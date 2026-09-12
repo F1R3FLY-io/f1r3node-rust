@@ -318,8 +318,8 @@ canonical_sexpr_projection_proofs() {
 pathmap_leaf_extension_proofs() {
   local TLC_MEMORY_HIGH=1536M TLC_RSS=2G TLC_CPU_QUOTA=100% TLC_TASKS_MAX=64
   rocq_reject_placeholders theories/PathMapLeafExtension.v
-  rocq_compile_with_closed_count theories/PathMapLeafExtension.v 39 \
-    "leaf extension, topology-preserving removal, ownership and virtual cursor laws"
+  rocq_compile_with_closed_count theories/PathMapLeafExtension.v 62 \
+    "leaf extension, removal dispatch, unit union, graft preparation, ownership and virtual cursor laws"
   rocq_check_modules "PathMap leaf-extension contract" StackSafePDA.PathMapLeafExtension
 }
 

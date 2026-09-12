@@ -11362,6 +11362,41 @@ CoW boundary. J-150 records the final logs and exact clone/disposal controls.
 This supersedes the pending guarded regression above, not the outstanding
 EPathMap/ACT integration or performance requirements.
 
+The combined `--epathmap-import` gate subsequently passes at `b6e236e81`,
+including its formal prerequisites, release/debug runtime groups, seven ACT
+line-transport tests and positive/sixteen-negative compile controls. J-151
+and pgmcp artifact 628 record the exact log hash and the 6 GiB, zero-swap
+execution envelope. This supersedes the pending combined-gate result above,
+not complete mutation coverage: five caller-facing removal/graft/join
+boundaries still require the same existing-focus discipline. No new measured
+performance improvement or completed persistence comparison is asserted.
+
+#### 5.33.65 Existing-focus mutation and topology-aware union (2026-09-12)
+
+The refined model has 62 closed reports after independent kernel checking
+and the maintained prerequisite gate. New dispatch laws separate path
+presence from value presence and prohibit reusing pre-prune authority for a
+post-prune mutation. Unit-specialized exact merging additionally preserves
+common dangling topology and counts only shared values as overlap.
+
+The public EPathMap cohort passes 23 tests, including two 128-case generated
+original-order properties. Shared-cursor tests pass 21; the full guarded
+cohort passes 34 with its existing measurement-only ignore. The earlier
+algebra cohort passes nine, including depth 4096 on a 256 KiB stack in
+261.08 seconds. These are bounded correctness runs, not benchmarking results.
+
+The first post-dispatch run retained two set-join failures: PathMap's dense
+native union assumed a shared edge must have an inhabited optional payload.
+J-153 records the minimized fixture, corrected mode attribution and PMU-009.
+Set/map union now share the existing synchronized native zipper/graft
+algorithm, without decoded projections or a dependency fork. Its performance
+qualification remains required; no general runtime speedup is asserted.
+
+J-152–153 provide source/log hashes and formal/native scope boundaries.
+Proofs run under 2 GiB and Rust cohorts under 6 GiB, with swap disabled.
+Whole-workspace acceptance and the production persistence-versus-LMDB
+comparison are not complete at this checkpoint.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate

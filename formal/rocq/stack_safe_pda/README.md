@@ -88,7 +88,7 @@ remain unqualified at this formal-first checkpoint.**
 
 ### Descendant-supported value removal
 
-The `DescendantRemoval` refinement adds 13 closed reports, for 39 total.
+The `DescendantRemoval` refinement adds 13 closed reports, bringing that checkpoint to 39.
 It models a finite physical-parent abstraction containing value slots and
 child slots with relative endpoints. Its independent reference removes only
 the focused value. A retained descendant can be a child subtree or a deeper
@@ -116,6 +116,55 @@ unconditionally using `true` can lose a terminal path.
 | Removal ownership | Exact returned payload, one count decrement, named disposal and repeated remove/restore controls. |
 | Terminal layout | Check value-plus-same-key-empty-child layouts separately; logical topology equivalence alone does not prove private slot uniqueness. |
 
+### Existing-focus dispatch and graft preparation
+
+The `BoundaryDispatch` refinement adds fifteen reports, bringing that checkpoint to 54. Branch
+removal admits a mutable focus only after a successful topology lookup;
+value removal requires a present value. A missing value is an exact no-op
+even when its dangling path exists. Subtrie removal applies the second gate
+to the branch-removal post-state, with an explicit well-formedness premise.
+A negative control demonstrates why retaining the original presence witness
+would incorrectly reopen a pruned path.
+
+Child materialization dispatches among an existing child, a missing child
+below a terminal, and a missing child below a branch. The terminal case
+reuses the proved leaf extension; the branch case retains an explicit native
+insertion-refinement premise. The resulting child exists, original values
+and their finite-domain count are unchanged, and a newly created child is
+terminal and valueless. Rooted graft publication absorbs the preparation's
+prefix closure, provided the source really publishes a root. This native
+publication premise is separate from the model's conceptual navigation root;
+it does not authorize grafting an absent source as though it were present.
+
+| Extracted dispatch invariant | Native qualification |
+|---|---|
+| Absent value/prefix opens no mutable focus | Original-order dense dangling fixtures and generated absent probes; unchanged values, topology, mode, count, cached bytes and retained clones. |
+| Present gate invokes the existing operation | Keep native pruning and return semantics; exercise valued parents, descendants and unrelated dangling siblings. |
+| Second gate uses post-branch authority | Remove a valueless parent subtree whose branch removal prunes the focus before the value-removal stage. |
+| Child preparation preserves values/count and establishes a vacant terminal | Join both operand orders against independent prefix-union and value oracles, including missing terminal and nonterminal children. |
+| Rooted graft absorbs preparation | Compare composed set/map grafts at missing, populated and neutral-empty destinations; retain source and destination aliases. |
+
+The `UnitJoin` refinement adds eight reports, for 62 total. Equality-checked
+unit-value merging cannot conflict and agrees with the existing value-join
+model. Membership is union and the exact count is left plus right minus
+shared value-bearing focuses. Common dangling edges contribute topology but
+no overlap count. The model checks commutativity, idempotence and associativity
+pointwise, and distinguishes an existing logical edge from its optional
+cofree payload. A concrete counterexample shows why treating an absent
+cofree payload as an absent edge loses shared dangling topology.
+
+The native set specialization now reuses the same synchronized zipper and
+borrowed-graft union as map mode. Deterministic set/map cases are separate so
+one mode's panic cannot prevent the other from running. Original-order
+generated histories compare exact prefix union, associations, counts and
+retained snapshots. The complete synchronized traversal, private CoW and
+machine-width count arithmetic are not automatically proved by these local
+specialization laws.
+
+These laws qualify the added control flow, not the private implementation of
+native pruning, CoW, branch insertion or graft publication. Those remain
+explicit source-correspondence and native-test obligations.
+
 The model uses pointwise observations rather than functional extensionality.
 The segmentation law concerns logical path concatenation, not PathMap's private
 physical layout. The prepublication focus trace specifies the allowed boundary;
@@ -127,9 +176,11 @@ No theorem establishes allocator correctness, private PathMap CoW behavior,
 arbitrary exception safety inside upstream methods, automatic Rust extraction,
 or a throughput improvement. Parking cleanup and rollback are deliberately
 different claims. The maintained `--pathmap-leaf-extension-proofs` route rebuilds
-the model prerequisites and checks the 26 reports and kernel acceptance;
+the model prerequisites and checks all 62 reports and kernel acceptance;
 `--epathmap-import` and the default gate include the same contract. Passing the
-proof-only route does not qualify the still-failing native acceptance gate.
+proof-only route does not qualify native acceptance. The combined gate at
+`b6e236e81` passes as recorded in engineering journal J-151; the later
+caller-dispatch changes require their own native qualification.
 
 ## Singleton EPathMap import prefilter (2026-09-08)
 

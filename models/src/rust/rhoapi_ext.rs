@@ -37,7 +37,9 @@ use prost::bytes::{Buf, BufMut};
 use prost::encoding::wire_type::WireType;
 use prost::encoding::{self, DecodeContext};
 use prost::DecodeError;
-use rspace_plus_plus::rspace::pathmap_mutation::{DisposeValue, NativePathCursor, TeardownBarrier};
+use rspace_plus_plus::rspace::pathmap_mutation::{
+    create_child_path, DisposeValue, NativePathCursor, TeardownBarrier,
+};
 
 use super::canonical_path::{
     declared_canonical_path_flags, declared_canonical_path_metadata, decode_trie_path,
@@ -91,6 +93,20 @@ where
     ModelPathMapPolicy: DisposeValue<V> + TeardownBarrier<V>,
 {
     NativePathCursor::<V, _, ModelPathMapPolicy>::new(map, path, &ModelPathMapPolicy).set_val(value)
+}
+
+fn native_remove<V>(map: &mut pathmap::PathMap<V>, path: &[u8]) -> Option<V>
+where V: Clone + Send + Sync + Unpin {
+    if map.contains(path) {
+        map.remove(path)
+    } else {
+        None
+    }
+}
+
+fn native_remove_branches<V>(map: &mut pathmap::PathMap<V>, path: &[u8]) -> bool
+where V: Clone + Send + Sync + Unpin {
+    map.path_exists_at(path) && map.remove_branches_at(path, true)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -285,8 +301,8 @@ where V: Clone + Send + Sync + Unpin {
         *map = pathmap::PathMap::new();
         return;
     }
-    map.remove_branches_at(prefix, true);
-    drop(map.remove(prefix));
+    native_remove_branches(map, prefix);
+    drop(native_remove(map, prefix));
 }
 
 /// Clone one absolute prefix subtrie without constructing a singleton mask.
@@ -344,6 +360,7 @@ fn graft_composed_set_subtrie(
 ) {
     use pathmap::zipper::{ZipperMoving, ZipperReadOnlyIteration, ZipperWriting};
 
+    native_create_path(destination, prefix);
     destination
         .write_zipper_at_path(prefix)
         .graft(&source.read_zipper());
@@ -386,6 +403,7 @@ fn graft_composed_map_subtrie(
 ) {
     use pathmap::zipper::{ZipperMoving, ZipperReadOnlyIteration, ZipperWriting};
 
+    native_create_path(destination, prefix);
     destination
         .write_zipper_at_path(prefix)
         .graft(&source.read_zipper());
@@ -423,23 +441,26 @@ fn graft_composed_map_subtrie(
     }
 }
 
-/// Exact map union without inventing a lattice for `Par`.
+/// Exact trie union without inventing a lattice for `Par`.
 ///
 /// A synchronized zipper walk compares values only on common paths. When the
 /// right operand enters a branch absent from the left operand, the whole
 /// compressed branch is grafted into the copy-on-write destination. The focus
 /// value is verified when PathMap's `graft_root_vals` feature carries it and
 /// cloned explicitly only when that feature is absent.
-fn join_exact_map_with_grafts(
-    left: &RholangMapPathMap,
-    right: &RholangMapPathMap,
-) -> Result<(RholangMapPathMap, usize), EPathMapAlgebraError> {
-    use pathmap::utils::BitMask;
+fn join_exact_with_grafts<V>(
+    left: &pathmap::PathMap<V>,
+    right: &pathmap::PathMap<V>,
+) -> Result<(pathmap::PathMap<V>, usize), EPathMapAlgebraError>
+where
+    V: Ord + Clone + Send + Sync + Unpin + 'static,
+    ModelPathMapPolicy: DisposeValue<V> + TeardownBarrier<V>,
+{
     use pathmap::zipper::{Zipper, ZipperMoving, ZipperValues, ZipperWriting};
 
-    fn merge_focus(
-        destination: &mut (impl ZipperWriting<Par> + ZipperValues<Par>),
-        source: &impl ZipperValues<Par>,
+    fn merge_focus<V: Ord + Clone + Send + Sync + Unpin>(
+        destination: &mut (impl ZipperWriting<V> + ZipperValues<V>),
+        source: &impl ZipperValues<V>,
         encoded_key: &[u8],
     ) -> Result<bool, EPathMapAlgebraError> {
         let Some(right_value) = source.val() else {
@@ -461,6 +482,9 @@ fn join_exact_map_with_grafts(
     }
 
     let mut joined = left.clone();
+    if joined.is_empty() {
+        joined = pathmap::PathMap::new();
+    }
     let mut overlap = 0usize;
     {
         let mut source = right.read_zipper();
@@ -479,12 +503,15 @@ fn join_exact_map_with_grafts(
                 continue;
             };
 
-            let destination_has_child = destination.child_mask().test_bit(byte);
             source.descend_to_byte(byte);
-            destination.descend_to_byte(byte);
+            let created = create_child_path::<V, _, ModelPathMapPolicy>(
+                &mut destination,
+                byte,
+                &ModelPathMapPolicy,
+            );
             debug_assert!(source.path_exists());
 
-            if !destination_has_child {
+            if created {
                 destination.graft(&source);
                 if let Some(value) = source.val() {
                     if let Some(grafted) = destination.val() {
@@ -1348,8 +1375,8 @@ impl EntryTrie {
     pub fn remove_encoded_entry(&mut self, key: &[u8]) -> bool {
         let removed = match &mut self.repr {
             EPathMapRepr::Empty => return false,
-            EPathMapRepr::Set(map) => map.remove(key).is_some(),
-            EPathMapRepr::Map(map) => match map.remove(key) {
+            EPathMapRepr::Set(map) => native_remove(map, key).is_some(),
+            EPathMapRepr::Map(map) => match native_remove(map, key) {
                 Some(value) => {
                     crate::rust::rholang::par_children::dismantle(value);
                     true
@@ -1368,8 +1395,8 @@ impl EntryTrie {
     pub fn remove_branches_at(&mut self, prefix: &[u8]) -> bool {
         let changed = match &mut self.repr {
             EPathMapRepr::Empty => false,
-            EPathMapRepr::Set(map) => map.remove_branches_at(prefix, true),
-            EPathMapRepr::Map(map) => map.remove_branches_at(prefix, true),
+            EPathMapRepr::Set(map) => native_remove_branches(map, prefix),
+            EPathMapRepr::Map(map) => native_remove_branches(map, prefix),
         };
         if changed {
             self.normalize_after_destructive_mutation();
@@ -1392,12 +1419,12 @@ impl EntryTrie {
         let changed = match &mut self.repr {
             EPathMapRepr::Empty => false,
             EPathMapRepr::Set(map) => {
-                let branches = map.remove_branches_at(prefix, true);
-                map.remove(prefix).is_some() || branches
+                let branches = native_remove_branches(map, prefix);
+                native_remove(map, prefix).is_some() || branches
             }
             EPathMapRepr::Map(map) => {
-                let branches = map.remove_branches_at(prefix, true);
-                let removed = map.remove(prefix);
+                let branches = native_remove_branches(map, prefix);
+                let removed = native_remove(map, prefix);
                 if let Some(value) = removed {
                     crate::rust::rholang::par_children::dismantle(value);
                     true
@@ -1569,17 +1596,16 @@ impl EntryTrie {
             (EPathMapRepr::Empty, _) => Ok(other.clone()),
             (_, EPathMapRepr::Empty) => Ok(self.clone()),
             (EPathMapRepr::Set(left), EPathMapRepr::Set(right)) => {
-                let joined = left.join(right);
-                let len = joined.val_count();
+                let (joined, overlap) = join_exact_with_grafts(left, right)?;
                 Ok(Self::joined_result(
                     EPathMapRepr::Set(joined),
-                    len,
+                    self.len + other.len - overlap,
                     self,
                     other,
                 ))
             }
             (EPathMapRepr::Map(left), EPathMapRepr::Map(right)) => {
-                let (joined, overlap) = join_exact_map_with_grafts(left, right)?;
+                let (joined, overlap) = join_exact_with_grafts(left, right)?;
                 Ok(Self::joined_result(
                     EPathMapRepr::Map(joined),
                     self.len + other.len - overlap,
@@ -1628,7 +1654,7 @@ impl EntryTrie {
             (EPathMapRepr::Map(left), EPathMapRepr::Map(right)) => {
                 let mut difference = left.clone();
                 for (key, _) in right.iter() {
-                    let removed = difference.remove(&key);
+                    let removed = native_remove(&mut difference, &key);
                     if let Some(removed) = removed {
                         crate::rust::rholang::par_children::dismantle(removed);
                     }

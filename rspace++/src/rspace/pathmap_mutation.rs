@@ -1,6 +1,7 @@
 use std::marker::PhantomData;
 
 use pathmap::PathMap;
+use pathmap::utils::BitMask;
 use pathmap::zipper::{
     TrieRefBorrowed, WriteZipperUntracked, Zipper, ZipperForking, ZipperMoving,
     ZipperReadOnlySubtries, ZipperValues, ZipperWriting,
@@ -70,6 +71,75 @@ impl<V, D: DisposeValue<V>> Drop for OwnedValue<'_, V, D> {
         if let Some(value) = self.value.take() {
             self.dispose.dispose(value);
         }
+    }
+}
+
+fn materialize_missing_suffix<V, D, B>(
+    inner: &mut WriteZipperUntracked<'_, '_, V>,
+    suffix: &[u8],
+    dispose: &D,
+    endpoints: &mut EndpointAuthority<'_>,
+) where
+    V: Clone + Send + Sync + Unpin + 'static,
+    D: DisposeValue<V>,
+    B: TeardownBarrier<V> + 'static,
+{
+    if inner.child_count() == 0 {
+        let donor = GuardedPathMap::<V, ValueFreeDisposer, B>::value_free_suffix(suffix);
+        let parked_count = endpoints.removed(inner.is_val());
+        let mut parked = OwnedValue {
+            value: inner.remove_val(false),
+            dispose,
+        };
+        endpoints.commit(parked_count);
+        #[cfg(test)]
+        tests::observe_extension_stage(ExtensionPhase::Parked, endpoints.observed_count());
+        donor.graft_value_free_suffix(inner);
+        #[cfg(test)]
+        tests::observe_extension_stage(ExtensionPhase::Grafted, endpoints.observed_count());
+        if parked.value.is_some() {
+            let restored_count = endpoints.added(true);
+            let replaced = inner.set_val(parked.value.take().unwrap());
+            endpoints.commit(restored_count);
+            let unexpected = OwnedValue {
+                value: replaced,
+                dispose,
+            };
+            assert!(unexpected.value.is_none(), "leaf extension restores a vacant boundary");
+        }
+        #[cfg(test)]
+        tests::observe_extension_stage(ExtensionPhase::Restored, endpoints.observed_count());
+        drop(donor);
+        inner.descend_to(suffix);
+    } else {
+        inner.descend_to(suffix);
+        inner.create_path();
+    }
+    assert!(inner.path_exists(), "materialization establishes the selected path");
+}
+
+pub fn create_child_path<V, D, B>(
+    writer: &mut WriteZipperUntracked<'_, '_, V>,
+    byte: u8,
+    dispose: &D,
+) -> bool
+where
+    V: Clone + Send + Sync + Unpin + 'static,
+    D: DisposeValue<V>,
+    B: TeardownBarrier<V> + 'static,
+{
+    assert!(writer.path_exists(), "child materialization starts at an existing focus");
+    if writer.child_mask().test_bit(byte) {
+        writer.descend_to_byte(byte);
+        false
+    } else {
+        materialize_missing_suffix::<V, D, B>(
+            writer,
+            &[byte],
+            dispose,
+            &mut EndpointAuthority::Uncounted,
+        );
+        true
     }
 }
 
@@ -189,44 +259,12 @@ where
             return false;
         }
         let suffix = &self.pending[self.inner.path().len()..];
-        if self.inner.child_count() == 0 {
-            let donor = GuardedPathMap::<V, ValueFreeDisposer, B>::value_free_suffix(suffix);
-            let parked_count = self.endpoints.removed(self.inner.is_val());
-            let mut parked = OwnedValue {
-                value: self.inner.remove_val(false),
-                dispose: self.dispose,
-            };
-            self.endpoints.commit(parked_count);
-            #[cfg(test)]
-            tests::observe_extension_stage(ExtensionPhase::Parked, self.endpoints.observed_count());
-            donor.graft_value_free_suffix(&mut self.inner);
-            #[cfg(test)]
-            tests::observe_extension_stage(
-                ExtensionPhase::Grafted,
-                self.endpoints.observed_count(),
-            );
-            if parked.value.is_some() {
-                let restored_count = self.endpoints.added(true);
-                let replaced = self.inner.set_val(parked.value.take().unwrap());
-                self.endpoints.commit(restored_count);
-                let unexpected = OwnedValue {
-                    value: replaced,
-                    dispose: self.dispose,
-                };
-                assert!(unexpected.value.is_none(), "leaf extension restores a vacant boundary");
-            }
-            #[cfg(test)]
-            tests::observe_extension_stage(
-                ExtensionPhase::Restored,
-                self.endpoints.observed_count(),
-            );
-            drop(donor);
-            self.inner.descend_to(suffix);
-        } else {
-            self.inner.descend_to(suffix);
-            self.inner.create_path();
-        }
-        assert!(self.inner.path_exists(), "materialization establishes the selected path");
+        materialize_missing_suffix::<V, D, B>(
+            &mut self.inner,
+            suffix,
+            self.dispose,
+            &mut self.endpoints,
+        );
         self.missing = false;
         self.pending.clear();
         true

@@ -11105,6 +11105,154 @@ close the complete EPathMap/ACT integration gate.
 | `target/verification/pathmap-leaf-cursor-native-r5.log` | `c878901e93e40a0756539e39d613931cb75b9aaa3bd32620b5e4ae05c7958093` |
 | `target/verification/pathmap-leaf-guarded-regression-r2.log` | `b7e0d633ccd218709fe15fe8fc77624dff6075575d57f6edc22489eb475a9a65` |
 
+### J-151 — 2026-09-12 Integrated admission gate and remaining mutation dispatch
+
+**VERIFIED CHECKPOINT.** Commit `b6e236e81` passes
+`scripts/check-stack-safe-pda-proofs.sh --epathmap-import` with exit zero.
+The run used a systemd scope with a 6 GiB memory limit, no swap, four CPU
+equivalents and a 900-second lifetime. The gate includes the focused formal
+prerequisites, release/debug admission and formatting cohorts, seven checked
+ACT line-transport tests, a positive span-borrow compilation and sixteen
+exact expected compiler-rejection controls. Errors printed by those negative
+controls are expected; the enclosing gate verifies their rejection reasons.
+The log is `target/verification/canonical-epathmap-integrated-admission-r2.log`,
+SHA-256 `cf0c16aa011f85e7a676f1352862c3460dd2b1ec330f6ae33dca12a9381083a5`;
+pgmcp artifact 628 preserves the result and its scope.
+
+**DERIVED COVERAGE GAP.** The native adapter is not yet used at every exposed
+mutation boundary. Read-only review identifies five groups: absent-key
+removal, branch/subtrie removal, map subtraction, composed subtree grafting,
+and synchronized map join. Missing keys may extend a dangling terminal path;
+raw mutable descent can fail before the native operation discovers absence.
+Subtrie removal must also recheck the post-branch-removal state because
+pruning can remove the original focus. The join detects an absent child but
+currently descends to it before graft publication.
+
+**DECISION.** Reuse one existing-boundary materialization primitive and retain
+the synchronized zipper/graft algorithm. Read-preflight destructive operations
+without creating topology, preserve native present-case pruning semantics,
+and qualify the added dispatch separately. Existing leaf-extension proofs
+justify extraction of the shared implementation, not all newly routed
+operations. Additional proofs and original-order production regressions must
+precede claiming those routes qualified. Fresh destination construction and
+immediately verified resident-key removal retain their distinct safety
+premises; they are not blanket rewrite targets.
+
+This gate supersedes J-150's pending combined-admission result. It does not
+complete tasks 5976/6023, whole-workspace CI, production persistence cutover,
+or the required persistence-versus-LMDB comparison. No throughput, storage
+size, canonical-byte or consensus-rule change is claimed.
+
+### J-152 — 2026-09-12 Existing-focus dispatch qualification
+
+**FORMAL RESULT.** Fifteen additional closed-context reports bring
+`PathMapLeafExtension.v` to 54. The topology gate and value gate are distinct:
+branch removal checks path presence, while value removal checks `Some` versus
+`None`. The second gate in subtree removal consults the post-branch state.
+Child materialization preserves values/count and establishes a vacant terminal
+when the child was absent. Rooted graft publication absorbs prefix preparation
+under an explicit native publication premise. Native nonterminal insertion,
+pruning and CoW behavior remain separate qualification obligations, not facts
+proved by the abstract dispatcher.
+
+Compilation and kernel checking completed before routing the new Rust callers.
+The source SHA-256 is
+`9fd1928d8e4482f06a4779669096e9c133871fee7da833f83c4a09c3be761f8c`.
+Compilation used 439,320 KiB maximum RSS in 1.60 seconds; kernel checking used
+283,704 KiB in 12.23 seconds. Both ran with a 2 GiB cap and zero swap. Fresh
+prerequisites and the maintained proof gate also pass.
+
+| Evidence | SHA-256 |
+|---|---|
+| `target/verification/pathmap-boundary-dispatch-formal-r8.log` | `99013f967b63d72cb12ed9dd78c07f5e7f91b3d981670684c75ad8fa48fcd361` |
+| `target/verification/pathmap-boundary-dispatch-formal-r8-kernel.log` | `bfe0265249a066b15cb89d01d2a3e57327cbb9410ff3d173b02d932db8d10ceb` |
+| `target/verification/pathmap-boundary-maintained-formal-r1.log` | `b51613e6c8e57b14ced4d5ab7f9392b7875162ebb613e4d865e01b47ff88314b` |
+| `target/verification/pathmap-materialization-extraction-r1.log` | `9ddd09fe702841c2437a956f25f73b8f4211ae59a19643c76c1d45af34ea5a4e` |
+| `target/verification/epathmap-native-boundary-baseline-r1.log` | `3287d206ba2c1e82dea855ba1c1db87dcb2ea177b35351a2c3765f91151b52da` |
+
+**NEGATIVE NATIVE EVIDENCE.** Extracting the existing materialization into one
+shared helper passes all 21 existing native tests. Before adopting the new
+dispatch, the expanded public EPathMap cohort reports 15 passes and five
+failures. Four reproduce the empty-sentinel panic through absent-value,
+absent-branch, absent-subtree removal and map join. The fifth is an incorrect
+new test oracle: composing a bare `7` through a `Split` cursor at the root
+produces `[7]`, not bare `7`. Correct that oracle; do not change production
+composition semantics. The failed log remains part of the evidence.
+
+**IMPLEMENTATION AND LIMIT.** Missing removals now return before opening a
+mutable focus. Present removals retain the existing native operation. Shared
+child materialization replaces the join's unsafe pre-graft descent, and
+composed grafts establish their destination prefix first. Set algebra remains
+native; map join retains synchronized zippers and borrowed CoW subtree grafts.
+There is no decoded projection or sorted reconstruction. Runtime qualification
+of this dispatch is recorded separately from the preceding formal result;
+neither result constitutes whole-campaign acceptance or a performance verdict.
+
+### J-153 — 2026-09-12 Shared valueless edges require topology-aware set union
+
+**REPRODUCED FAILURE.** The first post-dispatch cohort reports 20 passes and
+two join failures. Its property shrinks to set mode with no generated extra
+paths: the fixed dense dangling fixture already suffices. Separating the
+deterministic set/map tests confirms that the repaired map join passes.
+The earlier combined-mode failure must therefore not be attributed solely
+to the map writer. The saved property seed remains in
+`models/tests/epathmap_pathmap_native_zipper.proptest-regressions`.
+
+PathMap 0.2.2's dense-node `pjoin` assumes that overlapping child-mask bits
+imply an inhabited optional cofree payload. A shared dangling edge has neither
+a recursive component nor a value; cofree join returns `None`, and the dense
+join takes an `unreachable!()` arm. `join_into` has the same assumption and
+ownership transfers already in progress, so substituting it is rejected.
+This is not a missing-value lookup, ACT decoding, or map-value conflict.
+
+**FORMAL-FIRST REPAIR.** Eight additional `UnitJoin` reports bring the model
+to 62 closed reports. Equality-checked unit-value merging never conflicts
+and agrees with the existing value-join specification. Value presence is
+union; overlap counts shared values only. Common dangling edges survive
+without increasing the value count. The explicit optional-cofree control
+shows why an absent payload must not erase an existing logical edge.
+Compilation and kernel checking pass before unit-specializing the native
+join; the maintained proof gate also passes with fresh prerequisites.
+
+**IMPLEMENTATION.** `join_exact_with_grafts` is one monomorphized algorithm
+for both `PathMap<()>` and `PathMap<Par>`. It keeps the initial CoW clone,
+synchronized common-branch traversal, shared child materialization and
+borrowed whole-subtree grafts. Unit values cannot conflict; map conflicts
+retain their existing canonical-order behavior. Set union now uses the
+existing exact overlap count instead of a separate result `val_count()`
+scan. This supersedes the direct set-`join` delegation in J-152; it does not
+replace the trie, add a decoded projection, or change upstream PathMap.
+Avoiding that count scan is a source-level work reduction, not a measured
+end-to-end speedup. The new set-union route still requires performance
+qualification against the valid-input native baseline.
+
+**NATIVE RESULT.** The expanded cohort passes all 23 tests, including separate
+set/map cases and two 128-case original-order properties. Generated histories
+check exact prefix union, values/count, absent-removal cache identity and
+CoW snapshots across drop orders. The complete guarded cohort passes 34 tests
+with one preexisting measurement-only ignore. The preceding shared-cursor
+cohort passes 21 tests; the preceding algebra cohort passes nine, including
+depth 4096 on a 256 KiB stack. That deep correctness run takes 261.08 seconds;
+it is not a controlled benchmark. Whole-workspace CI, all native proof
+bindings, persistence cutover and the required LMDB comparison remain open.
+
+| Evidence under `target/verification/` | SHA-256 |
+|---|---|
+| `epathmap-native-boundary-qualified-r1.log` (20 pass, 2 fail) | `c9b3481cc490aab8e4e06f53350dc0f58c70d67eac810badd7e04a0e395182b4` |
+| `epathmap-set-join-trace-r1.log` | `2ce1bbcb544753d3ce1301572eada54bd6a8379fd14e6ba5b3fdcdd10c894779` |
+| `epathmap-map-join-qualified-r1.log` | `327d3b2b0c7cff4408802c066c7de035487445ccd1cdd19f8f981bd0c0d38a4d` |
+| `pathmap-unit-join-formal-r3.log` | `2c1dd2b4038b503ffdc01a5a73197ad3590f59506a276633321974a74a1a010d` |
+| `pathmap-unit-join-formal-r3-kernel.log` | `b1e1a3a6a9c4e23106841751da35531a4ac6975c1b33a503244341cfc8ab6ce5` |
+| `pathmap-unit-join-maintained-formal-r1.log` | `9e8d00f78a5c300c5ebd7113e200d6d2f0c96d1e5fce7c59cb957ab3402f6c9f` |
+| `epathmap-native-boundary-qualified-r2.log` (23 pass) | `95a1e217a5e35ba45ace0098ec0fc48df10ddba83b392edd15037c01c59f3b9e` |
+| `pathmap-boundary-guarded-full-r2.log` | `9ebfe4ec4be27b938a3623e83a497253d5afd188189858fd71ea6a48b36d2cec` |
+| `pathmap-boundary-cursor-r1.log` | `33cab5e2c27a23af11805803033f42635ee8bcb4cf0a08a495702218225027d9` |
+| `pathmap-boundary-algebra-r1.log` | `8acf199c6125fa9273568af74f269f8a6f7db6a00402cba55960c79df7855e1d` |
+
+Proof commands use a 2 GiB cap; Rust compilation/cohorts use 6 GiB, and the
+direct minimized trace uses 1 GiB. All disable swap. The final model source
+SHA-256 is `6d5d61561dfc595010aced350e97c5a985ed8baf928b72aeb47095843a736878`.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
@@ -11122,7 +11270,8 @@ still requires measurement.
 | PMU-004 | Correctness + performance API; **demonstrated need against PathMap 0.2.2** | `models/src/rust/epathmap_trie_codec.rs` must associate each canonical ACT value body with its logical endpoint occurrence. The current integration cannot derive that association from `ArenaCompactTree::from_zipper` without relying on `T` addresses: the public value mapper receives no logical path or occurrence ordinal and PathMap may invoke it more than once while compressing one leaf. CoW grafting can also expose one stored `T` at several logical endpoints. | Add a fallible canonical ACT emission cursor or callback that visits every logical value endpoint exactly once in canonical producer order and supplies a borrowed logical path, stable occurrence ordinal, or equivalent endpoint token. Its observable result must be independent of allocation address, node sharing, graft history, and mapper re-entry. It must compose with checked preflight and sink streaming, retain value-free endpoints, preserve canonical `ArenaCompactTree::from_zipper` bytes, and use heap-bounded stack-safe traversal. | Required local evidence is an executable shared-versus-independently-allocated graft differential with repeated equal and pointer-identical values; an address-collapse mutant that maps two endpoints to ordinal zero; exact EPM1/ACT byte equality; malformed/sink-failure controls; and geometric time, allocation, RSS, and native-stack measurements. The formal EPM1 V2 authority must prove that ordinals enumerate logical occurrences, not value identities. | A released PathMap API supplies the exactly-once logical-occurrence contract and passes the same EPM1, sharing-topology, failure-atomicity, and resource gates. The integration then deletes its local occurrence-association traversal while retaining its EPM1 schema and transaction policy. |
 | PMU-005 | Stack-safety + ownership + allocation API; **demonstrated need against PathMap 0.2.2, measured local guard active** | Campaign-owned maps require an outer `Arc<AnchorRoot<PathMap<V>>>`, a reverse-prune zipper PDA, temporary immediate-parent barriers, guarded builders/iterators, and closure of every detached subtree before an owned raw map can fall out of scope. The barriers prevent recursive detached-subtrie destruction but split compressed line-list nodes. | Make destruction of arbitrary branching and non-branching `PathMap` topology iterative in the crate itself. Prefer intrinsic iterative `Drop`; otherwise add a fallible, nonallocating consuming physical-node drain whose owned temporaries remain stack-safe on success, sink error, panic, and early exit. It must visit each stored value exactly once, preserve CoW siblings and shared snapshots, avoid whole-version cloning and per-logical-byte barriers, and compose safely with replacement, join, meet, subtract, restrict, graft, and destructive subtree operations. If public finalization is explicit, unique-root authority must be race-free and failure must never let a nonempty raw subtrie reach recursive `Drop`. | PathMap 0.2.2 source inspection demonstrates the recursive-drop boundary. Local Rocq proves 18 invariants and rejects 19 causal mutants; Verus proves edge/payload conservation; TLA+ and Loom cover outer-anchor schedules. Deep line/dense/comb/root/topology-only tests pass on a 256 KiB stack with exact payload-drop counts and failure/alias coverage. Four teardown geometries measure time exponents 0.95785–0.98911, but headless Heaptrack attributes 181,708 temporary line-list splits to barriers for the realistic size-256 case; see J-052 and its measurement report. | A released PathMap version passes the same fixed-stack, ownership, topology, failure, CoW, exactly-once disposal, geometric time, and allocation gates without per-logical-byte barrier churn. The integration can then remove its generic reverse-prune compatibility layer without allowing raw recursive-drop authority to escape. |
 
-| PMU-006 | Mutation correctness; **reproduced against PathMap 0.2.2, unresolved** | EPathMap Set/Map and guarded topology mutation use public `create_path`; a valid dangling-branch extension panics before ACT serialization. No replacement helper has been adopted. | Support arbitrary dangling-path creation and extension, including related value insertion, without mutable descent through an immutable empty sentinel. Preserve existing values, siblings, zipper semantics and CoW snapshots independently of insertion order. | J-057 gives the four-operation reproducer and saved property seed. Full RSpace library release: 600 passed, one failed, one ignored. Require the complete generated topology/value domain, compressed/dense promotion, root/repeated operations, CoW and stack-safe ownership controls. A public leaf-boundary graft needs separate qualification, including `graft_root_vals` value preservation. | An approved released PathMap fix passes the same deterministic/generated topology, value, CoW and stack-safety gates; any corresponding local compatibility helper can then be removed. Neither a fork nor weakening the property generator is authorized. |
+| PMU-006 | Mutation correctness; **reproduced against PathMap 0.2.2, local adapter active; upstream unresolved** | `NativePathCursor` and shared existing-boundary materialization protect guarded/EPathMap creation; exposed removals use read preflight and grafts establish their destination first. | Support arbitrary dangling-path creation and extension, including related value insertion, without mutable descent through an immutable empty sentinel. Preserve existing values, siblings, zipper semantics and CoW snapshots independently of insertion order. | J-057 retains the original four-operation failure. J-150–153 record formal models, original-order properties, CoW/ownership controls and focused native passes. Complete integration/performance and private-callee bindings remain distinct gates. | An approved released PathMap fix passes the same deterministic/generated topology, value, CoW and stack-safety gates; the corresponding local adapter can then be removed. Neither a fork nor weakening the property generator is authorized. |
+| PMU-009 | Native lattice join; **shared dangling-edge panic reproduced, local zipper union active** | Set and map union share `join_exact_with_grafts`; unit values specialize the existing exact-value merge while topology is tracked independently. | Preserve shared dangling edges in dense `pjoin` and `join_into` even when both optional cofree components are absent; do not conflate an existing edge with an inhabited payload. | J-153: minimized set fixture, saved property seed, source/backtrace, eight unit-union proof reports and 23 passing EPathMap tests. `join_into` is not an accepted substitute for its identical failing assumption. | A released native union passes the same exact-topology, value, count, CoW and original-order tests and measured performance gates; retain the map exact-value contract independently. |
 
 ### Additional reproduced cursor/removal contracts (J-150)
 

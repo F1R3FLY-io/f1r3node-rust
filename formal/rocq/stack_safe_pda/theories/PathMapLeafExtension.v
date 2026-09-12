@@ -831,6 +831,415 @@ Proof. repeat split; reflexivity. Qed.
 
 End DescendantRemoval.
 
+Module BoundaryDispatch.
+
+Theorem value_presence_implies_topology : forall s p value,
+  well_formed s -> values s p = Some value -> topology s p = true.
+Proof.
+  intros s p value [_ [_ Hsupport]] Hv.
+  destruct (topology s p) eqn:Hp; auto.
+  specialize (Hsupport p Hp). congruence.
+Qed.
+
+Theorem absent_prefix_excludes_all_descendants : forall s prefix q,
+  well_formed s -> topology s prefix = false -> prefixb prefix q = true ->
+  topology s q = false /\ values s q = None.
+Proof.
+  intros s prefix q [_ [Hclosed Hsupport]] Habsent Hprefix.
+  destruct (topology s q) eqn:Hq.
+  - pose proof (Hclosed prefix q Hprefix Hq). congruence.
+  - split; auto.
+Qed.
+
+Inductive reply := BranchReply (changed : bool) | ValueReply (removed : option payload).
+
+Record gate_result := GateResult {
+  after_gate : state;
+  gate_reply : reply;
+  mutable_focus_trace : list path
+}.
+
+Definition existing_gate (s : state) (p : path) (absent : reply)
+    (native : state -> path -> state * reply) : gate_result :=
+  if topology s p then
+    let '(after, result) := native s p in GateResult after result [p]
+  else GateResult s absent [].
+
+Theorem absent_gate_is_exact_noop : forall s p absent native,
+  topology s p = false ->
+  after_gate (existing_gate s p absent native) = s /\
+  gate_reply (existing_gate s p absent native) = absent /\
+  mutable_focus_trace (existing_gate s p absent native) = [].
+Proof. intros. unfold existing_gate. rewrite H. repeat split; reflexivity. Qed.
+
+Theorem present_gate_preserves_supplied_operation : forall s p absent native after result,
+  topology s p = true -> native s p = (after, result) ->
+  existing_gate s p absent native = GateResult after result [p].
+Proof. intros. unfold existing_gate. now rewrite H, H0. Qed.
+
+Theorem every_gate_opening_was_present_in_its_input : forall s p absent native q,
+  In q (mutable_focus_trace (existing_gate s p absent native)) ->
+  q = p /\ topology s q = true.
+Proof.
+  intros s p absent native q. unfold existing_gate.
+  destruct (topology s p) eqn:Hpresent.
+  - destruct (native s p). simpl. intros [Hq|[]]. subst. auto.
+  - simpl. contradiction.
+Qed.
+
+Definition value_gate (s : state) (p : path)
+    (native : state -> path -> state * reply) : gate_result :=
+  match values s p with
+  | None => GateResult s (ValueReply None) []
+  | Some _ => let '(after, result) := native s p in GateResult after result [p]
+  end.
+
+Theorem absent_value_gate_skips_even_present_topology : forall s p native,
+  values s p = None ->
+  value_gate s p native = GateResult s (ValueReply None) [].
+Proof. intros. unfold value_gate. now rewrite H. Qed.
+
+Theorem present_value_gate_preserves_supplied_operation : forall s p native value after result,
+  values s p = Some value -> native s p = (after, result) ->
+  value_gate s p native = GateResult after result [p].
+Proof. intros. unfold value_gate. now rewrite H, H0. Qed.
+
+Theorem value_gate_opens_only_present_post_state_focus : forall s p native q,
+  well_formed s -> In q (mutable_focus_trace (value_gate s p native)) ->
+  q = p /\ topology s q = true.
+Proof.
+  intros s p native q Hwf. unfold value_gate.
+  destruct (values s p) as [value|] eqn:Hvalue; [|simpl; contradiction].
+  destruct (native s p). simpl. intros [Hq|[]]. subst.
+  split; auto. eapply value_presence_implies_topology; eauto.
+Qed.
+
+Definition composed_subtrie_removal (s : state) (p : path)
+    (branch_native value_native : state -> path -> state * reply) :=
+  let branch := existing_gate s p (BranchReply false) branch_native in
+  let value := value_gate (after_gate branch) p value_native in
+  (branch, value).
+
+Theorem second_gate_uses_post_branch_authority : forall s p branch_native value_native,
+  let branch := fst (composed_subtrie_removal s p branch_native value_native) in
+  let value := snd (composed_subtrie_removal s p branch_native value_native) in
+  well_formed (after_gate branch) ->
+  (forall q, In q (mutable_focus_trace value) -> topology (after_gate branch) q = true) /\
+  (topology (after_gate branch) p = false ->
+    values (after_gate branch) p = None /\
+    after_gate value = after_gate branch /\
+    gate_reply value = ValueReply None /\ mutable_focus_trace value = []).
+Proof.
+  intros s p branch_native value_native. simpl.
+  set (branch := existing_gate s p (BranchReply false) branch_native).
+  intro Hwf. split.
+  - intros q Hin. exact (proj2 (@value_gate_opens_only_present_post_state_focus
+      (after_gate branch) p value_native q Hwf Hin)).
+  - intro Habsent.
+    pose proof (proj2 (@absent_prefix_excludes_all_descendants
+      (after_gate branch) p p Hwf Habsent (prefixb_refl p))) as Hvalue.
+    split; auto.
+    rewrite (@absent_value_gate_skips_even_present_topology
+      (after_gate branch) p value_native Hvalue). repeat split; reflexivity.
+Qed.
+
+Definition remove_fixture_branch (_ : state) (_ : path) : state * reply :=
+  (singleton_line [] None, BranchReply true).
+
+Definition nontrivial_value_fixture (s : state) (p : path) : state * reply :=
+  (reference_insert s p (PathMapReversePruneTeardown.SetMember 99),
+    ValueReply (Some (PathMapReversePruneTeardown.SetMember 99))).
+
+Theorem stale_branch_presence_is_not_reused :
+  let source := singleton_line [1] (Some (PathMapReversePruneTeardown.SetMember 1)) in
+  let stages := composed_subtrie_removal source [1] remove_fixture_branch nontrivial_value_fixture in
+  mutable_focus_trace (fst stages) = [[1]] /\
+  mutable_focus_trace (snd stages) = [] /\
+  gate_reply (snd stages) = ValueReply None /\
+  topology (after_gate (snd stages)) [1] = false /\
+  topology (fst (nontrivial_value_fixture (after_gate (fst stages)) [1])) [1] = true.
+Proof. repeat split; reflexivity. Qed.
+
+Lemma prefixb_antisymmetric : forall p q,
+  prefixb p q = true -> prefixb q p = true -> p = q.
+Proof.
+  intros p q Hpq Hqp. apply prefixb_spec in Hpq, Hqp.
+  destruct Hpq as [a Ha], Hqp as [b Hb].
+  pose proof (f_equal (@length nat) Ha) as Hla.
+  pose proof (f_equal (@length nat) Hb) as Hlb.
+  rewrite length_app in Hla, Hlb.
+  assert (Hempty : length a = 0).
+  { cbv [PathMapPhysicalOwnership.byte] in Hla, Hlb |- *. lia. }
+  apply length_zero_iff_nil in Hempty. subst a.
+  rewrite app_nil_r in Ha. symmetry. exact Ha.
+Qed.
+
+Definition materialize_child (s : state) (boundary : path) (byte : nat)
+    (terminal_flag : bool) (native_branch : state -> path -> state) :=
+  let child := boundary ++ [byte] in
+  if topology s child then s
+  else if terminal_flag then extend_leaf s boundary [byte]
+  else native_branch s child.
+
+Theorem child_materialization_matches_reference : forall s boundary byte flag native_branch,
+  well_formed s -> topology s boundary = true ->
+  (flag = true -> terminal s boundary) ->
+  (flag = false -> ~ terminal s boundary) ->
+  (topology s (boundary ++ [byte]) = false -> flag = false ->
+    same_observation (native_branch s (boundary ++ [byte]))
+      (reference_create s (boundary ++ [byte]))) ->
+  same_observation (materialize_child s boundary byte flag native_branch)
+    (reference_create s (boundary ++ [byte])).
+Proof.
+  intros s boundary byte flag native_branch Hwf Hpresent Hterminal Hbranch Hnative.
+  unfold same_observation. intro q.
+  unfold materialize_child. cbn zeta. cbv [PathMapPhysicalOwnership.byte] in *.
+  destruct (topology s (@app nat boundary [byte])) eqn:Hchild.
+  - destruct (@existing_path_creation_is_noop s (boundary ++ [byte]) Hwf Hchild q) as [Ht Hv].
+    split; [exact (eq_sym Ht)|exact (eq_sym Hv)].
+  - destruct flag.
+    + apply leaf_extension_matches_reference; auto.
+    + apply Hnative; auto.
+Qed.
+
+Theorem materialized_child_is_present_and_values_count_unchanged :
+  forall s boundary byte flag native_branch domain,
+  same_observation (materialize_child s boundary byte flag native_branch)
+    (reference_create s (boundary ++ [byte])) ->
+  topology (materialize_child s boundary byte flag native_branch) (boundary ++ [byte]) = true /\
+  (forall q, values (materialize_child s boundary byte flag native_branch) q = values s q) /\
+  value_count domain (materialize_child s boundary byte flag native_branch) = value_count domain s.
+Proof.
+  intros s boundary byte flag native_branch domain Hsame.
+  assert (Hvalues : forall q, values (materialize_child s boundary byte flag native_branch) q = values s q).
+  { intro q. exact (proj2 (Hsame q)). }
+  split.
+  - rewrite (proj1 (Hsame (boundary ++ [byte]))).
+    unfold reference_create, set_join; simpl. rewrite prefixb_refl. apply orb_true_r.
+  - split; auto. now apply same_values_same_count.
+Qed.
+
+Theorem missing_materialized_child_is_terminal_and_valueless : forall s child candidate,
+  well_formed s -> topology s child = false ->
+  same_observation candidate (reference_create s child) ->
+  terminal candidate child /\ values candidate child = None.
+Proof.
+  intros s child candidate Hwf Hmissing Hsame.
+  split.
+  - split.
+    + rewrite (proj1 (Hsame child)). unfold reference_create, set_join; simpl.
+      rewrite prefixb_refl. apply orb_true_r.
+    + intros q Hprefix Hpresent.
+      pose proof (@absent_prefix_excludes_all_descendants s child q Hwf Hmissing Hprefix) as [Hq _].
+      rewrite (proj1 (Hsame q)) in Hpresent.
+      unfold reference_create, set_join in Hpresent; simpl in Hpresent.
+      rewrite Hq in Hpresent; simpl in Hpresent.
+      now apply prefixb_antisymmetric.
+  - rewrite (proj2 (Hsame child)).
+    exact (proj2 (@absent_prefix_excludes_all_descendants s child child Hwf Hmissing (prefixb_refl child))).
+Qed.
+
+Definition rooted_graft_image (s : state) (focus : path) (donor : state) : state :=
+  State
+    (fun q => if prefixb focus q then topology donor (skipn (length focus) q)
+      else topology s q || prefixb q focus)
+    (fun q => if prefixb focus q then values donor (skipn (length focus) q) else values s q).
+
+Definition publish_rooted_graft (s : state) (focus : path) (donor : state)
+    (native_source_root_present : bool) : option state :=
+  if native_source_root_present && topology donor []
+  then Some (rooted_graft_image s focus donor) else None.
+
+Theorem preparation_is_absorbed_by_rooted_graft_publication : forall s focus donor publication,
+  publication = true -> topology donor [] = true ->
+  publish_rooted_graft s focus donor publication = Some (rooted_graft_image s focus donor) /\
+  publish_rooted_graft (reference_create s focus) focus donor publication =
+    Some (rooted_graft_image (reference_create s focus) focus donor) /\
+  same_observation (rooted_graft_image (reference_create s focus) focus donor)
+    (rooted_graft_image s focus donor).
+Proof.
+  intros s focus donor publication Hpublication Hroot. split.
+  - unfold publish_rooted_graft. now rewrite Hpublication, Hroot.
+  - split.
+    + unfold publish_rooted_graft. now rewrite Hpublication, Hroot.
+    + intro q. unfold rooted_graft_image, reference_create, set_join; simpl.
+      destruct (prefixb focus q); split; auto.
+      destruct (topology s q), (prefixb q focus); reflexivity.
+Qed.
+
+Theorem rooted_graft_preparation_and_publication_have_present_focus : forall s focus donor,
+  topology donor [] = true ->
+  topology (reference_create s focus) focus = true /\
+  topology (rooted_graft_image s focus donor) focus = true.
+Proof.
+  intros s focus donor Hroot. split.
+  - unfold reference_create, set_join; simpl. rewrite prefixb_refl. apply orb_true_r.
+  - unfold rooted_graft_image; simpl. rewrite prefixb_refl, skipn_all. exact Hroot.
+Qed.
+
+End BoundaryDispatch.
+
+Module UnitJoin.
+
+Definition unit_eq_dec : forall a b : unit, {a = b} + {a <> b}.
+Proof. decide equality. Defined.
+
+Definition present (cell : option unit) := match cell with None => false | Some _ => true end.
+
+Definition as_value_cell (cell : option unit) : @value_cell unit :=
+  match cell with None => Absent | Some value => Present value end.
+
+Definition checked_focus_merge {V : Type}
+    (equal : forall a b : V, {a = b} + {a <> b})
+    (left right : option V) : option (option V * bool) :=
+  match right with
+  | None => Some (left, false)
+  | Some r =>
+      match left with
+      | None => Some (Some r, false)
+      | Some l => if equal l r then Some (Some l, true) else None
+      end
+  end.
+
+Definition union_cell (left right : option unit) : option unit :=
+  if present left || present right then Some tt else None.
+
+Theorem unit_focus_merge_never_conflicts_and_counts_exact_overlap : forall left right,
+  checked_focus_merge unit_eq_dec left right =
+    Some (union_cell left right, present left && present right) /\
+  @value_join unit unit_eq_dec (as_value_cell left) (as_value_cell right) =
+    as_value_cell (union_cell left right).
+Proof. intros [[]|] [[]|]; split; reflexivity. Qed.
+
+Definition unit_values := path -> option unit.
+
+Definition join_values (left right : unit_values) : unit_values :=
+  fun q => union_cell (left q) (right q).
+
+Theorem unit_value_membership_is_native_set_union : forall left right q,
+  present (join_values left right q) =
+    set_join (fun p => present (left p)) (fun p => present (right p)) q.
+Proof.
+  intros left right q. unfold join_values, union_cell, set_join.
+  destruct (left q) as [[]|], (right q) as [[]|]; reflexivity.
+Qed.
+
+Fixpoint count_present (domain : list path) (cells : unit_values) : nat :=
+  match domain with
+  | [] => 0
+  | p :: rest => (if present (cells p) then 1 else 0) + count_present rest cells
+  end.
+
+Fixpoint count_overlap (domain : list path) (left right : unit_values) : nat :=
+  match domain with
+  | [] => 0
+  | p :: rest => (if present (left p) && present (right p) then 1 else 0) +
+      count_overlap rest left right
+  end.
+
+Lemma unit_presence_sum : forall left right,
+  (if present (union_cell left right) then 1 else 0) +
+    (if present left && present right then 1 else 0) =
+  (if present left then 1 else 0) + (if present right then 1 else 0).
+Proof. intros [[]|] [[]|]; reflexivity. Qed.
+
+Theorem unit_join_count_is_union_minus_overlap : forall domain left right,
+  count_present domain (join_values left right) + count_overlap domain left right =
+    count_present domain left + count_present domain right /\
+  count_present domain (join_values left right) =
+    count_present domain left + count_present domain right - count_overlap domain left right.
+Proof.
+  induction domain as [|p domain IH]; intros left right; [simpl; auto|].
+  specialize (IH left right). destruct IH as [IH _].
+  pose proof (unit_presence_sum (left p) (right p)) as Hcell.
+  cbn [count_present count_overlap]. unfold join_values in *.
+  split; lia.
+Qed.
+
+Record unit_state := UnitState {
+  unit_topology : @set_trie path;
+  unit_payloads : unit_values
+}.
+
+Definition join_state (left right : unit_state) : unit_state :=
+  UnitState (set_join (unit_topology left) (unit_topology right))
+    (join_values (unit_payloads left) (unit_payloads right)).
+
+Theorem unit_join_preserves_shared_valueless_topology : forall left right q,
+  unit_topology left q = true -> unit_topology right q = true ->
+  unit_payloads left q = None -> unit_payloads right q = None ->
+  unit_topology (join_state left right) q = true /\
+  unit_payloads (join_state left right) q = None /\
+  checked_focus_merge unit_eq_dec (unit_payloads left q) (unit_payloads right q) =
+    Some (None, false).
+Proof.
+  intros left right q Hlt Hrt Hlv Hrv.
+  unfold join_state, set_join, join_values; simpl.
+  rewrite Hlt, Hrt, Hlv, Hrv. repeat split; reflexivity.
+Qed.
+
+Theorem unit_join_has_pointwise_set_laws : forall left right third q,
+  unit_topology (join_state left right) q = unit_topology (join_state right left) q /\
+  unit_payloads (join_state left right) q = unit_payloads (join_state right left) q /\
+  unit_topology (join_state left left) q = unit_topology left q /\
+  unit_payloads (join_state left left) q = unit_payloads left q /\
+  unit_topology (join_state (join_state left right) third) q =
+    unit_topology (join_state left (join_state right third)) q /\
+  unit_payloads (join_state (join_state left right) third) q =
+    unit_payloads (join_state left (join_state right third)) q.
+Proof.
+  intros left right third q.
+  unfold join_state, set_join, join_values; simpl.
+  destruct (unit_topology left q), (unit_topology right q), (unit_topology third q),
+    (unit_payloads left q) as [[]|], (unit_payloads right q) as [[]|],
+    (unit_payloads third q) as [[]|]; repeat split; reflexivity.
+Qed.
+
+Record optional_cofree := OptionalCofree {
+  logical_edge_present : bool;
+  recursive_component_present : bool;
+  cofree_value : option unit
+}.
+
+Definition join_cofree (left right : optional_cofree) :=
+  OptionalCofree (logical_edge_present left || logical_edge_present right)
+    (recursive_component_present left || recursive_component_present right)
+    (union_cell (cofree_value left) (cofree_value right)).
+
+Definition optional_payload_projection (cofree : optional_cofree) :=
+  if recursive_component_present cofree || present (cofree_value cofree)
+  then Some (recursive_component_present cofree, cofree_value cofree) else None.
+
+Definition common_dangling := OptionalCofree true false None.
+
+Theorem present_edge_does_not_imply_inhabited_optional_payload :
+  logical_edge_present common_dangling = true /\
+  optional_payload_projection common_dangling = None /\
+  logical_edge_present (join_cofree common_dangling common_dangling) = true /\
+  optional_payload_projection (join_cofree common_dangling common_dangling) = None.
+Proof. repeat split; reflexivity. Qed.
+
+Definition drop_none_projection_mutant (cofree : optional_cofree) :=
+  match optional_payload_projection cofree with Some _ => true | None => false end.
+
+Theorem discarding_none_projection_loses_common_dangling_edge :
+  drop_none_projection_mutant (join_cofree common_dangling common_dangling) = false /\
+  logical_edge_present (join_cofree common_dangling common_dangling) = true.
+Proof. split; reflexivity. Qed.
+
+Definition dense_dangling_fixture : unit_state :=
+  UnitState (set_join (fun q => prefixb q [0]) (fun q => prefixb q [1])) (fun _ => None).
+
+Theorem common_zero_one_dangling_children_survive_unit_join :
+  unit_topology (join_state dense_dangling_fixture dense_dangling_fixture) [0] = true /\
+  unit_topology (join_state dense_dangling_fixture dense_dangling_fixture) [1] = true /\
+  count_present [[]; [0]; [1]] (unit_payloads (join_state dense_dangling_fixture dense_dangling_fixture)) = 0 /\
+  count_overlap [[]; [0]; [1]] (unit_payloads dense_dangling_fixture)
+    (unit_payloads dense_dangling_fixture) = 0.
+Proof. repeat split; reflexivity. Qed.
+
+End UnitJoin.
+
 Inductive native_obligation :=
 | ReadSelectionExact | TerminalChildMask | MutableFocusBeforeMissingEdge
 | CompressedEndpointParentFocus | FreshDonorRootAbsent | DonorSuffixExact
@@ -896,5 +1305,28 @@ Print Assumptions DescendantRemoval.terminal_removal_retains_dangling_path.
 Print Assumptions DescendantRemoval.unconditional_false_duplicates_same_key_child.
 Print Assumptions DescendantRemoval.unguarded_true_can_discard_terminal_path.
 Print Assumptions DescendantRemoval.compressed_deeper_value_is_sufficient_support.
+Print Assumptions BoundaryDispatch.value_presence_implies_topology.
+Print Assumptions BoundaryDispatch.absent_prefix_excludes_all_descendants.
+Print Assumptions BoundaryDispatch.absent_gate_is_exact_noop.
+Print Assumptions BoundaryDispatch.present_gate_preserves_supplied_operation.
+Print Assumptions BoundaryDispatch.every_gate_opening_was_present_in_its_input.
+Print Assumptions BoundaryDispatch.absent_value_gate_skips_even_present_topology.
+Print Assumptions BoundaryDispatch.present_value_gate_preserves_supplied_operation.
+Print Assumptions BoundaryDispatch.value_gate_opens_only_present_post_state_focus.
+Print Assumptions BoundaryDispatch.second_gate_uses_post_branch_authority.
+Print Assumptions BoundaryDispatch.stale_branch_presence_is_not_reused.
+Print Assumptions BoundaryDispatch.child_materialization_matches_reference.
+Print Assumptions BoundaryDispatch.materialized_child_is_present_and_values_count_unchanged.
+Print Assumptions BoundaryDispatch.missing_materialized_child_is_terminal_and_valueless.
+Print Assumptions BoundaryDispatch.preparation_is_absorbed_by_rooted_graft_publication.
+Print Assumptions BoundaryDispatch.rooted_graft_preparation_and_publication_have_present_focus.
+Print Assumptions UnitJoin.unit_focus_merge_never_conflicts_and_counts_exact_overlap.
+Print Assumptions UnitJoin.unit_value_membership_is_native_set_union.
+Print Assumptions UnitJoin.unit_join_count_is_union_minus_overlap.
+Print Assumptions UnitJoin.unit_join_preserves_shared_valueless_topology.
+Print Assumptions UnitJoin.unit_join_has_pointwise_set_laws.
+Print Assumptions UnitJoin.present_edge_does_not_imply_inhabited_optional_payload.
+Print Assumptions UnitJoin.discarding_none_projection_loses_common_dangling_edge.
+Print Assumptions UnitJoin.common_zero_one_dangling_children_survive_unit_join.
 
 End PathMapLeafExtension.
