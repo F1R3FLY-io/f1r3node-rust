@@ -12,9 +12,11 @@ A reader could observe an empty or partial record under its final name, and no c
 The matched RED exits 1 because no record had a synced temporary file, a rename, and a directory sync.
 
 The corrected driver publishes every record through one helper.
-The helper writes the content to a temporary name beside the target, syncs the temporary file, renames it into place, and syncs the directory.
+The helper writes the content to a temporary name beside the target and syncs the temporary file.
+It then renames the file into place and syncs the directory.
 The summary writer follows the same sequence for the summary JSON.
-The matched GREEN exits 0: every record shows its final digest in a file sync under its temporary name, followed by a directory sync, and no temporary file remains.
+The matched GREEN exits 0.
+Every record shows its final digest in a file sync under its temporary name, followed by a directory sync, and no temporary file remains.
 
 ## Correspondence
 

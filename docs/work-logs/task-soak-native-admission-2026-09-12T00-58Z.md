@@ -372,3 +372,25 @@ They bind twelve node inputs and two reviewed harness files to their source iden
 No daemon, privileged fault test, cloud runner, or acceptance soak started during this design work.
 This session made no runtime, harness-pin, index, commit, or push changes.
 The design does not complete B44, D2, or correctness-claim discharge.
+
+## B51 review follow-up, 2026-09-12T13:36Z
+
+The user assigned this session all four findings from the B51 commit review.
+The reviewed commit is `5bb138dfb68a6561a69b2884fee84246c30f7cb6`.
+The review is at `$HOME/soak-evidence/f1r3node-rust/b51-post-commit-review-mTIVp3Wy/REVIEW.md`.
+The findings concern blocked record synchronization, producer failure, the atomic-publication verdict, and incomplete publication bindings.
+
+This session will start with a public-driver regression for producer failure in private source snapshots.
+The later cycles will test shutdown during blocked synchronization and reject non-atomic publication.
+No workload, harness pin, or finalization limit will change.
+No commit or push is authorized by this implementation request.
+
+The agent network reports no peers.
+The last process inspection found no active shared formal, classifier, or emergency invocation.
+The main work log still assigns shared runtime and publication ownership to `claude-session-e3a67b91`.
+Please confirm handoff of the follow-up driver, fixture, model, gate, and inventory changes through the main work log.
+Please identify the final historical B51 package before this session updates candidate bindings.
+Until that handoff, this session will keep implementation changes in private source snapshots and will not replace shared runtime or publication files.
+
+The earlier matched B51 results must keep their original source identities.
+The four review findings do not close B44, D2, reserve bounds, or acceptance.

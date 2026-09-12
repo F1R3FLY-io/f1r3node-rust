@@ -1240,3 +1240,45 @@ The original indentation was restored with only the tail edit, and the matched G
 The in-place configuration violates `VisibleImpliesDurable` with TLC exit 12, and the atomic configuration passes with 10 distinct states.
 The isolated formal gate passes 50 positive configurations and 50 exact controls with 100 actual TLC logs.
 The driver suite, the supporting probe, sample, and admission checks, and the summary and metrics regressions pass.
+
+Commit `5bb138dfb68a6561a69b2884fee84246c30f7cb6` entered the history at 05:58 local time from outside this session and carried the whole B51 working tree except the package directory.
+This session did not create that commit and did not push it.
+Before that commit, six pipeline continuations in the driver were rewritten from a trailing backslash to a trailing pipe from outside this session.
+The change is formatting only, and the fixture, the summary writer, and the model files are unchanged.
+
+The second GREEN run, the first driver-dependent suite runs, and the first verification snapshot are retained as attempts.
+The verification snapshot was refrozen on the committed driver bytes, and the matched GREEN and every driver-dependent check were rerun on those bytes.
+The package binds the baseline from `78921d076` and records `5bb138dfb` as the commit that carried the correction.
+
+### B51 review handoff to the native-admission session, 2026-09-12
+
+The user assigned the four B51 review findings to the native-admission session.
+This session confirms the handoff of the driver, fixture, model, gate, and inventory changes for R1 through R4.
+This session will not edit those shared files or build the B51 package until the native-admission session hands the work back.
+This session retains the shared plan and this work log and integrates the returned results.
+
+No final historical B51 package exists yet.
+This session stopped before the package build, so `manifest.jsonc` is absent by design.
+The staged package holds only `README.md` and `.gitattributes` under `docs/cbc-evidence/soak-d2-durable-record-2026-09-12/`.
+The staged documentation edits to the plan, this log, and the model note are Simplified Technical English fixes and do not change runtime code.
+
+The raw evidence root is `$HOME/soak-evidence/f1r3node-rust/d2-durable-record-wQoXYH8`.
+Its `build-record.py` binds base commit `78921d076` and correction commit `5bb138dfb`.
+The inventory rebind script is in this session's scratchpad at `rebind-inventory-b51.py`.
+The frozen `verified-source` snapshot matches the committed tree, and the raw root retains the RED run, the committed-bytes GREEN run, and the earlier attempts.
+
+The stored attempt-1 GREEN driver digest is `fd790edb26ff685b292746fb7bd99d415a984c5b0de3dc46ee39f9214bda9977`.
+That digest predates the external pipeline-wrap reformat.
+The final committed-bytes GREEN run and the committed driver both use digest `03e92edcea74f7030fb1fafe5b7904c60e48403db61496a6b5b45291795b1707`.
+These source identities must remain distinct in any rebinding.
+
+R1 shares the emergency path with an unregistered race that this session found and did not fix.
+The guardian breach can be missed when the workload process exits before the iteration poll loop rechecks the breach file.
+On that path the driver skips `emergency_start`, so the breach record follows the evidence copies and the response misses the composed deadline.
+The full emergency suite reproduced this twice on the committed driver, and the isolated case passed once.
+
+The proposed correction adds a post-loop breach check after the iteration `wait`.
+When `GUARDIAN_INTERRUPTED` is zero and the guardian breach file is present, the driver starts the emergency response and publishes the records before the copies.
+A deterministic fixture sets a large `SOAK_GUARDIAN_POLL_SECONDS` so the loop cannot recheck in time, while the guardian fires on its fixed five-second interval.
+The native-admission session should fold this post-loop detection into the R1 correction, because both bound the same emergency path.
+The composed deadline must also cover the publication step.

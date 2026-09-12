@@ -474,6 +474,7 @@ The [durable record package](../cbc-evidence/soak-d2-durable-record-2026-09-12/R
 Every breach record, the early-exit record, the persisted state, and both summaries now pass through one helper.
 The helper syncs a temporary file, renames it into place, and syncs the directory, so a record under its final name is complete or absent.
 The [model](../../formal/tlaplus/soak_disk/DurableRecord.md) refutes the in-place baseline.
+
 The fixture proves ordering and atomic visibility with a substituted `sync` command and does not prove kernel durability.
 Storage faults during publication, upload acknowledgment, and the guardian and crash-monitor bounds remain unverified.
 D2 and claim discharge remain pending.
