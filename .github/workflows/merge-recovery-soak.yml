@@ -139,6 +139,16 @@ env:
   # iterations) and the orchestrator host guardian (every iteration) use it.
   SOAK_HOST_FREE_FLOOR_MB: "8192"
   # Third pin site; keep identical to the other two — bump via scripts/repin-system-integration.sh.
+  #
+  # What this literal binds: the trusted runner launcher (a job that holds OCI
+  # secrets and runs before any target checkout) and the CI pin-drift check.
+  # It does NOT bind the integration test suite the soak runs. The workflow
+  # file always executes from the default branch, but the target is usually
+  # dev, so the suite follows the pin in the TARGET tree's
+  # .github/oci-validation.env (the same file the release evidence reads).
+  # Until 2026-09-10 the suite used this literal, and every nightly after a
+  # dev-only repin (2026-09-08) failed the observer-overload preflight until
+  # dev was promoted. Runs 34303543830 and 34450109213.
   # Pin history:
   # 2026-08-20: 56884ab -> 3757cab (system-integration PR #124 branch, NOT yet
   # main): validator-lifecycle payout bounds made race-proof (pre-withdraw
@@ -1609,11 +1619,50 @@ jobs:
           test "$actual_sha" = "$EXPECTED_SHA"
           echo "sha=$actual_sha" >> "$GITHUB_OUTPUT"
 
+      # The integration suite must match the node it tests, and the node comes
+      # from the target ref, not from the branch this workflow file runs on.
+      # Read the pin from the target tree's env file (the release evidence
+      # reads the same file) and fail closed on anything but a SHA or tag ref.
+      - name: Read the target's system-integration pin
+        id: pin
+        working-directory: node-under-test
+        env:
+          WORKFLOW_PIN: ${{ env.SYSTEM_INTEGRATION_REF }}
+        shell: bash -euo pipefail {0}
+        run: |
+          env_file=.github/oci-validation.env
+          if [ ! -f "$env_file" ]; then
+            echo "::error::$env_file is missing from the target tree; cannot pin the integration suite"
+            exit 1
+          fi
+          # Count declaration lines, not values: an empty duplicate line
+          # (SYSTEM_INTEGRATION_REF=) is a second declaration. `|| true`
+          # keeps a missing key from killing the step under pipefail before
+          # the ::error:: below can name it.
+          declaration_count="$(grep -cE '^SYSTEM_INTEGRATION_REF=' "$env_file" || true)"
+          declarations="$( (grep -E '^SYSTEM_INTEGRATION_REF=' "$env_file" || true) | cut -d= -f2- | sed -E 's/[[:space:]]*$//')"
+          if [ "$declaration_count" -ne 1 ]; then
+            echo "::error::$env_file must declare SYSTEM_INTEGRATION_REF exactly once; found $declaration_count declarations"
+            exit 1
+          fi
+          target_pin="$declarations"
+          # Same shape scripts/repin-system-integration.sh enforces: lowercase
+          # 40-hex SHA, or refs/tags/<tag> for the emergency path.
+          if [[ ! "$target_pin" =~ ^[0-9a-f]{40}$ && ! "$target_pin" =~ ^refs/tags/[A-Za-z0-9._/-]+$ ]]; then
+            echo "::error::SYSTEM_INTEGRATION_REF in the target tree must be a lowercase 40-character commit SHA or refs/tags/<tag>; got '$target_pin'"
+            exit 1
+          fi
+          if [ "$target_pin" != "$WORKFLOW_PIN" ]; then
+            echo "::notice::integration suite follows the target tree's pin $target_pin; this workflow file's own pin is $WORKFLOW_PIN"
+          fi
+          echo "system_integration_ref=$target_pin" >> "$GITHUB_OUTPUT"
+          echo "integration suite pin: $target_pin"
+
       - name: Clone trusted integration harness
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           repository: F1R3FLY-io/system-integration
-          ref: ${{ env.SYSTEM_INTEGRATION_REF }}
+          ref: ${{ steps.pin.outputs.system_integration_ref }}
           path: system-integration
           persist-credentials: false
 
