@@ -23,7 +23,7 @@ a Boolean constant and must violate exactly the invariant named below.
 | `MonitorCrash` | The crash monitor dies before the benchmark admission or the iteration admission (B42) |
 | `GuardianCrash` | The guardian process dies before the workload starts |
 | `Admit` | Start the iteration |
-| `PublishRefusal` | Write `protection-breach.txt`, `early-exit.txt`, and the failure summary |
+| `PublishRefusal`, `CompletePublish` | Write `protection-breach.txt`, `early-exit.txt`, and the failure summary. The corrected driver writes each record to a temporary name, syncs it, renames it into place, and syncs the directory (B51) |
 | `Attribute` | Run the disk usage attribution after a disk breach. The corrected driver writes the records first (B48) |
 
 | Constant | Correction | Pre-fix configuration | Expected violation |
@@ -49,8 +49,9 @@ a Boolean constant and must violate exactly the invariant named below.
 | `VerifyPlacement` | Under required containment, the benchmark and an iteration are admitted only when the trusted run-domain record matches the driver's own control group and uid. A failed comparison retains a failure. The pre-fix driver ignored the containment setting and took the unmanaged path (B45) | `MC_SoakDiskAdmission_unchecked_placement_pre_fix` | `UnverifiedPlacementPreventsAdmission` |
 | `BindIdentity` | The record is trusted only when the driver opened each root-owned, unwritable path component from the filesystem root, within the size bound. The pre-fix driver inspected the pathname and read the record separately (B46). The `unchecked_placement` control omits this invariant, which a driver with no placement check also violates | `MC_SoakDiskAdmission_pathname_pre_fix` | `UntrustedRecordPreventsAdmission` |
 | `RecordBeforeAttribution` | The driver writes the breach record and the early-exit record before any disk usage attribution starts, so a stalled attribution cannot delay them. The pre-fix driver attributed on the hygiene-pass path before it decided (B48) | `MC_SoakDiskAdmission_attribute_first_pre_fix` | `AttributionRequiresRecord` |
+| `AtomicPublish` | Every minimal record is synced under a temporary name, renamed into place, and followed by a directory sync. A reader sees the record complete or not at all. The pre-fix driver wrote each record in place, and a reader could see an empty or partial record (B51) | `MC_SoakDiskAdmission_in_place_pre_fix` | `VisibleImpliesDurable` |
 
-`MC_SoakDiskAdmission` enables all twenty-one corrections with all three benchmark fault kinds. It checks `TypeOK`, the twenty-one invariants above, `HygieneKillFollowsTerm`, `StopPreventsAdmission`, `RefusalRecorded`, and the liveness property `Completes`. It completes with 30352 distinct states.
+`MC_SoakDiskAdmission` enables all twenty-two corrections with all three benchmark fault kinds. It checks `TypeOK`, the twenty-two invariants above, `HygieneKillFollowsTerm`, `StopPreventsAdmission`, `RefusalRecorded`, and the liveness property `Completes`. It completes with 37744 distinct states.
 
 Constants: floor 4096 MiB, band 4096 MiB, free-space samples `{7000, 8191, 8192, 8193, 16384}`, initial free space 7000 MiB, malformed prefix 16384.
 

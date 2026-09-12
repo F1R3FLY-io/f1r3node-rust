@@ -796,6 +796,22 @@ behaviors:
         formal_green_exit: 0
         native_regression: scripts/bench/test-soak-native-containment.py
         production_integration: false
+  - id: B51
+    statement: Every minimal record the driver publishes is synced under a temporary name, renamed into place, and followed by a directory sync, so a record under its final name is complete or absent.
+    priority: must
+    deep_module: false
+    done: true
+    construction: not-applicable
+    claim_discharge: pending
+    cycle_log:
+      - evidence: docs/cbc-evidence/soak-d2-durable-record-2026-09-12/manifest.jsonc
+        test: scripts/bench/test-soak-durable-record.sh
+        red_binding: source-sha256
+        red_exit: 1
+        formal_red_exit: 12
+        green_exit: 0
+        formal_green_exit: 0
+        production_integration: false
 ---
 
 # Soak Gate Development Cycles
@@ -1079,7 +1095,8 @@ The first B29 positive model had an incomplete successor. Its corrected RED/GREE
 - [ ] Verify ownership-safe reclamation, ownership-safe stop selection, and the complete node-image lifecycle.
 - [x] Verify selected benchmark monitor death, opening admission checks, and interrupted output-drain ordering.
 - [ ] Correct combined controller loss with a reviewed containment design and matched RED/GREEN evidence.
-- [ ] Verify other shutdown paths and durable evidence publication.
+- [x] Publish the minimal records through synced temporary files and atomic renames.
+- [ ] Verify other shutdown paths, storage faults during publication, and upload acknowledgment.
 - [ ] Establish one composed emergency deadline, including iteration shutdown and evidence handling.
 - [x] Reject the tested oversized disk settings and overflowing admission sum.
 - [x] Preserve the tested valid maximum settings.
