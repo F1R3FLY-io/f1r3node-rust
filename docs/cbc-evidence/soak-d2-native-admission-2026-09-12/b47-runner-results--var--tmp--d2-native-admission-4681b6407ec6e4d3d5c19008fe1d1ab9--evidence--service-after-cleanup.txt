@@ -1,0 +1,8 @@
+Restart=no
+MainPID=0
+ControlGroup=
+User=0
+KillMode=control-group
+ActiveState=failed
+SubState=failed
+InvocationID=63a08768dd784e019c9ce28f03d51bfe

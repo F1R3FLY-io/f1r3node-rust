@@ -726,6 +726,41 @@ behaviors:
         green_exit: 0
         formal_green_exit: 0
         production_integration: false
+  - id: B47
+    statement: The native launcher verifies manager placement and gate identity before it releases the driver, so a stalled service-status query prevents native admission.
+    priority: must
+    deep_module: true
+    done: true
+    construction: not-applicable
+    claim_discharge: pending
+    implemented_by: pi-session-native-admission
+    cycle_log:
+      - evidence: docs/cbc-evidence/soak-d2-native-admission-2026-09-12/manifest.jsonc
+        scope: native-launch-admission
+        test: scripts/bench/test-soak-native-admission.py
+        red_binding: source-sha256
+        red_exit: 1
+        formal_red_exit: 12
+        green_exit: 0
+        formal_green_exit: 0
+        native_regression: scripts/bench/test-soak-native-containment.py
+        production_integration: false
+  - id: B48
+    statement: The driver publishes its minimal breach record before any disk attribution starts, and a stalled attribution cannot delay that record or failure publication.
+    priority: must
+    deep_module: false
+    done: true
+    construction: not-applicable
+    claim_discharge: pending
+    cycle_log:
+      - evidence: docs/cbc-evidence/soak-d2-breach-record-2026-09-12/manifest.jsonc
+        test: scripts/bench/test-soak-breach-record-order.sh
+        red_binding: source-sha256
+        red_exit: 1
+        formal_red_exit: 12
+        green_exit: 0
+        formal_green_exit: 0
+        production_integration: false
 ---
 
 # Soak Gate Development Cycles

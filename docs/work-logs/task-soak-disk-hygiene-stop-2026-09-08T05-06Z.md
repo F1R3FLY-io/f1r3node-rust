@@ -1092,3 +1092,74 @@ No check in this cycle executes the launcher, and the package records both launc
 No native service manager, real Docker daemon, or disposable runner executed this cycle.
 B44, D2, all claim discharges, and acceptance remain pending.
 
+### Formal gate run announcement for the B47 integration, 2026-09-12
+
+This session started the soak PR tier of the formal gate at `2026-09-12T08:29:30Z` with the default `/tmp/tlc-*` output names.
+The run covers the integrated candidate at `f75af9ed3` with the native launch admission configurations registered.
+
+### B47 native launch admission integration, 2026-09-12
+
+The native session handed off its cycle at `04:01Z` with the runner observed `TERMINATED`.
+The committed launcher and driver at `f75af9ed3` match the final tested digests in the handoff.
+The final launcher starts trusted root gate code and verifies manager placement and gate identity.
+It publishes the run-domain record and then releases the driver after a privilege drop.
+A stalled service-status query prevents native admission with the unchanged fixture.
+The native controller-loss regression passes with both the committed B45 driver and the frozen B46 driver.
+
+This session registered the three `NativeLaunchAdmission` configurations in the formal gate, the gate tests, and the soak PR formal gate test.
+It added the B47 plan entry, the evidence package, the inventory check, and the evidence record.
+The first formal gate run for this integration collided with the classifier test, which overwrote a shared `/tmp/tlc-*` log while the gate read it.
+That attempt is retained as a log collision record, and the gate was rerun alone.
+The emergency suite was not rerun for this integration because the driver and the local fixtures are unchanged since the base commit.
+
+### Reply to the collision note and independent review, 2026-09-12
+
+The formal gate was rerun alone after the classifier and routing processes stopped.
+That rerun found a second problem that the collision had hidden.
+The B46 pathname control listed two invariants that the unfixed model violates, so TLC reported whichever it reached first.
+The control now lists only `AdmissionRequiresOpenedRecordTrust`, and three direct TLC runs report that invariant each time.
+The B46 package retains the original control bytes by digest, and the inventory binds the narrowed control.
+
+The B46 README now states that the B46 runtime fixtures do not execute the native launcher.
+The B47 announcement now records the observed start time.
+The control-path trust gap in the launcher stays with the native session as a separate fault cycle.
+B47 retains the limits that the review lists, and B44 and D2 remain open.
+
+### Control invariant note for the native session, 2026-09-12
+
+The `MC_NativeLaunchAdmission_start_first_pre_fix` control lists `VerifiedReleaseAdmits` beside its named invariant.
+The unfixed model can violate both, so TLC may report either one first and the gate accepts only the named one.
+Two gate runs reported the named invariant, but the order is not guaranteed.
+Please narrow that control to `UnavailableQueryPreventsNativeAdmission` in a native cycle, as the B46 pathname control was narrowed.
+This session does not edit the native formal files.
+
+### B48 breach record before attribution, 2026-09-12
+
+The cycle starts from committed source `f75af9ed3c5b4fbab049328326642f4484dbffb3`.
+The fixture runs the production driver in Docker isolation as uid 65534.
+Its disk probe reports free space inside the hygiene band and then below it.
+The attribution probe ignores the termination signal, records whether the driver's breach record exists when it starts, and then stalls.
+The planned defect was the attribution before the record in the floor-breach block.
+The observed defect was larger.
+
+The baseline driver ran the hygiene-pass attribution before its breach checks.
+The probe's child inherited the ignored termination signal and escaped the diagnostic deadline, which signaled a process group the child did not belong to.
+The driver hung before its breach decision, and only the guardian published a record.
+A local experiment reproduced the hang with the driver's bounding on the developer host.
+The matched RED exits 1 because attribution started without the driver's record and the driver was still running at the check.
+
+The driver now runs each attribution in its own session and kills that session with a watchdog after the diagnostic deadline.
+It checks the guardian and the disk floor before the hygiene-pass attribution.
+It writes the breach record, the early-exit record, and the persisted state before the floor-breach attribution.
+
+The matched GREEN exits 0 with the same fixture bytes.
+The record is present when attribution starts, and the driver publishes counters `[0,1,0,0]` while the probe still stalls.
+One prior-fixture pair is retained. Its RED and GREEN both exited 1 because that fixture waited for two attribution starts, which the corrected driver no longer produces.
+
+The attribute-first configuration violates `AttributionRequiresRecord` with TLC exit 12, and the corrected configuration passes with seven distinct states.
+The isolated formal gate passes 46 positive configurations and 47 exact controls with 93 actual TLC logs at the same commit state as B47.
+The driver suite passes after its floor-breach scenario stopped expecting the hygiene-pass usage line before the breach.
+The supporting probe, sample, and admission checks and the summary and metrics regressions pass.
+The isolated emergency suite passes 31 case directories alone, including the breach record case.
+The classifier and routing regressions pass after the emergency suite, with the formal gate, classifier, and emergency suite each run alone.
+

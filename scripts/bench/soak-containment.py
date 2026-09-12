@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import pwd
 import re
+import stat
 import subprocess
 import sys
 import time
@@ -68,9 +69,10 @@ def launch_native(source, control, uid):
     parent = control.parent.resolve(strict=True)
     if not control.is_absolute() or parent != control.parent or not re.fullmatch(r"/[A-Za-z0-9_./-]+", str(control)):
         raise ValueError("The control directory must have a canonical absolute parent.")
-    metadata = parent.stat()
-    if metadata.st_uid != 0 or metadata.st_mode & 0o022:
-        raise ValueError("The control parent must be root-owned and not writable by other users.")
+    for ancestor in (*reversed(parent.parents), parent):
+        metadata = ancestor.lstat()
+        if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_mode & 0o022:
+            raise ValueError("The control directory has an untrusted ancestor.")
     driver = source / "scripts/run-merge-recovery-soak.sh"
     if not driver.is_file():
         raise ValueError("The source directory has no soak driver.")

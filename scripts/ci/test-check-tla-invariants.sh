@@ -62,6 +62,8 @@ case "$config" in
     MC_NativeControllerLoss_unmanaged_pre_fix.cfg) invariant=NativeControllerLossStopsOwnedWriter ;;
     MC_RunDomainAdmission_benchmark_unchecked_pre_fix.cfg | MC_RunDomainAdmission_iteration_unchecked_pre_fix.cfg) invariant=UnverifiedPlacementPreventsAdmission ;;
     MC_RunDomainRecordIdentity_pathname_pre_fix.cfg) invariant=AdmissionRequiresOpenedRecordTrust ;;
+    MC_NativeLaunchAdmission_start_first_pre_fix.cfg) invariant=UnavailableQueryPreventsNativeAdmission ;;
+    MC_BreachRecordOrder_attribute_first_pre_fix.cfg) invariant=AttributionRequiresRecord ;;
     *) printf 'Model checking completed. No error has been found.\n'; exit 0 ;;
 esac
 if [[ "$config" == "$TEST_TLC_TARGET" ]]; then
@@ -122,7 +124,9 @@ for target in carrier_index/MC_CarrierIndex_dag_first_pre_fix \
     soak_disk/MC_NativeControllerLoss_unmanaged_pre_fix \
     soak_disk/MC_RunDomainAdmission_benchmark_unchecked_pre_fix \
     soak_disk/MC_RunDomainAdmission_iteration_unchecked_pre_fix \
-    soak_disk/MC_RunDomainRecordIdentity_pathname_pre_fix; do
+    soak_disk/MC_RunDomainRecordIdentity_pathname_pre_fix \
+    soak_disk/MC_NativeLaunchAdmission_start_first_pre_fix \
+    soak_disk/MC_BreachRecordOrder_attribute_first_pre_fix; do
     for result in clean wrong-invariant tool-error wrong-exit timeout missing expected; do
         config="$WORK/repo/formal/tlaplus/$target.cfg"
         if [[ "$result" == missing ]]; then

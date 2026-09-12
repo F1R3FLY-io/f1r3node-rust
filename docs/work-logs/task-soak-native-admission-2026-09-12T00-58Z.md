@@ -219,3 +219,130 @@ Please preserve the separate B46 setup failure and all earlier source identities
 The combined candidate still needs the owner's composed checks and publication audit.
 No commit or push was made by this session, and external staging remains intact.
 B44, private Docker containment, creation fencing, D2, claim discharge, hosted enforcement, and acceptance remain incomplete.
+
+## Completion coordination at 2026-09-12T08:25Z
+
+The user requested completion after staging the current candidate.
+This session will finish the native evidence export and its independent audit rather than stop at the raw handoff.
+The B46 package and driver remain with the integration owner.
+The native export will use a separate package directory and retain B44 as an incomplete parent behavior.
+Preparation starts outside the repository so it cannot overwrite an active package build.
+
+Please confirm whether the integration owner will register the native configurations and run the combined candidate checks.
+If that work has stopped, please transfer those integration files through this log before this session edits them.
+The final native runtime and formal inputs remain frozen at the recorded digests.
+No new diagnostic runner is needed for the completed native admission checks.
+This session will not infer current hosted verification or full D2 completion from local results.
+
+## Shared TLC log collision at 2026-09-12T08:31Z
+
+The integration owner started the actual formal gate at `08:29:30Z` and the classifier eight seconds later.
+Both processes write the same `/tmp/tlc-*` paths.
+The completed replay and carrier logs now contain only the classifier's one-line substitute result, not actual TLC output.
+Copying those paths after the formal gate ends cannot recover the overwritten execution evidence.
+The current overlapping attempt must remain separate from a verified combined result.
+
+Please run the actual formal gate again after the classifier and routing processes stop.
+Please retain and verify every actual TLC log before another substitute-based check starts.
+The shared gate files remain unchanged by this session.
+This session will audit the native package and actual-log provenance after the isolated rerun.
+
+The integration owner has registered this native cycle as B47 and has started its combined checks.
+This session will not create a competing native package build.
+The external commit `f75af9ed3c5b4fbab049328326642f4484dbffb3` preserves the tested native runtime bytes.
+The original runtime and formal execution identities remain unchanged by that commit.
+
+## Independent review, 2026-09-12
+
+The B46 archive audit, packaging regressions, and JSONC regressions pass.
+Every B46 package file preserves its Git-filter bytes and matches `f75af9ed3`.
+The review records are under the native raw root in `independent-review-8tAIghUl/`.
+
+The B46 README says that the native launcher does not write the record yet.
+That statement is stale for the integrated native helper recorded in the same package.
+Please replace it with the narrower fact that the B46 runtime fixtures do not execute the native launcher.
+The B47 run announcement also needs the observed start time, `2026-09-12T08:29:30Z`, instead of `04:25Z`.
+
+The root-gate review found a separate control-path trust gap.
+The launcher checks the immediate control parent, but it does not check all ancestors before it uses control paths again.
+An untrusted ancestor can permit directory replacement after the initial check.
+The release grant has public manager identity fields, so filesystem protection is essential to its authorization.
+The current fixture uses a trusted `/run` chain and does not test this attack.
+This is a source review finding, not an observed behavioral RED.
+
+The isolated Python gate treats the workload environment as data and drops groups, GID, and UID before it executes Bash.
+That review does not establish control-path authorization, descriptor isolation, or private Docker containment.
+Please retain those limits in B47 and keep B44 and D2 open.
+This session will prepare a separate control-path fault cycle without changing the source used by the active integration checks.
+
+## Control-directory refusal cycle at 2026-09-12T09:01Z
+
+The user explicitly requested defensive control-directory validation and regression tests on approved disposable infrastructure.
+This session owns the native helper and the new `test-soak-native-control-path.py` fixture.
+The integration owner retains the driver, shared gates, plans, and evidence inventory.
+The driver baseline for this cycle is committed `f75af9ed3`, not the concurrent B48 edits.
+
+The selected behavior rejects a control directory below an untrusted ancestor before it executes workload code.
+The fixture will use a harmless workload initialization hook to record execution and its user identity.
+The fixture will invoke the public Python launcher directly, so the hook cannot run in a privileged wrapper shell.
+The production driver, admission checks, manager, and privilege drop remain real.
+External workload commands remain substitutes, and an unrelated writer must continue.
+
+The cycle will retain production RED before correction and use private output paths for its matching finite model.
+The correction will need the unchanged fixture and the existing native positive regressions.
+No developer-host privileged test, third-party target, acceptance soak, or Git write is authorized by this cycle.
+A new runner must pass the existing identity, expiration, and exclusive-use guards before tests start.
+
+## Control-directory results at 2026-09-12T09:12Z
+
+The guarded runner passed the existing identity, expiration, and exclusive-use checks.
+Its name is `ci-eph-f1r3node-rust-amd64-d2-20260912-090605-c92d41`.
+The raw root is `/home/bf_spark/soak-evidence/f1r3node-rust/d2-native-control-WkVIMLiZ`.
+The runner remains live for integrated regression checks and retrieval.
+
+The unchanged fixture reports behavioral RED with the committed helper and GREEN with the correction.
+RED executes the harmless initialization hook as UID 65534 below the untrusted control ancestor.
+The unrelated writer advances from 8 to 18 bytes before cleanup.
+The matching control violates `UntrustedControlPreventsWorkload` with exit 12.
+Both corrected model configurations pass, with two and three distinct states.
+
+The helper now checks every control-parent component from the filesystem root with `lstat`.
+Each component must be a root-owned directory with no group or other write permission.
+The check occurs before control-directory creation or manager launch.
+The helper digest is `2641d0ac90ee8d837e7849038a3ef1f8f66c64fd4a035f5f823a6c1f90287ea7`.
+The unchanged query-refusal and native controller-loss fixtures also pass with the committed B46 driver.
+This session will test a separate B48 driver snapshot next, without rebinding the earlier runtime results.
+
+The B47 invariant review does not reproduce the reported second violation.
+With `QueryAvailable=FALSE`, the model never reaches phase `admitted`, so `VerifiedReleaseAdmits` holds.
+The original control reports the named invariant with exit 12.
+A separate configuration that omits only that invariant passes all remaining checks with exit 0.
+The supporting files are in `native-control-invariant-review/` under this cycle's raw root.
+The B47 model files remain unchanged.
+
+## Control-directory handoff, 2026-09-12
+
+The selected control-directory repair and its bounded verification are complete.
+The integrated B48 driver also passes the unchanged control-path fixture and both existing native regressions.
+Its tested digest is `94b180d0c4cb6b7607284ff111e24512af8109d689e20c674fe15b717a3b8680`.
+The current nine runtime files match the integrated snapshot.
+The matched fixture and all seven formal execution inputs remain unchanged.
+
+The retrieval audit verifies 298 regular members from seven source-bound invocations.
+The archive digest is `7031d6bfbfaca62db377dea37be00eaee2c7eae0d114d00339d9de628a3d5f07`.
+Its size is 261,267 bytes, and its expanded payload is 870,688 bytes.
+Two FIFO entries are excluded, and no private environment payload is included.
+The first retrieval attempt failed on an obsolete directory name and remains separate from the runtime results.
+A new retrieval destination passed the audit before the runner was observed `TERMINATED`.
+
+The full handoff is `/home/bf_spark/soak-evidence/f1r3node-rust/d2-native-control-WkVIMLiZ/HANDOFF.md`.
+The [model note](../../formal/tlaplus/soak_disk/NativeControlPath.md) documents the selected behavior, runtime correspondence, and remaining limits.
+The integration owner can register the two positive `NativeControlPath` configurations and the exact parent-only control.
+The owner retains the shared plan, combined gates, publication package, and claim inventory.
+Please preserve the earlier B47 helper identity when registering this separate correction.
+
+No privileged test ran on the development host, and no acceptance soak started.
+This session did not change the driver, workload, finalization settings, harness pins, or Git index.
+The user or another session staged files during this cycle, and those index changes remain intact.
+Concurrent directory replacement, mount changes, inherited descriptors, private Docker containment, and creation fencing remain unverified.
+B44, D2, all claim discharges, and acceptance remain open.

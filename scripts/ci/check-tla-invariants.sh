@@ -143,6 +143,9 @@ POST_FIX_CONFIGS=(
     soak_disk/MC_RunDomainAdmission_benchmark
     soak_disk/MC_RunDomainAdmission_iteration
     soak_disk/MC_RunDomainRecordIdentity
+    soak_disk/MC_NativeLaunchAdmission
+    soak_disk/MC_NativeLaunchAdmission_available
+    soak_disk/MC_BreachRecordOrder
 )
 
 TLC_WORKERS=auto
@@ -191,6 +194,9 @@ if [[ "$SOAK_PR" == true ]]; then
         soak_disk/MC_RunDomainAdmission_benchmark
         soak_disk/MC_RunDomainAdmission_iteration
         soak_disk/MC_RunDomainRecordIdentity
+        soak_disk/MC_NativeLaunchAdmission
+        soak_disk/MC_NativeLaunchAdmission_available
+        soak_disk/MC_BreachRecordOrder
     )
     TLC_WORKERS=2
 fi
@@ -272,6 +278,8 @@ NEGATIVE_CONTROLS=(
     soak_disk/MC_RunDomainAdmission_benchmark_unchecked_pre_fix:UnverifiedPlacementPreventsAdmission
     soak_disk/MC_RunDomainAdmission_iteration_unchecked_pre_fix:UnverifiedPlacementPreventsAdmission
     soak_disk/MC_RunDomainRecordIdentity_pathname_pre_fix:AdmissionRequiresOpenedRecordTrust
+    soak_disk/MC_NativeLaunchAdmission_start_first_pre_fix:UnavailableQueryPreventsNativeAdmission
+    soak_disk/MC_BreachRecordOrder_attribute_first_pre_fix:AttributionRequiresRecord
 )
 
 failed=0
