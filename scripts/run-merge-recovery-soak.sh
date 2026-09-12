@@ -247,14 +247,6 @@ if [ "$CONTAINMENT" != unmanaged ] && [ "$CONTAINMENT" != required ]; then
 	exit 2
 fi
 RUN_DOMAIN_RECORD="${SOAK_RUN_DOMAIN_RECORD:-}"
-
-# Required containment admits work only inside a trusted run domain. The
-# launcher records the unit, cgroup, and uid it placed the driver in before the
-# driver starts. The record and its directory must belong to root and must not
-# be writable by other users. The driver's own kernel cgroup view and uid must
-# match that record before either admission counter increases. A missing,
-# unreadable, forged, or mismatched record refuses work; it never selects the
-# unmanaged path.
 run_domain_verified() {
 	[ "$CONTAINMENT" = required ] || return 0
 	python3 - "$RUN_DOMAIN_RECORD" <<'PY'
@@ -263,25 +255,58 @@ import os
 import stat
 import sys
 
+BOUND = 65536
+
+
+def trusted(descriptor, directory):
+    status = os.fstat(descriptor)
+    expected = stat.S_ISDIR(status.st_mode) if directory else stat.S_ISREG(status.st_mode)
+    return expected and status.st_uid == 0 and not status.st_mode & 0o022
+
+
+def open_record(path):
+    parts = [part for part in path.split("/") if part]
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+    descriptor = os.open("/", flags | os.O_DIRECTORY)
+    try:
+        if not trusted(descriptor, True):
+            return None
+        for index, part in enumerate(parts):
+            last = index == len(parts) - 1
+            child = os.open(part, flags | (0 if last else os.O_DIRECTORY), dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+            if not trusted(descriptor, not last):
+                return None
+        payload = b""
+        while len(payload) <= BOUND:
+            chunk = os.read(descriptor, BOUND + 1 - len(payload))
+            if not chunk:
+                return payload
+            payload += chunk
+        return None
+    finally:
+        os.close(descriptor)
+
+
 path = sys.argv[1]
-if not path or not os.path.isabs(path):
+if not path or not os.path.isabs(path) or "/." in path or path.endswith("/"):
     sys.exit(1)
 try:
-    parent = os.lstat(os.path.dirname(path))
-    record = os.lstat(path)
-    if not stat.S_ISREG(record.st_mode) or record.st_uid != 0 or record.st_mode & 0o022:
+    payload = open_record(path)
+    if payload is None:
         sys.exit(1)
-    if not stat.S_ISDIR(parent.st_mode) or parent.st_uid != 0 or parent.st_mode & 0o022:
-        sys.exit(1)
-    with open(path, "rb") as source:
-        data = json.loads(source.read(65536))
+    data = json.loads(payload)
     with open("/proc/self/cgroup", encoding="utf-8") as source:
         cgroup = source.read().splitlines()
 except (OSError, ValueError):
     sys.exit(1)
 if not isinstance(data, dict) or data.get("uid") != os.getuid():
     sys.exit(1)
+unit = data.get("unit")
 expected = data.get("cgroup")
+if not isinstance(unit, str) or not unit or "/" in unit:
+    sys.exit(1)
 if not isinstance(expected, str) or not expected.startswith("/"):
     sys.exit(1)
 if cgroup != ["0::" + expected]:

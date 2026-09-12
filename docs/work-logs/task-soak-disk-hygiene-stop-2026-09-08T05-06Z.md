@@ -1015,3 +1015,80 @@ No native service manager, real Docker daemon, or disposable runner executed thi
 The native launcher does not write the record yet, and the normal workflow does not require containment.
 B44, D2, all claim discharges, and acceptance remain pending.
 
+### D2 completion plan across two sessions, 2026-09-12
+
+The user directed both sessions to coordinate through the work logs and ToDos until D2 is complete.
+Commit `dd1043c70` retains B45 with a passing package check, inventory validator, and repository packaging check.
+The driver review in the [native admission log](task-soak-native-admission-2026-09-12T00-58Z.md) at `01:01Z` identified two defects in the B45 record check.
+The check opens the record by pathname after a separate `lstat`, so an untrusted ancestor can change between the two operations.
+The check reads at most 65,536 bytes and does not detect trailing content beyond that bound.
+Both defects become B46 with matched local RED/GREEN evidence.
+
+This session owns the driver, the local fixtures, the formal gate registrations, the plan, the evidence packages, and the claim inventory.
+This session integrates the other session's cycle results into the plan and inventory, because the other session does not edit those files.
+Planned local cycles, in order:
+
+1. B46. The record check binds file identity through descriptors from the filesystem root. It rejects any ancestor that is not root-owned or is writable by others, and it rejects a record longer than its bound. The new source comments are removed in the same change.
+2. B47. The minimal durable breach record is published before any attribution work can delay it.
+3. B48. One composed emergency deadline covers detection, closure, stop, confirmation, and minimal evidence handling.
+4. Storage fault refusals for stalled writes, allocation limits, and unacknowledged uploads.
+
+The other session owns the native launcher, the launch barrier, disposable infrastructure, private Docker containment, and the creation fence.
+Requested native cycles, in order:
+
+1. The launcher writes the run-domain record with the `unit`, `cgroup`, and `uid` fields before it starts the unit. It refuses to start when the record cannot be written.
+2. The launch barrier verifies containment before it releases the driver, with the `NativeLaunchAdmission` formal files and the existing Python fixture.
+3. One guarded runner verifies the B45 and B46 handshake end to end with a real systemd unit. That runner needs the user's authorization.
+4. Private Docker engine containment and the creation fence, with matched evidence.
+
+Handoff protocol for each native cycle: record the result in the native admission log. The record lists the changed files with their source digests, the RED and GREEN exits, the raw evidence root, and the runner termination state.
+This session then adds the plan entry, builds or binds the package, rebinds the inventory, and prepares the commit for the user.
+This session announces each full formal gate run in this log with a start time and uses the default `/tmp/tlc-*` names.
+The other session uses separate output paths for any concurrent TLC run.
+Neither session edits the other session's fixtures.
+
+### Formal gate run announcement, 2026-09-12
+
+This session started the soak PR tier of the formal gate at `2026-09-12T02:35Z` for B46 with the default `/tmp/tlc-*` output names.
+
+### Reply to the native cycle coordination, 2026-09-12
+
+This session has no live diagnostic runner and no overlapping infrastructure operation.
+This session does not change the native fixture or the launcher.
+The barrier design in the native admission log is compatible with the driver check.
+The driver reads the record at each admission boundary, so a record published after manager verification and before release satisfies B45 and B46.
+The B46 correction removes the separate check and read from the driver, and the driver now opens the record through descriptors from the filesystem root.
+
+### B46 record identity, 2026-09-12
+
+The cycle starts from committed source `dd1043c70addf40d436500216a89e157080938d1`.
+The fixture builds four run-domain records as root under `/run` and then drops to uid 65534.
+The untrusted-ancestor record sits below a directory that uid 65534 owns.
+The symlink-ancestor record is reached through a symbolic link component.
+The oversized record holds a valid object padded to 65,536 bytes and then trailing content.
+The matching record sits below a root-owned chain from the filesystem root.
+
+The baseline driver admits work through the untrusted-ancestor record because its immediate parent belongs to root.
+The matched RED exits 1 on that admission.
+
+The corrected driver opens each path component from the root with a directory descriptor and no symbolic link following.
+It requires every directory and the record to belong to uid 0 without group or other write permission.
+It reads one byte past the bound and requires a non-empty unit string.
+All three untrusted records refuse work with the breach record and counters `[0,1,0,0]`, and the matching record admits one iteration.
+The matched GREEN exits 0 with the same fixture bytes as the RED.
+
+One earlier fixture attempt failed setup because root could not create a directory below a uid 65534 directory.
+The retained fixture builds the chain first and then changes the ancestor owner.
+The B45 source comments are removed in the same driver change.
+
+The pathname configuration violates `AdmissionRequiresOpenedRecordTrust` with TLC exit 12, and the corrected configuration passes with 16 distinct states.
+The soak PR tier of the formal gate passes 43 positive configurations and 45 exact controls with 88 actual TLC logs.
+The classifier and routing regressions, the driver suite, and the supporting probe, sample, and admission checks pass.
+The summary and metrics regressions pass.
+The isolated emergency suite passes 30 case directories alone, including the record identity case and both run-domain admission cases.
+
+The other session changed the native launcher during this cycle.
+No check in this cycle executes the launcher, and the package records both launcher files as drift-exempt with their snapshot digests.
+No native service manager, real Docker daemon, or disposable runner executed this cycle.
+B44, D2, all claim discharges, and acceptance remain pending.
+

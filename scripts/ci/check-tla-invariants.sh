@@ -179,6 +179,7 @@ NEGATIVE_CONTROLS=(
     soak_disk/MC_SoakDiskAdmission_iteration_only_pre_fix:BenchmarkMonitorDeathObserved
     soak_disk/MC_SoakDiskAdmission_unchecked_monitor_pre_fix:MonitorDeathPreventsAdmission
     soak_disk/MC_SoakDiskAdmission_unchecked_placement_pre_fix:UnverifiedPlacementPreventsAdmission
+    soak_disk/MC_SoakDiskAdmission_pathname_pre_fix:UntrustedRecordPreventsAdmission
     soak_disk/MC_SoakDiskGuardian_unwatched_pre_fix:DeadGuardianRequiresInterrupt
     soak_disk/MC_SoakDiskGuardian_unavailable_sample_pre_fix:InvalidSampleRequiresInterrupt
     soak_disk/MC_SoakDiskGuardian_unbounded_probe_pre_fix:ProbeWithinDeadline

@@ -122,3 +122,100 @@ The review outputs are in `/tmp/soak-b45-commit-review.B4TDzGCk`.
 The B45 ownership response assigns the launcher and launch barrier to this session.
 The integration owner retains the B45 evidence package and inventory update.
 These updates must preserve historical execution identities and the open D2 status.
+
+## Native cycle coordination at 2026-09-12T03:26Z
+
+This session accepts the split in the main work log.
+The integration owner retains B46 through B48, the driver, local fixtures, shared gates, the plan, evidence packaging, and the inventory.
+This session owns the native launcher, launch barrier, native fixtures, and guarded diagnostic infrastructure.
+The current baseline is `dd1043c70addf40d436500216a89e157080938d1`.
+No network peer is visible, so these work logs remain the collaboration channel.
+
+The next cycle tests refusal when the external service-status query stalls before admission.
+This session will freeze the committed driver rather than test concurrent B46 edits as if they were the same source.
+Any concurrent formal runs will use private output paths outside `/tmp/tlc-*`.
+The existing implementation approval covers guarded disposable diagnostics, not an acceptance soak or developer-host privilege changes.
+Before provisioning, this session will check for another live diagnostic runner and retain the result.
+
+The proposed barrier starts trusted gate code before the driver, verifies actual manager placement, and then releases the driver after a privilege drop.
+Writing a predicted cgroup into a record before unit creation does not verify placement.
+The gate must not execute caller-controlled Python or loader customization with root privileges.
+The release record must not be writable through another workload process or its descriptors.
+The launcher will publish `unit`, `cgroup`, and `uid` for the driver's check only after manager verification.
+Service invocation identity remains a separate requirement from the B45 record comparison.
+
+Please preserve the native fixture and launcher while B46 proceeds.
+Please report any live diagnostic runner or overlapping infrastructure operation in the main work log.
+The final handoff will include exact fixture and source digests, observed exits, raw evidence paths, and runner termination evidence.
+
+## Native admission results, 2026-09-12
+
+The guarded runner is `ci-eph-f1r3node-rust-amd64-d2-20260912-032924-b21b6e`.
+Its expiration timer is active, its GitHub registration is disabled, and its source matches the frozen committed baseline.
+The raw evidence root is `/home/bf_spark/soak-evidence/f1r3node-rust/d2-native-admission-r3F6zFzg`.
+The runner is still live during retrieval, so termination is not yet confirmed.
+
+The unchanged native-query fixture reports RED with exit 1 and GREEN with exit 0.
+RED observes one admitted iteration despite launcher refusal status 2.
+The unrelated writer remains alive and advances from 174 to 189 bytes before fixture cleanup.
+The matching formal control violates `UnavailableQueryPreventsNativeAdmission` with exit 12.
+Both the unavailable-query correction and the available-query model pass with exit 0.
+
+The correction starts trusted root gate code without the workload environment.
+The launcher verifies the manager observation and gate identity before it publishes the placement record and release.
+The gate drops groups, group identity, and user identity before it executes the driver.
+The workload receives `SOAK_CONTAINMENT=required` and the root-owned placement record.
+The unchanged native controller-loss fixture passes as a positive admission and shutdown regression, including two actual refused restarts.
+
+The tested driver is the frozen B45 baseline, not the concurrent B46 candidate.
+Please provide the B46 source digest when its matched cycle is complete so this session can verify the integrated handshake separately.
+The native files and private formal outputs remain outside the other session's edit scope.
+The result does not complete B44, private Docker containment, creation fencing, storage durability, or D2.
+
+## B46 integration finding
+
+The first frozen B46 integration run passes the unavailable-query fixture but fails the positive native fixture before admission.
+The driver records one run-domain refusal, and the fixture exits 2 because it never reaches active work.
+This is an integration setup failure, not another behavioral RED for early admission.
+
+The B46 directory walk uses `O_RDONLY` and therefore needs directory read permission.
+The native launcher created its control directory with mode `0711`.
+A read-only probe against the actual control directory confirms `PermissionError` for uid 65534.
+This session will use mode `0755` for that directory while keeping environment and release files private to root.
+The driver remains unchanged, and the corrected native source needs fresh fixture results before handoff.
+
+The first GREEN also received a small integer-parsing refactor after four reviewed false-positive diagnostics.
+That source has its own successful native-query and B45 controller-loss regression results in `reviewed-source`.
+Earlier results retain their original source snapshots.
+
+## Native admission handoff at 2026-09-12T04:01Z
+
+The final native-query fixture passes with both the committed B45 driver and the frozen B46 driver.
+The unchanged native controller-loss fixture also passes with both drivers, including two actual refused restarts with normal summaries.
+The final directory permission correction has fresh results rather than a retrospective source update.
+The helper, wrapper, driver, and unchanged fixtures match the final integrated snapshot at the source check.
+
+The guarded runner was retrieved, independently audited, and then observed `TERMINATED`.
+The retrieval archive contains 524 regular members from 11 invocations and their control records.
+Five special entries were excluded, so the archive is not a complete filesystem image.
+The archive digest is `f66bb3afe8b6e626519e40d4b33ac643790ff5063a1fe69a60bacb13d52683e9`.
+Its size is 412,882 bytes.
+The earlier provisioning record describes the pre-test state, not the final state.
+
+The complete handoff is `/home/bf_spark/soak-evidence/f1r3node-rust/d2-native-admission-r3F6zFzg/HANDOFF.md`.
+That file lists each execution, source snapshot, result, archive check, and termination record.
+The model note is [NativeLaunchAdmission.md](../../formal/tlaplus/soak_disk/NativeLaunchAdmission.md).
+The final helper digest is `35399004d7ac8b9eab14db2fd9f9d1514bd46fbd8993ce530ef3ea94ac69d0c6`.
+The tested B46 driver digest is `08e0fa0c07cb8cf4ec3b326052e65de31421b335b9ad7e5ef08dc8499cb69ce7`.
+
+The final five-path diagnostic recheck confirms all five paths clean after an earlier inconclusive probe.
+Python, embedded gate, and shell syntax checks pass.
+Ordinary-user safety refusals, invalid UID refusal, scoped STE, and scoped whitespace checks pass.
+Human STE Review and maintainer ratification remain pending.
+
+The integration owner can now add the native cycle to the plan, shared gates, evidence package, and inventory.
+Please review the root gate environment and release authorization before broader integration.
+Please preserve the separate B46 setup failure and all earlier source identities when packaging.
+The combined candidate still needs the owner's composed checks and publication audit.
+No commit or push was made by this session, and external staging remains intact.
+B44, private Docker containment, creation fencing, D2, claim discharge, hosted enforcement, and acceptance remain incomplete.

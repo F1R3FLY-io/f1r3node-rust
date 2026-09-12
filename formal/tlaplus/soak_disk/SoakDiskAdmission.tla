@@ -1,7 +1,7 @@
 -------------------------- MODULE SoakDiskAdmission --------------------------
 (* One iteration-boundary disk admission decision in                         *)
 (* scripts/run-merge-recovery-soak.sh: probe, optional hygiene, re-probe,    *)
-(* decide, after the opening benchmark on the first segment. Nineteen        *)
+(* decide, after the opening benchmark on the first segment. Twenty          *)
 (* Boolean constants switch the corrections on and off so that each pre-fix  *)
 (* configuration reproduces one historical defect; BenchmarkFaults selects   *)
 (* the fault kinds an admitted benchmark can suffer.                         *)
@@ -27,6 +27,7 @@ CONSTANTS FloorMiB, BandMiB, FreeSamples, InitialFreeMiB, MalformedPrefixMiB,
           WatchMonitor, \* a crash monitor exit during the benchmark cancels it (B41)
           CheckMonitorAlive, \* a dead crash monitor cannot admit the benchmark or an iteration (B42)
           VerifyPlacement, \* required containment admits work only when the trusted run-domain record matches the driver's own placement (B45)
+          BindIdentity, \* the record is trusted only when every path component was opened from the root, root-owned, unwritable, and within the size bound (B46)
           BenchmarkFaults \* fault kinds an admitted benchmark can suffer: "breach", "death"
 
 ASSUME /\ FloorMiB \in Nat \ {0}
@@ -38,7 +39,8 @@ ASSUME /\ FloorMiB \in Nat \ {0}
            CheckRetainedBreach, CheckDiskBand, MonitorOpening, WatchGuardian,
            CheckProgress, EnforceHygieneDeadline, CheckRange, PreserveUnowned,
            EnforceCleanupFailures, PreserveDockerResources, RememberInFlight,
-           RememberBenchmark, WatchMonitor, CheckMonitorAlive, VerifyPlacement} \subseteq BOOLEAN
+           RememberBenchmark, WatchMonitor, CheckMonitorAlive, VerifyPlacement,
+           BindIdentity} \subseteq BOOLEAN
        /\ BenchmarkFaults \subseteq {"breach", "death", "monitor-death"}
 
 Threshold == IF RequireBand THEN FloorMiB + BandMiB ELSE FloorMiB
@@ -84,7 +86,8 @@ VARIABLES phase, free, raw, sample, guardian, guardianAlive, admitted,
           benchmarkInterrupted, \* the previous segment died with the opening benchmark in flight (B37)
           monitorAlive, \* the crash monitor process is alive (B41, B42)
           benchmarkMonitorAlive, \* the monitor was alive when the benchmark was admitted (B42)
-          recordMatches \* the launcher's run-domain record matches the driver's cgroup and uid (B45)
+          recordMatches, \* the launcher's run-domain record matches the driver's cgroup and uid (B45)
+          recordTrusted \* the record the driver opened sits below a root-owned, unwritable chain and ends within its bound (B46)
 
 HygieneVars == <<hygieneStalled, hygieneElapsed, hygieneTermSent, hygieneKillSent>>
 
@@ -94,7 +97,8 @@ vars == <<phase, free, raw, sample, guardian, guardianAlive, admitted,
           benchmarkGuardianAlive, guardianFresh, admissionFresh, benchmarkFresh,
           hygieneStalled, hygieneElapsed, hygieneTermSent, hygieneKillSent,
           settingsValid, sessionAge, sessionPresent, cleanupFailed, dockerPresent,
-          interrupted, benchmarkInterrupted, monitorAlive, benchmarkMonitorAlive, recordMatches>>
+          interrupted, benchmarkInterrupted, monitorAlive, benchmarkMonitorAlive, recordMatches,
+          recordTrusted>>
 
 Init ==
     /\ phase = "config"
@@ -108,6 +112,7 @@ Init ==
     /\ monitorAlive = TRUE
     /\ benchmarkMonitorAlive = TRUE
     /\ recordMatches \in BOOLEAN
+    /\ recordTrusted \in BOOLEAN
     /\ free = InitialFreeMiB
     /\ raw = MissingRaw
     /\ sample = Unknown
@@ -175,6 +180,12 @@ ValidateSettings ==
 \* the benchmark (a recorded breach, or guardian death) cancels the benchmark
 \* and publishes the failure only when the driver watches the guardian; the
 \* stop, TERM, grace, and kill sequence is one step here.
+\* The run-domain check passes when the record matches the driver's placement.
+\* With BindIdentity (B46) the record must also be the one the driver opened
+\* through a root-owned, unwritable chain, within its size bound. The pre-fix
+\* driver trusted the pathname view and read the record separately.
+PlacementVerified == recordMatches /\ (~BindIdentity \/ recordTrusted)
+
 Benchmark ==
     /\ phase = "benchmark"
     /\ IF CheckRetainedBreach /\ retained
@@ -194,7 +205,7 @@ Benchmark ==
                    guardianOk == /\ ~CheckGuardianAlive \/ guardianAlive
                                  /\ ~CheckProgress \/ guardianFresh
                                  /\ ~CheckMonitorAlive \/ monitorAlive
-                                 /\ ~VerifyPlacement \/ recordMatches
+                                 /\ ~VerifyPlacement \/ PlacementVerified
                    admit == diskOk /\ guardianOk
                    f == IF admit THEN fault ELSE "none"
                    observed == f = "breach" /\ MonitorOpening
@@ -219,7 +230,7 @@ Benchmark ==
     /\ UNCHANGED <<free, raw, sample, admitted, admissionRaw, admissionSample,
                    evidence, retained, guardianFresh, admissionFresh, settingsValid,
                    sessionAge, sessionPresent, cleanupFailed, dockerPresent,
-                   interrupted, benchmarkInterrupted, recordMatches>>
+                   interrupted, benchmarkInterrupted, recordMatches, recordTrusted>>
 
 CheckGuardian ==
     /\ phase \in {"guard", "post-guard"}
@@ -320,8 +331,9 @@ DecideAfterHygiene ==
 
 \* The common check before work starts: a missing sample, then (B14) a
 \* guardian process that died since the boundary probe, then (B42) a dead
-\* crash monitor, then (B45) a run-domain record that does not match the
-\* driver's placement under required containment, then (B22) a guardian
+\* crash monitor, then (B45, B46) a run-domain record that does not match the
+\* driver's placement, or was not opened through a trusted chain, under
+\* required containment, then (B22) a guardian
 \* whose progress record has expired.
 CheckAdmission ==
     /\ phase = "admission-check"
@@ -334,7 +346,7 @@ CheckAdmission ==
           ELSE IF CheckMonitorAlive /\ ~monitorAlive
           THEN /\ phase' = "stopped"
                /\ stopReason' = "guardian"
-          ELSE IF VerifyPlacement /\ ~recordMatches
+          ELSE IF VerifyPlacement /\ ~PlacementVerified
           THEN /\ phase' = "stopped"
                /\ stopReason' = "guardian"
           ELSE IF CheckProgress /\ ~guardianFresh
@@ -402,7 +414,7 @@ FrozenAfterBenchmark == <<retained, benchmark, benchmarkSample, benchmarkFault,
                           benchmarkObserved, benchmarkCancelled,
                           benchmarkGuardianAlive, benchmarkMonitorAlive, benchmarkFresh,
                           settingsValid, sessionAge, interrupted, benchmarkInterrupted,
-                          recordMatches>>
+                          recordMatches, recordTrusted>>
 
 HygieneOutcome == <<sessionPresent, cleanupFailed, dockerPresent>>
 
@@ -473,6 +485,7 @@ TypeOK ==
     /\ monitorAlive \in BOOLEAN
     /\ benchmarkMonitorAlive \in BOOLEAN
     /\ recordMatches \in BOOLEAN
+    /\ recordTrusted \in BOOLEAN
 
 AdmissionRequiresBand ==
     admitted /\ admissionSample.known => admissionSample.mib >= FloorMiB + BandMiB
@@ -493,6 +506,7 @@ MonitorDeathPreventsAdmission ==
     /\ admitted => monitorAlive
     /\ benchmark => benchmarkMonitorAlive
 UnverifiedPlacementPreventsAdmission == ~recordMatches => ~admitted /\ ~benchmark
+UntrustedRecordPreventsAdmission == ~recordTrusted => ~admitted /\ ~benchmark
 StaleProgressPreventsAdmission ==
     /\ admitted => admissionFresh
     /\ benchmark => benchmarkFresh

@@ -710,6 +710,22 @@ behaviors:
         green_exit: 0
         formal_green_exit: 0
         production_integration: false
+  - id: B46
+    statement: The run-domain record check trusts only a record it opened through a root-owned, unwritable directory chain and rejects a record beyond its size bound.
+    priority: must
+    deep_module: false
+    done: true
+    construction: not-applicable
+    claim_discharge: pending
+    cycle_log:
+      - evidence: docs/cbc-evidence/soak-d2-record-identity-2026-09-12/manifest.jsonc
+        test: scripts/bench/test-soak-record-identity.sh
+        red_binding: source-sha256
+        red_exit: 1
+        formal_red_exit: 12
+        green_exit: 0
+        formal_green_exit: 0
+        production_integration: false
 ---
 
 # Soak Gate Development Cycles
@@ -755,6 +771,10 @@ B45 adds [run-domain admission evidence](../cbc-evidence/soak-d2-run-domain-2026
 When containment is required, the driver refuses benchmark and iteration admission unless a trusted [run-domain record](../../formal/tlaplus/soak_disk/RunDomainAdmission.md) matches its own cgroup and uid.
 An absent or mismatched record retains one failure across two refused restarts, and a matching record admits work.
 The native launcher does not write the record yet, and the normal workflow does not require containment.
+
+B46 adds [record identity evidence](../cbc-evidence/soak-d2-record-identity-2026-09-12/README.md).
+The [record check](../../formal/tlaplus/soak_disk/RunDomainRecordIdentity.md) now opens the record through descriptors from the filesystem root.
+It rejects an untrusted ancestor, a symbolic link component, or a record beyond its size bound.
 
 B44 is an open [controller-loss counterexample](../../formal/tlaplus/soak_disk/ControllerLoss.md).
 Both controllers exit, but the owned native writer continues without fixture intervention.
