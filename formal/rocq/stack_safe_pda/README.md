@@ -1968,6 +1968,56 @@ prove those values were initially correct. The runner checks twelve ownership/li
 closed-context reports, three control reports, kernel acceptance, and exactly three executed
 Rust gateway tests. The manifest test checks inventory linkage only.
 
+### S-expression streaming projection model (2026-09-12)
+
+`CanonicalSexprProjection.v` supplies the observation-level model for removing
+repeated typed reconstruction from `ParToSExpr`. A subject carries literal token
+chunks and ordered children. An independent recursive renderer defines the
+reference output. The continuation machine uses `Visit`, `Siblings` and `Emit`
+jobs, processing one sibling at a time. Its execution relation has constructive
+completion and deterministic, exact reference output; it is not merely a
+conditional assertion about successful executions. The model also connects to
+the existing `StackSafePDA` fold theorem.
+
+Render-once/repeat preserves each occurrence and separator. Three-state
+classification (`Zero`, `One`, `Many`) agrees with mathematical occurrence
+cardinality without requiring a bounded integer sum. Selected family order is
+Send, Receive, New, Expr, Bundle. Ignored families affect neither that order nor
+the zero/one/many decision, including when they are the only families present.
+
+The unique, exhaustive **modeled observation** catalog has 33 cases. Before
+runtime implementation, extract the following complete case binding matrix:
+
+| Model cases | Required native differential/property obligations |
+|---|---|
+| `ParZero`, `ParOne`, `ParMany` | Exact Nil/unwrapped/wrapped output; selected-family order; mixed and repeated endpoints; category classification near integer boundaries without summing overflowing counts. |
+| `SendCase`, `ReceiveCase`, `BindCase`, `NewCase`, `BundleCase` | Correct protobuf fields and ignored metadata; missing children; zero/negative/positive bind counts; empty/repeated data and binds; exact separators and parentheses. |
+| `BoolCase`, `IntCase`, `StringCase`, `UriCase`, `BytesCase` | Canonical scalar views equal typed values; signed ZigZag and integer extrema; empty/non-ASCII/quote-containing text remains unescaped; exact byte hex. Scalar conversion is a separate binding, not proved by opaque token strings. |
+| `ListCase`, `TupleCase`, `SetCase`, `MapCase`, `PairCase` | Preserve child and pair order; empty-form spacing; missing pair sides become Nil; cursor continuation handles wide and deep children without materializing them. |
+| `BoundCase`, `FreeCase`, `WildcardCase`, `MissingVarCase` | Signed indices and exact `_`, `$`, wildcard and `var` distinctions; absent EVar child versus present empty Var. |
+| `NegCase`, `NotCase`, `MultCase`, `DivCase`, `PlusCase`, `MinusCase` | Exact operator token, operand order, missing operands and unary/binary punctuation. |
+| `MethodCase` | Target, unescaped name and ordered arguments; retain `(Nil. )` for the empty form. |
+| `MissingExprCase`, `FallbackExprCase`, `IgnoredFamilyCase`, `MissingParCase` | Distinguish Nil, `(expr)` and ignored families; enumerate every generated unsupported Expr arm, including EPathMap and extended numerics; ignored-only Par is Nil, never an empty rendered occurrence. |
+
+The machine, repeat and family laws additionally require generated nested
+combinations, exact token-to-string concatenation, snapshot immutability, and
+the unchanged 128 KiB deep test. Preserve the current decoded-PDA formatter as a
+shallow test-only oracle: it is not a recursive oracle. Resource controls must
+observe zero typed component decoding/rebuilding, bounded immediate-field
+visits and one-child-at-a-time pending work; semantic proofs alone establish no
+native allocation bound.
+
+**Verification and boundary.** Final compiler and independent kernel checks
+pass, with 18 closed-context reports and no axioms or admissions. This proves
+the observation-level machine, not the correspondence between actual protobuf
+bytes and typed constructor observations. `native_field_view_obligation` names
+that remaining proposition without assuming it. Field selection, canonical
+ordering, scalar conversion and binder generation still need their refinement
+and native bindings before a complete formatter-equivalence claim. No runtime
+formatter change has been made at this checkpoint. The model is registered in
+`_CoqProject` and the default maintained proof gate; no parser or dependency is
+introduced. See journal J-147 for exact artifacts and remaining work.
+
 ### Compressed teardown navigation refinement (2026-09-11)
 
 `PathMapReversePruneTeardown.NavigationRefinement` independently computes scalar

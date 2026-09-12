@@ -515,6 +515,10 @@ fi
 
 pushd "$rocq_root" >/dev/null
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/StackSafePDA.v
+rocq_reject_placeholders theories/CanonicalSexprProjection.v
+rocq_compile_with_closed_count theories/CanonicalSexprProjection.v 18 \
+  "S-expression observation-level streaming projection and multiplicity laws"
+rocq_check_modules "S-expression observation-level projection" StackSafePDA.CanonicalSexprProjection
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/EPathMap.v
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/Bag.v
 rocq_reject_placeholders theories/ScalarProjection.v

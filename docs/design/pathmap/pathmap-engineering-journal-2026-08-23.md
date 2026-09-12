@@ -10686,6 +10686,72 @@ mutation repair, full debug pass, consensus-byte change or persistence-versus-LM
 performance result is claimed here. PMU-005's upstream iterative-destruction
 request remains necessary; compressed search does not remove local barriers.
 
+### J-147 — 2026-09-12 Formal-first formatter projection and byte-view boundary
+
+**QUESTION.** J-146 locates typed descendant reconstruction inside diagnostic
+formatting. Can the existing borrowed protobuf cursors render each authoritative
+endpoint without constructing nested `Par` roots, while preserving the exact
+historical text? This is a local repair candidate for task 8413's acceptance
+path, not a new decoder, parser or PathMap implementation.
+
+**DESIGN REVIEW.** `Par::visit_encoded` lends a validated component payload and
+its multiplicity inside a zipper callback. Complete the component's formatter
+PDA inside that callback so nested message jobs can borrow slices without
+copying the endpoint or reference-counting an owned byte region. Reuse
+`CanonicalFieldCursor`, `CanonicalParProcessIndex` and repeated-field cursor
+continuations. Render one distinct endpoint once and repeat its output range
+for multiplicity. Preserve Send/Receive/New/Expr/Bundle order; ignored families
+must not influence the Par wrapper decision. Unsupported expressions still
+render `(expr)` rather than acquiring new behavior.
+
+**FORMAL RESULT.** The focused `CanonicalSexprProjection.v` theory reuses
+`StackSafePDA` and proves an independent recursive token reference equivalent to
+a fuel-free continuation execution relation. Constructive completion rules out
+a vacuous success-only claim. Additional laws preserve occurrence expansion,
+every separator, zero/one/many classification without bounded-count addition,
+selected-family order, and ignored-family exclusion from both output and arity.
+A duplicate-free exhaustive catalog contains 33 modeled observation cases.
+Literal controls include empty Send, New and Method spacing. The model's
+symbolic trees and occurrence lists are specifications, not proposed runtime
+allocations.
+
+The final fifth compiler run has 18 closed-context reports and exits zero;
+independent `coqchk -silent` also exits zero. Compiler wall time is 0.98 seconds
+with maximum RSS 424,468 KiB; kernel wall time is 12.75 seconds with maximum RSS
+292,164 KiB. The agent reports a separate shared-cgroup peak of 399.1 MiB and
+zero swap; that accounting is not interchangeable with process maximum RSS.
+Both commands use the existing installed toolchain under a systemd scope with
+2 GiB memory-max, 1.5 GiB memory-high, zero swap, one-core quota, 64 tasks and a
+900-second lifetime. Earlier local list-rewrite/association proof failures are
+retained in attempts 1–3; attempt 4 verifies the first 15 laws, and attempt 5
+adds the three selected-family laws.
+
+| Artifact | SHA-256 |
+|---|---|
+| `formal/rocq/stack_safe_pda/theories/CanonicalSexprProjection.v` | `596cdb00980d52291905d1511827c6821632fda053f548bca7b7f29e67db0889` |
+| `target/verification/canonical-sexpr-projection-coqc-r5.log` | `f376ddc15896911857fe8978390156802fbaa792450c375c6f224a666c659995` |
+| `target/verification/canonical-sexpr-projection-kernel-r5.log` | `f5c2bad1807e462a1c092509b5a7dbfb983a0c65786580b58d78950f9b8de67e` |
+
+**BOUNDARY AND REQUIRED BINDINGS.** These are observation-level proofs, not a
+proof of the actual protobuf parser or Rust formatter. The theory explicitly
+names `native_field_view_obligation` as a proposition; it neither assumes nor
+proves it. Canonical field selection/defaults, scalar ZigZag/text conversion,
+binder generation and complete schema fallback classification still need their
+refinement and native differential bindings. The existing proof README extracts
+every catalog case into a native binding matrix before implementation, alongside
+cross-cutting deep/wide, multiplicity, zero-decode/rebuild and field-visit resource
+controls. The current decoded-PDA formatter is the proposed shallow test-only
+oracle, not a recursive oracle.
+
+**DECISION.** Retain the checked observation model and register its exact
+18-context expectation in the existing default proof gate and `_CoqProject`.
+The gate script passes shell syntax checking; the complete default gate is not
+rerun or claimed here. Do not change production formatting until the required
+field-view design and bindings are accounted for. No end-to-end equivalence,
+allocation bound, runtime speedup or campaign completion is inferred from this
+formal checkpoint. No dependency, separate proof parser, new branch or worktree
+is introduced.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

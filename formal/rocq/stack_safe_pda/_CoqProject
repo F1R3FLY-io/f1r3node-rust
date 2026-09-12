@@ -1,5 +1,6 @@
 -Q theories StackSafePDA
 theories/StackSafePDA.v
+theories/CanonicalSexprProjection.v
 theories/EPathMap.v
 theories/Bag.v
 theories/ScalarProjection.v
