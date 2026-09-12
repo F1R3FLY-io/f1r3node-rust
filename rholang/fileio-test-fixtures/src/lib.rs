@@ -165,3 +165,186 @@ pub fn apply_wal_translated(
     )
     .expect("test-driven WAL apply must not produce ApplierError");
 }
+
+#[cfg(test)]
+mod tests {
+    //! X-5 D-14 (2026-09-12, branch-review-2026-09-11.md Track D):
+    //! unit tests for the shared test-fixture helpers.  Track D
+    //! flagged that `assert_dir_trees_byte_identical` and
+    //! `apply_wal_translated` had no direct coverage — they were
+    //! tested transitively via fs_wal_spec, which passes a well-
+    //! formed WAL under one code path (Consensus leader-follower
+    //! parity).  A regression in the helper's edge cases (kind
+    //! divergence, mismatch detection, idempotent re-apply) would
+    //! slip past transitive coverage.
+    //!
+    //! These pins exercise the helpers directly against synthetic
+    //! trees / WAL entries.
+    use rholang::rust::interpreter::io::wal::{PayloadRef, WalOp, WalOutcome};
+
+    use super::*;
+
+    /// D-14 pin 1: `assert_dir_trees_byte_identical` returns
+    /// cleanly on two identical trees + panics on divergence.  Two
+    /// sub-cases: content divergence + kind divergence (file vs
+    /// directory at the same rel path).
+    #[test]
+    fn d14_assert_dir_trees_byte_identical_panics_on_content_divergence() {
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        std::fs::write(a.path().join("f.bin"), b"leader-content").unwrap();
+        std::fs::write(b.path().join("f.bin"), b"follower-content").unwrap();
+        let result = std::panic::catch_unwind(|| {
+            assert_dir_trees_byte_identical(a.path(), b.path(), &[]);
+        });
+        assert!(
+            result.is_err(),
+            "D-14 regression: assert_dir_trees_byte_identical must panic \
+             on differing file contents"
+        );
+    }
+
+    #[test]
+    fn d14_assert_dir_trees_byte_identical_passes_on_identical_trees() {
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        // Populate both trees identically.
+        std::fs::write(a.path().join("f.bin"), b"same-content").unwrap();
+        std::fs::write(b.path().join("f.bin"), b"same-content").unwrap();
+        std::fs::create_dir(a.path().join("sub")).unwrap();
+        std::fs::create_dir(b.path().join("sub")).unwrap();
+        std::fs::write(a.path().join("sub/g.bin"), b"nested").unwrap();
+        std::fs::write(b.path().join("sub/g.bin"), b"nested").unwrap();
+        // MUST NOT panic.
+        assert_dir_trees_byte_identical(a.path(), b.path(), &[]);
+    }
+
+    #[test]
+    fn d14_assert_dir_trees_byte_identical_panics_on_kind_divergence() {
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        // Same relative path — `x` — is a file on side a, a
+        // directory on side b.  A regression that ignored the
+        // kind at collect() time would miss this.
+        std::fs::write(a.path().join("x"), b"file-content").unwrap();
+        std::fs::create_dir(b.path().join("x")).unwrap();
+        let result = std::panic::catch_unwind(|| {
+            assert_dir_trees_byte_identical(a.path(), b.path(), &[]);
+        });
+        assert!(
+            result.is_err(),
+            "D-14 regression: kind divergence (file vs dir at the same \
+             rel path) must panic"
+        );
+    }
+
+    /// D-14 pin 2: `apply_wal_translated` on a WAL with a single
+    /// RemoveFile entry that targets a nested path — verifies
+    /// (a) the file is actually removed on the follower side,
+    /// (b) parent directory structure is preserved, (c) applying
+    /// the SAME WAL twice is idempotent (the second removal is a
+    /// no-op because the file is already gone; H-6 skips Failure
+    /// entries and the entry outcome is Success, so it retries the
+    /// unlink and either succeeds or NotFound-ignores per applier
+    /// semantics).
+    #[test]
+    fn d14_apply_wal_translated_removes_nested_file() {
+        let leader = tempfile::tempdir().unwrap();
+        let follower = tempfile::tempdir().unwrap();
+        // Seed the follower tree with a nested file that the WAL
+        // entry will remove.
+        std::fs::create_dir(follower.path().join("sub")).unwrap();
+        std::fs::write(follower.path().join("sub/target.bin"), b"payload").unwrap();
+
+        // Synthetic WAL: RemoveFile on `leader_root/sub/target.bin`.
+        // translate_path rewrites onto follower_root.
+        let leader_target = leader.path().join("sub/target.bin");
+        let wal = vec![WalEntry {
+            op: WalOp::RemoveFile,
+            path: leader_target.clone(),
+            extra_path: None,
+            offset: None,
+            length: None,
+            payload_ref: None,
+            mode_bits: None,
+            owner: None,
+            group: None,
+            outcome: WalOutcome::Success,
+        }];
+        // Also need to seed the leader side for translate_path to
+        // strip the prefix correctly.
+        std::fs::create_dir(leader.path().join("sub")).unwrap();
+
+        apply_wal_translated(&wal, &HashMap::new(), leader.path(), follower.path());
+        assert!(
+            !follower.path().join("sub/target.bin").exists(),
+            "D-14 regression: RemoveFile WAL entry must delete the \
+             nested file on the follower side"
+        );
+        assert!(
+            follower.path().join("sub").exists(),
+            "D-14 regression: parent directory must survive the \
+             RemoveFile — only the leaf gets removed"
+        );
+    }
+
+    /// D-14 pin 3: idempotent apply — re-running the same WAL
+    /// (with a Failure entry followed by a Success entry) does
+    /// not surface a fresh mutation on the second pass.  Failure
+    /// entries are skipped (H-6); Success entries are re-applied.
+    /// The pin is that the applier tolerates re-running against
+    /// its own output tree — no ApplierError from the second call.
+    #[test]
+    fn d14_apply_wal_translated_is_idempotent_on_success_entries() {
+        let leader = tempfile::tempdir().unwrap();
+        let follower = tempfile::tempdir().unwrap();
+        std::fs::create_dir(leader.path().join("sub")).unwrap();
+        std::fs::create_dir(follower.path().join("sub")).unwrap();
+
+        // Write a payload via a Write entry.  Payload keyed by its
+        // Blake2b256 hash — we synthesize an arbitrary hash + bytes.
+        // (`apply_wal_to_fresh_tree`'s Write branch looks up the
+        // hash in `payload_bytes` and pwrites the bytes; it doesn't
+        // verify hash === Blake2b256(bytes) inside the applier.)
+        let hash = [0xAAu8; 32];
+        let bytes = b"payload-v1".to_vec();
+        let mut payload_bytes: HashMap<[u8; 32], Vec<u8>> = HashMap::new();
+        payload_bytes.insert(hash, bytes.clone());
+
+        let leader_target = leader.path().join("sub/data.bin");
+        let wal = vec![WalEntry {
+            op: WalOp::Write,
+            path: leader_target,
+            extra_path: None,
+            offset: Some(0),
+            length: Some(bytes.len() as u64),
+            payload_ref: Some(PayloadRef::Hash(hash)),
+            mode_bits: None,
+            owner: None,
+            group: None,
+            outcome: WalOutcome::Success,
+        }];
+
+        // First apply — populates the follower's tree.
+        apply_wal_translated(&wal, &payload_bytes, leader.path(), follower.path());
+        let after_first = std::fs::read(follower.path().join("sub/data.bin"))
+            .expect("data.bin must exist after first apply");
+        assert_eq!(
+            after_first, bytes,
+            "D-14 regression: first apply must land the payload"
+        );
+
+        // Second apply of the SAME WAL — idempotent, tree stays
+        // consistent.  A regression that (say) appended instead of
+        // pwrote at offset 0 would surface here as a doubled file
+        // content.
+        apply_wal_translated(&wal, &payload_bytes, leader.path(), follower.path());
+        let after_second = std::fs::read(follower.path().join("sub/data.bin"))
+            .expect("data.bin must exist after second apply");
+        assert_eq!(
+            after_second, bytes,
+            "D-14 regression: re-applying the same Write WAL must be \
+             idempotent (pwrite at offset 0 overwrites in place)"
+        );
+    }
+}

@@ -2500,6 +2500,78 @@ mod tests {
         }
     }
 
+    /// X-5 D-08 (2026-09-12, branch-review-2026-09-11.md Track D):
+    /// stream-handler WAL byte-identity pin.  `fs_entries_stream_
+    /// next`'s Consensus journal branch is unreachable via the
+    /// runtime under the Phase-2 ban (entriesStreamOpen rejects
+    /// Consensus caps), but the journal code path is retained for
+    /// structural parity with the other Consensus-cap ops.
+    ///
+    /// This pin covers the invariant that motivates D-08: if
+    /// entries_stream_next EVER produces a WalEntry (via ban lift,
+    /// or via a low-level API that bypasses the Rholang surface),
+    /// its wire encoding is deterministic given identical fields.
+    /// A regression that made the encoding depend on the caller
+    /// (leader vs follower context, wall-clock, per-node state)
+    /// would surface here as a byte-diff between two encode calls
+    /// with the same input.
+    ///
+    /// Complements `encode_entry_uses_op_tag_values` above (which
+    /// pins the tag byte for tag 15) by locking the FULL encoded
+    /// bytes for a realistic EntriesStreamNext entry.
+    #[test]
+    fn d08_entries_stream_next_wal_encoding_is_deterministic() {
+        let entry = WalEntry {
+            op: WalOp::EntriesStreamNext,
+            path: PathBuf::from("/consensus-root/subdir"),
+            extra_path: None,
+            offset: None,
+            length: Some(1), // 1 = one entry yielded (n from post_reply_supplement).
+            payload_ref: Some(PayloadRef::Hash([0xAB; 32])),
+            mode_bits: None,
+            owner: None,
+            group: None,
+            outcome: WalOutcome::Success,
+        };
+        // Two encodes of the same input MUST produce byte-identical
+        // output.  A regression that made encoding non-deterministic
+        // (e.g., HashMap-ordering leak, wall-clock inclusion, thread-
+        // local state) would surface here.
+        let bytes_1 = encode_wal_slice(&[entry.clone()]);
+        let bytes_2 = encode_wal_slice(&[entry.clone()]);
+        assert_eq!(
+            bytes_1, bytes_2,
+            "D-08 regression: EntriesStreamNext WAL encoding must be \
+             deterministic on identical inputs — differed on repeat encode"
+        );
+        // Pin the tag byte at index 5 (matches
+        // `encode_entry_uses_op_tag_values`).  This locks the tag
+        // slot even if the outcome / payload_ref layout drifts
+        // upstream.
+        assert_eq!(
+            bytes_1[5], 15,
+            "D-08 regression: EntriesStreamNext tag byte must be 15"
+        );
+        // Verify the entry survives a full round-trip (encode →
+        // decode → re-encode) with byte-identical results.  A
+        // regression in the decoder that dropped fields would
+        // surface as a re-encode mismatch.
+        let decoded = decode_wal_slice(&bytes_1).expect("decode round-trip");
+        assert_eq!(decoded.len(), 1, "decode must yield 1 entry");
+        assert_eq!(
+            decoded[0], entry,
+            "D-08 regression: decoded EntriesStreamNext entry must equal \
+             original — a decoder that dropped or reordered fields \
+             surfaces here"
+        );
+        let bytes_3 = encode_wal_slice(&decoded);
+        assert_eq!(
+            bytes_1, bytes_3,
+            "D-08 regression: encode → decode → re-encode must be byte-\
+             identical"
+        );
+    }
+
     /// H-30-7: DeployRef byte-layout stability.  Verifies
     /// (a) the tag byte is 2, (b) block_hash comes first, then
     /// deploy_index big-endian u32, then arg_index big-endian u32,

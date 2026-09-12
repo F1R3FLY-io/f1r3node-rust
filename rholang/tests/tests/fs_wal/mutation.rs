@@ -3759,6 +3759,102 @@ async fn chown_on_consensus_rejects_with_fserr_unsupported() {
     );
 }
 
+/// X-5 COV-1 / D-01 (2026-09-12, branch-review-2026-09-11.md
+/// Track D): companion to `chown_on_consensus_rejects_with_fserr_
+/// unsupported` above.  Pins that ORACULAR fs_chown ALSO produces
+/// no WAL entry — the Consensus ban means chown never journals,
+/// period.  Oracular ops that DO mutate on-disk (chmod, rename,
+/// copyFile, removeFile) are journaled ONLY under Consensus mode
+/// (`journal_path_mutation_single_via_table` returns Ok(false) on
+/// non-Consensus cmode); this test pins that fs_chown follows the
+/// same discipline.
+///
+/// A regression that made Oracular fs_chown journal would (a)
+/// bloat the WAL with entries that carry no consensus meaning
+/// (they're never re-executed on followers), (b) leak the ban's
+/// intent — the whole point of the Consensus ban is that fs_chown
+/// has NO consensus-observable byte-identity across validators.
+///
+/// Complements the Oracular smoke pin
+/// `fs_chown_urn_dispatches` in `fileio_native_spec.rs` (which
+/// pins the [true] reply shape) — this pin adds the WAL invariant.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn chown_on_oracular_does_not_journal() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("f.bin"), b"").unwrap();
+    let runtime = create_runtime().await;
+
+    // Oracular chown with Nil/Nil owner/group — no-op chown that
+    // succeeds without NSS lookup (matches the fs_chown_urn_
+    // dispatches smoke test).
+    let term = format!(
+        r#"
+            new fsChown(`rho:io:fs:native:1.0.0/chown`), ret in {{
+              fsChown!("{root}", "f.bin", Nil, Nil, "oracular", *ret) |
+              for (@reply <- ret) {{
+                @"result"!(reply)
+              }}
+            }}
+            "#,
+        root = dir.path().display(),
+    );
+    runtime
+        .evaluate(
+            &term,
+            Cost::unsafe_max(),
+            std::collections::HashMap::new(),
+            rand(),
+        )
+        .await
+        .expect("evaluate Oracular fs_chown");
+
+    // Assert the reply is [true, ...] (success).  A regression that
+    // made Oracular chown fail would fire a different diagnostic
+    // than the WAL check below.
+    use models::rhoapi::expr::ExprInstance;
+    use models::rhoapi::{Expr, Par};
+    use rholang::rust::interpreter::rho_runtime::RhoRuntime;
+    let result_channel = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::GString("result".to_string())),
+    }]);
+    let datums = runtime.get_data(&result_channel).await;
+    let reply_par = datums
+        .first()
+        .and_then(|d| d.a.pars.first())
+        .cloned()
+        .expect("no reply on @\"result\" — Oracular chown didn't dispatch");
+    let list = match reply_par
+        .exprs
+        .first()
+        .and_then(|e| e.expr_instance.as_ref())
+    {
+        Some(ExprInstance::EListBody(l)) => l,
+        other => panic!("expected EList reply, got {other:?}"),
+    };
+    match list.ps[0]
+        .exprs
+        .first()
+        .and_then(|e| e.expr_instance.as_ref())
+    {
+        Some(ExprInstance::GBool(true)) => {}
+        other => panic!("expected [true, ...] Oracular chown reply, got head {other:?}"),
+    }
+
+    // The WAL invariant: Oracular chown journals nothing.  A
+    // regression that lifted the `cmode != Consensus` early-return
+    // in `journal_path_mutation_single_via_table` would surface
+    // here as a non-empty WAL — the entry would still be silently
+    // wrong (Consensus meaning applied to Oracular data), so this
+    // is a defense-in-depth pin.
+    assert!(
+        runtime.fs_handles.wal.is_empty(),
+        "Oracular fs_chown must NOT journal — journal_path_mutation_\
+         single_via_table self-guards on cmode != Consensus.  Got \
+         WAL: {:?}",
+        runtime.fs_handles.wal.snapshot()
+    );
+}
+
 /// H-29-3 slice 1 — leader/follower WAL byte-identity for all
 /// five lifted single-op path mutations.  Runs a mixed sequence
 /// on the leader, replays on the follower, asserts identical

@@ -406,6 +406,100 @@ mod tests {
         }
     }
 
+    /// X-5 M-07 (2026-09-12, branch-review-2026-09-11.md Track B):
+    /// composed-binding form of `state_deploy_binding_fs_native_urn_
+    /// fails_with_reduce_error`.  The prior test binds a single URN;
+    /// this one exercises the pattern a real attacker would use —
+    /// composing multiple fs-native URNs into an inline sandbox
+    /// bypass.  Every binding in the composed source must be
+    /// rejected before the deploy body runs.
+    ///
+    /// A regression that made the filter check the top-level `new`
+    /// only (missing nested `new` clauses) would leave a bypass:
+    /// wrap the fs-native binding in an outer `new` to defeat the
+    /// filter.  This test's composed form catches that.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn fileio_genesis_urn_filter_blocks_user_fs_native_binding() {
+        let runtime = create_runtime().await;
+        assert!(runtime.fs_native_urn_filter_enabled());
+        // Attacker-style pattern: nest fs-native URN bindings inside
+        // an outer `new` (a composed source shape).  Every filter
+        // implementation MUST reject all of them, not just the
+        // outermost.
+        let term = r#"
+            new outer in {
+              new fsOpen(`rho:io:fs:native:1.0.0/open`),
+                  fsRead(`rho:io:fs:native:1.0.0/read`),
+                  fsWrite(`rho:io:fs:native:1.0.0/write`)
+              in {
+                Nil
+              }
+            }
+        "#;
+        let result = runtime
+            .evaluate(
+                term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                rand(),
+            )
+            .await
+            .expect("evaluate should return an EvaluateResult");
+        assert!(
+            !result.errors.is_empty(),
+            "M-07 regression: composed-source binding of fs-native URNs \
+             at user scope must be rejected.  A regression that only \
+             checked top-level `new` would let this slip past."
+        );
+        let msgs: Vec<String> = result.errors.iter().map(|e| format!("{e}")).collect();
+        assert!(
+            msgs.iter().any(|m| m.contains("rho:io:fs:native")),
+            "M-07 regression: filter rejection error must reference the \
+             rho:io:fs:native family; got {msgs:?}"
+        );
+    }
+
+    /// X-5 M-07 (2026-09-12, branch-review-2026-09-11.md Track B):
+    /// positive counterpart — with the filter OFF (as during
+    /// `play_deploys_for_genesis`), the same composed binding
+    /// pattern MUST resolve cleanly.  This is the pin that
+    /// preserves the genesis composition path: if the filter got
+    /// stuck in the always-on state, genesis would fail to bind
+    /// its fs-native URNs and the whole FsGenesis composition would
+    /// break.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn fileio_genesis_urn_filter_allows_composed_binding() {
+        let runtime = create_runtime().await;
+        // Simulate the genesis wrapper's toggle-off.
+        runtime.disable_fs_native_urn_filter();
+        assert!(!runtime.fs_native_urn_filter_enabled());
+        let term = r#"
+            new outer in {
+              new fsOpen(`rho:io:fs:native:1.0.0/open`),
+                  fsRead(`rho:io:fs:native:1.0.0/read`),
+                  fsWrite(`rho:io:fs:native:1.0.0/write`)
+              in {
+                Nil
+              }
+            }
+        "#;
+        let result = runtime
+            .evaluate(
+                term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                rand(),
+            )
+            .await
+            .expect("evaluate should return an EvaluateResult");
+        assert!(
+            result.errors.is_empty(),
+            "M-07 regression: composed genesis binding must resolve \
+             cleanly when the filter is OFF; got errors: {:?}",
+            result.errors
+        );
+    }
+
     /// Slice 31: introspection ergonomics — verify the error type is
     /// `ReduceError`, not the generic `BugFoundError` that would
     /// arise from missing-in-urn_map + missing-from-injections.

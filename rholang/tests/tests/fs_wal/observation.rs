@@ -2524,6 +2524,241 @@ async fn consensus_fs_entries_reexecute_handles_empty_directory() {
         .expect("replay data must match on empty-dir readdir");
 }
 
+/// X-5 D-09 (2026-09-12, branch-review-2026-09-11.md Track D):
+/// Oracular-mode empty-directory pin.  Companion to
+/// `consensus_fs_entries_reexecute_handles_empty_directory` above:
+/// under Oracular mode, fs_entries on an empty directory MUST NOT
+/// journal a WAL entry AND must reply with a well-formed empty
+/// list `[true, []]`.
+///
+/// Track D flagged that Oracular empty-dir was untested — the
+/// existing coverage was Consensus-focused (n=0 metering audit
+/// fix).  A regression that ignored the cmode and journaled
+/// unconditionally on empty dirs (masking the ban rationale)
+/// would surface here as a non-empty WAL.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn oracular_fs_entries_on_empty_directory_returns_ok_empty_no_wal() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("empty_sub")).unwrap();
+    let runtime = create_runtime().await;
+
+    let term = format!(
+        r#"
+            new fsEntries(`rho:io:fs:native:1.0.0/entries`), ret in {{
+              fsEntries!("{root}", "empty_sub", "oracular", *ret) |
+              for (@r <- ret) {{ @"result"!(r) }}
+            }}
+            "#,
+        root = dir.path().display(),
+    );
+    runtime
+        .evaluate(
+            &term,
+            Cost::unsafe_max(),
+            std::collections::HashMap::new(),
+            rand(),
+        )
+        .await
+        .expect("evaluate Oracular fs_entries empty-dir");
+
+    // Verify reply shape: [true, []] — head-true, empty list.
+    use models::rhoapi::expr::ExprInstance;
+    use models::rhoapi::Expr;
+    use rholang::rust::interpreter::rho_runtime::RhoRuntime;
+    let result_channel = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::GString("result".to_string())),
+    }]);
+    let datums = runtime.get_data(&result_channel).await;
+    let reply_par = datums
+        .first()
+        .and_then(|d| d.a.pars.first())
+        .cloned()
+        .expect("no reply on @\"result\"");
+    let list = match reply_par
+        .exprs
+        .first()
+        .and_then(|e| e.expr_instance.as_ref())
+    {
+        Some(ExprInstance::EListBody(l)) => l,
+        other => panic!("expected EList reply, got {other:?}"),
+    };
+    match list.ps[0]
+        .exprs
+        .first()
+        .and_then(|e| e.expr_instance.as_ref())
+    {
+        Some(ExprInstance::GBool(true)) => {}
+        other => panic!("D-09 regression: expected [true, ...]; got head {other:?}"),
+    }
+    let inner = match list.ps[1]
+        .exprs
+        .first()
+        .and_then(|e| e.expr_instance.as_ref())
+    {
+        Some(ExprInstance::EListBody(l)) => l,
+        other => panic!(
+            "D-09 regression: fs_entries reply must have EList as second element; got {other:?}"
+        ),
+    };
+    assert!(
+        inner.ps.is_empty(),
+        "D-09 regression: empty-dir fs_entries must return empty inner list; got {} entries",
+        inner.ps.len()
+    );
+
+    // Oracular invariant: no WAL journal.  A regression that
+    // journaled Oracular entries would surface here.
+    assert!(
+        runtime.fs_handles.wal.is_empty(),
+        "D-09 regression: Oracular fs_entries on empty dir MUST NOT journal; got WAL: {:?}",
+        runtime.fs_handles.wal.snapshot()
+    );
+}
+
+/// X-5 D-09 (2026-09-12): empty-after-recursive-removal boundary
+/// pin.  Verifies that after `fs_remove_dir(recursive=true)` on a
+/// populated directory, the parent's listing correctly reflects
+/// the removal — the directory no longer appears in `fs_entries`
+/// of its parent.
+///
+/// This is the "post-recursive-removal state consistency" edge
+/// case: a regression in the recursive-removal WAL journal (say,
+/// that the follower's re-execute walked in a different order and
+/// left stale WalEntry paths) would surface as a state mismatch.
+/// The pin here is the simpler surface: post-removal, listing the
+/// parent shows the removed dir is gone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn oracular_fs_entries_reflects_recursive_removal() {
+    let dir = tempfile::tempdir().unwrap();
+    // Populate: parent/sub/{a.bin, b.bin, nested/c.bin}
+    // safe_descend_verified rejects rel="" (Empty), so we nest the
+    // removal target one level down and list the parent by name.
+    std::fs::create_dir(dir.path().join("parent")).unwrap();
+    std::fs::create_dir(dir.path().join("parent/sub")).unwrap();
+    std::fs::write(dir.path().join("parent/sub/a.bin"), b"a").unwrap();
+    std::fs::write(dir.path().join("parent/sub/b.bin"), b"b").unwrap();
+    std::fs::create_dir(dir.path().join("parent/sub/nested")).unwrap();
+    std::fs::write(dir.path().join("parent/sub/nested/c.bin"), b"c").unwrap();
+    let runtime = create_runtime().await;
+
+    let term = format!(
+        r#"
+            new fsRemoveDir(`rho:io:fs:native:1.0.0/removeDir`),
+                fsEntries(`rho:io:fs:native:1.0.0/entries`),
+                rr, er
+            in {{
+              fsRemoveDir!("{root}", "parent/sub", true, "oracular", *rr) |
+              for (@_ <- rr) {{
+                fsEntries!("{root}", "parent", "oracular", *er) |
+                for (@e <- er) {{ @"result"!(e) }}
+              }}
+            }}
+            "#,
+        root = dir.path().display(),
+    );
+    runtime
+        .evaluate(
+            &term,
+            Cost::unsafe_max(),
+            std::collections::HashMap::new(),
+            rand(),
+        )
+        .await
+        .expect("evaluate recursive-remove + list");
+
+    use models::rhoapi::expr::ExprInstance;
+    use models::rhoapi::Expr;
+    use rholang::rust::interpreter::rho_runtime::RhoRuntime;
+    let result_channel = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::GString("result".to_string())),
+    }]);
+    let datums = runtime.get_data(&result_channel).await;
+    let reply_par = datums
+        .first()
+        .and_then(|d| d.a.pars.first())
+        .cloned()
+        .expect("no reply on @\"result\" — remove or list failed to complete");
+    let list = match reply_par
+        .exprs
+        .first()
+        .and_then(|e| e.expr_instance.as_ref())
+    {
+        Some(ExprInstance::EListBody(l)) => l,
+        other => panic!("expected EList reply, got {other:?}"),
+    };
+    match list.ps[0]
+        .exprs
+        .first()
+        .and_then(|e| e.expr_instance.as_ref())
+    {
+        Some(ExprInstance::GBool(true)) => {}
+        other => panic!("D-09 regression: fs_entries post-removal must succeed; head={other:?}"),
+    }
+    let inner = match list.ps[1]
+        .exprs
+        .first()
+        .and_then(|e| e.expr_instance.as_ref())
+    {
+        Some(ExprInstance::EListBody(l)) => l,
+        other => panic!("D-09 regression: inner not EList; got {other:?}"),
+    };
+    // On-disk verification: parent should have no `sub` child left.
+    let leftover_sub = std::fs::read_dir(dir.path().join("parent"))
+        .expect("read parent")
+        .filter_map(|e| e.ok())
+        .any(|e| e.file_name() == "sub");
+    assert!(
+        !leftover_sub,
+        "D-09 regression: recursive fs_remove_dir must actually remove \
+         `sub` on disk"
+    );
+    // Rholang-surface pin: parent listing must NOT contain `sub`.
+    let names: Vec<String> = inner
+        .ps
+        .iter()
+        .filter_map(|p| {
+            // Entry record shape is a Map with "name" key; simplify by
+            // scanning any GString in the entry Par.
+            p.exprs
+                .iter()
+                .filter_map(|e| e.expr_instance.as_ref())
+                .filter_map(|ei| match ei {
+                    ExprInstance::EMapBody(m) => Some(m),
+                    _ => None,
+                })
+                .flat_map(|m| m.kvs.iter())
+                .filter_map(|kv| {
+                    let k = kv
+                        .key
+                        .as_ref()?
+                        .exprs
+                        .first()
+                        .and_then(|e| e.expr_instance.as_ref());
+                    let v = kv
+                        .value
+                        .as_ref()?
+                        .exprs
+                        .first()
+                        .and_then(|e| e.expr_instance.as_ref());
+                    match (k, v) {
+                        (Some(ExprInstance::GString(k_s)), Some(ExprInstance::GString(v_s)))
+                            if k_s == "name" =>
+                        {
+                            Some(v_s.clone())
+                        }
+                        _ => None,
+                    }
+                })
+                .next()
+        })
+        .collect();
+    assert!(
+        !names.iter().any(|n| n == "sub"),
+        "D-09 regression: post-recursive-removal, parent listing must \
+         not contain `sub`; got names {names:?}"
+    );
+}
+
 /// Phase 3 pin (Consensus re-execute + verify, 2026-09-01):
 /// **Dedicated fs_seek Consensus real-lseek prerequisite pin**.
 /// Under Phase 3, follower's fs_seek is_replay Consensus branch

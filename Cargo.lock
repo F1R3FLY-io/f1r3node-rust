@@ -2023,6 +2023,7 @@ name = "fileio-test-fixtures"
 version = "0.1.0"
 dependencies = [
  "rholang",
+ "tempfile",
 ]
 
 [[package]]
