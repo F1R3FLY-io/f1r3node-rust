@@ -11300,6 +11300,13 @@ release inventory, without missing or extra tests. This does not claim a single
 full 502-test debug invocation or whole-workspace CI. J-148 retains exact hashes
 and the separate combined admission-gate requirement.
 
+The subsequent combined gate passes the formatter and preceding admission
+proof/runtime groups but fails the final ACT line-transport property on the
+known PMU-006 PathMap empty-sentinel mutation defect (six passes, one failure).
+The panic occurs during valid dangling-path construction, before ACT encoding;
+it is not a formatter stack overflow. J-148 records the minimized history and
+terminal log hash. Combined-gate and campaign completion remain unproven.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate

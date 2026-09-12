@@ -10877,6 +10877,22 @@ The maintained focused admission route now requires all 27 formatter proof
 reports and the exact 15-test formatter cohort in both profiles. Its combined
 formal/runtime execution remains a separate acceptance result.
 
+**INTEGRATED GATE RESULT.** The subsequent `--epathmap-import` run exits one.
+Every preceding proof/native group passes, including the 27 formatter reports
+and 15 formatter tests in each profile. The final `checked_line_transport` group
+passes six tests and fails its generated branched-image property on the existing
+PMU-006 PathMap 0.2.2 sentinel-mutation defect, before ACT encoding. The minimized
+operations create value-free paths `[0]`, `[178]`, `[1]`, then `[178, 0]`, with
+seed `16299543669`. PathMap attempts `make_unique` on an empty sentinel. This is
+the previously tracked 6023/6038 defect, not a new formatter failure. Later ACT
+compile-fail controls do not execute after this failure. The log
+`target/verification/canonical-sexpr-integrated-admission-r1.log` has SHA-256
+`2e318acfd24cdaba4d588ad2bbb01b059837bd81d2ef48a97f2349d552e25772`.
+The complete combined gate remains unqualified; no failing property is filtered
+or weakened. Scheduler revision 1015 retains incumbent 5976. The existing
+mutation dependency must be resolved within its recorded scope before this
+acceptance path can close. Native formatter evidence is pgmcp artifact 618.
+
 **BOUNDARY.** The model proofs establish their stated observation/window laws,
 not automatic extraction of this Rust implementation. Native field bindings,
 negative controls and resource measurements remain distinct evidence. No
