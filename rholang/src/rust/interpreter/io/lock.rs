@@ -1104,6 +1104,31 @@ fn sequential_conflicts(state: &FileLockState) -> bool {
 ///
 /// Idempotent when `waiters` is empty.  Safe to call after any state
 /// mutation; a no-op if nothing has changed.
+///
+/// # X-2 / G-02 defense-in-depth chain (branch-review-2026-09-11)
+///
+/// A waiter belonging to deploy D1 can be promoted here while D1 is
+/// simultaneously aborting.  The abort path
+/// (`WalDeployScope::drop`) has two steps in a locked ordering
+/// (Phase 8 slice 8b sub-6):
+///
+/// 1. `cancel_all_waiters_for_deploy(D1)` — drains D1's PARKED
+///    waiters.  Doesn't help if a D1 waiter was already promoted
+///    here (i.e., moved from `waiters` to `ranges`) between D1's
+///    handler enqueuing and the sweep firing.
+/// 2. `release_all_for_deploy(D1)` — `state.ranges.retain(|e|
+///    &e.deploy != D1)` unconditionally sweeps ANY held range
+///    with matching deploy, regardless of whether it got there
+///    via direct acquire OR waiter promotion.  This closes the
+///    G-02 leak.
+///
+/// The receiver-drop rollback (below) is a third layer: if D1's
+/// handler task was already dropped by the time promotion happens,
+/// `send(Ok)` fails → the promotion rolls back and the ghost is
+/// prevented from ever appearing in `ranges` in the first place.
+///
+/// Regression pin: `g02_promoted_same_deploy_waiter_swept_by_
+/// release_all_for_deploy` (in the tests module below).
 fn wake_waiters(state: &mut FileLockState) {
     while let Some(head) = state.waiters.front() {
         // Check admissibility using the same rules as the direct
@@ -3264,6 +3289,137 @@ mod tests {
         assert_eq!(released, 1);
         assert_eq!(b_rx.await.unwrap(), Ok(b_id));
         assert_eq!(reg.held_locks(), 1);
+    }
+
+    /// X-2 / G-02 (2026-09-11, branch-review-2026-09-11.md): pin the
+    /// two-defense chain that prevents a same-deploy waiter promoted
+    /// mid-deploy-abort from leaking as a zombie held-lock entry.
+    ///
+    /// # Scenario Track G identified
+    ///
+    /// 1. Handler A (in D1's deploy) calls `try_acquire_range_wait`,
+    ///    gets `Parked { admit: rx }`.  Waiter enqueued with
+    ///    `deploy: D1`.
+    /// 2. Handler A `await`s rx.
+    /// 3. Another thread (release path from some other deploy) runs
+    ///    `release()` → `wake_waiters` → promotes D1's waiter to
+    ///    `state.ranges` with `deploy=D1` and sends `Ok(id)`.
+    /// 4. D1 aborts.  `WalDeployScope::drop` fires.
+    /// 5. `cancel_all_waiters_for_deploy(D1)` — no D1 waiters (already
+    ///    promoted).  If this were the only defense, the promoted
+    ///    entry would leak.
+    /// 6. `release_all_for_deploy(D1)` — sweeps `state.ranges` by
+    ///    `deploy` scope, removing the promoted entry.  **This is
+    ///    what closes the leak.**
+    ///
+    /// # Why the current code handles it
+    ///
+    /// The Phase-8 slice-8b sub-6 review-fix (2026-08-12) locked the
+    /// cancel-first, release-second ordering in
+    /// `WalDeployScope::drop` precisely to defend against this
+    /// scenario.  Additionally, `release_all_for_deploy` uses
+    /// `state.ranges.retain(|e| &e.deploy != deploy)` (line ~869 of
+    /// this file), which unconditionally sweeps ANY held range with
+    /// matching deploy — regardless of whether it got there via
+    /// direct acquire or waiter-promotion.
+    ///
+    /// This test pins the full chain: enqueue D1 waiter, simulate
+    /// promotion via release of a conflicting holder, THEN sweep
+    /// D1's deploy, assert the promoted entry is swept.
+    #[tokio::test]
+    async fn g02_promoted_same_deploy_waiter_swept_by_release_all_for_deploy() {
+        let reg = LockRegistry::new();
+        // Deploy D1's own holder A takes a range (so a subsequent D1
+        // parker will park behind it, exercising same-deploy same-
+        // holder skip guard — see `range_conflicts`).  Use a DIFFERENT
+        // holder for D1's parker to avoid the same-holder-skip path.
+        let _outer = expect_immediate(
+            reg.try_acquire_range_wait(
+                (1, 42),
+                0,
+                100,
+                LockMode::Write,
+                holder(99),
+                deploy(99),
+                WaitPolicy::Fail,
+            )
+            .unwrap(),
+        );
+        // D1's parker waits behind the outer holder.
+        let (_d1_id, _d1_rx) = expect_parked(
+            reg.try_acquire_range_wait(
+                (1, 42),
+                0,
+                100,
+                LockMode::Write,
+                holder(1),
+                deploy(1),
+                WaitPolicy::Wait,
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            reg.parked_waiters(),
+            1,
+            "D1's waiter must be parked before promotion"
+        );
+        // Simulate the "release from another deploy that admits D1's
+        // waiter" step: release the outer holder.  wake_waiters runs
+        // synchronously inside release() → D1's waiter promoted to
+        // ranges with deploy=D1.
+        reg.release_test_bypass(_outer).unwrap();
+        assert_eq!(
+            reg.parked_waiters(),
+            0,
+            "D1's waiter must be promoted (queue emptied)"
+        );
+        assert_eq!(
+            reg.held_locks(),
+            1,
+            "D1's promoted entry must be in state.ranges"
+        );
+        // Now simulate D1's deploy-end sweep.  cancel_all_waiters_for_
+        // deploy(D1) has nothing to cancel (waiter is promoted, not
+        // parked).  release_all_for_deploy(D1) MUST sweep the
+        // promoted entry.
+        let n_cancelled = reg.cancel_all_waiters_for_deploy(&deploy(1));
+        assert_eq!(
+            n_cancelled, 0,
+            "G-02: cancel_all_waiters_for_deploy finds nothing to \
+             cancel — the waiter was already promoted (this is the \
+             race Track G identified)"
+        );
+        let n_released = reg.release_all_for_deploy(&deploy(1));
+        assert_eq!(
+            n_released, 1,
+            "G-02: release_all_for_deploy MUST sweep the promoted \
+             D1 entry from state.ranges — this is the second-line \
+             defense that prevents the zombie leak"
+        );
+        assert_eq!(
+            reg.held_locks(),
+            0,
+            "G-02: after full deploy-end sweep, no D1 entries remain"
+        );
+        assert_eq!(
+            reg.tracked_files(),
+            0,
+            "G-02: empty state after sweep must be evicted"
+        );
+        // Post-sweep: a fresh D2 acquire on the same range must
+        // succeed (no zombie entry blocking it).
+        let _d2 = expect_immediate(
+            reg.try_acquire_range_wait(
+                (1, 42),
+                0,
+                100,
+                LockMode::Write,
+                holder(2),
+                deploy(2),
+                WaitPolicy::Fail,
+            )
+            .unwrap(),
+        );
     }
 
     #[tokio::test]

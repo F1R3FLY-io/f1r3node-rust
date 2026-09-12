@@ -520,9 +520,42 @@ impl Wal {
 
     /// Snapshot the current entries.  Cheap — returns a Vec clone.
     /// Intended for tests + slice-30 snapshot/checkpoint machinery.
+    ///
+    /// # X-2 / G-03 (branch-review-2026-09-11, MAJOR)
+    ///
+    /// This is a **point-in-time clone**.  Under the T-07 single-
+    /// RwLock refactor (commit `32a28937f`) the read guard is
+    /// dropped BEFORE this function returns; concurrent mutators
+    /// may advance the WAL immediately after.  The returned Vec is
+    /// self-contained (owns its allocation) and therefore memory-
+    /// safe, but callers MUST NOT use the clone's `.len()` to
+    /// validate against a subsequent `Wal::len()` call — the two
+    /// can diverge under concurrency.
+    ///
+    /// For a snapshot whose length is pinned atomically with the
+    /// clone, use `snapshot_with_mark()` below.
     pub fn snapshot(&self) -> Vec<WalEntry> {
         let guard = poison_abort(self.inner.read(), "Wal");
         guard.entries.clone()
+    }
+
+    /// X-2 / G-03 (branch-review-2026-09-11): snapshot the current
+    /// entries AND their length under a single read guard, so the
+    /// returned mark is guaranteed to describe the returned Vec (no
+    /// concurrent-mutation ambiguity).  Prefer this over
+    /// `snapshot()` + `snapshot_mark()` called separately — the
+    /// separate calls take two guards and a concurrent writer can
+    /// slip a mutation in between.
+    ///
+    /// The returned `(entries, mark)` pair satisfies
+    /// `entries.len() == mark.len` at the moment of the read guard;
+    /// after the guard drops, the WAL may grow further but the
+    /// pair remains internally consistent.
+    pub fn snapshot_with_mark(&self) -> (Vec<WalEntry>, WalMark) {
+        let guard = poison_abort(self.inner.read(), "Wal");
+        let entries = guard.entries.clone();
+        let mark = WalMark { len: entries.len() };
+        (entries, mark)
     }
 
     /// Number of journaled entries.
@@ -894,6 +927,41 @@ mod tests {
         assert_eq!(snap.len(), 1);
         assert_eq!(snap[0].op, WalOp::Write);
         assert_eq!(snap[0].length, Some(5));
+    }
+
+    /// X-2 / G-03 (2026-09-11, branch-review-2026-09-11.md): pin
+    /// `snapshot_with_mark()` returns entries + mark that agree at
+    /// the moment of the read guard.  This is the atomic
+    /// alternative to calling `snapshot()` + `snapshot_mark()`
+    /// separately, which under concurrency can return values that
+    /// disagree if a writer slips between the two guards.
+    #[test]
+    fn wal_snapshot_with_mark_is_internally_consistent() {
+        let wal = Wal::new();
+        for i in 0..7 {
+            wal.append(mk_write_entry(format!("entry-{i}").as_bytes()))
+                .unwrap();
+        }
+        let (entries, mark) = wal.snapshot_with_mark();
+        assert_eq!(
+            entries.len(),
+            mark.len,
+            "G-03: snapshot_with_mark MUST return (entries, mark) \
+             where entries.len() == mark.len — both captured under \
+             the same read guard"
+        );
+        assert_eq!(mark.len, 7);
+        // Subsequent appends do not affect the previously-captured
+        // snapshot's internal consistency.
+        wal.append(mk_write_entry(b"post")).unwrap();
+        assert_eq!(wal.len(), 8);
+        assert_eq!(
+            entries.len(),
+            mark.len,
+            "G-03: the returned pair remains internally consistent \
+             even as the WAL grows past it — the pair is a value \
+             type, not a live reference"
+        );
     }
 
     #[test]
