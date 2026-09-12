@@ -300,7 +300,7 @@ test -d "$TMP/tmp3/test-stale"
 test -d "$TMP/tmp3/test-live"
 grep -q 'free disk 7000MB inside hygiene band (floor 4096MB + band 4096MB); reclaiming' "$TMP/driver3.log"
 grep -q '^disk hygiene: 7000MB free -> 7000MB free$' "$TMP/driver3.log"
-grep -q '^disk usage: ' "$TMP/driver3.log"
+! grep -q '^disk usage: ' "$TMP/driver3.log"
 grep -q '^host_protection_breach: disk floor: free 7000MB still inside hygiene band (floor 4096MB + band 4096MB) after hygiene$' \
 	"$TMP/output3/early-exit.txt"
 grep -q 'still inside hygiene band' "$TMP/output3/protection-breach.txt"

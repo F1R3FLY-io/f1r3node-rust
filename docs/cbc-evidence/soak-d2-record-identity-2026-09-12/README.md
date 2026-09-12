@@ -32,5 +32,5 @@ Rerun outputs remain digest-only in the raw archive.
 
 The `unit` field check is a shape check, not a live service invocation check.
 Invocation freshness, exclusive ownership, and creation fencing remain distinct claims.
-The native launcher does not write the record yet, and the normal workflow does not require containment.
+The B46 runtime fixtures do not execute the native launcher, and the normal workflow does not require containment.
 Private Docker containment, storage durability, deadline and reserve bounds, hosted enforcement, maintainer ratification, and acceptance remain pending.

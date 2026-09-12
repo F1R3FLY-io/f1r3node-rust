@@ -180,6 +180,7 @@ NEGATIVE_CONTROLS=(
     soak_disk/MC_SoakDiskAdmission_unchecked_monitor_pre_fix:MonitorDeathPreventsAdmission
     soak_disk/MC_SoakDiskAdmission_unchecked_placement_pre_fix:UnverifiedPlacementPreventsAdmission
     soak_disk/MC_SoakDiskAdmission_pathname_pre_fix:UntrustedRecordPreventsAdmission
+    soak_disk/MC_SoakDiskAdmission_attribute_first_pre_fix:AttributionRequiresRecord
     soak_disk/MC_SoakDiskGuardian_unwatched_pre_fix:DeadGuardianRequiresInterrupt
     soak_disk/MC_SoakDiskGuardian_unavailable_sample_pre_fix:InvalidSampleRequiresInterrupt
     soak_disk/MC_SoakDiskGuardian_unbounded_probe_pre_fix:ProbeWithinDeadline
@@ -201,6 +202,7 @@ NEGATIVE_CONTROLS=(
     soak_disk/MC_SoakDiskGuardian_startup_only_pre_fix:DeadMonitorRequiresInterrupt
     soak_disk/MC_SoakDiskGuardian_drain_first_pre_fix:DrainRequiresOwnedStop
     soak_disk/MC_SoakDiskGuardian_unmanaged_pre_fix:ControllerLossStopsOwnedWriters
+    soak_disk/MC_SoakDiskGuardian_start_first_pre_fix:UnavailableQueryPreventsRelease
     soak_disk/MC_SoakStorageBudget_uncapped_blocks_pre_fix:WithinBudget
     soak_disk/MC_SoakStorageBudget_uncapped_logs_pre_fix:WithinBudget
     soak_disk/MC_SoakStorageBudget_uncapped_history_pre_fix:WithinBudget

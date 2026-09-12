@@ -24,6 +24,7 @@ a Boolean constant and must violate exactly the invariant named below.
 | `GuardianCrash` | The guardian process dies before the workload starts |
 | `Admit` | Start the iteration |
 | `PublishRefusal` | Write `protection-breach.txt`, `early-exit.txt`, and the failure summary |
+| `Attribute` | Run the disk usage attribution after a disk breach. The corrected driver writes the records first (B48) |
 
 | Constant | Correction | Pre-fix configuration | Expected violation |
 | --- | --- | --- | --- |
@@ -47,8 +48,9 @@ a Boolean constant and must violate exactly the invariant named below.
 | `CheckMonitorAlive` | A dead crash monitor cannot admit the benchmark or an iteration, and the refusal retains a failure. The pre-fix driver checked the monitor only at startup and mid-work | `MC_SoakDiskAdmission_unchecked_monitor_pre_fix` | `MonitorDeathPreventsAdmission` |
 | `VerifyPlacement` | Under required containment, the benchmark and an iteration are admitted only when the trusted run-domain record matches the driver's own control group and uid. A failed comparison retains a failure. The pre-fix driver ignored the containment setting and took the unmanaged path (B45) | `MC_SoakDiskAdmission_unchecked_placement_pre_fix` | `UnverifiedPlacementPreventsAdmission` |
 | `BindIdentity` | The record is trusted only when the driver opened each root-owned, unwritable path component from the filesystem root, within the size bound. The pre-fix driver inspected the pathname and read the record separately (B46). The `unchecked_placement` control omits this invariant, which a driver with no placement check also violates | `MC_SoakDiskAdmission_pathname_pre_fix` | `UntrustedRecordPreventsAdmission` |
+| `RecordBeforeAttribution` | The driver writes the breach record and the early-exit record before any disk usage attribution starts, so a stalled attribution cannot delay them. The pre-fix driver attributed on the hygiene-pass path before it decided (B48) | `MC_SoakDiskAdmission_attribute_first_pre_fix` | `AttributionRequiresRecord` |
 
-`MC_SoakDiskAdmission` enables all twenty corrections with all three benchmark fault kinds. It checks `TypeOK`, the twenty invariants above, `HygieneKillFollowsTerm`, `StopPreventsAdmission`, `RefusalRecorded`, and the liveness property `Completes`. It completes with 29520 distinct states.
+`MC_SoakDiskAdmission` enables all twenty-one corrections with all three benchmark fault kinds. It checks `TypeOK`, the twenty-one invariants above, `HygieneKillFollowsTerm`, `StopPreventsAdmission`, `RefusalRecorded`, and the liveness property `Completes`. It completes with 30352 distinct states.
 
 Constants: floor 4096 MiB, band 4096 MiB, free-space samples `{7000, 8191, 8192, 8193, 16384}`, initial free space 7000 MiB, malformed prefix 16384.
 
@@ -70,6 +72,7 @@ Each step corresponds to one historical defect and one correction constant. The 
 | `MonitorCrash`, `WatcherPollMonitor` | The iteration watcher polls the crash monitor, and its death is a breach (B40) |
 | `Drain` | The interrupted iteration's client has exited, and the driver waits for output EOF. The corrected driver stops the owned writers first (B43) |
 | `ControllerLoss`, `ContainmentResponse` | The driver and the crash monitor die together. Only a service manager that owns the writers' control group stops them (B44, launcher prototype) |
+| `Release` | The launcher verifies the manager placement and the gate identity, then releases the driver. A status query that never returns refuses the launch (B47, launcher prototype) |
 | `Stall`, `WatcherPollStale` | The guardian is alive but its progress record has expired; the watcher reads the record (B20 benchmark, B21 iteration) |
 | `DriverExit`, `ExitTrap` | The driver exits mid-iteration, and the corrected trap stops the writers (B28). Docker may reject the stop. The corrected trap then records a failure and a refusal (B31) |
 | `MonitorObservesExit` | The trap's exit handling leaves a marker, and the crash monitor reads it before it acts (B39) |
@@ -103,8 +106,9 @@ Each step corresponds to one historical defect and one correction constant. The 
 | `DetectMonitorDeath` | The iteration watcher treats a dead crash monitor as a breach, records unconfirmed termination, and refuses work. The pre-fix driver checked the monitor only at startup | `MC_SoakDiskGuardian_startup_only_pre_fix` | `DeadMonitorRequiresInterrupt` |
 | `StopBeforeDrain` | The interrupted iteration path stops the owned writers before it waits for output EOF. The pre-fix driver drained first and hung on the pipe the writers held | `MC_SoakDiskGuardian_drain_first_pre_fix` | `DrainRequiresOwnedStop` |
 | `ManagedContainment` | A service manager kills the owned writers' control group when both controllers die. The launcher prototype provides it, the direct launch does not, and B44 stays open on the source | `MC_SoakDiskGuardian_unmanaged_pre_fix` | `ControllerLossStopsOwnedWriters` |
+| `VerifyBeforeRelease` | The launcher starts a trusted gate, verifies the manager placement and the gate identity, and only then releases the driver. The pre-fix launcher started the driver before its status query returned (B47, launcher prototype) | `MC_SoakDiskGuardian_start_first_pre_fix` | `UnavailableQueryPreventsRelease` |
 
-`MC_SoakDiskGuardian` enables all nineteen corrections. It also checks `TimedOutSampleRejected`, `PriorFailuresPreserved`, `KillFollowsTerm`, and the conditional theorem below. It completes with 22500 distinct states.
+`MC_SoakDiskGuardian` enables all twenty corrections. It also checks `TimedOutSampleRejected`, `PriorFailuresPreserved`, `KillFollowsTerm`, and the conditional theorem below. It completes with 22518 distinct states.
 
 ### Conditional no-overrun theorem
 

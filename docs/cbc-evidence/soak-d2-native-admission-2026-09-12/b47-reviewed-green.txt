@@ -1,0 +1,2 @@
+PASS: An unavailable native containment query prevents workload admission and preserves the unrelated writer.
+The service-status query and external workload were substitutes. Fixture cleanup started after the recorded verdict.

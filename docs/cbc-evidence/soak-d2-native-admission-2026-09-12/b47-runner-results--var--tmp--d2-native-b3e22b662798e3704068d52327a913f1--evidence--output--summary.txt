@@ -1,0 +1,12 @@
+started_at=1789184973
+segments=1
+finished_at=1789184974
+target_ref=unknown
+target_sha=unknown
+requested_seconds=120
+elapsed_seconds=1
+iterations=0
+failures=1
+bench_segments=0
+bench_failures=0
+early_exit_reason=host_protection_breach

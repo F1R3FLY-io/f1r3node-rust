@@ -1,0 +1,2 @@
+Soak host protection: node RSS ceiling=0MB; host free floor=0MB; disk free floor=0MB (hygiene band +4096MB)
+Native containment refused work: Command '['/usr/bin/systemctl', 'show', 'soak-native-865e076e7e2c4f73a31fdf7ed1aa7cb2.service', '--property=MainPID,InvocationID,ControlGroup,ActiveState,SubState,Result,ExecMainStatus,KillMode,Restart,User,Description']' timed out after 3 seconds

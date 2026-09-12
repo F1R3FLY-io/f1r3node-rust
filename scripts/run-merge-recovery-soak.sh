@@ -617,8 +617,16 @@ disk_diagnostics_bounded() {
 		declare -f bounded disk_free_mb disk_usage_roots disk_usage_snapshot_data disk_usage_tag_summary disk_usage_timeline_row disk_guardian_diagnostics
 		declare -f guardian_stamp_health_tag || true
 	)"
-	timeout --signal=TERM --kill-after=1 "$DISK_DIAGNOSTIC_SECONDS" \
-		bash -c "$definitions"$'\n''"$@"' bash "$@"
+	local pid watchdog status=0
+	setsid bash -c "$definitions"$'\n''"$@"' bash "$@" &
+	pid=$!
+	setsid bash -c 'sleep "$1"; kill -TERM -- "-$2" 2>/dev/null; sleep 1; kill -KILL -- "-$2" 2>/dev/null' \
+		bash "$DISK_DIAGNOSTIC_SECONDS" "$pid" >/dev/null 2>&1 &
+	watchdog=$!
+	wait "$pid" || status=$?
+	kill -KILL -- "-$watchdog" 2>/dev/null || true
+	wait "$watchdog" 2>/dev/null || true
+	return "$status"
 }
 
 disk_usage_snapshot() {
@@ -1641,7 +1649,6 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 				FAILURES="$((FAILURES + 1))"
 				break
 			fi
-			disk_usage_snapshot 2>/dev/null | sed 's/^/disk usage: /'
 			# The guardian may have fired while hygiene ran (a builder prune
 			# can outlast the soft floor's 15s window), and it exits after
 			# firing — space recovered afterwards does not un-fire it or
@@ -1659,14 +1666,16 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 			DISK_MB="$(disk_free_mb)"
 			if [ -n "$DISK_MB" ] && [ "$DISK_MB" -lt "$((DISK_FREE_FLOOR_MB + DISK_HYGIENE_BAND_MB))" ]; then
 				EARLY_EXIT_REASON="host_protection_breach"
-				disk_usage_snapshot >"$OUTPUT_DIR/disk-floor-breach.txt" 2>/dev/null || true
 				printf 'orchestrator disk floor: free disk %sMB still inside hygiene band (floor %sMB + band %sMB) after hygiene; ending soak (fail-closed)\n' \
 					"$DISK_MB" "$DISK_FREE_FLOOR_MB" "$DISK_HYGIENE_BAND_MB" | tee "$OUTPUT_DIR/protection-breach.txt"
 				printf 'host_protection_breach: disk floor: free %sMB still inside hygiene band (floor %sMB + band %sMB) after hygiene\n' \
 					"$DISK_MB" "$DISK_FREE_FLOOR_MB" "$DISK_HYGIENE_BAND_MB" >"$OUTPUT_DIR/early-exit.txt"
 				FAILURES="$((FAILURES + 1))"
+				persist_soak_state || true
+				disk_usage_snapshot >"$OUTPUT_DIR/disk-floor-breach.txt" 2>/dev/null || true
 				break
 			fi
+			disk_usage_snapshot 2>/dev/null | sed 's/^/disk usage: /'
 		fi
 		if [ -z "$DISK_MB" ]; then
 			EARLY_EXIT_REASON="host_protection_breach"

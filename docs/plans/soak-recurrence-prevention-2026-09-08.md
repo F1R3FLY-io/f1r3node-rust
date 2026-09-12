@@ -422,6 +422,32 @@ A root-owned chain still admits work.
 The unit field check is a shape check, and invocation identity, exclusive ownership, and creation fencing remain distinct claims.
 D2 and claim discharge remain pending.
 
+#### Native launch admission after B47
+
+The [native admission package](../cbc-evidence/soak-d2-native-admission-2026-09-12/README.md) records the second session's native cycle.
+One guarded runner ran it and was then terminated.
+The launcher now starts trusted root gate code and verifies manager placement and gate identity.
+It then publishes the run-domain record and releases the driver after a privilege drop.
+A stalled service-status query prevents native admission, and the [model](../../formal/tlaplus/soak_disk/NativeLaunchAdmission.md) refutes the start-first baseline.
+
+The native controller-loss regression passes with both the committed B45 driver and the frozen B46 driver.
+The root launcher requires a trusted administrative startup context.
+Adversarial release access, metadata failures, failed stops, and observer loss need separate evidence.
+D2 and claim discharge remain pending.
+
+#### Breach record before attribution after B48
+
+The [breach record package](../cbc-evidence/soak-d2-breach-record-2026-09-12/README.md) corrects the order of the minimal breach record and the disk usage attribution.
+The baseline driver ran the hygiene-pass attribution before its breach checks, and a probe child that ignored the termination signal escaped the diagnostic deadline.
+The driver then hung before its breach decision, and only the guardian published a record.
+
+The driver now runs each attribution in its own session and kills that session at the deadline.
+It checks the guardian and the disk floor before the hygiene-pass attribution.
+It writes the breach record, the early-exit record, and the persisted state before the floor-breach attribution.
+The [model](../../formal/tlaplus/soak_disk/BreachRecordOrder.md) refutes the attribute-first baseline.
+The composed emergency deadline, storage durability, and reserve bounds remain open.
+D2 and claim discharge remain pending.
+
 ### Gate O1: Verify observability before the diagnostic soak
 
 **Owners:** The soak maintainer and Casper maintainer.

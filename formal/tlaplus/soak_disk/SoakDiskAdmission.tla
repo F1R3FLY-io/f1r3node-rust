@@ -1,7 +1,7 @@
 -------------------------- MODULE SoakDiskAdmission --------------------------
 (* One iteration-boundary disk admission decision in                         *)
 (* scripts/run-merge-recovery-soak.sh: probe, optional hygiene, re-probe,    *)
-(* decide, after the opening benchmark on the first segment. Twenty          *)
+(* decide, after the opening benchmark on the first segment. Twenty-one      *)
 (* Boolean constants switch the corrections on and off so that each pre-fix  *)
 (* configuration reproduces one historical defect; BenchmarkFaults selects   *)
 (* the fault kinds an admitted benchmark can suffer.                         *)
@@ -28,6 +28,7 @@ CONSTANTS FloorMiB, BandMiB, FreeSamples, InitialFreeMiB, MalformedPrefixMiB,
           CheckMonitorAlive, \* a dead crash monitor cannot admit the benchmark or an iteration (B42)
           VerifyPlacement, \* required containment admits work only when the trusted run-domain record matches the driver's own placement (B45)
           BindIdentity, \* the record is trusted only when every path component was opened from the root, root-owned, unwritable, and within the size bound (B46)
+          RecordBeforeAttribution, \* the driver writes the breach record and the early-exit record before any disk usage attribution starts (B48)
           BenchmarkFaults \* fault kinds an admitted benchmark can suffer: "breach", "death"
 
 ASSUME /\ FloorMiB \in Nat \ {0}
@@ -40,7 +41,7 @@ ASSUME /\ FloorMiB \in Nat \ {0}
            CheckProgress, EnforceHygieneDeadline, CheckRange, PreserveUnowned,
            EnforceCleanupFailures, PreserveDockerResources, RememberInFlight,
            RememberBenchmark, WatchMonitor, CheckMonitorAlive, VerifyPlacement,
-           BindIdentity} \subseteq BOOLEAN
+           BindIdentity, RecordBeforeAttribution} \subseteq BOOLEAN
        /\ BenchmarkFaults \subseteq {"breach", "death", "monitor-death"}
 
 Threshold == IF RequireBand THEN FloorMiB + BandMiB ELSE FloorMiB
@@ -87,11 +88,12 @@ VARIABLES phase, free, raw, sample, guardian, guardianAlive, admitted,
           monitorAlive, \* the crash monitor process is alive (B41, B42)
           benchmarkMonitorAlive, \* the monitor was alive when the benchmark was admitted (B42)
           recordMatches, \* the launcher's run-domain record matches the driver's cgroup and uid (B45)
-          recordTrusted \* the record the driver opened sits below a root-owned, unwritable chain and ends within its bound (B46)
+          recordTrusted, \* the record the driver opened sits below a root-owned, unwritable chain and ends within its bound (B46)
+          attributionStarted \* the disk usage attribution has started after a disk breach (B48)
 
 HygieneVars == <<hygieneStalled, hygieneElapsed, hygieneTermSent, hygieneKillSent>>
 
-vars == <<phase, free, raw, sample, guardian, guardianAlive, admitted,
+DriverVars == <<phase, free, raw, sample, guardian, guardianAlive, admitted,
           admissionRaw, admissionSample, stopReason, evidence, retained, benchmark,
           benchmarkSample, benchmarkFault, benchmarkObserved, benchmarkCancelled,
           benchmarkGuardianAlive, guardianFresh, admissionFresh, benchmarkFresh,
@@ -99,6 +101,8 @@ vars == <<phase, free, raw, sample, guardian, guardianAlive, admitted,
           settingsValid, sessionAge, sessionPresent, cleanupFailed, dockerPresent,
           interrupted, benchmarkInterrupted, monitorAlive, benchmarkMonitorAlive, recordMatches,
           recordTrusted>>
+
+vars == <<DriverVars, attributionStarted>>
 
 Init ==
     /\ phase = "config"
@@ -113,6 +117,7 @@ Init ==
     /\ benchmarkMonitorAlive = TRUE
     /\ recordMatches \in BOOLEAN
     /\ recordTrusted \in BOOLEAN
+    /\ attributionStarted = FALSE
     /\ free = InitialFreeMiB
     /\ raw = MissingRaw
     /\ sample = Unknown
@@ -410,6 +415,18 @@ PublishRefusal ==
     /\ UNCHANGED <<free, raw, sample, guardian, guardianAlive, admitted,
                    admissionRaw, admissionSample, stopReason>>
 
+\* After a disk breach the driver attributes the usage with df, du, and
+\* docker system df. The corrected driver (B48) writes the breach record and
+\* the early-exit record first, so a stalled attribution cannot delay them.
+\* The pre-fix driver attributed on the hygiene-pass path before it decided.
+Attribute ==
+    /\ phase \in {"stopped", "done"}
+    /\ stopReason = "disk"
+    /\ ~attributionStarted
+    /\ ~RecordBeforeAttribution \/ evidence
+    /\ attributionStarted' = TRUE
+    /\ UNCHANGED DriverVars
+
 FrozenAfterBenchmark == <<retained, benchmark, benchmarkSample, benchmarkFault,
                           benchmarkObserved, benchmarkCancelled,
                           benchmarkGuardianAlive, benchmarkMonitorAlive, benchmarkFresh,
@@ -418,31 +435,32 @@ FrozenAfterBenchmark == <<retained, benchmark, benchmarkSample, benchmarkFault,
 
 HygieneOutcome == <<sessionPresent, cleanupFailed, dockerPresent>>
 
-Next == (Benchmark /\ UNCHANGED HygieneVars)
+Next == (Benchmark /\ UNCHANGED <<HygieneVars, attributionStarted>>)
         \/ (/\ Admit
-            /\ UNCHANGED FrozenAfterBenchmark
+            /\ UNCHANGED <<FrozenAfterBenchmark, attributionStarted>>
             /\ UNCHANGED <<guardianFresh, monitorAlive, HygieneVars, HygieneOutcome>>)
         \/ (/\ GuardianStall
-            /\ UNCHANGED FrozenAfterBenchmark
+            /\ UNCHANGED <<FrozenAfterBenchmark, attributionStarted>>
             /\ UNCHANGED <<admissionFresh, monitorAlive, HygieneVars, HygieneOutcome>>)
         \/ (/\ HygieneStall \/ HygieneTick
-            /\ UNCHANGED FrozenAfterBenchmark
+            /\ UNCHANGED <<FrozenAfterBenchmark, attributionStarted>>
             /\ UNCHANGED <<guardianFresh, admissionFresh, monitorAlive, HygieneOutcome>>)
         \/ (/\ HygieneReturns
-            /\ UNCHANGED FrozenAfterBenchmark
+            /\ UNCHANGED <<FrozenAfterBenchmark, attributionStarted>>
             /\ UNCHANGED <<guardianFresh, admissionFresh, monitorAlive>>)
         \/ (/\ Hygiene
-            /\ UNCHANGED FrozenAfterBenchmark
+            /\ UNCHANGED <<FrozenAfterBenchmark, attributionStarted>>
             /\ UNCHANGED <<guardianFresh, admissionFresh, monitorAlive, HygieneVars>>)
         \/ (/\ ValidateSettings
                \/ CheckGuardian \/ ProbeBoundary \/ DecideHygiene
                \/ ProbeAfterHygiene \/ DecideAfterHygiene \/ CheckAdmission
                \/ GuardianTrip \/ GuardianCrash \/ PublishRefusal
-            /\ UNCHANGED FrozenAfterBenchmark
+            /\ UNCHANGED <<FrozenAfterBenchmark, attributionStarted>>
             /\ UNCHANGED <<guardianFresh, admissionFresh, monitorAlive, HygieneVars, HygieneOutcome>>)
         \/ (/\ MonitorCrash
-            /\ UNCHANGED FrozenAfterBenchmark
+            /\ UNCHANGED <<FrozenAfterBenchmark, attributionStarted>>
             /\ UNCHANGED <<guardianFresh, admissionFresh, HygieneVars, HygieneOutcome>>)
+        \/ Attribute
 
 Spec == Init /\ [][Next]_vars /\ WF_vars(Next)
 
@@ -486,6 +504,7 @@ TypeOK ==
     /\ benchmarkMonitorAlive \in BOOLEAN
     /\ recordMatches \in BOOLEAN
     /\ recordTrusted \in BOOLEAN
+    /\ attributionStarted \in BOOLEAN
 
 AdmissionRequiresBand ==
     admitted /\ admissionSample.known => admissionSample.mib >= FloorMiB + BandMiB
@@ -507,6 +526,7 @@ MonitorDeathPreventsAdmission ==
     /\ benchmark => benchmarkMonitorAlive
 UnverifiedPlacementPreventsAdmission == ~recordMatches => ~admitted /\ ~benchmark
 UntrustedRecordPreventsAdmission == ~recordTrusted => ~admitted /\ ~benchmark
+AttributionRequiresRecord == attributionStarted => evidence
 StaleProgressPreventsAdmission ==
     /\ admitted => admissionFresh
     /\ benchmark => benchmarkFresh

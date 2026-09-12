@@ -1,0 +1,5 @@
+control=/run/soak-native-test-a3e49879e0644c55ae9fef6612531718 mode=0o711
+directory_open_exit=1 Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+PermissionError: [Errno 13] Permission denied: '/run/soak-native-test-a3e49879e0644c55ae9fef6612531718'
+

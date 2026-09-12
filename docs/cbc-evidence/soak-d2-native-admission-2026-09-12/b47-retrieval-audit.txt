@@ -1,0 +1,6 @@
+PASS: 524 regular members match both archive and member identities.
+PASS: 11 invocation records retain the query RED/GREEN, positive native regressions, and the separate B46 setup failure.
+PASS: Successful native regressions retain two normal recovery summaries with counters [1,1,0,0].
+Archive SHA-256: f66bb3afe8b6e626519e40d4b33ac643790ff5063a1fe69a60bacb13d52683e9
+Archive bytes: 412882
+Expanded bytes: 1383365

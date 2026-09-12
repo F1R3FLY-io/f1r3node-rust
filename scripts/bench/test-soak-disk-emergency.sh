@@ -39,4 +39,6 @@ for mode in benchmark iteration; do
 done
 SOAK_DISK_TEST_IMAGE="$IMAGE" bash "$ROOT/scripts/bench/test-soak-record-identity.sh" \
     "${1:-$ROOT}" "$OUTPUT/record-identity"
+SOAK_DISK_TEST_IMAGE="$IMAGE" bash "$ROOT/scripts/bench/test-soak-breach-record-order.sh" \
+    "${1:-$ROOT}" "$OUTPUT/breach-record-order"
 printf 'PASS: The isolated disk emergency regressions completed.\n'
