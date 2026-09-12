@@ -11251,8 +11251,14 @@ runtime depth cap. Tests require exact scalar-route and disposal-trace equality,
 borrowed value identity and shared-snapshot preservation, including an 8,192-byte
 dangling line. Both profiles pass the final strengthened suite: 34 passes,
 zero failures and one existing measurement-only ignore in each. The unchanged
-deep formatter test is being rerun separately against the final implementation.
+deep formatter test also passes separately against the final implementation in
+801.80 seconds, with its 128 KiB worker stack unchanged and process exit zero.
 Read-buffer allocation and per-edge barrier costs remain.
+
+The complete current models release suite passes 491 tests with no failures,
+ignores or filters at `fec3985b6`, including the new physical-retention controls.
+Its 46.94-second test duration is not a benchmark comparison. Full models debug
+and whole-workspace acceptance remain separate requirements.
 
 The unchanged depth-256 formatter test passes with the earlier, unre-based
 candidate in 816.95 seconds. That does not establish a complete debug pass or a

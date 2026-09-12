@@ -10657,15 +10657,26 @@ no running acceptance test was attached to or terminated.
 | `canonical-sexpr-render-diagnostic-r1.log` | `b1e35c60acca33cf00d8ac1ab4c0112227533907c805583e514cc68cf06d8f36` |
 | `rightmost-navigation-rebased-group-debug-r2.log` | `6a304c1661139f05884dd98bb59d549e973c8d6ec1f47de630919add0862304d` |
 | `rightmost-navigation-rebased-group-release-r2.log` | `1118152e8830fc0faa5b732d0ce6937fe1393506766262a5745c5478cac283f9` |
+| `canonical-sexpr-rebased-final-debug-r1.log` | `f4b7b89f7edceb15adebadc918944e9ee44a24dc0468fdddc237567e1c9f9ab3` |
+| `canonical-models-rebased-release-r1.log` | `bfd9b6b26c010d678751d60c2c1a6813962e7d2e87d8af80cdd8cf90d8cc508f` |
 
 The final helper source has SHA-256
 `8ec01c3ee5603592096953f00cc2d590e9b6075a6f1c9ea5040c6179d6a529b1`;
 the final test source has SHA-256
 `b3d3426b70e7fc62f4c5a094dc7d552acfa9da75001c55defeaa7b5432120005`.
-The unchanged depth-256 test is separately running against this final helper in
-`canonical-sexpr-rebased-final-20260912.scope`, with output captured in
-`target/verification/canonical-sexpr-rebased-final-debug-r1.log`; its result is
-not yet available at this checkpoint.
+The unchanged depth-256 test separately passes against this final helper in
+`canonical-sexpr-rebased-final-20260912.scope`: one pass, 490 filtered, 801.80
+seconds after a 44.14-second build, process exit zero. Output is captured in
+`target/verification/canonical-sexpr-rebased-final-debug-r1.log`. The 128 KiB
+worker stack and 900-second process lifetime are unchanged. This single test
+does not establish the complete debug inventory or a timing-distribution verdict.
+
+The complete current models release suite also passes at `fec3985b6`: 491 tests,
+zero failures, zero ignores and zero filters, in 46.94 seconds of test-body time.
+The same resource policy runs `cargo test -p models -j4 --release --lib` in
+`canonical-models-rebased-release-20260912.scope`; the process exits zero. This
+includes the three added physical source-cache controls. It is package-level
+release evidence, not whole-workspace CI or the full debug inventory.
 
 **DECISION.** Finish and commit the navigation qualification before changing
 formatter behavior. Review existing byte-native cursor and formatter models for
