@@ -25,7 +25,7 @@ pub use super::handlers::{MAX_ENTRIES, MAX_WRITE_BYTES};
 pub use super::lock::{LOCK_ID_CEILING, MAX_RANGES_PER_FILE, MAX_WAITERS_PER_FILE};
 // WAL entry serialization (§ 3).
 pub use super::snapshot::{MANIFEST_FORMAT_VERSION, SNAPSHOT_FORMAT_VERSION};
-pub use super::wal::MAX_WAL_ENTRIES;
+pub use super::wal::{MAX_WAL_ENTRIES, WAL_OP_VARIANTS, WAL_OUTCOME_VARIANTS};
 pub use super::{MAX_CHUNK_ITEMS, MAX_OPEN_FDS, MAX_READ_BYTES, MAX_TRUNCATE_BYTES};
 
 #[cfg(test)]
@@ -73,6 +73,10 @@ mod tests {
             "MAX_OPEN_FDS",
             "MAX_READ_BYTES",
             "MAX_TRUNCATE_BYTES",
+            // X-1 / CONS-1 (2026-09-11): pin WAL wire encoding
+            // variant counts as consensus-observable.
+            "WAL_OP_VARIANTS",
+            "WAL_OUTCOME_VARIANTS",
         ]
         .into_iter()
         .collect();

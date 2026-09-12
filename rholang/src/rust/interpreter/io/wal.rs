@@ -147,54 +147,85 @@ pub struct WalEntry {
 /// `docs/consensus-invariants.md`.  Bumping the layout or the
 /// numeric tags is a hard fork of the WAL root — coordinate via
 /// `SNAPSHOT_FORMAT_VERSION`.
+///
+/// # X-1 / CONS-1 (2026-09-11, branch-review-2026-09-11.md)
+///
+/// `#[repr(u8)]` + explicit discriminants pin the wire encoding
+/// at the source level.  Pre-CONS-1 the enum had no `repr` and
+/// no explicit discriminants, so Rust's default layout could
+/// theoretically shift under compiler / edition changes → silent
+/// WAL wire divergence across a validator binary rebuild.  The
+/// combination of `#[repr(u8)]` + explicit `= N` + the
+/// `WAL_OUTCOME_VARIANTS` const registered in CONSENSUS_FOLD +
+/// the `wal_outcome_discriminants_pinned` test guards against
+/// both (a) reordering, (b) add/remove.
+#[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WalOutcome {
     /// The syscall completed successfully.  Reserve-pattern
     /// placeholders default to this — the leader will finalize
     /// to `Failure` if the syscall reply carries an error.
-    Success,
+    Success = 0,
     /// The syscall failed with the given upstream FSERR_* code.
     /// Followers MUST NOT apply the entry's mutation to
     /// reconstructed state.
-    Failure { code: u32 },
+    Failure { code: u32 } = 1,
 }
+
+/// X-1 / CONS-1: total variant count of `WalOutcome`.  Registered
+/// in `CONSENSUS_FOLD` so any add/remove is a fingerprint-hex roll
+/// (visible in code review + peering-handshake mismatch).  Bump
+/// this AND the golden hex if a variant is added.
+pub const WAL_OUTCOME_VARIANTS: usize = 2;
 
 /// Enumeration of consensus-observable filesystem operations
 /// captured in the WAL.  Named "WalOp" for historical reasons but
 /// now covers both mutations AND observation-preserving reads whose
 /// results feed the tuplespace (slice 32, PB-M-14 read-hash).
+///
+/// # X-1 / CONS-1 (2026-09-11, branch-review-2026-09-11.md)
+///
+/// `#[repr(u8)]` + explicit `= N` discriminants pin the wire
+/// encoding.  Adding a variant → bump `WAL_OP_VARIANTS`, append at
+/// the tail with the next discriminant, roll the fingerprint
+/// golden hex.  NEVER reorder existing variants (each variant's
+/// discriminant is a hard-fork surface embedded in every WAL
+/// entry's leading byte).  The `wal_op_discriminants_pinned` test
+/// pins the exact assignments; the fingerprint fold pins the
+/// count across validators.
+#[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WalOp {
     /// `fs_write(fd, bytes)` — sequential write; offset is None,
     /// length = bytes.len(), payload_ref = Hash(blake2b(bytes)).
-    Write,
+    Write = 0,
     /// `fs_write_at(fd, off, bytes)` — positional write;
     /// offset = off, length = bytes.len(), payload_ref = Hash(...).
-    WriteAt,
+    WriteAt = 1,
     /// `fs_truncate(fd, n)` — file length becomes n; offset = n,
     /// length = None, payload_ref = None.
-    Truncate,
+    Truncate = 2,
     // The following variants are RESERVED for the follow-up slice
     // that wires path-based mutations; kept in the enum so the
     // WAL replay protocol can distinguish op types without a
     // discriminant clash.
-    Chmod,
-    Chown,
-    RemoveFile,
-    RemoveDir,
-    Rename,
-    CopyFile,
+    Chmod = 3,
+    Chown = 4,
+    RemoveFile = 5,
+    RemoveDir = 6,
+    Rename = 7,
+    CopyFile = 8,
     /// `fs_read(fd, n) -> bytes` — sequential read.  Slice 32
     /// (PB-M-14 read-hash): records `Hash(returned_bytes)` so a
     /// joining validator can verify that a byte-identical read
     /// against reconstructed state produces the same hash.
     /// offset is None; length = returned_bytes.len();
     /// payload_ref = Hash(blake2b(returned_bytes)).
-    Read,
+    Read = 9,
     /// `fs_read_at(fd, off, n) -> bytes` — positional read.
     /// offset = off; length = returned_bytes.len();
     /// payload_ref = Hash(...).  See Read.
-    ReadAt,
+    ReadAt = 10,
     /// M-5 fix (2026-08-06): `fs_stat(root, rel, cmode) -> record`
     /// — journaled on Consensus caps only.  offset/length None;
     /// payload_ref = Hash(stable_hash(reply_par)) — covers the
@@ -203,7 +234,7 @@ pub enum WalOp {
     /// setgid/sticky bits in Consensus mode, so the hashed
     /// bytes ARE the deterministic subset).  Outcome
     /// distinguishes Success replies from Failure(code).
-    Stat,
+    Stat = 11,
     /// M-5: `fs_entries(root, rel, cmode) -> [record, ...]` —
     /// journaled on Consensus caps.  offset = None; length = None
     /// (the entry count is derivable from the hashed reply, but
@@ -218,7 +249,7 @@ pub enum WalOp {
     /// into its digest), so any joiner that verifies `payload_ref`
     /// implicitly verifies the count.  Kept None to match `Stat`'s
     /// no-side-band-metadata shape.
-    Entries,
+    Entries = 12,
     /// M-5: `fs_size(fd) -> u64` — journaled when the fd's
     /// `FileHandle.cmode == Consensus`.  offset = None;
     /// length = None; payload_ref = Hash(stable_hash of the reply
@@ -231,7 +262,7 @@ pub enum WalOp {
     /// the value, length is a side-band per-call metadata field
     /// used only where the joiner wants a fast count (currently
     /// only `EntriesStreamNext` for its 1-per-yield semantics).
-    Size,
+    Size = 13,
     /// Streaming-backing slice Step 3 (2026-08-25):
     /// `entriesStreamNext(streamFd)` — one Next call on a
     /// Consensus-cap dir stream.  Journaled per call, symmetric on
@@ -262,7 +293,7 @@ pub enum WalOp {
     ///   disambiguate EOS from a genuine unknown-code failure by
     ///   consulting the `payload_ref` hash (EOS has a well-known
     ///   2-element reply hash).
-    EntriesStreamNext,
+    EntriesStreamNext = 14,
     /// Consensus ban-lift (2026-09-04): `fs_exists(root, rel, cmode)
     /// -> [true, Bool]` — journaled on Consensus caps only.  Prior to
     /// this slice, fs_exists was banned under Consensus at the Rholang
@@ -272,8 +303,22 @@ pub enum WalOp {
     /// matches fs_stat / fs_size — offset = None; length = None;
     /// payload_ref = Hash(stable_hash of the `[true, Bool]` reply
     /// Par).  The Bool value is inside the hashed reply.
-    Exists,
+    Exists = 15,
 }
+
+/// X-1 / CONS-1: total variant count of `WalOp`.  Registered in
+/// `CONSENSUS_FOLD` so any add/remove is a fingerprint-hex roll.
+/// Bump this + the golden hex + `SNAPSHOT_FORMAT_VERSION` if a
+/// variant is added.
+pub const WAL_OP_VARIANTS: usize = 16;
+
+// X-1 / CONS-1 (2026-09-11): register both variant counts in the
+// consensus fingerprint fold.  Reordering variants doesn't change
+// the count but IS caught by the `wal_op_discriminants_pinned` /
+// `wal_outcome_discriminants_pinned` unit tests below (which pin
+// each variant's `as u8` explicit value).
+crate::register_consensus_constant!(order = 12, name = WAL_OP_VARIANTS, u64_be);
+crate::register_consensus_constant!(order = 13, name = WAL_OUTCOME_VARIANTS, u64_be);
 
 impl WalOp {
     /// True iff this op is an observation-only WAL entry —
@@ -915,6 +960,71 @@ mod tests {
             group: None,
             outcome: WalOutcome::Success,
         }
+    }
+
+    /// X-1 / CONS-1 (2026-09-11, branch-review-2026-09-11.md): pin
+    /// each `WalOp` variant's explicit `#[repr(u8)]` discriminant.
+    /// This is the wire encoding — every WAL entry's leading op-tag
+    /// byte comes from these values.  A reorder or renumbering
+    /// silently changes the WAL byte format across a validator
+    /// binary rebuild → shard split.  Bump the discriminant + the
+    /// golden fingerprint hex + `SNAPSHOT_FORMAT_VERSION` in
+    /// concert if a variant is truly renumbered.
+    ///
+    /// Pinned assignments (any change is a hard-fork event):
+    #[test]
+    fn wal_op_discriminants_pinned() {
+        assert_eq!(WalOp::Write as u8, 0);
+        assert_eq!(WalOp::WriteAt as u8, 1);
+        assert_eq!(WalOp::Truncate as u8, 2);
+        assert_eq!(WalOp::Chmod as u8, 3);
+        assert_eq!(WalOp::Chown as u8, 4);
+        assert_eq!(WalOp::RemoveFile as u8, 5);
+        assert_eq!(WalOp::RemoveDir as u8, 6);
+        assert_eq!(WalOp::Rename as u8, 7);
+        assert_eq!(WalOp::CopyFile as u8, 8);
+        assert_eq!(WalOp::Read as u8, 9);
+        assert_eq!(WalOp::ReadAt as u8, 10);
+        assert_eq!(WalOp::Stat as u8, 11);
+        assert_eq!(WalOp::Entries as u8, 12);
+        assert_eq!(WalOp::Size as u8, 13);
+        assert_eq!(WalOp::EntriesStreamNext as u8, 14);
+        assert_eq!(WalOp::Exists as u8, 15);
+        assert_eq!(
+            WAL_OP_VARIANTS, 16,
+            "CONS-1: WAL_OP_VARIANTS must equal the number of \
+             discriminants pinned above (currently 16); adding a \
+             variant means bumping this + the fingerprint golden \
+             hex."
+        );
+    }
+
+    /// X-1 / CONS-1 (2026-09-11): pin `WalOutcome` discriminants.
+    /// Same rationale as `wal_op_discriminants_pinned` — the
+    /// outcome tag is at the tail of every WAL entry's wire
+    /// encoding.
+    #[test]
+    fn wal_outcome_discriminants_pinned() {
+        // Standard Rust representation: discriminant is the first
+        // byte for a `#[repr(u8)]` enum, retrievable via
+        // `*(&val as *const _ as *const u8)`.
+        //
+        // SAFETY: `WalOutcome` is `#[repr(u8)]` so the first byte
+        // of any live value's storage is the discriminant.
+        // Dereferencing the pointer reads that byte; the reference
+        // outlives the read.
+        let success_disc = unsafe { *(&WalOutcome::Success as *const _ as *const u8) };
+        // SAFETY: same rationale — `#[repr(u8)]` guarantees the
+        // first byte is the discriminant, regardless of the
+        // variant's payload.
+        let failure_disc = unsafe { *(&WalOutcome::Failure { code: 0 } as *const _ as *const u8) };
+        assert_eq!(success_disc, 0);
+        assert_eq!(failure_disc, 1);
+        assert_eq!(
+            WAL_OUTCOME_VARIANTS, 2,
+            "CONS-1: WAL_OUTCOME_VARIANTS must equal the number of \
+             discriminants pinned above (currently 2)."
+        );
     }
 
     #[test]

@@ -99,7 +99,11 @@ const _: () = assert!(
 /// `order` AND bump this count.  Both must move together; the
 /// golden-hex pin (in `tests` below) already forces a coordinated
 /// change of the encoded fingerprint too.
-const EXPECTED_ENTRY_COUNT: usize = 11;
+///
+/// X-1 / CONS-1 (2026-09-11): bumped from 11 to 13 to add
+/// `WAL_OP_VARIANTS` (order 12) and `WAL_OUTCOME_VARIANTS`
+/// (order 13).  Rolls fingerprint golden hex.
+const EXPECTED_ENTRY_COUNT: usize = 13;
 
 /// M-35 (2026-09-08, A4-S-3): a single consensus-observable
 /// constant's contribution to the fingerprint fold.
@@ -349,17 +353,22 @@ mod tests {
             FINGERPRINT_HEX_LEN,
             "fingerprint length locked at {FINGERPRINT_HEX_LEN} chars"
         );
-        // Pinned value: regenerate deliberately when ANY of the 11
-        // consensus constants changes.  Coordinated peer-upgrade
-        // required for each roll.
+        // Pinned value: regenerate deliberately when ANY consensus
+        // constant changes.  Coordinated peer-upgrade required for
+        // each roll.
         // Regenerate: cargo test -p rholang --lib -- \
         //   fingerprint_pinned_for_current_consensus_constants --nocapture
         //
         // Prior anchor: 2315df6c0d5b6687 (pre-M-19-Gap-2, 2026-09-04)
         //   — 10 constants (MAX_WAL_ENTRIES through
         //   SNAPSHOT_FORMAT_VERSION).
-        // Current anchor: MAX_CHUNK_ITEMS appended at position 11.
-        const EXPECTED_FOR_CURRENT: &str = "0982cf37fab162be";
+        // Prior anchor: 0982cf37fab162be (2026-09-08 M-35 landing;
+        //   MAX_CHUNK_ITEMS appended at position 11).
+        // Current anchor: X-1 / CONS-1 (2026-09-11) added
+        //   WAL_OP_VARIANTS (position 12) + WAL_OUTCOME_VARIANTS
+        //   (position 13).  Pins the WAL wire encoding's variant
+        //   count as consensus-observable.
+        const EXPECTED_FOR_CURRENT: &str = "a4ec7d2e6988455b";
         assert_eq!(
             fp, EXPECTED_FOR_CURRENT,
             "M-8/B2 fingerprint changed — did MAX_WAL_ENTRIES, MAX_WRITE_BYTES, \
