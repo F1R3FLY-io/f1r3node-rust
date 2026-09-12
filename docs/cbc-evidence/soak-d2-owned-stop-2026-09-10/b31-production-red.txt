@@ -1,0 +1,1 @@
+FAIL: Driver exit lost the rejected Docker stop and its unconfirmed writer termination.

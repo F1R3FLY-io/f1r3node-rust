@@ -1,0 +1,2 @@
+FAIL: A failed cleanup command permitted work or lost its failure result (cleanup-error-remove).
+Evidence: [EVIDENCE_ROOT]/d2-cleanup-outcome-eTKwRQgd/baseline-confirmed-remove

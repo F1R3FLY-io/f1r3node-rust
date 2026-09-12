@@ -29,7 +29,6 @@ correctness — proved, model-checked, and tested — is the organizing concern.
 
 ## Canonical Terms
 
-
 ### Release candidate
 
 A release candidate is one immutable source commit with its tested artifacts and [release evidence](#release-evidence). Standard release gates evaluate this identity.
@@ -77,6 +76,12 @@ The 60h stability soak is the fixed 60-hour pre-promotion soak of one release ca
 The dev integration soak is the scheduled variable-length soak of the `dev` integration branch. It publishes regression data and does not gate a release.
 
 **Preferred usage.** Use this term for the scheduled integration-branch soak. *Avoid*: daily soak. The machine series key keeps the legacy value `daily` until a separate identifier migration. *Distinguish from* the [60h stability soak](#60h-stability-soak): integration monitoring versus a release gate.
+
+### Committed outcome
+
+A committed outcome is an iteration control result that the soak driver records through `.soak-state` replacement. The record contains the iteration counter, failure counter, and iteration state.
+
+This term does not establish power-loss durability, artifact upload, or a committed blockchain transaction.
 
 ### Test net
 
@@ -152,6 +157,42 @@ dashboard reports p95 and maximum run aggregates in blocks.
 **Preferred usage.** Use this term to describe shard agreement on finalized
 state. *Distinguish from* finalization distance from the block graph tip.
 *Avoid*: block height and finalization latency.
+
+### Correct by Construction
+
+Correct by Construction (CbC) is the development process that connects a correctness claim to implementation behavior, formal verification, and retained evidence.
+
+**Preferred usage.** Use CbC for this verification process. Distinguish it from CBC Casper, which names the consensus protocol.
+
+### Work bound
+
+A work bound limits counted operations as a function of input size and explicit operating assumptions. A work bound does not directly establish elapsed time.
+
+**Preferred usage.** Name the counted operation, input dimensions, and assumptions. Distinguish a work bound from a finalization deadline.
+
+### Disk hygiene
+
+Disk hygiene removes eligible inactive files and caches between soak iterations. Disk hygiene must preserve active node state and required evidence.
+
+**Preferred usage.** Use this term for preventive cleanup. Distinguish disk hygiene from emergency writer termination by the disk guardian.
+
+### Disk admission
+
+Disk admission decides whether a soak iteration can start from the latest free-space sample. With protection enabled, the post-hygiene sample must reach floor plus band.
+
+**Preferred usage.** Use this term for the iteration-boundary decision. Distinguish it from mid-iteration protection and full-duration disk safety.
+
+### Disk probe
+
+A disk probe reads free space for the soak output filesystem. A missing sample does not establish available space.
+
+**Preferred usage.** Use this term for the measurement operation, not the admission decision or a disk guardian.
+
+### Disk guardian
+
+The disk guardian monitors free disk during a soak iteration. The disk guardian triggers protection when the configured disk conditions require a stop.
+
+**Preferred usage.** Use this term for the concurrent protection process. A guardian event does not establish that every writer stopped or that the runner survived.
 
 ### Verification tier
 
@@ -424,6 +465,62 @@ budget classes in the formal-verification stack entry).
 - Mathematical symbols, acronyms, LTS labels, and theorem names resolve in
   [02-glossary-and-notation.md](casper/theory/slashing/design/02-glossary-and-notation.md)
   until the planned unification lands.
+
+## Docker owner label
+
+The **Docker owner label** associates a container with the driver instance that creates it through the workload Docker wrapper.
+The label key is `io.f1r3fly.soak.owner`.
+
+**Preferred usage:** Use this term for creation metadata that the shared Docker stop helper checks before selecting a container.
+Do not use a name prefix or fixture label as a substitute.
+The label is not authorization against an actor who can control Docker or forge metadata.
+
+## Process descriptor
+
+A **process descriptor** is a Linux kernel handle that identifies one process independently of numeric process identifier reuse.
+Linux exposes this handle as a `pidfd`.
+
+**Preferred usage:** Use this term when the stop helper signals or observes a process through its kernel handle.
+Do not treat a process name or numeric identifier alone as equivalent ownership evidence.
+
+### Crash monitor
+
+A **crash monitor** is an independent process that waits for the soak driver to exit.
+It requests an ownership-checked writer stop when the driver has no valid exit-handling acknowledgment.
+
+**Preferred usage:** Use this term for the process-crash response, not the periodic host guardian.
+An exit-handling acknowledgment does not confirm writer termination.
+
+### Controller loss
+
+**Controller loss** means that both the soak driver and crash monitor exit during active work.
+Controller loss does not establish workload termination.
+
+**Preferred usage:** Use this term for the combined failure tested by B44.
+State which independent supervisor must survive when a containment design depends on that supervisor.
+
+### Run domain
+
+A **run domain** is the proposed, exclusively owned containment boundary for one soak run and its workload launch services.
+The run domain includes native writers, Docker writers, and the services that can create those writers.
+
+**Preferred usage:** Use this term for the complete containment boundary, not a process group or an ownership label.
+A configured run domain does not establish confirmed termination.
+
+### Run-domain record
+
+A **run-domain record** is a root-owned file that names the unit, cgroup, and uid the trusted launcher placed the soak driver in.
+The driver compares the record with its own kernel cgroup view and uid before it admits work.
+
+**Preferred usage:** Use this term for the launcher-written placement record, not for an environment variable or a caller-supplied marker.
+A matching record establishes placement, not exclusive run-domain ownership or confirmed termination.
+
+### Creation fence
+
+A **creation fence** prevents further workload execution after closure, including execution from requests accepted before closure.
+
+**Preferred usage:** Identify the mechanism that enforces the creation fence.
+A rejected client request, an empty process list, or a single kill operation does not establish a creation fence.
 
 ## Maintenance
 

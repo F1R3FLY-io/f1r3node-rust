@@ -1,0 +1,6 @@
+6a04b8aa2b3335012eba6b66793b784c28fbedfd5160844c27e0d8abf01e7554  scripts/bench/collect-soak-metrics.sh
+735c0eed6e7db8edb2ca910f40c2058a146b386aec28e817d2ad795c70888813  scripts/bench/run-bench-segment.sh
+d4a71e7996dc0b0a74fcfc339f5164121c246db7c2f4e27114b7ea80c2edfef7  scripts/bench/soak-metrics.json
+08c76bf27b1dcba5b2389fd1e7b3cd4c46754c38f10c7d9f7b028dccd2f20d03  scripts/bench/test-soak-benchmark-monitor-death.sh
+ed6c53492ab35dd9b2cc82123766e76efec9ea6a7e18b759a034b4a038d8a489  scripts/bench/write-soak-summary.sh
+4ae0dd01f32aebd8784e3db7d00d5c1773ff0171baadef0155eeb68278281e8e  scripts/run-merge-recovery-soak.sh

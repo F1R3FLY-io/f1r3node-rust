@@ -1,0 +1,98 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 127 and seed -8860433796712698099 with 2 workers on 20 cores with 491MB heap and 64MB offheap memory (Linux 6.17.0-1032-nvidia aarch64, Private Build 1.8.0_502 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file [EVIDENCE_ROOT]/d2-benchmark-monitor-wD4Bp96f/formal-source/MC_BenchmarkDiskMonitor_late_pre_fix.tla
+Parsing file [EVIDENCE_ROOT]/d2-benchmark-monitor-wD4Bp96f/formal-source/BenchmarkDiskMonitor.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/TLC.tla
+Parsing file /tmp/Sequences.tla
+Parsing file /tmp/FiniteSets.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module BenchmarkDiskMonitor
+Semantic processing of module MC_BenchmarkDiskMonitor_late_pre_fix
+Starting... (2026-09-09 18:59:43)
+Implied-temporal checking--satisfiability problem has 1 branches.
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-09-09 18:59:44.
+Error: Invariant BenchmarkBreachObserved is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ sampled = FALSE
+/\ guardianStarted = FALSE
+/\ stopRequested = FALSE
+/\ freeMiB = 16384
+/\ phase = "prepare"
+/\ breachRecorded = FALSE
+
+State 2: <StartBenchmark line 17, col 5 to line 20, col 68 of module BenchmarkDiskMonitor>
+/\ sampled = FALSE
+/\ guardianStarted = FALSE
+/\ stopRequested = FALSE
+/\ freeMiB = 16384
+/\ phase = "active"
+/\ breachRecorded = FALSE
+
+State 3: <DiskFalls line 23, col 5 to line 26, col 76 of module BenchmarkDiskMonitor>
+/\ sampled = FALSE
+/\ guardianStarted = FALSE
+/\ stopRequested = FALSE
+/\ freeMiB = 1024
+/\ phase = "poll"
+/\ breachRecorded = FALSE
+
+State 4: <Observe line 29, col 5 to line 34, col 45 of module BenchmarkDiskMonitor>
+/\ sampled = FALSE
+/\ guardianStarted = FALSE
+/\ stopRequested = FALSE
+/\ freeMiB = 1024
+/\ phase = "observed"
+/\ breachRecorded = FALSE
+
+The coverage statistics at 2026-09-09 18:59:44
+<Init line 8, col 1 to line 8, col 4 of module BenchmarkDiskMonitor>: 2:2
+  line 9, col 5 to line 14, col 28 of module BenchmarkDiskMonitor: 2
+<StartBenchmark line 16, col 1 to line 16, col 14 of module BenchmarkDiskMonitor>: 1:2
+  line 17, col 8 to line 17, col 24 of module BenchmarkDiskMonitor: 9
+  |line 17, col 8 to line 17, col 12 of module BenchmarkDiskMonitor: 7
+  line 18, col 8 to line 18, col 40 of module BenchmarkDiskMonitor: 2
+  line 19, col 8 to line 19, col 24 of module BenchmarkDiskMonitor: 2
+  line 20, col 8 to line 20, col 68 of module BenchmarkDiskMonitor: 2
+<DiskFalls line 22, col 1 to line 22, col 9 of module BenchmarkDiskMonitor>: 1:3
+  line 23, col 8 to line 23, col 23 of module BenchmarkDiskMonitor: 9
+  |line 23, col 8 to line 23, col 12 of module BenchmarkDiskMonitor: 6
+  line 24, col 8 to line 24, col 26 of module BenchmarkDiskMonitor: 3
+  line 25, col 8 to line 25, col 22 of module BenchmarkDiskMonitor: 3
+  line 26, col 8 to line 26, col 76 of module BenchmarkDiskMonitor: 3
+<Observe line 28, col 1 to line 28, col 7 of module BenchmarkDiskMonitor>: 1:2
+  line 29, col 8 to line 29, col 21 of module BenchmarkDiskMonitor: 6
+  |line 29, col 8 to line 29, col 12 of module BenchmarkDiskMonitor: 5
+  line 30, col 8 to line 30, col 33 of module BenchmarkDiskMonitor: 1
+  |line 30, col 19 to line 30, col 33 of module BenchmarkDiskMonitor: 2
+  line 31, col 8 to line 31, col 68 of module BenchmarkDiskMonitor: 1
+  |line 31, col 27 to line 31, col 67 of module BenchmarkDiskMonitor: 2
+  line 32, col 8 to line 32, col 39 of module BenchmarkDiskMonitor: 1
+  |line 32, col 25 to line 32, col 39 of module BenchmarkDiskMonitor: 2
+  line 33, col 8 to line 33, col 26 of module BenchmarkDiskMonitor: 1
+  line 34, col 8 to line 34, col 45 of module BenchmarkDiskMonitor: 1
+<ReturnBenchmark line 36, col 1 to line 36, col 15 of module BenchmarkDiskMonitor>: 0:0
+  line 37, col 8 to line 37, col 25 of module BenchmarkDiskMonitor: 3
+  line 38, col 8 to line 38, col 22 of module BenchmarkDiskMonitor: 0
+  line 39, col 8 to line 39, col 30 of module BenchmarkDiskMonitor: 0
+  line 40, col 8 to line 40, col 68 of module BenchmarkDiskMonitor: 0
+<TypeOK line 45, col 1 to line 45, col 6 of module BenchmarkDiskMonitor>
+  line 46, col 5 to line 51, col 32 of module BenchmarkDiskMonitor: 4
+<BenchmarkBreachObserved line 53, col 1 to line 53, col 23 of module BenchmarkDiskMonitor>
+  line 54, col 5 to line 55, col 52 of module BenchmarkDiskMonitor: 4
+  |line 54, col 6 to line 54, col 49 of module BenchmarkDiskMonitor: 4
+  ||line 54, col 6 to line 54, col 23 of module BenchmarkDiskMonitor: 4
+  ||line 54, col 28 to line 54, col 49 of module BenchmarkDiskMonitor: 1
+  |line 55, col 10 to line 55, col 51 of module BenchmarkDiskMonitor: 1
+<StopRequiresRecord line 57, col 1 to line 57, col 18 of module BenchmarkDiskMonitor>
+  line 57, col 23 to line 57, col 53 of module BenchmarkDiskMonitor: 3
+End of statistics.
+4 states generated, 4 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 4.
+The average outdegree of the complete state graph is 1 (minimum is 1, the maximum 1 and the 95th percentile is 1).
+Finished in 02s at (2026-09-09 18:59:44)

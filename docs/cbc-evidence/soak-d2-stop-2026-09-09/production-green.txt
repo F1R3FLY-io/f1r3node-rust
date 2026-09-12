@@ -1,0 +1,2 @@
+PASS: The driver bounded stalled stop commands and published the protection failure. Writer termination remains unconfirmed.
+Evidence: /home/bf_spark/soak-evidence/f1r3node-rust/d2-stop-LVbwcGyM/production-green-corrected

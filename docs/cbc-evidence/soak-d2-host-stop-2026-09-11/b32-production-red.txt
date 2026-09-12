@@ -1,0 +1,3 @@
+/case/test.sh: line 61:    13 Killed                  setsid bash /tmp/rnode-unrelated /case/evidence/unrelated-node
+/case/test.sh: line 61:    14 Killed                  setsid bash integration-tests/test/tests/custom/test_load.py /case/evidence/unrelated-client
+FAIL: Driver exit stopped an unrelated host writer selected by its command line.

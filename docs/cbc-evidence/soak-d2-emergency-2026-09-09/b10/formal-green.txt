@@ -1,0 +1,65 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 93 and seed 7536396678648858627 with 2 workers on 20 cores with 491MB heap and 64MB offheap memory (Linux 6.17.0-1032-nvidia aarch64, Private Build 1.8.0_502 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /home/bf_spark/src/F1r3fly/f1r3node-rust/formal/tlaplus/soak_disk/MC_DiskProbeDeadline.tla
+Parsing file /home/bf_spark/src/F1r3fly/f1r3node-rust/formal/tlaplus/soak_disk/DiskProbeDeadline.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/TLC.tla
+Parsing file /tmp/Sequences.tla
+Parsing file /tmp/FiniteSets.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module DiskProbeDeadline
+Semantic processing of module MC_DiskProbeDeadline
+Starting... (2026-09-09 04:35:45)
+Implied-temporal checking--satisfiability problem has 1 branches.
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-09-09 04:35:46.
+Progress(5) at 2026-09-09 04:35:46: 5 states generated, 5 distinct states found, 0 states left on queue.
+Checking temporal properties for the complete state space with 5 total distinct states at (2026-09-09 04:35:46)
+Finished checking temporal properties in 00s at 2026-09-09 04:35:46
+Model checking completed. No error has been found.
+  Estimates of the probability that TLC did not check all reachable states
+  because two distinct states had the same fingerprint:
+  calculated (optimistic):  val = 0.0
+The coverage statistics at 2026-09-09 04:35:46
+<Init line 8, col 1 to line 8, col 4 of module DiskProbeDeadline>: 1:1
+  line 9, col 5 to line 13, col 29 of module DiskProbeDeadline: 1
+<Tick line 15, col 1 to line 15, col 4 of module DiskProbeDeadline>: 3:4
+  line 16, col 8 to line 16, col 22 of module DiskProbeDeadline: 10
+  |line 16, col 8 to line 16, col 12 of module DiskProbeDeadline: 6
+  line 17, col 8 to line 17, col 18 of module DiskProbeDeadline: 4
+  line 18, col 8 to line 18, col 29 of module DiskProbeDeadline: 4
+  line 19, col 8 to line 19, col 51 of module DiskProbeDeadline: 4
+  line 20, col 8 to line 20, col 55 of module DiskProbeDeadline: 4
+  line 21, col 8 to line 21, col 42 of module DiskProbeDeadline: 4
+<ProbeReturns line 23, col 1 to line 23, col 12 of module DiskProbeDeadline>: 0:0
+  line 24, col 8 to line 24, col 22 of module DiskProbeDeadline: 6
+  line 25, col 8 to line 25, col 18 of module DiskProbeDeadline: 4
+  line 26, col 8 to line 26, col 24 of module DiskProbeDeadline: 0
+  line 27, col 8 to line 27, col 61 of module DiskProbeDeadline: 0
+<Decide line 29, col 1 to line 29, col 6 of module DiskProbeDeadline>: 1:1
+  line 30, col 8 to line 30, col 23 of module DiskProbeDeadline: 7
+  |line 30, col 8 to line 30, col 12 of module DiskProbeDeadline: 6
+  line 31, col 8 to line 31, col 25 of module DiskProbeDeadline: 1
+  line 32, col 8 to line 32, col 33 of module DiskProbeDeadline: 1
+  line 33, col 8 to line 33, col 22 of module DiskProbeDeadline: 1
+  line 34, col 8 to line 34, col 38 of module DiskProbeDeadline: 1
+<TypeOK line 39, col 1 to line 39, col 6 of module DiskProbeDeadline>
+  line 40, col 5 to line 44, col 33 of module DiskProbeDeadline: 5
+<ProbeWithinDeadline line 46, col 1 to line 46, col 19 of module DiskProbeDeadline>
+  line 46, col 24 to line 46, col 53 of module DiskProbeDeadline: 5
+  |line 46, col 24 to line 46, col 38 of module DiskProbeDeadline: 5
+  |line 46, col 43 to line 46, col 53 of module DiskProbeDeadline: 3
+<TimedOutSampleRejected line 47, col 1 to line 47, col 22 of module DiskProbeDeadline>
+  line 47, col 27 to line 47, col 84 of module DiskProbeDeadline: 5
+  |line 47, col 28 to line 47, col 53 of module DiskProbeDeadline: 5
+  ||line 47, col 28 to line 47, col 41 of module DiskProbeDeadline: 5
+  ||line 47, col 46 to line 47, col 53 of module DiskProbeDeadline: 1
+  |line 47, col 60 to line 47, col 83 of module DiskProbeDeadline: 1
+End of statistics.
+5 states generated, 5 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 5.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 1 and the 95th percentile is 1).
+Finished in 01s at (2026-09-09 04:35:46)

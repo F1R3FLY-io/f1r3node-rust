@@ -1,0 +1,2 @@
+FAIL: The opening benchmark started with 7000 MiB below the 8192 MiB admission threshold.
+Evidence: [EVIDENCE_ROOT]/d2-benchmark-band-xzY4nTYN/production-red

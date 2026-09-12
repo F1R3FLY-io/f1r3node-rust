@@ -1,0 +1,961 @@
+// The archive retains the published bytes before the authorized removal.
+{
+  "schema_version": 1,
+  "source_commit": "5e1842688b6920c7f012fb4e9fe04e593a002883",
+  "content": "previously-published-bytes",
+  "scope": "187 remaining final-real rerun files from the B38/B39 package",
+  "raw_archive": {
+    "raw_path": "[EVIDENCE_ROOT]/published-reruns.tar.gz",
+    "raw_sha256": "2f3491f11dec9e60ed16f928f710deb23189b03c26de1a14c8e347f14710ec45",
+    "raw_bytes": 23091,
+    "entries": [
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-archive-audit.txt",
+        "raw_sha256": "4ef845ae9d04b23930b93f2cc6fcdd09075d9804231010e0908a023a187fde07",
+        "raw_bytes": 142
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-archive.stderr",
+        "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "raw_bytes": 0
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-archive.txt",
+        "raw_sha256": "fed4e6d815fe495134c3ec0f0982fe713b2ba99a1a3c03a3e3eb1aa31593f140",
+        "raw_bytes": 81
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-base-commit.txt",
+        "raw_sha256": "dd34141e729bef4310a1657d2b3e50e916659079d3da94ca1ae84a3122bdff33",
+        "raw_bytes": 41
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-cycle-exit.txt",
+        "raw_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+        "raw_bytes": 2
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-cycle-finished-at.txt",
+        "raw_sha256": "ba1dc29bbb0f5b5cdb5464d8cc5457ab780ed2afd1760d563e60790d2073c655",
+        "raw_bytes": 21
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-cycle.stderr",
+        "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "raw_bytes": 0
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-cycle.txt",
+        "raw_sha256": "889aeb4278f25f9113fdc60132dff26426ea044eba7b5b47a5c0a2b0f9b00b01",
+        "raw_bytes": 172
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-green-extract.stderr",
+        "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "raw_bytes": 0
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-green-extract.txt",
+        "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "raw_bytes": 0
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-green-transfer.stderr",
+        "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "raw_bytes": 0
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-green-transfer.txt",
+        "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "raw_bytes": 0
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-outer-exit.txt",
+        "raw_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+        "raw_bytes": 2
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-provision-exit.txt",
+        "raw_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+        "raw_bytes": 2
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-provision.stderr",
+        "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "raw_bytes": 0
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-provision.txt",
+        "raw_sha256": "4f96577ae47fc773e7abf1ebda9a38780bd86ee716f23145946f2f4896d75de6",
+        "raw_bytes": 997
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-remote-green-exit.txt",
+        "raw_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+        "raw_bytes": 2
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-remote-green.stderr",
+        "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "raw_bytes": 0
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-remote-green.txt",
+        "raw_sha256": "17e0fe996aa99b55184a40ec7afd1ad8dbcc7e77f809123ba517b6765b4f6208",
+        "raw_bytes": 364
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieve-prepare.stderr",
+        "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "raw_bytes": 0
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieve-prepare.txt",
+        "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "raw_bytes": 0
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieve.stderr",
+        "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "raw_bytes": 0
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieve.txt",
+        "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "raw_bytes": 0
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b27-exit.txt",
+        "raw_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+        "raw_bytes": 2
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b27.stderr",
+        "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "raw_bytes": 0
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b27.txt",
+        "raw_sha256": "6c03ba26104cf18f3df3f44f395ee0ca681ea0ff4cb5185a8cf171ae21b8aeda",
+        "raw_bytes": 103
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b28-exit.txt",
+        "raw_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+        "raw_bytes": 2
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b28.stderr",
+        "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "raw_bytes": 0
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b28.txt",
+        "raw_sha256": "b6e30cbe08e723f22310091373680e01268aee6c3db6d86e0cfe13b6bfed747f",
+        "raw_bytes": 81
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b29-exit.txt",
+        "raw_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+        "raw_bytes": 2
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b29.stderr",
+        "raw_sha256": "d3c41320dbe92758fa58a3d5685edb8990090bcd5685d635dcca7c4e67182e3d",
+        "raw_bytes": 212
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b29.txt",
+        "raw_sha256": "4ab267145d4c3aa014e1208070f0dd60587c18916cf8347dc1f135ea9517ac4e",
+        "raw_bytes": 103
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b30-compose-exit.txt",
+        "raw_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+        "raw_bytes": 2
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b30-compose.stderr",
+        "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "raw_bytes": 0
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b30-compose.txt",
+        "raw_sha256": "c587bf4fa56a42900e7271ccea91daefbb32b775430068012ccccfda422bd223",
+        "raw_bytes": 96
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b30-run-exit.txt",
+        "raw_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+        "raw_bytes": 2
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b30-run.stderr",
+        "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "raw_bytes": 0
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b30-run.txt",
+        "raw_sha256": "c587bf4fa56a42900e7271ccea91daefbb32b775430068012ccccfda422bd223",
+        "raw_bytes": 96
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b31-exit.txt",
+        "raw_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+        "raw_bytes": 2
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b31.stderr",
+        "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "raw_bytes": 0
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b31.txt",
+        "raw_sha256": "20f93909616ac770efb95e4e65361a1818cbd99e80e62d142ad632aef4a33398",
+        "raw_bytes": 115
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b35-bin-curl",
+        "raw_sha256": "d784e012f98bd1897fd2bc4b107d09d2240f575eb787693dba8bd6c4ade7a6b0",
+        "raw_bytes": 27
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b35-bin-docker",
+        "raw_sha256": "38dd1fb66d3882e2aeb8b757a653cd081054a5fb1317c58c9e3e308db3d6bbf0",
+        "raw_bytes": 446
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b35-bin-oci",
+        "raw_sha256": "d784e012f98bd1897fd2bc4b107d09d2240f575eb787693dba8bd6c4ade7a6b0",
+        "raw_bytes": 27
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b35-bin-poetry",
+        "raw_sha256": "fadcfcb82c3dacbd9e7d147cd0b437a68e7adbb0b4ac88652e999989c2833b57",
+        "raw_bytes": 136
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b35-exit.txt",
+        "raw_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+        "raw_bytes": 2
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b35-initial-created-ids.txt",
+        "raw_sha256": "36537207d0083c5f6eb1277836ac6834b0a8024ef030655a6698f805963d7670",
+        "raw_bytes": 65
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b35-initial-driver-exit.txt",
+        "raw_sha256": "9d9b18720961e9b4689fd763b85e7b6f36160ccd3a8a1c9ddc5103bb0f66c396",
+        "raw_bytes": 4
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b35-initial-driver.log",
+        "raw_sha256": "91292d1ffac192b690e4194cbfe68c6a78f2445fa1dd12acb92c18cbe3fbcb6c",
+        "raw_bytes": 257
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b35-initial-state.txt",
+        "raw_sha256": "0a29cca19d5f2f5d2377833af7493053f81857168343a98f4a034ecc3aacf352",
+        "raw_bytes": 132
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b35-instance-id.txt",
+        "raw_sha256": "83bb90c20ee077aa06628b1e007bcf30b369e07408c98f59f47a7f9b03c54901",
+        "raw_bytes": 93
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b35-node-docker-shard.yml",
+        "raw_sha256": "0bb104147d0c5562447953c4a40b3d29868a63cbf77bffbfeedddce3f6217205",
+        "raw_bytes": 627
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b35-output-.crash-monitor.lnhWrJiP-handled-exit",
+        "raw_sha256": "1b9c2f410a9adbce7718696caf7f7f97f936b35b4618002103fa724eba715965",
+        "raw_bytes": 8
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b35-output-.crash-monitor.lnhWrJiP-monitor.log",
+        "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "raw_bytes": 0
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b35-output-.crash-monitor.lnhWrJiP-ready",
+        "raw_sha256": "a57f0a9861552e8561824b6b46fff9367854820fb52402e1e5e66e8f64f929fe",
+        "raw_bytes": 5
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b35-output-.docker-owner.DsNKBcsD-docker",
+        "raw_sha256": "badbbe2a76b6aed1aa7ec2fb15b714ebc57e0e7028dead4a059e30a6fc40f95a",
+        "raw_bytes": 1642
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b35-output-.docker-owner.QMnKpGM9-docker",
+        "raw_sha256": "badbbe2a76b6aed1aa7ec2fb15b714ebc57e0e7028dead4a059e30a6fc40f95a",
+        "raw_bytes": 1642
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b35-output-.docker-owner.QyQIhS9q-docker",
+        "raw_sha256": "badbbe2a76b6aed1aa7ec2fb15b714ebc57e0e7028dead4a059e30a6fc40f95a",
+        "raw_bytes": 1642
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b35-output-.host-guardian-progress",
+        "raw_sha256": "551cf8db9af28c24c6555d03a649e228b27f067ed4522995e55039afdec8c847",
+        "raw_bytes": 5
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b35-output-.soak-checkpoint-state.json",
+        "raw_sha256": "da7a94ae54b0b2449edb95ef3591b8007cfb442681ba5ed7342788e836bfe379",
+        "raw_bytes": 277
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b35-output-.soak-state",
+        "raw_sha256": "54559b1ca663524d055734de48e912b4f1c4cba02c0941d4da0c10baedeee794",
+        "raw_bytes": 132
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b35-output-bench-segment-00001-compose-up.log",
+        "raw_sha256": "4be00bda583e1bd21d6eda56ab99463b8d3c8ddbebf89a9f8a404422a16058cb",
+        "raw_bytes": 162
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b35-output-bench-segment-00001-segment.log",
+        "raw_sha256": "1a8027f40b22cecae502d33544eaa399576fe517e949aebcae05e9ad005491c3",
+        "raw_bytes": 22
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b35-output-bench-segment-00001-shard.log",
+        "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "raw_bytes": 0
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b35-output-early-exit.txt",
+        "raw_sha256": "ca0310c6bf1d3f3b60ddf4f517b941cfd863e2a55cb53f7a59c97df275c12e56",
+        "raw_bytes": 96
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b35-output-iterations.json",
+        "raw_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+        "raw_bytes": 3
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b35-output-summary.json",
+        "raw_sha256": "90473b846974ed424ea5850d28d6debed911e08575423e104d2879ba06ad9b76",
+        "raw_bytes": 876
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b35-output-summary.txt",
+        "raw_sha256": "461b95f4d1c656233c3f20c6583fd741b629fe11cab55dd1980029a613c1d1f1",
+        "raw_bytes": 233
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b35-output-writer-stop-failure.txt",
+        "raw_sha256": "b4bbcf1e9f19abd50dbfa9d6ecd5be5b50273622e2546014a9862924bbc70888",
+        "raw_bytes": 87
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b35-rejected-stop.txt",
+        "raw_sha256": "3d5a1225444f7b5794ee0211e2a9ac065cfd5d84ead290e3133aa6c79d9204eb",
+        "raw_bytes": 168
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b35-restart-1-driver-exit.txt",
+        "raw_sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+        "raw_bytes": 2
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b35-restart-1-driver.log",
+        "raw_sha256": "b4e16e0effd5e9d30e3d099df854c3dcb651f1a76388fef0fad9976968fee1b7",
+        "raw_bytes": 672
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b35-restart-1-state.txt",
+        "raw_sha256": "54cc0abcb232493fc0226b678cf526099f86b54a54df86f7a0f6d5744b8c0c53",
+        "raw_bytes": 132
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b35-restart-1-summary.json",
+        "raw_sha256": "90473b846974ed424ea5850d28d6debed911e08575423e104d2879ba06ad9b76",
+        "raw_bytes": 876
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b35-restart-2-driver-exit.txt",
+        "raw_sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+        "raw_bytes": 2
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b35-restart-2-driver.log",
+        "raw_sha256": "d7bd44dff6fe41c248de31a05a8989bc9896f9336e46cb0be61676315e3b7db4",
+        "raw_bytes": 713
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b35-restart-2-state.txt",
+        "raw_sha256": "54559b1ca663524d055734de48e912b4f1c4cba02c0941d4da0c10baedeee794",
+        "raw_bytes": 132
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b35-restart-2-summary.json",
+        "raw_sha256": "90473b846974ed424ea5850d28d6debed911e08575423e104d2879ba06ad9b76",
+        "raw_bytes": 876
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b35-source-sha256.txt",
+        "raw_sha256": "185208a465629428d73ecfd90fad8daeb15b1c6d0848821c00042714cb5624f3",
+        "raw_bytes": 506
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b35-writer-after-restarts.json",
+        "raw_sha256": "c9b7b8ee8fa4bf4cfbb86081cc635ec75daf5c5c35c83d90b762b6aaa41fe622",
+        "raw_bytes": 8751
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b35-writer-after-stop.json",
+        "raw_sha256": "c9b7b8ee8fa4bf4cfbb86081cc635ec75daf5c5c35c83d90b762b6aaa41fe622",
+        "raw_bytes": 8751
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b35-writer-before.json",
+        "raw_sha256": "c9b7b8ee8fa4bf4cfbb86081cc635ec75daf5c5c35c83d90b762b6aaa41fe622",
+        "raw_bytes": 8751
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b35.stderr",
+        "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "raw_bytes": 0
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b35.txt",
+        "raw_sha256": "d28874854ffb69e705b490c1d83dd0d453aa9cf22666a6b026bf4c2432189a17",
+        "raw_bytes": 112
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b36-compose-exit.txt",
+        "raw_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+        "raw_bytes": 2
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b36-compose.stderr",
+        "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "raw_bytes": 0
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b36-compose.txt",
+        "raw_sha256": "3fbe9868bfc9136c72fb9b622610f2777592c178e2331c877a40b31800ab9a9d",
+        "raw_bytes": 210
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b36-run-exit.txt",
+        "raw_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+        "raw_bytes": 2
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b36-run.stderr",
+        "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "raw_bytes": 0
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b36-run.txt",
+        "raw_sha256": "3fbe9868bfc9136c72fb9b622610f2777592c178e2331c877a40b31800ab9a9d",
+        "raw_bytes": 210
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b37-green-bin-curl",
+        "raw_sha256": "d784e012f98bd1897fd2bc4b107d09d2240f575eb787693dba8bd6c4ade7a6b0",
+        "raw_bytes": 27
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b37-green-bin-docker",
+        "raw_sha256": "1b701887c2d92c76a26041954d62e3ea3cccead88f85f17df645fd1852cff8bf",
+        "raw_bytes": 659
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b37-green-bin-oci",
+        "raw_sha256": "d784e012f98bd1897fd2bc4b107d09d2240f575eb787693dba8bd6c4ade7a6b0",
+        "raw_bytes": 27
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b37-green-bin-poetry",
+        "raw_sha256": "3df78106203d2b938b091da2cded6bdd39b239d7cbfb0fa2baa5fd3413cf381b",
+        "raw_bytes": 142
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b37-green-crash-at.txt",
+        "raw_sha256": "52db36230731189a4226cae0e94d2efe56f21704fbc53705a83183af9b7cc906",
+        "raw_bytes": 21
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b37-green-crashed-driver-exit.txt",
+        "raw_sha256": "e3b9c2844b5a5c2677b3a2279db2ec8487491dd9a23d6b22fac153391b3bb63c",
+        "raw_bytes": 4
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b37-green-exit.txt",
+        "raw_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+        "raw_bytes": 2
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b37-green-fixture-client-stop.txt",
+        "raw_sha256": "fdfbe5564131f230d855f56b6d8a5420c64b7166a28aa156ce147e0c41b4f68f",
+        "raw_bytes": 127
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b37-green-initial-client-group.txt",
+        "raw_sha256": "eeb67d767bfbdb98dbda2dddc8f8d369145fcfe1aa4196101a9aba3b2c613efe",
+        "raw_bytes": 5
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b37-green-initial-client-session.txt",
+        "raw_sha256": "9fa0c7958d1844e0d2388523341f72a101db193c2b2b587bee5381aafd2d2809",
+        "raw_bytes": 5
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b37-green-initial-created-ids.txt",
+        "raw_sha256": "f528297932237697a3a52ad69cc64c56ec7d79e0fc399a395e400ad5c20d7975",
+        "raw_bytes": 65
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b37-green-initial-driver.log",
+        "raw_sha256": "1e5ee7a8cf9d1d2fa958ee710a31e01aafd01f323eec1036300b441f8781cd8f",
+        "raw_bytes": 257
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b37-green-instance-id.txt",
+        "raw_sha256": "83bb90c20ee077aa06628b1e007bcf30b369e07408c98f59f47a7f9b03c54901",
+        "raw_bytes": 93
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b37-green-node-docker-shard.yml",
+        "raw_sha256": "5f123ddd8d1654358fbf86f32dd96cd6f33b5b2f0255fd22334d75edc2d7239c",
+        "raw_bytes": 624
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b37-green-output-.crash-monitor.gj294788-exit-code.txt",
+        "raw_sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+        "raw_bytes": 2
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b37-green-output-.crash-monitor.gj294788-monitor.log",
+        "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "raw_bytes": 0
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b37-green-output-.crash-monitor.gj294788-ready",
+        "raw_sha256": "0b606b99d2450d26168d3208beb4c1d557d472d9ee4e3ae726bc0d1f4c5cbb47",
+        "raw_bytes": 5
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b37-green-output-.docker-owner.7C8jVAmM-docker",
+        "raw_sha256": "badbbe2a76b6aed1aa7ec2fb15b714ebc57e0e7028dead4a059e30a6fc40f95a",
+        "raw_bytes": 1642
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b37-green-output-.docker-owner.8pHCVExs-docker",
+        "raw_sha256": "badbbe2a76b6aed1aa7ec2fb15b714ebc57e0e7028dead4a059e30a6fc40f95a",
+        "raw_bytes": 1642
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b37-green-output-.docker-owner.TzVDC2iY-docker",
+        "raw_sha256": "badbbe2a76b6aed1aa7ec2fb15b714ebc57e0e7028dead4a059e30a6fc40f95a",
+        "raw_bytes": 1642
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b37-green-output-.host-guardian-progress",
+        "raw_sha256": "1d22a0d0218bfe0acbbb63a833d5fe0110af4044fa1695ea379237d1cea3acfe",
+        "raw_bytes": 5
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b37-green-output-.soak-checkpoint-state.json",
+        "raw_sha256": "da7a94ae54b0b2449edb95ef3591b8007cfb442681ba5ed7342788e836bfe379",
+        "raw_bytes": 277
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b37-green-output-.soak-state",
+        "raw_sha256": "54559b1ca663524d055734de48e912b4f1c4cba02c0941d4da0c10baedeee794",
+        "raw_bytes": 132
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b37-green-output-bench-segment-00001-compose-up.log",
+        "raw_sha256": "4be00bda583e1bd21d6eda56ab99463b8d3c8ddbebf89a9f8a404422a16058cb",
+        "raw_bytes": 162
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b37-green-output-bench-segment-00001-segment.log",
+        "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "raw_bytes": 0
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b37-green-output-early-exit.txt",
+        "raw_sha256": "ca0310c6bf1d3f3b60ddf4f517b941cfd863e2a55cb53f7a59c97df275c12e56",
+        "raw_bytes": 96
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b37-green-output-iterations.json",
+        "raw_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+        "raw_bytes": 3
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b37-green-output-summary.json",
+        "raw_sha256": "a7518df9f660bb0cd7ff5630fa25558aebfc0d735f9a4fbd8d190707b8f12a4e",
+        "raw_bytes": 876
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b37-green-output-summary.txt",
+        "raw_sha256": "1b6c357da9bf028d625b3b069d3e87c21a72c6641d5715f87bf46b7ae07eacd2",
+        "raw_bytes": 233
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b37-green-output-writer-stop-failure.txt",
+        "raw_sha256": "e7ee441e13b6846a0e2b58d97037861446a8693cfb0f159cc982458ceae74f47",
+        "raw_bytes": 59
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b37-green-rejected-stop.txt",
+        "raw_sha256": "b90cb73049c4028442336d9a260ee2ece4dbe4336b5e013772362302e6c05e9a",
+        "raw_bytes": 46
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b37-green-restart-1-driver-exit.txt",
+        "raw_sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+        "raw_bytes": 2
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b37-green-restart-1-driver.log",
+        "raw_sha256": "3703447faf409b453aa4fa501ca18155427413c9e14077d0149a8d12a4376afe",
+        "raw_bytes": 569
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b37-green-restart-1-state.txt",
+        "raw_sha256": "54cc0abcb232493fc0226b678cf526099f86b54a54df86f7a0f6d5744b8c0c53",
+        "raw_bytes": 132
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b37-green-restart-1-summary.json",
+        "raw_sha256": "a7518df9f660bb0cd7ff5630fa25558aebfc0d735f9a4fbd8d190707b8f12a4e",
+        "raw_bytes": 876
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b37-green-restart-2-driver-exit.txt",
+        "raw_sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+        "raw_bytes": 2
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b37-green-restart-2-driver.log",
+        "raw_sha256": "7d22eb67bbbc68302065e0b9650dc9093fcf84cdb473b218ea2ee818a691ec87",
+        "raw_bytes": 713
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b37-green-restart-2-state.txt",
+        "raw_sha256": "54559b1ca663524d055734de48e912b4f1c4cba02c0941d4da0c10baedeee794",
+        "raw_bytes": 132
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b37-green-restart-2-summary.json",
+        "raw_sha256": "a7518df9f660bb0cd7ff5630fa25558aebfc0d735f9a4fbd8d190707b8f12a4e",
+        "raw_bytes": 876
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b37-green-source-sha256.txt",
+        "raw_sha256": "185208a465629428d73ecfd90fad8daeb15b1c6d0848821c00042714cb5624f3",
+        "raw_bytes": 506
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b37-green-state-before-crash.txt",
+        "raw_sha256": "9c05e7b3c4ae6b4455fe8a928049958cf3f4d309dc533e8c16d5c5928cb524e8",
+        "raw_bytes": 132
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b37-green-writer-after-crash.json",
+        "raw_sha256": "4c6d980ca94472d61b34000610839d51a857029cca2552e87b08667e1af780ea",
+        "raw_bytes": 8765
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b37-green-writer-after-restarts.json",
+        "raw_sha256": "4c6d980ca94472d61b34000610839d51a857029cca2552e87b08667e1af780ea",
+        "raw_bytes": 8765
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b37-green-writer-before.json",
+        "raw_sha256": "4c6d980ca94472d61b34000610839d51a857029cca2552e87b08667e1af780ea",
+        "raw_bytes": 8765
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b37-green.stderr",
+        "raw_sha256": "bcedefd6258564c004442c2f6d73f39b06eb5e2a081673d96185b7e7ef37e1b5",
+        "raw_bytes": 734
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b37-green.txt",
+        "raw_sha256": "b7eaa55c9d12e33e7c7d20fcb68f17a6ccd162aaf3da409672964a5181d72f2a",
+        "raw_bytes": 121
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b38-bin-curl",
+        "raw_sha256": "d784e012f98bd1897fd2bc4b107d09d2240f575eb787693dba8bd6c4ade7a6b0",
+        "raw_bytes": 27
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b38-bin-docker",
+        "raw_sha256": "c4941028ad10e01eb61c9a539776c66fff08d18718075485462babffc0ce7446",
+        "raw_bytes": 449
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b38-bin-oci",
+        "raw_sha256": "d784e012f98bd1897fd2bc4b107d09d2240f575eb787693dba8bd6c4ade7a6b0",
+        "raw_bytes": 27
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b38-bin-poetry",
+        "raw_sha256": "67cda824dfd51e8879fb1cbb60a6a3d2480a9e1176915f4fb07dcd9b9444438a",
+        "raw_bytes": 117
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b38-client-group.txt",
+        "raw_sha256": "7897af5e7c52ddfa6d91d5bb33cd57a0c39a790f8e2cdd0528f23516bf9deee8",
+        "raw_bytes": 5
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b38-client-session.txt",
+        "raw_sha256": "cac33d737fa994181d964a95005268ae0f8b047b6a99ab1fda84d3745b845b96",
+        "raw_bytes": 5
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b38-crash-at.txt",
+        "raw_sha256": "ad475acdea9a1ee9227f6014105925a06cd695161a479ae8ed3a8f27c059a5c3",
+        "raw_bytes": 21
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b38-crashed-driver-exit.txt",
+        "raw_sha256": "e3b9c2844b5a5c2677b3a2279db2ec8487491dd9a23d6b22fac153391b3bb63c",
+        "raw_bytes": 4
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b38-created-ids.txt",
+        "raw_sha256": "3352bddc24f80560b0eecef7671b76113af96fe98679bf027f7323d4eebc1eaf",
+        "raw_bytes": 65
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b38-driver.log",
+        "raw_sha256": "f759f31bc14c63de4274560849aa4aa046f6e9658a7848fed48c346c97030231",
+        "raw_bytes": 257
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b38-exit.txt",
+        "raw_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+        "raw_bytes": 2
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b38-instance-id.txt",
+        "raw_sha256": "83bb90c20ee077aa06628b1e007bcf30b369e07408c98f59f47a7f9b03c54901",
+        "raw_bytes": 93
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b38-node-docker-shard.yml",
+        "raw_sha256": "7f7800b5bc5b8b141f9be76ca3eacd73f8372d92159d0664c2aaf2043b278c63",
+        "raw_bytes": 625
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b38-observation-clock.txt",
+        "raw_sha256": "c2a2e7412baa5cbf7bafa225740142f30927afd3b763fe58fbaca8659a973c25",
+        "raw_bytes": 29
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b38-output-.crash-monitor.BM07H4pk-exit-code.txt",
+        "raw_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+        "raw_bytes": 2
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b38-output-.crash-monitor.BM07H4pk-monitor.log",
+        "raw_sha256": "3352bddc24f80560b0eecef7671b76113af96fe98679bf027f7323d4eebc1eaf",
+        "raw_bytes": 65
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b38-output-.crash-monitor.BM07H4pk-ready",
+        "raw_sha256": "f8b650810a9f6c396effbba6a2e8108da28aed10a75458a92bb3136b39ead0a0",
+        "raw_bytes": 5
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b38-output-.docker-owner.RVdKdbVZ-docker",
+        "raw_sha256": "badbbe2a76b6aed1aa7ec2fb15b714ebc57e0e7028dead4a059e30a6fc40f95a",
+        "raw_bytes": 1642
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b38-output-.host-guardian-progress",
+        "raw_sha256": "00fe694403169d4d738b0b74732fe2f191b575b2a3744e45967b0f37305465d3",
+        "raw_bytes": 5
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b38-output-.soak-checkpoint-state.json",
+        "raw_sha256": "44ebd67dc67ace7a21bd5b82fba602484c6973202da33047e2956826ee436c04",
+        "raw_bytes": 277
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b38-output-.soak-state",
+        "raw_sha256": "c98e466eccdfca7e7ebc2a7793944000c335c7b43e5d6cedbaf977c394a0815c",
+        "raw_bytes": 132
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b38-output-bench-segment-00001-compose-up.log",
+        "raw_sha256": "4be00bda583e1bd21d6eda56ab99463b8d3c8ddbebf89a9f8a404422a16058cb",
+        "raw_bytes": 162
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b38-output-bench-segment-00001-segment.log",
+        "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "raw_bytes": 0
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b38-owned-after.json",
+        "raw_sha256": "34c90e0f763db51dde3a658175ba0d1befeaf784569014da0320082121d1400d",
+        "raw_bytes": 8596
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b38-owned-after.txt",
+        "raw_sha256": "b78a1987bcbdc0903ba6ba29ee3e1f4e7cc1ca868a60889beb141e26e06cb005",
+        "raw_bytes": 6
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b38-owned-before.json",
+        "raw_sha256": "a95966f21cb4461c8cebaf038b5d4b466fd914534cdef2bf6de8cd9ea24c9727",
+        "raw_bytes": 8749
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b38-owned-before.txt",
+        "raw_sha256": "82c1315e6c757f33c4a77ca58b2a184f5a88614470c05ec77f3d28918db6b8ae",
+        "raw_bytes": 4
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b38-owned-stable.txt",
+        "raw_sha256": "b78a1987bcbdc0903ba6ba29ee3e1f4e7cc1ca868a60889beb141e26e06cb005",
+        "raw_bytes": 6
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b38-source-sha256.txt",
+        "raw_sha256": "185208a465629428d73ecfd90fad8daeb15b1c6d0848821c00042714cb5624f3",
+        "raw_bytes": 506
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b38-state-before-crash.txt",
+        "raw_sha256": "c98e466eccdfca7e7ebc2a7793944000c335c7b43e5d6cedbaf977c394a0815c",
+        "raw_bytes": 132
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b38-unrelated-after.json",
+        "raw_sha256": "8d0a1e8d9291b87fc6ccfb87bc693805be8354b6695520c2832fd1e8be56b8da",
+        "raw_bytes": 7790
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b38-unrelated-after.txt",
+        "raw_sha256": "d28a59f6173184f7ca72607394ee0595bd89786b2df86f7495aa7408c87aa872",
+        "raw_bytes": 14
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b38-unrelated-before.json",
+        "raw_sha256": "8d0a1e8d9291b87fc6ccfb87bc693805be8354b6695520c2832fd1e8be56b8da",
+        "raw_bytes": 7790
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b38-unrelated-before.txt",
+        "raw_sha256": "026d8ad3dfa1f2aa9da7964947ddedd4e83c6fc008206ebf898699dea80f9804",
+        "raw_bytes": 10
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b38-unrelated-id.txt",
+        "raw_sha256": "c4c22160e9d68a89b68f8ffc0782a98afb5fb63c01278b761dd903eb627dd0bd",
+        "raw_bytes": 65
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b38.stderr",
+        "raw_sha256": "d58f399244bd2838d1ff09d8cfba983f290fa8d8f28b2ae06e8afb577a77fd2e",
+        "raw_bytes": 1242
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-b38.txt",
+        "raw_sha256": "aedd388da2c65f5d7cf26e8eacfc5974a09d9d6c38e7e08276c8e60f455f1bde",
+        "raw_bytes": 129
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-batch-exit.txt",
+        "raw_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+        "raw_bytes": 2
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-batch.stderr",
+        "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "raw_bytes": 0
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-batch.txt",
+        "raw_sha256": "17e0fe996aa99b55184a40ec7afd1ad8dbcc7e77f809123ba517b6765b4f6208",
+        "raw_bytes": 364
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-compose-version.txt",
+        "raw_sha256": "e7550973b2ff3e9fa73604ad19f926e406b5e7153c2628a7b9d8f489884c6aac",
+        "raw_bytes": 30
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-containers-after.txt",
+        "raw_sha256": "f95becc007e273e85566e7ed2126c0fec7ebe43307f85564bcb1537f50aa0a98",
+        "raw_bytes": 71
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-disk-after.txt",
+        "raw_sha256": "e826bc30ca788529d00af2515c5a199006e23edd1896f3a504b1f693386eba87",
+        "raw_bytes": 123
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-docker-version.txt",
+        "raw_sha256": "fbcc897ec7055438c5f208fe9b5036747324f97f5da906b1d3a7b63a9ae2bbfc",
+        "raw_bytes": 769
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-finished-at.txt",
+        "raw_sha256": "d1f3d8e540cbcddaad76fa0abae9b8b201066b1c0d8cb69293bd338784462e1c",
+        "raw_bytes": 21
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-inodes-after.txt",
+        "raw_sha256": "d2d94f1ca35e971fb7b2aa26aa6dfa98aec46ad910854c759c66ff193d4fa585",
+        "raw_bytes": 105
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-python-version.txt",
+        "raw_sha256": "f6b75e07f1488db28a89724a522725e3e01af3dc78f6fd365f17eb4059e41056",
+        "raw_bytes": 15
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-started-at.txt",
+        "raw_sha256": "e5f4af2457510a260039609bcdf98acc3573f5cbe638137416ed29c5b4ae8f49",
+        "raw_bytes": 21
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-retrieved-results-uname.txt",
+        "raw_sha256": "39fb0269059c29723afb3e831dec613f2c53306d20860dea7cc9229b05e905c3",
+        "raw_bytes": 160
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-runner-evidence-root.txt",
+        "raw_sha256": "77d1372960754df33ff9d660e69094ce1366155a146b2780b8a51f3cd0ebe52b",
+        "raw_bytes": 29
+      },
+      {
+        "raw_path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/final-real-runner-final-state.txt",
+        "raw_sha256": "95823108f25102c15d88f11839509742d2684a5813846901b96ee527ed3f4e63",
+        "raw_bytes": 11
+      }
+    ]
+  },
+  "historical_manifests_sha256": {
+    "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/manifest.jsonc": "4079c17dbe113294e1a3fe202c4eb952fc5b94c012a13a80c1570060c7e21921"
+  },
+  "claims_discharged": [
+
+  ],
+  "limits": [
+    "The archive retains previously published bytes, not a new execution.",
+    "The original historical manifest remains unchanged.",
+    "Commit 5e1842688 removed 878 other rerun files before this archive was created. This archive does not cover those earlier removals.",
+    "Claim discharge, D2 completion, and acceptance remain pending."
+  ]
+}

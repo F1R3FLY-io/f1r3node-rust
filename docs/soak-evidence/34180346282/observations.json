@@ -1,0 +1,165 @@
+{
+  "authority": "retained-log-observations-only",
+  "lines": [
+    {
+      "path": "workflow-logs/Merge Recovery Soak/3_Checkout CI control files.txt",
+      "line": 96,
+      "text": "2026-09-08T02:33:58.8934787Z be2324661e474bba0cd0f44a8c06864f69f7d0fb"
+    },
+    {
+      "path": "workflow-logs/Merge Recovery Soak/6_Resolve target revision.txt",
+      "line": 15,
+      "text": "2026-09-08T02:34:16.6646259Z   EXPECTED_SHA: 0f5d2b7414786cd27b8a686ca636485c35a5edce"
+    },
+    {
+      "path": "workflow-logs/Merge Recovery Soak/8_Extend issue 24 soak metrics.txt",
+      "line": 1,
+      "text": "﻿2026-09-08T02:34:17.4287035Z ##[group]Run bash node-under-test/scripts/bench/extend-issue24-metrics.sh system-integration/integration-tests/test/infra/metrics.py"
+    },
+    {
+      "path": "workflow-logs/Merge Recovery Soak/9_Build node image.txt",
+      "line": 2014,
+      "text": "2026-09-08T02:38:24.9560606Z #38 exporting manifest sha256:3b10aa41e4adebdf2fc7efe6315f962a8a7d08e87d51c1f53d2d6861aeef0d3e done"
+    },
+    {
+      "path": "workflow-logs/Merge Recovery Soak/9_Build node image.txt",
+      "line": 2017,
+      "text": "2026-09-08T02:38:24.9562244Z #38 exporting manifest list sha256:483727742825364a9a943b780db9c87ffec3f8c8f63e7a4a079108df8b4e5820 done"
+    },
+    {
+      "path": "workflow-logs/Merge Recovery Soak/12_Extract subprocess binary.txt",
+      "line": 1,
+      "text": "﻿2026-09-08T02:38:25.4937874Z ##[group]Run container_id=\"$(docker create \"$DOCKER_IMAGE_NAME:latest\")\""
+    },
+    {
+      "path": "workflow-logs/Merge Recovery Soak/12_Extract subprocess binary.txt",
+      "line": 2,
+      "text": "2026-09-08T02:38:25.4938297Z container_id=\"$(docker create \"$DOCKER_IMAGE_NAME:latest\")\""
+    },
+    {
+      "path": "workflow-logs/Merge Recovery Soak/12_Extract subprocess binary.txt",
+      "line": 3,
+      "text": "2026-09-08T02:38:25.4938561Z docker cp \"$container_id:/opt/docker/bin/node\" /tmp/rnode"
+    },
+    {
+      "path": "workflow-logs/Merge Recovery Soak/18_Soak segment 1.txt",
+      "line": 116,
+      "text": "2026-09-08T05:04:29.5521419Z Soak host protection: node RSS ceiling=45056MB; host free floor=8192MB; disk free floor=4096MB (hygiene band +4096MB)"
+    },
+    {
+      "path": "workflow-logs/Merge Recovery Soak/18_Soak segment 1.txt",
+      "line": 117,
+      "text": "2026-09-08T05:04:29.5684414Z orchestrator host guardian watching MemAvailable floor 8192MB (hard floor 4096MB, warn 12288MB) and disk free floor 4096MB (hard floor 2048MB); pid 470008"
+    },
+    {
+      "path": "workflow-logs/Merge Recovery Soak/18_Soak segment 1.txt",
+      "line": 53077,
+      "text": "2026-09-08T08:04:11.3554311Z host guardian: could not apply oom_score_adj to some workload processes; the runner is not OOM-preferred over them"
+    },
+    {
+      "path": "workflow-logs/Merge Recovery Soak/18_Soak segment 1.txt",
+      "line": 403303,
+      "text": "2026-09-08T12:25:40.1516241Z disk hygiene: 7964MB free -> 14371MB free"
+    },
+    {
+      "path": "workflow-logs/Merge Recovery Soak/18_Soak segment 1.txt",
+      "line": 417249,
+      "text": "2026-09-08T13:12:18.0043015Z dev advanced past 0f5d2b7414786cd27b8a686ca636485c35a5edce; ending soak after iteration 51"
+    },
+    {
+      "path": "workflow-logs/Merge Recovery Soak/18_Soak segment 1.txt",
+      "line": 417261,
+      "text": "2026-09-08T13:12:18.0201332Z early_exit_reason=target_advanced"
+    },
+    {
+      "path": "workflow-logs/Merge Recovery Soak/18_Soak segment 1.txt",
+      "line": 417324,
+      "text": "2026-09-08T13:12:20.4757056Z ci-control/scripts/bench/aggregate-perf-report.sh: line 174: /usr/bin/jq: Argument list too long"
+    },
+    {
+      "path": "workflow-logs/Merge Recovery Soak/19_Soak segment 2.txt",
+      "line": 117,
+      "text": "2026-09-08T13:12:20.9002025Z soak already ended (dev advanced past 0f5d2b7414786cd27b8a686ca636485c35a5edce; ending soak after iteration 51); this segment does no work"
+    },
+    {
+      "path": "workflow-logs/Merge Recovery Soak/19_Soak segment 2.txt",
+      "line": 131,
+      "text": "2026-09-08T13:12:20.9399089Z early_exit_reason=none"
+    },
+    {
+      "path": "workflow-logs/Merge Recovery Soak/23_Soak final segment.txt",
+      "line": 116,
+      "text": "2026-09-08T13:12:26.1612802Z soak already ended (dev advanced past 0f5d2b7414786cd27b8a686ca636485c35a5edce; ending soak after iteration 51); this segment does no work"
+    },
+    {
+      "path": "workflow-logs/Merge Recovery Soak/23_Soak final segment.txt",
+      "line": 130,
+      "text": "2026-09-08T13:12:26.2012444Z early_exit_reason=none"
+    },
+    {
+      "path": "workflow-logs/Merge Recovery Soak/24_Aggregate soak report + verdict.txt",
+      "line": 63,
+      "text": "2026-09-08T13:12:31.4053691Z ci-control/scripts/bench/aggregate-perf-report.sh: line 174: /usr/bin/jq: Argument list too long"
+    },
+    {
+      "path": "workflow-logs/Publish Soak Dashboard/5_Assemble dashboard site.txt",
+      "line": 196,
+      "text": "2026-09-08T13:14:59.8683166Z ##[error]soak artifact has no weekly-summary.json"
+    },
+    {
+      "path": "extracted/iteration-00042-subprocess/pytest.log",
+      "line": 1125,
+      "text": "Submitted 1200 deploys in 300.0s (4.0/sec), 0 errors"
+    },
+    {
+      "path": "extracted/iteration-00042-subprocess/pytest.log",
+      "line": 1126,
+      "text": "Cone at end of sustained submission: tip-LFB lag = 8 blocks (tip #133, LFB #125)"
+    },
+    {
+      "path": "extracted/iteration-00042-subprocess/pytest.log",
+      "line": 1127,
+      "text": "Phase sustained: inclusion p50=6.6s p95=25.4s, finalization p50=26.7s p95=64.9s, LFB #33->#141 (18.8 blk/min), unfinalized=5"
+    },
+    {
+      "path": "extracted/iteration-00042-subprocess/pytest.log",
+      "line": 2760,
+      "text": "All-node LFBs at drain: {'rnode.test.69a161c9.boot': 130, 'rnode.test.69a161c9.validator1': 141, 'rnode.test.69a161c9.validator2': 141, 'rnode.test.69a161c9.validator3': 141, 'rnode.test.69a161c9.validator4': 141, 'rnode.test.69a161c9.readonly': 122} (spread 19 blocks)"
+    },
+    {
+      "path": "extracted/iteration-00042-subprocess/pytest.log",
+      "line": 2766,
+      "text": "E   AssertionError: 5 deploy(s) not finalized within 45s"
+    },
+    {
+      "path": "extracted/early-exit.txt",
+      "line": 1,
+      "text": "dev advanced past 0f5d2b7414786cd27b8a686ca636485c35a5edce; ending soak after iteration 51"
+    },
+    {
+      "path": "extracted/summary.txt",
+      "line": 6,
+      "text": "requested_seconds=70448"
+    },
+    {
+      "path": "extracted/summary.txt",
+      "line": 7,
+      "text": "elapsed_seconds=29277"
+    },
+    {
+      "path": "extracted/summary.txt",
+      "line": 8,
+      "text": "iterations=51"
+    },
+    {
+      "path": "extracted/summary.txt",
+      "line": 9,
+      "text": "failures=1"
+    },
+    {
+      "path": "extracted/summary.txt",
+      "line": 12,
+      "text": "early_exit_reason=none"
+    }
+  ]
+}

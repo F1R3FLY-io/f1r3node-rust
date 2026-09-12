@@ -1,0 +1,18 @@
+Soak host protection: node RSS ceiling=0MB; host free floor=0MB; disk free floor=4096MB (hygiene band +4096MB)
+orchestrator host guardian watching MemAvailable floor 0MB (hard floor 0MB, warn 4096MB) and disk free floor 4096MB (hard floor 2048MB); pid 66
+free disk 6144MB inside hygiene band (floor 4096MB + band 4096MB); reclaiming
+disk hygiene: Docker resources and temporary sessions retained because ownership is unconfirmed
+disk hygiene: 6144MB free -> 3072MB free
+orchestrator disk floor: free disk 3072MB still inside hygiene band (floor 4096MB + band 4096MB) after hygiene; ending soak (fail-closed)
+started_at=1789202581
+segments=1
+finished_at=1789202592
+target_ref=unknown
+target_sha=unknown
+requested_seconds=1200
+elapsed_seconds=11
+iterations=0
+failures=1
+bench_segments=0
+bench_failures=0
+early_exit_reason=host_protection_breach

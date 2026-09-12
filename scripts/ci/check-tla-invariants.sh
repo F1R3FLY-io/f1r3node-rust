@@ -20,11 +20,6 @@
 #   • replay_liveness/MC_ReplayHotLoop.tla / .cfg
 #   • carrier_index/MC_CarrierIndex.tla / .cfg
 #
-# A non-zero exit code from TLC for any post-fix configuration is a CI
-# failure; the pre-fix configurations (e.g. MC_ConcurrentTracker_pre_fix)
-# are *expected* to violate their invariants and are skipped here (they
-# are the formal-side counter-examples, run manually for validation).
-#
 # The exhaustive tier (RUN_EXHAUSTIVE_TLA=1) holds the configs whose state
 # spaces exceed the per-config wall-clock cap: MC_EquivocationDetector and
 # MC_EquivocationDetectorEager_3v hit the 45m cap on every nightly since
@@ -39,6 +34,18 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 TLA_ROOT="$REPO_ROOT/formal/tlaplus"
+SOAK_PR=false
+if (($#)); then
+    if (($# != 1)) || [[ "$1" != --soak-pr ]]; then
+        echo "Usage: scripts/ci/check-tla-invariants.sh [--soak-pr]" >&2
+        exit 2
+    fi
+    SOAK_PR=true
+    if [[ "${RUN_EXHAUSTIVE_TLA:-0}" == 1 ]]; then
+        echo "ERROR: The soak PR tier cannot include exhaustive configurations." >&2
+        exit 2
+    fi
+fi
 
 if [[ ! -d "$TLA_ROOT/slashing" ]]; then
     echo "ERROR: TLA+ slashing directory not found at $TLA_ROOT/slashing" >&2
@@ -58,8 +65,7 @@ else
     for candidate in \
         /usr/share/tla/tla2tools.jar \
         /opt/tlaplus/tla2tools.jar \
-        "$HOME/.tla/tla2tools.jar"
-    do
+        "$HOME/.tla/tla2tools.jar"; do
         if [[ -f "$candidate" ]]; then
             TLC_CMD="java -XX:+UseParallelGC -jar $candidate"
             break
@@ -96,7 +102,24 @@ POST_FIX_CONFIGS=(
     recovery_leader/MC_RecoveryLeader
     replay_liveness/MC_ReplayHotLoop
     carrier_index/MC_CarrierIndex
+    deploy_storage/MC_DeployStorageBound
+    soak_disk/MC_SoakDiskAdmission
+    soak_disk/MC_SoakDiskGuardian
+    soak_disk/MC_SoakStorageBudget
 )
+
+TLC_WORKERS=auto
+if [[ "$SOAK_PR" == true ]]; then
+    POST_FIX_CONFIGS=(
+        replay_liveness/MC_ReplayHotLoop
+        carrier_index/MC_CarrierIndex
+        deploy_storage/MC_DeployStorageBound
+        soak_disk/MC_SoakDiskAdmission
+        soak_disk/MC_SoakDiskGuardian
+        soak_disk/MC_SoakStorageBudget
+    )
+    TLC_WORKERS=2
+fi
 
 if [[ "${RUN_EXHAUSTIVE_TLA:-0}" == "1" ]]; then
     POST_FIX_CONFIGS+=(
@@ -112,20 +135,110 @@ fi
 # invariant violations. Override via TLC_PER_CONFIG_TIMEOUT (GNU timeout
 # duration syntax); the cap is skipped when `timeout` is unavailable.
 TLC_PER_CONFIG_TIMEOUT="${TLC_PER_CONFIG_TIMEOUT:-45m}"
+if [[ "$SOAK_PR" == true ]]; then
+    TLC_PER_CONFIG_TIMEOUT=2m
+fi
 TIMEOUT_CMD=""
 if command -v timeout >/dev/null 2>&1; then
     TIMEOUT_CMD="timeout --signal=TERM --kill-after=60 $TLC_PER_CONFIG_TIMEOUT"
 elif command -v gtimeout >/dev/null 2>&1; then
     TIMEOUT_CMD="gtimeout --signal=TERM --kill-after=60 $TLC_PER_CONFIG_TIMEOUT"
 fi
+if [[ "$SOAK_PR" == true && -z "$TIMEOUT_CMD" ]]; then
+    echo "ERROR: The soak PR tier requires timeout or gtimeout." >&2
+    exit 3
+fi
 
 # Registered entries are hand-maintained above: a malformed entry or a
 # missing config file is a broken registration, not a skippable condition —
 # a silent SKIP here would let a renamed or deleted model quietly leave CI.
+#
+# NEGATIVE_CONTROLS is the single registry of expected-violation configs:
+# <subdir>/<config>:<invariant>. Each must exit 12 with exactly that invariant;
+# scripts/ci/test-check-tla-invariants.sh reads this list rather than copying it.
+NEGATIVE_CONTROLS=(
+    carrier_index/MC_CarrierIndex_dag_first_pre_fix:IndexCompleteForWindow
+    carrier_index/MC_CarrierIndex_read_failure_pre_fix:AbsenceProofSound
+    soak_disk/MC_SoakDiskAdmission_floor_only_pre_fix:AdmissionRequiresBand
+    soak_disk/MC_SoakDiskAdmission_missing_sample_pre_fix:AdmissionRequiresSample
+    soak_disk/MC_SoakDiskAdmission_numeric_prefix_pre_fix:AdmissionRequiresValidSample
+    soak_disk/MC_SoakDiskAdmission_unchecked_guardian_pre_fix:AdmissionRequiresGuardian
+    soak_disk/MC_SoakDiskAdmission_retained_breach_pre_fix:RetainedBreachPreventsBenchmark
+    soak_disk/MC_SoakDiskAdmission_benchmark_band_pre_fix:BenchmarkRequiresBand
+    soak_disk/MC_SoakDiskAdmission_late_guardian_pre_fix:BenchmarkBreachObserved
+    soak_disk/MC_SoakDiskAdmission_unwatched_death_pre_fix:BenchmarkCancellationObserved
+    soak_disk/MC_SoakDiskAdmission_unwatched_breach_pre_fix:BenchmarkCancellationObserved
+    soak_disk/MC_SoakDiskAdmission_unchecked_progress_pre_fix:StaleProgressPreventsAdmission
+    soak_disk/MC_SoakDiskAdmission_unbounded_hygiene_pre_fix:HygieneWithinBudget
+    soak_disk/MC_SoakDiskAdmission_unchecked_range_pre_fix:AdmissionRequiresValidDiskSettings
+    soak_disk/MC_SoakDiskAdmission_age_only_pre_fix:UnownedSessionPreserved
+    soak_disk/MC_SoakDiskAdmission_ignore_errors_pre_fix:CleanupFailurePreventsAdmission
+    soak_disk/MC_SoakDiskAdmission_global_prune_pre_fix:UnownedDockerResourcesPreserved
+    soak_disk/MC_SoakDiskAdmission_unrecorded_pre_fix:CrashRequiresRefusal
+    soak_disk/MC_SoakDiskAdmission_unrecorded_benchmark_pre_fix:BenchmarkCrashRequiresRefusal
+    soak_disk/MC_SoakDiskAdmission_iteration_only_pre_fix:BenchmarkMonitorDeathObserved
+    soak_disk/MC_SoakDiskAdmission_unchecked_monitor_pre_fix:MonitorDeathPreventsAdmission
+    soak_disk/MC_SoakDiskAdmission_unchecked_placement_pre_fix:UnverifiedPlacementPreventsAdmission
+    soak_disk/MC_SoakDiskAdmission_pathname_pre_fix:UntrustedRecordPreventsAdmission
+    soak_disk/MC_SoakDiskAdmission_attribute_first_pre_fix:AttributionRequiresRecord
+    soak_disk/MC_SoakDiskGuardian_unwatched_pre_fix:DeadGuardianRequiresInterrupt
+    soak_disk/MC_SoakDiskGuardian_unavailable_sample_pre_fix:InvalidSampleRequiresInterrupt
+    soak_disk/MC_SoakDiskGuardian_unbounded_probe_pre_fix:ProbeWithinDeadline
+    soak_disk/MC_SoakDiskGuardian_stop_first_pre_fix:StopRequiresRecord
+    soak_disk/MC_SoakDiskGuardian_per_root_deadline_pre_fix:AttributionWithinBudget
+    soak_disk/MC_SoakDiskGuardian_cleared_breach_pre_fix:RetainedBreachStopsRestart
+    soak_disk/MC_SoakDiskGuardian_unbounded_stop_pre_fix:StopWithinBudget
+    soak_disk/MC_SoakDiskGuardian_alive_only_pre_fix:StaleGuardianRequiresInterrupt
+    soak_disk/MC_SoakDiskGuardian_client_only_pre_fix:ExitStopsWriters
+    soak_disk/MC_SoakDiskGuardian_rate_exceeds_floor_pre_fix:NoOverrun
+    soak_disk/MC_SoakDiskGuardian_unconfirmed_stop_pre_fix:NoOverrun
+    soak_disk/MC_SoakDiskGuardian_ignored_pre_fix:FailedStopRetained
+    soak_disk/MC_SoakDiskGuardian_name_only_pre_fix:UnownedWritersPreserved
+    soak_disk/MC_SoakDiskGuardian_host_pattern_only_pre_fix:UnownedHostWritersPreserved
+    soak_disk/MC_SoakDiskGuardian_oom_pattern_only_pre_fix:UnownedPreferencesPreserved
+    soak_disk/MC_SoakDiskGuardian_periodic_name_pre_fix:UnownedContainerPreferencesPreserved
+    soak_disk/MC_SoakDiskGuardian_parent_group_pre_fix:CrashStopsOwnedWriters
+    soak_disk/MC_SoakDiskGuardian_unconditional_pre_fix:HandledExitHasNoExtraStop
+    soak_disk/MC_SoakDiskGuardian_startup_only_pre_fix:DeadMonitorRequiresInterrupt
+    soak_disk/MC_SoakDiskGuardian_drain_first_pre_fix:DrainRequiresOwnedStop
+    soak_disk/MC_SoakDiskGuardian_unmanaged_pre_fix:ControllerLossStopsOwnedWriters
+    soak_disk/MC_SoakDiskGuardian_start_first_pre_fix:UnavailableQueryPreventsRelease
+    soak_disk/MC_SoakDiskGuardian_unbounded_pre_fix:ResponseWithinDeadline
+    soak_disk/MC_SoakDiskGuardian_parent_only_pre_fix:UntrustedControlPreventsRelease
+    soak_disk/MC_SoakStorageBudget_uncapped_blocks_pre_fix:WithinBudget
+    soak_disk/MC_SoakStorageBudget_uncapped_logs_pre_fix:WithinBudget
+    soak_disk/MC_SoakStorageBudget_uncapped_history_pre_fix:WithinBudget
+    deploy_storage/MC_DeployStorageBound_unmetered_pre_fix:RetainedWithinPhlo
+)
+
+# Areas whose expected-violation configurations are all registered. A
+# MC_<Model>_*_pre_fix.cfg beside a registered positive in one of these
+# directories that is absent from NEGATIVE_CONTROLS is a broken registration,
+# not a manual control. Other areas keep manual controls until they opt in
+# (docs/formal-verification.md).
+REGISTERED_CONTROL_AREAS=(carrier_index deploy_storage soak_disk)
+for entry in "${POST_FIX_CONFIGS[@]}"; do
+    area="${entry%%/*}"
+    printf '%s\n' "${REGISTERED_CONTROL_AREAS[@]}" | grep -Fxq "$area" || continue
+    for cfg in "$TLA_ROOT/$entry"_*_pre_fix.cfg; do
+        [[ -f "$cfg" ]] || continue
+        control="$area/$(basename "$cfg" .cfg)"
+        if ! printf '%s\n' "${NEGATIVE_CONTROLS[@]}" | grep -q "^$control:"; then
+            echo "ERROR: $control exists but is not registered in NEGATIVE_CONTROLS" >&2
+            exit 2
+        fi
+    done
+done
+
 failed=0
 timeouts=0
 violations=0
-for entry in "${POST_FIX_CONFIGS[@]}"; do
+for check in "${POST_FIX_CONFIGS[@]}" "${NEGATIVE_CONTROLS[@]}"; do
+    entry="${check%%:*}"
+    expected_invariant=""
+    if [[ "$check" == *:* ]]; then
+        expected_invariant="${check#*:}"
+    fi
     if [[ "$entry" != */* ]]; then
         echo "ERROR: malformed POST_FIX_CONFIGS entry '$entry' (expected <subdir>/<config>)" >&2
         exit 2
@@ -142,18 +255,24 @@ for entry in "${POST_FIX_CONFIGS[@]}"; do
     started_epoch="$(date +%s)"
     echo "CHECK  $entry (started $(date -u +%H:%M:%SZ), cap $TLC_PER_CONFIG_TIMEOUT)"
     set +e
-    (cd "$dir" && $TIMEOUT_CMD $TLC_CMD -workers auto -config "$cfg.cfg" "$cfg.tla") >"$log" 2>&1
+    (cd "$dir" && $TIMEOUT_CMD $TLC_CMD -workers "$TLC_WORKERS" -config "$cfg.cfg" "$cfg.tla") >"$log" 2>&1
     status=$?
     set -e
-    elapsed="$(( $(date +%s) - started_epoch ))s"
-    if (( status == 0 )); then
+    elapsed="$(($(date +%s) - started_epoch))s"
+    if ((status == 0)) && [[ -z "$expected_invariant" ]]; then
         echo "OK     $entry ($elapsed)"
-    elif (( status == 124 )); then
+    elif ((status == 12)) && [[ -n "$expected_invariant" ]] &&
+        grep -Fxq "Error: Invariant $expected_invariant is violated." "$log"; then
+        echo "EXPECTED-FAIL $entry ($expected_invariant, $elapsed)"
+    elif ((status == 124)); then
         echo "TIMEOUT $entry after $elapsed (cap $TLC_PER_CONFIG_TIMEOUT) — treat as failure; profile or split the config"
         failed=$((failed + 1))
         timeouts=$((timeouts + 1))
     else
         echo "FAIL   $entry ($elapsed)"
+        if [[ -n "$expected_invariant" ]]; then
+            echo "Expected invariant $expected_invariant with TLC exit 12, received exit $status."
+        fi
         echo "--- last 40 lines of $log ---"
         tail -40 "$log"
         echo "--- end log ---"
@@ -162,9 +281,10 @@ for entry in "${POST_FIX_CONFIGS[@]}"; do
     fi
 done
 
-if (( failed > 0 )); then
+if ((failed > 0)); then
     echo "FAILED: $failed config(s) did not verify — $timeouts cap timeout(s), $violations violation-or-error(s)."
     exit 1
 fi
 
 echo "All $((${#POST_FIX_CONFIGS[@]})) post-fix TLA+ configurations clean."
+echo "All ${#NEGATIVE_CONTROLS[@]} negative controls violated their expected invariants."

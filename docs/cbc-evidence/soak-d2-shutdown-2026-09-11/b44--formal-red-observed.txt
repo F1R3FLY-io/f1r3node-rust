@@ -1,0 +1,36 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 97 and seed -7619162939333780619 with 2 workers on 20 cores with 491MB heap and 64MB offheap memory (Linux 6.17.0-1032-nvidia aarch64, Private Build 1.8.0_502 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file [EVIDENCE_ROOT]/b44/observed-formal/MC_ControllerLoss_current.tla
+Parsing file [EVIDENCE_ROOT]/b44/observed-formal/ControllerLoss.tla
+Semantic processing of module ControllerLoss
+Semantic processing of module MC_ControllerLoss_current
+Starting... (2026-09-11 12:45:12)
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-09-11 12:45:12.
+Error: Invariant ControllerLossStopsOwnedWriter is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ ownedRunning = TRUE
+/\ unownedRunning = TRUE
+/\ phase = "active"
+/\ driverRunning = TRUE
+/\ monitorRunning = TRUE
+
+State 2: <ControllersCrash line 14, col 5 to line 19, col 49 of module ControllerLoss>
+/\ ownedRunning = TRUE
+/\ unownedRunning = TRUE
+/\ phase = "lost"
+/\ driverRunning = FALSE
+/\ monitorRunning = FALSE
+
+State 3: <Observe line 22, col 5 to line 24, col 80 of module ControllerLoss>
+/\ ownedRunning = TRUE
+/\ unownedRunning = TRUE
+/\ phase = "checked"
+/\ driverRunning = FALSE
+/\ monitorRunning = FALSE
+
+3 states generated, 3 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 3.
+The average outdegree of the complete state graph is 1 (minimum is 1, the maximum 1 and the 95th percentile is 1).
+Finished in 01s at (2026-09-11 12:45:12)

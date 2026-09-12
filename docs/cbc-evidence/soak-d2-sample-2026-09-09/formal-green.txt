@@ -1,0 +1,85 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 122 and seed 6509815141242458119 with 2 workers on 20 cores with 491MB heap and 64MB offheap memory (Linux 6.17.0-1032-nvidia aarch64, Private Build 1.8.0_502 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /home/bf_spark/src/F1r3fly/f1r3node-rust/formal/tlaplus/soak_disk/MC_DiskSampleValidation.tla
+Parsing file /home/bf_spark/src/F1r3fly/f1r3node-rust/formal/tlaplus/soak_disk/DiskSampleValidation.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/TLC.tla
+Parsing file /tmp/Sequences.tla
+Parsing file /tmp/FiniteSets.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module DiskSampleValidation
+Semantic processing of module MC_DiskSampleValidation
+Starting... (2026-09-09 00:34:51)
+Implied-temporal checking--satisfiability problem has 1 branches.
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-09-09 00:34:52.
+Progress(5) at 2026-09-09 00:34:52: 17 states generated, 17 distinct states found, 0 states left on queue.
+Checking temporal properties for the complete state space with 17 total distinct states at (2026-09-09 00:34:52)
+Finished checking temporal properties in 00s at 2026-09-09 00:34:52
+Model checking completed. No error has been found.
+  Estimates of the probability that TLC did not check all reachable states
+  because two distinct states had the same fingerprint:
+  calculated (optimistic):  val = 0.0
+The coverage statistics at 2026-09-09 00:34:52
+<Init line 21, col 1 to line 21, col 4 of module DiskSampleValidation>: 1:1
+  line 22, col 5 to line 26, col 23 of module DiskSampleValidation: 1
+<Probe line 28, col 1 to line 28, col 5 of module DiskSampleValidation>: 4:4
+  line 29, col 8 to line 29, col 22 of module DiskSampleValidation: 23
+  |line 29, col 8 to line 29, col 12 of module DiskSampleValidation: 22
+  line 30, col 8 to line 30, col 26 of module DiskSampleValidation: 4
+  |line 30, col 17 to line 30, col 26 of module DiskSampleValidation: 1
+  line 31, col 8 to line 31, col 24 of module DiskSampleValidation: 4
+  line 32, col 8 to line 32, col 47 of module DiskSampleValidation: 4
+<Decode line 34, col 1 to line 34, col 6 of module DiskSampleValidation>: 4:8
+  line 35, col 8 to line 35, col 23 of module DiskSampleValidation: 30
+  |line 35, col 8 to line 35, col 12 of module DiskSampleValidation: 22
+  line 36, col 8 to line 38, col 72 of module DiskSampleValidation: 8
+  |line 36, col 18 to line 38, col 72 of module DiskSampleValidation: 8
+  ||line 36, col 21 to line 36, col 54 of module DiskSampleValidation: 8
+  ||line 37, col 26 to line 37, col 32 of module DiskSampleValidation: 2
+  ||line 38, col 26 to line 38, col 72 of module DiskSampleValidation: 6
+  line 39, col 8 to line 39, col 24 of module DiskSampleValidation: 8
+  line 40, col 8 to line 40, col 44 of module DiskSampleValidation: 8
+<Decide line 42, col 1 to line 42, col 6 of module DiskSampleValidation>: 4:5
+  line 43, col 8 to line 43, col 23 of module DiskSampleValidation: 27
+  |line 43, col 8 to line 43, col 12 of module DiskSampleValidation: 22
+  line 44, col 8 to line 45, col 46 of module DiskSampleValidation: 5
+  |line 44, col 17 to line 45, col 46 of module DiskSampleValidation: 5
+  ||line 44, col 20 to line 44, col 71 of module DiskSampleValidation: 5
+  |||line 44, col 20 to line 44, col 31 of module DiskSampleValidation: 5
+  |||line 44, col 36 to line 44, col 71 of module DiskSampleValidation: 3
+  line 46, col 8 to line 46, col 52 of module DiskSampleValidation: 5
+<Admit line 48, col 1 to line 48, col 5 of module DiskSampleValidation>: 2:2
+  line 49, col 8 to line 49, col 22 of module DiskSampleValidation: 24
+  |line 49, col 8 to line 49, col 12 of module DiskSampleValidation: 22
+  line 50, col 8 to line 50, col 23 of module DiskSampleValidation: 2
+  line 51, col 8 to line 51, col 25 of module DiskSampleValidation: 2
+  line 52, col 8 to line 52, col 42 of module DiskSampleValidation: 2
+<PublishRefusal line 54, col 1 to line 54, col 14 of module DiskSampleValidation>: 2:2
+  line 55, col 8 to line 55, col 24 of module DiskSampleValidation: 24
+  |line 55, col 8 to line 55, col 12 of module DiskSampleValidation: 22
+  line 56, col 8 to line 56, col 23 of module DiskSampleValidation: 2
+  line 57, col 8 to line 57, col 22 of module DiskSampleValidation: 2
+  line 58, col 8 to line 58, col 42 of module DiskSampleValidation: 2
+<TypeOK line 63, col 1 to line 63, col 6 of module DiskSampleValidation>
+  line 64, col 5 to line 68, col 27 of module DiskSampleValidation: 17
+<AdmissionRequiresValidSample line 70, col 1 to line 70, col 28 of module DiskSampleValidation>
+  line 70, col 33 to line 70, col 58 of module DiskSampleValidation: 17
+  |line 70, col 33 to line 70, col 40 of module DiskSampleValidation: 17
+  |line 70, col 45 to line 70, col 58 of module DiskSampleValidation: 2
+<AdmissionRequiresBand line 71, col 1 to line 71, col 21 of module DiskSampleValidation>
+  line 71, col 26 to line 71, col 89 of module DiskSampleValidation: 17
+  |line 71, col 26 to line 71, col 33 of module DiskSampleValidation: 17
+  |line 71, col 38 to line 71, col 89 of module DiskSampleValidation: 2
+<RefusalRecorded line 72, col 1 to line 72, col 15 of module DiskSampleValidation>
+  line 72, col 20 to line 72, col 58 of module DiskSampleValidation: 17
+  |line 72, col 20 to line 72, col 33 of module DiskSampleValidation: 17
+  |line 72, col 38 to line 72, col 58 of module DiskSampleValidation: 2
+End of statistics.
+17 states generated, 17 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 5.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 4 and the 95th percentile is 4).
+Finished in 02s at (2026-09-09 00:34:52)

@@ -1,0 +1,1 @@
+The composed command completed 59 actual model checks, then reached its 650-second tool limit during classifier regressions. This timeout is not behavioral RED.

@@ -1,0 +1,4 @@
+FAIL: A post-start disk sample was missing (missing-boundary), but the driver admitted 1 iteration(s).
+Evidence: /home/bf_spark/soak-evidence/f1r3node-rust/d2-probe-kTz5sRKN/production-red-final/missing-boundary
+FAIL: A post-start disk sample was missing (missing-after-hygiene), but the driver admitted 1 iteration(s).
+Evidence: /home/bf_spark/soak-evidence/f1r3node-rust/d2-probe-kTz5sRKN/production-red-final/missing-after-hygiene

@@ -248,6 +248,10 @@ env:
   #   the owed re-pin from 2026-09-07. Also carries #139 finalization-
   #   evidence fail-closed test fixes). Verified: descends from 5909b17
   #   (merge-base --is-ancestor).
+  #   The same content reached the soak-disk-hygiene branches as 0fb6337 -> 962effd:
+  #   the runner exit-path post-mortem now tags a df line and bounded du lines
+  #   after weekend runs 33939315110/33978505238/34056342543 died on ENOSPC
+  #   ~20s past the disk guardian stamp.
   SYSTEM_INTEGRATION_REF: 962effd17708192627bd249362761c0ccb1fd5fa
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.

@@ -1,0 +1,13 @@
+{
+  "scope": "six changed executable files",
+  "active_probe": {"files": 6, "clean": 4, "findings": 2, "inconclusive": 0, "auxiliary_findings": 11},
+  "dispositions": [
+    {"file": "scripts/bench/soak-containment.py", "lines": [46, 55, 83], "rule": "unchecked-throwing-call-python", "disposition": "false-positive", "reason": "The immutable duration passes decimal syntax and range checks. The command-line exception handler catches ValueError."},
+    {"file": "scripts/bench/soak-containment.py", "lines": [146], "rule": "unchecked-throwing-call-python", "disposition": "false-positive", "reason": "The command-line handler invokes main within try/except and catches invalid UID conversion before launch."},
+    {"file": "scripts/bench/test-soak-native-containment.py", "lines": [45, 106, 109, 116, 119, 152], "rule": "unchecked-throwing-call-python", "disposition": "false-positive", "reason": "The fixture handler catches setup exceptions and exits 2. These failures cannot become behavioral RED."},
+    {"file": "scripts/bench/test-soak-native-containment.py", "lines": [48], "rule": "no-identity-operator-on-literals", "disposition": "false-positive", "reason": "The identity check requires the False singleton and deliberately rejects integer zero."}
+  ],
+  "source_suppressions": false,
+  "tested_source_changed": false,
+  "limitations": ["This review does not claim that the analyzer reported no findings.", "The native prototype still lacks verified pre-admission placement, creation fencing, and general metadata-failure coverage."]
+}

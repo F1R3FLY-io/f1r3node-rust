@@ -1,0 +1,4 @@
+PASS: Restart preserved the guardian breach and failure count without new work (restart-uncounted).
+Evidence: /home/bf_spark/soak-evidence/f1r3node-rust/d2-emergency-QxFiblTW/b12/production-green/restart-uncounted
+PASS: Restart preserved the guardian breach and failure count without new work (restart-counted).
+Evidence: /home/bf_spark/soak-evidence/f1r3node-rust/d2-emergency-QxFiblTW/b12/production-green/restart-counted

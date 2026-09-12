@@ -1,0 +1,2 @@
+FAIL: The Docker stop command started before the disk breach record existed.
+Evidence: /home/bf_spark/soak-evidence/f1r3node-rust/d2-emergency-QxFiblTW/b8/production-red

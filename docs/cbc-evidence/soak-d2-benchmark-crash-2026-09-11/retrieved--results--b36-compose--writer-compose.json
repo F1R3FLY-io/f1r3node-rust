@@ -1,0 +1,27 @@
+{
+  "services": {
+    "writer": {
+      "image": "busybox@sha256:fc6dddc4c44b1bfe37f41cae8e67d1693828e8f42a91862816d7953e2c9d3f23",
+      "container_name": "rnode.test.d2-owned-63721",
+      "network_mode": "none",
+      "mem_limit": "32m",
+      "cpus": 0.5,
+      "pids_limit": 32,
+      "cap_drop": [
+        "ALL"
+      ],
+      "security_opt": [
+        "no-new-privileges"
+      ],
+      "user": "65534:65534",
+      "labels": {
+        "fixture.owner": "workload"
+      },
+      "command": [
+        "/bin/sh",
+        "-c",
+        "i=0; while [ \"$$i\" -lt 600 ]; do printf \"%s\\n\" \"$$i\" >>/tmp/writes; i=$$((i+1)); sleep 0.1; done"
+      ]
+    }
+  }
+}

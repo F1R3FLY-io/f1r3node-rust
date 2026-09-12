@@ -1,0 +1,25 @@
+PASS: Validated 3265 regular archive members and 0 symlinks.
+Created ci-eph-f1r3node-rust-amd64-d2-20260911-132408-399643.
+PASS: SSH and Docker verification completed.
+{
+  "status": "ready",
+  "observed_at": "2026-09-11T13:25:30Z",
+  "runner_name": "ci-eph-f1r3node-rust-amd64-d2-20260911-132408-399643",
+  "public_ip": "146.235.224.154",
+  "node_revision": "980285d4c5620929566ff783a77fabf90292b8b3",
+  "source_path": "[RUNNER_ROOT]/source",
+  "source_archive_sha256": "a3e425b21d074674fafec28dfdff4adea9e364c68da165832795973a2b8e818e",
+  "verified_regular_files": 3265,
+  "ssh_verified": true,
+  "docker_verified": true,
+  "source_transfer_verified": true,
+  "expires_at": "2026-09-11T15:24:09Z",
+  "expiration_timer_active": true,
+  "termination_observed": false,
+  "github_registered": false,
+  "soak_started": false,
+  "fault_tests_started": false,
+  "d2_complete": false
+}
+PASS: Provisioning, SSH verification, and source transfer completed.
+Evidence directory: [RUNNER_EVIDENCE_ROOT]

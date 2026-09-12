@@ -1,0 +1,2 @@
+PASS: 524 unique regular files, 2221867 bytes, and no unsafe archive members.
+PASS: Every extracted file matches its archived digest.

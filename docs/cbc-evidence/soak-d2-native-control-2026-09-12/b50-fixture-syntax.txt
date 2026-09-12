@@ -1,0 +1,1 @@
+PASS: The control-path fixture parses.

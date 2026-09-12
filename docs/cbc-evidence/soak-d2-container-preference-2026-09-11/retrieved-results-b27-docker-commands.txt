@@ -1,0 +1,7 @@
+ps -aq --filter status=exited --filter name=rnode.
+inspect 0db7ce12ecf1
+network ls -q
+image ls -q
+system df
+system df
+system df

@@ -1,0 +1,300 @@
+{
+  "authority": "selected-verbatim-source-lines",
+  "lines": [
+    {
+      "source": "job-102109798473.txt",
+      "line": 35,
+      "text": "2026-09-08T13:35:49.8881215Z   ref: d50dc533ddac3acf8277c31a4fb75c8232cb99ea"
+    },
+    {
+      "source": "job-102109798473.txt",
+      "line": 96,
+      "text": "2026-09-08T13:35:50.1352701Z [command]/usr/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin d50dc533ddac3acf8277c31a4fb75c8232cb99ea"
+    },
+    {
+      "source": "job-102109798473.txt",
+      "line": 105,
+      "text": "2026-09-08T13:35:50.8565137Z [command]/usr/bin/git checkout --progress --force d50dc533ddac3acf8277c31a4fb75c8232cb99ea"
+    },
+    {
+      "source": "job-102109798473.txt",
+      "line": 123,
+      "text": "2026-09-08T13:35:51.0513646Z HEAD is now at d50dc53 Merge 9310ae2ceda65d1944e1235336fd12df489e4197 into cdf447ac18710d9702a27379bce6c946f421be46"
+    },
+    {
+      "source": "job-102109798473.txt",
+      "line": 126,
+      "text": "2026-09-08T13:35:51.0608372Z d50dc533ddac3acf8277c31a4fb75c8232cb99ea"
+    },
+    {
+      "source": "job-102109798473.txt",
+      "line": 289,
+      "text": "2026-09-08T13:36:25.6011426Z ##[group]Run bash scripts/ci/test-soak-claim-inventory.sh"
+    },
+    {
+      "source": "job-102109798473.txt",
+      "line": 297,
+      "text": "2026-09-08T13:36:25.8084816Z PASS: 4 required claims have current input digests and explicit pending obligations."
+    },
+    {
+      "source": "job-102109798473.txt",
+      "line": 298,
+      "text": "2026-09-08T13:36:25.8086101Z Inventory validity is not formal discharge or soak acceptance."
+    },
+    {
+      "source": "job-102122023044.txt",
+      "line": 35,
+      "text": "2026-09-08T15:21:51.5353076Z   ref: 28444208dd1db4a4928a0a8e20e1f586b9c9c065"
+    },
+    {
+      "source": "job-102122023044.txt",
+      "line": 96,
+      "text": "2026-09-08T15:21:51.7948464Z [command]/usr/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin 28444208dd1db4a4928a0a8e20e1f586b9c9c065"
+    },
+    {
+      "source": "job-102122023044.txt",
+      "line": 105,
+      "text": "2026-09-08T15:21:53.1538459Z [command]/usr/bin/git checkout --progress --force 28444208dd1db4a4928a0a8e20e1f586b9c9c065"
+    },
+    {
+      "source": "job-102122023044.txt",
+      "line": 123,
+      "text": "2026-09-08T15:21:53.3515762Z HEAD is now at 2844420 Merge d6aaba9628536245fc42183d1682539583d6550b into cdf447ac18710d9702a27379bce6c946f421be46"
+    },
+    {
+      "source": "job-102122023044.txt",
+      "line": 126,
+      "text": "2026-09-08T15:21:53.3598173Z 28444208dd1db4a4928a0a8e20e1f586b9c9c065"
+    },
+    {
+      "source": "job-102122023044.txt",
+      "line": 289,
+      "text": "2026-09-08T15:22:27.4984893Z ##[group]Run bash scripts/ci/test-soak-claim-inventory.sh"
+    },
+    {
+      "source": "job-102122023044.txt",
+      "line": 297,
+      "text": "2026-09-08T15:22:27.6247917Z PASS: 4 required claims have current input digests and explicit pending obligations."
+    },
+    {
+      "source": "job-102122023044.txt",
+      "line": 298,
+      "text": "2026-09-08T15:22:27.6248855Z Inventory validity is not formal discharge or soak acceptance."
+    },
+    {
+      "source": "job-102121946596.txt",
+      "line": 120,
+      "text": "2026-09-08T15:21:40.6053907Z HEAD is now at 2844420 Merge d6aaba9628536245fc42183d1682539583d6550b into cdf447ac18710d9702a27379bce6c946f421be46"
+    },
+    {
+      "source": "job-102121946596.txt",
+      "line": 123,
+      "text": "2026-09-08T15:21:40.6132579Z 28444208dd1db4a4928a0a8e20e1f586b9c9c065"
+    },
+    {
+      "source": "job-102121946596.txt",
+      "line": 425,
+      "text": "2026-09-08T15:22:30.7835190Z /home/runner/.tla/tla2tools.jar: OK"
+    },
+    {
+      "source": "job-102121946596.txt",
+      "line": 443,
+      "text": "2026-09-08T15:22:30.8084969Z CHECK  replay_liveness/MC_ReplayHotLoop (started 15:22:30Z, cap 2m)"
+    },
+    {
+      "source": "job-102121946596.txt",
+      "line": 444,
+      "text": "2026-09-08T15:22:32.9642321Z OK     replay_liveness/MC_ReplayHotLoop (2s)"
+    },
+    {
+      "source": "job-102121946596.txt",
+      "line": 445,
+      "text": "2026-09-08T15:22:32.9667028Z CHECK  carrier_index/MC_CarrierIndex (started 15:22:32Z, cap 2m)"
+    },
+    {
+      "source": "job-102121946596.txt",
+      "line": 446,
+      "text": "2026-09-08T15:22:33.9530072Z OK     carrier_index/MC_CarrierIndex (1s)"
+    },
+    {
+      "source": "job-102121946596.txt",
+      "line": 447,
+      "text": "2026-09-08T15:22:33.9555853Z CHECK  carrier_index/MC_CarrierIndex_dag_first_pre_fix (started 15:22:33Z, cap 2m)"
+    },
+    {
+      "source": "job-102121946596.txt",
+      "line": 448,
+      "text": "2026-09-08T15:22:34.8116835Z EXPECTED-FAIL carrier_index/MC_CarrierIndex_dag_first_pre_fix (IndexCompleteForWindow, 1s)"
+    },
+    {
+      "source": "job-102121946596.txt",
+      "line": 449,
+      "text": "2026-09-08T15:22:34.8142643Z CHECK  carrier_index/MC_CarrierIndex_read_failure_pre_fix (started 15:22:34Z, cap 2m)"
+    },
+    {
+      "source": "job-102121946596.txt",
+      "line": 450,
+      "text": "2026-09-08T15:22:35.6902361Z EXPECTED-FAIL carrier_index/MC_CarrierIndex_read_failure_pre_fix (AbsenceProofSound, 1s)"
+    },
+    {
+      "source": "job-102121946596.txt",
+      "line": 451,
+      "text": "2026-09-08T15:22:35.6903004Z All 2 post-fix TLA+ configurations clean."
+    },
+    {
+      "source": "job-102121946596.txt",
+      "line": 452,
+      "text": "2026-09-08T15:22:35.6903456Z All 2 negative controls violated their expected invariants."
+    },
+    {
+      "source": "job-102121946596.txt",
+      "line": 475,
+      "text": "2026-09-08T15:22:36.6398652Z SHA256 digest of uploaded artifact zip is 67c33849b3cd439fb5e6ded2fd8294b29413086562b66d52d19b9045298252e0"
+    },
+    {
+      "source": "job-102123184076.txt",
+      "line": 562,
+      "text": "2026-09-08T15:25:50.4373398Z         \"code\": \"LimitExceeded\","
+    },
+    {
+      "source": "job-102123184076.txt",
+      "line": 564,
+      "text": "2026-09-08T15:25:50.4378275Z         \"message\": \"You have reached your daily resource creation limit. You can request a service limit increase from the Console's Limits, Quotas and Usage page or from the Help menu.\","
+    },
+    {
+      "source": "job-102123184076.txt",
+      "line": 566,
+      "text": "2026-09-08T15:25:50.4380678Z         \"operation_name\": \"launch_instance\","
+    },
+    {
+      "source": "job-102123184076.txt",
+      "line": 568,
+      "text": "2026-09-08T15:25:50.4382339Z         \"status\": 400,"
+    },
+    {
+      "source": "job-102123184076.txt",
+      "line": 578,
+      "text": "2026-09-08T15:25:50.7024778Z         \"code\": \"LimitExceeded\","
+    },
+    {
+      "source": "job-102123184076.txt",
+      "line": 580,
+      "text": "2026-09-08T15:25:50.7028314Z         \"message\": \"You have reached your daily resource creation limit. You can request a service limit increase from the Console's Limits, Quotas and Usage page or from the Help menu.\","
+    },
+    {
+      "source": "job-102123184076.txt",
+      "line": 582,
+      "text": "2026-09-08T15:25:50.7065615Z         \"operation_name\": \"launch_instance\","
+    },
+    {
+      "source": "job-102123184076.txt",
+      "line": 584,
+      "text": "2026-09-08T15:25:50.7068226Z         \"status\": 400,"
+    },
+    {
+      "source": "job-102123184076.txt",
+      "line": 594,
+      "text": "2026-09-08T15:25:50.7220272Z         \"code\": \"LimitExceeded\","
+    },
+    {
+      "source": "job-102123184076.txt",
+      "line": 596,
+      "text": "2026-09-08T15:25:50.7224529Z         \"message\": \"You have reached your daily resource creation limit. You can request a service limit increase from the Console's Limits, Quotas and Usage page or from the Help menu.\","
+    },
+    {
+      "source": "job-102123184076.txt",
+      "line": 598,
+      "text": "2026-09-08T15:25:50.7228183Z         \"operation_name\": \"launch_instance\","
+    },
+    {
+      "source": "job-102123184076.txt",
+      "line": 600,
+      "text": "2026-09-08T15:25:50.7249179Z         \"status\": 400,"
+    },
+    {
+      "source": "job-102123184076.txt",
+      "line": 610,
+      "text": "2026-09-08T15:25:50.7659926Z         \"code\": \"LimitExceeded\","
+    },
+    {
+      "source": "job-102123184076.txt",
+      "line": 612,
+      "text": "2026-09-08T15:25:50.7664071Z         \"message\": \"You have reached your daily resource creation limit. You can request a service limit increase from the Console's Limits, Quotas and Usage page or from the Help menu.\","
+    },
+    {
+      "source": "job-102123184076.txt",
+      "line": 614,
+      "text": "2026-09-08T15:25:50.7668568Z         \"operation_name\": \"launch_instance\","
+    },
+    {
+      "source": "job-102123184076.txt",
+      "line": 616,
+      "text": "2026-09-08T15:25:50.7672227Z         \"status\": 400,"
+    },
+    {
+      "source": "job-102123184076.txt",
+      "line": 626,
+      "text": "2026-09-08T15:25:50.8641146Z         \"code\": \"LimitExceeded\","
+    },
+    {
+      "source": "job-102123184076.txt",
+      "line": 628,
+      "text": "2026-09-08T15:25:50.8644081Z         \"message\": \"You have reached your daily resource creation limit. You can request a service limit increase from the Console's Limits, Quotas and Usage page or from the Help menu.\","
+    },
+    {
+      "source": "job-102123184076.txt",
+      "line": 630,
+      "text": "2026-09-08T15:25:50.8646594Z         \"operation_name\": \"launch_instance\","
+    },
+    {
+      "source": "job-102123184076.txt",
+      "line": 632,
+      "text": "2026-09-08T15:25:50.8648194Z         \"status\": 400,"
+    },
+    {
+      "source": "job-102123184076.txt",
+      "line": 654,
+      "text": "2026-09-08T15:25:50.8891832Z         \"code\": \"LimitExceeded\","
+    },
+    {
+      "source": "job-102123184076.txt",
+      "line": 656,
+      "text": "2026-09-08T15:25:50.8895200Z         \"message\": \"You have reached your daily resource creation limit. You can request a service limit increase from the Console's Limits, Quotas and Usage page or from the Help menu.\","
+    },
+    {
+      "source": "job-102123184076.txt",
+      "line": 658,
+      "text": "2026-09-08T15:25:50.8897659Z         \"operation_name\": \"launch_instance\","
+    },
+    {
+      "source": "job-102123184076.txt",
+      "line": 660,
+      "text": "2026-09-08T15:25:50.8899262Z         \"status\": 400,"
+    },
+    {
+      "source": "job-102123184076.txt",
+      "line": 674,
+      "text": "2026-09-08T15:25:50.8938442Z ##[error]Process completed with exit code 1."
+    },
+    {
+      "source": "job-102127145754.txt",
+      "line": 54,
+      "text": "2026-09-08T15:35:42.9394110Z Expected 4 amd64 integration test slots (docker, subprocess, plus the two ucc legs), but found 0:"
+    },
+    {
+      "source": "job-102127145754.txt",
+      "line": 56,
+      "text": "2026-09-08T15:35:42.9407237Z ##[error]Process completed with exit code 1."
+    },
+    {
+      "source": "job-102127145707.txt",
+      "line": 54,
+      "text": "2026-09-08T15:35:42.8865396Z Expected 2 arm64 integration test slots, but found 0:"
+    },
+    {
+      "source": "job-102127145707.txt",
+      "line": 56,
+      "text": "2026-09-08T15:35:42.8881500Z ##[error]Process completed with exit code 1."
+    }
+  ]
+}

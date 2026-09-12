@@ -1,0 +1,2 @@
+PASS: 4 required claims have current input digests and explicit pending obligations.
+Inventory validity is not formal discharge or soak acceptance.

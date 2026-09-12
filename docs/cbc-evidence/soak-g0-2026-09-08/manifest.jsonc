@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "claim_id": "CLAIM-SOAK-GATE-001",
+  "claim_status": "pending",
+  "cycle": "G0/B1",
+  "recorded_at": "2026-09-08T12:00:11Z",
+  "base_commit": "599513d4af1382e87787c2b2c746d0c887d3b738",
+  "candidate_identity": "working-tree-content-digests",
+  "source_sha256": {
+    "scripts/ci/check-tla-invariants.sh": "1f6e0e4c9bd2bcf886f22801651022d6051bfd9a1d6cd8a4a9a1c55cb7a9a3a1",
+    "scripts/ci/test-check-tla-invariants.sh": "31291fc837b98385f5c7d3497ee20bb152b3d62e4b6e889ba94a4e74c8f1c46b",
+    ".github/workflows/ci.yml": "1d95031c65a0ee11789f0fa4f82b43dff6280fb55259e80880effb6280218b68",
+    "formal/tlaplus/carrier_index/CarrierIndex.tla": "5aae4327a4aca056d571d56d778dfe82684165fb4faa7123f480b8afd4d67575",
+    "formal/tlaplus/carrier_index/MC_CarrierIndex.cfg": "4c5dc2805bb8ca65e1e4ff2fa9059efb30aef0b9caf71d7317d837d9c4249cd2",
+    "formal/tlaplus/carrier_index/MC_CarrierIndex.tla": "2018d282687b9489c801c5f279be34fe680e896fb2a60b0c42936fa2f47db0cb",
+    "formal/tlaplus/carrier_index/MC_CarrierIndex_dag_first_pre_fix.cfg": "ca704ce77b04c0aba4b0d6e3879ccc785b826dc166446b4ad634d6b0c480d9e1",
+    "formal/tlaplus/carrier_index/MC_CarrierIndex_dag_first_pre_fix.tla": "186e6f96007d49f027d12c5a21e1e0c3c9e07f8fa1a948a05665b03842cc0f08",
+    "formal/tlaplus/carrier_index/MC_CarrierIndex_read_failure_pre_fix.cfg": "2957030a60ce09a49d49ff2251cd100170e01e727c944d51aaab08e130b10dee",
+    "formal/tlaplus/carrier_index/MC_CarrierIndex_read_failure_pre_fix.tla": "9316c773d6b2a7a6842382662fe737be9a25398b3fe559e89ebabc3221443a55"
+  },
+  "production_red": {
+    "source_commit": "599513d4af1382e87787c2b2c746d0c887d3b738",
+    "script_sha256": "ff2ca9e5e6b045db231e374cb43dbec2896e3bdea64e43b321ad73945974eeb9",
+    "command": "bash scripts/ci/test-check-tla-invariants.sh",
+    "exit_code": 1,
+    "log": "gate-red.log",
+    "reason": "The gate accepted a clean carrier negative control."
+  },
+  "production_green": {
+    "command": "bash scripts/ci/test-check-tla-invariants.sh",
+    "exit_code": 0,
+    "verifier_process": "fixture",
+    "cases": 14,
+    "log": "gate-green.log"
+  },
+  "formal_baseline": {
+    "tool": "TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)",
+    "release": "v1.7.4",
+    "jar_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+    "workers": 1,
+    "per_config_timeout_seconds": 60,
+    "command": "timeout --signal=TERM --kill-after=5 60s java -XX:+UseParallelGC -jar \"$TLA_TOOLS_JAR\" -workers 1 -config \"$cfg.cfg\" \"$cfg.tla\"",
+    "results": [
+      {
+        "exit_code": 0,
+        "distinct_states": 222,
+        "expected_invariant": null,
+        "configuration": "formal/tlaplus/carrier_index/MC_CarrierIndex.cfg",
+        "log": "MC_CarrierIndex.log"
+      },
+      {
+        "exit_code": 12,
+        "expected_invariant": "IndexCompleteForWindow",
+        "configuration": "formal/tlaplus/carrier_index/MC_CarrierIndex_dag_first_pre_fix.cfg",
+        "log": "MC_CarrierIndex_dag_first_pre_fix.log"
+      },
+      {
+        "exit_code": 12,
+        "expected_invariant": "AbsenceProofSound",
+        "configuration": "formal/tlaplus/carrier_index/MC_CarrierIndex_read_failure_pre_fix.cfg",
+        "log": "MC_CarrierIndex_read_failure_pre_fix.log"
+      }
+    ]
+  },
+  "log_sha256": {
+    "MC_CarrierIndex.log": "188cfd3165715b5ed67993fe370bbaae41867bd247ed94311d23745b8363e0c3",
+    "MC_CarrierIndex_dag_first_pre_fix.log": "1f1e86b20b24ad71d4e58d5184abe0269819074f7a38f7d881dcff5470379bb8",
+    "MC_CarrierIndex_read_failure_pre_fix.log": "006a3853c2857fc0505f6e76fb990a01507263145df85edd8d9efda99c79091b",
+    "gate-green.log": "7c164485b09885d34fb6fa5cad90ff4c6bab602d8e04d2fc701fb2d620ea16ac",
+    "gate-red.log": "79fefd2ce87b9d9e882168821cf102762307a5a9760ffccfe67548ac6a847098",
+    "release-workflows.log": "a55ff24e1452a38de29ad829c85bbb561ac396d848ec6526a97b394f6e16a82f",
+    "workflow-security.log": "58aaa9d3aa8ec252a7e93ba60dea09172058b7c4e30e5a36e54a8b57657424ab"
+  },
+  "open_obligations": [
+    "The shell gate has no formal discharge.",
+    "Actual bounded TLC execution on pull requests remains open.",
+    "The complete claim and candidate inventory remains open.",
+    "The 17-configuration suite and Rocq suite were not rerun with real verifiers in this cycle.",
+    "No residual finalization or disk repair claim is discharged by carrier baseline evidence."
+  ],
+  "revalidation": {
+    "recorded_at": "2026-09-08T12:21:20Z",
+    "reason": "The gate script changed formatting after the initial GREEN run.",
+    "previous_script_sha256": "0583d018a60d23c7b399925cac51f2e7674c0c45145496fd24eff2181f1904df",
+    "command": "bash scripts/ci/test-check-tla-invariants.sh",
+    "exit_code": 0,
+    "workflow_security_exit_code": 0,
+    "release_workflows_exit_code": 0
+  },
+  "claim": {
+    "path": "docs/claims/soak-formal-gate.md",
+    "sha256": "5158f8258ebcc3de62679c044be187d9bc3fd622b09187766262d684467436ca"
+  }
+}

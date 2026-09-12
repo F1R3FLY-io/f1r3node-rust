@@ -1,0 +1,2 @@
+FAIL: Guardian death during the benchmark probe allowed benchmark admission (benchmark-guardian-boundary).
+Evidence: [EVIDENCE_ROOT]/d2-benchmark-cancel-cEJkF60i/b19/production-red-boundary

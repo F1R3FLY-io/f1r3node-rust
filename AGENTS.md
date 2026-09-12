@@ -3,6 +3,7 @@
 AI assistant guidance for F1R3node Rust — Pure Rust Blockchain Node. This file follows the Agentic AI Foundation (Linux Foundation) standard for AI coding assistants.
 
 ## Project Context
+
 - Pure Rust implementation of the F1R3FLY.io blockchain platform
 - Extracted from the `rust/dev` branch of [f1r3fly](https://github.com/F1R3FLY-io/f1r3fly) as a standalone Rust workspace
 - **No Nix, no SBT, no Scala** — this repo builds with standard Rust tooling (cargo + system deps)
@@ -11,7 +12,7 @@ AI assistant guidance for F1R3node Rust — Pure Rust Blockchain Node. This file
 
 ## Code Style and Standards
 
-- **No comments** unless explicitly requested by user
+- Do not add source code comments unless the user explicitly requests them.
 - Zero-cost abstractions, proper ownership
 - Async/await with Tokio runtime
 - Error handling: `eyre` for application errors, `thiserror` for library errors
@@ -19,6 +20,7 @@ AI assistant guidance for F1R3node Rust — Pure Rust Blockchain Node. This file
 - Serialization: `prost` for protobuf, `serde` for JSON/bincode
 
 Three crates have `build.rs` for protobuf code generation:
+
 - `node/build.rs` — `repl.proto`, `lsp.proto`
 - `models/build.rs` — `RhoTypes.proto`, `CasperMessage.proto`, `DeployServiceV1.proto`, etc.
 - `comm/build.rs` — `kademlia.proto`
@@ -26,6 +28,22 @@ Three crates have `build.rs` for protobuf code generation:
 - `.cargo/config.toml` — stack size (8MB for rholang recursion), native CPU features
 - `rust-toolchain.toml` — nightly channel pin
 - `Cross.toml` — cross-compilation for amd64/arm64
+
+## Configuration and Metadata Files
+
+Prefer JSON with Comments (JSONC), with the `.jsonc` extension, for human-edited configuration and metadata files, including claim inventories.
+
+Allow explanatory comments in these files. The source code comment restriction does not apply to JSONC configuration or metadata files.
+
+- Check for existing format variants before creating a file.
+- Edit the existing supported variant instead of creating duplicate files.
+- Update repository-owned readers, references, validators, and tests when migrating to `.jsonc`.
+- Use a JSONC-aware parser, not regular expressions that remove comments.
+- Test comment support and rejection of malformed input.
+- Preserve strict `.json` filenames and syntax when an external tool, protocol, or data format requires them.
+- Preserve immutable historical evidence and machine-generated JSON artifacts.
+
+Follow the complete [configuration file conventions](CLAUDE.md#configuration-file-conventions).
 
 <!-- ste-policy: required -->
 
@@ -147,6 +165,7 @@ A checker cannot establish full ASD-STE100 conformance. Do not claim that text i
 - Do not delegate work to subagents on your own initiative. Perform tasks directly by default
 
 ## Security
+
 - Never log or expose private keys
 - Validate all user inputs and state transitions
 - TLS 1.3 for P2P communications

@@ -1,0 +1,2 @@
+PASS: The disk breach record exists before Docker starts the stop command. Termination remains unconfirmed.
+Evidence: /home/bf_spark/soak-evidence/f1r3node-rust/d2-emergency-QxFiblTW/b8/production-green

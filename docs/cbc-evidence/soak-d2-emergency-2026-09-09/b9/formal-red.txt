@@ -1,0 +1,68 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 2 and seed 4177028830622366437 with 2 workers on 20 cores with 491MB heap and 64MB offheap memory (Linux 6.17.0-1032-nvidia aarch64, Private Build 1.8.0_502 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /home/bf_spark/src/F1r3fly/f1r3node-rust/formal/tlaplus/soak_disk/MC_GuardianSupervision_unwatched_pre_fix.tla
+Parsing file /home/bf_spark/src/F1r3fly/f1r3node-rust/formal/tlaplus/soak_disk/GuardianSupervision.tla
+Parsing file /tmp/TLC.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/Sequences.tla
+Parsing file /tmp/FiniteSets.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module GuardianSupervision
+Semantic processing of module MC_GuardianSupervision_unwatched_pre_fix
+Starting... (2026-09-09 04:07:10)
+Implied-temporal checking--satisfiability problem has 1 branches.
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-09-09 04:07:11.
+Error: Invariant DeadGuardianRequiresInterrupt is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ interruptRequested = FALSE
+/\ alive = TRUE
+/\ phase = "running"
+/\ breachRecorded = FALSE
+
+State 2: <Crash line 15, col 5 to line 17, col 62 of module GuardianSupervision>
+/\ interruptRequested = FALSE
+/\ alive = FALSE
+/\ phase = "running"
+/\ breachRecorded = FALSE
+
+State 3: <Poll line 20, col 5 to line 24, col 22 of module GuardianSupervision>
+/\ interruptRequested = FALSE
+/\ alive = FALSE
+/\ phase = "decided"
+/\ breachRecorded = FALSE
+
+The coverage statistics at 2026-09-09 04:07:11
+<Init line 8, col 1 to line 8, col 4 of module GuardianSupervision>: 2:2
+  line 9, col 5 to line 12, col 29 of module GuardianSupervision: 2
+<Crash line 14, col 1 to line 14, col 5 of module GuardianSupervision>: 1:4
+  line 15, col 8 to line 15, col 24 of module GuardianSupervision: 9
+  |line 15, col 8 to line 15, col 12 of module GuardianSupervision: 5
+  line 16, col 8 to line 16, col 21 of module GuardianSupervision: 4
+  line 17, col 8 to line 17, col 62 of module GuardianSupervision: 4
+<Poll line 19, col 1 to line 19, col 4 of module GuardianSupervision>: 2:3
+  line 20, col 8 to line 20, col 24 of module GuardianSupervision: 6
+  |line 20, col 8 to line 20, col 12 of module GuardianSupervision: 4
+  line 21, col 8 to line 21, col 52 of module GuardianSupervision: 2
+  |line 21, col 31 to line 21, col 51 of module GuardianSupervision: 3
+  line 22, col 8 to line 22, col 44 of module GuardianSupervision: 2
+  |line 22, col 26 to line 22, col 44 of module GuardianSupervision: 3
+  line 23, col 8 to line 23, col 25 of module GuardianSupervision: 2
+  line 24, col 8 to line 24, col 22 of module GuardianSupervision: 2
+<TypeOK line 29, col 1 to line 29, col 6 of module GuardianSupervision>
+  line 30, col 5 to line 33, col 33 of module GuardianSupervision: 4
+<DeadGuardianRequiresInterrupt line 35, col 1 to line 35, col 29 of module GuardianSupervision>
+  line 36, col 5 to line 36, col 75 of module GuardianSupervision: 4
+  |line 36, col 6 to line 36, col 32 of module GuardianSupervision: 4
+  ||line 36, col 6 to line 36, col 22 of module GuardianSupervision: 4
+  ||line 36, col 27 to line 36, col 32 of module GuardianSupervision: 2
+  |line 36, col 39 to line 36, col 74 of module GuardianSupervision: 1
+End of statistics.
+5 states generated, 4 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 3.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 2 and the 95th percentile is 2).
+Finished in 02s at (2026-09-09 04:07:11)

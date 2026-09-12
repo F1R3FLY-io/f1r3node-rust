@@ -1,0 +1,2039 @@
+{
+  "schema_version": 1,
+  "role": "hosted-baseline-and-enforcement-observation",
+  "observed_at_start": "2026-09-08T15:37:28Z",
+  "observed_at_end": "2026-09-08T15:41:57Z",
+  "candidate_head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+  "pr": {
+    "number": 399,
+    "state": "open",
+    "merged": false,
+    "mergeable_state": "blocked",
+    "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/pull/399",
+    "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+    "base_ref": "dev"
+  },
+  "runs": [
+    {
+      "id": 34232911628,
+      "run_attempt": 2,
+      "head_sha": "9310ae2ceda65d1944e1235336fd12df489e4197",
+      "head_branch": "fix/soak-disk-hygiene-stop",
+      "event": "pull_request",
+      "path": ".github/workflows/ci.yml",
+      "status": "completed",
+      "conclusion": "failure",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34232911628"
+    },
+    {
+      "id": 34244230926,
+      "run_attempt": 1,
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "head_branch": "fix/soak-disk-hygiene-stop",
+      "event": "pull_request",
+      "path": ".github/workflows/slashing-tests.yml",
+      "status": "completed",
+      "conclusion": "success",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244230926"
+    },
+    {
+      "id": 34244231314,
+      "run_attempt": 1,
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "head_branch": "fix/soak-disk-hygiene-stop",
+      "event": "pull_request",
+      "path": ".github/workflows/ci.yml",
+      "status": "in_progress",
+      "conclusion": null,
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244231314"
+    }
+  ],
+  "jobs": [
+    {
+      "id": 102109798473,
+      "run_id": 34232911628,
+      "run_attempt": 2,
+      "name": "Lint",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-08T13:35:47Z",
+      "completed_at": "2026-09-08T13:39:10Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34232911628/job/102109798473",
+      "steps": [
+        {
+          "number": 1,
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T13:35:48Z",
+          "completed_at": "2026-09-08T13:35:49Z"
+        },
+        {
+          "number": 2,
+          "name": "Checkout",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T13:35:49Z",
+          "completed_at": "2026-09-08T13:35:51Z"
+        },
+        {
+          "number": 3,
+          "name": "Verify workflow security invariants",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T13:35:51Z",
+          "completed_at": "2026-09-08T13:35:54Z"
+        },
+        {
+          "number": 4,
+          "name": "Verify pre-push hook",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T13:35:54Z",
+          "completed_at": "2026-09-08T13:35:54Z"
+        },
+        {
+          "number": 5,
+          "name": "Verify stack CI gate",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T13:35:54Z",
+          "completed_at": "2026-09-08T13:35:55Z"
+        },
+        {
+          "number": 6,
+          "name": "Verify soak schedule routing",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T13:35:55Z",
+          "completed_at": "2026-09-08T13:35:56Z"
+        },
+        {
+          "number": 7,
+          "name": "Verify system-integration node capability contract",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T13:35:56Z",
+          "completed_at": "2026-09-08T13:35:56Z"
+        },
+        {
+          "number": 8,
+          "name": "Verify system-integration repin helper",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T13:35:56Z",
+          "completed_at": "2026-09-08T13:35:56Z"
+        },
+        {
+          "number": 9,
+          "name": "Verify release evidence",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T13:35:56Z",
+          "completed_at": "2026-09-08T13:35:57Z"
+        },
+        {
+          "number": 10,
+          "name": "Verify release gates",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T13:35:57Z",
+          "completed_at": "2026-09-08T13:36:12Z"
+        },
+        {
+          "number": 11,
+          "name": "Verify release promotion",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T13:36:12Z",
+          "completed_at": "2026-09-08T13:36:15Z"
+        },
+        {
+          "number": 12,
+          "name": "Verify release gate evidence",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T13:36:15Z",
+          "completed_at": "2026-09-08T13:36:17Z"
+        },
+        {
+          "number": 13,
+          "name": "Verify deployment train validator",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T13:36:17Z",
+          "completed_at": "2026-09-08T13:36:22Z"
+        },
+        {
+          "number": 14,
+          "name": "Verify deployment train manifests",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T13:36:22Z",
+          "completed_at": "2026-09-08T13:36:22Z"
+        },
+        {
+          "number": 15,
+          "name": "Verify release workflows",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T13:36:22Z",
+          "completed_at": "2026-09-08T13:36:22Z"
+        },
+        {
+          "number": 16,
+          "name": "Verify TLA+ negative-control classification",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T13:36:22Z",
+          "completed_at": "2026-09-08T13:36:24Z"
+        },
+        {
+          "number": 17,
+          "name": "Verify bounded PR formal gate",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T13:36:24Z",
+          "completed_at": "2026-09-08T13:36:25Z"
+        },
+        {
+          "number": 18,
+          "name": "Verify soak claim inventory",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T13:36:25Z",
+          "completed_at": "2026-09-08T13:36:25Z"
+        },
+        {
+          "number": 19,
+          "name": "Verify coverage summary aggregation",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T13:36:25Z",
+          "completed_at": "2026-09-08T13:36:26Z"
+        },
+        {
+          "number": 20,
+          "name": "Verify soak summary aggregation",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T13:36:26Z",
+          "completed_at": "2026-09-08T13:36:26Z"
+        },
+        {
+          "number": 21,
+          "name": "Verify soak verdicts",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T13:36:26Z",
+          "completed_at": "2026-09-08T13:36:26Z"
+        },
+        {
+          "number": 22,
+          "name": "Verify latency benchmark readiness and finalization",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T13:36:26Z",
+          "completed_at": "2026-09-08T13:36:27Z"
+        },
+        {
+          "number": 23,
+          "name": "Verify integration preflight driver",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T13:36:27Z",
+          "completed_at": "2026-09-08T13:36:29Z"
+        },
+        {
+          "number": 24,
+          "name": "Verify soak fail-closed driver",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T13:36:29Z",
+          "completed_at": "2026-09-08T13:36:38Z"
+        },
+        {
+          "number": 25,
+          "name": "Verify soak dashboard restoration",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T13:36:38Z",
+          "completed_at": "2026-09-08T13:36:38Z"
+        },
+        {
+          "number": 26,
+          "name": "Install Rust",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T13:36:38Z",
+          "completed_at": "2026-09-08T13:36:47Z"
+        },
+        {
+          "number": 27,
+          "name": "Verify supply-chain controls",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T13:36:47Z",
+          "completed_at": "2026-09-08T13:37:06Z"
+        },
+        {
+          "number": 28,
+          "name": "Cache dependencies",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T13:37:06Z",
+          "completed_at": "2026-09-08T13:37:20Z"
+        },
+        {
+          "number": 29,
+          "name": "Install system dependencies",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T13:37:20Z",
+          "completed_at": "2026-09-08T13:37:55Z"
+        },
+        {
+          "number": 30,
+          "name": "Check formatting",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T13:37:55Z",
+          "completed_at": "2026-09-08T13:37:59Z"
+        },
+        {
+          "number": 31,
+          "name": "Run clippy",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T13:37:59Z",
+          "completed_at": "2026-09-08T13:39:07Z"
+        },
+        {
+          "number": 61,
+          "name": "Post Cache dependencies",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T13:39:07Z",
+          "completed_at": "2026-09-08T13:39:07Z"
+        },
+        {
+          "number": 62,
+          "name": "Post Checkout",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T13:39:07Z",
+          "completed_at": "2026-09-08T13:39:07Z"
+        },
+        {
+          "number": 63,
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T13:39:07Z",
+          "completed_at": "2026-09-08T13:39:07Z"
+        }
+      ]
+    },
+    {
+      "id": 102122023044,
+      "run_id": 34244231314,
+      "run_attempt": 1,
+      "name": "Lint",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-08T15:21:49Z",
+      "completed_at": "2026-09-08T15:24:46Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244231314/job/102122023044",
+      "steps": [
+        {
+          "number": 1,
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:21:50Z",
+          "completed_at": "2026-09-08T15:21:51Z"
+        },
+        {
+          "number": 2,
+          "name": "Checkout",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:21:51Z",
+          "completed_at": "2026-09-08T15:21:53Z"
+        },
+        {
+          "number": 3,
+          "name": "Verify workflow security invariants",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:21:53Z",
+          "completed_at": "2026-09-08T15:21:56Z"
+        },
+        {
+          "number": 4,
+          "name": "Verify pre-push hook",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:21:56Z",
+          "completed_at": "2026-09-08T15:21:56Z"
+        },
+        {
+          "number": 5,
+          "name": "Verify stack CI gate",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:21:56Z",
+          "completed_at": "2026-09-08T15:21:57Z"
+        },
+        {
+          "number": 6,
+          "name": "Verify soak schedule routing",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:21:57Z",
+          "completed_at": "2026-09-08T15:21:57Z"
+        },
+        {
+          "number": 7,
+          "name": "Verify system-integration node capability contract",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:21:57Z",
+          "completed_at": "2026-09-08T15:21:58Z"
+        },
+        {
+          "number": 8,
+          "name": "Verify system-integration repin helper",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:21:58Z",
+          "completed_at": "2026-09-08T15:21:58Z"
+        },
+        {
+          "number": 9,
+          "name": "Verify release evidence",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:21:58Z",
+          "completed_at": "2026-09-08T15:21:59Z"
+        },
+        {
+          "number": 10,
+          "name": "Verify release gates",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:21:59Z",
+          "completed_at": "2026-09-08T15:22:15Z"
+        },
+        {
+          "number": 11,
+          "name": "Verify release promotion",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:22:15Z",
+          "completed_at": "2026-09-08T15:22:17Z"
+        },
+        {
+          "number": 12,
+          "name": "Verify release gate evidence",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:22:17Z",
+          "completed_at": "2026-09-08T15:22:19Z"
+        },
+        {
+          "number": 13,
+          "name": "Verify deployment train validator",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:22:19Z",
+          "completed_at": "2026-09-08T15:22:24Z"
+        },
+        {
+          "number": 14,
+          "name": "Verify deployment train manifests",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:22:24Z",
+          "completed_at": "2026-09-08T15:22:24Z"
+        },
+        {
+          "number": 15,
+          "name": "Verify release workflows",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:22:24Z",
+          "completed_at": "2026-09-08T15:22:24Z"
+        },
+        {
+          "number": 16,
+          "name": "Verify TLA+ negative-control classification",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:22:24Z",
+          "completed_at": "2026-09-08T15:22:26Z"
+        },
+        {
+          "number": 17,
+          "name": "Verify bounded PR formal gate",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:22:26Z",
+          "completed_at": "2026-09-08T15:22:27Z"
+        },
+        {
+          "number": 18,
+          "name": "Verify soak claim inventory",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:22:27Z",
+          "completed_at": "2026-09-08T15:22:27Z"
+        },
+        {
+          "number": 19,
+          "name": "Verify coverage summary aggregation",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:22:27Z",
+          "completed_at": "2026-09-08T15:22:27Z"
+        },
+        {
+          "number": 20,
+          "name": "Verify soak summary aggregation",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:22:27Z",
+          "completed_at": "2026-09-08T15:22:27Z"
+        },
+        {
+          "number": 21,
+          "name": "Verify soak verdicts",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:22:27Z",
+          "completed_at": "2026-09-08T15:22:28Z"
+        },
+        {
+          "number": 22,
+          "name": "Verify latency benchmark readiness and finalization",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:22:28Z",
+          "completed_at": "2026-09-08T15:22:29Z"
+        },
+        {
+          "number": 23,
+          "name": "Verify integration preflight driver",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:22:29Z",
+          "completed_at": "2026-09-08T15:22:31Z"
+        },
+        {
+          "number": 24,
+          "name": "Verify soak fail-closed driver",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:22:31Z",
+          "completed_at": "2026-09-08T15:22:39Z"
+        },
+        {
+          "number": 25,
+          "name": "Verify soak dashboard restoration",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:22:39Z",
+          "completed_at": "2026-09-08T15:22:39Z"
+        },
+        {
+          "number": 26,
+          "name": "Install Rust",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:22:39Z",
+          "completed_at": "2026-09-08T15:22:48Z"
+        },
+        {
+          "number": 27,
+          "name": "Verify supply-chain controls",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:22:48Z",
+          "completed_at": "2026-09-08T15:23:07Z"
+        },
+        {
+          "number": 28,
+          "name": "Cache dependencies",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:23:07Z",
+          "completed_at": "2026-09-08T15:23:18Z"
+        },
+        {
+          "number": 29,
+          "name": "Install system dependencies",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:23:18Z",
+          "completed_at": "2026-09-08T15:23:32Z"
+        },
+        {
+          "number": 30,
+          "name": "Check formatting",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:23:32Z",
+          "completed_at": "2026-09-08T15:23:36Z"
+        },
+        {
+          "number": 31,
+          "name": "Run clippy",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:23:36Z",
+          "completed_at": "2026-09-08T15:24:43Z"
+        },
+        {
+          "number": 61,
+          "name": "Post Cache dependencies",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:24:43Z",
+          "completed_at": "2026-09-08T15:24:43Z"
+        },
+        {
+          "number": 62,
+          "name": "Post Checkout",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:24:43Z",
+          "completed_at": "2026-09-08T15:24:43Z"
+        },
+        {
+          "number": 63,
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:24:43Z",
+          "completed_at": "2026-09-08T15:24:44Z"
+        }
+      ]
+    },
+    {
+      "id": 102121946596,
+      "run_id": 34244230926,
+      "run_attempt": 1,
+      "name": "TLA+ invariant check",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-08T15:21:37Z",
+      "completed_at": "2026-09-08T15:22:39Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244230926/job/102121946596",
+      "steps": [
+        {
+          "number": 1,
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:21:38Z",
+          "completed_at": "2026-09-08T15:21:39Z"
+        },
+        {
+          "number": 2,
+          "name": "Run actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:21:39Z",
+          "completed_at": "2026-09-08T15:21:40Z"
+        },
+        {
+          "number": 3,
+          "name": "Install Java + TLC",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:21:40Z",
+          "completed_at": "2026-09-08T15:22:30Z"
+        },
+        {
+          "number": 4,
+          "name": "Run TLA+ invariant suite",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:22:30Z",
+          "completed_at": "2026-09-08T15:22:35Z"
+        },
+        {
+          "number": 5,
+          "name": "Retain TLA+ logs",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:22:35Z",
+          "completed_at": "2026-09-08T15:22:36Z"
+        },
+        {
+          "number": 10,
+          "name": "Post Run actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:22:37Z",
+          "completed_at": "2026-09-08T15:22:37Z"
+        },
+        {
+          "number": 11,
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:22:37Z",
+          "completed_at": "2026-09-08T15:22:37Z"
+        }
+      ]
+    },
+    {
+      "id": 102123184076,
+      "run_id": 34244231314,
+      "run_attempt": 1,
+      "name": "Heavy Pipeline / Launch Ephemeral Runners",
+      "status": "completed",
+      "conclusion": "failure",
+      "started_at": "2026-09-08T15:24:55Z",
+      "completed_at": "2026-09-08T15:25:52Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244231314/job/102123184076",
+      "steps": [
+        {
+          "number": 1,
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:24:56Z",
+          "completed_at": "2026-09-08T15:24:57Z"
+        },
+        {
+          "number": 2,
+          "name": "Clone system-integration",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:24:57Z",
+          "completed_at": "2026-09-08T15:24:59Z"
+        },
+        {
+          "number": 3,
+          "name": "Install OCI CLI (pinned, checksum-verified)",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:24:59Z",
+          "completed_at": "2026-09-08T15:25:45Z"
+        },
+        {
+          "number": 4,
+          "name": "Report credential delivery",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:25:45Z",
+          "completed_at": "2026-09-08T15:25:45Z"
+        },
+        {
+          "number": 5,
+          "name": "Configure OCI auth from secrets",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:25:45Z",
+          "completed_at": "2026-09-08T15:25:46Z"
+        },
+        {
+          "number": 6,
+          "name": "Create runner-management token",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:25:46Z",
+          "completed_at": "2026-09-08T15:25:47Z"
+        },
+        {
+          "number": 7,
+          "name": "Launch 4 amd64 + 2 arm64 ephemeral runners",
+          "status": "completed",
+          "conclusion": "failure",
+          "started_at": "2026-09-08T15:25:47Z",
+          "completed_at": "2026-09-08T15:25:50Z"
+        },
+        {
+          "number": 8,
+          "name": "Remove OCI credentials",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:25:50Z",
+          "completed_at": "2026-09-08T15:25:50Z"
+        },
+        {
+          "number": 15,
+          "name": "Post Create runner-management token",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:25:50Z",
+          "completed_at": "2026-09-08T15:25:51Z"
+        },
+        {
+          "number": 16,
+          "name": "Post Clone system-integration",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:25:51Z",
+          "completed_at": "2026-09-08T15:25:51Z"
+        },
+        {
+          "number": 17,
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:25:51Z",
+          "completed_at": "2026-09-08T15:25:51Z"
+        }
+      ]
+    },
+    {
+      "id": 102127145754,
+      "run_id": 34244231314,
+      "run_attempt": 1,
+      "name": "Integration Tests (amd64)",
+      "status": "completed",
+      "conclusion": "failure",
+      "started_at": "2026-09-08T15:35:40Z",
+      "completed_at": "2026-09-08T15:35:44Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244231314/job/102127145754",
+      "steps": [
+        {
+          "number": 1,
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:35:41Z",
+          "completed_at": "2026-09-08T15:35:41Z"
+        },
+        {
+          "number": 2,
+          "name": "Check amd64 matrix slots",
+          "status": "completed",
+          "conclusion": "failure",
+          "started_at": "2026-09-08T15:35:41Z",
+          "completed_at": "2026-09-08T15:35:42Z"
+        },
+        {
+          "number": 3,
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:35:42Z",
+          "completed_at": "2026-09-08T15:35:42Z"
+        }
+      ]
+    },
+    {
+      "id": 102127145707,
+      "run_id": 34244231314,
+      "run_attempt": 1,
+      "name": "Integration Tests (arm64)",
+      "status": "completed",
+      "conclusion": "failure",
+      "started_at": "2026-09-08T15:35:40Z",
+      "completed_at": "2026-09-08T15:35:43Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244231314/job/102127145707",
+      "steps": [
+        {
+          "number": 1,
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:35:41Z",
+          "completed_at": "2026-09-08T15:35:41Z"
+        },
+        {
+          "number": 2,
+          "name": "Check arm64 matrix slots",
+          "status": "completed",
+          "conclusion": "failure",
+          "started_at": "2026-09-08T15:35:41Z",
+          "completed_at": "2026-09-08T15:35:42Z"
+        },
+        {
+          "number": 3,
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-09-08T15:35:42Z",
+          "completed_at": "2026-09-08T15:35:42Z"
+        }
+      ]
+    }
+  ],
+  "checks": [
+    {
+      "id": 102127148132,
+      "name": "Release Packages",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "skipped",
+      "started_at": "2026-09-08T15:35:38Z",
+      "completed_at": "2026-09-08T15:35:38Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244231314/job/102127148132",
+      "app_id": 15368
+    },
+    {
+      "id": 102127148036,
+      "name": "Release Docker Image",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "skipped",
+      "started_at": "2026-09-08T15:35:38Z",
+      "completed_at": "2026-09-08T15:35:38Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244231314/job/102127148036",
+      "app_id": 15368
+    },
+    {
+      "id": 102127145754,
+      "name": "Integration Tests (amd64)",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "failure",
+      "started_at": "2026-09-08T15:35:40Z",
+      "completed_at": "2026-09-08T15:35:44Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244231314/job/102127145754",
+      "app_id": 15368
+    },
+    {
+      "id": 102127145707,
+      "name": "Integration Tests (arm64)",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "failure",
+      "started_at": "2026-09-08T15:35:40Z",
+      "completed_at": "2026-09-08T15:35:43Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244231314/job/102127145707",
+      "app_id": 15368
+    },
+    {
+      "id": 102125948093,
+      "name": "Heavy Pipeline / Integration Tests (${{ matrix.arch }}-${{ matrix.provider }})",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "skipped",
+      "started_at": "2026-09-08T15:32:23Z",
+      "completed_at": "2026-09-08T15:32:23Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244231314/job/102125948093",
+      "app_id": 15368
+    },
+    {
+      "id": 102125946720,
+      "name": "Heavy Pipeline / Integration Tests (${{ matrix.arch }}-${{ matrix.provider }}, ucc)",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "skipped",
+      "started_at": "2026-09-08T15:32:23Z",
+      "completed_at": "2026-09-08T15:32:23Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244231314/job/102125946720",
+      "app_id": 15368
+    },
+    {
+      "id": 102125944696,
+      "name": "Heavy Pipeline / Smoke Test (Docker Shard)",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-08T15:32:26Z",
+      "completed_at": "2026-09-08T15:35:37Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244231314/job/102125944696",
+      "app_id": 15368
+    },
+    {
+      "id": 102125944686,
+      "name": "Heavy Pipeline / Smoke Test (Local Standalone)",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-08T15:32:25Z",
+      "completed_at": "2026-09-08T15:34:29Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244231314/job/102125944686",
+      "app_id": 15368
+    },
+    {
+      "id": 102125944445,
+      "name": "Heavy Pipeline / Smoke Test (Docker Standalone)",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-08T15:32:25Z",
+      "completed_at": "2026-09-08T15:34:28Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244231314/job/102125944445",
+      "app_id": 15368
+    },
+    {
+      "id": 102123184076,
+      "name": "Heavy Pipeline / Launch Ephemeral Runners",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "failure",
+      "started_at": "2026-09-08T15:24:55Z",
+      "completed_at": "2026-09-08T15:25:52Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244231314/job/102123184076",
+      "app_id": 15368
+    },
+    {
+      "id": 102123183537,
+      "name": "Heavy Pipeline / Build Docker Image (amd64)",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-08T15:24:54Z",
+      "completed_at": "2026-09-08T15:31:08Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244231314/job/102123183537",
+      "app_id": 15368
+    },
+    {
+      "id": 102123183475,
+      "name": "Heavy Pipeline / Build Docker Image (arm64)",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-08T15:24:53Z",
+      "completed_at": "2026-09-08T15:32:22Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244231314/job/102123183475",
+      "app_id": 15368
+    },
+    {
+      "id": 102123154081,
+      "name": "Heavy Pipeline / Await Launch Approval",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-08T15:24:49Z",
+      "completed_at": "2026-09-08T15:24:51Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244231314/job/102123154081",
+      "app_id": 15368
+    },
+    {
+      "id": 102123153891,
+      "name": "Coverage (casper)",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "in_progress",
+      "conclusion": null,
+      "started_at": "2026-09-08T15:24:49Z",
+      "completed_at": null,
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244231314/job/102123153891",
+      "app_id": 15368
+    },
+    {
+      "id": 102123153885,
+      "name": "Coverage (comm)",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-08T15:24:49Z",
+      "completed_at": "2026-09-08T15:28:17Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244231314/job/102123153885",
+      "app_id": 15368
+    },
+    {
+      "id": 102123153853,
+      "name": "Coverage (crypto)",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-08T15:24:50Z",
+      "completed_at": "2026-09-08T15:26:47Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244231314/job/102123153853",
+      "app_id": 15368
+    },
+    {
+      "id": 102123153823,
+      "name": "Coverage (node)",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-08T15:24:49Z",
+      "completed_at": "2026-09-08T15:34:16Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244231314/job/102123153823",
+      "app_id": 15368
+    },
+    {
+      "id": 102123153725,
+      "name": "Coverage (graphz)",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-08T15:24:49Z",
+      "completed_at": "2026-09-08T15:25:41Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244231314/job/102123153725",
+      "app_id": 15368
+    },
+    {
+      "id": 102123153719,
+      "name": "Coverage (rholang)",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-08T15:24:50Z",
+      "completed_at": "2026-09-08T15:34:01Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244231314/job/102123153719",
+      "app_id": 15368
+    },
+    {
+      "id": 102123153604,
+      "name": "Test (graphz)",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-08T15:24:50Z",
+      "completed_at": "2026-09-08T15:25:33Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244231314/job/102123153604",
+      "app_id": 15368
+    },
+    {
+      "id": 102123153543,
+      "name": "Test (rspace_plus_plus)",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-08T15:24:49Z",
+      "completed_at": "2026-09-08T15:28:17Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244231314/job/102123153543",
+      "app_id": 15368
+    },
+    {
+      "id": 102123153515,
+      "name": "Coverage (models)",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-08T15:24:49Z",
+      "completed_at": "2026-09-08T15:28:08Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244231314/job/102123153515",
+      "app_id": 15368
+    },
+    {
+      "id": 102123153503,
+      "name": "Coverage (block-storage)",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-08T15:24:48Z",
+      "completed_at": "2026-09-08T15:28:09Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244231314/job/102123153503",
+      "app_id": 15368
+    },
+    {
+      "id": 102123153502,
+      "name": "Test (block-storage)",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-08T15:24:49Z",
+      "completed_at": "2026-09-08T15:26:30Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244231314/job/102123153502",
+      "app_id": 15368
+    },
+    {
+      "id": 102123153482,
+      "name": "Test (crypto)",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-08T15:24:49Z",
+      "completed_at": "2026-09-08T15:26:00Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244231314/job/102123153482",
+      "app_id": 15368
+    },
+    {
+      "id": 102123153476,
+      "name": "Test (comm)",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-08T15:24:49Z",
+      "completed_at": "2026-09-08T15:26:40Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244231314/job/102123153476",
+      "app_id": 15368
+    },
+    {
+      "id": 102123153446,
+      "name": "Test (rholang)",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-08T15:24:49Z",
+      "completed_at": "2026-09-08T15:32:09Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244231314/job/102123153446",
+      "app_id": 15368
+    },
+    {
+      "id": 102123153432,
+      "name": "Coverage (rspace_plus_plus)",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-08T15:24:49Z",
+      "completed_at": "2026-09-08T15:28:49Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244231314/job/102123153432",
+      "app_id": 15368
+    },
+    {
+      "id": 102123153403,
+      "name": "Test (models)",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-08T15:24:49Z",
+      "completed_at": "2026-09-08T15:26:17Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244231314/job/102123153403",
+      "app_id": 15368
+    },
+    {
+      "id": 102123153380,
+      "name": "Coverage (shared)",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-08T15:24:49Z",
+      "completed_at": "2026-09-08T15:26:36Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244231314/job/102123153380",
+      "app_id": 15368
+    },
+    {
+      "id": 102123153354,
+      "name": "Test (shared)",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-08T15:24:49Z",
+      "completed_at": "2026-09-08T15:26:26Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244231314/job/102123153354",
+      "app_id": 15368
+    },
+    {
+      "id": 102123153343,
+      "name": "Test (node)",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-08T15:24:49Z",
+      "completed_at": "2026-09-08T15:30:41Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244231314/job/102123153343",
+      "app_id": 15368
+    },
+    {
+      "id": 102123153312,
+      "name": "Test (casper 2/2)",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "in_progress",
+      "conclusion": null,
+      "started_at": "2026-09-08T15:24:49Z",
+      "completed_at": null,
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244231314/job/102123153312",
+      "app_id": 15368
+    },
+    {
+      "id": 102123153277,
+      "name": "Test (casper 1/2)",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "in_progress",
+      "conclusion": null,
+      "started_at": "2026-09-08T15:24:49Z",
+      "completed_at": null,
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244231314/job/102123153277",
+      "app_id": 15368
+    },
+    {
+      "id": 102122023210,
+      "name": "cargo-deny",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-08T15:21:49Z",
+      "completed_at": "2026-09-08T15:22:45Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244231314/job/102122023210",
+      "app_id": 15368
+    },
+    {
+      "id": 102122023139,
+      "name": "Markdown Link Check",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-08T15:21:49Z",
+      "completed_at": "2026-09-08T15:22:02Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244231314/job/102122023139",
+      "app_id": 15368
+    },
+    {
+      "id": 102122023044,
+      "name": "Lint",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-08T15:21:49Z",
+      "completed_at": "2026-09-08T15:24:46Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244231314/job/102122023044",
+      "app_id": 15368
+    },
+    {
+      "id": 102121948970,
+      "name": "Nightly extended proptest (PROPTEST_CASES=100000)",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "skipped",
+      "started_at": "2026-09-08T15:21:34Z",
+      "completed_at": "2026-09-08T15:21:34Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244230926/job/102121948970",
+      "app_id": 15368
+    },
+    {
+      "id": 102121948848,
+      "name": "Mutation coverage (cargo-mutants, nightly only)",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "skipped",
+      "started_at": "2026-09-08T15:21:34Z",
+      "completed_at": "2026-09-08T15:21:34Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244230926/job/102121948848",
+      "app_id": 15368
+    },
+    {
+      "id": 102121948838,
+      "name": "Build Base",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-08T15:21:37Z",
+      "completed_at": "2026-09-08T15:21:46Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244231314/job/102121948838",
+      "app_id": 15368
+    },
+    {
+      "id": 102121948214,
+      "name": "Search-horizon nightly tier (1M fuzz runs)",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "skipped",
+      "started_at": "2026-09-08T15:21:34Z",
+      "completed_at": "2026-09-08T15:21:34Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244230926/job/102121948214",
+      "app_id": 15368
+    },
+    {
+      "id": 102121947265,
+      "name": "Pre-fix regression backstops (6)",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-08T15:21:36Z",
+      "completed_at": "2026-09-08T15:23:44Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244230926/job/102121947265",
+      "app_id": 15368
+    },
+    {
+      "id": 102121947237,
+      "name": "Pre-fix regression backstops (3)",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-08T15:21:36Z",
+      "completed_at": "2026-09-08T15:23:46Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244230926/job/102121947237",
+      "app_id": 15368
+    },
+    {
+      "id": 102121947224,
+      "name": "Property-based theorem tests",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-08T15:21:36Z",
+      "completed_at": "2026-09-08T15:32:59Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244230926/job/102121947224",
+      "app_id": 15368
+    },
+    {
+      "id": 102121947213,
+      "name": "Pre-fix regression backstops (1)",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-08T15:21:37Z",
+      "completed_at": "2026-09-08T15:23:39Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244230926/job/102121947213",
+      "app_id": 15368
+    },
+    {
+      "id": 102121947204,
+      "name": "Pre-fix regression backstops (5)",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-08T15:21:37Z",
+      "completed_at": "2026-09-08T15:23:43Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244230926/job/102121947204",
+      "app_id": 15368
+    },
+    {
+      "id": 102121947186,
+      "name": "Pre-fix regression backstops (7)",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-08T15:21:37Z",
+      "completed_at": "2026-09-08T15:23:43Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244230926/job/102121947186",
+      "app_id": 15368
+    },
+    {
+      "id": 102121947184,
+      "name": "Pre-fix regression backstops (9)",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-08T15:21:36Z",
+      "completed_at": "2026-09-08T15:23:35Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244230926/job/102121947184",
+      "app_id": 15368
+    },
+    {
+      "id": 102121947175,
+      "name": "Pre-fix regression backstops (8)",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-08T15:21:37Z",
+      "completed_at": "2026-09-08T15:23:42Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244230926/job/102121947175",
+      "app_id": 15368
+    },
+    {
+      "id": 102121947131,
+      "name": "Pre-fix regression backstops (4)",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-08T15:21:37Z",
+      "completed_at": "2026-09-08T15:23:47Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244230926/job/102121947131",
+      "app_id": 15368
+    },
+    {
+      "id": 102121947120,
+      "name": "Pre-fix regression backstops (2)",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-08T15:21:36Z",
+      "completed_at": "2026-09-08T15:23:33Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244230926/job/102121947120",
+      "app_id": 15368
+    },
+    {
+      "id": 102121947099,
+      "name": "Pre-fix regression backstops (11)",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-08T15:21:39Z",
+      "completed_at": "2026-09-08T15:24:03Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244230926/job/102121947099",
+      "app_id": 15368
+    },
+    {
+      "id": 102121946954,
+      "name": "Loom exhaustive interleaving (T-9.2)",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-08T15:21:37Z",
+      "completed_at": "2026-09-08T15:29:39Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244230926/job/102121946954",
+      "app_id": 15368
+    },
+    {
+      "id": 102121946888,
+      "name": "Search-horizon smoke tier (10k fuzz runs)",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-08T15:21:37Z",
+      "completed_at": "2026-09-08T15:30:39Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244230926/job/102121946888",
+      "app_id": 15368
+    },
+    {
+      "id": 102121946878,
+      "name": "Pre-fix regression backstops (10)",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-08T15:21:36Z",
+      "completed_at": "2026-09-08T15:23:59Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244230926/job/102121946878",
+      "app_id": 15368
+    },
+    {
+      "id": 102121946862,
+      "name": "Example-based UC tests",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-08T15:21:36Z",
+      "completed_at": "2026-09-08T15:23:38Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244230926/job/102121946862",
+      "app_id": 15368
+    },
+    {
+      "id": 102121946852,
+      "name": "Rocq slashing, fork-choice and rspace-guards rebuild",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-08T15:21:36Z",
+      "completed_at": "2026-09-08T15:27:59Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244230926/job/102121946852",
+      "app_id": 15368
+    },
+    {
+      "id": 102121946596,
+      "name": "TLA+ invariant check",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-08T15:21:37Z",
+      "completed_at": "2026-09-08T15:22:39Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244230926/job/102121946596",
+      "app_id": 15368
+    },
+    {
+      "id": 102121942088,
+      "name": "Integration Tests (amd64)",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "skipped",
+      "started_at": "2026-09-08T15:21:33Z",
+      "completed_at": "2026-09-08T15:21:33Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244228780/job/102121942088",
+      "app_id": 15368
+    },
+    {
+      "id": 102121941636,
+      "name": "Integration Tests (arm64)",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "skipped",
+      "started_at": "2026-09-08T15:21:33Z",
+      "completed_at": "2026-09-08T15:21:33Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244228780/job/102121941636",
+      "app_id": 15368
+    },
+    {
+      "id": 102121940775,
+      "name": "Heavy Pipeline",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "status": "completed",
+      "conclusion": "skipped",
+      "started_at": "2026-09-08T15:21:33Z",
+      "completed_at": "2026-09-08T15:21:33Z",
+      "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/34244228780/job/102121940775",
+      "app_id": 15368
+    }
+  ],
+  "artifact": {
+    "id": 10063312912,
+    "name": "tla-invariant-logs-34244230926-1",
+    "size_in_bytes": 3724,
+    "digest": "sha256:67c33849b3cd439fb5e6ded2fd8294b29413086562b66d52d19b9045298252e0",
+    "expired": false,
+    "workflow_run": {
+      "id": 34244230926,
+      "repository_id": 1137711560,
+      "head_repository_id": 1137711560,
+      "head_branch": "fix/soak-disk-hygiene-stop",
+      "head_sha": "d6aaba9628536245fc42183d1682539583d6550b"
+    },
+    "downloaded_sha256": "67c33849b3cd439fb5e6ded2fd8294b29413086562b66d52d19b9045298252e0"
+  },
+  "active_branch_rules": [
+    {
+      "type": "deletion",
+      "ruleset_source_type": "Repository",
+      "ruleset_source": "F1R3FLY-io/f1r3node-rust",
+      "ruleset_id": 20148338
+    },
+    {
+      "type": "non_fast_forward",
+      "ruleset_source_type": "Repository",
+      "ruleset_source": "F1R3FLY-io/f1r3node-rust",
+      "ruleset_id": 20148338
+    },
+    {
+      "type": "deletion",
+      "ruleset_source_type": "Repository",
+      "ruleset_source": "F1R3FLY-io/f1r3node-rust",
+      "ruleset_id": 15773875
+    },
+    {
+      "type": "non_fast_forward",
+      "ruleset_source_type": "Repository",
+      "ruleset_source": "F1R3FLY-io/f1r3node-rust",
+      "ruleset_id": 15773875
+    },
+    {
+      "type": "pull_request",
+      "parameters": {
+        "required_approving_review_count": 0,
+        "dismiss_stale_reviews_on_push": false,
+        "required_reviewers": [
+
+        ],
+        "require_code_owner_review": true,
+        "dismissal_restriction": {
+          "enabled": false,
+          "allowed_actors": [
+
+          ]
+        },
+        "require_last_push_approval": false,
+        "required_review_thread_resolution": false,
+        "require_extra_approval_for_unattributed_changes": true,
+        "allowed_merge_methods": [
+          "merge",
+          "squash",
+          "rebase"
+        ]
+      },
+      "ruleset_source_type": "Repository",
+      "ruleset_source": "F1R3FLY-io/f1r3node-rust",
+      "ruleset_id": 15773875
+    },
+    {
+      "type": "required_status_checks",
+      "parameters": {
+        "strict_required_status_checks_policy": true,
+        "do_not_enforce_on_create": false,
+        "required_status_checks": [
+          {
+            "context": "Lint",
+            "integration_id": 15368
+          },
+          {
+            "context": "cargo-deny",
+            "integration_id": 15368
+          },
+          {
+            "context": "Test (block-storage)",
+            "integration_id": 15368
+          },
+          {
+            "context": "Test (comm)",
+            "integration_id": 15368
+          },
+          {
+            "context": "Test (crypto)",
+            "integration_id": 15368
+          },
+          {
+            "context": "Test (graphz)",
+            "integration_id": 15368
+          },
+          {
+            "context": "Test (models)",
+            "integration_id": 15368
+          },
+          {
+            "context": "Test (rholang)",
+            "integration_id": 15368
+          },
+          {
+            "context": "Test (node)",
+            "integration_id": 15368
+          },
+          {
+            "context": "Test (shared)",
+            "integration_id": 15368
+          },
+          {
+            "context": "Integration Tests (amd64)",
+            "integration_id": 15368
+          },
+          {
+            "context": "Integration Tests (arm64)",
+            "integration_id": 15368
+          },
+          {
+            "context": "Test (casper)",
+            "integration_id": 15368
+          },
+          {
+            "context": "Test (rspace_plus_plus)",
+            "integration_id": 15368
+          }
+        ]
+      },
+      "ruleset_source_type": "Repository",
+      "ruleset_source": "F1R3FLY-io/f1r3node-rust",
+      "ruleset_id": 15773875
+    },
+    {
+      "type": "deletion",
+      "ruleset_source_type": "Repository",
+      "ruleset_source": "F1R3FLY-io/f1r3node-rust",
+      "ruleset_id": 14299997
+    },
+    {
+      "type": "non_fast_forward",
+      "ruleset_source_type": "Repository",
+      "ruleset_source": "F1R3FLY-io/f1r3node-rust",
+      "ruleset_id": 14299997
+    },
+    {
+      "type": "required_status_checks",
+      "parameters": {
+        "strict_required_status_checks_policy": true,
+        "do_not_enforce_on_create": false,
+        "required_status_checks": [
+          {
+            "context": "Lint",
+            "integration_id": 15368
+          },
+          {
+            "context": "Test (casper)",
+            "integration_id": 15368
+          },
+          {
+            "context": "Test (rspace_plus_plus)",
+            "integration_id": 15368
+          },
+          {
+            "context": "Test (rholang)",
+            "integration_id": 15368
+          },
+          {
+            "context": "Test (shared)",
+            "integration_id": 15368
+          },
+          {
+            "context": "Test (node)"
+          },
+          {
+            "context": "Test (models)"
+          },
+          {
+            "context": "Test (crypto)"
+          },
+          {
+            "context": "Test (block-storage)"
+          },
+          {
+            "context": "Test (comm)",
+            "integration_id": 15368
+          },
+          {
+            "context": "Test (graphz)",
+            "integration_id": 15368
+          },
+          {
+            "context": "cargo-deny",
+            "integration_id": 15368
+          }
+        ]
+      },
+      "ruleset_source_type": "Repository",
+      "ruleset_source": "F1R3FLY-io/f1r3node-rust",
+      "ruleset_id": 14299997
+    },
+    {
+      "type": "pull_request",
+      "parameters": {
+        "required_approving_review_count": 0,
+        "dismiss_stale_reviews_on_push": false,
+        "required_reviewers": [
+
+        ],
+        "require_code_owner_review": true,
+        "dismissal_restriction": {
+          "enabled": false,
+          "allowed_actors": [
+
+          ]
+        },
+        "require_last_push_approval": false,
+        "required_review_thread_resolution": false,
+        "require_extra_approval_for_unattributed_changes": true,
+        "allowed_merge_methods": [
+          "merge",
+          "squash",
+          "rebase"
+        ]
+      },
+      "ruleset_source_type": "Repository",
+      "ruleset_source": "F1R3FLY-io/f1r3node-rust",
+      "ruleset_id": 14299997
+    }
+  ],
+  "rulesets": [
+    {
+      "id": 15773875,
+      "name": "devProtect",
+      "enforcement": "active",
+      "conditions": {
+        "ref_name": {
+          "exclude": [
+
+          ],
+          "include": [
+            "refs/heads/dev"
+          ]
+        }
+      },
+      "rules": [
+        {
+          "type": "deletion"
+        },
+        {
+          "type": "non_fast_forward"
+        },
+        {
+          "type": "pull_request",
+          "parameters": {
+            "required_approving_review_count": 0,
+            "dismiss_stale_reviews_on_push": false,
+            "required_reviewers": [
+
+            ],
+            "require_code_owner_review": true,
+            "dismissal_restriction": {
+              "enabled": false,
+              "allowed_actors": [
+
+              ]
+            },
+            "require_last_push_approval": false,
+            "required_review_thread_resolution": false,
+            "require_extra_approval_for_unattributed_changes": true,
+            "allowed_merge_methods": [
+              "merge",
+              "squash",
+              "rebase"
+            ]
+          }
+        },
+        {
+          "type": "required_status_checks",
+          "parameters": {
+            "strict_required_status_checks_policy": true,
+            "do_not_enforce_on_create": false,
+            "required_status_checks": [
+              {
+                "context": "Lint",
+                "integration_id": 15368
+              },
+              {
+                "context": "cargo-deny",
+                "integration_id": 15368
+              },
+              {
+                "context": "Test (block-storage)",
+                "integration_id": 15368
+              },
+              {
+                "context": "Test (comm)",
+                "integration_id": 15368
+              },
+              {
+                "context": "Test (crypto)",
+                "integration_id": 15368
+              },
+              {
+                "context": "Test (graphz)",
+                "integration_id": 15368
+              },
+              {
+                "context": "Test (models)",
+                "integration_id": 15368
+              },
+              {
+                "context": "Test (rholang)",
+                "integration_id": 15368
+              },
+              {
+                "context": "Test (node)",
+                "integration_id": 15368
+              },
+              {
+                "context": "Test (shared)",
+                "integration_id": 15368
+              },
+              {
+                "context": "Integration Tests (amd64)",
+                "integration_id": 15368
+              },
+              {
+                "context": "Integration Tests (arm64)",
+                "integration_id": 15368
+              },
+              {
+                "context": "Test (casper)",
+                "integration_id": 15368
+              },
+              {
+                "context": "Test (rspace_plus_plus)",
+                "integration_id": 15368
+              }
+            ]
+          }
+        }
+      ],
+      "bypass_actor_type_counts": {
+        "OrganizationAdmin": 1,
+        "User": 2,
+        "Integration": 1
+      },
+      "bypass_modes": [
+        "always"
+      ]
+    },
+    {
+      "id": 14299997,
+      "name": "masterProtect",
+      "enforcement": "active",
+      "conditions": {
+        "ref_name": {
+          "exclude": [
+
+          ],
+          "include": [
+            "~DEFAULT_BRANCH",
+            "refs/heads/master",
+            "refs/heads/dev"
+          ]
+        }
+      },
+      "rules": [
+        {
+          "type": "deletion"
+        },
+        {
+          "type": "non_fast_forward"
+        },
+        {
+          "type": "required_status_checks",
+          "parameters": {
+            "strict_required_status_checks_policy": true,
+            "do_not_enforce_on_create": false,
+            "required_status_checks": [
+              {
+                "context": "Lint",
+                "integration_id": 15368
+              },
+              {
+                "context": "Test (casper)",
+                "integration_id": 15368
+              },
+              {
+                "context": "Test (rspace_plus_plus)",
+                "integration_id": 15368
+              },
+              {
+                "context": "Test (rholang)",
+                "integration_id": 15368
+              },
+              {
+                "context": "Test (shared)",
+                "integration_id": 15368
+              },
+              {
+                "context": "Test (node)"
+              },
+              {
+                "context": "Test (models)"
+              },
+              {
+                "context": "Test (crypto)"
+              },
+              {
+                "context": "Test (block-storage)"
+              },
+              {
+                "context": "Test (comm)",
+                "integration_id": 15368
+              },
+              {
+                "context": "Test (graphz)",
+                "integration_id": 15368
+              },
+              {
+                "context": "cargo-deny",
+                "integration_id": 15368
+              }
+            ]
+          }
+        },
+        {
+          "type": "pull_request",
+          "parameters": {
+            "required_approving_review_count": 0,
+            "dismiss_stale_reviews_on_push": false,
+            "required_reviewers": [
+
+            ],
+            "require_code_owner_review": true,
+            "dismissal_restriction": {
+              "enabled": false,
+              "allowed_actors": [
+
+              ]
+            },
+            "require_last_push_approval": false,
+            "required_review_thread_resolution": false,
+            "require_extra_approval_for_unattributed_changes": true,
+            "allowed_merge_methods": [
+              "merge",
+              "squash",
+              "rebase"
+            ]
+          }
+        }
+      ],
+      "bypass_actor_type_counts": {
+        "OrganizationAdmin": 1,
+        "User": 2,
+        "Integration": 1
+      },
+      "bypass_modes": [
+        "always"
+      ]
+    }
+  ],
+  "classic_protection": {
+    "http_status": 403,
+    "cli_exit": 1,
+    "authority": "permission-error-not-absence-evidence"
+  },
+  "github_status_semantics": {
+    "source_url": "https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/collaborating-on-repositories-with-code-quality-features/troubleshooting-required-status-checks",
+    "retrieved_on": "2026-09-08",
+    "source_kind": "official-documentation-not-repository-fault-test",
+    "passages": [
+      "Successful check statuses are `success`, `skipped`, and `neutral`.",
+      "Required checks must pass on the latest commit SHA. Checks from earlier commits don't satisfy the requirement.",
+      "Test merge commit has a status",
+      "The test merge commit"
+    ]
+  },
+  "g0_status": "pending",
+  "maintainer_confirmation": false,
+  "repository_fault_rejection_tests": "not-run",
+  "full_acceptance_identity": "incomplete",
+  "claims_discharged": [
+
+  ],
+  "infrastructure_failure": {
+    "provider": "Oracle Cloud Infrastructure",
+    "operation": "launch_instance",
+    "code": "LimitExceeded",
+    "http_status": 400,
+    "reported_limit": "daily-resource-creation",
+    "matching_errors": 6,
+    "production_red": false
+  }
+}

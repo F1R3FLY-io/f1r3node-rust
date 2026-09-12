@@ -26,6 +26,8 @@ PROVIDERS=(docker subprocess)
 # directories and silently discard its metrics.
 mkdir -p "$OUTPUT_DIR"
 STATE_FILE="$OUTPUT_DIR/.soak-state"
+INFLIGHT_ITERATION=0
+INFLIGHT_BENCHMARK=0
 if [ -f "$STATE_FILE" ]; then
 	# shellcheck source=/dev/null
 	. "$STATE_FILE"
@@ -37,6 +39,14 @@ else
 	ITERATIONS=0
 	FAILURES=0
 	SEGMENT=1
+fi
+if ! [[ "$INFLIGHT_ITERATION" =~ ^[012]$ ]]; then
+	printf 'The saved iteration state must be 0, 1, or 2.\n' >&2
+	exit 2
+fi
+if ! [[ "$INFLIGHT_BENCHMARK" =~ ^[012]$ ]]; then
+	printf 'The saved benchmark state must be 0, 1, or 2.\n' >&2
+	exit 2
 fi
 
 # An absolute deadline lets the caller end a segment on a wall-clock boundary
@@ -163,6 +173,19 @@ else
 	fi
 fi
 
+DISK_INTEGER_MAX=9223372036854775807
+
+disk_setting_decimal() {
+	local LC_ALL=C value="$1"
+	[[ "$value" =~ ^[0-9]+$ ]] || return 1
+	value="${value#"${value%%[!0]*}"}"
+	value="${value:-0}"
+	if [ "${#value}" -gt 19 ] || { [ "${#value}" -eq 19 ] && [[ "decimal:$value" > "decimal:$DISK_INTEGER_MAX" ]]; }; then
+		return 1
+	fi
+	printf '%s\n' "$value"
+}
+
 # Disk twin of the memory floor (issue #378). Weekend runs 33254400407 and
 # 33278321865 filled the soak VM's default ~47GB boot volume 9-12h in: the
 # runner worker died on ENOSPC writing its own _diag log, and the last
@@ -170,18 +193,160 @@ fi
 # a full disk masquerading as a finalization regression. Memory had a
 # guardian, warn band and durable last words; disk had nothing.
 # SOAK_DISK_FREE_FLOOR_MB overrides; 0 disables the floor.
-DISK_FREE_FLOOR_MB="${SOAK_DISK_FREE_FLOOR_MB:-4096}"
-if ! [[ "$DISK_FREE_FLOOR_MB" =~ ^[0-9]+$ ]]; then
-	printf 'SOAK_DISK_FREE_FLOOR_MB must be a non-negative integer\n' >&2
+if ! DISK_FREE_FLOOR_MB="$(disk_setting_decimal "${SOAK_DISK_FREE_FLOOR_MB:-4096}")"; then
+	printf 'SOAK_DISK_FREE_FLOOR_MB must be a non-negative integer no larger than 9223372036854775807\n' >&2
 	exit 2
 fi
 # Hygiene runs when free space sinks into floor+band, BEFORE the floor
 # breaches: pruning between iterations is cheap, while a breach ends the run.
-DISK_HYGIENE_BAND_MB="${SOAK_DISK_HYGIENE_BAND_MB:-4096}"
-if ! [[ "$DISK_HYGIENE_BAND_MB" =~ ^[0-9]+$ ]]; then
-	printf 'SOAK_DISK_HYGIENE_BAND_MB must be a non-negative integer\n' >&2
+if ! DISK_HYGIENE_BAND_MB="$(disk_setting_decimal "${SOAK_DISK_HYGIENE_BAND_MB:-4096}")"; then
+	printf 'SOAK_DISK_HYGIENE_BAND_MB must be a non-negative integer no larger than 9223372036854775807\n' >&2
 	exit 2
 fi
+if [ "$DISK_HYGIENE_BAND_MB" -gt "$((DISK_INTEGER_MAX - DISK_FREE_FLOOR_MB))" ]; then
+	printf 'SOAK_DISK_FREE_FLOOR_MB plus SOAK_DISK_HYGIENE_BAND_MB must not exceed 9223372036854775807\n' >&2
+	exit 2
+fi
+# Where harness sessions leave their compose and genesis files (the
+# `test-*` sweep below), and where the runner keeps _diag and _work. Both are
+# overridable so the driver test can sweep and measure a private tree instead
+# of the developer's real /tmp.
+SOAK_TMP_ROOT="${SOAK_TMP_ROOT:-/tmp}"
+SOAK_RUNNER_ROOT="${SOAK_RUNNER_ROOT:-/opt/actions-runner}"
+DISK_STOP_SECONDS="${SOAK_DISK_STOP_SECONDS:-2}"
+if ! [[ "$DISK_STOP_SECONDS" =~ ^[1-5]$ ]]; then
+	printf 'SOAK_DISK_STOP_SECONDS must be an integer from 1 through 5\n' >&2
+	exit 2
+fi
+GUARDIAN_MAX_SILENCE_SECONDS="${SOAK_GUARDIAN_MAX_SILENCE_SECONDS:-10}"
+if ! [[ "$GUARDIAN_MAX_SILENCE_SECONDS" =~ ^([89]|[12][0-9]|30)$ ]]; then
+	printf 'SOAK_GUARDIAN_MAX_SILENCE_SECONDS must be an integer from 8 through 30\n' >&2
+	exit 2
+fi
+DISK_HYGIENE_SECONDS="${SOAK_DISK_HYGIENE_SECONDS:-10}"
+if ! [[ "$DISK_HYGIENE_SECONDS" =~ ^([1-9]|[12][0-9]|30)$ ]]; then
+	printf 'SOAK_DISK_HYGIENE_SECONDS must be an integer from 1 through 30\n' >&2
+	exit 2
+fi
+DISK_DIAGNOSTIC_SECONDS="${SOAK_DISK_DIAGNOSTIC_SECONDS:-10}"
+if ! [[ "$DISK_DIAGNOSTIC_SECONDS" =~ ^([1-9]|10)$ ]]; then
+	printf 'SOAK_DISK_DIAGNOSTIC_SECONDS must be an integer from 1 through 10\n' >&2
+	exit 2
+fi
+# D3 evidence: how often the guardian appends one attribution row to
+# disk-usage-timeline.tsv while the soak runs; 0 disables the timeline.
+DISK_USAGE_INTERVAL_SECONDS="${SOAK_DISK_USAGE_INTERVAL_SECONDS:-300}"
+if ! [[ "$DISK_USAGE_INTERVAL_SECONDS" =~ ^(0|[1-9][0-9]{0,3})$ ]]; then
+	printf 'SOAK_DISK_USAGE_INTERVAL_SECONDS must be an integer from 0 through 9999\n' >&2
+	exit 2
+fi
+DISK_USAGE_TIMELINE="$OUTPUT_DIR/disk-usage-timeline.tsv"
+CONTAINMENT="${SOAK_CONTAINMENT:-unmanaged}"
+if [ "$CONTAINMENT" != unmanaged ] && [ "$CONTAINMENT" != required ]; then
+	printf 'SOAK_CONTAINMENT must be unmanaged or required\n' >&2
+	exit 2
+fi
+RUN_DOMAIN_RECORD="${SOAK_RUN_DOMAIN_RECORD:-}"
+EMERGENCY_DEADLINE_SECONDS="${SOAK_EMERGENCY_DEADLINE_SECONDS:-60}"
+if ! [[ "$EMERGENCY_DEADLINE_SECONDS" =~ ^([5-9]|[1-9][0-9]|[1-5][0-9][0-9]|600)$ ]]; then
+	printf 'SOAK_EMERGENCY_DEADLINE_SECONDS must be an integer from 5 through 600\n' >&2
+	exit 2
+fi
+EMERGENCY_DEADLINE_EPOCH=""
+emergency_start() {
+	[ -n "$EMERGENCY_DEADLINE_EPOCH" ] && return 0
+	EMERGENCY_DEADLINE_EPOCH="$(($(date +%s) + EMERGENCY_DEADLINE_SECONDS))"
+	printf 'emergency response started; composed deadline %ss\n' "$EMERGENCY_DEADLINE_SECONDS" >"$OUTPUT_DIR/emergency-started.txt"
+}
+emergency_remaining() {
+	local remaining
+	if [ -z "$EMERGENCY_DEADLINE_EPOCH" ]; then
+		printf '%s\n' "$EMERGENCY_DEADLINE_SECONDS"
+		return 0
+	fi
+	remaining="$((EMERGENCY_DEADLINE_EPOCH - $(date +%s)))"
+	[ "$remaining" -gt 0 ] || remaining=0
+	printf '%s\n' "$remaining"
+}
+session_bounded() {
+	local seconds="$1" pid watchdog status=0
+	shift
+	setsid "$@" &
+	pid=$!
+	setsid bash -c 'sleep "$1"; kill -TERM -- "-$2" 2>/dev/null; sleep 1; kill -KILL -- "-$2" 2>/dev/null' \
+		bash "$seconds" "$pid" >/dev/null 2>&1 &
+	watchdog=$!
+	wait "$pid" || status=$?
+	kill -KILL -- "-$watchdog" 2>/dev/null || true
+	wait "$watchdog" 2>/dev/null || true
+	return "$status"
+}
+run_domain_verified() {
+	[ "$CONTAINMENT" = required ] || return 0
+	python3 - "$RUN_DOMAIN_RECORD" <<'PY'
+import json
+import os
+import stat
+import sys
+
+BOUND = 65536
+
+
+def trusted(descriptor, directory):
+    status = os.fstat(descriptor)
+    expected = stat.S_ISDIR(status.st_mode) if directory else stat.S_ISREG(status.st_mode)
+    return expected and status.st_uid == 0 and not status.st_mode & 0o022
+
+
+def open_record(path):
+    parts = [part for part in path.split("/") if part]
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+    descriptor = os.open("/", flags | os.O_DIRECTORY)
+    try:
+        if not trusted(descriptor, True):
+            return None
+        for index, part in enumerate(parts):
+            last = index == len(parts) - 1
+            child = os.open(part, flags | (0 if last else os.O_DIRECTORY), dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+            if not trusted(descriptor, not last):
+                return None
+        payload = b""
+        while len(payload) <= BOUND:
+            chunk = os.read(descriptor, BOUND + 1 - len(payload))
+            if not chunk:
+                return payload
+            payload += chunk
+        return None
+    finally:
+        os.close(descriptor)
+
+
+path = sys.argv[1]
+if not path or not os.path.isabs(path) or "/." in path or path.endswith("/"):
+    sys.exit(1)
+try:
+    payload = open_record(path)
+    if payload is None:
+        sys.exit(1)
+    data = json.loads(payload)
+    with open("/proc/self/cgroup", encoding="utf-8") as source:
+        cgroup = source.read().splitlines()
+except (OSError, ValueError):
+    sys.exit(1)
+if not isinstance(data, dict) or data.get("uid") != os.getuid():
+    sys.exit(1)
+unit = data.get("unit")
+expected = data.get("cgroup")
+if not isinstance(unit, str) or not unit or "/" in unit:
+    sys.exit(1)
+if not isinstance(expected, str) or not expected.startswith("/"):
+    sys.exit(1)
+if cgroup != ["0::" + expected]:
+    sys.exit(1)
+PY
+}
 
 # Free MB on the filesystem the soak actually fills. OUTPUT_DIR, the harness
 # session dirs and the runner's _diag all live on the one boot volume, so one
@@ -190,35 +355,323 @@ fi
 # arithmetic garbage into the guardian.
 disk_free_mb() {
 	local mb
-	mb="$(df -Pm "$OUTPUT_DIR" 2>/dev/null | awk 'NR == 2 { print int($4) }')"
+	mb="$(timeout --signal=TERM --kill-after=1 2 df -Pm "$OUTPUT_DIR" 2>/dev/null |
+		awk 'NR == 2 && $4 ~ /^[0-9]+$/ { print int($4) }')" || return 1
 	[[ "$mb" =~ ^[0-9]+$ ]] || return 1
 	printf '%s\n' "$mb"
 }
 
-# Reclaim space that accumulates across iterations without touching anything
-# an active session owns. Container removal is scoped to EXITED containers in
-# the soak's own `rnode.` namespace (a failed `compose up` leaks them);
-# dangling images are by definition unreferenced, and the docker build cache
-# is dead weight once the image under test is built and loaded. The network
-# prune and the /tmp sweep are broader by nature, and both lean on two facts:
-# this VM is exclusive to the soak (the RUNNER_LABELS f1r3fly-rust-soak
-# registration below admits no other workload), and a /tmp/test-* file older
-# than 60 minutes is past pytest's own 1200s per-test timeout, so no live
-# iteration can still own it. Never prunes tagged images (the image under
-# test) or running containers.
-reclaim_disk_space() {
-	local before after
+guardian_clock_seconds() {
+	local uptime _unused
+	read -r uptime _unused </proc/uptime || return 1
+	uptime="${uptime%%.*}"
+	[[ "$uptime" =~ ^[0-9]{1,12}$ ]] || return 1
+	printf '%s\n' "$((10#$uptime))"
+}
+
+guardian_record_progress() {
+	local now
+	now="$(guardian_clock_seconds)" || return 1
+	printf '%s\n' "$now" >"$HOST_GUARDIAN_PROGRESS.tmp" &&
+		mv -f "$HOST_GUARDIAN_PROGRESS.tmp" "$HOST_GUARDIAN_PROGRESS"
+}
+
+guardian_progress_fresh() {
+	local now last
+	now="$(guardian_clock_seconds)" || return 1
+	last="$(<"$HOST_GUARDIAN_PROGRESS")" || return 1
+	[[ "$last" =~ ^[0-9]{1,12}$ ]] || return 1
+	last="$((10#$last))"
+	[ "$last" -le "$now" ] && [ "$((now - last))" -le "$GUARDIAN_MAX_SILENCE_SECONDS" ]
+}
+
+stop_owned_host_writers() {
+	python3 - "$SOAK_WRITER_OWNER" <<'PY'
+import os
+import select
+import signal
+import sys
+import time
+
+marker = ("SOAK_PROCESS_OWNER=" + sys.argv[1]).encode()
+owned = []
+status = 0
+for name in os.listdir("/proc"):
+    if not name.isdecimal():
+        continue
+    fd = None
+    try:
+        if os.stat("/proc/" + name).st_uid != os.geteuid():
+            continue
+        fd = os.pidfd_open(int(name), 0)
+        with open("/proc/" + name + "/environ", "rb") as source:
+            matches = marker in source.read().split(b"\0")
+        if matches:
+            owned.append(fd)
+            fd = None
+    except (FileNotFoundError, ProcessLookupError):
+        pass
+    except OSError:
+        status = 1
+    finally:
+        if fd is not None:
+            os.close(fd)
+pending = set()
+poller = select.poll()
+for fd in owned:
+    try:
+        signal.pidfd_send_signal(fd, signal.SIGKILL)
+        poller.register(fd, select.POLLIN)
+        pending.add(fd)
+    except ProcessLookupError:
+        pass
+    except OSError:
+        status = 1
+deadline = time.monotonic() + 0.75
+while pending:
+    remaining = max(0, int((deadline - time.monotonic()) * 1000))
+    events = poller.poll(remaining)
+    if not events:
+        status = 1
+        break
+    for fd, event in events:
+        if not event & select.POLLIN:
+            status = 1
+        poller.unregister(fd)
+        pending.discard(fd)
+for fd in owned:
+    os.close(fd)
+sys.exit(status)
+PY
+}
+
+stop_node_writer_commands() {
+	local selection="$1"
+	shift
+	local cid owner ids status=0
+	stop_owned_host_writers || status=1
+	ids="$(docker ps "$selection" --no-trunc --filter "label=io.f1r3fly.soak.owner=$SOAK_WRITER_OWNER" 2>/dev/null)" || return 1
+	while IFS= read -r cid; do
+		[ -n "$cid" ] || continue
+		if ! [[ "$cid" =~ ^[a-f0-9]{64}$ ]]; then
+			status=1
+			continue
+		fi
+		owner="$(docker inspect --format '{{index .Config.Labels "io.f1r3fly.soak.owner"}}' "$cid" 2>/dev/null)" || {
+			status=1
+			continue
+		}
+		[ "$owner" = "$SOAK_WRITER_OWNER" ] || {
+			status=1
+			continue
+		}
+		docker "$@" "$cid" 2>/dev/null || status=1
+	done <<<"$ids"
+	return "$status"
+}
+
+stop_node_writers() (
+	export SOAK_WRITER_OWNER
+	export -f stop_owned_host_writers stop_node_writer_commands
+	timeout --signal=TERM --kill-after=1 "$DISK_STOP_SECONDS" \
+		bash -c 'trap "" TERM; stop_node_writer_commands "$@"' bash "$@"
+)
+
+start_crash_monitor() {
+	local directory monitor _attempt
+	directory="$(mktemp -d "$OUTPUT_DIR/.crash-monitor.XXXXXXXX")" || return 1
+	CRASH_MONITOR_DIR="$directory"
+	(
+		export SOAK_WRITER_OWNER DISK_STOP_SECONDS
+		export -f stop_owned_host_writers stop_node_writer_commands stop_node_writers
+		exec python3 - "$$" "$directory" "$OUTPUT_DIR" <<'PY'
+import os
+from pathlib import Path
+import select
+import subprocess
+import sys
+
+os.setsid()
+parent = os.pidfd_open(int(sys.argv[1]), 0)
+poller = select.poll()
+poller.register(parent, select.POLLIN)
+directory = Path(sys.argv[2])
+(directory / "ready").write_text(str(os.getpid()) + "\n")
+poller.poll()
+os.close(parent)
+try:
+    with (directory / "handled-exit").open("rb") as source:
+        handled = source.read(9) == b"handled\n"
+except OSError:
+    handled = False
+if handled:
+    sys.exit(0)
+status = subprocess.run(["bash", "-c", "stop_node_writers -q kill"]).returncode
+if status != 0:
+    try:
+        (Path(sys.argv[3]) / "writer-stop-failure.txt").write_text(
+            "Writer termination is unconfirmed after the driver exited.\n"
+        )
+    except OSError:
+        pass
+(directory / "exit-code.txt").write_text(str(status) + "\n")
+sys.exit(status)
+PY
+	) >"$directory/monitor.log" 2>&1 &
+	monitor=$!
+	CRASH_MONITOR_PID="$monitor"
+	for _attempt in {1..100}; do
+		kill -0 "$monitor" 2>/dev/null || return 1
+		[ ! -s "$directory/ready" ] || return 0
+		sleep 0.05
+	done
+	return 1
+}
+
+reclaim_disk_space_commands() {
+	local before after status=0
+	set -o pipefail
 	before="$(disk_free_mb)" || before=""
 	if command -v docker >/dev/null 2>&1; then
 		docker ps -aq --filter status=exited --filter 'name=rnode.' 2>/dev/null |
-			xargs -r docker rm >/dev/null 2>&1 || true
-		docker network prune -f >/dev/null 2>&1 || true
-		docker image prune -f >/dev/null 2>&1 || true
-		docker builder prune -af >/dev/null 2>&1 || true
+			xargs -r docker inspect >/dev/null 2>&1 || {
+			status=1
+			printf 'disk hygiene: container inspection failed\n' >&2
+		}
+		docker network ls -q >/dev/null 2>&1 || {
+			status=1
+			printf 'disk hygiene: network inspection failed\n' >&2
+		}
+		docker image ls -q >/dev/null 2>&1 || {
+			status=1
+			printf 'disk hygiene: image inspection failed\n' >&2
+		}
+		docker system df >/dev/null 2>&1 || {
+			status=1
+			printf 'disk hygiene: storage inspection failed\n' >&2
+		}
 	fi
-	find /tmp -maxdepth 1 -name 'test-*' -mmin +60 -exec rm -rf {} + 2>/dev/null || true
+	printf 'disk hygiene: Docker resources and temporary sessions retained because ownership is unconfirmed\n'
 	after="$(disk_free_mb)" || after=""
 	printf 'disk hygiene: %sMB free -> %sMB free\n' "${before:-?}" "${after:-?}"
+	return "$status"
+}
+
+reclaim_disk_space() (
+	export OUTPUT_DIR SOAK_TMP_ROOT
+	export -f disk_free_mb reclaim_disk_space_commands
+	timeout --signal=TERM --kill-after=1 "$DISK_HYGIENE_SECONDS" \
+		bash -c 'trap "" TERM; reclaim_disk_space_commands'
+)
+
+# Run a command under a wall-clock bound where timeout(1) exists, and bare
+# where it does not (macOS without coreutils). Attribution is best-effort and
+# must never hold up the guard it serves.
+bounded() {
+	local seconds="$1"
+	shift
+	if command -v timeout >/dev/null 2>&1; then
+		timeout --foreground "$seconds" "$@"
+	else
+		"$@"
+	fi
+}
+
+# Where the space went. df says how much is left; only du says who took it.
+# Weekend runs 33939315110, 33978505238 and 34056342543 died of ENOSPC after
+# the floor fired, and the last three hygiene passes before the third death
+# reclaimed nothing (7956 -> 7956MB, 7596 -> 7596MB, 7355 -> 7355MB): the
+# growth was outside everything reclaim_disk_space sweeps, and nothing on the
+# terminated VM could say where. This prints on every hygiene pass (stdout
+# reaches the workflow log even when the VM dies later), into the breach
+# evidence on every disk stop, and from the guardian on a breach. Metadata
+# walks of the harness and runner roots finish in seconds; docker's own
+# accounting stands in for /var/lib/docker, which du would crawl for minutes.
+disk_usage_roots() {
+	printf '%s\n' "$OUTPUT_DIR" "${HARNESS_TELEMETRY_DIRS[@]}" \
+		"$SOAK_RUNNER_ROOT/_diag" "$SOAK_RUNNER_ROOT/_work"
+	find "$SOAK_TMP_ROOT" -maxdepth 1 -name 'test-*' 2>/dev/null || true
+}
+
+disk_usage_snapshot_data() {
+	local root
+	df -Pm "$OUTPUT_DIR" 2>/dev/null || true
+	while IFS= read -r root; do
+		[ -d "$root" ] || continue
+		bounded 20 du -sm "$root" 2>/dev/null ||
+			printf '?\t%s (du timed out)\n' "$root"
+	done < <(disk_usage_roots)
+	if command -v docker >/dev/null 2>&1; then
+		bounded 20 docker system df 2>/dev/null || true
+	fi
+}
+
+# One line of the same attribution, short enough to ride in an OCI freeform
+# tag beside the guardian's last words (256 chars per value). Per-root
+# timeouts are tight because this runs between killing the writers and the
+# stamp: the VMs above died ~20s after the stamp, so every second spent here
+# is a second the stamp may not get.
+disk_usage_tag_summary() {
+	local label root mb tmp_mb=0 summary=""
+	for label in out:"$OUTPUT_DIR" data:"${HARNESS_TELEMETRY_DIRS[0]}" \
+		arch:"${HARNESS_TELEMETRY_DIRS[1]}" sub:"${HARNESS_TELEMETRY_DIRS[2]}" \
+		diag:"$SOAK_RUNNER_ROOT/_diag"; do
+		root="${label#*:}"
+		[ -d "$root" ] || continue
+		mb="$(bounded 3 du -sm "$root" 2>/dev/null | awk '{ print $1 }')"
+		[[ "$mb" =~ ^[0-9]+$ ]] || mb='?'
+		summary="${summary}${label%%:*}=${mb}M,"
+	done
+	while IFS= read -r root; do
+		mb="$(bounded 3 du -sm "$root" 2>/dev/null | awk '{ print $1 }')"
+		[[ "$mb" =~ ^[0-9]+$ ]] && tmp_mb=$((tmp_mb + mb))
+	done < <(find "$SOAK_TMP_ROOT" -maxdepth 1 -name 'test-*' 2>/dev/null || true)
+	summary="${summary}tmp=${tmp_mb}M"
+	if command -v docker >/dev/null 2>&1; then
+		summary="${summary},dock=$(bounded 5 docker system df --format '{{.Type}}={{.Size}}' 2>/dev/null |
+			tr -d ' ' | paste -sd '+' - || true)"
+	fi
+	printf '%s\n' "$summary"
+}
+
+# The same attribution as the breach tag, one row at a time, so the growth
+# curve rides in the run artifact instead of only the last snapshot. Columns:
+# epoch, label (segment-start, iteration-NNNNN, sample), free MiB, summary.
+disk_usage_timeline_row() {
+	local free
+	free="$(disk_free_mb 2>/dev/null)" || free='?'
+	printf '%s\t%s\t%s\t%s\n' "$(date +%s)" "$1" "${free:-?}" "$(disk_usage_tag_summary)" \
+		>>"$DISK_USAGE_TIMELINE"
+}
+
+disk_diagnostics_bounded() {
+	local definitions
+	definitions="$(
+		declare -p OUTPUT_DIR HARNESS_TELEMETRY_DIRS SOAK_TMP_ROOT SOAK_RUNNER_ROOT DISK_USAGE_TIMELINE
+		declare -f bounded disk_free_mb disk_usage_roots disk_usage_snapshot_data disk_usage_tag_summary disk_usage_timeline_row disk_guardian_diagnostics
+		declare -f guardian_stamp_health_tag || true
+	)"
+	local seconds remaining
+	seconds="$DISK_DIAGNOSTIC_SECONDS"
+	remaining="$(emergency_remaining)"
+	[ "$remaining" -ge "$seconds" ] || seconds="$remaining"
+	[ "$seconds" -gt 0 ] || return 1
+	session_bounded "$seconds" bash -c "$definitions"$'\n''"$@"' bash "$@"
+}
+
+disk_usage_snapshot() {
+	disk_diagnostics_bounded disk_usage_snapshot_data
+}
+
+disk_usage_timeline() {
+	[ "$DISK_USAGE_INTERVAL_SECONDS" -gt 0 ] || return 0
+	[ -s "$DISK_USAGE_TIMELINE" ] || printf 'epoch\tlabel\tfree_mb\tusage\n' >"$DISK_USAGE_TIMELINE"
+	disk_diagnostics_bounded disk_usage_timeline_row "$1" || true
+}
+
+disk_guardian_diagnostics() {
+	guardian_stamp_health_tag disk-breach "$1" "$(disk_usage_tag_summary)"
+	disk_usage_snapshot_data >"$OUTPUT_DIR/disk-breach-usage.txt" 2>/dev/null || true
 }
 
 # The floor is only as good as the probe behind it: an OUTPUT_DIR that df
@@ -271,11 +724,13 @@ persist_soak_state() {
 	{
 		printf 'STARTED_AT=%s\n' "$STARTED_AT"
 		printf 'ITERATIONS=%s\n' "$ITERATIONS"
+		printf 'INFLIGHT_ITERATION=%s\n' "$INFLIGHT_ITERATION"
+		printf 'INFLIGHT_BENCHMARK=%s\n' "$INFLIGHT_BENCHMARK"
 		printf 'FAILURES=%s\n' "$FAILURES"
 		printf 'BENCH_SEGMENTS=%s\n' "$BENCH_SEGMENTS"
 		printf 'BENCH_FAILURES=%s\n' "$BENCH_FAILURES"
 		printf 'SEGMENT=%s\n' "$SEGMENT"
-	} >"$state_tmp" && mv "$state_tmp" "$STATE_FILE"
+	} >"$state_tmp" && mv "$state_tmp" "$STATE_FILE" || return 1
 	jq -n \
 		--arg target_ref "$TARGET_REF" \
 		--arg target_sha "$TARGET_SHA" \
@@ -297,7 +752,28 @@ persist_soak_state() {
 		mv "$checkpoint_tmp" "$checkpoint_state"
 }
 
-persist_soak_state
+if [ "$INFLIGHT_ITERATION" -eq 1 ]; then
+	FAILURES="$((FAILURES + 1))"
+	INFLIGHT_ITERATION=2
+fi
+if [ "$INFLIGHT_ITERATION" -eq 2 ]; then
+	EARLY_EXIT_REASON="interrupted_iteration"
+	DEADLINE=0
+	printf 'interrupted_iteration: iteration %s has no committed outcome. Writer termination is unconfirmed.\n' \
+		"$ITERATIONS" >"$OUTPUT_DIR/early-exit.txt" || exit 2
+fi
+if [ "$INFLIGHT_BENCHMARK" -eq 1 ]; then
+	FAILURES="$((FAILURES + 1))"
+	BENCH_FAILURES="$((BENCH_FAILURES + 1))"
+	INFLIGHT_BENCHMARK=2
+fi
+if [ "$INFLIGHT_BENCHMARK" -eq 2 ]; then
+	EARLY_EXIT_REASON="interrupted_benchmark"
+	DEADLINE=0
+	printf 'interrupted_benchmark: benchmark %s has no committed outcome. Writer termination is unconfirmed.\n' \
+		"$BENCH_SEGMENTS" >"$OUTPUT_DIR/early-exit.txt" || exit 2
+fi
+persist_soak_state || exit 2
 
 # Peak total node RSS for this iteration, from the newest harness
 # resource-timeseries.csv written after the iteration's start marker
@@ -687,18 +1163,88 @@ run_bench_segment() {
 	if [ "$remaining" -le "$((BENCH_DURATION + 600))" ]; then
 		return 0
 	fi
+	if [ "$DISK_FREE_FLOOR_MB" -gt 0 ]; then
+		local disk_mb
+		disk_mb="$(disk_free_mb)"
+		if [ -z "$disk_mb" ] || [ "$disk_mb" -lt "$((DISK_FREE_FLOOR_MB + DISK_HYGIENE_BAND_MB))" ]; then
+			EARLY_EXIT_REASON="host_protection_breach"
+			DEADLINE=0
+			FAILURES="$((FAILURES + 1))"
+			printf 'The disk sample does not permit benchmark admission. The driver refused work.\n' |
+				tee "$OUTPUT_DIR/protection-breach.txt"
+			printf 'host_protection_breach: benchmark disk sample %s MiB, required %s MiB\n' \
+				"${disk_mb:-unavailable}" "$((DISK_FREE_FLOOR_MB + DISK_HYGIENE_BAND_MB))" >"$OUTPUT_DIR/early-exit.txt"
+			return 1
+		fi
+	fi
+	if [ ! -s "$HOST_GUARDIAN_BREACH" ] && ! run_domain_verified; then
+		printf 'The run domain is unverified before benchmark admission. The driver refused work.\n' >"$HOST_GUARDIAN_BREACH"
+	fi
+	if ! jobs -pr | grep -Fxq "$CRASH_MONITOR_PID" && [ ! -s "$HOST_GUARDIAN_BREACH" ]; then
+		printf 'The crash monitor failed its benchmark admission check. Workload termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
+	fi
+	if [ -s "$HOST_GUARDIAN_BREACH" ] || { [ -n "$HOST_GUARDIAN_PID" ] && { ! kill -0 "$HOST_GUARDIAN_PID" 2>/dev/null || ! guardian_progress_fresh; }; }; then
+		if [ ! -s "$HOST_GUARDIAN_BREACH" ]; then
+			printf 'The host guardian failed its benchmark admission check. Workload termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
+		fi
+		EARLY_EXIT_REASON="host_protection_breach"
+		DEADLINE=0
+		FAILURES="$((FAILURES + 1))"
+		head -1 "$HOST_GUARDIAN_BREACH" | tee "$OUTPUT_DIR/protection-breach.txt"
+		printf 'host_protection_breach: %s\n' "$(head -1 "$HOST_GUARDIAN_BREACH")" >"$OUTPUT_DIR/early-exit.txt"
+		return 1
+	fi
 	BENCH_SEGMENTS="$((BENCH_SEGMENTS + 1))"
+	INFLIGHT_BENCHMARK=1
+	persist_soak_state || exit 2
 	local segment_dir
 	segment_dir="$OUTPUT_DIR/bench-segment-$(printf '%05d' "$BENCH_SEGMENTS")"
 	mkdir -p "$segment_dir"
-	NODE_REPO_DIR="$NODE_REPO_DIR" \
+	PATH="$SOAK_WORKLOAD_PATH" \
+		SOAK_PROCESS_OWNER="$SOAK_WRITER_OWNER" \
+		SOAK_WRITER_OWNER="$SOAK_WRITER_OWNER" \
+		SOAK_DOCKER_REAL="$SOAK_DOCKER_REAL" \
+		SOAK_DOCKER_OWNER_DIR="$SOAK_DOCKER_OWNER_DIR" \
+		NODE_REPO_DIR="$NODE_REPO_DIR" \
 		OUT_DIR="$segment_dir" \
 		BENCH_DURATION="$BENCH_DURATION" \
 		BENCH_RATE="$BENCH_RATE" \
 		SEGMENT_INDEX="$BENCH_SEGMENTS" \
 		SOAK_STARTED_AT="$STARTED_AT" \
-		"$SCRIPT_DIR/bench/run-bench-segment.sh" >"$segment_dir/segment.log" 2>&1
+		timeout --signal=TERM --kill-after=1 "$remaining" \
+		bash -c 'trap "while :; do sleep 1; done" TERM; "$@"' bash \
+		"$SCRIPT_DIR/bench/run-bench-segment.sh" >"$segment_dir/segment.log" 2>&1 &
+	BENCHMARK_PID=$!
+	local interrupted=0
+	while kill -0 "$BENCHMARK_PID" 2>/dev/null; do
+		if ! jobs -pr | grep -Fxq "$CRASH_MONITOR_PID" && [ ! -s "$HOST_GUARDIAN_BREACH" ]; then
+			printf 'The crash monitor exited during benchmark execution. Workload termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
+		fi
+		if [ -n "$HOST_GUARDIAN_PID" ] && ! kill -0 "$HOST_GUARDIAN_PID" 2>/dev/null && [ ! -s "$HOST_GUARDIAN_BREACH" ]; then
+			printf 'The host guardian exited during benchmark execution. Workload termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
+		fi
+		if [ -n "$HOST_GUARDIAN_PID" ] && ! guardian_progress_fresh && [ ! -s "$HOST_GUARDIAN_BREACH" ]; then
+			printf 'The host guardian has no recent progress during benchmark execution. Workload termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
+		fi
+		if [ -s "$HOST_GUARDIAN_BREACH" ]; then
+			interrupted=1
+			stop_node_writers -q kill >/dev/null 2>&1 || true
+			kill -TERM "$BENCHMARK_PID" 2>/dev/null || true
+			break
+		fi
+		sleep "${SOAK_GUARDIAN_POLL_SECONDS:-2}"
+	done
+	wait "$BENCHMARK_PID" 2>/dev/null
 	local status=$?
+	BENCHMARK_PID=""
+	if [ "$interrupted" -eq 1 ]; then
+		EARLY_EXIT_REASON="host_protection_breach"
+		DEADLINE=0
+		FAILURES="$((FAILURES + 1))"
+		head -1 "$HOST_GUARDIAN_BREACH" | tee "$OUTPUT_DIR/protection-breach.txt"
+		printf 'host_protection_breach: %s\n' "$(head -1 "$HOST_GUARDIAN_BREACH")" >"$OUTPUT_DIR/early-exit.txt"
+		status=1
+	fi
 	if [ "$status" -ne 0 ]; then
 		BENCH_FAILURES="$((BENCH_FAILURES + 1))"
 		printf '%s\n' "$status" >"$segment_dir/exit-code.txt"
@@ -713,17 +1259,11 @@ run_bench_segment() {
 			tail -20 "$segment_dir/bench.log" >&2 || true
 		fi
 	fi
+	INFLIGHT_BENCHMARK=0
+	persist_soak_state || exit 2
 }
 
 mkdir -p "$OUTPUT_DIR"
-
-# Only on the first segment: this is the run's opening baseline measurement,
-# and repeating it at every resume would add segments the cadence never asked
-# for and skew the run's active-benchmark averages.
-if [ "$RUN_BENCHMARKS" = "true" ] && [ "$SEGMENT" -eq 1 ]; then
-	run_bench_segment
-	persist_soak_state
-fi
 
 # Operator signal, polled between iterations.
 #
@@ -775,24 +1315,133 @@ fi
 # breach it SIGKILLs every node process and container, writes a breach
 # marker, and the iteration loop below fails the soak closed.
 HOST_GUARDIAN_BREACH="$OUTPUT_DIR/host-guardian-breach.txt"
-rm -f "$HOST_GUARDIAN_BREACH"
+if [ -s "$HOST_GUARDIAN_BREACH" ]; then
+	EARLY_EXIT_REASON="host_protection_breach"
+	DEADLINE=0
+	if [ "$FAILURES" -eq 0 ]; then FAILURES=1; fi
+	head -1 "$HOST_GUARDIAN_BREACH" >"$OUTPUT_DIR/protection-breach.txt"
+	printf 'host_protection_breach: recovered guardian record: %s\n' \
+		"$(head -1 "$HOST_GUARDIAN_BREACH")" >"$OUTPUT_DIR/early-exit.txt"
+	persist_soak_state
+	printf 'The previous guardian breach prevents this segment from starting work.\n'
+fi
+if ! python3 -c 'import os, signal; assert callable(signal.pidfd_send_signal); os.close(os.pidfd_open(os.getpid(), 0))'; then
+	printf 'Host writer ownership requires Linux pidfd support. The driver refused work.\n' >&2
+	exit 2
+fi
+read -r SOAK_WRITER_OWNER </proc/sys/kernel/random/uuid || exit 2
+[[ "$SOAK_WRITER_OWNER" =~ ^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$ ]] || exit 2
+SOAK_DOCKER_REAL="$(command -v docker || true)"
+SOAK_DOCKER_OOM_PREFERRED=0
+if [ "$HOST_FREE_FLOOR_MB" -gt 0 ]; then SOAK_DOCKER_OOM_PREFERRED=1; fi
+export SOAK_DOCKER_OOM_PREFERRED
+SOAK_DOCKER_OWNER_DIR=""
+SOAK_WORKLOAD_PATH="$PATH"
+if [ -n "$SOAK_DOCKER_REAL" ]; then
+	SOAK_DOCKER_OWNER_DIR="$(mktemp -d "$OUTPUT_DIR/.docker-owner.XXXXXXXX")" || exit 2
+	cat >"$SOAK_DOCKER_OWNER_DIR/docker" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+real="${SOAK_DOCKER_REAL:?}"
+owner="${SOAK_WRITER_OWNER:?}"
+prefer="${SOAK_DOCKER_OOM_PREFERRED:?}"
+[[ "$prefer" == 0 || "$prefer" == 1 ]] || exit 2
+[[ "$owner" =~ ^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$ ]] || exit 2
+original=("$@")
+case "${1:-}" in
+run | create)
+    command="$1"
+    shift
+    preference=()
+    [[ "$prefer" == 0 ]] || preference=(--oom-score-adj 1000)
+    exec "$real" "$command" --label "io.f1r3fly.soak.owner=$owner" "${preference[@]}" "$@"
+    ;;
+compose)
+    prefix=(compose)
+    shift
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+        -f | --file | -p | --project-name | --project-directory | --env-file | --profile | --ansi | --progress)
+            [[ $# -ge 2 ]] || exit 2
+            prefix+=("$1" "$2")
+            shift 2
+            ;;
+        --file=* | --project-name=* | --project-directory=* | --env-file=* | --profile=* | --ansi=* | --progress=*)
+            prefix+=("$1")
+            shift
+            ;;
+        up | create)
+            labels="$(mktemp "${SOAK_DOCKER_OWNER_DIR:?}/labels.XXXXXXXX.json")"
+            trap 'rm -f "$labels"' EXIT
+            "$real" "${prefix[@]}" config --format json |
+                jq --arg owner "$owner" --argjson prefer "$prefer" '{services: (.services | with_entries(.value = ({labels: {"io.f1r3fly.soak.owner": $owner}} + (if $prefer == 1 then {oom_score_adj: 1000} else {} end))))}' >"$labels"
+            "$real" "${prefix[@]}" -f "$labels" "$@"
+            exit "$?"
+            ;;
+        -*) exit 2 ;;
+        *) break ;;
+        esac
+    done
+    ;;
+esac
+exec "$real" "${original[@]}"
+SH
+	chmod 700 "$SOAK_DOCKER_OWNER_DIR/docker" || exit 2
+	SOAK_WORKLOAD_PATH="$SOAK_DOCKER_OWNER_DIR:$PATH"
+fi
+CRASH_MONITOR_DIR=""
+CRASH_MONITOR_PID=""
+disk_usage_timeline segment-start
 HOST_GUARDIAN_PID=""
+HOST_GUARDIAN_PROGRESS="$OUTPUT_DIR/.host-guardian-progress"
+BENCHMARK_PID=""
 ITERATION_PID=""
 ITERATION_TEE_PID=""
 ITERATION_SNAPSHOT_PID=""
 ITERATION_FIFO=""
 cleanup_soak_processes() {
 	[ -z "$HOST_GUARDIAN_PID" ] || kill "$HOST_GUARDIAN_PID" 2>/dev/null || true
+	if [ -n "$BENCHMARK_PID" ]; then
+		kill -TERM "$BENCHMARK_PID" 2>/dev/null || true
+		wait "$BENCHMARK_PID" 2>/dev/null || true
+	fi
 	if [ -n "$ITERATION_PID" ]; then
 		kill "$ITERATION_PID" 2>/dev/null || true
-		pkill -KILL -f 'integration-tests/test/tests/custom/test_load.py' 2>/dev/null || true
 	fi
 	[ -z "$ITERATION_TEE_PID" ] || kill "$ITERATION_TEE_PID" 2>/dev/null || true
 	[ -z "$ITERATION_SNAPSHOT_PID" ] || kill "$ITERATION_SNAPSHOT_PID" 2>/dev/null || true
 	[ -z "$ITERATION_FIFO" ] || rm -f "$ITERATION_FIFO"
+	if [ -n "$BENCHMARK_PID" ] || [ -n "$ITERATION_PID" ]; then
+		if ! stop_node_writers -q kill >/dev/null 2>&1; then
+			printf 'Writer termination is unconfirmed because a writer stop failed or exceeded its budget.\n' >"$OUTPUT_DIR/writer-stop-failure.txt"
+			printf 'writer_stop_failed: Writer termination is unconfirmed.\n' >"$OUTPUT_DIR/early-exit.txt"
+			if [ "$INFLIGHT_ITERATION" -eq 1 ]; then
+				INFLIGHT_ITERATION=2
+				FAILURES="$((FAILURES + 1))"
+			elif [ "$INFLIGHT_BENCHMARK" -eq 1 ]; then
+				INFLIGHT_BENCHMARK=2
+				BENCH_FAILURES="$((BENCH_FAILURES + 1))"
+				FAILURES="$((FAILURES + 1))"
+			elif [ "$FAILURES" -eq 0 ]; then
+				FAILURES=1
+			fi
+			persist_soak_state || return 1
+		fi
+	fi
+	if [ -n "$CRASH_MONITOR_DIR" ]; then
+		printf 'handled\n' >"$CRASH_MONITOR_DIR/handled-exit"
+	fi
 }
 trap cleanup_soak_processes EXIT
+if [ "$DEADLINE" -gt "$(date +%s)" ] && ! start_crash_monitor; then
+	printf 'The crash monitor is unavailable. The driver refused work.\n' >&2
+	exit 2
+fi
 if { [ "$HOST_FREE_FLOOR_MB" -gt 0 ] && [ -r /proc/meminfo ]; } || [ "$DISK_FREE_FLOOR_MB" -gt 0 ]; then
+	if ! guardian_record_progress; then
+		printf 'The host guardian progress record is unavailable. The driver refused work.\n' >&2
+		exit 2
+	fi
 	(
 		# Run 33136185540 (2026-08-28): the kernel OOM killer chose
 		# Runner.Worker while this guardian's 3-sample window was still
@@ -820,18 +1469,37 @@ if { [ "$HOST_FREE_FLOOR_MB" -gt 0 ] && [ -r /proc/meminfo ]; } || [ "$DISK_FREE
 		#    dying, and last words outrank a checkpoint signal there.
 		guardian_oom_mark_warned=0
 		guardian_mark_workload_oom_preferred() {
-			local pid cid failed=0
-			for pid in $(pgrep -f '/tmp/rnode' 2>/dev/null); do
-				echo 1000 >"/proc/$pid/oom_score_adj" 2>/dev/null ||
-					sudo -n tee "/proc/$pid/oom_score_adj" <<<"1000" >/dev/null 2>&1 ||
-					failed=1
-			done
-			for cid in $(docker ps -q --filter 'name=rnode.' 2>/dev/null); do
-				pid="$(docker inspect -f '{{.State.Pid}}' "$cid" 2>/dev/null)" || continue
-				[ -n "$pid" ] && [ "$pid" != "0" ] || continue
-				sudo -n tee "/proc/$pid/oom_score_adj" <<<"1000" >/dev/null 2>&1 ||
-					failed=1
-			done
+			local failed=0
+			if ! timeout --signal=TERM --kill-after=1 "$DISK_STOP_SECONDS" python3 - "$SOAK_WRITER_OWNER" <<'PY'; then
+import os
+import sys
+
+marker = ("SOAK_PROCESS_OWNER=" + sys.argv[1]).encode()
+status = 0
+for name in os.listdir("/proc"):
+    if not name.isdigit():
+        continue
+    directory = None
+    try:
+        directory = os.open("/proc/" + name, os.O_RDONLY | os.O_DIRECTORY)
+        if os.fstat(directory).st_uid != os.geteuid():
+            continue
+        with os.fdopen(os.open("environ", os.O_RDONLY, dir_fd=directory), "rb") as environment:
+            if marker not in environment.read().split(b"\0"):
+                continue
+        with os.fdopen(os.open("oom_score_adj", os.O_WRONLY, dir_fd=directory), "w") as preference:
+            preference.write("1000\n")
+    except (FileNotFoundError, ProcessLookupError):
+        pass
+    except OSError:
+        status = 1
+    finally:
+        if directory is not None:
+            os.close(directory)
+sys.exit(status)
+PY
+				failed=1
+			fi
 			# One line for the whole guardian lifetime: a per-sample failure
 			# would flood the log, silence would hide that the runner is NOT
 			# protected from the kernel OOM killer.
@@ -841,7 +1509,7 @@ if { [ "$HOST_FREE_FLOOR_MB" -gt 0 ] && [ -r /proc/meminfo ]; } || [ "$DISK_FREE
 			fi
 		}
 		guardian_stamp_health_tag() {
-			local state="$1" avail="$2" iid tags
+			local state="$1" avail="$2" detail="${3:-}" iid tags
 			command -v oci >/dev/null 2>&1 || return 0
 			iid="$(curl -fsS --max-time 5 -H 'Authorization: Bearer Oracle' \
 				http://169.254.169.254/opc/v2/instance/id 2>/dev/null)" || return 0
@@ -849,16 +1517,18 @@ if { [ "$HOST_FREE_FLOOR_MB" -gt 0 ] && [ -r /proc/meminfo ]; } || [ "$DISK_FREE
 			# Every remote call is deadline-bounded: this function runs while
 			# the host is under memory pressure, and a hung CLI here must not
 			# stall the guardian whose whole job is reacting fast.
-			tags="$(timeout 15 oci --auth instance_principal compute instance get \
+			tags="$(timeout --foreground 15 oci --auth instance_principal compute instance get \
 				--instance-id "$iid" --query 'data."freeform-tags"' \
 				--output json 2>/dev/null)" || return 0
+			# An OCI freeform tag value holds 256 chars; the attribution detail
+			# is optional and trimmed to whatever fits after the last words.
 			tags="$(printf '%s' "$tags" | python3 -c '
 import json, sys
 tags = json.load(sys.stdin) or {}
-tags["soak-health"] = sys.argv[1]
+tags["soak-health"] = sys.argv[1][:256]
 print(json.dumps(tags))
-' "$state:$(date +%s):avail=${avail}MB")" || return 0
-			timeout 15 oci --auth instance_principal compute instance update \
+' "$state:$(date +%s):avail=${avail}MB${detail:+:$detail}")" || return 0
+			timeout --foreground 15 oci --auth instance_principal compute instance update \
 				--instance-id "$iid" --freeform-tags "$tags" --force \
 				>/dev/null 2>&1 || true
 		}
@@ -871,33 +1541,49 @@ print(json.dumps(tags))
 		[ "$disk_hard_floor_mb" -ge 1 ] || disk_hard_floor_mb=1
 		last_stamp=0
 		sample_n=0
+		timeline_last="$(date +%s)"
+		timeline_pid=""
 		while :; do
 			sleep 5
-			# Disk twin of the memory floor below (issue #378): same
-			# 3-consecutive-sample soft floor, same single-sample hard floor
-			# at half, same kill-then-marker order, same durable tag last
-			# words. Killing the nodes on a disk breach stops the writers
-			# while the runner still has bytes left for its own _diag log —
-			# on runs 33254400407/33278321865 those bytes ran out and the
-			# breach became a vanished runner instead of a recorded failure.
+			# The timeline row runs in the background and never overlaps
+			# itself, so a slow du cannot delay the probe or the progress
+			# record that the B22 admission check reads.
+			if [ "$DISK_USAGE_INTERVAL_SECONDS" -gt 0 ] &&
+				[ $(($(date +%s) - timeline_last)) -ge "$DISK_USAGE_INTERVAL_SECONDS" ] &&
+				{ [ -z "$timeline_pid" ] || ! kill -0 "$timeline_pid" 2>/dev/null; }; then
+				disk_usage_timeline sample &
+				timeline_pid=$!
+				timeline_last="$(date +%s)"
+			fi
 			if [ "$DISK_FREE_FLOOR_MB" -gt 0 ]; then
 				disk_mb="$(disk_free_mb)"
+				if [ -z "$disk_mb" ]; then
+					printf 'The disk probe is unavailable during execution. Workload termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
+					stop_node_writers -q kill || true
+					exit 0
+				fi
 				if [ -n "$disk_mb" ]; then
 					if [ "$disk_mb" -ge "$DISK_FREE_FLOOR_MB" ]; then
 						disk_over=0
 					else
 						disk_over=$((disk_over + 1))
 						if [ "$disk_mb" -lt "$disk_hard_floor_mb" ] || [ "$disk_over" -ge 3 ]; then
-							pkill -9 -f '/tmp/rnode' 2>/dev/null || true
-							docker ps -q --filter 'name=rnode.' 2>/dev/null | xargs -r docker kill 2>/dev/null || true
-							printf 'orchestrator disk guardian: host free disk %sMB < floor %sMB (hard floor %sMB, consecutive %s); killed all node processes and containers to protect the runner\n' \
+							printf 'The disk guardian detected %s MiB below floor %s MiB (hard floor %s MiB, consecutive samples %s). Workload termination is unconfirmed.\n' \
 								"$disk_mb" "$DISK_FREE_FLOOR_MB" "$disk_hard_floor_mb" "$disk_over" >"$HOST_GUARDIAN_BREACH"
-							guardian_stamp_health_tag disk-breach "$disk_mb"
+							stop_node_writers -q kill || true
+							# Who filled it rides in the tag: on weekend runs
+							# 33939315110, 33978505238 and 34056342543 the VM
+							# was gone ~20s after this stamp and the tag was
+							# the only evidence that survived. The full
+							# snapshot follows for the case where the runner
+							# lives long enough to upload it.
+							disk_diagnostics_bounded disk_guardian_diagnostics "$disk_mb" || true
 							exit 0
 						fi
 					fi
 				fi
 			fi
+			guardian_record_progress || exit 1
 			if [ "$HOST_FREE_FLOOR_MB" -le 0 ]; then
 				continue
 			fi
@@ -926,14 +1612,9 @@ print(json.dumps(tags))
 			if [ "$free_mb" -ge "$hard_floor_mb" ] && [ "$over" -lt 3 ]; then
 				continue
 			fi
-			# Kill first, marker second: the marker asserts the host was defended,
-			# so it must not exist before the kills have run. `|| true` on each —
-			# pkill exits 1 with no matching process (normal when only containers
-			# are up), and neither miss may stop the other mitigation.
-			pkill -9 -f '/tmp/rnode' 2>/dev/null || true
-			docker ps -q --filter 'name=rnode.' 2>/dev/null | xargs -r docker kill 2>/dev/null || true
-			printf 'orchestrator host guardian: host available RAM %sMB < floor %sMB (hard floor %sMB, consecutive %s); killed all node processes and containers to protect the host\n' \
+			printf 'orchestrator host guardian: host available RAM %sMB < floor %sMB (hard floor %sMB, consecutive %s); writer termination is unconfirmed\n' \
 				"$free_mb" "$HOST_FREE_FLOOR_MB" "$hard_floor_mb" "$over" >"$HOST_GUARDIAN_BREACH"
+			stop_node_writers -q kill >/dev/null 2>&1 || true
 			guardian_stamp_health_tag breach "$free_mb"
 			exit 0
 		done
@@ -942,6 +1623,15 @@ print(json.dumps(tags))
 	printf 'orchestrator host guardian watching MemAvailable floor %sMB (hard floor %sMB, warn %sMB) and disk free floor %sMB (hard floor %sMB); pid %s\n' \
 		"$HOST_FREE_FLOOR_MB" "$((HOST_FREE_FLOOR_MB / 2))" "$((HOST_FREE_FLOOR_MB + 4096))" \
 		"$DISK_FREE_FLOOR_MB" "$((DISK_FREE_FLOOR_MB / 2))" "$HOST_GUARDIAN_PID"
+fi
+
+# Only on the first segment: this is the run's opening baseline measurement,
+# and repeating it at every resume would add segments the cadence never asked
+# for and skew the run's active-benchmark averages.
+if [ "$RUN_BENCHMARKS" = "true" ] && [ "$SEGMENT" -eq 1 ] &&
+	[ ! -s "$OUTPUT_DIR/host-guardian-breach.txt" ]; then
+	run_bench_segment
+	persist_soak_state
 fi
 
 while [ "$(date +%s)" -lt "$DEADLINE" ]; do
@@ -960,15 +1650,35 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 	# Iteration-boundary disk hygiene (issue #378): reclaim per-iteration
 	# leftovers while free space is merely low, so the guardian floor above
 	# is the backstop and not the routine outcome. If hygiene cannot lift
-	# free space back over the floor, end the run here — cleanly, with df
-	# evidence — rather than start an iteration whose nodes will write into
-	# a nearly full disk and fail with a misleading consensus verdict.
+	# free space back OUT OF THE BAND, end the run here — cleanly, with df
+	# and du evidence — rather than start an iteration whose nodes will write
+	# into a nearly full disk and fail with a misleading consensus verdict.
+	#
+	# Out of the band, not merely over the floor. The first cut compared
+	# against the floor, and weekend runs 33939315110, 33978505238 and
+	# 34056342543 all walked through it: hygiene reclaimed nothing at 7956MB,
+	# 7596MB and 7355MB free, each pass was still 3GB over the floor, so each
+	# started another iteration; the iteration crossed the floor mid-run, the
+	# guardian fired, and the runner was dead ~20s later with no report. A
+	# pass that ends inside the band has already proven that nothing it
+	# sweeps is what is growing, and the next iteration only moves the
+	# breach into the guardian's window. Every observed pass that did
+	# recover space cleared the band (8054 -> 14381MB, 8047 -> 14265MB).
 	if [ "$DISK_FREE_FLOOR_MB" -gt 0 ]; then
 		DISK_MB="$(disk_free_mb)"
 		if [ -n "$DISK_MB" ] && [ "$DISK_MB" -lt "$((DISK_FREE_FLOOR_MB + DISK_HYGIENE_BAND_MB))" ]; then
 			printf 'free disk %sMB inside hygiene band (floor %sMB + band %sMB); reclaiming\n' \
 				"$DISK_MB" "$DISK_FREE_FLOOR_MB" "$DISK_HYGIENE_BAND_MB"
-			reclaim_disk_space
+			if ! reclaim_disk_space; then
+				if [ ! -s "$HOST_GUARDIAN_BREACH" ]; then
+					printf 'Disk hygiene failed or exceeded its command budget. Cleanup termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
+				fi
+				EARLY_EXIT_REASON="host_protection_breach"
+				head -1 "$HOST_GUARDIAN_BREACH" | tee "$OUTPUT_DIR/protection-breach.txt"
+				printf 'host_protection_breach: disk hygiene incomplete\n' >"$OUTPUT_DIR/early-exit.txt"
+				FAILURES="$((FAILURES + 1))"
+				break
+			fi
 			# The guardian may have fired while hygiene ran (a builder prune
 			# can outlast the soft floor's 15s window), and it exits after
 			# firing — space recovered afterwards does not un-fire it or
@@ -984,17 +1694,43 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 				break
 			fi
 			DISK_MB="$(disk_free_mb)"
-			if [ -n "$DISK_MB" ] && [ "$DISK_MB" -lt "$DISK_FREE_FLOOR_MB" ]; then
+			if [ -n "$DISK_MB" ] && [ "$DISK_MB" -lt "$((DISK_FREE_FLOOR_MB + DISK_HYGIENE_BAND_MB))" ]; then
 				EARLY_EXIT_REASON="host_protection_breach"
-				df -Pm "$OUTPUT_DIR" >"$OUTPUT_DIR/disk-floor-breach.txt" 2>/dev/null || true
-				printf 'orchestrator disk floor: free disk %sMB < floor %sMB after hygiene; ending soak (fail-closed)\n' \
-					"$DISK_MB" "$DISK_FREE_FLOOR_MB" | tee "$OUTPUT_DIR/protection-breach.txt"
-				printf 'host_protection_breach: disk floor: free %sMB < floor %sMB after hygiene\n' \
-					"$DISK_MB" "$DISK_FREE_FLOOR_MB" >"$OUTPUT_DIR/early-exit.txt"
+				printf 'orchestrator disk floor: free disk %sMB still inside hygiene band (floor %sMB + band %sMB) after hygiene; ending soak (fail-closed)\n' \
+					"$DISK_MB" "$DISK_FREE_FLOOR_MB" "$DISK_HYGIENE_BAND_MB" | tee "$OUTPUT_DIR/protection-breach.txt"
+				printf 'host_protection_breach: disk floor: free %sMB still inside hygiene band (floor %sMB + band %sMB) after hygiene\n' \
+					"$DISK_MB" "$DISK_FREE_FLOOR_MB" "$DISK_HYGIENE_BAND_MB" >"$OUTPUT_DIR/early-exit.txt"
 				FAILURES="$((FAILURES + 1))"
+				persist_soak_state || true
+				disk_usage_snapshot >"$OUTPUT_DIR/disk-floor-breach.txt" 2>/dev/null || true
 				break
 			fi
+			disk_usage_snapshot 2>/dev/null | sed 's/^/disk usage: /'
 		fi
+		if [ -z "$DISK_MB" ]; then
+			EARLY_EXIT_REASON="host_protection_breach"
+			printf 'The disk probe is unavailable before admission. The driver refused work.\n' |
+				tee "$OUTPUT_DIR/protection-breach.txt"
+			printf 'host_protection_breach: disk probe unavailable before admission\n' >"$OUTPUT_DIR/early-exit.txt"
+			FAILURES="$((FAILURES + 1))"
+			break
+		fi
+	fi
+	if [ ! -s "$HOST_GUARDIAN_BREACH" ] && ! run_domain_verified; then
+		printf 'The run domain is unverified before iteration admission. The driver refused work.\n' >"$HOST_GUARDIAN_BREACH"
+	fi
+	if ! jobs -pr | grep -Fxq "$CRASH_MONITOR_PID" && [ ! -s "$HOST_GUARDIAN_BREACH" ]; then
+		printf 'The crash monitor failed its iteration admission check. Workload termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
+	fi
+	if [ -s "$HOST_GUARDIAN_BREACH" ] || { [ -n "$HOST_GUARDIAN_PID" ] && { ! kill -0 "$HOST_GUARDIAN_PID" 2>/dev/null || ! guardian_progress_fresh; }; }; then
+		if [ ! -s "$HOST_GUARDIAN_BREACH" ]; then
+			printf 'The host guardian failed its iteration admission check. Workload termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
+		fi
+		EARLY_EXIT_REASON="host_protection_breach"
+		head -1 "$HOST_GUARDIAN_BREACH" | tee "$OUTPUT_DIR/protection-breach.txt"
+		printf 'host_protection_breach: %s\n' "$(head -1 "$HOST_GUARDIAN_BREACH")" >"$OUTPUT_DIR/early-exit.txt"
+		FAILURES="$((FAILURES + 1))"
+		break
 	fi
 	if [ -e "$SIGNAL_FILE" ]; then
 		SIGNAL="$(tr -d '[:space:]' <"$SIGNAL_FILE" 2>/dev/null || true)"
@@ -1026,11 +1762,14 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 	fi
 	PROVIDER="${PROVIDERS[$((ITERATIONS % ${#PROVIDERS[@]}))]}"
 	ITERATIONS="$((ITERATIONS + 1))"
-	persist_soak_state
+	INFLIGHT_ITERATION=1
+	persist_soak_state || exit 2
 	ITERATION_DIR="$OUTPUT_DIR/iteration-$(printf '%05d' "$ITERATIONS")-$PROVIDER"
 	mkdir -p "$ITERATION_DIR"
+	disk_usage_timeline "iteration-$(printf '%05d' "$ITERATIONS")"
 	REMAINING="$((DEADLINE - $(date +%s)))"
 	if [ "$REMAINING" -le 0 ]; then
+		INFLIGHT_ITERATION=0
 		break
 	fi
 
@@ -1043,6 +1782,9 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 	ITERATION_TEE_PID=$!
 	(
 		cd "$SYSTEM_INTEGRATION_DIR"
+		export SOAK_WRITER_OWNER SOAK_DOCKER_REAL SOAK_DOCKER_OWNER_DIR
+		export SOAK_PROCESS_OWNER="$SOAK_WRITER_OWNER"
+		export PATH="$SOAK_WORKLOAD_PATH"
 		exec timeout --signal=TERM --kill-after=30 "${REMAINING}s" \
 			poetry run pytest \
 			integration-tests/test/tests/custom/test_load.py \
@@ -1058,10 +1800,26 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 	ITERATION_SNAPSHOT_PID=$!
 	GUARDIAN_INTERRUPTED=0
 	while kill -0 "$ITERATION_PID" 2>/dev/null; do
+		if ! jobs -pr | grep -Fxq "$CRASH_MONITOR_PID" && [ ! -s "$HOST_GUARDIAN_BREACH" ]; then
+			printf 'The crash monitor exited during iteration execution. Workload termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
+		fi
+		if [ -n "$HOST_GUARDIAN_PID" ] && ! kill -0 "$HOST_GUARDIAN_PID" 2>/dev/null && [ ! -s "$HOST_GUARDIAN_BREACH" ]; then
+			printf 'The host guardian exited during execution. Workload termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
+		fi
+		if [ -n "$HOST_GUARDIAN_PID" ] && ! guardian_progress_fresh && [ ! -s "$HOST_GUARDIAN_BREACH" ]; then
+			printf 'The host guardian has no recent progress during execution. Workload termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
+		fi
 		if [ -s "$HOST_GUARDIAN_BREACH" ]; then
 			GUARDIAN_INTERRUPTED=1
+			emergency_start
+			EARLY_EXIT_REASON="host_protection_breach"
+			head -1 "$HOST_GUARDIAN_BREACH" >"$OUTPUT_DIR/protection-breach.txt"
+			printf 'host_protection_breach: iteration %s: %s\n' "$ITERATIONS" "$(head -1 "$HOST_GUARDIAN_BREACH")" \
+				>"$OUTPUT_DIR/early-exit.txt"
 			kill -TERM "$ITERATION_PID" 2>/dev/null || true
-			for _ in $(seq 1 15); do
+			term_wait="$(emergency_remaining)"
+			[ "$term_wait" -le 15 ] || term_wait=15
+			for _ in $(seq 1 "$term_wait"); do
 				kill -0 "$ITERATION_PID" 2>/dev/null || break
 				sleep 1
 			done
@@ -1072,6 +1830,16 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 	done
 	wait "$ITERATION_PID" 2>/dev/null
 	STATUS=$?
+	if [ "$GUARDIAN_INTERRUPTED" -eq 1 ]; then
+		STATUS=1
+		stop_node_writers -aq rm -f >/dev/null 2>&1 || true
+	fi
+	if [ -n "$EMERGENCY_DEADLINE_EPOCH" ]; then
+		while kill -0 "$ITERATION_TEE_PID" 2>/dev/null && [ "$(emergency_remaining)" -gt 0 ]; do
+			sleep 0.2
+		done
+		kill "$ITERATION_TEE_PID" 2>/dev/null || true
+	fi
 	wait "$ITERATION_TEE_PID" 2>/dev/null || true
 	kill "$ITERATION_SNAPSHOT_PID" 2>/dev/null || true
 	wait "$ITERATION_SNAPSHOT_PID" 2>/dev/null || true
@@ -1080,11 +1848,6 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 	ITERATION_TEE_PID=""
 	ITERATION_SNAPSHOT_PID=""
 	ITERATION_FIFO=""
-	if [ "$GUARDIAN_INTERRUPTED" -eq 1 ]; then
-		STATUS=1
-		pkill -9 -f '/tmp/rnode' 2>/dev/null || true
-		docker ps -aq --filter 'name=rnode.' 2>/dev/null | xargs -r docker rm -f >/dev/null 2>&1 || true
-	fi
 	# No `set -e` restore: this script never enables errexit (line 2 is
 	# `set -uo pipefail`), and turning it on here made the first failed
 	# iteration fatal — the metric pipelines return nonzero when a failed
@@ -1093,6 +1856,7 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 	ITER_FINISHED="$(date +%s)"
 	emit_iteration_metrics "$ITERATION_DIR" "$ITERATIONS" "$PROVIDER" \
 		"$ITER_STARTED" "$ITER_FINISHED" "$STATUS" || true
+	INFLIGHT_ITERATION=0
 
 	if [ "$STATUS" -eq 124 ] && [ "$(date +%s)" -ge "$DEADLINE" ]; then
 		printf '%s\n' "deadline reached during iteration $ITERATIONS" >"$ITERATION_DIR/deadline.txt"
@@ -1113,11 +1877,18 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 			printf 'preserving failure evidence from integration-tests/%s (iteration %s)\n' \
 				"$evidence_name" "$ITERATIONS"
 			mkdir -p "$ITERATION_DIR/$evidence_name"
-			(cd "$evidence_root" &&
-				find . -type f \( -name '*.log' -o -name '*.csv' -o -name '*.txt' \
-					-o -name '*.json' -o -name '*.conf' -o -name '*.toml' \) -print0 |
-				tar --null -T - -cf -) |
-				tar -xf - -C "$ITERATION_DIR/$evidence_name" ||
+			copy_budget="$(emergency_remaining)"
+			if [ -n "$EMERGENCY_DEADLINE_EPOCH" ] && [ "$copy_budget" -le 0 ]; then
+				printf 'failure-evidence copy of %s skipped: the emergency deadline expired\n' "$evidence_name" |
+					tee -a "$OUTPUT_DIR/emergency-skipped.txt" >&2
+				continue
+			fi
+			session_bounded "$copy_budget" bash -c '
+				cd "$1" &&
+					find . -type f \( -name "*.log" -o -name "*.csv" -o -name "*.txt" \
+						-o -name "*.json" -o -name "*.conf" -o -name "*.toml" \) -print0 |
+					tar --null -T - -cf - |
+					tar -xf - -C "$2"' bash "$evidence_root" "$ITERATION_DIR/$evidence_name" ||
 				printf 'failure-evidence copy incomplete (non-fatal)\n' >&2
 			printf 'failure evidence preserved in %ss\n' "$(($(date +%s) - COPY_STARTED))"
 		done
@@ -1156,7 +1927,7 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 		if [ -z "$BREACH_LINE" ] && [ "$DISK_FREE_FLOOR_MB" -gt 0 ]; then
 			DISK_MB="$(disk_free_mb)"
 			if [ -n "$DISK_MB" ] && [ "$DISK_MB" -lt "$DISK_FREE_FLOOR_MB" ]; then
-				df -Pm "$OUTPUT_DIR" >"$ITERATION_DIR/disk-floor-breach.txt" 2>/dev/null || true
+				disk_usage_snapshot >"$ITERATION_DIR/disk-floor-breach.txt" 2>/dev/null || true
 				BREACH_LINE="iteration $ITERATIONS failed with free disk ${DISK_MB}MB < floor ${DISK_FREE_FLOOR_MB}MB; infrastructure, not a workload verdict"
 			fi
 		fi
@@ -1170,6 +1941,7 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 		fi
 		sleep 30
 	fi
+	persist_soak_state || exit 2
 
 	if target_ref_moved; then
 		EARLY_EXIT_REASON="target_advanced"
@@ -1198,6 +1970,9 @@ if [ -z "$EARLY_EXIT_REASON" ] && [ -s "$HOST_GUARDIAN_BREACH" ]; then
 	FAILURES="$((FAILURES + 1))"
 fi
 
+if [ "${EARLY_EXIT_REASON:-}" = host_protection_breach ]; then
+	emergency_start
+fi
 FINISHED_AT="$(date +%s)"
 
 # Written before the rollup so a later segment resumes from accurate counters
@@ -1219,6 +1994,12 @@ persist_soak_state
 	printf 'early_exit_reason=%s\n' "${EARLY_EXIT_REASON:-none}"
 } | tee "$OUTPUT_DIR/summary.txt"
 
+summary_budget() {
+	local remaining
+	remaining="$(emergency_remaining)"
+	[ "$remaining" -ge 5 ] || remaining=5
+	printf '%s\n' "$remaining"
+}
 if command -v jq >/dev/null; then
 	SOAK_OUTPUT_DIR="$OUTPUT_DIR" \
 		SOAK_METRICS_REGISTRY="$SCRIPT_DIR/bench/soak-metrics.json" \
@@ -1234,7 +2015,7 @@ if command -v jq >/dev/null; then
 		SOAK_FAILURES="$FAILURES" \
 		SOAK_BENCH_SEGMENTS="$BENCH_SEGMENTS" \
 		SOAK_BENCH_FAILURES="$BENCH_FAILURES" \
-		"$SCRIPT_DIR/bench/write-soak-summary.sh" ||
+		session_bounded "$(summary_budget)" "$SCRIPT_DIR/bench/write-soak-summary.sh" ||
 		{
 			# The full rollup failing must not leave the run without passive data:
 			# aggregate-perf-report.sh then emits started_at/elapsed_seconds as

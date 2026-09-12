@@ -1,0 +1,2 @@
+FAIL: The opening benchmark returned without a guardian record and stop request for its disk fault.
+Evidence: [EVIDENCE_ROOT]/d2-benchmark-monitor-wD4Bp96f/production-red-confirmed

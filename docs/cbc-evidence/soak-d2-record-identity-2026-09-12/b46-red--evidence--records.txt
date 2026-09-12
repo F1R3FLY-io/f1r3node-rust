@@ -1,0 +1,11 @@
+0 644 regular file 153 /run/soak-run-domain/matching.json
+0 644 regular file 153 /run/soak-run-domain/nested/symlink-ancestor.json
+0 644 regular file 153 /run/soak-untrusted/workload-owned/run-domain/untrusted-ancestor.json
+0 644 regular file 69634 /run/soak-run-domain/oversized.json
+0 644 regular file 92 /run/soak-run-domain/fixture-cgroup.txt
+0 755 directory 4096 /run/soak-run-domain
+0 755 directory 4096 /run/soak-run-domain/nested
+0 755 directory 4096 /run/soak-untrusted
+0 755 directory 4096 /run/soak-untrusted/workload-owned/run-domain
+0 777 symbolic link 20 /run/soak-link
+65534 755 directory 4096 /run/soak-untrusted/workload-owned
