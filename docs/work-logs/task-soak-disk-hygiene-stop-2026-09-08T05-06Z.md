@@ -888,3 +888,65 @@ The design must cover native descendants, Docker writers, late creation, inacces
 Storage durability, aggregate deadlines, D3 reserve evidence, hosted verification, maintainer review, and acceptance remain pending.
 Construction is not applicable to these Bash-driver models.
 No claim is discharged.
+
+### B44 containment proposal, 2026-09-11
+
+This review starts from a clean tree at `1f9427958634516ab04f757688b0e2ad3376b718`.
+The [controller-loss correspondence](../../formal/tlaplus/soak_disk/ControllerLoss.md#proposed-runner-containment) now contains a proposed runner containment contract.
+The proposal includes a private Docker engine, explicit placement, pending creation, independent shutdown observation, and failure retention.
+The glossary defines the run domain and creation fence.
+These definitions do not establish an implemented protection mechanism.
+
+The local host reports systemd 255, cgroup v2, and Docker's systemd cgroup driver.
+These read-only observations do not verify a deployed containment boundary.
+The Docker reference permits per-container overrides of daemon placement defaults.
+The kernel reference does not establish a permanent creation fence from one cgroup kill.
+A simple service wrapper or daemon default is therefore insufficient.
+
+GitHub CLI access still fails because authentication is unavailable.
+No new behavioral result, hosted execution, virtual machine, or acceptance run exists for this proposal.
+Production and formal source files remain unchanged.
+The next implementation requires confirmation of the proposed files, method, and service-manager survival assumption.
+B44 remains RED, and D2 remains incomplete.
+
+### B44 native subcycle, 2026-09-11
+
+The user confirmed the proposed implementation scope and assigned commit and push work to another agent.
+The [native subcycle](../../formal/tlaplus/soak_disk/NativeControllerLoss.md) starts from committed source `1f9427958634516ab04f757688b0e2ad3376b718`.
+The new baseline adapter launches the unchanged driver without containment.
+The matched RED confirms both controller deaths while the owned writer grows from 376 to 396 bytes.
+The unrelated writer also continues.
+The matching model violates `NativeControllerLossStopsOwnedWriter` with TLC exit 12.
+
+The corrected native launcher uses a separate system service with control-group termination and no automatic restart.
+The unchanged fixture confirms owned-writer termination while the unrelated writer continues.
+Two actual restarts refuse admission and retain `[1,1,0,0]`.
+The managed three-state model passes.
+The original direct-launch B44 model and fixture remain separate, unresolved evidence.
+
+The initial service environment arguments caused a setup failure, not behavioral RED.
+A later invocation passed its behavioral assertions but failed outer-service cleanup.
+The final matched pair uses identical outer-service settings and has invocation exits 1 and 0.
+All five initial stages retain separate source and result identities.
+The evidence archive was verified before the diagnostic virtual machine reached observed `TERMINATED` state.
+
+Evidence review found that the initial fixture copied shell files without execute permissions.
+Its restarts used the driver's fallback summary.
+The reviewed fixture restores execute permissions without changing the fault or its assertions.
+A second guarded runner establishes matched RED/GREEN results with normal summary publication on both actual restarts.
+The reviewed observation records stable owned output at 2 bytes and unrelated output from 4 to 14 bytes.
+Verified retrieval precedes observed termination of the second runner.
+
+The combined snapshot passes 40 positive configurations, 42 exact controls, 294 classifier cases, six routing scenarios, and 46 emergency cases.
+All 82 actual TLC logs identify the frozen source and expected result.
+The supporting admission, driver, metrics, and summary regressions pass.
+The combined snapshot does not execute the privileged native fixture.
+Its later permission correction has separate reviewed native execution.
+All combined reruns remain digest-only.
+
+This native-only prototype is not connected to the normal soak workflow.
+It checks placement after service start and does not establish a verified pre-admission handshake.
+Private Docker containment, creation fencing, metadata failure handling, and general termination guarantees remain open.
+The 45-second finalization wait and workload remain unchanged.
+The [native evidence package](../cbc-evidence/soak-d2-native-containment-2026-09-11/README.md) records the bounded verification and its limitations.
+B44, D2, all claim discharges, and acceptance remain pending.

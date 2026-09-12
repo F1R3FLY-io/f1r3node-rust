@@ -82,6 +82,7 @@ case "$config" in
     MC_BenchmarkMonitorDeath_iteration_only_pre_fix.cfg) invariant=BenchmarkMonitorDeathStopsOwnedWriter ;;
     MC_MonitorAdmission_benchmark_unchecked_pre_fix.cfg | MC_MonitorAdmission_iteration_unchecked_pre_fix.cfg) invariant=MonitorDeathPreventsAdmission ;;
     MC_InterruptedOutputDrain_drain_first_pre_fix.cfg) invariant=DrainRequiresOwnedStop ;;
+    MC_NativeControllerLoss_unmanaged_pre_fix.cfg) invariant=NativeControllerLossStopsOwnedWriter ;;
     *) printf 'Model checking completed. No error has been found.\n'; exit 0 ;;
 esac
 printf 'Error: Invariant %s is violated.\n' "$invariant"
@@ -168,6 +169,8 @@ pr_configs=(
     soak_disk/MC_MonitorAdmission_iteration_unchecked_pre_fix
     soak_disk/MC_InterruptedOutputDrain
     soak_disk/MC_InterruptedOutputDrain_drain_first_pre_fix
+    soak_disk/MC_NativeControllerLoss
+    soak_disk/MC_NativeControllerLoss_unmanaged_pre_fix
     carrier_index/MC_CarrierIndex_dag_first_pre_fix
     carrier_index/MC_CarrierIndex_read_failure_pre_fix
 )

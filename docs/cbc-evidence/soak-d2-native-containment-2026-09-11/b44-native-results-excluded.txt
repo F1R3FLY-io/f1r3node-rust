@@ -1,0 +1,4 @@
+./matched-red/evidence/output/iteration-00001-docker/.pytest-output.fifo
+./matched-green/evidence/output/iteration-00001-docker/.pytest-output.fifo
+./compatible/evidence/output/iteration-00001-docker/.pytest-output.fifo
+./red/evidence/output/iteration-00001-docker/.pytest-output.fifo

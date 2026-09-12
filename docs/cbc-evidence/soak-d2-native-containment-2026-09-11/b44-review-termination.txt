@@ -1,0 +1,1 @@
+Diagnostic VM final state: TERMINATED
