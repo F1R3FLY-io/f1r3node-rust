@@ -307,6 +307,14 @@ canonical_key_protocol_proofs() {
   rocq_check_modules "ordered source chunk folds" StackSafePDA.IncrementalPrepareStreaming
 }
 
+canonical_sexpr_projection_proofs() {
+  local TLC_MEMORY_HIGH=1536M TLC_RSS=2G TLC_CPU_QUOTA=100% TLC_TASKS_MAX=64
+  rocq_reject_placeholders theories/CanonicalSexprProjection.v
+  rocq_compile_with_closed_count theories/CanonicalSexprProjection.v 27 \
+    "S-expression streaming projection, multiplicity and canonical-field view laws"
+  rocq_check_modules "S-expression canonical-field projection" StackSafePDA.CanonicalSexprProjection
+}
+
 canonical_act_batch_publication_proofs() {
   local TLC_MEMORY_HIGH=1536M TLC_RSS=2G TLC_CPU_QUOTA=100% TLC_TASKS_MAX=64
   rocq_reject_placeholders theories/CanonicalActBatchPublication.v
@@ -353,6 +361,8 @@ epathmap_import_runtime() {
   rpb3_run_tests 15 --release -j4 --lib normalized_source_spans
   rpb3_run_tests 15 -j4 --lib normalized_source_spans
   rpb3_run_tests 5 --release -j4 --lib byte_policy_tests
+  rpb3_run_tests 15 --release -j4 --lib rust::par_to_sexpr::tests
+  rpb3_run_tests 15 -j4 --lib rust::par_to_sexpr::tests
 }
 
 act_line_transport_runtime() {
@@ -429,6 +439,7 @@ if [[ "${1:-}" == "--canonical-key-proofs" ]]; then
   pushd "$rocq_root" >/dev/null
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/StackSafePDA.v
   canonical_key_protocol_proofs
+  canonical_sexpr_projection_proofs
   popd >/dev/null
   echo "stack-safe-pda: canonical-key prerequisite proofs passed; runtime qualification is separate"
   exit 0
@@ -445,6 +456,7 @@ if [[ "${1:-}" == "--epathmap-import" ]]; then
   rocq_compile_with_closed_count theories/RhoPathV1Datum.v 21 "RhoPath zero framing"
   epathmap_score_proofs
   canonical_key_protocol_proofs
+  canonical_sexpr_projection_proofs
   popd >/dev/null
   pushd "$repo_root" >/dev/null
   epathmap_import_runtime
@@ -618,10 +630,7 @@ if [[ "$rspace_commit_closed_capstones" != "6" ]]; then
   exit 1
 fi
 canonical_key_protocol_proofs
-rocq_reject_placeholders theories/CanonicalSexprProjection.v
-rocq_compile_with_closed_count theories/CanonicalSexprProjection.v 27 \
-  "S-expression streaming projection, multiplicity and canonical-field view laws"
-rocq_check_modules "S-expression canonical-field projection" StackSafePDA.CanonicalSexprProjection
+canonical_sexpr_projection_proofs
 rpb3_admission_mutants_rocq_output="$(
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/RPB3AdmissionMutants.v 2>&1
 )"

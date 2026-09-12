@@ -16,7 +16,7 @@ use crate::rust::rholang::protobuf_encoder;
 use crate::rust::rholang::protobuf_schema::ProtobufKind;
 
 #[derive(Default)]
-struct Reads {
+pub(crate) struct Reads {
     positions: BTreeMap<usize, usize>,
 }
 
@@ -32,7 +32,7 @@ pub(crate) fn record_byte(address: usize) {
     });
 }
 
-fn measure<T>(action: impl FnOnce() -> T) -> (T, Reads) {
+pub(crate) fn measure<T>(action: impl FnOnce() -> T) -> (T, Reads) {
     struct Reset;
     impl Drop for Reset {
         fn drop(&mut self) { ACTIVE.with(|active| *active.borrow_mut() = None); }
@@ -49,9 +49,9 @@ fn measure<T>(action: impl FnOnce() -> T) -> (T, Reads) {
 }
 
 impl Reads {
-    fn total(&self) -> usize { self.positions.values().sum() }
+    pub(crate) fn total(&self) -> usize { self.positions.values().sum() }
 
-    fn maximum(&self) -> usize { self.positions.values().copied().max().unwrap_or(0) }
+    pub(crate) fn maximum(&self) -> usize { self.positions.values().copied().max().unwrap_or(0) }
 
     fn within(&self, root: &ProtobufRegion, limit: usize) -> bool {
         let start = root.as_bytes().as_ptr() as usize;

@@ -2054,6 +2054,24 @@ and these tests live under `models/tests/support/`. The original four tests keep
 their names and depth/stack parameters. These baselines are not yet evidence for
 a byte-native implementation.
 
+The subsequent byte-native implementation binds these laws using endpoint-local
+offset jobs. Its six additional controls in `models/tests/support/par_to_sexpr.rs`
+check non-vacuous duplicate/split-run premises, exact mixed-family mapping and
+saturated cardinality classification, multibyte occurrence copies and snapshots,
+width-independent pending work, a 4,096-level 128 KiB traversal, and 64 generated
+ordered nested cases. The typed-decode observer is scoped to `decode_exact` and
+has a positive frozen-oracle control. Existing protobuf-header instrumentation
+is reused rather than introducing a second parser. The focused debug inventory
+passes all 14 tests; full-package acceptance is tracked separately in J-148.
+
+Independent review adds a fifteenth explicit populated Method, multi-bind and
+ignored-metadata fixture. Final focused debug passes all 15; the full release
+library passes 502 tests. Exact identity comparison of the earlier 501-test full
+debug pass and final focused debug pass establishes aggregate coverage of all
+502 release identities. The maintained admission route now checks the 27 proof
+reports and exact 15-test formatter counts in both profiles, alongside the
+existing tiny-stack admission and compiler controls.
+
 ### Compressed teardown navigation refinement (2026-09-11)
 
 `PathMapReversePruneTeardown.NavigationRefinement` independently computes scalar

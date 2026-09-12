@@ -10787,6 +10787,103 @@ allocation bound, runtime speedup or campaign completion is inferred from this
 formal checkpoint. No dependency, separate proof parser, new branch or worktree
 is introduced.
 
+### J-148 — 2026-09-12 Byte-native S-expression traversal qualification
+
+**IMPLEMENTATION.** Following J-147's checked field-view model and the frozen
+baseline checkpoint `adf03c976`, the formatter now visits encoded ParBag
+endpoints directly. One reusable vector holds message offsets, repeated-field
+continuations and literal emissions. All work for an endpoint finishes inside
+its borrowed zipper callback. Nested offsets are rebased from the cursor's exact
+input slice; a repeated continuation advances by the complete encoded field
+length, never restarting at the enclosing message. No nested `Par`, owned
+interior trie, payload copy or per-byte-array hex buffer is constructed.
+
+Multiplicity renders one distinct endpoint once, then copies that output range
+for each remaining occurrence. The range excludes preceding separators and
+ends before any repetitions. The zero/one/many wrapper decision combines capped
+categories rather than summing possibly saturated family counts. New binders
+are emitted incrementally; repeated children retain one continuation, not one
+job per sibling. The native algorithm is the following specialization of the
+modeled continuation machine:
+
+```text
+classify the five rendered root families as zero, one or many
+for each encoded endpoint in historical family and trie order:
+    require the pending worklist to be empty
+    record the output start after its preceding separator
+    visit the borrowed endpoint using offset frames
+        message: select immediate fields and schedule continuations
+        repeated: advance one encoded field and schedule its child
+        literal or scalar: append directly to the final output
+    freeze the output end; repeat only this range for multiplicity
+```
+
+**DERIVED COMPLEXITY.** For the selected traversal, immediate fields are scanned
+a constructor-bounded number of times and sibling cursors advance monotonically.
+Work is therefore proportional to visited encoded bytes plus required output;
+pending jobs grow with nesting depth, not sibling width. The reused vector keeps
+its peak capacity until the formatter returns. The final output string still
+necessarily grows with expanded diagnostic output. These claims do not describe
+input construction, ParBag key validation, or native PathMap destruction.
+
+**MEASURED CONTROLS.** Fourteen focused debug tests pass with no failures or
+ignores in 9.51 seconds. They include all original tests, the four frozen
+baselines, six new resource/field controls and 64 generated ordered nested
+cases. The original depth-256 fixture retains its 128 KiB stack. A directly
+encoded depth-4,096 fixture also passes on 128 KiB: 48,265 input bytes, 77,709
+observed header-byte reads, at most two reads per position and 4,097 pending
+jobs. Widths 16 and 256 both use three pending jobs and at most two reads per
+header position (247 and 3,848 total reads respectively).
+
+The public formatter makes zero calls to the observed typed `decode_exact`
+boundary; the frozen decoded oracle supplies a positive control. This observes
+that specific reconstruction boundary, not every allocator or decoder in the
+process. A two-endpoint multibyte-text/nested-list test checks callback isolation,
+snapshot stability, exact separator copies and two renders for five occurrences.
+Duplicate-singular and split-run controls demonstrate the canonical premises;
+they are not inputs the formatter promises to accept directly.
+
+The focused source SHA-256 is
+`4b2158f0ee63337b823bf6287e1d325387a449639363d9376e5bb9057a1e13a5`.
+The log `target/verification/canonical-sexpr-byte-native-debug-r2.log` has SHA-256
+`803c2c0724fbefae1a196907967cc5487f171efde3ee63202568628c41b94deb`.
+The scope uses 6 GiB memory-max, 4 GiB memory-high, zero swap, four-core quota,
+512 tasks and a 900-second lifetime. Full package verification is running;
+neither whole-workspace CI nor a benchmark speedup is inferred from these tests.
+Independent source review finds no production defect but requests explicit
+populated Method and multi-bind/ignored-metadata fixtures before acceptance.
+
+**FINAL NATIVE CHECKPOINT.** The requested populated-field fixture is now present
+and passes. The production formatter source is unchanged from the hash above.
+The full debug run passes 501 tests in 430.64 seconds with zero failures, ignores
+or filters. Its binary predates that final added test. The full release run
+includes the new fixture and passes 502 tests in 25.68 seconds with zero failures,
+ignores or filters. A subsequent final debug formatter run passes all 15 tests
+in 9.42 seconds, including the added fixture. Exact test-name set comparison
+establishes that the union of the 501-test debug run and the final focused debug
+run equals the full 502-test release inventory, with no missing or extra names.
+This is aggregate debug qualification, not a single full 502-test debug run.
+The elapsed times are test-run observations, not controlled benchmark estimates.
+
+| Final artifact under `target/verification/` | SHA-256 |
+|---|---|
+| `canonical-sexpr-byte-native-models-debug-r1.log` | `72f1faa22f4d9cb42ff3b7e1d1c2a2e5c358e9312742a57d649fd09a72734340` |
+| `canonical-sexpr-byte-native-models-release-r1.log` | `f2ca1c6dfdf76bf2722a312d4a699a47231c9c38e9944385b0504a1264015933` |
+| `canonical-sexpr-byte-native-debug-r3.log` | `f8d41b022edb09fb4a86eb11643efdb4ba3993e7477f0f1a3da0c51c0dd7237a` |
+
+The final test source has SHA-256
+`e3cae20edbbf9d9b6f5d6a23ad2cac3502ea0bdbabda70cf5a9e6339f1c2854a`.
+The maintained focused admission route now requires all 27 formatter proof
+reports and the exact 15-test formatter cohort in both profiles. Its combined
+formal/runtime execution remains a separate acceptance result.
+
+**BOUNDARY.** The model proofs establish their stated observation/window laws,
+not automatic extraction of this Rust implementation. Native field bindings,
+negative controls and resource measurements remain distinct evidence. No
+canonical codec, consensus hash, contract semantics, PathMap dependency or
+persistence format changes. The source-cache retention and upstream mutation
+issues remain open and are not repaired by faster diagnostic formatting.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

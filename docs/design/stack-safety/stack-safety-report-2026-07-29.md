@@ -11274,6 +11274,32 @@ The source-cache retention problem in 5.33.60 is also still open. See
 [J-146](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-146--2026-09-12-borrowed-local-origin-teardown-navigation-and-formatter-attribution)
 for source correspondence, exact commands, artifact hashes and limitations.
 
+#### 5.33.62 Byte-native diagnostic traversal (2026-09-12)
+
+The formatter now traverses borrowed endpoint bytes using reusable offset jobs
+instead of decoding and cloning nested `Par` components. One sibling continuation
+advances monotonically; one distinct endpoint is rendered before its output range
+is repeated for multiplicity. No interior PathMap is constructed or owned for
+formatting. The output format and canonical storage bytes are unchanged.
+
+The 14-test focused debug suite passes, including the unchanged depth-256 fixture
+on 128 KiB. A separate directly encoded 4,096-level fixture also passes on 128 KiB
+with zero observed typed component decodes, 4,097 pending jobs and at most two
+reads per observed protobuf-header position. Widths 16 and 256 both require
+three pending jobs. These are exact work observations for named fixtures, not
+general allocation or application-throughput measurements. Pending heap storage
+remains proportional to nesting depth and output storage to the required text;
+neither is a native-stack recursion risk. J-148 records the formal/native boundary,
+source/log hashes, resource limits and remaining package qualification.
+
+Subsequent package qualification passes all 501 tests in the debug binary built
+before the final review fixture, and all 502 tests in the final release inventory.
+The final 15-test debug formatter cohort passes separately. Exact identity-set
+comparison proves their aggregate debug coverage equals the complete 502-test
+release inventory, without missing or extra tests. This does not claim a single
+full 502-test debug invocation or whole-workspace CI. J-148 retains exact hashes
+and the separate combined admission-gate requirement.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate
