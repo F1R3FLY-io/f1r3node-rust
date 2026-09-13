@@ -825,12 +825,15 @@ fn every_fs_handler_charges_its_cost_helper() {
     let handlers_observation_src =
         include_str!("../src/rust/interpreter/io/handlers_observation.rs");
     let handlers_mutation_src = include_str!("../src/rust/interpreter/io/handlers_mutation.rs");
+    // X-6e A-07 Phase 2 (2026-09-13): fs_remove_dir + its 3 helper
+    // methods moved out.
+    let handlers_removedir_src = include_str!("../src/rust/interpreter/io/handlers_removedir.rs");
     // Every migrated handler now lives in a per-family file; concat
     // with `\n---\n` separator between so trait_impl_block anchor-
     // search still works per-file (each block is bounded by its own
     // `}\n}\n`).
     let all_src: String = format!(
-        "{handlers_src}\n// ---\n{handlers_stream_src}\n// ---\n{handlers_lock_src}\n// ---\n{handlers_lifecycle_src}\n// ---\n{handlers_observation_src}\n// ---\n{handlers_mutation_src}"
+        "{handlers_src}\n// ---\n{handlers_stream_src}\n// ---\n{handlers_lock_src}\n// ---\n{handlers_lifecycle_src}\n// ---\n{handlers_observation_src}\n// ---\n{handlers_mutation_src}\n// ---\n{handlers_removedir_src}"
     );
 
     let mut missing = Vec::new();
@@ -850,11 +853,11 @@ fn every_fs_handler_charges_its_cost_helper() {
                 continue;
             }
         }
-        // 2. Trait-exempt fs_remove_dir: still lives inside
-        //    `impl FsProcesses` as a `pub async fn fs_remove_dir`
-        //    wrapper in handlers.rs.
+        // 2. Trait-exempt fs_remove_dir: still lives inside a
+        //    split `impl FsProcesses` block — post-X-6e-A-07-Phase-2
+        //    that block is in handlers_removedir.rs.
         let signature_prefix = format!("    pub async fn {handler_name}(");
-        if let Some(body) = method_body(handlers_src, &signature_prefix) {
+        if let Some(body) = method_body(handlers_removedir_src, &signature_prefix) {
             if body.contains(&expected_call) {
                 continue;
             }
@@ -899,6 +902,10 @@ fn every_fs_handler_charges_its_cost_helper() {
 fn handlers_top_comment_count_matches_actual_handlers() {
     use rholang::rust::interpreter::io::handler_trait::FS_HANDLERS;
     let src = include_str!("../src/rust/interpreter/io/handlers.rs");
+    // X-6e A-07 Phase 2 (2026-09-13): fs_remove_dir moved to
+    // handlers_removedir.rs.  Search both files for the
+    // trait-exempt `pub async fn fs_*` count.
+    let removedir_src = include_str!("../src/rust/interpreter/io/handlers_removedir.rs");
     // Wave-3 S3.12b (2026-09-09) rewrite: post-wrapper retirement,
     // the source of truth for the migrated count is the FS_HANDLERS
     // distributed slice.  fs_remove_dir stays trait-exempt with a
@@ -906,6 +913,7 @@ fn handlers_top_comment_count_matches_actual_handlers() {
     let migrated = FS_HANDLERS.len();
     let exempt = src
         .lines()
+        .chain(removedir_src.lines())
         .filter(|line| line.starts_with("    pub async fn fs_"))
         .count();
     // fs_remove_dir is the only remaining wrapper.
@@ -969,17 +977,20 @@ fn handlers_top_comment_phase5_verifying_count_matches_actual() {
     let handlers_observation_src =
         include_str!("../src/rust/interpreter/io/handlers_observation.rs");
     let handlers_mutation_src = include_str!("../src/rust/interpreter/io/handlers_mutation.rs");
+    // X-6e A-07 Phase 2 (2026-09-13): fs_remove_dir + its 3 helper
+    // methods moved out.
+    let handlers_removedir_src = include_str!("../src/rust/interpreter/io/handlers_removedir.rs");
     let all_src: String = format!(
-        "{src}\n// ---\n{handlers_stream_src}\n// ---\n{handlers_lock_src}\n// ---\n{handlers_lifecycle_src}\n// ---\n{handlers_observation_src}\n// ---\n{handlers_mutation_src}"
+        "{src}\n// ---\n{handlers_stream_src}\n// ---\n{handlers_lock_src}\n// ---\n{handlers_lifecycle_src}\n// ---\n{handlers_observation_src}\n// ---\n{handlers_mutation_src}\n// ---\n{handlers_removedir_src}"
     );
 
     // Pass 1: pre-wave-3 style — scan `pub async fn fs_X` bodies
-    // for the inline `match verify_reply_hash_matches_cached`.  Post
-    // S3.12b only fs_remove_dir (trait-exempt) remains as a `pub
-    // async fn` in handlers.rs.
+    // for the inline `match verify_reply_hash_matches_cached`.
+    // X-6e A-07 Phase 2 (2026-09-13): fs_remove_dir moved to
+    // handlers_removedir.rs, so scan both files.
     let mut current_fn: Option<&str> = None;
     let mut verifying: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    for line in src.lines() {
+    for line in src.lines().chain(handlers_removedir_src.lines()) {
         if let Some(rest) = line.strip_prefix("    pub async fn ") {
             if let Some((name, _)) = rest.split_once('(') {
                 current_fn = Some(name);
@@ -1083,10 +1094,13 @@ fn c14_fs_handlers_verifying_flag_matches_source_scan() {
     let handlers_observation_src =
         include_str!("../src/rust/interpreter/io/handlers_observation.rs");
     let handlers_mutation_src = include_str!("../src/rust/interpreter/io/handlers_mutation.rs");
+    // X-6e A-07 Phase 2 (2026-09-13): fs_remove_dir + its 3 helper
+    // methods moved out.
+    let handlers_removedir_src = include_str!("../src/rust/interpreter/io/handlers_removedir.rs");
     let all_src: String = format!(
         "{src}\n// ---\n{handlers_stream_src}\n// ---\n{handlers_lock_src}\n// ---\n\
          {handlers_lifecycle_src}\n// ---\n{handlers_observation_src}\n// ---\n\
-         {handlers_mutation_src}"
+         {handlers_mutation_src}\n// ---\n{handlers_removedir_src}"
     );
     let mut source_verifying: std::collections::BTreeSet<String> =
         std::collections::BTreeSet::new();
@@ -1112,20 +1126,22 @@ fn c14_fs_handlers_verifying_flag_matches_source_scan() {
     // verifying — its `pub async fn fs_remove_dir` body contains
     // its own `match verify_reply_hash_matches_cached` sites.
     // Neither the runtime FS_HANDLERS entry NOR the trait-scan
-    // above picks it up; add it explicitly.
-    if src.contains("match verify_reply_hash_matches_cached") {
+    // above picks it up; add it explicitly.  X-6e A-07 Phase 2
+    // (2026-09-13): moved to handlers_removedir.rs, so scan there.
+    if handlers_removedir_src.contains("match verify_reply_hash_matches_cached") {
         source_verifying.insert("fs_remove_dir".to_string());
     }
     // Similarly, if fs_remove_dir carries verifying: true through
     // some future non-slice registration, it'd be in the runtime
     // set — add it for symmetric comparison.
-    let runtime_normalized = if src.contains("match verify_reply_hash_matches_cached") {
-        let mut extended = runtime_verifying.clone();
-        extended.insert("fs_remove_dir".to_string());
-        extended
-    } else {
-        runtime_verifying.clone()
-    };
+    let runtime_normalized =
+        if handlers_removedir_src.contains("match verify_reply_hash_matches_cached") {
+            let mut extended = runtime_verifying.clone();
+            extended.insert("fs_remove_dir".to_string());
+            extended
+        } else {
+            runtime_verifying.clone()
+        };
 
     assert_eq!(
         runtime_normalized, source_verifying,
@@ -1311,7 +1327,9 @@ fn fs_entries_charges_supplement_on_both_branches() {
 /// a leader/follower consensus divergence trap.
 #[test]
 fn fs_remove_dir_charges_supplement_on_both_branches() {
-    let src = include_str!("../src/rust/interpreter/io/handlers.rs");
+    // X-6e A-07 Phase 2 (2026-09-13): fs_remove_dir moved to
+    // handlers_removedir.rs.
+    let src = include_str!("../src/rust/interpreter/io/handlers_removedir.rs");
     let signature_prefix = "    pub async fn fs_remove_dir(";
     let body = method_body(src, signature_prefix).expect("fs_remove_dir handler must exist");
 

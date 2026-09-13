@@ -40,6 +40,10 @@ pub mod handlers_lifecycle;
 pub mod handlers_lock;
 pub mod handlers_mutation;
 pub mod handlers_observation;
+// X-6e A-07 Phase 2 (2026-09-12): trait-exempt fs_remove_dir +
+// its exclusive helpers, extracted from handlers.rs via a split
+// `impl FsProcesses` block.
+pub mod handlers_removedir;
 pub mod handlers_stream;
 pub mod lock;
 pub mod mode;
