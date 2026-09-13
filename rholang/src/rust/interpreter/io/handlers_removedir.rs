@@ -267,18 +267,19 @@ fn extract_removedir_manifest(previous: &[Par]) -> Vec<(PathBuf, RemoveKind)> {
     out
 }
 
-/// DD-RemoveDirReplyShape (2026-09-03): success reply carrying
-/// `nDeleted` at position 1.  Used by `fs_remove_dir` for
-/// non-recursive success (`[true, 1]`) and Oracular recursive
-/// success (`[true, n]`).  See design-decisions.md.
+/// 2026-09-03 unified removeDir reply shape: success reply
+/// carrying `nDeleted` at position 1.  Used by `fs_remove_dir`
+/// for non-recursive success (`[true, 1]`) and Oracular recursive
+/// success (`[true, n]`).  See FIP §Dir > removeDir reply shape.
 fn ok_with_count(n_deleted: u64) -> Par {
     list_par_2(bool_par_true(), RhoNumber::create_par(n_deleted as i64))
 }
 
-/// DD-RemoveDirReplyShape (2026-09-03): failure reply carrying
-/// `nDeletedBeforeError` at position 3.  Used by `fs_remove_dir`
-/// for non-recursive failure (n=0) and Oracular recursive failure
-/// (n = count-before-error).  See design-decisions.md.
+/// 2026-09-03 unified removeDir reply shape: failure reply
+/// carrying `nDeletedBeforeError` at position 3.  Used by
+/// `fs_remove_dir` for non-recursive failure (n=0) and Oracular
+/// recursive failure (n = count-before-error).  See FIP §Dir >
+/// removeDir reply shape.
 fn err_with_count(code: super::errors::FserrCode, msg: impl Into<String>, n_deleted: u64) -> Par {
     let items = vec![
         bool_par_false(),

@@ -207,8 +207,9 @@
 // itself doesn't fail (Rholang agent constructors have no
 // mint-error return channel), but the resulting cap is inert.
 // Previously-minted File/Dir caps are unaffected — they are
-// independent agents.  See spec §Revocation + design-decisions.md
-// DD-Revoke.
+// independent agents.  See FIP §Revocation for the normative
+// semantics (SEC-1(A): revoke does NOT cascade to previously-
+// minted caps).
 new Fs, fsBundleP,
     fsStdinFdP, fsStdoutFdP, fsStderrFdP, fsRevokedP in {
 

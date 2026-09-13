@@ -216,8 +216,8 @@ consensus_error_codes! {
     // After `Fs.revoke()` has been called on any Fs instance, every
     // subsequent `openFile` / `openDir` / `stdin` / `stdout` /
     // `stderr` returns `[false, FSERR_REVOKED, ...]`.  Previously-
-    // minted caps are unaffected.  See spec §Revocation +
-    // design-decisions.md DD-Revoke + `docs/consensus-invariants.md § 4`.
+    // minted caps are unaffected.  See FIP §Revocation +
+    // `docs/consensus-invariants.md § 4`.
     (REVOKED,              15),
 }
 
@@ -784,10 +784,9 @@ mod tests {
         assert!(
             offending.is_empty(),
             "T-13: raw poison-expect / poison-accept patterns found \
-             outside the `poison_abort` helper.  Per \
-             DD-FailClosedOnInvariantBreak (design-decisions.md § \
-             DD-FailClosedOnInvariantBreak), all lock acquisitions \
-             in the io/ tree must route through `poison_abort()`:\n  \
+             outside the `poison_abort` helper.  Per the FIP \
+             §Invariant break semantics, all lock acquisitions in \
+             the io/ tree must route through `poison_abort()`:\n  \
              - {}",
             offending.join("\n  - "),
         );

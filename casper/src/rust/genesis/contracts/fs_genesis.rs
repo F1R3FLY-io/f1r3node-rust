@@ -817,8 +817,7 @@ new
   // Ambient-authority off-switch (2026-09-03).  Module-level cell
   // shared across every Fs instance; flipped by Fs.revoke().
   // Initialized to `false` at composition time by the module body.
-  // See Fs.rho's top-of-file docstring + DD-Revoke in
-  // FIPS/fileio/.../design-decisions.md.
+  // See Fs.rho's top-of-file docstring + FIP §Revocation.
   fsRevokedP,
   openFileImpl, openFileImplInner, openDirImpl, openDirImplInner, joinRel,
   // parseRwxToBits + parseRwxLoop retired 2026-09-04 (mode-consistency
@@ -2380,7 +2379,12 @@ mod tests {
         // query vs mutator re-park semantics.  Both edits are
         // pure-Rholang-source changes (comments + a pattern with
         // named binds vs wildcards) and roll every FsGenesis anchor.
-        const EXPECTED: &str = "54e9b0baedd35dfa372266f626f1fed12bea9e31f337ce262beaff86e6381e4a";
+        // X-8b (2026-09-13): design-decisions.md deleted; comments
+        // in Fs.rho / Dir.rho / composed outer-new-scope that used
+        // to cite it now cite the FIP directly.  Comment-only edit
+        // — still rolls the anchor because the composed source is
+        // hashed as a raw string.
+        const EXPECTED: &str = "79859563b508d3a04812c2c8fb62c76fe6ddd3bcbcdc66f98d99d8836d21103e";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \
@@ -2468,7 +2472,10 @@ mod tests {
         // 2 → 3 + lockCell format bump.
         // X-8 (2026-09-13): rolled for F-01 Stream.rho:250 strictness
         // + F-02 Buffer.rho:44-58 docstring clarification.
-        const EXPECTED: &str = "3688247313872a207f10a73b15384d1f02464d813ec4b89da8828ccc8ff18f7e";
+        // X-8b (2026-09-13): rolled again for design-decisions.md
+        // deletion — comment-only edits in Fs.rho / Dir.rho / the
+        // composed outer-new-scope replace DD refs with FIP refs.
+        const EXPECTED: &str = "a6005130b0ce4db99e83de7341fa823e7e00baeab2ea79b121d1a579a7d8a4b5";
         assert_eq!(
             hex, EXPECTED,
             "M-40: compose_fs_genesis_source() hash for non-empty bundle \
@@ -2557,7 +2564,10 @@ mod tests {
         // 2 → 3 + lockCell format bump.
         // X-8 (2026-09-13): rolled for F-01 Stream.rho:250 strictness
         // + F-02 Buffer.rho:44-58 docstring clarification.
-        const EXPECTED: &str = "e02a6127dbacd3bf17b5649b687a850ffaf43292381ce1febebdb4343c2c329a";
+        // X-8b (2026-09-13): rolled again for design-decisions.md
+        // deletion — comment-only edits in Fs.rho / Dir.rho / the
+        // composed outer-new-scope replace DD refs with FIP refs.
+        const EXPECTED: &str = "5d93da4727878944b726a3e08bd3f7434deb0241efb80d07d7ed6baff9cc4497";
         assert_eq!(
             hex, EXPECTED,
             "M-40 review-fix (S4): compose_fs_genesis_source() hash for \

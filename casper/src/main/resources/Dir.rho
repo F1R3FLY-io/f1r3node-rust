@@ -503,8 +503,8 @@ new Dir, rootP, cmodeP in {
               // recursive.
               //
               // Prior H-29-3-lift shape (surfaced the manifest at the
-              // Rholang boundary) was superseded by DD-RemoveDirReplyShape
-              // — see FIP §Dir.removeDir + design-decisions.md.
+              // Rholang boundary) was superseded by the unified
+              // `[true, nDeleted]` shape — see FIP §Dir.removeDir.
                   for (@params <<- @[*private, *rootP]; @cmode <<- @[*private, *cmodeP]) {
                     match params {
                       (canonRoot, subPath, dirMode, _fileCtor) => {

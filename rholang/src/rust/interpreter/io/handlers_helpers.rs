@@ -133,12 +133,12 @@ pub(super) fn per_entry_ack_seed(ack: &Par, path: &std::path::Path) -> [u8; 32] 
 /// err(FSERR_IO, "spawn_blocking task failed"))` pattern that
 /// appears at 10+ handler sites.
 ///
-/// T-20 (2026-09-11, DD-FailClosedOnInvariantBreak): JoinError arm
-/// changed from returning `err(FSERR_IO, ...)` (soft reply that
-/// burned budget but masked the underlying bug) to `join_err_abort`
-/// which panics with `JOIN_ERR_ABORT_PREFIX`, unwinding through
-/// the async runtime to the deploy scope which rejects the block.
-/// See `design-decisions.md § DD-FailClosedOnInvariantBreak`.
+/// T-20 (2026-09-11): JoinError arm changed from returning
+/// `err(FSERR_IO, ...)` (soft reply that burned budget but masked
+/// the underlying bug) to `join_err_abort` which panics with
+/// `JOIN_ERR_ABORT_PREFIX`, unwinding through the async runtime
+/// to the deploy scope which rejects the block.  See the FIP
+/// §Invariant break semantics for the normative rationale.
 ///
 /// X-2 / G-01 (2026-09-11, branch-review-2026-09-11.md): the
 /// `spawn_blocking` JoinHandle await is wrapped in

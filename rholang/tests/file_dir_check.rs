@@ -14052,8 +14052,8 @@ async fn fs_open_file_non_string_mode_rejects() {
 }
 
 // ---------------------------------------------------------------------
-// Fs.revoke() ambient-authority off-switch (2026-09-03) — spec
-// §Revocation + design-decisions.md DD-Revoke.
+// Fs.revoke() ambient-authority off-switch (2026-09-03) — FIP
+// §Revocation.
 //
 // - revoke() flips the module-level `fsRevokedP` cell true.
 // - Post-revoke, openFile / openDir / stdin / stdout / stderr on any
