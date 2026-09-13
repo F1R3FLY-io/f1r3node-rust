@@ -581,6 +581,8 @@ Do not delete active node state or required evidence. Do not replace attribution
 
 **Exit evidence:** The measured writer has a verified lifecycle bound. A controlled early stop alone does not satisfy this gate.
 
+The [reserve argument](soak-reserve-argument-2026-09-12.md) bounds the response-latency term T from the guardian sampling and the composed emergency deadline. It leaves the growth, burst, and reserve terms open for this diagnostic run to supply.
+
 ### Gate A1: Run the acceptance soak and gate completion
 
 **Owners:** The release maintainer, Casper maintainer, and soak maintainer.
