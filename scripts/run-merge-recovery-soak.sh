@@ -288,7 +288,34 @@ publish_record() {
 		return 1
 	fi
 	[ "$echo_record" -eq 0 ] || cat "$tmp"
-	sync "$tmp" && mv -f "$tmp" "$target" && sync "$(dirname "$target")"
+	mv -f "$tmp" "$target"
+}
+publication_budget() {
+	local remaining
+	if [ -n "$EMERGENCY_DEADLINE_EPOCH" ]; then
+		remaining="$(emergency_remaining)"
+		[ "$remaining" -le 5 ] || remaining=5
+		[ "$remaining" -ge 1 ] || remaining=1
+		printf '%s\n' "$remaining"
+	else
+		printf '30\n'
+	fi
+}
+reap_publication() {
+	local budget sp waited=0
+	[ -n "$OUTPUT_DIR" ] || return 0
+	budget="$(publication_budget)"
+	sync "$OUTPUT_DIR" &
+	sp=$!
+	while kill -0 "$sp" 2>/dev/null && [ "$waited" -lt "$budget" ]; do
+		sleep 1
+		waited=$((waited + 1))
+	done
+	if kill -0 "$sp" 2>/dev/null; then
+		printf 'durability_unconfirmed after %ss at %s\n' "$budget" "$(date -u +%FT%TZ)" >>"$OUTPUT_DIR/publication-unconfirmed.txt"
+		return 3
+	fi
+	wait "$sp" 2>/dev/null || true
 }
 run_domain_verified() {
 	[ "$CONTAINMENT" = required ] || return 0
@@ -1803,6 +1830,13 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 	done
 	wait "$ITERATION_PID" 2>/dev/null
 	STATUS=$?
+	if [ "$GUARDIAN_INTERRUPTED" -eq 0 ] && [ -s "$HOST_GUARDIAN_BREACH" ]; then
+		GUARDIAN_INTERRUPTED=1
+		emergency_start
+		EARLY_EXIT_REASON="host_protection_breach"
+		publish_record "$OUTPUT_DIR/protection-breach.txt" head -1 "$HOST_GUARDIAN_BREACH"
+		publish_record "$OUTPUT_DIR/early-exit.txt" printf 'host_protection_breach: iteration %s: %s\n' "$ITERATIONS" "$(head -1 "$HOST_GUARDIAN_BREACH")"
+	fi
 	if [ "$GUARDIAN_INTERRUPTED" -eq 1 ]; then
 		STATUS=1
 		stop_node_writers -aq rm -f >/dev/null 2>&1 || true
@@ -2020,6 +2054,11 @@ if command -v jq >/dev/null; then
 				printf 'fallback summary emission failed too (non-fatal)\n' >&2
 		}
 fi
+
+# Durability is a bounded step so a stalled storage sync never blocks the
+# writer stop or the failure publication. A sync that exceeds the budget
+# records an explicit unconfirmed result and is not confirmed termination.
+reap_publication || true
 
 if [ "$FAILURES" -ne 0 ]; then
 	exit 1

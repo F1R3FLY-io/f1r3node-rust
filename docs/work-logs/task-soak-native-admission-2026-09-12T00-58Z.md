@@ -394,3 +394,187 @@ Until that handoff, this session will keep implementation changes in private sou
 
 The earlier matched B51 results must keep their original source identities.
 The four review findings do not close B44, D2, reserve bounds, or acceptance.
+
+## Containment and telemetry continuation, 2026-09-13
+
+The integration owner confirmed the B51 handoff in the main work log.
+The user then extended this session's scope to runtime containment and telemetry corrections.
+The shared plan and the main work log remain with the integration owner.
+This session will preserve the workload, the three harness pins, and the 45-second finalization wait.
+
+The requested producer-repair commit is `b32a2e9e8`.
+Its normal commit hooks passed.
+The claim inventory still reports a stale `docs/ToDos.md` input.
+No push occurred, and no further commit is authorized.
+
+The private shutdown candidate passes the frozen stalled-sync and post-exit fixtures.
+It also passes the producer regression, the existing driver regressions, and two positive `RecordShutdown` configurations.
+Three exact formal controls fail with TLC exit 12.
+These results do not verify the private Docker engine or complete containment.
+
+The retained repair root is `$HOME/soak-evidence/f1r3node-rust/b51-review-repairs-f9QjbAqI`.
+That root retains the first inadequate verdict, a combined-fault failure, a process-substitution setup failure, and the corrected runs.
+The candidate uses a guardian pipe, bounded publication workers, and post-loop breach handling.
+The candidate remains outside the branch as a retained alternative.
+The main work log now reassigns R1, R3, and R4 to the integration owner.
+This session will not overwrite that owner's driver, summary writer, publication fixtures, gates, or inventory changes.
+
+The in-place publication control is prepared, but the stronger publication verdict has not run.
+The historical B51 package and the current candidate bindings remain incomplete.
+The private Docker protocol inventory, guarded capability tests, and real-Docker comparisons remain separate requirements.
+The telemetry audit's twelve regression specifications also remain open.
+
+The reserve document's 67-second and 77-second figures remain provisional.
+A publication correction alone cannot prove an aggregate bound across probes, scheduling, creators, termination confirmation, storage, and upload.
+No accepted reserve bound or acceptance result follows from these local checks.
+
+### Telemetry summary and missing-baseline corrections
+
+The new evidence root is `$HOME/soak-evidence/f1r3node-rust/containment-telemetry-1nzZ4KmS`.
+The source baseline is `b32a2e9e84ec7b45289fc661850c150977f6f1b1`.
+The harness source comes from the unchanged pin.
+
+The new fixture executes the public driver and imports the complete harness metrics and monitor modules.
+A loopback HTTP server supplies synthetic node samples at the external probe boundary.
+The real monitor thread writes telemetry, and the real driver retains the monitor files and phase log.
+The fixture does not replace production parsing, interval calculation, summary formatting, snapshot selection, or publication.
+
+The frozen summary RED retains all 27 raw families but omits 20 families from the phase summary.
+The corrected overlay publishes all 27 families with explicit units.
+The unchanged fixture passes against the correction.
+The `MetricSummary` control fails with exit 12 and `CollectedRequiredPublished`.
+The corrected model passes.
+
+The next frozen case returns HTTP 503 for the baseline, followed by a valid scrape.
+The summary-only candidate fails because it treats missing baselines as zero.
+The corrected interval function preserves an unavailable result with `reason=missing_baseline`.
+The unchanged missing-baseline fixture and its healthy-summary control both pass.
+
+The first `MetricBaseline` model attempt fails with exit 76 because it mixes strings and numbers in a set.
+The second attempt fails with exit 75 because a Boolean assignment lacks parentheses.
+Both setup attempts and their source files remain in the evidence root.
+The corrected control fails with exit 12 and `MissingBaselineUnavailable`.
+Both corrected configurations pass, including the available-baseline positive case.
+
+The shared driver and summary writer changed during this work.
+The telemetry comparisons therefore use frozen source directories, not the changing shared driver.
+Final integration needs a new comparison against the owner's completed source.
+
+Shared-gate registration remains pending for `MetricSummary` and `MetricBaseline`.
+The remaining telemetry cases include process epochs, resets, labels, invalid samples, timing, authenticated sessions, interrupted artifacts, disk coverage, and remote retrieval.
+These local synthetic samples do not establish live-node emission or successful upload and retrieval.
+O1 remains open.
+
+Before the capability work, the read-only infrastructure query found no active D2 diagnostic runner.
+The queried infrastructure configuration matched the harness pin.
+That observation did not include a privileged capability test.
+
+### Guarded private-engine capability results
+
+The first diagnostic runner stopped during bootstrap because its console-history state did not match the provisioner's expected spelling.
+The termination helper confirmed that runner as `TERMINATED`.
+A corrected provisioner created a second runner with the same identity, isolation, resource, and two-hour expiry controls.
+Both runners used the recorded source baseline and unchanged harness pin.
+Neither runner started an acceptance soak.
+
+The namespace probe confirms the cgroup-root inode and separate mount and network namespaces.
+The private-engine probe starts a separate Docker engine and containerd inside the run domain.
+A small BusyBox fixture supplies controlled file writers.
+The probe tests automatic restart, container exec, root inside the container, and a published loopback port.
+
+The observer checks eight process identities through host cgroup membership and process descriptors.
+Those identities cover the service main process, Docker engine, containerd, shim, proxy, container, exec process, and exec client.
+All eight processes exit before fixture cleanup.
+Both selected writers stop.
+The corrected comparison also preserves the selected shared-engine and firewall metadata.
+
+The record retains the failed setup attempts and intermediate results.
+Those attempts expose timestamp parsing, cgroup mounting, PID writing, restart assumptions, and a time-dependent firewall comparison.
+Setup failures are not production RED results.
+The capability results do not execute the public driver or an API gateway.
+They do not prove permanent creation closure, delayed-request accounting, complete compatibility, or unrelated-writer progress.
+
+The retained archive contains 121 regular files, including 116 files bound to the remote content manifest.
+Its verified expanded size is 6,698,161 bytes.
+Its SHA-256 is `8aaa4ee1d2bd85c4c0009f5b562258c59b18881a35c33beccb1884b1285d816d`.
+The archive contains selected evidence and fixture inputs, not a full filesystem image.
+After retrieval, the termination helper confirmed the second runner as `TERMINATED`.
+
+The capability records remain under `containment-capability/` in the current evidence root.
+The two runner records remain under `containment-runner/` and `containment-runner-v2/`.
+No private-engine implementation has entered the branch.
+Complete runtime containment and the aggregate reserve bound remain open.
+
+### Decreasing cumulative samples
+
+The next frozen fixture tests decreasing histogram sums, decreasing histogram counts, and decreasing event counters.
+Both decreasing cases fail against the missing-baseline candidate.
+The healthy-summary, missing-baseline, and genuine-zero controls pass against that same candidate.
+
+The `MetricMonotonicity` control fails with exit 12 and `DecreasingSamplesUnavailable`.
+The correction rejects a histogram interval if either cumulative component decreases.
+It also rejects a decreasing event counter.
+The summary retains `reason=cumulative_decrease` instead of a numeric interval.
+
+Both decreasing cases and all three controls pass against the frozen correction.
+The corrected finite model also passes.
+The model covers seven selected vectors, not parser correctness or all possible metric values.
+A decrease does not establish a process restart.
+Process epochs, labels, invalid samples, timing, artifact authentication, disk coverage, and remote retrieval remain open.
+
+The matched records remain under `monotonic/` in the current evidence root.
+Shared-gate registration and final integration against the owner's completed driver remain pending.
+No further commit or push is authorized.
+
+### Invalid cumulative values
+
+The next fixture supplies numeric overflow and negative values in histogram sums and event counters.
+Each fault occurs separately in the baseline and final sample.
+All four cases fail against the monotonicity candidate.
+The five earlier controls pass against that same candidate.
+
+A fixture-only source change replaces two fixed-literal conversions with `math.inf`.
+The record preserves the first fixture and its results.
+The revised fixture repeats all four RED cases and all five controls before the production correction.
+It also reproduces the earlier summary, missing-baseline, and monotonicity defects against their original source candidates.
+
+The `MetricSampleValidity` control fails with exit 12 and `InvalidSamplesRejected`.
+The correction checks both samples before it calculates an interval.
+The summary distinguishes `nonfinite_sample`, `negative_sample`, `cumulative_decrease`, and `missing_baseline`.
+The negative-value rule applies to the selected nonnegative histogram families and event counters.
+
+The unchanged revised fixture passes all nine cases against the frozen correction.
+The corrected finite model, overlay regression, and driver regression also pass.
+The model checks sample categories and result classification, not numeric parsing or implementation correctness.
+The matched records remain under `sample-validity/` in the current evidence root.
+
+These cases do not test literal NaN parsing, malformed tokens, missing final components, large-integer precision, or every resource sample.
+Process epochs, label identity, timing, authenticated artifact selection, interrupted artifacts, disk coverage, and remote retrieval remain open.
+The four telemetry models still need shared-gate registration and complete evidence bindings.
+No completion or acceptance claim follows from these checks.
+
+### Current-source integration snapshot
+
+The next snapshot captures the six current execution inputs before another comparison.
+The capture checks each input before and after copying.
+All nine telemetry cases pass against that frozen snapshot with the revised fixture unchanged.
+The snapshot remains under `current-integration-20260913T063232Z/` in the current evidence root.
+
+This comparison includes the integration owner's current driver and summary writer.
+It does not declare those files final or change their ownership.
+The glossary now defines metric series, metric intervals, and process epochs.
+The five-file diagnostic check reports four clean files and one inconclusive file, with no reported findings.
+Human STE Review and the remaining containment and telemetry obligations remain open.
+
+### Private Docker follow-up
+
+The recorded daemon reports commit `8ec5ab3`.
+The upstream API schema at that commit declares version `1.55`.
+The retrieved schema contains 98 paths and 159 definitions.
+The source records remain under `private-api-schema/` in the current evidence root.
+This retrieval does not implement a gateway or prove that the binary matches the source.
+
+The peer query stops after a broker timeout.
+That result does not establish peer absence or exclusive ownership.
+Shared-file ownership remains unchanged.
+The private gateway, creation fence, and remaining telemetry corrections remain incomplete.

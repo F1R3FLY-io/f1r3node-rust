@@ -136,6 +136,4 @@ jq -n \
           iteration_metrics: $all
         }
   ' >"$OUTPUT_DIR/summary.json.tmp.$$" &&
-  sync "$OUTPUT_DIR/summary.json.tmp.$$" &&
-  mv -f "$OUTPUT_DIR/summary.json.tmp.$$" "$OUTPUT_DIR/summary.json" &&
-  sync "$OUTPUT_DIR"
+  mv -f "$OUTPUT_DIR/summary.json.tmp.$$" "$OUTPUT_DIR/summary.json"

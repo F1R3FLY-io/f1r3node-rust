@@ -1,0 +1,1 @@
+PASS: Every published record reached its final path through an observed atomic rename, and the verdict rejected an in-place control that published the same records without a rename.

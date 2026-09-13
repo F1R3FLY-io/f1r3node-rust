@@ -1,13 +1,31 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+RECORDS=(host-guardian-breach.txt protection-breach.txt early-exit.txt summary.txt summary.json .soak-state)
+
+verify_atomic() {
+    local out="$1" mvlog="$2" name path missing=""
+    for name in "${RECORDS[@]}"; do
+        path="$out/$name"
+        if [[ ! -e "$path" ]]; then
+            missing="$missing $name(absent)"
+            continue
+        fi
+        if ! awk -v p="$path" '$1 == "rename" && $3 == p && index($2, p ".tmp.") == 1 { found = 1 } END { exit found ? 0 : 1 }' "$mvlog"; then
+            missing="$missing $name(no-rename)"
+        fi
+    done
+    [[ -z "$missing" ]] && return 0
+    printf '%s\n' "$missing"
+    return 1
+}
+
 if [[ "${1:-}" == --inside ]]; then
     [[ -f /.dockerenv && "$(id -u)" == 65534 && ! -S /var/run/docker.sock ]] || exit 2
     cd /case
     mkdir -p evidence bin harness/integration-tests/data/session-1 tmp runner
     trap 'printf "ERROR: The durable record fixture failed before its behavioral verdict.\n" >&2; exit 2' ERR
     DRIVER=""
-    POLLER=""
     stop_driver() {
         [[ -z "$DRIVER" ]] || kill -TERM -- "-$DRIVER" 2>/dev/null || true
         [[ -z "$DRIVER" ]] || wait "$DRIVER" 2>/dev/null || true
@@ -20,21 +38,25 @@ available=16384
 if [[ -f /case/evidence/workload-started.txt ]]; then
     available=1024
 fi
-printf 'valid=%s\n' "$available" >>/case/evidence/probe-samples.txt
 printf 'Filesystem 1M-blocks Used Available Capacity Mounted on\n'
 printf '/dev/fixture 47000 %s %s 85%% /\n' "$((47000 - available))" "$available"
 SH
+    cat >bin/mv <<'SH'
+#!/usr/bin/env bash
+args=("$@")
+n=${#args[@]}
+if [[ $n -ge 2 ]]; then
+    printf 'rename %s %s\n' "${args[n-2]}" "${args[n-1]}" >>/case/evidence/mv-calls.txt
+fi
+for real in /usr/bin/mv /bin/mv; do
+    [[ -x "$real" ]] && exec "$real" "$@"
+done
+exit 127
+SH
     cat >bin/sync <<'SH'
 #!/usr/bin/env bash
-for target in "$@"; do
-    if [[ -d "$target" ]]; then
-        printf 'dir - - %s\n' "$target" >>/case/evidence/sync-calls.txt
-    elif [[ -f "$target" ]]; then
-        printf 'file %s %s %s\n' "$(stat -c %s "$target")" "$(sha256sum "$target" | cut -c1-64)" "$target" >>/case/evidence/sync-calls.txt
-    else
-        printf 'missing - - %s\n' "$target" >>/case/evidence/sync-calls.txt
-    fi
-done
+printf 'sync %s\n' "$*" >>/case/evidence/sync-calls.txt
+exit 0
 SH
     cat >bin/docker <<'SH'
 #!/usr/bin/env bash
@@ -49,26 +71,9 @@ SH
     printf '#!/usr/bin/env bash\nexit 1\n' >bin/curl
     cp bin/curl bin/oci
     chmod +x bin/*
+    : >evidence/mv-calls.txt
     : >evidence/sync-calls.txt
     (cd repo && sha256sum scripts/run-merge-recovery-soak.sh scripts/bench/write-soak-summary.sh scripts/bench/collect-soak-metrics.sh scripts/bench/soak-metrics.json) >evidence/source-sha256.txt
-    cat >evidence/poller.sh <<'SH'
-#!/usr/bin/env bash
-declare -A last
-while :; do
-    for name in host-guardian-breach.txt protection-breach.txt early-exit.txt summary.txt summary.json .soak-state; do
-        path="/case/evidence/output/$name"
-        size=absent
-        [[ ! -e "$path" ]] || size="$(stat -c %s "$path" 2>/dev/null || echo absent)"
-        if [[ "${last[$name]:-}" != "$size" ]]; then
-            printf '%s %s\n' "$name" "$size" >>/case/evidence/observations.txt
-            last[$name]="$size"
-        fi
-    done
-    sleep 0.01
-done
-SH
-    setsid bash evidence/poller.sh >/dev/null 2>&1 &
-    POLLER=$!
     driver() {
         exec env PATH="/case/bin:$PATH" SYSTEM_INTEGRATION_DIR=/case/harness SOAK_OUTPUT_DIR=/case/evidence/output \
             SOAK_TMP_ROOT=/case/tmp SOAK_RUNNER_ROOT=/case/runner SOAK_DURATION_SECONDS=1200 \
@@ -92,9 +97,6 @@ SH
         DRIVER=""
     fi
     printf '%s\n' "$status" >evidence/driver-exit.txt
-    kill -TERM -- "-$POLLER" 2>/dev/null || true
-    wait "$POLLER" 2>/dev/null || true
-    grep -c ' 0$' evidence/observations.txt >evidence/partial-observations.txt || true
     if [[ ! -s evidence/workload-started.txt || ! -s evidence/output/host-guardian-breach.txt ]]; then
         printf 'ERROR: The guardian did not fire during the iteration within the fixture budget.\n' >&2
         exit 2
@@ -105,28 +107,20 @@ SH
         exit 2
     fi
     trap - ERR
-    incomplete=""
-    for name in host-guardian-breach.txt protection-breach.txt early-exit.txt summary.txt summary.json .soak-state; do
-        path="/case/evidence/output/$name"
-        final="$(sha256sum "$path" | cut -c1-64)"
-        synced_line="$(awk -v prefix="$path.tmp." -v digest="$final" \
-            '$1 == "file" && $3 == digest && index($4, prefix) == 1 { line = NR } END { print line + 0 }' evidence/sync-calls.txt)"
-        directory_line="$(awk -v after="$synced_line" \
-            '$1 == "dir" && $4 == "/case/evidence/output" && NR > after { print NR; exit }' evidence/sync-calls.txt)"
-        in_place="$(awk -v target="$path" '$1 == "file" && $4 == target' evidence/sync-calls.txt)"
-        if [[ "$synced_line" == 0 || -z "$directory_line" || -n "$in_place" ]]; then
-            incomplete="$incomplete $name"
-        fi
-        printf '%s synced_line=%s directory_line=%s in_place=%s\n' "$name" "$synced_line" "${directory_line:-none}" "${in_place:+yes}" >>evidence/record-durability.txt
-    done
-    if compgen -G '/case/evidence/output/*.tmp.*' >/dev/null || compgen -G '/case/evidence/output/.*.tmp.*' >/dev/null; then
-        incomplete="$incomplete leftover-temporary-file"
-    fi
-    if [[ -n "$incomplete" ]]; then
-        printf 'FAIL: The driver published a record without a synced temporary file, an atomic rename, and a directory sync:%s\n' "$incomplete" >&2
+    if ! detail="$(verify_atomic /case/evidence/output /case/evidence/mv-calls.txt)"; then
+        printf 'FAIL: A published record reached its final path without an observed atomic rename:%s\n' "$detail" >&2
         exit 1
     fi
-    printf 'PASS: Every minimal record was synced under a temporary name, renamed into place, and followed by a directory sync, and no partial record was left behind.\n'
+    mkdir -p evidence/inplace-output
+    : >evidence/inplace-mv-calls.txt
+    for name in "${RECORDS[@]}"; do
+        printf 'in-place %s\n' "$name" >"evidence/inplace-output/$name"
+    done
+    if verify_atomic /case/evidence/inplace-output /case/evidence/inplace-mv-calls.txt >/dev/null 2>&1; then
+        printf 'FAIL: The verdict accepted in-place publication that logged no atomic rename.\n' >&2
+        exit 1
+    fi
+    printf 'PASS: Every published record reached its final path through an observed atomic rename, and the verdict rejected an in-place control that published the same records without a rename.\n'
     exit 0
 fi
 

@@ -522,6 +522,27 @@ A **creation fence** prevents further workload execution after closure, includin
 **Preferred usage:** Identify the mechanism that enforces the creation fence.
 A rejected client request, an empty process list, or a single kill operation does not establish a creation fence.
 
+### Metric series
+
+A **metric series** contains observations with one emitter identity, process epoch, metric name, and label set.
+
+**Preferred usage:** Keep each metric series separate until you validate its interval.
+
+### Metric interval
+
+A **metric interval** compares two observations of one metric series.
+Cumulative values must not decrease within a valid interval.
+Missing data does not establish zero activity.
+
+**Preferred usage:** Record the observation order and any collection gap.
+
+### Process epoch
+
+A **process epoch** identifies one lifetime of an emitter process.
+A container name, collector session, or provider handle does not establish a process epoch.
+
+**Preferred usage:** Use a new process epoch after an emitter restarts.
+
 ## Maintenance
 
 - Update this file before merging code or documentation that introduces a

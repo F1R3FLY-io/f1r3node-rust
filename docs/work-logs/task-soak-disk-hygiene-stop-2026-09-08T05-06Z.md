@@ -1282,3 +1282,37 @@ When `GUARDIAN_INTERRUPTED` is zero and the guardian breach file is present, the
 A deterministic fixture sets a large `SOAK_GUARDIAN_POLL_SECONDS` so the loop cannot recheck in time, while the guardian fires on its fixed five-second interval.
 The native-admission session should fold this post-loop detection into the R1 correction, because both bound the same emergency path.
 The composed deadline must also cover the publication step.
+
+### B51 review findings R1, R3, R4 reassigned to this session, 2026-09-12
+
+The user reassigned findings R1, R3, and R4 to this session while the native-admission session takes containment and telemetry.
+This session owns the driver, the fixture, the model, the gates, and the inventory for these three findings.
+The native-admission session completed the R2 producer-failure driver change in commit `b32a2e9e8`.
+That commit added the `RecordProducer` model, which still needs gate registration in the R4 step.
+
+R1 bounds record publication and keeps writer shutdown independent of a stalled storage sync.
+The confirmed approach makes each record visible with the atomic rename first, then runs durability as a bounded step that never blocks the stop.
+A stalled sync yields an explicit unconfirmed result and never counts as confirmed termination.
+This weakens the B51 sync-before-rename ordering in the stall case, which is the accepted trade-off for host-protection safety.
+
+R3 makes the durable-record verdict prove the atomic rename and reject in-place publication.
+R4 registers the new models, builds the B51 package on the final bytes, and rebinds the inventory with distinct execution identities.
+The order is R1, then R3, then R4.
+
+### B51 review findings R1, R3, R4 complete, 2026-09-13
+
+R1 bounds record publication and keeps the writer stop independent of a stalled storage sync.
+The driver publishes each record with an atomic rename, then runs durability through a bounded reap that records `publication-unconfirmed.txt` on a stall.
+The driver also detects a breach recorded after the iteration process exits, which closes the emergency-deadline race under load.
+R1 has matched production RED and GREEN and a formal control that violates `ShutdownIndependentOfSync`.
+
+R3 hardens the durable-record verdict to observe the atomic rename and reject an in-place control.
+The `DurableRecord` model now proves `VisibleImpliesComplete`, and the three gate files carry the new invariant name.
+R4 registered the `BoundedPublication`, `DurableRecord`, and the second session's `RecordProducer` models in the formal gate.
+It wired the publication-bound fixture, built the consolidated package, and rebound the inventory.
+
+The formal gate passes 52 positive configurations and 52 exact controls.
+The classifier, routing, driver, and summary regressions pass.
+Every emergency sub-fixture passes in an individual run, because the full single-invocation suite exceeds this host's memory.
+The user approved the removal of fourteen stale test containers to free memory for the individual runs.
+Producer failure remains the native-admission session's cycle, and `MetricSummary` remains their telemetry work.

@@ -1,0 +1,1 @@
+PASS: The writer stop and the failure publication completed within the deadline despite a stalled storage sync, the breach record was visible, and the unconfirmed durability result was recorded.

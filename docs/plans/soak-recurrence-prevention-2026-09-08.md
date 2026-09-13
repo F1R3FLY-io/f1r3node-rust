@@ -583,6 +583,8 @@ Do not delete active node state or required evidence. Do not replace attribution
 
 The [reserve argument](soak-reserve-argument-2026-09-12.md) bounds the response-latency term T from the guardian sampling and the composed emergency deadline. It leaves the growth, burst, and reserve terms open for this diagnostic run to supply.
 
+The [durable publication package](../cbc-evidence/soak-d2-durable-record-2026-09-12/README.md) records the B51 review corrections R1 and R3. R1 bounds record publication and keeps the writer stop independent of a stalled sync, with an explicit unconfirmed result. R3 proves the atomic rename and rejects in-place publication. The [bounded publication model](../../formal/tlaplus/soak_disk/BoundedPublication.md) and the [atomic record model](../../formal/tlaplus/soak_disk/DurableRecord.md) refute the respective baselines. Durable power-loss survival and hosted enforcement remain pending.
+
 ### Gate A1: Run the acceptance soak and gate completion
 
 **Owners:** The release maintainer, Casper maintainer, and soak maintainer.

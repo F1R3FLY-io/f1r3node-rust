@@ -150,6 +150,8 @@ POST_FIX_CONFIGS=(
     soak_disk/MC_NativeControlPath
     soak_disk/MC_NativeControlPath_trusted
     soak_disk/MC_DurableRecord
+    soak_disk/MC_RecordProducer
+    soak_disk/MC_BoundedPublication
 )
 
 TLC_WORKERS=auto
@@ -205,6 +207,8 @@ if [[ "$SOAK_PR" == true ]]; then
         soak_disk/MC_NativeControlPath
         soak_disk/MC_NativeControlPath_trusted
         soak_disk/MC_DurableRecord
+        soak_disk/MC_RecordProducer
+        soak_disk/MC_BoundedPublication
     )
     TLC_WORKERS=2
 fi
@@ -290,7 +294,9 @@ NEGATIVE_CONTROLS=(
     soak_disk/MC_BreachRecordOrder_attribute_first_pre_fix:AttributionRequiresRecord
     soak_disk/MC_EmergencyDeadline_unbounded_pre_fix:ResponseWithinDeadline
     soak_disk/MC_NativeControlPath_parent_only_pre_fix:UntrustedControlPreventsWorkload
-    soak_disk/MC_DurableRecord_in_place_pre_fix:VisibleImpliesDurable
+    soak_disk/MC_DurableRecord_in_place_pre_fix:VisibleImpliesComplete
+    soak_disk/MC_RecordProducer_unchecked_pre_fix:FailedProducerPreservesRecord
+    soak_disk/MC_BoundedPublication_blocking_pre_fix:ShutdownIndependentOfSync
 )
 
 failed=0

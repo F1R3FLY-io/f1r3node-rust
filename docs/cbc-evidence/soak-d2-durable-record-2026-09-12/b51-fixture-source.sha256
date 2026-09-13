@@ -1,0 +1,2 @@
+36d011112e2ee08cc07356364c90cbfffe362f7077abc152fc8fdbfb1d0e6540  scripts/bench/test-soak-durable-record.sh
+49283e406940f3270cb15ab1584261943839f94457c0a8c9cc2e131233fbf842  scripts/bench/test-soak-publication-bound.sh

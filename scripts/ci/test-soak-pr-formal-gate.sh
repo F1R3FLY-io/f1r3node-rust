@@ -89,7 +89,9 @@ case "$config" in
     MC_BreachRecordOrder_attribute_first_pre_fix.cfg) invariant=AttributionRequiresRecord ;;
     MC_EmergencyDeadline_unbounded_pre_fix.cfg) invariant=ResponseWithinDeadline ;;
     MC_NativeControlPath_parent_only_pre_fix.cfg) invariant=UntrustedControlPreventsWorkload ;;
-    MC_DurableRecord_in_place_pre_fix.cfg) invariant=VisibleImpliesDurable ;;
+    MC_DurableRecord_in_place_pre_fix.cfg) invariant=VisibleImpliesComplete ;;
+    MC_RecordProducer_unchecked_pre_fix.cfg) invariant=FailedProducerPreservesRecord ;;
+    MC_BoundedPublication_blocking_pre_fix.cfg) invariant=ShutdownIndependentOfSync ;;
     *) printf 'Model checking completed. No error has been found.\n'; exit 0 ;;
 esac
 printf 'Error: Invariant %s is violated.\n' "$invariant"
@@ -196,6 +198,10 @@ pr_configs=(
     soak_disk/MC_NativeControlPath_parent_only_pre_fix
     soak_disk/MC_DurableRecord
     soak_disk/MC_DurableRecord_in_place_pre_fix
+    soak_disk/MC_RecordProducer
+    soak_disk/MC_RecordProducer_unchecked_pre_fix
+    soak_disk/MC_BoundedPublication
+    soak_disk/MC_BoundedPublication_blocking_pre_fix
     carrier_index/MC_CarrierIndex_dag_first_pre_fix
     carrier_index/MC_CarrierIndex_read_failure_pre_fix
 )

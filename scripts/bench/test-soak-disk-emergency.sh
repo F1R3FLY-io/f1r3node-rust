@@ -45,4 +45,6 @@ SOAK_DISK_TEST_IMAGE="$IMAGE" bash "$ROOT/scripts/bench/test-soak-emergency-dead
     "${1:-$ROOT}" "$OUTPUT/emergency-deadline"
 SOAK_DISK_TEST_IMAGE="$IMAGE" bash "$ROOT/scripts/bench/test-soak-durable-record.sh" \
     "${1:-$ROOT}" "$OUTPUT/durable-record"
+SOAK_DISK_TEST_IMAGE="$IMAGE" bash "$ROOT/scripts/bench/test-soak-publication-bound.sh" \
+    "${1:-$ROOT}" "$OUTPUT/publication-bound"
 printf 'PASS: The isolated disk emergency regressions completed.\n'
