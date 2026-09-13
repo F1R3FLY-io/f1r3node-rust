@@ -54,6 +54,74 @@
 // config through — a documented gap the boot wire-in currently
 // exercises).
 //
+// # X-6b M-03 (2026-09-12, branch-review-2026-09-11.md Track B) —
+//   Sidecar authentication model
+//
+// ## Trust boundary
+//
+// The `payload_bytes` HashMap fed to `apply_wal_to_fresh_tree`
+// carries the Write/WriteAt bodies keyed by their Blake2b256 hash.
+// It reaches the applier via one of two paths:
+//
+// 1. **Local test path** — the caller (`pb_m_14_*` /
+//    `wal_applier_skips_failure_outcome_entries`) constructs the
+//    HashMap in-process from bytes it produced or read.  Trusted
+//    by construction.
+// 2. **Joiner path** — the boot subscriber fetches the payload
+//    bytes over the network from the leader (or from a peer with
+//    a copy), keyed by the hash in `entry.payload_ref`.  This is
+//    the interesting trust boundary.
+//
+// ## Authentication chain (joiner path)
+//
+// - **On-chain WAL entries are signed** as part of the block.  A
+//   validator that produced a block signed every WalEntry that
+//   made it into the chain.  Downstream validators trust the
+//   consensus-signed WAL as authoritative (same trust model as
+//   any other block content).
+// - **Sidecar bytes are NOT independently signed**.  Instead the
+//   joiner verifies `Blake2b256(fetched_bytes) == entry.payload_ref`
+//   before installing them in `payload_bytes` — this catches
+//   corruption in transit + rules out a peer serving arbitrary
+//   bytes.  Blake2b256 collision resistance is 2^-256 per pair,
+//   so serving alternative bytes with the same hash is
+//   cryptographically infeasible.
+// - **No leader→sidecar signature binding**.  A malicious node
+//   that had the correct payload_bytes could serve them; a
+//   malicious node that DID NOT have them cannot substitute other
+//   bytes (hash check catches it).  Security = leader trust +
+//   Blake2b256 pre-image resistance + TLS transport hygiene.
+//
+// ## What this closes / doesn't close
+//
+// Closes:
+//   - Corruption in transit (bit flips, TLS-terminated
+//     man-in-the-middle serving replayed old bytes).
+//   - Malicious peer serving arbitrary bytes for a known hash
+//     (impossible under Blake2b256 pre-image resistance).
+//
+// Does NOT close:
+//   - A malicious LEADER that produced a WAL with a
+//     `payload_ref: Hash(H)` alongside sidecar bytes whose
+//     Blake2b256 truly equals H but which encode adversarial file
+//     content the leader wanted the joiner to install.  This is
+//     equivalent to a byzantine leader in a signed-block chain —
+//     the consensus layer's block validation gates catch it via
+//     other mechanisms (leader stake slashing, minority validator
+//     divergence detection at re-execute time, etc.).
+//
+// ## Refactor guardrails
+//
+// If sidecar transport ever moves to a shared cache (Redis, S3,
+// pubsub fan-out) or a peer-to-peer redistribution overlay, the
+// current "hash-check-only" discipline needs a signature binding
+// (leader signs `(payload_ref, deploy_scope)`; joiners verify the
+// signature before installing).  Rationale: shared caches
+// weaken the "malicious peer can only serve bytes with the
+// correct hash" guarantee — a shared writer can populate the
+// cache with mismatch-tolerated entries under specific timing
+// conditions.  Any such refactor MUST cite this note.
+//
 // # Supported ops
 //
 //   * `Write` / `WriteAt` — carry absolute `offset` (position-
@@ -1453,6 +1521,101 @@ mod tests {
         );
         // The attacker's tree is untouched.
         assert!(!evil.path().join("target.bin").exists());
+    }
+
+    /// X-6a M-08 (2026-09-12, branch-review-2026-09-11.md Track B):
+    /// realistic capture-then-rename applier-side pin.  Companion to
+    /// `mismatched_root_identity_returns_safe_descend_failed` below
+    /// (which uses a synthetic `Some((u64::MAX, u64::MAX))` identity
+    /// to force the mismatch) and `safe_descend_verified_rejects_
+    /// rename_and_recreate` in `path.rs::tests` (which exercises
+    /// the helper directly).
+    ///
+    /// This test runs the FULL applier flow with a real captured
+    /// identity, then executes the H-5 rename-and-recreate attack
+    /// between capture and apply.  The applier's
+    /// `safe_descend_verified` call surfaces the mismatch as
+    /// `SafeDescendFailed` (whose inner `QuarantineError::
+    /// RootIdentityChanged` is preserved in the error message).
+    ///
+    /// A regression that let the applier open a swapped root
+    /// silently (e.g., a refactor that stripped the identity from
+    /// the `ResolvedWalPath` triple) would surface here as the
+    /// file at the fresh dir getting mutated — the outer file-
+    /// content check catches this.
+    #[test]
+    fn wal_applier_identity_check_rejects_renamed_root_in_oracular_mode() {
+        let staging = tempfile::tempdir().unwrap();
+        let root_path = staging.path().join("legit-root");
+        std::fs::create_dir(&root_path).unwrap();
+        std::fs::write(root_path.join("target.bin"), vec![0u8; 8]).unwrap();
+
+        // Boot: capture the real identity of the legit root.
+        let boot_id =
+            super::super::path::capture_root_identity(&root_path).expect("boot-time stat ok");
+
+        // Sanity: the applier accepts the entry BEFORE the attack.
+        let payload = b"good".to_vec();
+        let (entry, h) = write_entry_at(&root_path.join("target.bin"), 0, &payload);
+        let mut sidecar: HashMap<[u8; 32], Vec<u8>> = HashMap::new();
+        sidecar.insert(h, payload.clone());
+        let root_pb = root_path.clone();
+        let boot_id_pre = boot_id;
+        apply_wal_to_fresh_tree(
+            &[entry.clone()],
+            &sidecar,
+            |_p| ResolvedWalPath {
+                root: root_pb.clone(),
+                rel: std::path::PathBuf::from("target.bin"),
+                expected_root_id: Some(boot_id_pre),
+            },
+            &[],
+        )
+        .expect("pre-attack apply must succeed against the legit root");
+        // Applier writes with libc::O_WRONLY | libc::O_CREAT (not
+        // TRUNC), so the tail of the original 8-byte seed remains
+        // after the 4-byte payload.  Just check the first 4 bytes.
+        let contents_after = std::fs::read(root_path.join("target.bin")).unwrap();
+        assert_eq!(&contents_after[..4], b"good");
+
+        // Attack: rename the legit root aside, then recreate a
+        // fresh dir with the same name + populate with attacker-
+        // controlled content of the same rel path.
+        let sidelined = staging.path().join("legit-root.bak");
+        std::fs::rename(&root_path, &sidelined).unwrap();
+        std::fs::create_dir(&root_path).unwrap();
+        std::fs::write(root_path.join("target.bin"), b"attacker-seed").unwrap();
+
+        // Apply again with the ORIGINAL boot_id.  The applier must
+        // reject at safe_descend_verified with the identity
+        // mismatch — attacker-seeded content stays untouched.
+        let attack_payload = b"attacker-overwrite".to_vec();
+        let (attack_entry, attack_h) =
+            write_entry_at(&root_path.join("target.bin"), 0, &attack_payload);
+        sidecar.insert(attack_h, attack_payload);
+        let err = apply_wal_to_fresh_tree(
+            &[attack_entry],
+            &sidecar,
+            |_p| ResolvedWalPath {
+                root: root_pb.clone(),
+                rel: std::path::PathBuf::from("target.bin"),
+                expected_root_id: Some(boot_id),
+            },
+            &[],
+        )
+        .expect_err("post-rename apply MUST reject");
+        assert!(
+            matches!(err, ApplierError::SafeDescendFailed { entry_index: 0, .. }),
+            "M-08 regression: post-rename apply must surface as \
+             SafeDescendFailed (containing RootIdentityChanged); got {err:?}"
+        );
+        // Content check: the attacker-seeded bytes are unchanged —
+        // the applier did NOT write.
+        assert_eq!(
+            std::fs::read(root_path.join("target.bin")).unwrap(),
+            b"attacker-seed".to_vec(),
+            "M-08 regression: applier must not mutate a swapped root"
+        );
     }
 
     /// S-1 TOCTOU pin (2026-09-03): a mismatched `expected_root_id`

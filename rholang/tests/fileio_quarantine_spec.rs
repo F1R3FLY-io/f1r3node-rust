@@ -205,19 +205,24 @@ mod tests {
     }
 
     /// D-02 scenario 3: same escape but on a Consensus-mode cap.
-    /// Ensures the quarantine gate fires BEFORE the Consensus verify
-    /// path even considers the cap — a regression that let
-    /// Consensus-mode path-escape through would silently escalate the
-    /// bypass to a Consensus-shared surface (every validator sees the
-    /// same rel string but might have different post-canonicalization
-    /// resolution on their subdir).
+    /// Since X-6c M-04 landed (2026-09-12), Consensus-mode dispatch
+    /// with an unregistered logical root refuses UPFRONT with
+    /// FSERR_UNSUPPORTED — the M-04 guard fires before
+    /// safe_descend_verified is even entered.  This is strictly
+    /// stronger than the pre-M-04 FSERR_QUARANTINE outcome: instead
+    /// of doing path-safety work then refusing the escape, we refuse
+    /// the entire dispatch because the tempdir root wasn't
+    /// registered in the RootIdentityRegistry at boot.
     ///
-    /// The pin here is that the ordering discipline holds: quarantine
-    /// rejection at the handler entry point, not deep in the verify
-    /// path where a follower's re-execute could produce a divergent
-    /// reply hash.
+    /// Real production Consensus caps carry `/@bundle/<X>` roots
+    /// which ARE boot-registered — this test path (tempdir root)
+    /// simulates the failure mode M-04 is designed to catch: a
+    /// Consensus cap on an unregistered logical root.  Either
+    /// FSERR_QUARANTINE (path-safety failure at descend) or
+    /// FSERR_UNSUPPORTED (M-04 refusal) is a valid safety outcome;
+    /// M-04 makes the refusal earlier + more explicit.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn consensus_fs_open_with_path_escape_returns_quarantine() {
+    async fn consensus_fs_open_with_path_escape_returns_quarantine_or_unsupported() {
         let dir = tempfile::tempdir().unwrap();
         let sibling = tempfile::tempdir().unwrap();
         std::fs::write(sibling.path().join("secret.bin"), b"attacker's target")
@@ -239,14 +244,14 @@ mod tests {
         );
         let reply = eval_and_read_out(&runtime, &term).await;
         let code = extract_err_code(&reply);
-        assert_eq!(
-            code, "FSERR_QUARANTINE",
-            "D-02 regression: Consensus-mode parent-traversal MUST \
-             reject with FSERR_QUARANTINE at the handler entry point.  \
-             A different code suggests the quarantine gate is ordered \
-             AFTER the Consensus verify branch — that ordering would \
-             mean followers re-execute the escape and could produce \
-             divergent reply hashes."
+        assert!(
+            code == "FSERR_QUARANTINE" || code == "FSERR_UNSUPPORTED",
+            "D-02 / X-6c M-04 regression: Consensus-mode parent-\
+             traversal MUST reject with FSERR_QUARANTINE (from \
+             safe_descend_verified) or FSERR_UNSUPPORTED (from the \
+             M-04 unregistered-root guard).  A different code suggests \
+             both the M-04 guard AND the quarantine gate were \
+             bypassed.  Got: {code}"
         );
     }
 }

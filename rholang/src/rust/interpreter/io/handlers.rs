@@ -1375,7 +1375,16 @@ impl FsProcesses {
         // recreate defense at open time (previously fs_open
         // silently skipped identity verification — a pre-existing
         // gap surfaced by Shape A's landing).
-        let (root_pb, expected_root_id) = self.handles.root_registry.resolve_or_identity(&root_pb);
+        // X-6c M-04 gated variant — refuses Consensus with an
+        // unregistered logical root.
+        let (root_pb, expected_root_id) = match self
+            .handles
+            .root_registry
+            .resolve_or_identity_gated_for_consensus(&root_pb, cmode)
+        {
+            Ok(v) => v,
+            Err((c, m)) => return err(c, m),
+        };
         let intent_copy = intent;
         // C-29-1 review fix: keep `rel` accessible for canon_path
         // construction below.  Clone into the blocking closure and
@@ -1607,9 +1616,20 @@ impl FsProcesses {
                     }
                     // Fresh syscall via Shape A resolver + lock-check
                     // gate (same as leader's non-recursive path).
+                    // X-6c M-04 gated variant.
                     let raw_root_pb = PathBuf::from(root);
-                    let (on_disk_root_pb, expected_root_id) =
-                        self.handles.root_registry.resolve_or_identity(&raw_root_pb);
+                    let (on_disk_root_pb, expected_root_id) = match self
+                        .handles
+                        .root_registry
+                        .resolve_or_identity_gated_for_consensus(&raw_root_pb, cmode)
+                    {
+                        Ok(v) => v,
+                        Err((c, m)) => {
+                            let out = vec![early_err_for_remove_dir(*recursive, cmode, c, m)];
+                            produce(&out, ack).await?;
+                            return Ok(out);
+                        }
+                    };
                     let rel_owned = rel.to_string();
                     let lock_registry = self.handles.lock_registry.clone();
                     // T-20 (2026-09-11, DD-FailClosedOnInvariantBreak):
@@ -1733,9 +1753,20 @@ impl FsProcesses {
                     // subdir).  The reply-hash divergence is the
                     // canonical divergence signal; downstream
                     // consumers hash the reply, not the WAL.
+                    // X-6c M-04 gated variant.
                     let raw_root_pb = PathBuf::from(root);
-                    let (on_disk_root_pb, expected_root_id) =
-                        self.handles.root_registry.resolve_or_identity(&raw_root_pb);
+                    let (on_disk_root_pb, expected_root_id) = match self
+                        .handles
+                        .root_registry
+                        .resolve_or_identity_gated_for_consensus(&raw_root_pb, cmode)
+                    {
+                        Ok(v) => v,
+                        Err((c, m)) => {
+                            let out = vec![early_err_for_remove_dir(*recursive, cmode, c, m)];
+                            produce(&out, ack).await?;
+                            return Ok(out);
+                        }
+                    };
                     let canon_wal_target = canonicalize_lexical(root, rel);
                     let rel_owned = rel.to_string();
                     let lock_registry = self.handles.lock_registry.clone();
@@ -1856,9 +1887,20 @@ impl FsProcesses {
                 // recorded divergent path bytes for the same logical
                 // action.  No PB-M-14 canary exercises Consensus
                 // RemoveDir today, so the divergence was latent.
+                // X-6c M-04 gated variant.
                 let raw_root_pb = PathBuf::from(&root);
-                let (on_disk_root_pb, expected_root_id) =
-                    self.handles.root_registry.resolve_or_identity(&raw_root_pb);
+                let (on_disk_root_pb, expected_root_id) = match self
+                    .handles
+                    .root_registry
+                    .resolve_or_identity_gated_for_consensus(&raw_root_pb, cmode)
+                {
+                    Ok(v) => v,
+                    Err((c, m)) => {
+                        let out = vec![early_err_for_remove_dir(recursive, cmode, c, m)];
+                        produce(&out, ack).await?;
+                        return Ok(out);
+                    }
+                };
                 let canon_wal_target = canonicalize_lexical(&root, &rel);
                 let lock_registry = self.handles.lock_registry.clone();
                 let ack_clone = ack.clone();
@@ -2493,7 +2535,17 @@ pub(super) async fn open_impl_via_table(
     // Shape A: resolve legacy Oracular through identity fall-through,
     // Consensus through per-runtime RootIdentityRegistry to the
     // validator's on-disk staging dir + boot-captured (dev, inode).
-    let (root_pb, expected_root_id) = handles.root_registry.resolve_or_identity(&root_pb);
+    // X-6c M-04: gated for Consensus to refuse dispatch on unregistered
+    // logical roots — fs_open is the entry point for every fd-based
+    // Consensus session, so the guard here inherits down to all
+    // fd-based ops that follow.
+    let (root_pb, expected_root_id) = match handles
+        .root_registry
+        .resolve_or_identity_gated_for_consensus(&root_pb, cmode)
+    {
+        Ok(v) => v,
+        Err((c, m)) => return err(c, m),
+    };
     let intent_copy = intent;
     let rel_for_open = rel.clone();
     // X-2 / G-01: park_external_during so the reduction driver can

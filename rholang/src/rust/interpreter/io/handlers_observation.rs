@@ -442,8 +442,14 @@ impl FsHandler for FsStatHandler {
         Box::pin(async move {
             let leaf_name = leaf_of(&args.rel);
             let root_pb = PathBuf::from(&args.root);
-            let (root_pb, expected_root_id) =
-                ctx.handles.root_registry.resolve_or_identity(&root_pb);
+            let (root_pb, expected_root_id) = match ctx
+                .handles
+                .root_registry
+                .resolve_or_identity_gated_for_consensus(&root_pb, args.cmode)
+            {
+                Ok(v) => v,
+                Err((c, m)) => return HandlerReply::Err(err(c, m)),
+            };
             let rel = args.rel;
             let cmode = args.cmode;
             let par = spawn_blocking_par(move || -> Par {
@@ -539,9 +545,12 @@ pub struct FsExistsHandler;
 pub struct FsExistsArgs {
     root: String,
     rel: String,
-    // cmode not stored in Args — dispatch doesn't use it (fstatat's
-    // ok/err drives ok_bool).  Journal + replay_cmode re-resolve
-    // from raw_args.
+    // X-6c M-04 (2026-09-12): cmode NOW stored so the gated resolver
+    // can refuse Consensus + unregistered logical root at dispatch
+    // entry.  Pre-M-04 it was intentionally dropped (fstatat's
+    // ok/err drives ok_bool; journal + replay_cmode re-resolve from
+    // raw_args) but the gated resolver needs cmode here.
+    cmode: super::ConsensusMode,
 }
 
 impl FsHandler for FsExistsHandler {
@@ -558,12 +567,15 @@ impl FsHandler for FsExistsHandler {
                 "expected (String, String, String)",
             ));
         };
-        if resolve_cmode(cmode_par).is_none() {
-            return Err(HandlerReply::boxed_err(
-                FSERR_BAD_ARG,
-                "cmode must be String \"oracular\" or \"consensus\"",
-            ));
-        }
+        let cmode = match resolve_cmode(cmode_par) {
+            Some(m) => m,
+            None => {
+                return Err(HandlerReply::boxed_err(
+                    FSERR_BAD_ARG,
+                    "cmode must be String \"oracular\" or \"consensus\"",
+                ));
+            }
+        };
         let (root, rel) = match (RhoString::unapply(root_par), RhoString::unapply(rel_par)) {
             (Some(r), Some(l)) => (r, l),
             _ => {
@@ -573,7 +585,7 @@ impl FsHandler for FsExistsHandler {
                 ));
             }
         };
-        Ok(FsExistsArgs { root, rel })
+        Ok(FsExistsArgs { root, rel, cmode })
     }
 
     fn pre_charge_cost() -> crate::rust::interpreter::accounting::costs::Cost {
@@ -586,8 +598,14 @@ impl FsHandler for FsExistsHandler {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = HandlerReply> + Send + 'a>> {
         Box::pin(async move {
             let root_pb = PathBuf::from(&args.root);
-            let (root_pb, expected_root_id) =
-                ctx.handles.root_registry.resolve_or_identity(&root_pb);
+            let (root_pb, expected_root_id) = match ctx
+                .handles
+                .root_registry
+                .resolve_or_identity_gated_for_consensus(&root_pb, args.cmode)
+            {
+                Ok(v) => v,
+                Err((c, m)) => return HandlerReply::Err(err(c, m)),
+            };
             let rel = args.rel;
             let par = spawn_blocking_par(move || -> Par {
                 let parent = match safe_descend_verified(&root_pb, &rel, expected_root_id) {
@@ -1188,8 +1206,14 @@ impl FsHandler for FsEntriesHandler {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = HandlerReply> + Send + 'a>> {
         Box::pin(async move {
             let root_pb = PathBuf::from(&args.root);
-            let (root_pb, expected_root_id) =
-                ctx.handles.root_registry.resolve_or_identity(&root_pb);
+            let (root_pb, expected_root_id) = match ctx
+                .handles
+                .root_registry
+                .resolve_or_identity_gated_for_consensus(&root_pb, args.cmode)
+            {
+                Ok(v) => v,
+                Err((c, m)) => return HandlerReply::Err(err(c, m)),
+            };
             let rel = args.rel;
             let cmode = args.cmode;
             let par = spawn_blocking_par(move || -> Par {

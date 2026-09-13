@@ -11,6 +11,27 @@
 // the runtime layer (Phase 1 tail) and take an immutable snapshot of the
 // counter; on rollback, any fds allocated past the snapshot are closed and
 // removed from the table.
+//
+// # X-6b A-13 (2026-09-12, branch-review-2026-09-11.md Track A) —
+//   Fd namespace: NOT unique across FileHandleTable + DirHandleTable
+//
+// **File fds and directory-stream fds live in SEPARATE tables and can
+// share numeric values.**  Rholang layer routes each fd to the correct
+// native (fs_close vs fs_entries_stream_close etc.) based on the URN
+// that produced the fd — a fd from fs_open goes to file handlers, a
+// fd from entriesStreamOpen goes to dir-stream handlers.  The Rust
+// handler layer looks up in the corresponding table.
+//
+// Consequence: a bug that routed a file fd to a dir-stream handler
+// (or vice versa) would produce FSERR_CLOSED — the handler's own
+// table lookup fails.  Sound at the boundary but subtle for anyone
+// reading `fd: u64` in isolation.  Refactor guardrail: if a future
+// slice unifies these into `HandleTable<T>` with a discriminator
+// tag, migrate carefully — every URN dispatch site currently
+// assumes the two tables are disjoint namespaces.
+//
+// The companion doc-comment lives in `dir_handle_table.rs`; both
+// should be kept in sync.
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -45,6 +66,59 @@ const _: () = assert!(
      the state-hash-derived watermark cannot guarantee aliasing prevention"
 );
 
+/// # X-6b M-06 (2026-09-12, branch-review-2026-09-11.md Track B) —
+///   Arc<File> keepalive vs FileHandle metadata coupling
+///
+/// The A4-M-1 fix (commit a9c64fe0e) wrapped `file` in `Arc` so
+/// `raw_fd()` can hand out clones that keep the underlying `File`
+/// alive across a `spawn_blocking(libc::read/write/...)` call — the
+/// OS fd stays valid until every closure clone drops, defeating the
+/// race where a concurrent `remove(fd)` closes the fd out from
+/// under the pending syscall.
+///
+/// **Coupling caveat**: the Arc keepalive protects the OS fd only.
+/// The `FileHandle` ENTRY in the table (this struct) can still be
+/// removed via `remove(fd)` / `close_all_for_deploy(scope)` while a
+/// spawn_blocking closure holds an `Arc<File>` clone.  Once removed,
+/// any handler that reads `FileHandle` fields (like `canon_path`,
+/// `mode`, `cmode`, `position`) via `with_mut` / a fresh
+/// `raw_fd()` lookup would see `None`.
+///
+/// **What works**:
+/// - In-flight `libc::read` / `libc::write` / `libc::lseek` on the
+///   held `Arc<File>` clone completes safely.  The OS fd is
+///   ref-counted by Rust's `File::drop` → `close(2)`; the pending
+///   syscall keeps the fd number valid for its duration.
+///
+/// **What doesn't**:
+/// - A syscall closure that ALSO calls back into the handle table
+///   to update metadata (e.g., advance `position`) via a second
+///   `with_mut` racing with `remove(fd)` on another task.  The
+///   `with_mut` returns `None` after remove; the closure's inner
+///   position update no-ops.  Callers must therefore snapshot the
+///   metadata they need BEFORE the spawn_blocking, or accept that
+///   a mid-flight remove races the update.
+///
+/// **In practice** every current handler follows the snapshot-
+/// before-spawn pattern:
+/// ```text
+///   let (fd_arc, canon_path, mode, cmode) = handles.with_mut(fd, |h| {
+///       (h.file.clone(), h.canon_path.clone(), h.mode, h.cmode)
+///   }).await?;
+///   spawn_blocking(move || {
+///       // safe: fd_arc holds the OS fd; other fields are owned copies.
+///   }).await
+/// ```
+/// The `position` field is the sole exception (its update happens
+/// after the syscall replies via a follow-up `with_mut` call).
+/// Under the sequential-deploy invariant (SEC-2), only ONE syscall
+/// closure can be in flight per fd at a time, so the with_mut race
+/// window doesn't materialize under production wiring.
+///
+/// **Refactor guardrail**: if a future slice lifts the sequential-
+/// deploy invariant OR shares `FileHandle` fields across concurrent
+/// syscall closures, tighten this pattern with explicit epoch
+/// tokens or per-fd sequence numbers.
 #[derive(Debug)]
 pub struct FileHandle {
     /// The underlying OS file wrapped in `Arc`, or `None` for a
@@ -691,6 +765,25 @@ impl FileHandleTable {
         let before = table.len();
         table.retain(|_, h| &h.deploy != scope);
         before - table.len()
+    }
+
+    /// X-6a M-10 (2026-09-12): sync peek into the table's length
+    /// without awaiting the RwLock.  Used by `WalDeployScope::Drop`
+    /// to decide whether the deploy-end sweep is a no-op (empty
+    /// table) or has real work to do — the latter requires a live
+    /// tokio runtime, the former is safely skippable.
+    ///
+    /// Reads via `try_read()` — if the lock is contended (someone
+    /// else is midway through a mutation), returns `true` (worst-
+    /// case: sweep must run under a runtime).  That's the safe
+    /// direction: false-positive "has handles" leads to a loud
+    /// runtime requirement; a false-negative "no handles" would
+    /// silently skip a needed sweep.
+    pub fn has_active_handles_sync(&self) -> bool {
+        match self.inner.table.try_read() {
+            Ok(guard) => !guard.is_empty(),
+            Err(_) => true, // contended → safe over-report
+        }
     }
 }
 

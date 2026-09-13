@@ -652,12 +652,38 @@ impl Drop for WalDeployScope {
         // available (synchronous drain OR per-deploy handle-table
         // partitioning).
         //
-        // Skip when no tokio runtime is available (rare: only test
-        // paths that construct WalDeployScope outside an async
-        // context).
-        let fs_handles = self.fs_handles.clone();
-        let scope = self.deploy_scope;
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        // X-6a M-10 (2026-09-12, branch-review-2026-09-11.md Track B):
+        // require a live tokio runtime at Drop time IFF there are
+        // handles to sweep.  A pre-fix silent `if let Ok(handle) = ...`
+        // skipped the sweep unconditionally when called outside async
+        // context, leaking OS fds until process end — the next
+        // deploy's `close_all_for_deploy` then missed them because
+        // the handle table carried the old deploy_scope.
+        //
+        // The conditional guard preserves compatibility with test
+        // paths that construct empty scopes outside `#[tokio::test]`
+        // (many `#[test]` unit tests in this file do exactly this
+        // to isolate WAL-only behavior from the async handle-table
+        // machinery), while making the previously-silent leak-path
+        // fire a loud panic if a non-empty table drops without a
+        // runtime.
+        //
+        // Production sites always construct WalDeployScope inside
+        // an async context (`RuntimeManager::spawn_runtime` → async
+        // task), so the loud-panic branch only fires on a genuine
+        // test-harness bug.
+        let has_files = self.fs_handles.has_active_handles_sync();
+        let has_dirs = self.fs_handles.dir_handles.has_active_handles_sync();
+        if has_files || has_dirs {
+            let fs_handles = self.fs_handles.clone();
+            let scope = self.deploy_scope;
+            let handle = tokio::runtime::Handle::try_current().expect(
+                "M-10: WalDeployScope::Drop has open fds to sweep but no \
+                 active tokio runtime.  Constructing WalDeployScope with \
+                 non-empty handle tables outside `#[tokio::test]` silently \
+                 leaks fds and misfires the next deploy's sweep.  Wrap \
+                 the caller in a tokio runtime.",
+            );
             handle.spawn(async move {
                 let n_file = fs_handles.close_all_for_deploy(&scope).await;
                 let n_dir = fs_handles.dir_handles.close_all_for_deploy(&scope).await;
@@ -4373,6 +4399,63 @@ mod tests {
     };
 
     fn holder(byte: u8) -> HolderId { HolderId::from_bytes([byte; 32]) }
+
+    /// X-6a M-10 (2026-09-12, branch-review-2026-09-11.md Track B):
+    /// pin the loud-panic path when WalDeployScope::Drop runs with
+    /// non-empty handle tables OUTSIDE a tokio runtime.  Pre-fix
+    /// the drop silently skipped the sweep, leaking OS fds until
+    /// process end + misfiring the next deploy's sweep.
+    ///
+    /// This test constructs a scope + inserts a shadow FileHandle
+    /// (no OS fd → no cleanup needed for the tempfile) then drops
+    /// the scope from a bare `#[test]` context.  The Drop must
+    /// panic with the M-10 diagnostic.
+    ///
+    /// Empty tables + no runtime is still safe (many `#[test]` unit
+    /// tests in this file exercise WalDeployScope with empty
+    /// tables); only non-empty + no-runtime fires the panic.
+    #[test]
+    #[should_panic(expected = "M-10: WalDeployScope::Drop has open fds to sweep")]
+    fn m10_wal_deploy_scope_drop_panics_when_non_empty_table_without_runtime() {
+        use rholang::rust::interpreter::io::handle_table::{FileHandle, FileHandleTable};
+        use rholang::rust::interpreter::io::mode::AccessMode;
+        use rholang::rust::interpreter::io::ConsensusMode;
+
+        let deploy_scope: DeployScope = [0xA1u8; 32];
+        let fs_handles = FileHandleTable::new();
+
+        // Insert a shadow handle (file: None so no OS fd to close).
+        // Use a fresh tokio runtime just for the insert (which is
+        // async), then drop the runtime BEFORE dropping the scope.
+        let rt = tokio::runtime::Runtime::new().expect("new tokio runtime");
+        rt.block_on(async {
+            let handle = FileHandle {
+                file: None,
+                canon_path: std::path::PathBuf::from("/shadow"),
+                mode: AccessMode::Read,
+                cmode: ConsensusMode::Oracular,
+                position: 0,
+                deploy: deploy_scope,
+            };
+            fs_handles.insert(handle).await.expect("insert");
+        });
+        drop(rt); // No live runtime past this point.
+
+        // Construct a scope with the non-empty fs_handles.  Its
+        // Drop below MUST panic with the M-10 diagnostic (there's
+        // no runtime to spawn the sweep on, and the table has an
+        // active handle to sweep).
+        let _scope = WalDeployScope::new_with_lock_sweep(
+            Wal::new(),
+            LockRegistry::new(),
+            deploy_scope,
+            std::sync::Arc::new(std::sync::RwLock::new([0u8; 32])),
+            Vec::new(),
+            std::sync::Arc::new(std::sync::RwLock::new(Vec::new())),
+            fs_handles,
+        );
+        // Panic fires when _scope drops at end of function.
+    }
 
     /// Deploy-end sweep: a lock acquired under this deploy's scope
     /// gets released when the WalDeployScope drops (caller neither

@@ -2374,7 +2374,7 @@ mod tests {
         // `(lockId, releasedFlag, holder)`; the URN arity
         // registration bumps to 3.  See auto-memory
         // `fileio_wave4_security_followups.md` § Item 2.
-        const EXPECTED: &str = "76116af6569c9019a6eef31e08fc0688c5de4f7ef3de7472cdbe4932f5337b1f";
+        const EXPECTED: &str = "55bc1b785d78ba7df0ef93eaf5d10558b8294dec4541a4b632931652042d3c73";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \
@@ -2460,7 +2460,7 @@ mod tests {
         //   `compose_fs_genesis_source_golden_hex` docstring).
         // S4.7 follow-up (2026-09-11 hardening): rolled for arity
         // 2 → 3 + lockCell format bump.
-        const EXPECTED: &str = "cc8a6275e09d24550d19977fc73e7047f89d423e85aae2f3c204e1d53551c820";
+        const EXPECTED: &str = "362a00b58d76947030f90c922c0028c4bce65734fe15e94c320aa16297970d62";
         assert_eq!(
             hex, EXPECTED,
             "M-40: compose_fs_genesis_source() hash for non-empty bundle \
@@ -2547,7 +2547,7 @@ mod tests {
         //   `compose_fs_genesis_source_golden_hex` docstring).
         // S4.7 follow-up (2026-09-11 hardening): rolled for arity
         // 2 → 3 + lockCell format bump.
-        const EXPECTED: &str = "1629eab79752fe8d6829e616cac169cb4a8bf7214687a27ea6a297e8342ba759";
+        const EXPECTED: &str = "0b5093cc0e60fbd977ac4c89cd51fdf9e16c40ad092fc0d9e1700f2d77d871e0";
         assert_eq!(
             hex, EXPECTED,
             "M-40 review-fix (S4): compose_fs_genesis_source() hash for \

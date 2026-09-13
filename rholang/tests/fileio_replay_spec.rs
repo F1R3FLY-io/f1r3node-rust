@@ -67,6 +67,11 @@ mod tests {
         follower.cost.set(Cost::unsafe_max());
         leader.disable_fs_native_urn_filter();
         follower.disable_fs_native_urn_filter();
+        // X-6c M-04 (2026-09-12): tempdir roots aren't Shape-A
+        // registered; see fs_wal_spec::create_runtime for the
+        // rationale.
+        leader.fs_handles.root_registry.set_test_permissive(true);
+        follower.fs_handles.root_registry.set_test_permissive(true);
         (leader, follower)
     }
 

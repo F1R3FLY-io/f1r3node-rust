@@ -336,8 +336,14 @@ impl FsHandler for FsChmodHandler {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = HandlerReply> + Send + 'a>> {
         Box::pin(async move {
             let root_pb = PathBuf::from(&args.root);
-            let (root_pb, expected_root_id) =
-                ctx.handles.root_registry.resolve_or_identity(&root_pb);
+            let (root_pb, expected_root_id) = match ctx
+                .handles
+                .root_registry
+                .resolve_or_identity_gated_for_consensus(&root_pb, args.cmode)
+            {
+                Ok(v) => v,
+                Err((c, m)) => return HandlerReply::Err(err(c, m)),
+            };
             let rel = args.rel;
             let bits = args.bits as libc::mode_t;
             let par = spawn_blocking_par(move || -> Par {
@@ -555,8 +561,18 @@ impl FsHandler for FsChownHandler {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = HandlerReply> + Send + 'a>> {
         Box::pin(async move {
             let root_pb = PathBuf::from(&args.root);
-            let (root_pb, expected_root_id) =
-                ctx.handles.root_registry.resolve_or_identity(&root_pb);
+            // fs_chown Consensus is banned at parse_content, so this
+            // gated call is defense-in-depth — the Consensus-Err branch
+            // never fires in practice.  Kept for structural parity
+            // with other path-mutation handlers (M-04 lint).
+            let (root_pb, expected_root_id) = match ctx
+                .handles
+                .root_registry
+                .resolve_or_identity_gated_for_consensus(&root_pb, args.cmode)
+            {
+                Ok(v) => v,
+                Err((c, m)) => return HandlerReply::Err(err(c, m)),
+            };
             let par =
                 chown_impl(&root_pb, args.rel, args.owner, args.group, expected_root_id).await;
             HandlerReply::Ok(par)
@@ -1058,10 +1074,22 @@ impl FsHandler for FsRenameHandler {
         Box::pin(async move {
             let from_root_pb = PathBuf::from(&args.from_root);
             let to_root_pb = PathBuf::from(&args.to_root);
-            let (from_root_pb, from_expected_id) =
-                ctx.handles.root_registry.resolve_or_identity(&from_root_pb);
-            let (to_root_pb, to_expected_id) =
-                ctx.handles.root_registry.resolve_or_identity(&to_root_pb);
+            let (from_root_pb, from_expected_id) = match ctx
+                .handles
+                .root_registry
+                .resolve_or_identity_gated_for_consensus(&from_root_pb, args.cmode)
+            {
+                Ok(v) => v,
+                Err((c, m)) => return HandlerReply::Err(err(c, m)),
+            };
+            let (to_root_pb, to_expected_id) = match ctx
+                .handles
+                .root_registry
+                .resolve_or_identity_gated_for_consensus(&to_root_pb, args.cmode)
+            {
+                Ok(v) => v,
+                Err((c, m)) => return HandlerReply::Err(err(c, m)),
+            };
             let from_rel = args.from_rel;
             let to_rel = args.to_rel;
             let par = spawn_blocking_par(move || -> Par {
@@ -1265,10 +1293,22 @@ impl FsHandler for FsCopyFileHandler {
         Box::pin(async move {
             let from_root_pb = PathBuf::from(&args.from_root);
             let to_root_pb = PathBuf::from(&args.to_root);
-            let (from_root_pb, from_expected_id) =
-                ctx.handles.root_registry.resolve_or_identity(&from_root_pb);
-            let (to_root_pb, to_expected_id) =
-                ctx.handles.root_registry.resolve_or_identity(&to_root_pb);
+            let (from_root_pb, from_expected_id) = match ctx
+                .handles
+                .root_registry
+                .resolve_or_identity_gated_for_consensus(&from_root_pb, args.cmode)
+            {
+                Ok(v) => v,
+                Err((c, m)) => return HandlerReply::Err(err(c, m)),
+            };
+            let (to_root_pb, to_expected_id) = match ctx
+                .handles
+                .root_registry
+                .resolve_or_identity_gated_for_consensus(&to_root_pb, args.cmode)
+            {
+                Ok(v) => v,
+                Err((c, m)) => return HandlerReply::Err(err(c, m)),
+            };
             let from_rel = args.from_rel;
             let to_rel = args.to_rel;
             let par = spawn_blocking_par(move || -> Par {
@@ -1449,8 +1489,14 @@ impl FsHandler for FsRemoveFileHandler {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = HandlerReply> + Send + 'a>> {
         Box::pin(async move {
             let root_pb = PathBuf::from(&args.root);
-            let (root_pb, expected_root_id) =
-                ctx.handles.root_registry.resolve_or_identity(&root_pb);
+            let (root_pb, expected_root_id) = match ctx
+                .handles
+                .root_registry
+                .resolve_or_identity_gated_for_consensus(&root_pb, args.cmode)
+            {
+                Ok(v) => v,
+                Err((c, m)) => return HandlerReply::Err(err(c, m)),
+            };
             let lock_registry = ctx.handles.lock_registry.clone();
             let rel = args.rel;
             let cmode = args.cmode;

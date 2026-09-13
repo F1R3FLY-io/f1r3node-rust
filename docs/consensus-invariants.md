@@ -181,6 +181,46 @@ Additional Rholang-layer bans (Dir agent):
 Changing any dispatch rule (adding a ban, removing a gate,
 switching a per-cmode journal decision) is a hard fork.
 
+### 7a. Mandatory `expected_root_id` for Consensus dispatch (X-6c M-04)
+
+Every path-based Consensus-mode handler MUST route its `root`
+through `RootIdentityRegistry::resolve_or_identity_gated_for_
+consensus(root, cmode)` (introduced 2026-09-12).  The gated
+variant:
+
+- Returns `Ok((on_disk_root, Some(identity)))` for a registered
+  logical root under any cmode.
+- Returns `Ok((logical, None))` fall-through for Oracular +
+  unregistered (safe — Oracular has no boot-registered identity
+  expectation).
+- Returns `Err((FSERR_UNSUPPORTED, msg))` for Consensus +
+  unregistered.  This is the load-bearing safety net M-04 adds.
+
+**Why mandatory**: pre-M-04 the ungated `resolve_or_identity`
+returned `Some(_)` for registered logicals and `None` fall-through
+for everything else.  A Consensus cap targeting an unregistered
+logical root would silently take the fall-through, hand
+`expected_root_id: None` to `safe_descend_verified`, and weaken
+the descent to symlink-only defense (no `(dev, inode)` identity
+check).  The H-5 rename-and-recreate attack is what the identity
+check exists to catch; skipping it on Consensus is unsound.
+
+Registered handlers as of 2026-09-12: fs_open (both handlers.rs
+inline + open_impl_via_table), fs_stat, fs_exists, fs_entries,
+fs_chmod, fs_chown, fs_rename (two roots), fs_copy_file (two
+roots), fs_remove_file, fs_remove_dir (three internal branches).
+The `resolve_or_identity_gated_for_consensus_lint` pin
+enumerates them.
+
+A pre-existing carve-out: `fs_quarantine` uses the ungated
+variant because it takes no cmode arg — quarantine is Oracular-
+only by construction (the Rholang URN has no cmode slot).
+
+Changing the gated policy (e.g., relaxing to allow Consensus +
+unregistered, or renaming the diagnostic prefix "M-04:") is a
+hard-fork event because it changes the FSERR reply the handler
+produces on unregistered inputs.
+
 ### 8. NB-7 cross-deploy mutual-wait cycle detection
 
 `LockRegistry::would_close_cycle` refuses any `wait: true`

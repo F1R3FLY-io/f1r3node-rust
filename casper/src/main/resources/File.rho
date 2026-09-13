@@ -6950,6 +6950,42 @@ in {
     // holder → mismatch at LockRegistry → FSERR_CLOSED.  Every mint
     // site (`LockToken!?(lid, *this)`) carries the correct holder
     // end-to-end.
+    //
+    // ## X-6b M-05 (2026-09-12, branch-review-2026-09-11.md Track B)
+    //
+    // **CRITICAL — stateP is scoped per LockToken instance, NEVER
+    // shared across File caps.**  Each `LockToken!?(lid, *this)`
+    // mint gets a fresh `stateP` GPrivate name via the agent
+    // constructor's `new this, private in { ... }` desugaring.  Do
+    // NOT refactor to hoist stateP to a shared cell (e.g., a
+    // module-level "all-locks state map" for observability) without
+    // reading this note.
+    //
+    // Rationale: today's linear consume `for (@state <- @[*private,
+    // *lockStateP])` on release serializes CONCURRENT release
+    // attempts on the SAME token (D3 FuturesUnordered can
+    // interleave releases when a par branch also drops the token).
+    // Sharing stateP across tokens would fold that serialization
+    // over MULTIPLE independent tokens — a call chain like
+    // `File.readN → withSequentialLock → callback` on cap A that
+    // acquires a subordinate lock on cap B would then serialize
+    // with any release path on cap B.  Under the current
+    // NB-7 cycle-detection surface (docs/consensus-invariants.md
+    // § 8) this would surface as a deadlock hazard the wait-for
+    // graph doesn't model (it tracks range acquires + wait:true
+    // deferred acquires, not shared-stateP contention).
+    //
+    // Future refactor guardrails:
+    // - If stateP is ever peeked non-linearly (`<<-`) for read-only
+    //   introspection, that's SAFE — no serialization, no cycle.
+    //   The linear `<-` on the release side is what enforces the
+    //   discipline.
+    // - If a future feature genuinely needs cross-cap coordination
+    //   (e.g., a coalesced release that atomically drops N locks),
+    //   route it through LockRegistry's `release_all_for_deploy`
+    //   instead of shared stateP.  The registry's cycle-detection
+    //   is the authoritative gate; token-level linearity is a
+    //   per-token safety net.
     constructor(@lid, @holder) {
       @[*private, *lockStateP]!((lid, holder))
     } |

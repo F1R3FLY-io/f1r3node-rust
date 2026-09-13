@@ -7,6 +7,14 @@
 // and derived from a state-hash-seeded watermark — same aliasing-
 // prevention pattern as `FileHandleTable` (PB-M-13 / slice 28).
 //
+// # X-6b A-13 (2026-09-12) — Fd namespace note
+//
+// **This table's fds are NOT unique with respect to FileHandleTable's
+// fds.**  See the companion doc-comment in `handle_table.rs`.  Both
+// tables allocate from independent monotonic counters seeded from the
+// state hash; they may (and often do) collide in numeric value.
+// Rholang URN dispatch is what routes an fd to the correct table.
+//
 // Why `Arc<DirHandle>` instead of storing `DirHandle` directly (as
 // `FileHandleTable` does with `FileHandle`): every `readdir` runs in
 // `spawn_blocking`, so the caller `.await`s the result while the
@@ -374,6 +382,17 @@ impl DirHandleTable {
         let before = table.len();
         table.retain(|_, h| &h.deploy != scope);
         before - table.len()
+    }
+
+    /// X-6a M-10 (2026-09-12): sync peek used by
+    /// `WalDeployScope::Drop` to gate the loud-runtime-requirement.
+    /// See the FileHandleTable companion for the safe-over-report
+    /// rationale.
+    pub fn has_active_handles_sync(&self) -> bool {
+        match self.inner.table.try_read() {
+            Ok(guard) => !guard.is_empty(),
+            Err(_) => true,
+        }
     }
 }
 

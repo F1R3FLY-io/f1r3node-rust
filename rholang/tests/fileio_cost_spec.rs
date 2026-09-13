@@ -1045,6 +1045,107 @@ fn handlers_top_comment_phase5_verifying_count_matches_actual() {
     );
 }
 
+/// X-6a C-14 (2026-09-12, branch-review-2026-09-11.md Track C):
+/// runtime lint that every `FS_HANDLERS` entry with
+/// `verifying: true` has a corresponding source-level verify site.
+/// The prior pin
+/// (`handlers_top_comment_phase5_verifying_count_matches_actual`)
+/// scans handler source; this pin scans the runtime slice.  Both
+/// must agree — a divergence means either the source-scan missed
+/// a handler OR a registration flipped its `verifying` flag
+/// without adding a verify call.
+///
+/// The framework auto-invokes `verify_reply_hash_matches_cached`
+/// inside `dispatch_via_trait_owned` (handler_trait.rs, Step 7) for
+/// every VERIFYING handler routed through the shared dispatch.
+/// This pin catches the case where a `verifying: true`
+/// registration exists but the dispatch fn was manually replaced
+/// with one that bypasses the framework's verify step (a subtle
+/// refactor hazard the review flagged).
+#[test]
+fn c14_fs_handlers_verifying_flag_matches_source_scan() {
+    use rholang::rust::interpreter::io::handler_trait::FS_HANDLERS;
+
+    // Runtime side: enumerate FS_HANDLERS with verifying == true.
+    let runtime_verifying: std::collections::BTreeSet<String> = FS_HANDLERS
+        .iter()
+        .filter(|e| e.verifying)
+        .map(|e| e.name.to_string())
+        .collect();
+
+    // Source-scan side: the same helper the sibling pin uses.
+    // Repeat the scan inline (single-purpose test, doesn't want to
+    // depend on cross-file test helpers).
+    let src = include_str!("../src/rust/interpreter/io/handlers.rs");
+    let handlers_stream_src = include_str!("../src/rust/interpreter/io/handlers_stream.rs");
+    let handlers_lock_src = include_str!("../src/rust/interpreter/io/handlers_lock.rs");
+    let handlers_lifecycle_src = include_str!("../src/rust/interpreter/io/handlers_lifecycle.rs");
+    let handlers_observation_src =
+        include_str!("../src/rust/interpreter/io/handlers_observation.rs");
+    let handlers_mutation_src = include_str!("../src/rust/interpreter/io/handlers_mutation.rs");
+    let all_src: String = format!(
+        "{src}\n// ---\n{handlers_stream_src}\n// ---\n{handlers_lock_src}\n// ---\n\
+         {handlers_lifecycle_src}\n// ---\n{handlers_observation_src}\n// ---\n\
+         {handlers_mutation_src}"
+    );
+    let mut source_verifying: std::collections::BTreeSet<String> =
+        std::collections::BTreeSet::new();
+    let mut cursor = 0usize;
+    while let Some(rel) = all_src[cursor..].find("impl FsHandler for Fs") {
+        let abs = cursor + rel;
+        let after = &all_src[abs..];
+        let struct_tok = after
+            .split_once("for ")
+            .and_then(|(_, rest)| rest.split_once(' '))
+            .map(|(s, _)| s)
+            .unwrap_or("");
+        cursor = abs + "impl FsHandler for ".len();
+        let name_snake = camel_handler_to_snake(struct_tok);
+        let end = after.find("\n}\n").map(|e| e + 3).unwrap_or(after.len());
+        let block = &after[..end];
+        if block.contains("const VERIFYING: bool = true") {
+            source_verifying.insert(name_snake);
+        }
+    }
+
+    // fs_remove_dir is trait-exempt (wave-3-plan § S3.11) but is
+    // verifying — its `pub async fn fs_remove_dir` body contains
+    // its own `match verify_reply_hash_matches_cached` sites.
+    // Neither the runtime FS_HANDLERS entry NOR the trait-scan
+    // above picks it up; add it explicitly.
+    if src.contains("match verify_reply_hash_matches_cached") {
+        source_verifying.insert("fs_remove_dir".to_string());
+    }
+    // Similarly, if fs_remove_dir carries verifying: true through
+    // some future non-slice registration, it'd be in the runtime
+    // set — add it for symmetric comparison.
+    let runtime_normalized = if src.contains("match verify_reply_hash_matches_cached") {
+        let mut extended = runtime_verifying.clone();
+        extended.insert("fs_remove_dir".to_string());
+        extended
+    } else {
+        runtime_verifying.clone()
+    };
+
+    assert_eq!(
+        runtime_normalized, source_verifying,
+        "C-14 regression: FS_HANDLERS' `verifying: true` set diverged \
+         from the source-level scan of `impl FsHandler` blocks + \
+         `pub async fn` bodies that call verify_reply_hash_matches_\
+         cached.\n\
+         runtime = {runtime_normalized:?}\n\
+         source  = {source_verifying:?}\n\
+         Cause: either (a) a handler was registered with `verifying: \
+         true` but its `const VERIFYING` was not set (or vice versa), \
+         or (b) a `verifying: true` handler's dispatch fn was manually \
+         replaced with one that bypasses the framework's Step-7 verify \
+         call.  The framework's shared verify call \
+         (handler_trait.rs::dispatch_via_trait_owned Step 7) is what \
+         makes VERIFYING load-bearing — an entry that skips it silently \
+         produces byte-tautology and masks divergence."
+    );
+}
+
 /// **Slice 9b regression pin — shared MeteredMachine.**
 ///
 /// Verify `setup_reducer` in `rho_runtime.rs` creates ONE

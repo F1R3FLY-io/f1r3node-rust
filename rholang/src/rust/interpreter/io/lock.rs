@@ -160,6 +160,54 @@ impl From<u64> for LockId {
 /// (`new this, private in { ... }` inside each per-instance
 /// constructor invocation), so each fresh-mint cap has a distinct
 /// `this` name and therefore a distinct HolderId.
+///
+/// # X-6b M-01 / M-02 (2026-09-12, branch-review-2026-09-11.md Track B)
+///
+/// ## Threat model — HolderId unforgeability
+///
+/// HolderId = Blake2b256(*this bytes).  The S4.7 release-time
+/// identity check (`LockRegistry::release`) uses this hash to
+/// enforce cross-cap release refusal.  Its security rests on TWO
+/// separate assumptions:
+///
+/// 1. **GPrivate opacity** — `*this` bytes are not directly
+///    observable to a Rholang deploy that does NOT hold the cap.
+///    Rholang's GPrivate names are minted with random 32-byte
+///    payloads via `Blake2b512Random::next_bytes` inside the `new`
+///    scope's desugaring; a deploy without the bundled dispatch
+///    channel cannot enumerate or forge them.  This is EMPIRICAL,
+///    not formally proven — if a future Rholang feature exposed
+///    reflection over GPrivate names (e.g., a `serialize_name`
+///    primitive, or a debug-mode escape hatch), the release-time
+///    identity check would collapse to zero-security.  Any such
+///    feature MUST audit this pathway before landing.
+///
+/// 2. **Blake2b256 collision resistance** — two distinct `*this`
+///    inputs must produce distinct HolderId outputs.  Blake2b256's
+///    collision resistance is 2^-256 per pair, so a random
+///    collision has astronomically low probability.  BUT: HolderId
+///    uniqueness is a *cryptographic* assumption, not a
+///    *structural* guarantee.  Callers that rely on HolderId as a
+///    unique cap identifier (e.g., a hypothetical future
+///    "holder-scoped audit log") should read this note before
+///    depending on 100%-unique-per-cap semantics.
+///
+/// ## Out-of-scope hardening options (deferred)
+///
+/// - **Dual-layer unique ID**: `(Blake2b256(*this), per-cap-counter,
+///   deploy-scope)` triple would give structural uniqueness in
+///   addition to unforgeability.  Not adopted because (a) it
+///   changes the on-chain byte-shape of every lock reply, (b) the
+///   counter needs a deploy-scoped bump primitive that doesn't
+///   exist yet, (c) current use cases don't require it.
+/// - **Formal proof of GPrivate opacity**: no known blocker other
+///   than effort.  If Rholang gains a spec-level proof of
+///   `*this`-opacity across contract boundaries, upgrade this
+///   threat-model note to reference it.
+///
+/// See also the S4.7 commit message (a9c64fe0e) for the
+/// two-independent-gates release design that this identity check
+/// participates in.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct HolderId {
     pub bytes: [u8; 32],

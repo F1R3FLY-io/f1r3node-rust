@@ -337,6 +337,18 @@ pub fn fstat_dev_inode(fd: i32) -> Result<(u64, u64), QuarantineError> {
 #[derive(Debug, Clone, Default)]
 pub struct RootIdentityRegistry {
     slot: std::sync::Arc<std::sync::RwLock<std::sync::Arc<std::sync::RwLock<RegistryInner>>>>,
+    /// X-6c M-04 test-permissive knob (2026-09-12).  Default false
+    /// (production); when true, the gated resolver's Consensus +
+    /// unregistered branch falls through instead of erroring.
+    /// Tests that construct raw-tempdir Consensus caps outside the
+    /// Shape-A `/@bundle/*` convention set this to true via
+    /// [`set_test_permissive`] to preserve pre-M-04 behavior.
+    ///
+    /// Wrapped in AtomicBool so `Clone`-cheap and lock-free reads.
+    /// Not shared across the middle Arc — each RootIdentityRegistry
+    /// clone carries its own knob so `share_root_registry` semantics
+    /// are unaffected.
+    test_permissive: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Per-registration record: the on-disk absolute root the
@@ -356,6 +368,22 @@ struct RegistryInner {
 
 impl RootIdentityRegistry {
     pub fn new() -> Self { Self::default() }
+
+    /// X-6c M-04 (2026-09-12): test-permissive knob.  When true,
+    /// the gated resolver's Consensus + unregistered branch falls
+    /// through with `(logical, None)` instead of erroring.  Used by
+    /// test harnesses that construct raw-tempdir Consensus caps.
+    /// Production code MUST NOT enable this.
+    pub fn set_test_permissive(&self, permissive: bool) {
+        self.test_permissive
+            .store(permissive, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// X-6c M-04 introspection helper.
+    pub fn is_test_permissive(&self) -> bool {
+        self.test_permissive
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
 
     /// Legacy registration: the caller's `canonRoot` IS the
     /// on-disk absolute path (logical == on_disk).  Idempotent
@@ -461,6 +489,16 @@ impl RootIdentityRegistry {
     /// `expected_root_id` as the identity argument.  Falls
     /// through to `(logical.to_owned(), None)` for unregistered
     /// logical roots — matches pre-Shape-A behavior exactly.
+    ///
+    /// # X-6c M-04 note (2026-09-12)
+    ///
+    /// This ungated variant is safe for Oracular callers (where
+    /// `None` legitimately means "no boot-registered identity") but
+    /// UNSAFE for Consensus callers: `None` here means the
+    /// Consensus cap's canonRoot was not registered at boot, and
+    /// `safe_descend_verified` would silently weaken to symlink-
+    /// only defense.  Consensus handlers MUST use
+    /// [`resolve_or_identity_gated_for_consensus`] instead.
     pub fn resolve_or_identity(
         &self,
         logical: &std::path::Path,
@@ -468,6 +506,67 @@ impl RootIdentityRegistry {
         match self.resolve(logical) {
             Some(r) => (r.on_disk_root, Some(r.identity)),
             None => (logical.to_path_buf(), None),
+        }
+    }
+
+    /// X-6c M-04 (2026-09-12, branch-review-2026-09-11.md Track B):
+    /// gated variant of [`resolve_or_identity`] that refuses
+    /// dispatch when a Consensus-mode cap targets an unregistered
+    /// logical root.
+    ///
+    /// Under Consensus-fs Shape A, every Consensus cap's canonRoot
+    /// is `/@bundle/<X>` and boot registration populates the
+    /// registry with matching mappings.  A Consensus resolve that
+    /// returns `None` therefore means the boot registration path
+    /// failed (bug), the cap carries a non-Shape-A root
+    /// (misconfiguration), or a test constructed a Consensus cap
+    /// without registering it (test-harness bug).  In all cases,
+    /// falling through with `expected_root_id: None` would silently
+    /// disable the identity check inside `safe_descend_verified` —
+    /// the very defense the Consensus mode relies on.  Refusing at
+    /// this gate makes the failure loud.
+    ///
+    /// Returns:
+    /// - `Ok((on_disk_root, Some(identity)))` on registered logical
+    /// - `Ok((logical, None))` on Oracular + unregistered (safe
+    ///   fall-through)
+    /// - `Err((FSERR_UNSUPPORTED, msg))` on Consensus + unregistered
+    ///
+    /// See [`docs/consensus-invariants.md § 4`] for the wider
+    /// Shape-A discipline this participates in.
+    pub fn resolve_or_identity_gated_for_consensus(
+        &self,
+        logical: &std::path::Path,
+        cmode: super::ConsensusMode,
+    ) -> Result<(std::path::PathBuf, Option<(u64, u64)>), (super::errors::FserrCode, String)> {
+        match self.resolve(logical) {
+            Some(r) => Ok((r.on_disk_root, Some(r.identity))),
+            None => match cmode {
+                super::ConsensusMode::Consensus => {
+                    if self.is_test_permissive() {
+                        // Test harness explicitly opted out — fall
+                        // through with the pre-M-04 behavior.  See
+                        // `set_test_permissive` docstring.
+                        Ok((logical.to_path_buf(), None))
+                    } else {
+                        Err((
+                            super::errors::FSERR_UNSUPPORTED,
+                            format!(
+                                "M-04: Consensus-mode cap targets unregistered logical root \
+                                 {logical:?}.  Under Consensus-fs Shape A every Consensus \
+                                 cap's canonRoot must be boot-registered in the \
+                                 RootIdentityRegistry; falling through with \
+                                 expected_root_id=None would silently disable \
+                                 safe_descend's identity check.  Fix: register the cap's \
+                                 canonRoot at boot (see \
+                                 fs_genesis::register_consensus_bundle_roots), or use \
+                                 Oracular mode for unregistered paths."
+                            ),
+                        ))
+                    }
+                }
+                _ => Ok((logical.to_path_buf(), None)),
+            },
         }
     }
 
@@ -1474,6 +1573,65 @@ mod tests {
         assert_eq!(
             resolved, sibling,
             "component-based starts_with must not match /@bundle-other against /@bundle"
+        );
+    }
+
+    /// X-6c M-04 (2026-09-12, branch-review-2026-09-11.md Track B):
+    /// pin the gated resolver's three-branch semantics.
+    ///
+    /// - Registered logical + any cmode → Ok with the on-disk root
+    ///   and Some(identity).
+    /// - Unregistered logical + Oracular → Ok with fall-through
+    ///   (safe: Oracular doesn't need boot-registered identity).
+    /// - Unregistered logical + Consensus → Err (FSERR_UNSUPPORTED,
+    ///   msg).  This is the load-bearing safety net M-04 adds.
+    #[test]
+    fn m04_gated_resolver_three_branches() {
+        use super::super::ConsensusMode;
+        let staging = TempDir::new().unwrap();
+        let on_disk = staging.path().join("target-subdir");
+        std::fs::create_dir(&on_disk).unwrap();
+        let reg = RootIdentityRegistry::new();
+        reg.register_with_remap(
+            std::path::PathBuf::from("/@bundle/thing"),
+            on_disk.clone(),
+            (42, 100),
+        );
+
+        // Branch 1: registered + Consensus → Ok(on_disk, Some).
+        let (root, id) = reg
+            .resolve_or_identity_gated_for_consensus(
+                std::path::Path::new("/@bundle/thing"),
+                ConsensusMode::Consensus,
+            )
+            .expect("registered Consensus must Ok");
+        assert_eq!(root, on_disk);
+        assert_eq!(id, Some((42, 100)));
+
+        // Branch 2: unregistered + Oracular → Ok(logical, None).
+        // Legacy Oracular fall-through preserved.
+        let (root, id) = reg
+            .resolve_or_identity_gated_for_consensus(
+                std::path::Path::new("/tmp/legacy-oracular"),
+                ConsensusMode::Oracular,
+            )
+            .expect("unregistered Oracular must Ok (fall-through)");
+        assert_eq!(root, std::path::PathBuf::from("/tmp/legacy-oracular"));
+        assert!(id.is_none());
+
+        // Branch 3: unregistered + Consensus → Err.  The M-04 gate.
+        let err = reg
+            .resolve_or_identity_gated_for_consensus(
+                std::path::Path::new("/tmp/unregistered"),
+                ConsensusMode::Consensus,
+            )
+            .expect_err("unregistered Consensus MUST Err");
+        assert_eq!(err.0, super::super::errors::FSERR_UNSUPPORTED);
+        assert!(
+            err.1.contains("M-04:") && err.1.contains("unregistered"),
+            "M-04 regression: error msg must reference the diagnostic \
+             prefix + reason; got {msg}",
+            msg = err.1
         );
     }
 }

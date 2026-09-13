@@ -610,4 +610,110 @@ mod tests {
         let reply = eval_and_read_out(&runtime, &term).await;
         assert_reply_head_bool(&reply, true);
     }
+
+    // ----------------------------------------------------------------
+    // X-6a C-10 (2026-09-12, branch-review-2026-09-11.md Track C):
+    // automated pin over the set of Consensus-mode bans.  The docs
+    // authority (`docs/consensus-invariants.md § 7 cmode dispatch
+    // rules`) enumerates two bans:
+    //   1. fs_entries_stream_open — readdir order fs-dependent.
+    //   2. fs_chown — NSS mapping host-local.
+    // (entriesStreamNext / entriesStreamClose reach their Consensus
+    //  paths ONLY via a stream fd that entriesStreamOpen would
+    //  refuse to allocate; the Open ban is sufficient.)
+    //
+    // Each ban must reject with FSERR_UNSUPPORTED at handler entry
+    // (parse_content early-return in the current Rust layout).
+    // A regression that lifted a ban would surface here as [true,
+    // ...] instead of the FSERR reply.
+    // ----------------------------------------------------------------
+
+    /// Assert the reply is `[false, "FSERR_UNSUPPORTED", _]`.
+    fn assert_unsupported_reply(reply: &Par, context: &str) {
+        let list = match reply.exprs.first().and_then(|e| e.expr_instance.as_ref()) {
+            Some(ExprInstance::EListBody(l)) => l,
+            other => panic!("{context}: expected EList reply, got {other:?}"),
+        };
+        match list.ps[0]
+            .exprs
+            .first()
+            .and_then(|e| e.expr_instance.as_ref())
+        {
+            Some(ExprInstance::GBool(false)) => {}
+            other => panic!(
+                "C-10 regression: {context}: expected [false, ...] error reply; \
+                 got head {other:?}"
+            ),
+        }
+        match list.ps[1]
+            .exprs
+            .first()
+            .and_then(|e| e.expr_instance.as_ref())
+        {
+            Some(ExprInstance::GString(s)) => assert_eq!(
+                s, "FSERR_UNSUPPORTED",
+                "C-10 regression: {context}: Consensus ban must use \
+                 FSERR_UNSUPPORTED; got code {s}"
+            ),
+            other => panic!("{context}: expected GString code; got {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn c10_consensus_ban_pin_fs_chown_rejects_with_unsupported() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("f.bin"), b"").unwrap();
+        let runtime = create_runtime().await;
+        let term = format!(
+            r#"
+            new op(`rho:io:fs:native:1.0.0/chown`), ret in {{
+              op!("{root}", "f.bin", Nil, Nil, "consensus", *ret) |
+              for (@r <- ret) {{ @"out"!(r) }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let reply = eval_and_read_out(&runtime, &term).await;
+        assert_unsupported_reply(&reply, "fs_chown under Consensus");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn c10_consensus_ban_pin_fs_entries_stream_open_rejects_with_unsupported() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        let runtime = create_runtime().await;
+        let term = format!(
+            r#"
+            new op(`rho:io:fs:native:1.0.0/entriesStreamOpen`), ret in {{
+              op!("{root}", "sub", "consensus", *ret) |
+              for (@r <- ret) {{ @"out"!(r) }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let reply = eval_and_read_out(&runtime, &term).await;
+        assert_unsupported_reply(&reply, "entriesStreamOpen under Consensus");
+    }
+
+    /// C-10 count-pin: the docs list exactly 2 Consensus bans (per
+    /// `docs/consensus-invariants.md § 7`).  A future ban addition
+    /// or removal must intentionally bump this constant AND update
+    /// the docs + the individual ban-pins above.  This is the
+    /// grep-friendly hook for reviewers to notice a ban-count drift.
+    #[test]
+    fn c10_consensus_ban_count_matches_docs_authority() {
+        const EXPECTED_CONSENSUS_BAN_COUNT: usize = 2;
+        // Enumerated here to make additions/removals a compile
+        // touchpoint.  Order matches doc listing.
+        let bans = ["fs_chown", "fs_entries_stream_open"];
+        assert_eq!(
+            bans.len(),
+            EXPECTED_CONSENSUS_BAN_COUNT,
+            "C-10 regression: Consensus ban count drifted from docs \
+             authority (docs/consensus-invariants.md § 7 cmode dispatch \
+             rules).  Adding or removing a ban is a hard-fork event — \
+             coordinate the constant, the docs, the individual pins, \
+             and the ban-lift/add commit together."
+        );
+    }
 }

@@ -60,6 +60,14 @@ mod tests {
         // Slice 31: disable the fs-native URN filter so tests can bind
         // rho:io:fs:native:1.0.0/* URNs directly.
         runtime.disable_fs_native_urn_filter();
+        // X-6c M-04 (2026-09-12): the fs_wal_spec tests construct
+        // Consensus caps against raw tempdirs that aren't registered
+        // in the RootIdentityRegistry.  Production Consensus caps
+        // always have `/@bundle/*` roots registered at boot; these
+        // tests intentionally sidestep Shape A to isolate WAL
+        // behavior.  Enable the M-04 test-permissive knob so the
+        // gated resolver falls through instead of erroring.
+        runtime.fs_handles.root_registry.set_test_permissive(true);
         runtime
     }
 
@@ -208,6 +216,9 @@ mod tests {
         follower.cost.set(Cost::unsafe_max());
         leader.disable_fs_native_urn_filter();
         follower.disable_fs_native_urn_filter();
+        // X-6c M-04: see create_runtime for the rationale.
+        leader.fs_handles.root_registry.set_test_permissive(true);
+        follower.fs_handles.root_registry.set_test_permissive(true);
         (leader, follower)
     }
 

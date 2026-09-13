@@ -154,6 +154,28 @@ pub struct SyscallCtx<'a> {
     pub handles: &'a FileHandleTable,
     pub mode: ConsensusMode,
     pub metering: &'a MeteredMachine,
+    /// # X-6b A-06 (2026-09-12, branch-review-2026-09-11.md Track A) —
+    ///   Ack channel: RPC metadata carried inside runtime context
+    ///
+    /// This field conflates two conceptually distinct layers:
+    /// (a) runtime state that handlers read/write (dispatcher,
+    /// space, handles, metering — the fields above); (b) the
+    /// caller's RPC metadata (this `ack` field — the last positional
+    /// arg the caller supplied).  A cleaner split would be
+    /// `SyscallCtx<'a>` (runtime state) + `JournalCtx<'a>` (ack +
+    /// WAL reference), passed only to handlers that override
+    /// `journal()`.
+    ///
+    /// The current unified shape works but complicates future
+    /// refactors that want to optimize context passing (e.g., stack-
+    /// allocated SyscallCtx, or reducing Arc clones).  Any such
+    /// refactor MUST preserve the ack reference for WAL-journaling
+    /// handlers — the ack's hash is the sidecar key on
+    /// `Wal::append_with_ack`.
+    ///
+    /// Deferred to a future slice (A-06 in review-tracks/
+    /// track-a-architecture.md).  Layer violation is documented
+    /// here to signal it's intentional pending the split.
     pub ack: &'a Par,
 }
 
@@ -243,6 +265,28 @@ pub trait FsHandler {
     /// lands in wave-3 S3.5; registering a `VERIFYING = true`
     /// handler before then fires an `unreachable!` guard in
     /// `dispatch_via_trait`.
+    ///
+    /// # X-6b A-02 (2026-09-12, branch-review-2026-09-11.md Track A) —
+    ///   Implicit-default hazard
+    ///
+    /// `VERIFYING` defaults to `false`.  If a NEW handler is added
+    /// for a re-execute-verify op and the author forgets `const
+    /// VERIFYING: bool = true;`, the framework silently treats it
+    /// as non-verifying → tautological echo on replay → follower
+    /// never re-executes → divergence undetectable at the fs layer.
+    /// The discipline is enforced by three runtime pins in
+    /// `fileio_cost_spec.rs`:
+    ///   - `handlers_top_comment_phase5_verifying_count_matches_actual`
+    ///     — source-scan count matches the docstring claim.
+    ///   - `c14_fs_handlers_verifying_flag_matches_source_scan`
+    ///     — runtime `FS_HANDLERS[i].verifying` matches source scan.
+    ///   - `fs_handlers_family_counts_match_pinned` — family split
+    ///     counts match plan-documented shape.
+    /// A drop in `const VERIFYING` (or a new handler without it)
+    /// trips these tests.  Future work (deferred): a proc macro
+    /// that forces every impl to declare all three constants
+    /// explicitly (no defaults) — see A-02 in review-tracks/
+    /// track-a-architecture.md.
     const VERIFYING: bool = false;
 
     /// Parsed content-arg type produced by `parse_content` and
