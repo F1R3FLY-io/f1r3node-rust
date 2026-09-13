@@ -36,6 +36,10 @@ pub mod handlers;
 // FsHandler for FsXHandler` + FS_HANDLERS registrations + family-
 // local helpers.  Shared helpers stay in `handlers.rs` with
 // `pub(super)` visibility (accessible via `super::handlers::X`).
+// X-6f A-07 Phase 3 (2026-09-13): 30+ pub(super) shared helpers
+// extracted from handlers.rs.  Sibling handler modules access them
+// as `super::handlers_helpers::X`.
+pub mod handlers_helpers;
 pub mod handlers_lifecycle;
 pub mod handlers_lock;
 pub mod handlers_mutation;
