@@ -2374,7 +2374,13 @@ mod tests {
         // `(lockId, releasedFlag, holder)`; the URN arity
         // registration bumps to 3.  See auto-memory
         // `fileio_wave4_security_followups.md` § Item 2.
-        const EXPECTED: &str = "55bc1b785d78ba7df0ef93eaf5d10558b8294dec4541a4b632931652042d3c73";
+        // X-8 F-01 / F-02 (2026-09-13): Stream.rho:250 chunk-builder
+        // reply reconstructed with named binds (strictness fix);
+        // Buffer.rho:44-58 concurrency docstring clarified for
+        // query vs mutator re-park semantics.  Both edits are
+        // pure-Rholang-source changes (comments + a pattern with
+        // named binds vs wildcards) and roll every FsGenesis anchor.
+        const EXPECTED: &str = "54e9b0baedd35dfa372266f626f1fed12bea9e31f337ce262beaff86e6381e4a";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \
@@ -2460,7 +2466,9 @@ mod tests {
         //   `compose_fs_genesis_source_golden_hex` docstring).
         // S4.7 follow-up (2026-09-11 hardening): rolled for arity
         // 2 → 3 + lockCell format bump.
-        const EXPECTED: &str = "362a00b58d76947030f90c922c0028c4bce65734fe15e94c320aa16297970d62";
+        // X-8 (2026-09-13): rolled for F-01 Stream.rho:250 strictness
+        // + F-02 Buffer.rho:44-58 docstring clarification.
+        const EXPECTED: &str = "3688247313872a207f10a73b15384d1f02464d813ec4b89da8828ccc8ff18f7e";
         assert_eq!(
             hex, EXPECTED,
             "M-40: compose_fs_genesis_source() hash for non-empty bundle \
@@ -2547,7 +2555,9 @@ mod tests {
         //   `compose_fs_genesis_source_golden_hex` docstring).
         // S4.7 follow-up (2026-09-11 hardening): rolled for arity
         // 2 → 3 + lockCell format bump.
-        const EXPECTED: &str = "0b5093cc0e60fbd977ac4c89cd51fdf9e16c40ad092fc0d9e1700f2d77d871e0";
+        // X-8 (2026-09-13): rolled for F-01 Stream.rho:250 strictness
+        // + F-02 Buffer.rho:44-58 docstring clarification.
+        const EXPECTED: &str = "e02a6127dbacd3bf17b5649b687a850ffaf43292381ce1febebdb4343c2c329a";
         assert_eq!(
             hex, EXPECTED,
             "M-40 review-fix (S4): compose_fs_genesis_source() hash for \

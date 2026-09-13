@@ -3335,3 +3335,114 @@ async fn failed_read_does_not_append_wal_entry() {
         "failed read (unknown fd) must not journal"
     );
 }
+
+/// X-8 D-MINOR (2026-09-13, branch-review-2026-09-13.md Track D):
+/// Consensus-mode companion to `oracular_fs_entries_reflects_
+/// recursive_removal`.  Verifies that under Consensus mode, after
+/// a `fs_remove_dir(recursive=true)` on a populated subtree, the
+/// follower's re-executed `fs_entries` on the parent returns a
+/// listing consistent with the leader's — the removed subtree is
+/// gone in both the WAL journal and the on-disk state, and the
+/// subsequent Entries WAL entry hashes match.
+///
+/// Track D flagged that the Oracular-only coverage of the
+/// post-recursive-removal-then-entries case left the Consensus
+/// re-execute path untested for the composite scenario.  A
+/// regression that re-executed removeDir + entries out of
+/// insertion order, or that snapshotted the pre-removal listing
+/// on the follower's re-execute, would surface here as either
+/// WAL divergence or the tree still visible in the follower's
+/// listing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn consensus_fs_entries_reflects_recursive_removal() {
+    let dir = tempfile::tempdir().unwrap();
+    // Idempotent seed: leader.evaluate removes only `parent/sub`,
+    // so re-seeding for the follower's fresh syscall (Phase 4 R5(b)
+    // pattern) must not trip AlreadyExists on `parent`.
+    // `create_dir_all` + explicit sub tree rebuild covers both the
+    // initial-seed and re-seed cases.
+    let seed = |base: &std::path::Path| {
+        std::fs::create_dir_all(base.join("parent/sub/nested")).unwrap();
+        std::fs::write(base.join("parent/sub/a.bin"), b"a").unwrap();
+        std::fs::write(base.join("parent/sub/b.bin"), b"b").unwrap();
+        std::fs::write(base.join("parent/sub/nested/c.bin"), b"c").unwrap();
+    };
+    seed(dir.path());
+
+    let (mut leader, mut follower) = create_leader_and_follower().await;
+
+    let term = format!(
+        r#"
+            new fsRemoveDir(`rho:io:fs:native:1.0.0/removeDir`),
+                fsEntries(`rho:io:fs:native:1.0.0/entries`),
+                rr, er
+            in {{
+              fsRemoveDir!("{root}", "parent/sub", true, "consensus", *rr) |
+              for (@_ <- rr) {{
+                fsEntries!("{root}", "parent", "consensus", *er) |
+                for (@_ <- er) {{ Nil }}
+              }}
+            }}
+            "#,
+        root = dir.path().display(),
+    );
+    let r = Blake2b512Random::create_from_bytes(&[177; 32]);
+
+    leader
+        .evaluate(
+            &term,
+            Cost::unsafe_max(),
+            std::collections::HashMap::new(),
+            r.clone(),
+        )
+        .await
+        .expect("leader evaluate recursive-remove + list");
+    assert!(
+        !dir.path().join("parent/sub").exists(),
+        "leader's recursive removeDir must delete `sub` on disk"
+    );
+
+    // Restore pre-play tree — proves the follower's own walk
+    // re-executes removeDir + entries fresh (Phase 4 R5(b) fresh-
+    // syscall pattern).
+    seed(dir.path());
+
+    let checkpoint = leader.create_checkpoint().await;
+    follower
+        .reset(&checkpoint.root)
+        .await
+        .expect("follower reset");
+    follower.rig(checkpoint.log).await.expect("follower rig");
+    follower
+        .evaluate(
+            &term,
+            Cost::unsafe_max(),
+            std::collections::HashMap::new(),
+            r,
+        )
+        .await
+        .expect("follower evaluate recursive-remove + list");
+
+    assert!(
+        !dir.path().join("parent/sub").exists(),
+        "D-MINOR regression: follower's recursive removeDir did NOT \
+         fire on Consensus mode.  Post-follower.evaluate, `parent/sub` \
+         must be gone; a stale tree indicates either the fresh-syscall \
+         path didn't engage or fs_entries was re-executed against the \
+         pre-removal snapshot."
+    );
+
+    let leader_wal = leader.fs_handles.wal.snapshot();
+    let follower_wal = follower.fs_handles.wal.snapshot();
+    assert_eq!(
+        leader_wal, follower_wal,
+        "D-MINOR regression: post-recursive-removal Consensus WAL must \
+         be byte-identical between leader and follower.  A regression \
+         that re-executed the Entries WAL entry against a stale (pre-\
+         removal) listing would surface here."
+    );
+    follower
+        .check_replay_data()
+        .await
+        .expect("D-MINOR: replay data must match on recursive-remove + list");
+}

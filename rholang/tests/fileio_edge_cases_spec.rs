@@ -316,4 +316,56 @@ mod tests {
             "D-04 regression: negative offset must reject with FSERR_BAD_ARG"
         );
     }
+
+    /// D-new-3 (X-8, 2026-09-13, branch-review-2026-09-13.md Track
+    /// D): fs_seek with (off = -1, whence = "set") MUST reject with
+    /// FSERR_BAD_ARG.  The handler's parse gate is
+    /// `"set" if off >= 0 => libc::SEEK_SET` — a negative offset
+    /// with "set" falls through to the wildcard and produces
+    /// FSERR_BAD_ARG.
+    ///
+    /// Parallel to `d04_fs_write_at_negative_offset_rejects_with_bad_arg`.
+    /// Track D noted that fs_seek's negative-offset guard was
+    /// untested despite being the same class of parse-time
+    /// invariant.  A regression that dropped the `off >= 0`
+    /// side-condition would let SEEK_SET land at a huge sparse
+    /// offset (i64::MAX-ish when reinterpreted as u64).
+    ///
+    /// Note: `whence = "cur"` or `"end"` with negative offsets is
+    /// LEGAL — that's how POSIX moves backwards through a file —
+    /// so this test specifically pins the "set" gate.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn d04_fs_seek_negative_offset_rejects_with_bad_arg() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("f.bin"), b"seed").unwrap();
+        let runtime = create_runtime().await;
+
+        let term = format!(
+            r#"
+            new fsOpen(`rho:io:fs:native:1.0.0/open`),
+                fsSeek(`rho:io:fs:native:1.0.0/seek`),
+                oc, sk in {{
+              fsOpen!("{root}", "f.bin", "r+", "oracular", *oc) |
+              for (@[true, fd] <- oc) {{
+                fsSeek!(fd, -1, "set", *sk) |
+                for (@r <- sk) {{ @"out"!(r) }}
+              }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let reply = eval_and_read_out(&runtime, &term).await;
+        assert_well_formed_reply(&reply);
+        assert!(
+            !head_bool(&reply),
+            "D-new-3 regression: fs_seek(SET, -1) MUST reject; a \
+             passing reply here indicates the `off >= 0` side-\
+             condition on the `set` arm was dropped."
+        );
+        assert_eq!(
+            err_code(&reply),
+            "FSERR_BAD_ARG",
+            "D-new-3 regression: fs_seek(SET, -1) must reject with FSERR_BAD_ARG"
+        );
+    }
 }

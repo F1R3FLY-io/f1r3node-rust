@@ -246,10 +246,23 @@ new foldConcurrentDispatch, foldConcurrentWorker, mapReduceDispatch, mapReduceWo
                                       // rather than a shape-mismatched
                                       // reply that breaks their own
                                       // pattern match.
+                                      //
+                                      // X-8 F-01 (2026-09-13): bind
+                                      // element names and reconstruct
+                                      // the reply rather than returning
+                                      // `packed` verbatim.  Prevents a
+                                      // hypothetical greedy-wildcard
+                                      // regression in Rholang's list-
+                                      // pattern matcher from letting a
+                                      // 3-element `[true, container,
+                                      // extra]` slip through unnoticed
+                                      // — with named binds, extra
+                                      // elements force arity failure
+                                      // and fall through to FSERR_IO.
                                       match packed {
-                                        [true, _]      => return!(packed)
-                                        [false, _, _]  => return!(packed)
-                                        _              => {
+                                        [true, container]      => return!([true, container])
+                                        [false, code, msg]     => return!([false, code, msg])
+                                        _                      => {
                                           return!([false, "FSERR_IO",
                                             "chunk-builder returned malformed reply"])
                                         }

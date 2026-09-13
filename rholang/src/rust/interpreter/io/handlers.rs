@@ -113,6 +113,34 @@ use super::handle_table::FileHandleTable;
 // the compat shim.  Sibling modules MAY prefer
 // `super::handlers_helpers::X` for new code (more precise) — both
 // paths resolve to the same symbol.
+//
+// # X-8 A-new-1 (2026-09-13, branch-review-2026-09-13.md) —
+//   INTENTIONAL PERMANENT COMPAT
+//
+// This re-export is NOT a temporary bridge awaiting a sunset date.
+// It is the permanent public surface of the fs handler helpers.
+// Rationale:
+//
+// - `handlers.rs` is the module every fs-handler sibling has
+//   historically imported from (`super::handlers::X`).  Rewriting
+//   every sibling to import from `super::handlers_helpers::X`
+//   would be a codebase-wide churn with zero semantic benefit —
+//   the re-export makes both paths equivalent, and Rust resolves
+//   them to the same symbol at link time (no runtime cost, no
+//   duplication).
+// - The two-path invariant is enforceable: any new symbol added
+//   to `handlers_helpers.rs` is automatically visible via
+//   `handlers::X` through this glob, so contributors don't have
+//   to remember to add re-exports one-by-one.
+// - No maintenance hazard exists: the split (handlers_helpers.rs
+//   holding the definitions, handlers.rs re-exporting) is fine.
+//   A future refactor that would REQUIRE removing this shim
+//   would have to remove `handlers.rs` entirely — which is a
+//   larger conversation than a lint would help with.
+//
+// **Do not remove this re-export.**  If you want to consolidate
+// (e.g., merge handlers.rs into another file), that's a separate
+// discussion; the shim itself is not tech debt.
 pub use super::handlers_helpers::*;
 #[allow(unused_imports)]
 use super::lock::{HolderId, LockMode};

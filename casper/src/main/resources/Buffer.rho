@@ -43,8 +43,19 @@
 //
 // Concurrency: every named method acquires the metadata token via
 // linear-receive with a free-variable pattern (spec §Metadata-token
-// mutex), matches "REVOKED" first, does its work, and re-parks the
-// token on every exit path.  The catch-all `_` arm makes the mutex
+// mutex), matches "REVOKED" first, does its work, and re-parks a
+// metadata value on every exit path.  What gets re-parked differs
+// by method kind:
+//   - Metadata queries (capacity / length / remaining / isEmpty /
+//     isFull) re-park the SAME `meta` tuple they received — the
+//     token acquire acts as a serialization point but the state
+//     is unchanged.
+//   - Mutators (writeBytes / writeByte / read / clear / close /
+//     beginFill / endFill) re-park a NEW tuple with the fields
+//     they advanced (ell, rho, lease, hi, ...), or "REVOKED" in
+//     the case of close.
+// In both cases the re-park is unconditional on every exit path,
+// including error arms.  The catch-all `_` arm makes the mutex
 // robust against a hypothetical third payload shape.
 
 new Buffer, Allocator, Rows, metaP, chunkP, innerP, rowsMetaP,

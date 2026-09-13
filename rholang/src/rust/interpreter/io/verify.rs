@@ -232,7 +232,7 @@ mod tests {
 
     use super::*;
     use crate::rust::interpreter::io::response::{err, ok_par};
-    use crate::rust::interpreter::io::stat::stat_record;
+    use crate::rust::interpreter::io::stat::{error_record, stat_record};
     use crate::rust::interpreter::io::ConsensusMode;
 
     /// F-3 pin (2026-09-04): `FdPositionMutator::ALL` must be
@@ -519,6 +519,36 @@ mod tests {
             "CONS-3: stable_hash of err_eos() drifted"
         );
 
+        // Case 11 (X-8, 2026-09-13, branch-review-2026-09-13.md
+        // Track D MINOR): pin `ExprInstance::EMapBody` encoding.
+        // `stat_record` and `error_record` are the only current
+        // producers of EMapBody-typed reply Pars; without a pin
+        // here, a Rholang change that reordered EMap fields or
+        // altered the KeyValuePair encoding would drift the
+        // `stat_record` hash without a single-shape assertion
+        // firing — a Consensus-mode fs_stat divergence would
+        // surface only as a HashMismatch at replay time.
+        //
+        // Uses `error_record` because its inputs are pure static
+        // strings, so the hash is deterministic across hosts
+        // (unlike `stat_record`, which pulls timestamps + mode
+        // bits from live Metadata).  Any encoding-drift regression
+        // in the shared `EMap { kvs, locally_free,
+        // connective_used, remainder }` serialization surfaces on
+        // both `stat_record`-in-Consensus and `error_record` output,
+        // so `error_record` is a faithful proxy.
+        let emap_hash = par_stable_hash(&ok_par(error_record("target", "example error")));
+        const EXPECTED_ERR_EMAP: [u8; 32] = [
+            230, 153, 196, 238, 244, 219, 255, 88, 230, 152, 182, 167, 24, 235, 206, 201, 13, 18,
+            45, 86, 65, 63, 20, 219, 250, 23, 249, 96, 18, 162, 132, 180,
+        ];
+        assert_eq!(
+            emap_hash, EXPECTED_ERR_EMAP,
+            "CONS-3 Case 11: stable_hash of ok_par(error_record(\"target\", \
+             \"example error\")) drifted.  This pins the EMapBody encoding \
+             (fs_stat / fs_entries Consensus-mode replies rely on it)."
+        );
+
         // Cross-shape distinctness: every pinned digest above must
         // be pairwise-distinct.  A bug that made two shapes collide
         // through stable_hash (e.g., ignoring the outer list
@@ -536,6 +566,7 @@ mod tests {
             ("ok_string_hello", ok_string_hash),
             ("ok_nested_list", ok_nested_hash),
             ("err_eos", eos_hash),
+            ("err_emap", emap_hash),
         ];
         for i in 0..all_hashes.len() {
             for j in (i + 1)..all_hashes.len() {

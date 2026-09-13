@@ -154,28 +154,43 @@ pub struct SyscallCtx<'a> {
     pub handles: &'a FileHandleTable,
     pub mode: ConsensusMode,
     pub metering: &'a MeteredMachine,
-    /// # X-6b A-06 (2026-09-12, branch-review-2026-09-11.md Track A) —
-    ///   Ack channel: RPC metadata carried inside runtime context
+    /// # X-6b A-06 / X-8 A-new-2 (2026-09-13) — WON'T-FIX BY DESIGN
     ///
-    /// This field conflates two conceptually distinct layers:
-    /// (a) runtime state that handlers read/write (dispatcher,
-    /// space, handles, metering — the fields above); (b) the
-    /// caller's RPC metadata (this `ack` field — the last positional
-    /// arg the caller supplied).  A cleaner split would be
-    /// `SyscallCtx<'a>` (runtime state) + `JournalCtx<'a>` (ack +
-    /// WAL reference), passed only to handlers that override
-    /// `journal()`.
+    /// The `ack` field carries the caller-supplied RPC metadata
+    /// (last positional arg) inside the runtime-context struct.
+    /// A stricter architecture would split into
+    /// `SyscallCtx<'a>` (runtime state only) + `JournalCtx<'a>`
+    /// (ack + WAL reference), passed separately to journal-taking
+    /// handlers.
     ///
-    /// The current unified shape works but complicates future
-    /// refactors that want to optimize context passing (e.g., stack-
-    /// allocated SyscallCtx, or reducing Arc clones).  Any such
-    /// refactor MUST preserve the ack reference for WAL-journaling
-    /// handlers — the ack's hash is the sidecar key on
-    /// `Wal::append_with_ack`.
+    /// Prior review passes (2026-09-11 A-06, 2026-09-13 A-new-2)
+    /// flagged this as a "layering violation" and suggested a
+    /// future split.  On 2026-09-13 the split was **rejected as
+    /// unwarranted**, not deferred:
     ///
-    /// Deferred to a future slice (A-06 in review-tracks/
-    /// track-a-architecture.md).  Layer violation is documented
-    /// here to signal it's intentional pending the split.
+    /// - The current unified shape works correctly.  Journaling
+    ///   handlers use `ctx.ack`; non-journaling handlers ignore
+    ///   the field.  No correctness / consensus / cost concern.
+    /// - No forcing function exists.  The prior "future async
+    ///   optimizations will hit this" claim was speculative —
+    ///   no Phase 4 slice actually plans stack-allocation or
+    ///   Arc-clone-reduction refactors.
+    /// - The split would touch ~30 handler impls (every
+    ///   `dispatch` / `journal` / `on_replay_side_effect` /
+    ///   `pre_syscall` signature) for a hypothetical benefit.
+    ///   Parameter-noise cost + review-time cost outweighs the
+    ///   aesthetic win.
+    ///
+    /// **This is the design.**  A future refactor that
+    /// genuinely needs stack-allocated SyscallCtx (say, a
+    /// zero-allocation reducer path) should revisit the split
+    /// AT THAT TIME — not preemptively.  Until such a refactor
+    /// concretely materializes, keep the unified shape.
+    ///
+    /// Guardrail: the ack MUST stay for WAL-journaling handlers
+    /// — the ack's hash is the sidecar key on
+    /// `Wal::append_with_ack`.  A refactor that removes the
+    /// field breaks journaling entirely.
     pub ack: &'a Par,
 }
 

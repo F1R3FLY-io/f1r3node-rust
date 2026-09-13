@@ -1,30 +1,28 @@
 //! Slice X-5 / D-03 (2026-09-12, branch-review-2026-09-11.md
-//! Track D): boundary tests for `MAX_WRITE_BYTES` and
-//! `MAX_READ_BYTES`.
+//! Track D): boundary tests for `MAX_READ_BYTES`.
 //!
 //! # What this pins
 //!
-//! Both caps are 64 MiB (2026-07-24-File-IO §Per-call caps) and are
-//! consensus-observable (folded into the fingerprint via CONSENSUS_
-//! FOLD orders 2 + 3).  Existing coverage samples at 0 / 1024 /
-//! 4096 (fileio_cost_spec) but no test exercises the boundary at
+//! `MAX_READ_BYTES` is 64 MiB (2026-07-24-File-IO §Per-call caps)
+//! and is consensus-observable (folded into the fingerprint via
+//! CONSENSUS_FOLD order 3).  Existing coverage samples at 0 / 1024
+//! / 4096 (fileio_cost_spec) but no test exercises the boundary at
 //! MAX or MAX+1.
 //!
 //! Regressions this catches:
 //! - A refactor that changed the constant from 64 MiB to some other
 //!   value would pass every happy-path test but fail this spec.
 //! - A refactor that flipped the `> MAX` predicate to `>= MAX`
-//!   would silently reject at-cap writes.
-//! - A refactor that skipped the cap check on one of the two write
-//!   handlers (fs_write vs fs_write_at) would leave a bypass path.
+//!   would silently reject at-cap reads.
 //!
-//! # Cost + performance note
+//! # Where write-side lives
 //!
-//! Constructing a 64 MiB `ByteArray` in Rholang uses `concatBytes`
-//! doubling from a 32-byte seed (21 iterations = 32 * 2^21).  The
-//! tests use `Cost::unsafe_max()` so metering doesn't cap.  Each
-//! test allocates ~128 MiB peak (buffer + doubled buffer during
-//! concat); acceptable for CI.
+//! Write-side at-max / over-max tests moved to
+//! `fileio_bounds_large_spec.rs` in slice X-8 (2026-09-13, D-new-1)
+//! because they each allocate ~128 MiB peak and were previously
+//! `#[ignore]`-gated — CI doesn't invoke `cargo test --ignored`, so
+//! the gate meant zero coverage.  The dedicated large-spec binary
+//! runs by default under nextest.
 
 #[cfg(test)]
 mod tests {
@@ -41,7 +39,7 @@ mod tests {
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
     use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 
-    /// 64 MiB — spec §Per-call caps, MAX_WRITE_BYTES = MAX_READ_BYTES.
+    /// 64 MiB — spec §Per-call caps, MAX_READ_BYTES.
     const MAX_BYTES: usize = 64 * 1024 * 1024;
 
     fn rand() -> Blake2b512Random { Blake2b512Random::create_from_bytes(&[1, 2, 45, 65]) }
@@ -109,175 +107,6 @@ mod tests {
             Some(ExprInstance::GString(s)) => s.clone(),
             other => panic!("expected GString code; got {other:?}"),
         }
-    }
-
-    /// Extract [true, n] "quantity" reply.
-    fn ok_int(reply: &Par) -> i64 {
-        let list = match reply.exprs.first().and_then(|e| e.expr_instance.as_ref()) {
-            Some(ExprInstance::EListBody(l)) => l,
-            other => panic!("expected EList reply, got {other:?}"),
-        };
-        match list.ps[1]
-            .exprs
-            .first()
-            .and_then(|e| e.expr_instance.as_ref())
-        {
-            Some(ExprInstance::GInt(n)) => *n,
-            other => panic!("expected GInt quantity; got {other:?}"),
-        }
-    }
-
-    /// Rholang term that builds a `size`-byte ByteArray by doubling
-    /// a 32-byte seed via `concatBytes`.  Requires `size` to be a
-    /// power of 2 ≥ 32.  Emits the built buffer on `@"bigBytes"`.
-    fn build_bytes_via_doubling(target: usize) -> String {
-        assert!(target >= 32, "target must be at least 32 bytes");
-        assert!(target.is_power_of_two(), "target must be a power of 2");
-        // 32-byte seed = 64 hex chars.
-        let seed_hex = "aa".repeat(32); // 32 bytes of 0xAA
-        let iterations = (target / 32).trailing_zeros();
-        format!(
-            r#"
-            new doubleBytes, resCh in {{
-              contract doubleBytes(@bytes, @n, ret) = {{
-                match n {{
-                  0 => ret!(bytes)
-                  _ => doubleBytes!([bytes, bytes].concatBytes(), n - 1, *ret)
-                }}
-              }} |
-              doubleBytes!("{seed_hex}".hexToBytes(), {iterations}, *resCh) |
-              for (@big <- resCh) {{ @"bigBytes"!(big) }}
-            }}
-            "#,
-        )
-    }
-
-    /// D-03 write-side at-max: fs_write with exactly MAX_WRITE_BYTES
-    /// bytes MUST succeed.  Bounds the constant from above — a
-    /// regression that lowered MAX_WRITE_BYTES would surface here.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    #[ignore = "allocates 64+ MiB; run with --ignored for boundary coverage"]
-    async fn d03_fs_write_at_max_bytes_succeeds() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("f.bin"), b"").unwrap();
-        let runtime = create_runtime().await;
-
-        // Build the 64 MiB buffer separately, then use it.  The
-        // separate build phase makes cost-of-doubling distinct from
-        // cost-of-write for diagnostic clarity if the test flakes.
-        let build_term = build_bytes_via_doubling(MAX_BYTES);
-        runtime
-            .evaluate(
-                &build_term,
-                Cost::unsafe_max(),
-                std::collections::HashMap::new(),
-                rand(),
-            )
-            .await
-            .expect("build big bytes");
-
-        // Now retrieve the buffer from @"bigBytes" and use it.  A
-        // separate evaluate lets Rholang re-parse the term with the
-        // buffer already resident in the tuplespace.
-        let write_term = format!(
-            r#"
-            new fsOpen(`rho:io:fs:native:1.0.0/open`),
-                fsWrite(`rho:io:fs:native:1.0.0/write`),
-                openReply, writeReply in {{
-              for (@big <- @"bigBytes") {{
-                fsOpen!("{root}", "f.bin", "r+", "oracular", *openReply) |
-                for (@[true, fd] <- openReply) {{
-                  fsWrite!(fd, big, *writeReply) |
-                  for (@r <- writeReply) {{ @"out"!(r) }}
-                }}
-              }}
-            }}
-            "#,
-            root = dir.path().display(),
-        );
-        runtime
-            .evaluate(
-                &write_term,
-                Cost::unsafe_max(),
-                std::collections::HashMap::new(),
-                rand(),
-            )
-            .await
-            .expect("evaluate at-max write");
-
-        let reply = read_out(&runtime, "out").await;
-        assert!(
-            head_bool(&reply),
-            "D-03 regression: fs_write at exactly MAX_WRITE_BYTES ({MAX_BYTES}) \
-             MUST succeed.  A `>=` instead of `>` in the cap check, or a \
-             lowered constant, surfaces here."
-        );
-        assert_eq!(
-            ok_int(&reply) as usize,
-            MAX_BYTES,
-            "fs_write should report writing all MAX_BYTES"
-        );
-    }
-
-    /// D-03 write-side over-max: fs_write with MAX_WRITE_BYTES + 1
-    /// (via `[maxBuf, oneMoreByte].concatBytes()`) MUST reject with
-    /// FSERR_QUOTA_EXCEEDED.  Bounds the constant from below.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    #[ignore = "allocates 64+ MiB; run with --ignored for boundary coverage"]
-    async fn d03_fs_write_over_max_bytes_rejects() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("f.bin"), b"").unwrap();
-        let runtime = create_runtime().await;
-
-        // Build MAX_BYTES worth of buffer.
-        let build_term = build_bytes_via_doubling(MAX_BYTES);
-        runtime
-            .evaluate(
-                &build_term,
-                Cost::unsafe_max(),
-                std::collections::HashMap::new(),
-                rand(),
-            )
-            .await
-            .expect("build big bytes");
-
-        // Concat one more byte to overrun MAX.
-        let write_term = format!(
-            r#"
-            new fsOpen(`rho:io:fs:native:1.0.0/open`),
-                fsWrite(`rho:io:fs:native:1.0.0/write`),
-                openReply, writeReply in {{
-              for (@big <- @"bigBytes") {{
-                fsOpen!("{root}", "f.bin", "r+", "oracular", *openReply) |
-                for (@[true, fd] <- openReply) {{
-                  fsWrite!(fd, [big, "ff".hexToBytes()].concatBytes(), *writeReply) |
-                  for (@r <- writeReply) {{ @"out"!(r) }}
-                }}
-              }}
-            }}
-            "#,
-            root = dir.path().display(),
-        );
-        runtime
-            .evaluate(
-                &write_term,
-                Cost::unsafe_max(),
-                std::collections::HashMap::new(),
-                rand(),
-            )
-            .await
-            .expect("evaluate over-max write");
-
-        let reply = read_out(&runtime, "out").await;
-        assert!(
-            !head_bool(&reply),
-            "D-03 regression: fs_write at MAX_WRITE_BYTES + 1 MUST reject"
-        );
-        assert_eq!(
-            err_code(&reply),
-            "FSERR_QUOTA_EXCEEDED",
-            "D-03 regression: cap-exceeded write must produce FSERR_QUOTA_EXCEEDED"
-        );
     }
 
     /// D-03 read-side at-max: fs_read with n = MAX_READ_BYTES on a

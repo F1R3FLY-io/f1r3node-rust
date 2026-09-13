@@ -22,11 +22,15 @@
 //! 2. `fs_open_with_symlink_component_returns_quarantine_error` —
 //!    a symlinked directory in the path chain; the O_NOFOLLOW
 //!    guard fires with `SymlinkComponent` → `FSERR_QUARANTINE`.
-//! 3. `consensus_fs_open_with_path_escape_returns_quarantine` —
-//!    same escape on a Consensus-mode cap; the leader's reply
-//!    must be FSERR_QUARANTINE (a regression that let path-escape
-//!    slip past on Consensus mode would silently escalate the
-//!    quarantine bypass to a Consensus-shared surface).
+//! 3. `consensus_fs_open_with_path_escape_returns_quarantine_or_unsupported` —
+//!    escape on a Consensus-mode cap with an UNREGISTERED tempdir
+//!    root; either FSERR_UNSUPPORTED (M-04 upfront refusal) or
+//!    FSERR_QUARANTINE (post-descend refusal) is a valid outcome.
+//! 4. `consensus_fs_open_with_registered_root_path_escape_returns_quarantine` —
+//!    D-new-2 (X-8, 2026-09-13): same escape but the root IS
+//!    boot-registered so M-04 doesn't trip.  Pins that quarantine
+//!    fires from `safe_descend_verified` alone, exercising the
+//!    production-parity Consensus code path.
 
 #[cfg(test)]
 mod tests {
@@ -37,6 +41,7 @@ mod tests {
     use models::rhoapi::{BindPattern, Expr, ListParWithRandom, Par, TaggedContinuation};
     use rholang::rust::interpreter::accounting::costs::Cost;
     use rholang::rust::interpreter::external_services::ExternalServices;
+    use rholang::rust::interpreter::io::path::capture_root_identity;
     use rholang::rust::interpreter::matcher::r#match::Matcher;
     use rholang::rust::interpreter::rho_runtime::{create_rho_runtime, RhoRuntime, RhoRuntimeImpl};
     use rspace_plus_plus::rspace::rspace::RSpace;
@@ -252,6 +257,74 @@ mod tests {
              M-04 unregistered-root guard).  A different code suggests \
              both the M-04 guard AND the quarantine gate were \
              bypassed.  Got: {code}"
+        );
+    }
+
+    /// D-new-2 (X-8, 2026-09-13, branch-review-2026-09-13.md Track
+    /// D): Consensus-mode path escape on a REGISTERED root MUST
+    /// reject with FSERR_QUARANTINE.
+    ///
+    /// Companion to `consensus_fs_open_with_path_escape_returns_
+    /// quarantine_or_unsupported`.  That test uses an unregistered
+    /// tempdir so M-04's upfront guard fires first and can mask a
+    /// hypothetical regression in `safe_descend_verified` at the
+    /// Consensus code path — either FSERR_UNSUPPORTED (M-04) or
+    /// FSERR_QUARANTINE (descend) satisfies its assertion, so it
+    /// cannot distinguish "M-04 caught it" from "descend caught it".
+    ///
+    /// This test registers the tempdir root in the
+    /// `RootIdentityRegistry` BEFORE dispatch — the exact shape
+    /// production Consensus caps carry after boot's
+    /// `register_consensus_bundle_roots` call.  M-04 no longer
+    /// trips (root IS registered), so descend must handle the
+    /// escape on its own.  A regression that moved the escape check
+    /// after canonicalization on Consensus caps, or wired a
+    /// permissive descend variant onto Consensus paths, would flip
+    /// this test's outcome from FSERR_QUARANTINE to either
+    /// `[true, fd]` (bypass) or a different error code.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_open_with_registered_root_path_escape_returns_quarantine() {
+        let dir = tempfile::tempdir().unwrap();
+        let sibling = tempfile::tempdir().unwrap();
+        std::fs::write(sibling.path().join("secret.bin"), b"attacker's target")
+            .expect("seed sibling");
+        let runtime = create_runtime().await;
+
+        // Boot-simulate a Consensus-cap registration on the tempdir
+        // root.  logical == on_disk (legacy Shape).  With the root
+        // registered, M-04's unregistered-root guard doesn't fire —
+        // the only remaining path-safety line of defence is
+        // safe_descend_verified.
+        let root_pb = dir.path().to_path_buf();
+        let id = capture_root_identity(&root_pb).expect("stat tempdir root");
+        runtime
+            .fs_handles
+            .root_registry
+            .register(root_pb.clone(), id);
+
+        let rel = format!(
+            "../{}/secret.bin",
+            sibling.path().file_name().unwrap().to_str().unwrap()
+        );
+        let term = format!(
+            r#"
+            new op(`rho:io:fs:native:1.0.0/open`), ret in {{
+              op!("{root}", "{rel}", "r", "consensus", *ret) |
+              for (@r <- ret) {{ @"out"!(r) }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let reply = eval_and_read_out(&runtime, &term).await;
+        let code = extract_err_code(&reply);
+        assert_eq!(
+            code, "FSERR_QUARANTINE",
+            "D-new-2 regression: Consensus-mode path escape on a \
+             REGISTERED root MUST reject with FSERR_QUARANTINE from \
+             safe_descend_verified.  Since M-04 doesn't fire here \
+             (root is registered), this is the isolated Consensus \
+             descend-path assertion.  A different code indicates the \
+             descend gate was bypassed on the Consensus code path."
         );
     }
 }
