@@ -302,6 +302,30 @@ pub const POISON_ABORT_PREFIX: &str = "io/ lock poisoned";
 /// prefix `JOIN_ERR_ABORT_PREFIX` lets operational log scanning
 /// grep for this specific hazard class independent of the payload.
 ///
+/// # X-7 G-05 (2026-09-13) — panic propagation across the async runtime
+///
+/// This function `panic!`s from within the return value of a fn
+/// invoked inside an `async fn`.  For that panic to reach the
+/// deploy-outcome layer (and get treated as an invariant break,
+/// per DD-FailClosedOnInvariantBreak), the async runtime MUST
+/// unwind the panic across the await boundary.  Tokio does this
+/// by default via `catch_unwind`.
+///
+/// The pin `t20_join_err_abort_panic_escapes_async_boundary`
+/// (`handlers.rs::tests`) uses `futures::FutureExt::catch_unwind`
+/// to prove the panic escapes when the surrounding future is
+/// awaited.  This test is load-bearing: it's what stops a future
+/// tokio version bump (or a future scheduler swap) from silently
+/// swallowing the panic and returning the T-20-retired FSERR_IO
+/// shape by accident.
+///
+/// If the runtime ever changes so that panics across `spawn` /
+/// `await` boundaries are swallowed by default, this helper needs
+/// re-plumbing (probably via an explicit deploy-scope cell that
+/// gets flipped to "aborted" and consulted at deploy end).  The
+/// current design assumes the tokio-default panic-propagation
+/// behavior.
+///
 /// # Consensus surface
 ///
 /// Zero.  Both pre- and post-hardening shapes fail the deploy on a

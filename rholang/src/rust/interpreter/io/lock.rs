@@ -88,6 +88,56 @@
 //! token itself, which is the intended ocap semantic.  Attenuation
 //! ("hold this token but don't release") uses the standard
 //! forwarder-filter pattern (spec §Ocap patterns > Attenuation).
+//!
+//! ## Correctness invariants (X-7 A-14, 2026-09-13)
+//!
+//! Load-bearing properties the LockRegistry design maintains.  A
+//! future refactor that violates any of these breaks consensus.
+//!
+//! - **LockId uniqueness**: monotone `AtomicU64` counter; never
+//!   rewinds.  A stale LockId that references a released lock
+//!   receives `LockError::Closed` on `release`, never aliases a
+//!   live lock.
+//! - **HolderId collision resistance**: `HolderId =
+//!   Blake2b256(*this bytes)` per fresh-mint cap.  The S4.7
+//!   release-time identity check trusts Blake2b256 collision
+//!   resistance (2^-256).  See `HolderId` docstring § X-6b M-01 /
+//!   M-02 for the full threat model.
+//! - **Per-deploy release semantics**: `release_all_for_deploy`
+//!   is the ONLY mechanism that MUST run at deploy-end (spec
+//!   §Explicit locks MUST auto-release).  Bypassing it (e.g., a
+//!   future Drop that fires only on success paths) leaks locks
+//!   past deploy boundary — every waiter on the leaked range
+//!   parks forever.
+//! - **FIFO admission order**: `state.waiters` is a `VecDeque`;
+//!   `wake_waiters` scans front-to-back and admits the first
+//!   compatible waiter.  Consensus-observable: leader and
+//!   follower must admit the SAME waiter given the same state
+//!   (the "first compatible in queue" predicate is deterministic
+//!   for byte-identical queues).  A future reshuffle to LIFO or
+//!   priority-based admit is a hard fork.
+//! - **Consensus vs Oracular divergence permissibility**:
+//!   Consensus mode treats LockRegistry as a hard invariant
+//!   (cross-cap contention returns FSERR_BUSY deterministically);
+//!   Oracular mode treats it as a best-effort in-process hint
+//!   (external processes can bypass).  Divergence between the
+//!   two modes on the same node is EXPECTED, not a bug —
+//!   Consensus semantics require the pessimistic surface, and
+//!   Oracular semantics match host `open(2)`+`unlink(2)` behavior
+//!   for callers migrating from raw filesystem access.
+//! - **NB-7 cycle detection**: `wait:true` acquires that would
+//!   close a cycle in the cross-deploy wait-for graph are
+//!   refused eagerly at enqueue time with `FSERR_DEADLOCK`.  The
+//!   predicate is a pure set-reachability check independent of
+//!   HashMap iteration order (see G-04 note).  See
+//!   `docs/consensus-invariants.md § 8`.
+//! - **Sequential-deploy invariant (SEC-2)**: at most one
+//!   `WalDeployScope` may be in flight per runtime.  Violated
+//!   by parallel-deploy execution, which would open TOCTOU races
+//!   against the fire-and-forget fd sweep in
+//!   `WalDeployScope::Drop`.  The assertion in
+//!   `new_with_lock_sweep` (SEC-2, X-3 commit `2568208c5`) is
+//!   what enforces the invariant.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};

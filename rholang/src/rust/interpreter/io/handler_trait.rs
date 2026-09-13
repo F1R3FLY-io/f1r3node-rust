@@ -795,22 +795,32 @@ pub async fn dispatch_via_trait<H: FsHandler>(
     // + n*per_byte)` call — splitting into two events would
     // change the authority_cost_witness fold bytes.
     //
-    // # X-3 / SEC-3 ordering discipline (2026-09-12)
+    // # X-3 / SEC-3 ordering discipline (2026-09-12) —
+    //   won't-fix by design (Item 1) + G-06 cover
     //
     // The cost pre-charge runs BEFORE the WAL-cap check
     // (`journal_*_via_table` → `Wal::append_with_ack`, which
-    // returns `FSERR_QUOTA_EXCEEDED` when at `MAX_WAL_ENTRIES`).
-    // When the WAL is full, the pre-charged cost is CONSUMED
-    // even though the handler returns an error and appends no
-    // WAL entry.  This is a UX / audit-trail wart, NOT a
-    // consensus concern: the pre-charge is a `BillableTokenEvent`
-    // that both leader and follower emit identically, so no
-    // divergence, no double-charge, no missing entry.
+    // returns `FSERR_QUOTA_EXCEEDED` when at `MAX_WAL_ENTRIES`)
+    // AND before Step 5 content parse.  When the WAL is full OR
+    // content parse fails, the pre-charged cost is CONSUMED even
+    // though the handler returns an error and appends no WAL
+    // entry.  This is a UX / audit-trail wart, NOT a consensus
+    // concern: the pre-charge is a `BillableTokenEvent` that both
+    // leader and follower emit identically, so no divergence, no
+    // double-charge, no missing entry.
     //
-    // Explicitly deferred per user 2026-09-11 (see
-    // `fileio_wave4_security_followups.md` Item 1).  This
-    // ordering IS load-bearing under the current design.
-    // Regression pin below prevents accidental reintroduction of
+    // # X-7 corrected framing (2026-09-13)
+    //
+    // The user decision on 2026-09-11 was NOT a "defer to a
+    // future slice" — it was "the current burn-cost-then-reject
+    // shape is the intended invariant."  Prior comments (and
+    // review track B-03 / G-06) called it "deferred"; that
+    // framing is wrong.  This ordering is the design.  See
+    // `fileio_wave4_security_followups.md` Item 1 for the full
+    // won't-fix rationale.
+    //
+    // Regression pin `sec3_no_refund_primitive_in_io_tree`
+    // (`errors.rs::tests`) prevents accidental reintroduction of
     // a refund mechanism that would emit an unaccounted
     // `BillableTokenEvent` (which would change the
     // `authority_cost_witness` fold bytes → hard-fork surface).

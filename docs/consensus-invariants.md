@@ -113,6 +113,13 @@ The numeric codes in `errors.rs` (e.g., `FSERR_CODE_NOT_FOUND`,
 `FSERR_CODE_REVOKED = 15`) surface in `WalOutcome::Failure { code }`
 and in `err` reply strings.  Renumbering ANY code is a hard fork.
 
+**Current count (X-7 C-01, 2026-09-13)**: **15 named FSERR codes**
+(1 = BAD_ARG through 15 = REVOKED).  `FSERR_CODE_UNKNOWN = 0` is
+reserved for un-classified errors and does not count as a
+"named" code.  A new code is appended at the next integer, never
+renumbered.  The `fserr_code_count_is_pinned` test in
+`errors.rs::tests` locks the count against silent drift.
+
 ### 5. Byte gates
 
 Values that determine whether a syscall is accepted or rejected
@@ -341,6 +348,108 @@ Adding methods to `Fs.rho` that touch the filesystem MUST include
 a `fsRevokedP` gate at method entry, else the revoke-invariant
 leaks.  Composed FsGenesis source hash rolls whenever the revoke
 mechanism's implementation changes.
+
+### 10. Handler dispatch step order (X-7 C-06, 2026-09-13)
+
+The 6-step dispatch loop in
+`handler_trait.rs::dispatch_via_trait_owned` is a consensus-critical
+ordering.  A cross-validator disagreement about step order would
+produce divergent WAL bytes or divergent cost witnesses at boundary
+cases.  The steps and their invariants:
+
+1. **Unapply the contract call** — extract
+   `(produce, is_replay, previous_output, args)` from the incoming
+   contract-args tuple.  If unapply fails, produce an
+   `illegal_argument_error` reply and return early (no cost charge,
+   no WAL touch).
+2. **Slice off the ack channel** — `ack = args[ARITY - 1]`;
+   `raw_pre_ack = args[..ARITY - 1]`.  Ack is used by every
+   subsequent step that emits a WAL entry (`ack_channel_hash(ack)`
+   is the sidecar key).
+3. **Cost pre-charge** — `metering.reserve_primitive(H::pre_charge_cost())`
+   or `reserve_incremental_primitive(H::pre_charge_incremental(...))`
+   depending on whether the handler declares a per-call variable
+   weight.  Charge fires BEFORE any WAL append (see § 6 note on
+   Item 1 won't-fix).
+4. **`is_replay` short-circuit** — verifying handlers with a
+   Consensus follower cmode fall through to Step 7 (re-execute +
+   verify); non-verifying handlers OR verifying handlers with an
+   Oracular / unresolved cmode take the tautological-echo path
+   (`H::on_replay_side_effect` + `previous.first()` → produce +
+   return).
+5. **Content parse** — `H::parse_content(raw_pre_ack)`.  Content-
+   level type mismatches produce a normal `[false, "FSERR_BAD_ARG",
+   ...]` reply, not an `illegal_argument_error`.
+6. **`pre_syscall` hook** — path-mutation handlers pre-append a
+   WAL entry with a Success placeholder before the syscall runs.
+   Consensus-observable: leader and follower append the same
+   entry, both hit `MAX_WAL_ENTRIES` at the same moment, both
+   return `FSERR_QUOTA_EXCEEDED` symmetrically.
+7. **`dispatch` + verify + journal + produce** — the syscall
+   itself.  Verifying handlers on the Consensus follower branch
+   route the fresh reply through `verify_reply_hash_matches_cached`
+   (comparing to the leader's cached reply hash) and journal via
+   the appropriate `JournalPath` variant (`Leader` /
+   `VerifySuccess` / `VerifyDivergence` / `OracularEcho`).
+
+Reordering any of these steps is a hard fork.  In particular,
+moving Step 3 (cost pre-charge) AFTER Step 6 (WAL journal) would
+change the "WAL cap full = cost charged + rejected" behavior that
+X-3 SEC-3 pinned as intended-by-design.  The framework-level pin
+`c14_fs_handlers_verifying_flag_matches_source_scan` in
+`fileio_cost_spec.rs` protects Steps 4 + 7.
+
+### 11. SNAPSHOT_FORMAT_VERSION history (X-7 C-15, 2026-09-13)
+
+`SNAPSHOT_FORMAT_VERSION` (in `snapshot.rs`) is the wire version
+byte prefixed to every `encode_wal_slice` output.  Currently
+`6`.  Rolling it is a hard fork.  Version history:
+
+| Version | Slice / commit | Change |
+|---|---|---|
+| 1 | Slice 26 (pre-2026-08-06) | Initial WAL wire format. |
+| 2 | H-6 fix (2026-08-06) | Outcome tail added: `Success (tag 0)` / `Failure { code: u32_be } (tag 1)`. |
+| 3 | M-5 (2026-08-06) | Stat / Entries / Size op tags (12/13/14) added at tail. |
+| 4 | Streaming-backing (2026-08-25) | EntriesStreamNext op tag (15) appended. |
+| 5 | (reserved) | Snapshot-format bump reserved during Consensus re-execute + verify Phase-2 shadow install rework; unclaimed. |
+| 6 | fs_exists Consensus lift (2026-09-04) | Exists op tag (16) appended; SNAPSHOT_FORMAT_VERSION bumped 5 → 6 to distinguish snapshots that may contain Exists entries. |
+
+Every version bump must (a) preserve backward-compat DECODE for
+older versions (or explicitly reject with a specific error), and
+(b) update this table.  A version bump without a table update
+trips the `decode_wal_slice_rejects_future_version` pin (which
+locks the accepted-range) alongside the doc drift.
+
+### 12. FsGenesis golden hex history (X-7 C-04, 2026-09-13)
+
+Three golden hex constants in `fs_genesis.rs::tests` pin the
+composed FsGenesis source bytes across the empty / non-empty /
+sort-tie bundle test-fixture shapes.  Every time the FsGenesis
+composition changes — Fs.rho / Dir.rho / File.rho / Stream.rho /
+Buffer.rho source edits, `BUNDLE_ROOT_PREFIX` change, URN arity
+bumps, `FS_NONCE` / `FS_GENERATOR_TIMESTAMP` change — all three
+hex constants roll together.
+
+The values themselves are volatile; the invariants are:
+
+- The three constants MUST roll together — if only one differs
+  after a change, the composition path has an asymmetric bug
+  (e.g., sort-tie code path doesn't see the same source edit).
+- Every roll SHOULD cite a slice commit in the commit message so
+  operator triage can trace "which slice rolled this?".
+
+Recent rolls (most-recent first):
+- **X-6b M-05** (2026-09-12, commit `853702cec`) — LockToken
+  stateP linearity docstring in File.rho.
+- **S4.7** (2026-09-11, commit `a9c64fe0e`) — LockRegistry
+  release holder-identity guard; fsReleaseLock URN arity 2 → 3.
+- **DD-RemoveDirReplyShape** (2026-09-03, commit `889e0c183`) —
+  unified `[true, nDeleted]` reply on every removeDir path.
+- **Fs.revoke** (2026-09-03, commit `bf80339af`) — ambient-
+  authority off-switch primitive added.
+
+Older rolls exist in the git history; walk `git log --oneline
+casper/src/main/resources/*.rho` for the pre-2026-09-03 record.
 
 ## When editing any of the surfaces above
 

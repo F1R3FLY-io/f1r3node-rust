@@ -114,6 +114,28 @@ pub fn safe_descend(root: &Path, rel: &str) -> Result<SafeParent, QuarantineErro
 /// or in-memory FSes inode numbers may not be stable across
 /// remounts — for those, operators should compose with the
 /// documented read-only bind-mount mitigation.
+///
+/// # X-7 A-12 (2026-09-13) — canonical TOCTOU-immune pattern
+///
+/// This function IS the standard TOCTOU-immune-path-descent
+/// pattern for every path-mutation handler in the io tree.
+/// Direct callers today: `open_impl_via_table` (fs_open),
+/// `fs_stat` / `fs_exists` / `fs_entries` (path-based
+/// observation), `fs_chmod` / `fs_chown` / `fs_rename` /
+/// `fs_copy_file` / `fs_remove_file` / `fs_remove_dir`
+/// (path-based mutation), `fs_quarantine`,
+/// `wal_applier::apply_wal_to_fresh_tree` (follower-side WAL
+/// replay).  Anyone writing a NEW path-taking handler MUST
+/// route through `safe_descend_verified` — do NOT invent
+/// per-handler `openat` chains.
+///
+/// The `SafeParent` returned bundles a dirfd + a leaf `CString`;
+/// every subsequent syscall MUST be an `*at` variant that
+/// references the dirfd (fchmodat, fchownat, renameat,
+/// unlinkat, ...).  This is what makes the descent TOCTOU-
+/// immune: an attacker that swaps a path component between
+/// descent and syscall fails cleanly at the `*at` boundary
+/// (ENOENT / ELOOP / ENOTDIR) rather than escaping the root.
 pub fn safe_descend_verified(
     root: &Path,
     rel: &str,
