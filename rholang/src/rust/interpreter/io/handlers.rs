@@ -36,6 +36,60 @@
 // `std::io::ErrorKind` classification but not the free-form message
 // (which on some platforms includes the offending path, leaking the
 // caller's root prefix).
+//
+// # X-6d A-07 (2026-09-12, branch-review-2026-09-11.md Track A) —
+//   What lives in this file
+//
+// Wave-3 S3.13b split the 27 trait-registered handlers into per-
+// family modules.  Post-split, this file contains:
+//
+//   1. Top-level exports + doc comments (this header).
+//   2. `spawn_blocking_par` / `consensus_divergence_reply` /
+//      `unlink_leaf_via_dirfd` — cross-family helpers used by both
+//      the trait-registered handlers and fs_remove_dir.
+//   3. Constants: `MAX_ENTRIES`, `MAX_WRITE_BYTES` + their
+//      CONSENSUS_FOLD registrations.
+//   4. `FsProcesses` struct + constructor + `is_contract_call`.
+//   5. **`fs_remove_dir` method** (trait-exempt per wave-3-plan.md
+//      § S3.11) + its exclusive helpers
+//      (`finalize_failure_journal`, `journal_path_mutation_single`).
+//   6. 30+ `pub(super)` shared helpers: WAL journaling entry points
+//      (`journal_write_via_table`, `journal_read_via_table`,
+//      `journal_state_read_via_table`, etc.), path/mode
+//      resolvers (`resolve_cmode`, `resolve_lock_mode`,
+//      `holder_id_of`, `leaf_of`), stat helpers
+//      (`fstatat_meta`, `target_dev_inode_at`, `entry_stat_row`),
+//      the `RemoveKind` enum, `chown_impl`, `readdir_one_entry`,
+//      `reply_is_ok`.
+//   7. Test module — pins for the above, plus fs_remove_dir E2E
+//      coverage.
+//
+// # fs_remove_dir stays trait-exempt
+//
+// fs_remove_dir has (a) two structurally distinct dispatch modes
+// (recursive vs non-recursive) with divergent WAL shapes, (b) an
+// inline recursive-walk syscall loop that runs under a
+// spawn_blocking closure holding the FsProcesses' lock registry
+// clone, (c) a reply shape that carries an `nDeleted` count field
+// per DD-RemoveDirReplyShape.  These make the trait's uniform
+// dispatch shape a poor fit — see wave-3-plan.md § S3.11 for the
+// full rationale.
+//
+// # Future extraction targets (deferred)
+//
+// - `handlers_removedir.rs` — pull fs_remove_dir + its 2 helper
+//   methods (finalize_failure_journal, journal_path_mutation_single)
+//   + its 8 exclusive free-fn helpers into a dedicated file.  Uses
+//   the split-`impl FsProcesses`-across-files pattern.
+// - `handlers_helpers.rs` — pull the 30+ pub(super) shared helpers
+//   into a dedicated helpers module.  Reduces handlers.rs to just
+//   the FsProcesses definition + fs_remove_dir.
+//
+// Both are safe refactors (all callers within io/); tracked as
+// A-07 follow-ups.  This slice removed 687 lines of dead
+// `_deleted_pre_wave3_*` code (11 methods, all `#[cfg(any())]`-
+// gated); the further splits reduce noise but don't change
+// semantics.
 
 use std::path::PathBuf;
 
@@ -712,403 +766,6 @@ impl FsProcesses {
         }
     }
 
-    /// RQ-2 (2026-09-04) centralized reader for the per-runtime
-    /// current-deploy-scope cell.  Used at every handler that tags
-    /// fd-table entries / DirHandle shadows / lock holders with the
-    /// deploy scope for cross-cap coordination + deploy-end sweep.
-    ///
-    /// The scope is a `[u8; 32]` — set at deploy entry by
-    /// `WalDeployScope::new_with_lock_sweep` (in the casper crate)
-    /// and cleared back to `[0; 32]` at deploy end.  Reads are
-    /// consistent within a single handler invocation because the
-    /// scope cell is only written twice per deploy (entry + exit).
-    ///
-    /// Wraps the `RwLock::read().expect(...)` pattern in one place
-    /// so a future refactor of the deploy-scope storage (e.g., an
-    /// atomic swap, a per-thread cell) doesn't need to touch every
-    /// handler.  Pre-RQ-2 this pattern was inlined at 6 sites, each
-    /// with an identical `expect("current_deploy_scope RwLock
-    /// poisoned")` message.
-    #[cfg(any())]
-    fn _deleted_pre_wave3_current_deploy_scope(&self) -> [u8; 32] {
-        *poison_abort(
-            self.handles.current_deploy_scope.read(),
-            "current_deploy_scope RwLock",
-        )
-    }
-
-    /// Redesign helper: journal a Write / WriteAt to the WAL from
-    /// data fully derivable from args (fd + bytes + offset).  Called
-    /// from `fs_write` and `fs_write_at` BEFORE the `is_replay`
-    /// short-circuit so leader and follower populate identical WALs
-    /// (C-29-F1 review fix).
-    ///
-    /// Returns:
-    ///   * `Ok(true)`  — fd is a Consensus cap and entry was appended.
-    ///   * `Ok(false)` — fd is not Consensus (Oracular or unknown), no-op.
-    ///   * `Err(())`   — WAL is at cap (`MAX_WAL_ENTRIES`); caller must
-    ///     translate to `FSERR_QUOTA_EXCEEDED` and NOT proceed with the
-    ///     syscall so leader/follower stay symmetric (both hit the same
-    ///     cap moment).
-    ///
-    /// Note on partial writes (M-29-3 trade-off): we record the
-    /// REQUESTED byte length + a hash of the REQUESTED payload.  On a
-    /// partial-write the actual on-disk state is n<len; the FIP
-    /// documents this as a caller-responsibility retry pattern.
-    /// Recording requested-bytes keeps the WAL fully derivable from
-    /// contract args, which is what makes leader/follower symmetric
-    /// on the `is_replay` short-circuit path (the follower does NOT
-    /// re-issue the syscall and therefore does not know `n`).
-    // Wave-3 S3.8 (2026-09-09): retired now that fs_write /
-    // fs_write_at migrated to the FsHandler trait.  Free-fn form
-    // `journal_write_via_table` is what the trait impls call via
-    // `ctx.handles`.
-    #[cfg(any())]
-    async fn _deleted_pre_wave3_journal_write(
-        &self,
-        fd: u64,
-        bytes: &[u8],
-        offset: Option<u64>,
-        ack: &Par,
-    ) -> Result<bool, ()> {
-        // For sequential Write (offset=None from caller), pull the
-        // fd's shadow position — that's the absolute offset the
-        // subsequent libc::write will land at.  Both leader and
-        // follower evolve `position` deterministically from the same
-        // sequence of contract-arg values (see FileHandle::position
-        // docstring), so this read is symmetric.  For WriteAt, the
-        // caller supplied the explicit offset.
-        //
-        // Position-follow-up (2026-08-26): a WAL entry with
-        // `offset=Some(pos)` for sequential Write is what unblocks
-        // the fresh-tree applier (`apply_wal_to_fresh_tree` in
-        // `fs_wal_spec.rs`) to reconstruct file state from the WAL
-        // alone.  Prior to this, sequential Write recorded
-        // `offset=None` and the applier had to panic on it.
-        let wal_meta = self
-            .handles
-            .with_mut(fd, |h| (h.cmode, h.canon_path.clone(), h.position))
-            .await;
-        match wal_meta {
-            Some((ConsensusMode::Consensus, canon_path, position)) => {
-                let (op, resolved_offset) = match offset {
-                    Some(off) => (WalOp::WriteAt, Some(off)),
-                    None => (WalOp::Write, Some(position)),
-                };
-                // Phase 7b-2 (2026-08-27): stash the write payload
-                // content-addressed on disk BEFORE appending the
-                // WAL entry so a joining validator's fetch protocol
-                // sees the bytes as soon as the WAL entry lands.
-                // Failure is logged but not fatal — the joiner-side
-                // fetch protocol will find the bytes on other
-                // serving peers (or fall back to the reducer once
-                // wired).  We do the persist unconditionally on
-                // Consensus caps whenever a store is attached; a
-                // downstream retention pass evicts stale bytes on
-                // snapshot-cycle boundaries.
-                if let Some(store) = self.handles.payload_store() {
-                    if let Err(e) = store.persist(bytes) {
-                        tracing::warn!(
-                            target: "f1r3fly.fs_wal.payload_store",
-                            error = %e,
-                            "payload store persist failed on Consensus write; \
-                             joiners will need to fetch from another peer"
-                        );
-                    }
-                }
-                // DD-7b-2 (a) Option 2 (2026-08-29): record the
-                // payload_hash → deploy_sig mapping into the
-                // block-storage-backed persistent index.  Chained
-                // through the existing deploy_sig → block_hash
-                // map (deploy_index in block_dag_key_value_storage),
-                // this lets a joiner reconstruct write bytes from
-                // block-stored deploys via
-                // capture_consensus_writes_by_replaying_deploy —
-                // the second tier of apply_wal_slice_after_fetch's
-                // reducer below the local PayloadLookup.
-                //
-                // Symmetric on leader (fs_write path) AND follower
-                // (replay path via journal_write's replay-branch
-                // caller); WalDeployScope sets current_deploy_sig
-                // on both sides so any node whose block processing
-                // succeeded can serve the Option 2 tier.  An empty
-                // sig (system deploys, between-deploy handler
-                // calls) skips — see FileHandleTable::
-                // current_deploy_sig docstring.  M-2 review
-                // discipline: fail-open; log Err at warn instead
-                // of aborting the deploy so a broken index doesn't
-                // reject Consensus writes leader-side.
-                let PayloadRef::Hash(payload_hash) = PayloadRef::hash(bytes) else {
-                    unreachable!("PayloadRef::hash always returns Hash variant")
-                };
-                if let Some(recorder) = self.handles.payload_source_recorder() {
-                    let sig =
-                        poison_abort(self.handles.current_deploy_sig.read(), "current_deploy_sig")
-                            .clone();
-                    if !sig.is_empty() {
-                        if let Err(e) = recorder.record(payload_hash, &sig) {
-                            tracing::warn!(
-                                target: "f1r3fly.fs_wal.payload_source_index",
-                                error = %e,
-                                "payload_source recorder record failed on \
-                                 Consensus write; joiners will need to fall back \
-                                 to peer fetch for this payload hash"
-                            );
-                        }
-                    }
-                }
-                self.handles
-                    .wal
-                    .append_with_ack(
-                        WalEntry {
-                            op,
-                            path: canon_path,
-                            extra_path: None,
-                            offset: resolved_offset,
-                            length: Some(bytes.len() as u64),
-                            payload_ref: Some(PayloadRef::Hash(payload_hash)),
-                            mode_bits: None,
-                            owner: None,
-                            group: None,
-                            // H-6 fix (2026-08-06): optimistic
-                            // Success placeholder; the leader's
-                            // finalize_failure_journal below
-                            // updates to Failure on syscall error.
-                            outcome: WalOutcome::Success,
-                        },
-                        ack_channel_hash(ack),
-                    )
-                    .map(|()| true)
-            }
-            _ => Ok(false),
-        }
-    }
-
-    /// Slice 32 (PB-M-14 read-hash): journal a Read/ReadAt to the WAL.
-    /// Called AFTER a successful read (leader path) OR from the
-    /// `is_replay` branch after extracting the cached bytes (follower
-    /// path) — both sides append the SAME entry (same op, path,
-    /// offset, length, and `Hash(bytes)` payload) so the WAL is
-    /// byte-identical across leader and follower.
-    ///
-    /// The hash is over the RETURNED bytes (post-truncate to the
-    /// actual read length), not the requested length — mirrors how
-    /// fs_read's reply carries `ok_bytes(bytes)` with the actual
-    /// truncated length after `buf.truncate(got as usize)`.
-    ///
-    /// Under PB-M-14 semantics, a joining validator replaying the
-    /// deploy against reconstructed state must observe the same
-    /// bytes on `fs_read`.  A mismatch (hash of freshly-read bytes
-    /// != WAL entry's hash) indicates disk state divergence between
-    /// leader and follower — the read-verify path (implemented
-    /// symmetrically via `journal_read` on both sides) catches this
-    /// at WAL-root-comparison time rather than as a silent tuplespace
-    /// fork downstream.
-    // Wave-3 S3.6 (2026-09-09) — the `&self` wrappers
-    // `journal_read`, `journal_read_divergence`, `read_impl` retired
-    // now that fs_read / fs_read_at / fs_seek migrated to the
-    // FsHandler trait.  Trait impls call the free-fn forms
-    // (`journal_read_via_table`, `journal_read_divergence_via_table`,
-    // `read_impl_via_table`) at the module bottom via `ctx.handles`.
-    #[cfg(any())]
-    async fn _deleted_pre_wave3_journal_read(
-        &self,
-        fd: u64,
-        bytes: &[u8],
-        offset: Option<u64>,
-        ack: &Par,
-    ) -> Result<bool, ()> {
-        // Sequential Read journals with shadow-position as absolute
-        // offset — same rationale as sequential Write; joining
-        // validators can now verify a Read against reconstructed
-        // state at the correct file position.  See journal_write
-        // for the position-follow-up (2026-08-26) design note.
-        //
-        // journal_read is called AFTER the syscall completes
-        // successfully — at which point the handler has NOT yet
-        // advanced FileHandle.position.  So the position read here
-        // reflects the PRE-read position, which is exactly the
-        // absolute offset the leader's libc::read consumed bytes
-        // from.  The handler then advances position by
-        // `bytes.len()` after this call.
-        let wal_meta = self
-            .handles
-            .with_mut(fd, |h| (h.cmode, h.canon_path.clone(), h.position))
-            .await;
-        match wal_meta {
-            Some((ConsensusMode::Consensus, canon_path, position)) => {
-                let (op, resolved_offset) = match offset {
-                    Some(off) => (WalOp::ReadAt, Some(off)),
-                    None => (WalOp::Read, Some(position)),
-                };
-                self.handles
-                    .wal
-                    .append_with_ack(
-                        WalEntry {
-                            op,
-                            path: canon_path,
-                            extra_path: None,
-                            offset: resolved_offset,
-                            length: Some(bytes.len() as u64),
-                            payload_ref: Some(PayloadRef::hash(bytes)),
-                            mode_bits: None,
-                            owner: None,
-                            group: None,
-                            // Reads are journaled AFTER a successful
-                            // syscall (see docstring above); the
-                            // outcome is always Success.  Failed
-                            // reads short-circuit before this call.
-                            outcome: WalOutcome::Success,
-                        },
-                        ack_channel_hash(ack),
-                    )
-                    .map(|()| true)
-            }
-            _ => Ok(false),
-        }
-    }
-
-    /// Phase 2 (Consensus re-execute + verify, 2026-09-01):
-    /// sibling helper to `journal_read` for the divergence path.
-    /// `journal_read` hardcodes `WalOutcome::Success` (reads are
-    /// only journaled AFTER a successful syscall on the leader
-    /// path); a Consensus follower that detects fs_read /
-    /// fs_read_at re-execute divergence needs to journal a Failure
-    /// entry with `FSERR_CODE_CONSENSUS_DIVERGENCE`.
-    ///
-    /// Field shape mirrors `journal_read`'s WalEntry with two
-    /// deltas: `payload_ref: None` and `length: None` because the
-    /// divergence-err reply carries no bytes to hash.  Follower's
-    /// divergent WAL entry inherently doesn't match the leader's
-    /// (leader never emits a CONSENSUS_DIVERGENCE outcome); block
-    /// validation catches the divergence via RSpace rig's produce
-    /// comparator on the ack channel.
-    ///
-    /// Returns `true` if the entry was appended (fd was a
-    /// Consensus-cap shadow); `false` otherwise (unregistered fd
-    /// or Oracular shadow — the latter never enters this path in
-    /// normal flow since the handler's dispatch routes Oracular to
-    /// the tautological branch above).
-    ///
-    /// # Coverage note (2026-09-01)
-    ///
-    /// The `_ => false` branch is defense-in-depth: fs_read /
-    /// fs_read_at dispatch upstream on `jmode != Consensus`, so
-    /// this helper is only reached with a Consensus shadow in
-    /// well-formed execution.  Direct testing of the fallthrough
-    /// would require exposing this method `pub(crate)` and
-    /// constructing a full `FsProcesses` in a unit test —
-    /// disproportionate scaffolding for a branch that mirrors
-    /// `journal_read`'s identically-shaped Consensus guard (which
-    /// IS exercised via the Oracular is_replay tautological path).
-    /// A future caller that hits this branch through a NEW
-    /// dispatch site would need its own coverage pin.
-    #[cfg(any())]
-    async fn _deleted_pre_wave3_journal_read_divergence(
-        &self,
-        fd: u64,
-        offset: Option<u64>,
-        ack: &Par,
-    ) -> bool {
-        let wal_meta = self
-            .handles
-            .with_mut(fd, |h| (h.cmode, h.canon_path.clone()))
-            .await;
-        match wal_meta {
-            Some((ConsensusMode::Consensus, canon_path)) => {
-                let op = match offset {
-                    Some(_) => WalOp::ReadAt,
-                    None => WalOp::Read,
-                };
-                self.handles
-                    .wal
-                    .append_with_ack(
-                        WalEntry {
-                            op,
-                            path: canon_path,
-                            extra_path: None,
-                            offset,
-                            length: None,
-                            payload_ref: None,
-                            mode_bits: None,
-                            owner: None,
-                            group: None,
-                            outcome: WalOutcome::Failure {
-                                code: FSERR_CODE_CONSENSUS_DIVERGENCE,
-                            },
-                        },
-                        ack_channel_hash(ack),
-                    )
-                    .is_ok()
-            }
-            _ => false,
-        }
-    }
-
-    /// Redesign helper: journal a Truncate to the WAL from data
-    /// fully derivable from args (fd + n).  Called from `fs_truncate`
-    /// BEFORE the `is_replay` short-circuit (C-29-F1 review fix).
-    /// Return semantics identical to `journal_write`.
-    /// Slice 30c M-29-3 fix: finalize a previously-reserved write
-    /// WAL entry with the ACTUAL bytes written.  Called by
-    /// `fs_write` / `fs_write_at` on partial writes (n < requested).
-    ///
-    /// Semantics:
-    /// - Locates the entry with matching ack_hash (the placeholder
-    ///   appended by `journal_write` pre-syscall).
-    /// - Updates only `length` and `payload_ref` — preserves
-    ///   `op`, `path`, `offset`, `outcome` from the placeholder.
-    /// - On leader: `n` comes from the syscall reply.
-    /// - On follower: `n` comes from the cached `previous` reply.
-    /// Both sides derive the same `n` from `bytes` (same args, same
-    /// deterministic reply) and produce a byte-identical final entry.
-    ///
-    /// M-7 fix (2026-08-06): removed the fd-relookup path that
-    /// silently no-op'd if the fd was closed between
-    /// `journal_write` and this call.  The placeholder is keyed
-    /// by `ack_hash` (a fresh unforgeable, unique per syscall)
-    /// which cannot be aliased away — the placeholder was just
-    /// appended in the same handler.  The WAL method
-    /// (`update_partial_write_by_ack_hash`) is a no-op if no
-    /// entry matches, which is the correct behavior for
-    /// non-Consensus caps (they never appended a placeholder).
-    ///
-    /// Full-length writes (n == requested) don't call this — the
-    /// pre-syscall placeholder already has the correct content.
-    /// Failed writes (error reply) go through
-    /// `finalize_failure_journal` instead (H-6).
-    #[cfg(any())]
-    fn _deleted_pre_wave3_finalize_write_journal(
-        &self,
-        requested_bytes: &[u8],
-        actual_n: u64,
-        ack: &Par,
-    ) {
-        let n = (actual_n as usize).min(requested_bytes.len());
-        let actual_slice = &requested_bytes[..n];
-        // Phase 7b-2 (2026-08-27): re-persist under the truncated
-        // slice's hash.  On full-length writes `n == requested`
-        // and the pre-syscall persist already covered the same
-        // bytes (idempotent).  On partial-write `n < requested`,
-        // the WAL entry's `payload_ref` is updated to point at the
-        // truncated slice's hash — the payload store must have
-        // those bytes too, or the joiner side will fail to fetch.
-        // Failure is logged but not fatal.
-        if let Some(store) = self.handles.payload_store() {
-            if let Err(e) = store.persist(actual_slice) {
-                tracing::warn!(
-                    target: "f1r3fly.fs_wal.payload_store",
-                    error = %e,
-                    "payload store persist failed on partial-write finalize"
-                );
-            }
-        }
-        let _ = self
-            .handles
-            .wal
-            .update_partial_write_by_ack_hash(ack_channel_hash(ack), actual_slice);
-    }
-
     /// H-6 fix (2026-08-06): flip a reserved WAL entry's outcome
     /// to `Failure { code }` when the leader's syscall reply
     /// carries an error.  Symmetric across leader (`code` from
@@ -1132,47 +789,6 @@ impl FsProcesses {
             .handles
             .wal
             .update_outcome_by_ack_hash(ack_channel_hash(ack), WalOutcome::Failure { code });
-    }
-
-    // Wave-3 S3.7 (2026-09-09): retired now that fs_truncate migrated
-    // to the FsHandler trait.  Free-fn form `journal_truncate_via_
-    // table` is what the trait impl calls via `ctx.handles`.
-    #[cfg(any())]
-    async fn _deleted_pre_wave3_journal_truncate(
-        &self,
-        fd: u64,
-        n: u64,
-        ack: &Par,
-    ) -> Result<bool, ()> {
-        let wal_meta = self
-            .handles
-            .with_mut(fd, |h| (h.cmode, h.canon_path.clone()))
-            .await;
-        match wal_meta {
-            Some((ConsensusMode::Consensus, canon_path)) => self
-                .handles
-                .wal
-                .append_with_ack(
-                    WalEntry {
-                        op: WalOp::Truncate,
-                        path: canon_path,
-                        extra_path: None,
-                        offset: Some(n),
-                        length: None,
-                        payload_ref: None,
-                        mode_bits: None,
-                        owner: None,
-                        group: None,
-                        // H-6: optimistic placeholder; the
-                        // leader's finalize_failure_journal
-                        // updates to Failure on syscall error.
-                        outcome: WalOutcome::Success,
-                    },
-                    ack_channel_hash(ack),
-                )
-                .map(|()| true),
-            _ => Ok(false),
-        }
     }
 
     // ---------------------------------------------------------------
@@ -1270,255 +886,6 @@ impl FsProcesses {
     /// touching `resolve_or_identity` on the pair), so this
     /// invariant holds today.
     #[allow(clippy::result_unit_err)]
-    #[cfg(any())]
-    async fn _deleted_pre_wave3_journal_path_mutation_two(
-        &self,
-        cmode: ConsensusMode,
-        op: WalOp,
-        from_canon_path: PathBuf,
-        to_canon_path: PathBuf,
-        ack: &Par,
-    ) -> Result<bool, ()> {
-        if cmode != ConsensusMode::Consensus {
-            return Ok(false);
-        }
-        self.handles
-            .wal
-            .append_with_ack(
-                WalEntry {
-                    op,
-                    path: from_canon_path,
-                    extra_path: Some(to_canon_path),
-                    offset: None,
-                    length: None,
-                    payload_ref: None,
-                    mode_bits: None,
-                    owner: None,
-                    group: None,
-                    outcome: WalOutcome::Success,
-                },
-                ack_channel_hash(ack),
-            )
-            .map(|()| true)
-    }
-
-    /// M-5 fix (2026-08-06): journal a state-read reply on a
-    /// Consensus cap.  Called AFTER the syscall completes (both
-    /// leader and follower paths — the follower extracts the
-    /// same reply from the cached `previous`, hashes it, and
-    /// journals identical bytes).
-    ///
-    /// - `op`: `WalOp::Stat` / `WalOp::Entries` / `WalOp::Size`.
-    /// - `path`: the canonical target (root + rel joined for
-    ///   path-based ops; canon_path from FileHandle for fd-based).
-    /// - `reply`: the just-produced reply Par.  Hashed via
-    ///   `stable_hash_provider::hash` for a canonical Blake2b256.
-    /// - Outcome derived from the reply: `[true, ...]` → Success,
-    ///   `[false, code, ...]` → Failure { code = fserr_to_code(code) }.
-    ///
-    /// A no-op if `cmode != Consensus`.  fs_stat / fs_entries /
-    /// fs_exists take cmode as an arg (fs_exists's cmode slot was
-    /// added in the 2026-09-04 ban-lift slice, bumping arity 3 →
-    /// 4); fs_size looks up the FileHandle's cmode via the fd.
-    #[cfg(any())]
-    fn _deleted_pre_wave3_journal_state_read(
-        &self,
-        cmode: ConsensusMode,
-        op: WalOp,
-        path: PathBuf,
-        reply: &Par,
-        ack: &Par,
-        length: Option<u64>,
-    ) {
-        journal_state_read_via_table(&self.handles, cmode, op, path, reply, ack, length)
-    }
-
-    #[cfg(any())]
-    async fn _deleted_pre_wave3_open_impl(
-        &self,
-        root: String,
-        rel: String,
-        mode: String,
-        cmode: ConsensusMode,
-    ) -> Par {
-        let intent = match parse_open_mode(&mode) {
-            Some(i) => i,
-            None => return err(FSERR_BAD_ARG, format!("unknown fopen mode {mode:?}")),
-        };
-        // Consensus caps + O_APPEND is not supported (see
-        // `FileHandle::position` docstring).  O_APPEND writes are
-        // atomically retargeted to file-end by the kernel; the
-        // shadow-position model that lets sequential writes record
-        // deterministic absolute offsets in the WAL doesn't extend
-        // cleanly to O_APPEND without per-canon_path EOF simulation
-        // on the follower.  Rather than silently produce a WAL that
-        // followers can't replay, reject at open time.  Consensus
-        // authors should use non-append modes + explicit `fs_seek`
-        // if they need append-like behavior.
-        if cmode == ConsensusMode::Consensus && intent.append {
-            return err(
-                FSERR_BAD_ARG,
-                "append modes (\"a\", \"a+\") are not supported on Consensus caps — \
-                 use a non-append mode plus fs_seek(SEEK_END) if append semantics \
-                 are required, or open the cap as Oracular",
-            );
-        }
-        let root_pb = PathBuf::from(&root);
-        // Shape A (2026-08-31): route the caller's `root` through
-        // the per-runtime `RootIdentityRegistry`.  For legacy
-        // (Oracular) bundles the resolver's fall-through returns
-        // the input path unchanged; for Consensus bundles under
-        // Shape A, the emitted logical `/@bundle/...` root remaps
-        // to the validator's on-disk staging dir + the boot-
-        // captured `(dev, inode)` identity.  Passing both to
-        // `safe_open_verified` preserves the H-5 rename-and-
-        // recreate defense at open time (previously fs_open
-        // silently skipped identity verification — a pre-existing
-        // gap surfaced by Shape A's landing).
-        // X-6c M-04 gated variant — refuses Consensus with an
-        // unregistered logical root.
-        let (root_pb, expected_root_id) = match self
-            .handles
-            .root_registry
-            .resolve_or_identity_gated_for_consensus(&root_pb, cmode)
-        {
-            Ok(v) => v,
-            Err((c, m)) => return err(c, m),
-        };
-        let intent_copy = intent;
-        // C-29-1 review fix: keep `rel` accessible for canon_path
-        // construction below.  Clone into the blocking closure and
-        // retain the original for later use.
-        let rel_for_open = rel.clone();
-        // openat descent + safe_open in a blocking task — sync fs.
-        // X-2 / G-01: park_external_during so the reduction driver
-        // can advance other participants while this syscall runs on
-        // the blocking pool.
-        let opened = crate::rust::interpreter::deterministic_reduction::park_external_during(
-            spawn_blocking(move || {
-                let (flags, mode_bits) = fopen_flags(intent_copy);
-                super::path::safe_open_verified(
-                    &root_pb,
-                    &rel_for_open,
-                    flags,
-                    mode_bits,
-                    expected_root_id,
-                )
-            }),
-        )
-        .await;
-        let file = match opened {
-            Err(je) => crate::rust::interpreter::io::errors::join_err_abort(je),
-            Ok(Err(qe)) => {
-                let (code, msg) = quarantine_err_reply(&qe);
-                return err(code, msg);
-            }
-            Ok(Ok(f)) => f,
-        };
-        // Reject non-regular files via fstat on the opened fd.  Because
-        // we already have the fd (opened with O_NOFOLLOW), there's no
-        // TOCTOU here.
-        let meta = match file.metadata() {
-            Ok(m) => m,
-            Err(e) => return err(io_err_code(&e), io_msg_scrub(&e)),
-        };
-        if !meta.file_type().is_file() {
-            return err(FSERR_UNSUPPORTED, "not a regular file");
-        }
-        // C-29-1 review fix: include the resolved `rel` in the
-        // canonical path so WAL entries can distinguish files under
-        // the same canonRoot.  Pre-fix the `.join("")` no-op dropped
-        // `rel` entirely, causing every WAL entry to record only the
-        // canonRoot — replay had no way to tell which file to apply
-        // the payload to.
-        let deploy = self.current_deploy_scope();
-        let handle = FileHandle {
-            // A4-M-1 fix (2026-09-04): wrap in Arc so `raw_fd()` can
-            // hand out clones that outlive concurrent remove(fd).
-            file: Some(std::sync::Arc::new(file)),
-            // M-R2 round-2 fix: lexically normalize so `a/b.txt` and
-            // `./a/b.txt` produce byte-identical canon_paths, keeping
-            // WAL entries stable across equivalent rel forms.
-            canon_path: canonicalize_lexical(&root, &rel),
-            mode: intent.mode,
-            cmode,
-            // Shadow position starts at 0 for all supported modes.
-            // Non-append modes (r/rw/w/w+/wx/w+x) all leave the fd at
-            // position 0 after open.  Append modes are rejected above
-            // for Consensus; for Oracular they're allowed but no WAL
-            // consumer reads `position`, so 0 is a safe default (the
-            // kernel handles O_APPEND retargeting at write time, and
-            // our sequential-write path doesn't consult `position`
-            // when the WAL journal is a no-op).
-            position: 0,
-            // Deploy-end sweep (2026-09-02): capture the scope so
-            // FileHandleTable::close_all_for_deploy can identify this
-            // file as belonging to the ending deploy.  Read from the
-            // per-runtime current_deploy_scope cell, populated by
-            // WalDeployScope::new_with_lock_sweep at deploy entry.
-            deploy,
-        };
-        match self.handles.insert(handle).await {
-            // A-3 (2026-09-03): emit via `ok_fd(Fd::from(...))` to
-            // enforce the fd-vs-quantity newtype invariant at the
-            // emission boundary; wire format is byte-identical to
-            // the pre-A-3 `ok_u64(fd)` shape.
-            Ok(fd) => ok_fd(Fd::from(fd)),
-            Err(()) => err(FSERR_QUOTA_EXCEEDED, "per-runtime fd cap reached"),
-        }
-    }
-
-    #[cfg(any())]
-    async fn _deleted_pre_wave3_read_impl(&self, fd: u64, n: u64, offset: Option<u64>) -> Par {
-        read_impl_via_table(&self.handles, fd, n, offset).await
-    }
-
-    #[cfg(any())]
-    async fn _deleted_pre_wave3_write_impl(
-        &self,
-        fd: u64,
-        bytes: Vec<u8>,
-        offset: Option<u64>,
-    ) -> Par {
-        if bytes.len() as u64 > MAX_WRITE_BYTES {
-            return err(
-                FSERR_QUOTA_EXCEEDED,
-                format!("write {} exceeds MAX_WRITE_BYTES", bytes.len()),
-            );
-        }
-        // A4-M-1 fix (2026-09-04): Arc<File> moved into the closure.
-        let file_arc = match self.handles.raw_fd(fd).await {
-            Some(f) => f,
-            None => return err(FSERR_CLOSED, format!("unknown fd {fd}")),
-        };
-        // Redesign note: WAL journaling for Consensus caps happens in
-        // `fs_write` / `fs_write_at` BEFORE this function is called,
-        // so both leader and follower populate identical WALs
-        // (C-29-F1 review fix).  Do NOT append here.
-        let result = spawn_blocking(move || {
-            use std::os::fd::AsRawFd;
-            let raw_fd = file_arc.as_raw_fd();
-            let n = unsafe {
-                if let Some(off) = offset {
-                    libc::pwrite(raw_fd, bytes.as_ptr() as *const _, bytes.len(), off as i64)
-                } else {
-                    libc::write(raw_fd, bytes.as_ptr() as *const _, bytes.len())
-                }
-            };
-            if n < 0 {
-                Err(std::io::Error::last_os_error())
-            } else {
-                Ok(n as u64)
-            }
-        })
-        .await;
-        match result {
-            Err(je) => crate::rust::interpreter::io::errors::join_err_abort(je),
-            Ok(Err(e)) => err(io_err_code(&e), io_msg_scrub(&e)),
-            Ok(Ok(n)) => ok_u64(n),
-        }
-    }
-
     // -------------------------------------------------------------------
     // removeDir — (rootCanon, rel, recursive: Bool, cmode) ->
     // DD-RemoveDirReplyShape (2026-09-03): every code path returns
