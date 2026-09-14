@@ -390,8 +390,6 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
 pub struct CasperSnapshot {
     pub dag: KeyValueDagRepresentation,
     pub last_finalized_block: BlockHash,
-    pub lca: BlockHash,
-    pub tips: Vec<BlockHash>,
     pub parents: Vec<BlockMessage>,
     // C13 / Perf-4: `justifications` and `max_seq_nums` are
     // constructed once per snapshot in `compute_snapshot` and
@@ -421,8 +419,6 @@ impl CasperSnapshot {
         Self {
             dag,
             last_finalized_block: BlockHash::default(),
-            lca: BlockHash::default(),
-            tips: vec![],
             parents: vec![],
             justifications: HashSet::new(),
             invalid_blocks: HashMap::new(),

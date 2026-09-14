@@ -326,34 +326,8 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
         parents_after_count_limit
     };
 
-    // C13 / Perf-3: hoist the parent-metadata lookup. Previously this
-    // function performed two passes of `dag.lookup_unsafe` over the
-    // same `parents` set — one to build `parent_metas_for_lca` and
-    // another (via `lookups_unsafe`) to build `parent_metas`. The
-    // batched `lookups_unsafe` is cheaper per parent, so use it once
-    // up-front and borrow into the LCA call.
     let parent_hashes: Vec<BlockHash> = parents.iter().map(|b| b.block_hash.clone()).collect();
     let parent_metas = dag.lookups_unsafe(parent_hashes.clone())?;
-
-    let approved_meta = models::rust::block_metadata::BlockMetadata::from_block(
-        &this.approved_block,
-        false,
-        None,
-        None,
-    );
-    let lca = if parent_metas.is_empty() {
-        this.approved_block.block_hash.clone()
-    } else {
-        crate::rust::util::dag_operations::DagOperations::lowest_universal_common_ancestor_many(
-            &parent_metas,
-            &dag,
-            &approved_meta,
-        )
-        .await?
-        .block_hash
-    };
-
-    let tips: Vec<BlockHash> = parents.iter().map(|b| b.block_hash.clone()).collect();
 
     tracing::debug!(
         "Parent selection: {} validators, {} invalid, {} valid, {} unfiltered, {} parents",
@@ -402,8 +376,6 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
             .collect::<HashSet<_>>()
     };
 
-    // C13 / Perf-3: `parent_metas` is reused from the hoisted lookup
-    // above — no second pass of `dag.lookups_unsafe`.
     let max_block_num = proto_util::max_block_number_metadata(&parent_metas);
 
     let max_seq_nums = valid_latest_metas
@@ -541,8 +513,6 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
     Ok(CasperSnapshot {
         dag,
         last_finalized_block,
-        lca,
-        tips,
         parents,
         justifications,
         invalid_blocks,

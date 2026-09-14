@@ -42,7 +42,6 @@ use crate::rust::util::proto_util;
 #[derive(Debug, Clone, PartialEq)]
 pub struct ForkChoice {
     pub tips: Vec<BlockHash>,
-    pub lca: BlockHash,
     pub scores: HashMap<BlockHash, i64>,
 }
 
@@ -57,30 +56,6 @@ impl Estimator {
     const LATEST_MESSAGE_MAX_DEPTH: i64 = 1000;
 
     pub fn apply() -> Self { Self }
-
-    #[tracing::instrument(name = "tips0", target = "f1r3fly.casper.estimator.tips0", skip_all)]
-    pub async fn tips(
-        &self,
-        dag: &mut KeyValueDagRepresentation,
-        genesis: &BlockMessage,
-        max_number_of_parents: i32,
-        max_parent_depth_opt: Option<i32>,
-    ) -> Result<ForkChoice, KvStoreError> {
-        // Phase 12 (PERF-5): `latest_message_hashes()` returns an owned
-        // `imbl::HashMap` (refcount-bump clone). Use `into_iter` to collect
-        // by ownership rather than re-cloning every key/value pair.
-        let latest_message_hashes: HashMap<Validator, BlockHash> =
-            dag.latest_message_hashes().into_iter().collect();
-        tracing::debug!(target: "f1r3fly.casper.estimator.tips_primary", "latest-message-hashes");
-        self.tips_with_latest_messages(
-            dag,
-            genesis,
-            latest_message_hashes,
-            max_number_of_parents,
-            max_parent_depth_opt,
-        )
-        .await
-    }
 
     /// When the BlockDag has an empty latestMessages, tips will return IndexedSeq(genesis.blockHash)
     #[tracing::instrument(name = "tips1", target = "f1r3fly.casper.estimator.tips1", skip_all)]
@@ -159,7 +134,6 @@ impl Estimator {
         };
         Ok(ForkChoice {
             tips,
-            lca,
             scores: scores_map,
         })
     }
@@ -254,7 +228,7 @@ impl Estimator {
     ) -> Result<HashMap<BlockHash, i64>, KvStoreError> {
         fn hash_parents(
             hash: &BlockHash,
-            last_finalized_block_number: i64,
+            lca_block_number: i64,
             block_dag: &KeyValueDagRepresentation,
         ) -> Result<Vec<BlockHash>, KvStoreError> {
             // Phase 12 (PERF-1): one `lookup_unsafe` call per node, not two.
@@ -262,7 +236,7 @@ impl Estimator {
             // whole `BlockMetadata` for `parents` — doubling lock
             // acquisitions on the BFS-bound fork-choice path.
             let meta = block_dag.lookup_unsafe(hash)?;
-            if meta.block_number < last_finalized_block_number {
+            if meta.block_number < lca_block_number {
                 Ok(Vec::new())
             } else {
                 // MAIN parent only. Crediting a validator's weight to every DAG
