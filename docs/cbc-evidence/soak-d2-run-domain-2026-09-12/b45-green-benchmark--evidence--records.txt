@@ -1,0 +1,4 @@
+0 755 /run/soak-run-domain
+0 644 /run/soak-run-domain/fixture-cgroup.txt
+0 644 /run/soak-run-domain/matching.json
+0 644 /run/soak-run-domain/mismatched.json

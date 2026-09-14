@@ -1,0 +1,155 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 30 and seed -7722272186241509315 with 2 workers on 20 cores with 491MB heap and 64MB offheap memory (Linux 6.17.0-1032-nvidia aarch64, Private Build 1.8.0_502 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file [EVIDENCE_ROOT]/d2-settings-DPaH5adL/formal-source/MC_DiskSettingsAdmission_unchecked_pre_fix.tla
+Parsing file [EVIDENCE_ROOT]/d2-settings-DPaH5adL/formal-source/DiskSettingsAdmission.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/Sequences.tla
+Parsing file /tmp/TLC.tla
+Parsing file /tmp/FiniteSets.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module DiskSettingsAdmission
+Semantic processing of module MC_DiskSettingsAdmission_unchecked_pre_fix
+Starting... (2026-09-10 00:34:31)
+Implied-temporal checking--satisfiability problem has 1 branches.
+Computing initial states...
+Computed 2 initial states...
+Finished computing initial states: 4 distinct states generated at 2026-09-10 00:34:32.
+Error: Invariant AdmissionRequiresValidDiskSettings is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ settings = [floorText |-> "4096", bandText |-> "9223372036854775808"]
+/\ rejected = FALSE
+/\ phase = "config"
+/\ admitted = FALSE
+
+State 2: <Decide line 46, col 5 to line 50, col 25 of module DiskSettingsAdmission>
+/\ settings = [floorText |-> "4096", bandText |-> "9223372036854775808"]
+/\ rejected = FALSE
+/\ phase = "checked"
+/\ admitted = TRUE
+
+The coverage statistics at 2026-09-10 00:34:32
+<Init line 40, col 1 to line 40, col 4 of module DiskSettingsAdmission>: 4:4
+  line 41, col 8 to line 41, col 25 of module DiskSettingsAdmission: 1
+  line 43, col 8 to line 43, col 23 of module DiskSettingsAdmission: 4
+  line 44, col 8 to line 44, col 23 of module DiskSettingsAdmission: 4
+<Decide line 45, col 1 to line 45, col 6 of module DiskSettingsAdmission>: 3:4
+  line 46, col 8 to line 46, col 23 of module DiskSettingsAdmission: 6
+  |line 46, col 8 to line 46, col 12 of module DiskSettingsAdmission: 4
+  line 47, col 8 to line 47, col 51 of module DiskSettingsAdmission: 2
+  |line 47, col 21 to line 47, col 50 of module DiskSettingsAdmission: 4
+  line 48, col 8 to line 48, col 29 of module DiskSettingsAdmission: 2
+  |line 48, col 20 to line 48, col 29 of module DiskSettingsAdmission: 4
+  line 49, col 8 to line 49, col 25 of module DiskSettingsAdmission: 2
+  line 50, col 8 to line 50, col 25 of module DiskSettingsAdmission: 2
+<TypeOK line 52, col 1 to line 52, col 6 of module DiskSettingsAdmission>
+  line 53, col 5 to line 56, col 27 of module DiskSettingsAdmission: 7
+<AdmissionRequiresValidDiskSettings line 57, col 1 to line 57, col 34 of module DiskSettingsAdmission>
+  line 57, col 39 to line 57, col 65 of module DiskSettingsAdmission: 7
+  |line 57, col 39 to line 57, col 46 of module DiskSettingsAdmission: 7
+  |line 57, col 51 to line 57, col 65 of module DiskSettingsAdmission: 3
+  ||line 37, col 5 to line 39, col 80 of module DiskSettingsAdmission: 3
+  |||line 37, col 8 to line 37, col 38 of module DiskSettingsAdmission: 3
+  |||line 38, col 8 to line 38, col 37 of module DiskSettingsAdmission: 3
+  ||||line 22, col 14 to line 22, col 25 of module DiskSettingsAdmission: 3
+  ||||line 22, col 32 to line 22, col 43 of module DiskSettingsAdmission: 3
+  ||||line 23, col 5 to line 27, col 44 of module DiskSettingsAdmission: 3
+  |||||line 23, col 8 to line 23, col 22 of module DiskSettingsAdmission: 3
+  |||||line 24, col 8 to line 27, col 44 of module DiskSettingsAdmission: 2
+  ||||||line 24, col 11 to line 24, col 25 of module DiskSettingsAdmission: 2
+  ||||||line 25, col 12 to line 27, col 43 of module DiskSettingsAdmission: 2
+  |||||||line 25, col 12 to line 25, col 16 of module DiskSettingsAdmission: 2
+  |||||||line 25, col 21 to line 27, col 43 of module DiskSettingsAdmission: 2
+  ||||||||line 26, col 12 to line 27, col 43 of module DiskSettingsAdmission: 35
+  |||||||||line 26, col 15 to line 26, col 55 of module DiskSettingsAdmission: 35
+  |||||||||line 27, col 15 to line 27, col 43 of module DiskSettingsAdmission: 35
+  ||||||||||line 27, col 15 to line 27, col 27 of module DiskSettingsAdmission: 35
+  |||||||||||line 14, col 18 to line 14, col 82 of module DiskSettingsAdmission: 35
+  ||||||||||||line 14, col 37 to line 14, col 82 of module DiskSettingsAdmission: 193
+  ||||||||||||line 14, col 31 to line 14, col 34 of module DiskSettingsAdmission: 35
+  |||||||||||line 27, col 26 to line 27, col 26 of module DiskSettingsAdmission: 35
+  ||||||||||line 27, col 31 to line 27, col 43 of module DiskSettingsAdmission: 35
+  |||||||||||line 14, col 18 to line 14, col 82 of module DiskSettingsAdmission: 35
+  ||||||||||||line 14, col 37 to line 14, col 82 of module DiskSettingsAdmission: 196
+  ||||||||||||line 14, col 31 to line 14, col 34 of module DiskSettingsAdmission: 35
+  |||||||||||line 27, col 42 to line 27, col 42 of module DiskSettingsAdmission: 35
+  ||||||||line 25, col 30 to line 25, col 38 of module DiskSettingsAdmission: 2
+  ||||line 38, col 18 to line 38, col 27 of module DiskSettingsAdmission: 3
+  ||||line 38, col 30 to line 38, col 36 of module DiskSettingsAdmission: 3
+  |||line 39, col 8 to line 39, col 80 of module DiskSettingsAdmission: 2
+  ||||line 22, col 14 to line 22, col 25 of module DiskSettingsAdmission: 2
+  |||||line 16, col 5 to line 20, col 62 of module DiskSettingsAdmission: 2
+  ||||||line 16, col 8 to line 16, col 48 of module DiskSettingsAdmission: 2
+  |||||||line 16, col 28 to line 16, col 48 of module DiskSettingsAdmission: 19
+  |||||||line 16, col 17 to line 16, col 25 of module DiskSettingsAdmission: 2
+  ||||||line 18, col 10 to line 20, col 62 of module DiskSettingsAdmission: 2
+  |||||||line 18, col 17 to line 18, col 17 of module DiskSettingsAdmission: 2
+  |||||||line 18, col 20 to line 20, col 53 of module DiskSettingsAdmission: 2
+  ||||||||line 19, col 9 to line 20, col 53 of module DiskSettingsAdmission: 19
+  |||||||||line 19, col 12 to line 19, col 32 of module DiskSettingsAdmission: 19
+  |||||||||line 20, col 12 to line 20, col 53 of module DiskSettingsAdmission: 2
+  ||||||||||line 20, col 33 to line 20, col 53 of module DiskSettingsAdmission: 17
+  ||||||||||line 20, col 21 to line 20, col 30 of module DiskSettingsAdmission: 2
+  ||||||||line 18, col 33 to line 18, col 41 of module DiskSettingsAdmission: 2
+  |||||||line 20, col 56 to line 20, col 61 of module DiskSettingsAdmission: 2
+  ||||line 22, col 32 to line 22, col 43 of module DiskSettingsAdmission: 2
+  ||||line 23, col 5 to line 27, col 44 of module DiskSettingsAdmission: 2
+  |||||line 23, col 8 to line 23, col 22 of module DiskSettingsAdmission: 2
+  |||||line 24, col 8 to line 27, col 44 of module DiskSettingsAdmission: 1
+  ||||||line 24, col 11 to line 24, col 25 of module DiskSettingsAdmission: 1
+  ||||||line 25, col 12 to line 27, col 43 of module DiskSettingsAdmission: 1
+  |||||||line 25, col 12 to line 25, col 16 of module DiskSettingsAdmission: 1
+  |||||||line 25, col 21 to line 27, col 43 of module DiskSettingsAdmission: 1
+  ||||||||line 26, col 12 to line 27, col 43 of module DiskSettingsAdmission: 19
+  |||||||||line 26, col 15 to line 26, col 55 of module DiskSettingsAdmission: 19
+  |||||||||line 27, col 15 to line 27, col 43 of module DiskSettingsAdmission: 19
+  ||||||||||line 27, col 15 to line 27, col 27 of module DiskSettingsAdmission: 19
+  |||||||||||line 14, col 18 to line 14, col 82 of module DiskSettingsAdmission: 19
+  ||||||||||||line 14, col 37 to line 14, col 82 of module DiskSettingsAdmission: 108
+  ||||||||||||line 14, col 31 to line 14, col 34 of module DiskSettingsAdmission: 19
+  |||||||||||line 27, col 26 to line 27, col 26 of module DiskSettingsAdmission: 19
+  ||||||||||line 27, col 31 to line 27, col 43 of module DiskSettingsAdmission: 19
+  |||||||||||line 14, col 18 to line 14, col 82 of module DiskSettingsAdmission: 19
+  ||||||||||||line 14, col 37 to line 14, col 82 of module DiskSettingsAdmission: 107
+  ||||||||||||line 14, col 31 to line 14, col 34 of module DiskSettingsAdmission: 19
+  |||||||||||line 27, col 42 to line 27, col 42 of module DiskSettingsAdmission: 19
+  ||||||||line 25, col 30 to line 25, col 38 of module DiskSettingsAdmission: 1
+  ||||line 39, col 18 to line 39, col 70 of module DiskSettingsAdmission: 2
+  |||||line 31, col 5 to line 35, col 61 of module DiskSettingsAdmission: 42
+  ||||||line 31, col 8 to line 31, col 17 of module DiskSettingsAdmission: 42
+  ||||||line 31, col 24 to line 31, col 52 of module DiskSettingsAdmission: 2
+  ||||||line 33, col 21 to line 33, col 57 of module DiskSettingsAdmission: 40
+  |||||||line 33, col 21 to line 33, col 49 of module DiskSettingsAdmission: 40
+  ||||||||line 33, col 21 to line 33, col 33 of module DiskSettingsAdmission: 40
+  |||||||||line 14, col 18 to line 14, col 82 of module DiskSettingsAdmission: 40
+  ||||||||||line 14, col 37 to line 14, col 82 of module DiskSettingsAdmission: 78
+  ||||||||||line 14, col 31 to line 14, col 34 of module DiskSettingsAdmission: 40
+  ||||||||line 33, col 37 to line 33, col 49 of module DiskSettingsAdmission: 40
+  |||||||||line 14, col 18 to line 14, col 82 of module DiskSettingsAdmission: 40
+  ||||||||||line 14, col 37 to line 14, col 82 of module DiskSettingsAdmission: 138
+  ||||||||||line 14, col 31 to line 14, col 34 of module DiskSettingsAdmission: 40
+  |||||||line 33, col 53 to line 33, col 57 of module DiskSettingsAdmission: 40
+  ||||||line 32, col 19 to line 32, col 24 of module DiskSettingsAdmission: 40
+  ||||||line 34, col 13 to line 35, col 61 of module DiskSettingsAdmission: 40
+  |||||||line 34, col 13 to line 34, col 76 of module DiskSettingsAdmission: 40
+  ||||||||line 34, col 23 to line 34, col 41 of module DiskSettingsAdmission: 40
+  ||||||||line 34, col 44 to line 34, col 62 of module DiskSettingsAdmission: 38
+  ||||||||line 34, col 65 to line 34, col 75 of module DiskSettingsAdmission: 40
+  |||||||line 35, col 16 to line 35, col 61 of module DiskSettingsAdmission: 40
+  |||||line 39, col 28 to line 39, col 46 of module DiskSettingsAdmission: 2
+  |||||line 39, col 49 to line 39, col 66 of module DiskSettingsAdmission: 2
+  ||||line 39, col 73 to line 39, col 79 of module DiskSettingsAdmission: 2
+  ||line 57, col 57 to line 57, col 64 of module DiskSettingsAdmission: 3
+<RefusalRecorded line 58, col 1 to line 58, col 15 of module DiskSettingsAdmission>
+  line 58, col 20 to line 58, col 63 of module DiskSettingsAdmission: 5
+  |line 58, col 21 to line 58, col 50 of module DiskSettingsAdmission: 5
+  ||line 58, col 21 to line 58, col 37 of module DiskSettingsAdmission: 5
+  ||line 58, col 42 to line 58, col 50 of module DiskSettingsAdmission: 1
+End of statistics.
+7 states generated, 7 distinct states found, 2 states left on queue.
+The depth of the complete state graph search is 2.
+The average outdegree of the complete state graph is 1 (minimum is 1, the maximum 1 and the 95th percentile is 1).
+Finished in 02s at (2026-09-10 00:34:32)

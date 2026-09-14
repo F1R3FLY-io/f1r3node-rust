@@ -1,0 +1,2 @@
+PASS: The retained breach prevented benchmark and iteration admission and preserved the failure.
+Evidence: [EVIDENCE_ROOT]/d2-benchmark-6twD3cJY/production-green

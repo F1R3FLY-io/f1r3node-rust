@@ -1,0 +1,2 @@
+FAIL: An out-of-range disk setting permitted workload admission (disk-band-range).
+Evidence: [EVIDENCE_ROOT]/d2-settings-DPaH5adL/baseline-confirmed-disk-band-range

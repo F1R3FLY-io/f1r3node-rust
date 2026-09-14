@@ -1,0 +1,16 @@
+2026-09-11T19:53:20Z
+Linux 6.17.0-1032-nvidia #32-Ubuntu SMP PREEMPT_DYNAMIC Wed Aug 19 17:40:46 UTC 2026 aarch64
+GNU bash, version 5.2.21(1)-release (aarch64-unknown-linux-gnu)
+Copyright (C) 2022 Free Software Foundation, Inc.
+License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>
+
+This is free software; you are free to change and redistribute it.
+There is NO WARRANTY, to the extent permitted by law.
+ruby 3.2.3 (2024-01-18 revision 52bb2ac0a6) [aarch64-linux-gnu]
+JSON 2.6.3
+openjdk version "1.8.0_502"
+OpenJDK Runtime Environment (build 1.8.0_502-8u502-ga~us1-0ubuntu1~24.04-b07)
+OpenJDK 64-Bit Server VM (build 25.502-b07, mixed mode)
+936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88  /tmp/soak-g0-tools.e7smwz/tla2tools.jar
+cdc0a57f553285d06905bb0456d8c29191c83efa
+sha256:2ba4825186d56dc974b21c65f273f3cb3ae04356ad070075691a43520f0b5b8e

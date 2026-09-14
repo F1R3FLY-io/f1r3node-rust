@@ -1,0 +1,51 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 53 and seed -2269586035016636054 with 2 workers on 20 cores with 491MB heap and 64MB offheap memory (Linux 6.17.0-1032-nvidia aarch64, Private Build 1.8.0_502 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file [EVIDENCE_ROOT]/b41/formal/MC_BenchmarkMonitorDeath_iteration_only_pre_fix.tla
+Parsing file [EVIDENCE_ROOT]/b41/formal/BenchmarkMonitorDeath.tla
+Parsing file /tmp/Naturals.tla
+Semantic processing of module Naturals
+Semantic processing of module BenchmarkMonitorDeath
+Semantic processing of module MC_BenchmarkMonitorDeath_iteration_only_pre_fix
+Starting... (2026-09-11 11:51:04)
+Implied-temporal checking--satisfiability problem has 1 branches.
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-09-11 11:51:05.
+Error: Invariant BenchmarkMonitorDeathStopsOwnedWriter is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ restarts = 0
+/\ ownedRunning = TRUE
+/\ failures = 0
+/\ iterations = 0
+/\ benchmarks = 1
+/\ unownedRunning = TRUE
+/\ phase = "benchmark"
+/\ benchmarkFailures = 0
+/\ monitorRunning = TRUE
+
+State 2: <MonitorDies line 23, col 5 to line 27, col 54 of module BenchmarkMonitorDeath>
+/\ restarts = 0
+/\ ownedRunning = TRUE
+/\ failures = 0
+/\ iterations = 0
+/\ benchmarks = 1
+/\ unownedRunning = TRUE
+/\ phase = "failed"
+/\ benchmarkFailures = 0
+/\ monitorRunning = FALSE
+
+State 3: <Respond line 30, col 5 to line 35, col 85 of module BenchmarkMonitorDeath>
+/\ restarts = 0
+/\ ownedRunning = TRUE
+/\ failures = 0
+/\ iterations = 0
+/\ benchmarks = 1
+/\ unownedRunning = TRUE
+/\ phase = "checked"
+/\ benchmarkFailures = 0
+/\ monitorRunning = FALSE
+
+3 states generated, 3 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 3.
+The average outdegree of the complete state graph is 1 (minimum is 1, the maximum 1 and the 95th percentile is 1).
+Finished in 02s at (2026-09-11 11:51:05)

@@ -1,0 +1,2 @@
+PASS: Successful cleanup preserved the admission result for its disk sample (cleanup-sufficient).
+Evidence: [EVIDENCE_ROOT]/d2-cleanup-outcome-eTKwRQgd/baseline-confirmed-sufficient

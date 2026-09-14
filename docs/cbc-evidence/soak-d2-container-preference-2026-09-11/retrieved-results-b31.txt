@@ -1,0 +1,1 @@
+PASS: Driver exit retained the rejected Docker stop, one interruption failure, and unconfirmed writer termination.

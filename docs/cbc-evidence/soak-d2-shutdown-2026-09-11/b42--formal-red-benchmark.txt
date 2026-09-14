@@ -1,0 +1,42 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 8 and seed -2952551961914412448 with 2 workers on 20 cores with 491MB heap and 64MB offheap memory (Linux 6.17.0-1032-nvidia aarch64, Private Build 1.8.0_502 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file [EVIDENCE_ROOT]/b42/formal/MC_MonitorAdmission_benchmark_unchecked_pre_fix.tla
+Parsing file [EVIDENCE_ROOT]/b42/formal/MonitorAdmission.tla
+Parsing file /tmp/Naturals.tla
+Semantic processing of module Naturals
+Semantic processing of module MonitorAdmission
+Semantic processing of module MC_MonitorAdmission_benchmark_unchecked_pre_fix
+Starting... (2026-09-11 11:59:58)
+Implied-temporal checking--satisfiability problem has 1 branches.
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-09-11 11:59:59.
+Error: Invariant MonitorDeathPreventsAdmission is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ restarts = 0
+/\ failures = 0
+/\ iterations = 0
+/\ benchmarks = 0
+/\ phase = "probe"
+/\ monitorRunning = TRUE
+
+State 2: <MonitorDiesDuringProbe line 18, col 5 to line 21, col 63 of module MonitorAdmission>
+/\ restarts = 0
+/\ failures = 0
+/\ iterations = 0
+/\ benchmarks = 0
+/\ phase = "checked"
+/\ monitorRunning = FALSE
+
+State 3: <Admission line 24, col 5 to line 29, col 45 of module MonitorAdmission>
+/\ restarts = 0
+/\ failures = 0
+/\ iterations = 0
+/\ benchmarks = 1
+/\ phase = "admitted"
+/\ monitorRunning = FALSE
+
+3 states generated, 3 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 3.
+The average outdegree of the complete state graph is 1 (minimum is 1, the maximum 1 and the 95th percentile is 1).
+Finished in 02s at (2026-09-11 11:59:59)

@@ -1,0 +1,56 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 115 and seed 2627115533522323380 with 2 workers on 20 cores with 491MB heap and 64MB offheap memory (Linux 6.17.0-1032-nvidia aarch64, Private Build 1.8.0_502 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file [EVIDENCE_ROOT]/d2-guardian-progress-k69aoiLY/b21/formal-source/MC_GuardianProgress.tla
+Parsing file [EVIDENCE_ROOT]/d2-guardian-progress-k69aoiLY/b21/formal-source/GuardianProgress.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/TLC.tla
+Parsing file /tmp/Sequences.tla
+Parsing file /tmp/FiniteSets.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module GuardianProgress
+Semantic processing of module MC_GuardianProgress
+Starting... (2026-09-09 22:39:18)
+Implied-temporal checking--satisfiability problem has 1 branches.
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-09-09 22:39:18.
+Progress(5) at 2026-09-09 22:39:19: 5 states generated, 5 distinct states found, 0 states left on queue.
+Checking temporal properties for the complete state space with 5 total distinct states at (2026-09-09 22:39:19)
+Finished checking temporal properties in 00s at 2026-09-09 22:39:19
+Model checking completed. No error has been found.
+  Estimates of the probability that TLC did not check all reachable states
+  because two distinct states had the same fingerprint:
+  calculated (optimistic):  val = 0.0
+The coverage statistics at 2026-09-09 22:39:19
+<Init line 7, col 1 to line 7, col 4 of module GuardianProgress>: 1:1
+  line 8, col 5 to line 11, col 26 of module GuardianProgress: 1
+<Tick line 13, col 1 to line 13, col 4 of module GuardianProgress>: 3:4
+  line 14, col 8 to line 14, col 24 of module GuardianProgress: 10
+  |line 14, col 8 to line 14, col 12 of module GuardianProgress: 6
+  line 15, col 8 to line 15, col 26 of module GuardianProgress: 4
+  |line 15, col 8 to line 15, col 10 of module GuardianProgress: 5
+  |line 15, col 15 to line 15, col 26 of module GuardianProgress: 5
+  line 16, col 8 to line 16, col 21 of module GuardianProgress: 4
+  line 17, col 8 to line 17, col 54 of module GuardianProgress: 4
+<Observe line 19, col 1 to line 19, col 7 of module GuardianProgress>: 1:1
+  line 20, col 8 to line 20, col 24 of module GuardianProgress: 7
+  |line 20, col 8 to line 20, col 12 of module GuardianProgress: 6
+  line 21, col 8 to line 21, col 29 of module GuardianProgress: 6
+  |line 21, col 8 to line 21, col 10 of module GuardianProgress: 5
+  |line 21, col 14 to line 21, col 29 of module GuardianProgress: 5
+  line 22, col 8 to line 22, col 35 of module GuardianProgress: 1
+  line 23, col 8 to line 23, col 25 of module GuardianProgress: 1
+  line 24, col 8 to line 24, col 39 of module GuardianProgress: 1
+<TypeOK line 28, col 1 to line 28, col 6 of module GuardianProgress>
+  line 29, col 5 to line 32, col 30 of module GuardianProgress: 5
+<StaleGuardianRequiresInterrupt line 33, col 1 to line 33, col 30 of module GuardianProgress>
+  line 33, col 35 to line 33, col 66 of module GuardianProgress: 5
+  |line 33, col 35 to line 33, col 51 of module GuardianProgress: 5
+  |line 33, col 56 to line 33, col 66 of module GuardianProgress: 1
+End of statistics.
+5 states generated, 5 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 5.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 1 and the 95th percentile is 1).
+Finished in 02s at (2026-09-09 22:39:19)

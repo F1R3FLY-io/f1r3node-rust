@@ -1,0 +1,1 @@
+PASS: Monitor death stopped the owned host writer, preserved the unrelated writer, and retained one failure across two refused restarts.

@@ -1,0 +1,1 @@
+PASS: Required containment refuses benchmark admission without a matching trusted run-domain record, retains one failure across two refused restarts, and admits with a matching record.

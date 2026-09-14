@@ -1,0 +1,1 @@
+host_protection_breach: disk floor: free 3072MB still inside hygiene band (floor 4096MB + band 4096MB) after hygiene

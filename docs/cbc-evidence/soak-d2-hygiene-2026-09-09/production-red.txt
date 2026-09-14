@@ -1,0 +1,2 @@
+FAIL: Stalled disk hygiene prevented client cancellation and failure publication before fixture release.
+Evidence: [EVIDENCE_ROOT]/d2-hygiene-3Wqnuu6P/production-red

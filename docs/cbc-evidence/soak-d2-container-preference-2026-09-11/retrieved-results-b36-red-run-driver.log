@@ -1,0 +1,2 @@
+Soak host protection: node RSS ceiling=0MB; host free floor=4096MB; disk free floor=4096MB (hygiene band +4096MB)
+orchestrator host guardian watching MemAvailable floor 4096MB (hard floor 2048MB, warn 8192MB) and disk free floor 4096MB (hard floor 2048MB); pid 4276

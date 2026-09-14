@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$SOAK_REAL_EVIDENCE/docker-commands.txt"
+exec /usr/bin/docker "$@"

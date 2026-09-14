@@ -1,0 +1,1 @@
+PASS: Driver exit stopped its detached host writer and preserved both unrelated host writers.

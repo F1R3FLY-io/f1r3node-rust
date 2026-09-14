@@ -1,0 +1,2 @@
+FAIL: A live guardian without progress did not stop its active iteration before fixture release.
+Evidence: [EVIDENCE_ROOT]/d2-guardian-progress-k69aoiLY/b21/production-red

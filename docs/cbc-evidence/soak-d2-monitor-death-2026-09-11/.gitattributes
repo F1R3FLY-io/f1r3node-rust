@@ -1,0 +1,4 @@
+*.log whitespace=-blank-at-eol,-space-before-tab,cr-at-eol
+*.txt whitespace=-blank-at-eol,-space-before-tab,cr-at-eol
+*.stderr whitespace=-blank-at-eol,-space-before-tab,cr-at-eol
+*.diff whitespace=-blank-at-eol,-space-before-tab,cr-at-eol

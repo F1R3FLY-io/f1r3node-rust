@@ -1,0 +1,742 @@
+{
+  "target_ref": "unknown",
+  "target_sha": "unknown",
+  "trigger_source": "manual",
+  "slot_delay_seconds": 0,
+  "version": "unknown",
+  "started_at": 1789067466,
+  "finished_at": 1789067472,
+  "requested_seconds": 120,
+  "elapsed_seconds": 6,
+  "shard_up_seconds": 3,
+  "iterations": 27,
+  "failures": 0,
+  "failure_rate": 0,
+  "iterations_per_hour": 16200,
+  "rss_peak_mb": null,
+  "cpu_peak_pct": null,
+  "cpu_peak_core_grid_pct": null,
+  "finalization_p50_ms": null,
+  "finalization_p95_ms": null,
+  "finalization_p99_ms": null,
+  "too_far_ahead_errors": 0,
+  "providers": {
+    "docker": {
+      "iterations": 13,
+      "failures": 0,
+      "avg_duration_s": 0
+    },
+    "subprocess": {
+      "iterations": 13,
+      "failures": 0,
+      "avg_duration_s": 0
+    }
+  },
+  "bench_segments": 0,
+  "bench_failures": 0,
+  "tracked_metrics": {},
+  "iteration_metrics": [
+    {
+      "iteration": 2,
+      "provider": "subprocess",
+      "started_at": 1789067466,
+      "finished_at": 1789067466,
+      "duration_s": 0,
+      "exit_code": 0,
+      "pytest": {
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "errors": 0
+      },
+      "rss_peak_mb": null,
+      "cpu_peak_pct": null,
+      "cpu_peak_per_node_pct": null,
+      "cpu_peak_per_node_core_pct": null,
+      "finalization_latency": {
+        "p50_ms": null,
+        "p95_ms": null,
+        "p99_ms": null,
+        "samples": 0
+      },
+      "too_far_ahead_errors": 0,
+      "metrics": {},
+      "ok": true
+    },
+    {
+      "iteration": 3,
+      "provider": "docker",
+      "started_at": 1789067466,
+      "finished_at": 1789067466,
+      "duration_s": 0,
+      "exit_code": 0,
+      "pytest": {
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "errors": 0
+      },
+      "rss_peak_mb": null,
+      "cpu_peak_pct": null,
+      "cpu_peak_per_node_pct": null,
+      "cpu_peak_per_node_core_pct": null,
+      "finalization_latency": {
+        "p50_ms": null,
+        "p95_ms": null,
+        "p99_ms": null,
+        "samples": 0
+      },
+      "too_far_ahead_errors": 0,
+      "metrics": {},
+      "ok": true
+    },
+    {
+      "iteration": 4,
+      "provider": "subprocess",
+      "started_at": 1789067466,
+      "finished_at": 1789067466,
+      "duration_s": 0,
+      "exit_code": 0,
+      "pytest": {
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "errors": 0
+      },
+      "rss_peak_mb": null,
+      "cpu_peak_pct": null,
+      "cpu_peak_per_node_pct": null,
+      "cpu_peak_per_node_core_pct": null,
+      "finalization_latency": {
+        "p50_ms": null,
+        "p95_ms": null,
+        "p99_ms": null,
+        "samples": 0
+      },
+      "too_far_ahead_errors": 0,
+      "metrics": {},
+      "ok": true
+    },
+    {
+      "iteration": 5,
+      "provider": "docker",
+      "started_at": 1789067467,
+      "finished_at": 1789067467,
+      "duration_s": 0,
+      "exit_code": 0,
+      "pytest": {
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "errors": 0
+      },
+      "rss_peak_mb": null,
+      "cpu_peak_pct": null,
+      "cpu_peak_per_node_pct": null,
+      "cpu_peak_per_node_core_pct": null,
+      "finalization_latency": {
+        "p50_ms": null,
+        "p95_ms": null,
+        "p99_ms": null,
+        "samples": 0
+      },
+      "too_far_ahead_errors": 0,
+      "metrics": {},
+      "ok": true
+    },
+    {
+      "iteration": 6,
+      "provider": "subprocess",
+      "started_at": 1789067467,
+      "finished_at": 1789067467,
+      "duration_s": 0,
+      "exit_code": 0,
+      "pytest": {
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "errors": 0
+      },
+      "rss_peak_mb": null,
+      "cpu_peak_pct": null,
+      "cpu_peak_per_node_pct": null,
+      "cpu_peak_per_node_core_pct": null,
+      "finalization_latency": {
+        "p50_ms": null,
+        "p95_ms": null,
+        "p99_ms": null,
+        "samples": 0
+      },
+      "too_far_ahead_errors": 0,
+      "metrics": {},
+      "ok": true
+    },
+    {
+      "iteration": 7,
+      "provider": "docker",
+      "started_at": 1789067467,
+      "finished_at": 1789067467,
+      "duration_s": 0,
+      "exit_code": 0,
+      "pytest": {
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "errors": 0
+      },
+      "rss_peak_mb": null,
+      "cpu_peak_pct": null,
+      "cpu_peak_per_node_pct": null,
+      "cpu_peak_per_node_core_pct": null,
+      "finalization_latency": {
+        "p50_ms": null,
+        "p95_ms": null,
+        "p99_ms": null,
+        "samples": 0
+      },
+      "too_far_ahead_errors": 0,
+      "metrics": {},
+      "ok": true
+    },
+    {
+      "iteration": 8,
+      "provider": "subprocess",
+      "started_at": 1789067467,
+      "finished_at": 1789067467,
+      "duration_s": 0,
+      "exit_code": 0,
+      "pytest": {
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "errors": 0
+      },
+      "rss_peak_mb": null,
+      "cpu_peak_pct": null,
+      "cpu_peak_per_node_pct": null,
+      "cpu_peak_per_node_core_pct": null,
+      "finalization_latency": {
+        "p50_ms": null,
+        "p95_ms": null,
+        "p99_ms": null,
+        "samples": 0
+      },
+      "too_far_ahead_errors": 0,
+      "metrics": {},
+      "ok": true
+    },
+    {
+      "iteration": 9,
+      "provider": "docker",
+      "started_at": 1789067467,
+      "finished_at": 1789067468,
+      "duration_s": 1,
+      "exit_code": 0,
+      "pytest": {
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "errors": 0
+      },
+      "rss_peak_mb": null,
+      "cpu_peak_pct": null,
+      "cpu_peak_per_node_pct": null,
+      "cpu_peak_per_node_core_pct": null,
+      "finalization_latency": {
+        "p50_ms": null,
+        "p95_ms": null,
+        "p99_ms": null,
+        "samples": 0
+      },
+      "too_far_ahead_errors": 0,
+      "metrics": {},
+      "ok": true
+    },
+    {
+      "iteration": 10,
+      "provider": "subprocess",
+      "started_at": 1789067468,
+      "finished_at": 1789067468,
+      "duration_s": 0,
+      "exit_code": 0,
+      "pytest": {
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "errors": 0
+      },
+      "rss_peak_mb": null,
+      "cpu_peak_pct": null,
+      "cpu_peak_per_node_pct": null,
+      "cpu_peak_per_node_core_pct": null,
+      "finalization_latency": {
+        "p50_ms": null,
+        "p95_ms": null,
+        "p99_ms": null,
+        "samples": 0
+      },
+      "too_far_ahead_errors": 0,
+      "metrics": {},
+      "ok": true
+    },
+    {
+      "iteration": 11,
+      "provider": "docker",
+      "started_at": 1789067468,
+      "finished_at": 1789067468,
+      "duration_s": 0,
+      "exit_code": 0,
+      "pytest": {
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "errors": 0
+      },
+      "rss_peak_mb": null,
+      "cpu_peak_pct": null,
+      "cpu_peak_per_node_pct": null,
+      "cpu_peak_per_node_core_pct": null,
+      "finalization_latency": {
+        "p50_ms": null,
+        "p95_ms": null,
+        "p99_ms": null,
+        "samples": 0
+      },
+      "too_far_ahead_errors": 0,
+      "metrics": {},
+      "ok": true
+    },
+    {
+      "iteration": 12,
+      "provider": "subprocess",
+      "started_at": 1789067468,
+      "finished_at": 1789067468,
+      "duration_s": 0,
+      "exit_code": 0,
+      "pytest": {
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "errors": 0
+      },
+      "rss_peak_mb": null,
+      "cpu_peak_pct": null,
+      "cpu_peak_per_node_pct": null,
+      "cpu_peak_per_node_core_pct": null,
+      "finalization_latency": {
+        "p50_ms": null,
+        "p95_ms": null,
+        "p99_ms": null,
+        "samples": 0
+      },
+      "too_far_ahead_errors": 0,
+      "metrics": {},
+      "ok": true
+    },
+    {
+      "iteration": 13,
+      "provider": "docker",
+      "started_at": 1789067468,
+      "finished_at": 1789067468,
+      "duration_s": 0,
+      "exit_code": 0,
+      "pytest": {
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "errors": 0
+      },
+      "rss_peak_mb": null,
+      "cpu_peak_pct": null,
+      "cpu_peak_per_node_pct": null,
+      "cpu_peak_per_node_core_pct": null,
+      "finalization_latency": {
+        "p50_ms": null,
+        "p95_ms": null,
+        "p99_ms": null,
+        "samples": 0
+      },
+      "too_far_ahead_errors": 0,
+      "metrics": {},
+      "ok": true
+    },
+    {
+      "iteration": 14,
+      "provider": "subprocess",
+      "started_at": 1789067468,
+      "finished_at": 1789067469,
+      "duration_s": 1,
+      "exit_code": 0,
+      "pytest": {
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "errors": 0
+      },
+      "rss_peak_mb": null,
+      "cpu_peak_pct": null,
+      "cpu_peak_per_node_pct": null,
+      "cpu_peak_per_node_core_pct": null,
+      "finalization_latency": {
+        "p50_ms": null,
+        "p95_ms": null,
+        "p99_ms": null,
+        "samples": 0
+      },
+      "too_far_ahead_errors": 0,
+      "metrics": {},
+      "ok": true
+    },
+    {
+      "iteration": 15,
+      "provider": "docker",
+      "started_at": 1789067469,
+      "finished_at": 1789067469,
+      "duration_s": 0,
+      "exit_code": 0,
+      "pytest": {
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "errors": 0
+      },
+      "rss_peak_mb": null,
+      "cpu_peak_pct": null,
+      "cpu_peak_per_node_pct": null,
+      "cpu_peak_per_node_core_pct": null,
+      "finalization_latency": {
+        "p50_ms": null,
+        "p95_ms": null,
+        "p99_ms": null,
+        "samples": 0
+      },
+      "too_far_ahead_errors": 0,
+      "metrics": {},
+      "ok": true
+    },
+    {
+      "iteration": 16,
+      "provider": "subprocess",
+      "started_at": 1789067469,
+      "finished_at": 1789067469,
+      "duration_s": 0,
+      "exit_code": 0,
+      "pytest": {
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "errors": 0
+      },
+      "rss_peak_mb": null,
+      "cpu_peak_pct": null,
+      "cpu_peak_per_node_pct": null,
+      "cpu_peak_per_node_core_pct": null,
+      "finalization_latency": {
+        "p50_ms": null,
+        "p95_ms": null,
+        "p99_ms": null,
+        "samples": 0
+      },
+      "too_far_ahead_errors": 0,
+      "metrics": {},
+      "ok": true
+    },
+    {
+      "iteration": 17,
+      "provider": "docker",
+      "started_at": 1789067469,
+      "finished_at": 1789067469,
+      "duration_s": 0,
+      "exit_code": 0,
+      "pytest": {
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "errors": 0
+      },
+      "rss_peak_mb": null,
+      "cpu_peak_pct": null,
+      "cpu_peak_per_node_pct": null,
+      "cpu_peak_per_node_core_pct": null,
+      "finalization_latency": {
+        "p50_ms": null,
+        "p95_ms": null,
+        "p99_ms": null,
+        "samples": 0
+      },
+      "too_far_ahead_errors": 0,
+      "metrics": {},
+      "ok": true
+    },
+    {
+      "iteration": 18,
+      "provider": "subprocess",
+      "started_at": 1789067470,
+      "finished_at": 1789067470,
+      "duration_s": 0,
+      "exit_code": 0,
+      "pytest": {
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "errors": 0
+      },
+      "rss_peak_mb": null,
+      "cpu_peak_pct": null,
+      "cpu_peak_per_node_pct": null,
+      "cpu_peak_per_node_core_pct": null,
+      "finalization_latency": {
+        "p50_ms": null,
+        "p95_ms": null,
+        "p99_ms": null,
+        "samples": 0
+      },
+      "too_far_ahead_errors": 0,
+      "metrics": {},
+      "ok": true
+    },
+    {
+      "iteration": 19,
+      "provider": "docker",
+      "started_at": 1789067470,
+      "finished_at": 1789067470,
+      "duration_s": 0,
+      "exit_code": 0,
+      "pytest": {
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "errors": 0
+      },
+      "rss_peak_mb": null,
+      "cpu_peak_pct": null,
+      "cpu_peak_per_node_pct": null,
+      "cpu_peak_per_node_core_pct": null,
+      "finalization_latency": {
+        "p50_ms": null,
+        "p95_ms": null,
+        "p99_ms": null,
+        "samples": 0
+      },
+      "too_far_ahead_errors": 0,
+      "metrics": {},
+      "ok": true
+    },
+    {
+      "iteration": 20,
+      "provider": "subprocess",
+      "started_at": 1789067470,
+      "finished_at": 1789067470,
+      "duration_s": 0,
+      "exit_code": 0,
+      "pytest": {
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "errors": 0
+      },
+      "rss_peak_mb": null,
+      "cpu_peak_pct": null,
+      "cpu_peak_per_node_pct": null,
+      "cpu_peak_per_node_core_pct": null,
+      "finalization_latency": {
+        "p50_ms": null,
+        "p95_ms": null,
+        "p99_ms": null,
+        "samples": 0
+      },
+      "too_far_ahead_errors": 0,
+      "metrics": {},
+      "ok": true
+    },
+    {
+      "iteration": 21,
+      "provider": "docker",
+      "started_at": 1789067470,
+      "finished_at": 1789067470,
+      "duration_s": 0,
+      "exit_code": 0,
+      "pytest": {
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "errors": 0
+      },
+      "rss_peak_mb": null,
+      "cpu_peak_pct": null,
+      "cpu_peak_per_node_pct": null,
+      "cpu_peak_per_node_core_pct": null,
+      "finalization_latency": {
+        "p50_ms": null,
+        "p95_ms": null,
+        "p99_ms": null,
+        "samples": 0
+      },
+      "too_far_ahead_errors": 0,
+      "metrics": {},
+      "ok": true
+    },
+    {
+      "iteration": 22,
+      "provider": "subprocess",
+      "started_at": 1789067470,
+      "finished_at": 1789067470,
+      "duration_s": 0,
+      "exit_code": 0,
+      "pytest": {
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "errors": 0
+      },
+      "rss_peak_mb": null,
+      "cpu_peak_pct": null,
+      "cpu_peak_per_node_pct": null,
+      "cpu_peak_per_node_core_pct": null,
+      "finalization_latency": {
+        "p50_ms": null,
+        "p95_ms": null,
+        "p99_ms": null,
+        "samples": 0
+      },
+      "too_far_ahead_errors": 0,
+      "metrics": {},
+      "ok": true
+    },
+    {
+      "iteration": 23,
+      "provider": "docker",
+      "started_at": 1789067471,
+      "finished_at": 1789067471,
+      "duration_s": 0,
+      "exit_code": 0,
+      "pytest": {
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "errors": 0
+      },
+      "rss_peak_mb": null,
+      "cpu_peak_pct": null,
+      "cpu_peak_per_node_pct": null,
+      "cpu_peak_per_node_core_pct": null,
+      "finalization_latency": {
+        "p50_ms": null,
+        "p95_ms": null,
+        "p99_ms": null,
+        "samples": 0
+      },
+      "too_far_ahead_errors": 0,
+      "metrics": {},
+      "ok": true
+    },
+    {
+      "iteration": 24,
+      "provider": "subprocess",
+      "started_at": 1789067471,
+      "finished_at": 1789067471,
+      "duration_s": 0,
+      "exit_code": 0,
+      "pytest": {
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "errors": 0
+      },
+      "rss_peak_mb": null,
+      "cpu_peak_pct": null,
+      "cpu_peak_per_node_pct": null,
+      "cpu_peak_per_node_core_pct": null,
+      "finalization_latency": {
+        "p50_ms": null,
+        "p95_ms": null,
+        "p99_ms": null,
+        "samples": 0
+      },
+      "too_far_ahead_errors": 0,
+      "metrics": {},
+      "ok": true
+    },
+    {
+      "iteration": 25,
+      "provider": "docker",
+      "started_at": 1789067471,
+      "finished_at": 1789067471,
+      "duration_s": 0,
+      "exit_code": 0,
+      "pytest": {
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "errors": 0
+      },
+      "rss_peak_mb": null,
+      "cpu_peak_pct": null,
+      "cpu_peak_per_node_pct": null,
+      "cpu_peak_per_node_core_pct": null,
+      "finalization_latency": {
+        "p50_ms": null,
+        "p95_ms": null,
+        "p99_ms": null,
+        "samples": 0
+      },
+      "too_far_ahead_errors": 0,
+      "metrics": {},
+      "ok": true
+    },
+    {
+      "iteration": 26,
+      "provider": "subprocess",
+      "started_at": 1789067471,
+      "finished_at": 1789067471,
+      "duration_s": 0,
+      "exit_code": 0,
+      "pytest": {
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "errors": 0
+      },
+      "rss_peak_mb": null,
+      "cpu_peak_pct": null,
+      "cpu_peak_per_node_pct": null,
+      "cpu_peak_per_node_core_pct": null,
+      "finalization_latency": {
+        "p50_ms": null,
+        "p95_ms": null,
+        "p99_ms": null,
+        "samples": 0
+      },
+      "too_far_ahead_errors": 0,
+      "metrics": {},
+      "ok": true
+    },
+    {
+      "iteration": 27,
+      "provider": "docker",
+      "started_at": 1789067471,
+      "finished_at": 1789067472,
+      "duration_s": 1,
+      "exit_code": 0,
+      "pytest": {
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "errors": 0
+      },
+      "rss_peak_mb": null,
+      "cpu_peak_pct": null,
+      "cpu_peak_per_node_pct": null,
+      "cpu_peak_per_node_core_pct": null,
+      "finalization_latency": {
+        "p50_ms": null,
+        "p95_ms": null,
+        "p99_ms": null,
+        "samples": 0
+      },
+      "too_far_ahead_errors": 0,
+      "metrics": {},
+      "ok": true
+    }
+  ]
+}

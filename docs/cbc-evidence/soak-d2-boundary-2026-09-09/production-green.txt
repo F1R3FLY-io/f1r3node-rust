@@ -1,0 +1,2 @@
+PASS: Guardian death during the boundary probe prevented admission and produced a protection failure.
+Evidence: /home/bf_spark/soak-evidence/f1r3node-rust/d2-boundary-rgLfbV0o/production-green

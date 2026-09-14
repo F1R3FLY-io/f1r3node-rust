@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == kill || " $* " == *' down '* ]]; then
+    printf '%s\n' "$*" >>"$SOAK_REAL_EVIDENCE/rejected-stop.txt"
+    exit 42
+fi
+if [[ "${1:-}" == compose && " $* " == *' up '* ]]; then
+    /usr/bin/docker "$@"
+    /usr/bin/docker ps -q --no-trunc --filter label=com.docker.compose.project=soak-bench >>"$SOAK_REAL_EVIDENCE/$SOAK_FIXTURE_PHASE-created-ids.txt"
+    exit 0
+fi
+exec /usr/bin/docker "$@"

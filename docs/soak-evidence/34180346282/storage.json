@@ -1,0 +1,160 @@
+{
+  "unit": "bytes",
+  "artifact_uncompressed_bytes": 14083145744,
+  "artifact_files": 652,
+  "primary_node_csv_bytes": 5241345094,
+  "failure_archive_bytes": 8813121294,
+  "failure_archive_files": 336,
+  "failure_archive_node_log_bytes": 8116018608,
+  "failure_archive_csv_matches": [
+    {
+      "path": "iteration-00042-subprocess/log-archive/087e8af6/node-metrics-timeseries.csv",
+      "bytes": 32792485,
+      "identical_primary_paths": [
+        "iteration-00007-docker/node-metrics-timeseries.csv"
+      ]
+    },
+    {
+      "path": "iteration-00042-subprocess/log-archive/2325eefa/node-metrics-timeseries.csv",
+      "bytes": 32842611,
+      "identical_primary_paths": [
+        "iteration-00025-docker/node-metrics-timeseries.csv"
+      ]
+    },
+    {
+      "path": "iteration-00042-subprocess/log-archive/2774449c/node-metrics-timeseries.csv",
+      "bytes": 32605611,
+      "identical_primary_paths": [
+        "iteration-00027-docker/node-metrics-timeseries.csv"
+      ]
+    },
+    {
+      "path": "iteration-00042-subprocess/log-archive/2df0d328/node-metrics-timeseries.csv",
+      "bytes": 32098591,
+      "identical_primary_paths": [
+        "iteration-00003-docker/node-metrics-timeseries.csv"
+      ]
+    },
+    {
+      "path": "iteration-00042-subprocess/log-archive/2f04d421/node-metrics-timeseries.csv",
+      "bytes": 33099144,
+      "identical_primary_paths": [
+        "iteration-00039-docker/node-metrics-timeseries.csv"
+      ]
+    },
+    {
+      "path": "iteration-00042-subprocess/log-archive/357240a2/node-metrics-timeseries.csv",
+      "bytes": 32945730,
+      "identical_primary_paths": [
+        "iteration-00023-docker/node-metrics-timeseries.csv"
+      ]
+    },
+    {
+      "path": "iteration-00042-subprocess/log-archive/5395c5f3/node-metrics-timeseries.csv",
+      "bytes": 32954375,
+      "identical_primary_paths": [
+        "iteration-00011-docker/node-metrics-timeseries.csv"
+      ]
+    },
+    {
+      "path": "iteration-00042-subprocess/log-archive/5d6d2bfb/node-metrics-timeseries.csv",
+      "bytes": 33601183,
+      "identical_primary_paths": [
+        "iteration-00019-docker/node-metrics-timeseries.csv"
+      ]
+    },
+    {
+      "path": "iteration-00042-subprocess/log-archive/605319aa/node-metrics-timeseries.csv",
+      "bytes": 33096716,
+      "identical_primary_paths": [
+        "iteration-00013-docker/node-metrics-timeseries.csv"
+      ]
+    },
+    {
+      "path": "iteration-00042-subprocess/log-archive/68b38209/node-metrics-timeseries.csv",
+      "bytes": 32610422,
+      "identical_primary_paths": [
+        "iteration-00009-docker/node-metrics-timeseries.csv"
+      ]
+    },
+    {
+      "path": "iteration-00042-subprocess/log-archive/7a5b8090/node-metrics-timeseries.csv",
+      "bytes": 32424920,
+      "identical_primary_paths": [
+        "iteration-00015-docker/node-metrics-timeseries.csv"
+      ]
+    },
+    {
+      "path": "iteration-00042-subprocess/log-archive/808f5bd3/node-metrics-timeseries.csv",
+      "bytes": 33107156,
+      "identical_primary_paths": [
+        "iteration-00031-docker/node-metrics-timeseries.csv"
+      ]
+    },
+    {
+      "path": "iteration-00042-subprocess/log-archive/89d16d0d/node-metrics-timeseries.csv",
+      "bytes": 33108515,
+      "identical_primary_paths": [
+        "iteration-00005-docker/node-metrics-timeseries.csv"
+      ]
+    },
+    {
+      "path": "iteration-00042-subprocess/log-archive/95910c6c/node-metrics-timeseries.csv",
+      "bytes": 32097439,
+      "identical_primary_paths": [
+        "iteration-00041-docker/node-metrics-timeseries.csv"
+      ]
+    },
+    {
+      "path": "iteration-00042-subprocess/log-archive/9bd84666/node-metrics-timeseries.csv",
+      "bytes": 32096220,
+      "identical_primary_paths": [
+        "iteration-00021-docker/node-metrics-timeseries.csv"
+      ]
+    },
+    {
+      "path": "iteration-00042-subprocess/log-archive/a3fa1da1/node-metrics-timeseries.csv",
+      "bytes": 33690688,
+      "identical_primary_paths": [
+        "iteration-00033-docker/node-metrics-timeseries.csv"
+      ]
+    },
+    {
+      "path": "iteration-00042-subprocess/log-archive/a6eb9960/node-metrics-timeseries.csv",
+      "bytes": 33362105,
+      "identical_primary_paths": [
+        "iteration-00037-docker/node-metrics-timeseries.csv"
+      ]
+    },
+    {
+      "path": "iteration-00042-subprocess/log-archive/c617f8fc/node-metrics-timeseries.csv",
+      "bytes": 32717517,
+      "identical_primary_paths": [
+        "iteration-00017-docker/node-metrics-timeseries.csv"
+      ]
+    },
+    {
+      "path": "iteration-00042-subprocess/log-archive/cf37aef0/node-metrics-timeseries.csv",
+      "bytes": 33102801,
+      "identical_primary_paths": [
+        "iteration-00001-docker/node-metrics-timeseries.csv"
+      ]
+    },
+    {
+      "path": "iteration-00042-subprocess/log-archive/f2f44750/node-metrics-timeseries.csv",
+      "bytes": 32878665,
+      "identical_primary_paths": [
+        "iteration-00035-docker/node-metrics-timeseries.csv"
+      ]
+    },
+    {
+      "path": "iteration-00042-subprocess/log-archive/fc0afcb9/node-metrics-timeseries.csv",
+      "bytes": 33787916,
+      "identical_primary_paths": [
+        "iteration-00029-docker/node-metrics-timeseries.csv"
+      ]
+    }
+  ],
+  "passive_argument_bytes_including_nul": 164253,
+  "limitation": "File lengths do not measure filesystem allocation or total writer growth."
+}

@@ -1,0 +1,46 @@
+--- [LOCAL_HOME]/soak-evidence/f1r3node-rust/d2-crash-stop-U2VSGFv7/final-real/run-green.sh	2026-09-11 07:12:23.989255328 -0700
++++ [EVIDENCE_ROOT]/real-system/run-green.sh	2026-09-11 09:04:54.942312406 -0700
+@@ -38,32 +38,32 @@
+ trap 'exit 124' TERM
+ (cd "$RAW" && find candidate -type f -print0 | sort -z | xargs -0 sha256sum >green-inputs.sha256 && sha256sum remote-green.sh >>green-inputs.sha256 && tar --format=ustar -czf green-inputs.tar.gz candidate remote-green.sh green-inputs.sha256)
+ sha256sum "$RAW/green-inputs.tar.gz" >"$RAW/green-archive.sha256"
+-timeout --kill-after=5 120 scp -F "$RUNNER/ssh-config" "$RAW/green-inputs.tar.gz" d2-runner:[SSH_HOME]/b38-green.tar.gz >"$RAW/green-transfer.txt" 2>"$RAW/green-transfer.stderr"
+-timeout --kill-after=5 60 ssh -F "$RUNNER/ssh-config" d2-runner 'sha256sum [SSH_HOME]/b38-green.tar.gz' >"$RAW/remote-green.sha256"
++timeout --kill-after=5 120 scp -F "$RUNNER/ssh-config" "$RAW/green-inputs.tar.gz" d2-runner:[SSH_HOME]/b40-green.tar.gz >"$RAW/green-transfer.txt" 2>"$RAW/green-transfer.stderr"
++timeout --kill-after=5 60 ssh -F "$RUNNER/ssh-config" d2-runner 'sha256sum [SSH_HOME]/b40-green.tar.gz' >"$RAW/remote-green.sha256"
+ [[ "$(awk '{print $1}' "$RAW/green-archive.sha256")" == "$(awk '{print $1}' "$RAW/remote-green.sha256")" ]]
+ timeout --kill-after=5 60 ssh -F "$RUNNER/ssh-config" d2-runner 'bash -s' >"$RAW/green-extract.txt" 2>"$RAW/green-extract.stderr" <<'REMOTE'
+ set -euo pipefail
+-sudo test ! -e [RUNNER_HOME]/d2/b38/candidate
+-sudo install -d -m 0750 -o runner -g runner [RUNNER_HOME]/d2/b38
+-sudo install -m 0600 -o runner -g runner [SSH_HOME]/b38-green.tar.gz [RUNNER_HOME]/d2/b38-green.tar.gz
+-sudo -u runner tar --no-same-owner --no-same-permissions -xzf [RUNNER_HOME]/d2/b38-green.tar.gz -C [RUNNER_HOME]/d2/b38
+-sudo -u runner bash -c 'cd [RUNNER_HOME]/d2/b38 && sha256sum --quiet -c green-inputs.sha256'
++sudo test ! -e [RUNNER_ROOT]/candidate
++sudo install -d -m 0750 -o runner -g runner [RUNNER_ROOT]
++sudo install -m 0600 -o runner -g runner [SSH_HOME]/b40-green.tar.gz [RUNNER_ROOT]-green.tar.gz
++sudo -u runner tar --no-same-owner --no-same-permissions -xzf [RUNNER_ROOT]-green.tar.gz -C [RUNNER_ROOT]
++sudo -u runner bash -c 'cd [RUNNER_ROOT] && sha256sum --quiet -c green-inputs.sha256'
+ REMOTE
+ IID=$(<"$RUNNER/instance-id.txt")
+ [[ "$IID" =~ ^ocid1.instance.oc1.us-sanjose-1.[a-z0-9]+$ ]]
+ status=0
+-timeout --signal=TERM --kill-after=10 1000 ssh -F "$RUNNER/ssh-config" d2-runner "sudo -u runner env SOAK_REAL_DOCKER_ACK='$IID' bash [RUNNER_HOME]/d2/b38/remote-green.sh" >"$RAW/remote-green.txt" 2>"$RAW/remote-green.stderr" || status=$?
++timeout --signal=TERM --kill-after=10 1000 ssh -F "$RUNNER/ssh-config" d2-runner "sudo -u runner env SOAK_REAL_DOCKER_ACK='$IID' bash [RUNNER_ROOT]/remote-green.sh" >"$RAW/remote-green.txt" 2>"$RAW/remote-green.stderr" || status=$?
+ printf '%s\n' "$status" >"$RAW/remote-green-exit.txt"
+ printf 'Remote GREEN batch exit: %s. Retrieve evidence before termination.\n' "$status"
+ timeout --kill-after=5 120 ssh -F "$RUNNER/ssh-config" d2-runner 'sudo -u runner bash -s' >"$RAW/archive.txt" 2>"$RAW/archive.stderr" <<'REMOTE'
+ set -euo pipefail
+-cd [RUNNER_HOME]/d2/b38
++cd [RUNNER_ROOT]
+ find results -type f -print0 | sort -z >regular-files.nul
+ tar --format=ustar --null --no-recursion -czf results.tar.gz -T regular-files.nul
+ sha256sum results.tar.gz
+ REMOTE
+-timeout --kill-after=5 90 ssh -F "$RUNNER/ssh-config" d2-runner 'sudo install -m 0600 -o ubuntu -g ubuntu [RUNNER_HOME]/d2/b38/results.tar.gz [SSH_HOME]/b38-results.tar.gz' >"$RAW/retrieve-prepare.txt" 2>"$RAW/retrieve-prepare.stderr"
+-timeout --kill-after=5 180 scp -F "$RUNNER/ssh-config" d2-runner:[SSH_HOME]/b38-results.tar.gz "$RAW/results.tar.gz" >"$RAW/retrieve.txt" 2>"$RAW/retrieve.stderr"
++timeout --kill-after=5 90 ssh -F "$RUNNER/ssh-config" d2-runner 'sudo install -m 0600 -o ubuntu -g ubuntu [RUNNER_ROOT]/results.tar.gz [SSH_HOME]/b40-results.tar.gz' >"$RAW/retrieve-prepare.txt" 2>"$RAW/retrieve-prepare.stderr"
++timeout --kill-after=5 180 scp -F "$RUNNER/ssh-config" d2-runner:[SSH_HOME]/b40-results.tar.gz "$RAW/results.tar.gz" >"$RAW/retrieve.txt" 2>"$RAW/retrieve.stderr"
+ [[ "$(sha256sum "$RAW/results.tar.gz" | awk '{print $1}')" == "$(awk '{print $1}' "$RAW/archive.txt")" ]]
+ ruby -rjson -rzlib -rrubygems/package -rdigest - "$RAW" >"$RAW/archive-audit.txt" <<'RUBY'
+ root=ARGV.fetch(0)

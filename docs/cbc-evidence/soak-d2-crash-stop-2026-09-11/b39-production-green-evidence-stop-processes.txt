@@ -1,0 +1,4 @@
+    PID    PPID STAT COMMAND
+      1       0 Ss   bash /case/test.sh --inside
+     13       1 S    bash /case/test.sh --inside
+    952      13 R    ps -eo pid,ppid,stat,args

@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -euo pipefail
+real="${SOAK_DOCKER_REAL:?}"
+owner="${SOAK_WRITER_OWNER:?}"
+prefer="${SOAK_DOCKER_OOM_PREFERRED:?}"
+[[ "$prefer" == 0 || "$prefer" == 1 ]] || exit 2
+[[ "$owner" =~ ^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$ ]] || exit 2
+original=("$@")
+case "${1:-}" in
+run | create)
+    command="$1"
+    shift
+    preference=()
+    [[ "$prefer" == 0 ]] || preference=(--oom-score-adj 1000)
+    exec "$real" "$command" --label "io.f1r3fly.soak.owner=$owner" "${preference[@]}" "$@"
+    ;;
+compose)
+    prefix=(compose)
+    shift
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+        -f | --file | -p | --project-name | --project-directory | --env-file | --profile | --ansi | --progress)
+            [[ $# -ge 2 ]] || exit 2
+            prefix+=("$1" "$2")
+            shift 2
+            ;;
+        --file=* | --project-name=* | --project-directory=* | --env-file=* | --profile=* | --ansi=* | --progress=*)
+            prefix+=("$1")
+            shift
+            ;;
+        up | create)
+            labels="$(mktemp "${SOAK_DOCKER_OWNER_DIR:?}/labels.XXXXXXXX.json")"
+            trap 'rm -f "$labels"' EXIT
+            "$real" "${prefix[@]}" config --format json |
+                jq --arg owner "$owner" --argjson prefer "$prefer" '{services: (.services | with_entries(.value = ({labels: {"io.f1r3fly.soak.owner": $owner}} + (if $prefer == 1 then {oom_score_adj: 1000} else {} end))))}' >"$labels"
+            "$real" "${prefix[@]}" -f "$labels" "$@"
+            exit "$?"
+            ;;
+        -*) exit 2 ;;
+        *) break ;;
+        esac
+    done
+    ;;
+esac
+exec "$real" "${original[@]}"

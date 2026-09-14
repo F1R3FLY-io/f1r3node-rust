@@ -1,0 +1,35 @@
+Soak host protection: node RSS ceiling=0MB; host free floor=0MB; disk free floor=0MB (hygiene band +4096MB)
+repo/scripts/run-merge-recovery-soak.sh: line 1770:    48 Killed                  ( export SOAK_WRITER_OWNER DISK_STOP_SECONDS; export -f stop_owned_host_writers stop_node_writer_commands stop_node_writers; exec python3 - "$$" "$directory" "$OUTPUT_DIR" <<'PY'
+import os
+from pathlib import Path
+import select
+import subprocess
+import sys
+
+os.setsid()
+parent = os.pidfd_open(int(sys.argv[1]), 0)
+poller = select.poll()
+poller.register(parent, select.POLLIN)
+directory = Path(sys.argv[2])
+(directory / "ready").write_text(str(os.getpid()) + "\n")
+poller.poll()
+os.close(parent)
+try:
+    with (directory / "handled-exit").open("rb") as source:
+        handled = source.read(9) == b"handled\n"
+except OSError:
+    handled = False
+if handled:
+    sys.exit(0)
+status = subprocess.run(["bash", "-c", "stop_node_writers -q kill"]).returncode
+if status != 0:
+    try:
+        (Path(sys.argv[3]) / "writer-stop-failure.txt").write_text(
+            "Writer termination is unconfirmed after the driver exited.\n"
+        )
+    except OSError:
+        pass
+(directory / "exit-code.txt").write_text(str(status) + "\n")
+sys.exit(status)
+PY
+ ) > "$directory/monitor.log" 2>&1

@@ -1,0 +1,2 @@
+FAIL: Stalled stop commands prevented failure publication within the fixture deadline.
+Evidence: /home/bf_spark/soak-evidence/f1r3node-rust/d2-stop-LVbwcGyM/production-red-confirmed

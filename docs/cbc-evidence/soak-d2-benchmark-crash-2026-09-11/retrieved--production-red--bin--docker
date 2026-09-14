@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == compose && " $* " == *' up '* ]]; then
+    ps -o pgid= -p "$PPID" | tr -d ' ' >"$SOAK_REAL_EVIDENCE/$SOAK_FIXTURE_PHASE-client-group.txt"
+    ps -o sid= -p "$PPID" | tr -d ' ' >"$SOAK_REAL_EVIDENCE/$SOAK_FIXTURE_PHASE-client-session.txt"
+    /usr/bin/docker "$@"
+    /usr/bin/docker ps -q --no-trunc --filter label=com.docker.compose.project=soak-bench >>"$SOAK_REAL_EVIDENCE/$SOAK_FIXTURE_PHASE-created-ids.txt"
+    exit 0
+fi
+exec /usr/bin/docker "$@"

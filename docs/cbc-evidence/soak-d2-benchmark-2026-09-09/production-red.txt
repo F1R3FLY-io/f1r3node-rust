@@ -1,0 +1,2 @@
+FAIL: A retained guardian breach allowed the opening benchmark to start.
+Evidence: [EVIDENCE_ROOT]/d2-benchmark-6twD3cJY/production-red

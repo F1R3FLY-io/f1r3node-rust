@@ -1,0 +1,1 @@
+host_protection_breach: recovered guardian record: The crash monitor exited during iteration execution. Workload termination is unconfirmed.

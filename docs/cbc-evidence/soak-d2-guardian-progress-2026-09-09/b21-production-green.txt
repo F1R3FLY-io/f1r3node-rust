@@ -1,0 +1,2 @@
+PASS: The missing guardian progress stopped the active iteration and preserved failure before fixture release.
+Evidence: [EVIDENCE_ROOT]/d2-guardian-progress-k69aoiLY/b21/production-green

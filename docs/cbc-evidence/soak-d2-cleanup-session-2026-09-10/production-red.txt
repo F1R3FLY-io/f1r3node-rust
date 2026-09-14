@@ -1,0 +1,2 @@
+FAIL: Disk hygiene deleted an unowned session directory while its writer remained active.
+Evidence: [EVIDENCE_ROOT]/d2-cleanup-session-EjFge6F9/production-red

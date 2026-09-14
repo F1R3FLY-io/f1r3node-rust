@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+printf '7000\n' >>"$SOAK_REAL_EVIDENCE/probe-samples.txt"
+printf 'Filesystem 1M-blocks Used Available Capacity Mounted on\n/dev/fixture 47000 40000 7000 85%% /\n'

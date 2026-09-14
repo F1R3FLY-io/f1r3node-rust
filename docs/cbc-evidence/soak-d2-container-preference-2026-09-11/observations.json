@@ -1,0 +1,46 @@
+{
+  "real_cases": {
+    "b36-red-run": 1,
+    "b36-red-compose": 1,
+    "b36-green-run": 0,
+    "b36-green-compose": 0,
+    "b35-characterization": 0,
+    "b35-current": 0,
+    "b30-run": 0,
+    "b30-compose": 0,
+    "b31": 0,
+    "b27": 0,
+    "b28": 0,
+    "b29": 0
+  },
+  "preferences": {
+    "red-run": [
+      0,
+      1000,
+      1000
+    ],
+    "red-compose": [
+      0,
+      1000,
+      1000
+    ],
+    "green-run": [
+      0,
+      0,
+      1000
+    ],
+    "green-compose": [
+      0,
+      0,
+      1000
+    ]
+  },
+  "benchmark_restart_counters": [
+    0,
+    1,
+    1
+  ],
+  "disabled_default_preference": 0,
+  "archive_members": 421,
+  "verified_runtime_inputs": 211
+}

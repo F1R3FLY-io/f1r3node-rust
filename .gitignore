@@ -62,6 +62,17 @@ run-local/data/
 # Logs
 *.log
 
+# CbC evidence packages: keep the manifest, README, and cycle transcripts.
+# Full-suite reruns are reproducible from the committed configs and the pinned TLC jar.
+# A package-local `!*.log` rule overrides the log patterns below; the package builder
+# must stop emitting it and stop listing reruns as published files for these to apply.
+docs/cbc-evidence/*/composed*
+docs/cbc-evidence/*/final*
+!docs/cbc-evidence/*/final-real.txt
+docs/cbc-evidence/*/supporting*
+docs/cbc-evidence/*/emergency*
+docs/cbc-evidence/*/tlc-*.log
+
 # Aider
 .aider*
 

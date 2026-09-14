@@ -1,0 +1,14 @@
+diff --git a/scripts/run-merge-recovery-soak.sh b/scripts/run-merge-recovery-soak.sh
+index c62c0fe92..29564e069 100755
+--- a/scripts/run-merge-recovery-soak.sh
++++ b/scripts/run-merge-recovery-soak.sh
+@@ -1077,6 +1077,9 @@ run_bench_segment() {
+ 	BENCHMARK_PID=$!
+ 	local interrupted=0
+ 	while kill -0 "$BENCHMARK_PID" 2>/dev/null; do
++		if ! jobs -pr | grep -Fxq "$CRASH_MONITOR_PID" && [ ! -s "$HOST_GUARDIAN_BREACH" ]; then
++			printf 'The crash monitor exited during benchmark execution. Workload termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
++		fi
+ 		if [ -n "$HOST_GUARDIAN_PID" ] && ! kill -0 "$HOST_GUARDIAN_PID" 2>/dev/null && [ ! -s "$HOST_GUARDIAN_BREACH" ]; then
+ 			printf 'The host guardian exited during benchmark execution. Workload termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
+ 		fi

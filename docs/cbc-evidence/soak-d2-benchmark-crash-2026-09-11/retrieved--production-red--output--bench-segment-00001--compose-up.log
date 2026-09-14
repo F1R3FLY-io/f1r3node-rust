@@ -1,0 +1,15 @@
+ Image busybox@sha256:fc6dddc4c44b1bfe37f41cae8e67d1693828e8f42a91862816d7953e2c9d3f23 Pulling 
+ f4255029a25b Pulling fs layer 0B
+ f4255029a25b Download complete 0B
+ f4255029a25b Extracting 1B
+ f4255029a25b Extracting 1B
+ f4255029a25b Extracting 1B
+ f4255029a25b Extracting 1B
+ f4255029a25b Extracting 1B
+ f4255029a25b Pull complete 0B
+ d5882b4ad448 Download complete 0B
+ Image busybox@sha256:fc6dddc4c44b1bfe37f41cae8e67d1693828e8f42a91862816d7953e2c9d3f23 Pulled 
+ Container soak-bench-writer-1 Creating 
+ Container soak-bench-writer-1 Created 
+ Container soak-bench-writer-1 Starting 
+ Container soak-bench-writer-1 Started 

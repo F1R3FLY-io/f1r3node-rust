@@ -1,0 +1,59 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 46 and seed -6584762438932477610 with 2 workers on 20 cores with 491MB heap and 64MB offheap memory (Linux 6.17.0-1032-nvidia aarch64, Private Build 1.8.0_502 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /home/bf_spark/src/F1r3fly/f1r3node-rust/formal/tlaplus/soak_disk/MC_DiskDiagnosticDeadline_per_root_pre_fix.tla
+Parsing file /home/bf_spark/src/F1r3fly/f1r3node-rust/formal/tlaplus/soak_disk/DiskDiagnosticDeadline.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/TLC.tla
+Parsing file /tmp/Sequences.tla
+Parsing file /tmp/FiniteSets.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module DiskDiagnosticDeadline
+Semantic processing of module MC_DiskDiagnosticDeadline_per_root_pre_fix
+Starting... (2026-09-09 04:43:27)
+Computing initial states...
+Computed 2 initial states...
+Finished computing initial states: 3 distinct states generated at 2026-09-09 04:43:28.
+Error: Invariant AttributionWithinBudget is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ elapsed = 0
+/\ rootsLeft = 1
+/\ freeMiB = 2
+/\ phase = "attribution"
+
+State 2: <Tick line 15, col 5 to line 20, col 26 of module DiskDiagnosticDeadline>
+/\ elapsed = 1
+/\ rootsLeft = 1
+/\ freeMiB = 0
+/\ phase = "attribution"
+
+The coverage statistics at 2026-09-09 04:43:28
+<Init line 8, col 1 to line 8, col 4 of module DiskDiagnosticDeadline>: 3:3
+  line 11, col 8 to line 11, col 31 of module DiskDiagnosticDeadline: 1
+  line 12, col 8 to line 12, col 18 of module DiskDiagnosticDeadline: 3
+<Tick line 14, col 1 to line 14, col 4 of module DiskDiagnosticDeadline>: 2:5
+  line 15, col 8 to line 15, col 28 of module DiskDiagnosticDeadline: 4
+  |line 15, col 8 to line 15, col 12 of module DiskDiagnosticDeadline: 3
+  line 16, col 8 to line 16, col 18 of module DiskDiagnosticDeadline: 1
+  |line 16, col 8 to line 16, col 14 of module DiskDiagnosticDeadline: 3
+  line 17, col 8 to line 17, col 29 of module DiskDiagnosticDeadline: 1
+  |line 17, col 19 to line 17, col 29 of module DiskDiagnosticDeadline: 3
+  line 18, col 8 to line 18, col 30 of module DiskDiagnosticDeadline: 3
+  line 19, col 8 to line 19, col 83 of module DiskDiagnosticDeadline: 3
+  |line 19, col 17 to line 19, col 83 of module DiskDiagnosticDeadline: 5
+  line 20, col 8 to line 20, col 26 of module DiskDiagnosticDeadline: 3
+<CompleteRoot line 22, col 1 to line 22, col 12 of module DiskDiagnosticDeadline>: 0:0
+  line 25, col 8 to line 25, col 33 of module DiskDiagnosticDeadline: 0
+  line 26, col 8 to line 26, col 64 of module DiskDiagnosticDeadline: 0
+  line 27, col 8 to line 27, col 37 of module DiskDiagnosticDeadline: 0
+<TypeOK line 32, col 1 to line 32, col 6 of module DiskDiagnosticDeadline>
+  line 33, col 5 to line 36, col 23 of module DiskDiagnosticDeadline: 5
+<AttributionWithinBudget line 38, col 1 to line 38, col 23 of module DiskDiagnosticDeadline>
+  line 38, col 28 to line 38, col 63 of module DiskDiagnosticDeadline: 5
+End of statistics.
+5 states generated, 5 distinct states found, 1 states left on queue.
+The depth of the complete state graph search is 2.
+Finished in 03s at (2026-09-09 04:43:28)

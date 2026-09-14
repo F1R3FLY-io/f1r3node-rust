@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "claim_id": "CLAIM-SOAK-GATE-001",
+  "claim_status": "pending",
+  "cycle": "G0/B3",
+  "base_commit": "43af06dab41ddf81b8dd1fcc5cf9e1303027aab7",
+  "recorded_at": "2026-09-08T13:17:40Z",
+  "candidate_identity": "working-tree-content-digests",
+  "source_sha256": {
+    "scripts/ci/test-soak-claim-inventory.sh": "dbd16e78ab45353585a3beff0942141fd9c6ce9a1f45dccc9392e790b0fb165e",
+    "docs/claims/soak-claim-inventory.json": "ed3ae9cd290e0f19a4c38523bbbd0beb53d48062f2e7a348660d6c4cdfc122a5",
+    ".github/workflows/ci.yml": "5e73cf64ac529828ca1871959e60f644118766d4493b3c59647f4c24b053588c",
+    "docs/claims/soak-formal-gate.md": "6356b7f25fcfec4050f1637b9fad6380ce410a7587fd7a55400c2a73119ab9f1",
+    "docs/plans/soak-recurrence-prevention-2026-09-08.md": "00ff7b8bc57caf3d3aea258625cc3e0ab15aecaf224a0860c01690567ca407e1",
+    "docs/tdd-plans/soak-gates-2026-09-08.md": "c0dc007aaf1c594a4a35e85706675fee6fa754479c6a55c8a6fd384536cf90b1",
+    "docs/work-logs/task-soak-disk-hygiene-stop-2026-09-08T05-06Z.md": "58e3bec31dd5a990211459f421b14de39e007203bb51ee2654f4f5cf394425e6",
+    "docs/cbc-evidence/scripts-ci-test-soak-claim-inventory-sh.md": "663aafccdb426193e47a64f9e1cdb4ee58bf10dd5e04cac1e00e348a8fa774bc"
+  },
+  "red": {
+    "command": "bash scripts/ci/test-soak-claim-inventory.sh",
+    "exit_code": 1,
+    "log": "red.log",
+    "classification": "missing-required-inventory",
+    "production_failure": false
+  },
+  "green": {
+    "command": "bash scripts/ci/test-soak-claim-inventory.sh",
+    "exit_code": 0,
+    "log": "green.log",
+    "authority": "inventory-contract-only"
+  },
+  "rejected_records": {
+    "count": 10,
+    "log": "rejection-checks.log",
+    "command_template": "bash scripts/ci/test-soak-claim-inventory.sh <altered-inventory.json>",
+    "scope": "One inventory-contract check with altered public input records."
+  },
+  "regression_logs": [
+    "b1-regression.log",
+    "b2-regression.log",
+    "workflow-security.log",
+    "release-workflows.log",
+    "release-gates.log"
+  ],
+  "hosted_evidence": "hosted-observation.json",
+  "evidence_sha256": {
+    "b1-regression.log": "7c164485b09885d34fb6fa5cad90ff4c6bab602d8e04d2fc701fb2d620ea16ac",
+    "b2-regression.log": "5bf9a0d60c04a9d56eb1eb237609c5639bec78b1bb44e905e72def58e8a55bc7",
+    "dev-required-checks.json": "c104ef2dce9c1ec7e6b4aecc78e2971f2a7de655e448bfa282e4d26870362de1",
+    "green.log": "a25059e56410a6f6144528b6c9c6b76b5271049619efc354d1bbe6783ac3d5e9",
+    "hosted-artifacts.json": "e110ae3fd6a077aa2a5de3e2b1ea1ca06dc4c00dba3616c4d75446ac8b8933f4",
+    "hosted-job.json": "a0a8e22b55f123b1fef0dd32f03ed79c547006368494667a75ce69efc3e5f48c",
+    "hosted-observation.json": "0c28cb6b5f83a005845153f0edc28fbc069d7fb85822b643f6faa9afd55927f6",
+    "hosted-run.json": "1b7769b7164eba9653a08080c0cc1f5e689a346012f93e2ca3c0f3405217ee32",
+    "red.exit": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+    "red.log": "644b358bc3a6913dc12761b05510b1ee60dd2b9720ca4447d6cfb465ba4d8f3a",
+    "rejection-checks.log": "0b1bcc931d9ef93e90156fc2446994410d340b6ca546bb17477069e5fa2580e3",
+    "release-gates.log": "cfe6567acc34cb3ac6b04d1b1fc407615684a85d34e48f05d93777dece12ae2b",
+    "release-workflows.log": "a55ff24e1452a38de29ad829c85bbb561ac396d848ec6526a97b394f6e16a82f",
+    "tlc-carrier_index-MC_CarrierIndex.log": "8830d18c8b4df3e2ab2bd5469e07275c1599701776fcc0ccaea49e53c56cef7a",
+    "tlc-carrier_index-MC_CarrierIndex_dag_first_pre_fix.log": "bc3efd682bde71f944dd810d3920480f79bf96ee611e0144625bef0a16761ec4",
+    "tlc-carrier_index-MC_CarrierIndex_read_failure_pre_fix.log": "0a53c3af73068820850076408449e054288163582f2a0fc93f3743bb2226b03a",
+    "tlc-replay_liveness-MC_ReplayHotLoop.log": "dba9cdcb9ea16f449a848d367cd07a303cb13c35960696cc039359fb53ed7ad3",
+    "workflow-security.log": "58aaa9d3aa8ec252a7e93ba60dea09172058b7c4e30e5a36e54a8b57657424ab"
+  },
+  "open_obligations": [
+    "Required-check enforcement and complete acceptance identity remain unconfirmed.",
+    "The new B3 CI step has not run on a hosted candidate.",
+    "The inventory checker has no formal discharge.",
+    "No production finalization or disk resource repair was verified in this cycle.",
+    "CLAIM-FINALITY-002 remains pending. CLAIM-SOAK-001 remains proposed and unratified."
+  ],
+  "revalidation": {
+    "recorded_at": "2026-09-08T13:21:29Z",
+    "reason": "The work log now records the completed soak and its uninspected artifact.",
+    "inventory_exit_code": 0,
+    "green_log_unchanged": true
+  }
+}

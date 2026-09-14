@@ -1,0 +1,1 @@
+PASS: The record check refuses an untrusted ancestor, a symlinked ancestor, and an oversized record, and admits through a root-owned chain.

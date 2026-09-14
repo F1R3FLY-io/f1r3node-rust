@@ -1,0 +1,166 @@
+{
+  "schema_version": 1,
+  "role": "incident-inspection",
+  "recorded_at": "2026-09-08T14:27:54Z",
+  "authority": "observations-and-file-integrity-only",
+  "run_id": 34180346282,
+  "run_attempt": 1,
+  "artifact_id": 10057623626,
+  "workflow_control_sha": "be2324661e474bba0cd0f44a8c06864f69f7d0fb",
+  "tested_node_sha": "0f5d2b7414786cd27b8a686ca636485c35a5edce",
+  "harness_sha": "0fb633729a22f600d2c2de4c8fdc3b1f57e9ecb6",
+  "image_build_manifest_digest": "sha256:3b10aa41e4adebdf2fc7efe6315f962a8a7d08e87d51c1f53d2d6861aeef0d3e",
+  "image_build_index_digest": "sha256:483727742825364a9a943b780db9c87ffec3f8c8f63e7a4a079108df8b4e5820",
+  "subprocess_binary_sha256": null,
+  "raw_directory": "target/soak-evidence/34180346282/attempt-1",
+  "archive_backup_directory": "/home/bf_spark/soak-evidence/f1r3node-rust/34180346282/attempt-1",
+  "inputs": {
+    "archive.zip": {
+      "bytes": 851355201,
+      "sha256": "3b25041120055e32a49810ec81f762cdbf570af9b2bdba8bf93c14569489a4cc"
+    },
+    "workflow-logs.zip": {
+      "bytes": 7254630,
+      "sha256": "ec82240393dcfa9f28854207928f32c191374ffe593ab14fcede2ad4dc58571f"
+    },
+    "run.json": {
+      "bytes": 481,
+      "sha256": "bf54356643dfa3b90559dcbb3b45b51e6ec6964f6065127802414c92135b7981"
+    },
+    "jobs.json": {
+      "bytes": 14259,
+      "sha256": "7f90dd98766b29d0e6db6f70f3abd1533b42e4a7814eee8f070384e4452f5f47"
+    },
+    "artifact.json": {
+      "bytes": 436,
+      "sha256": "c4793f5f6fd03f2be5fff626d1475a6e0dfd7e8b37dc8f953bd55828427497b1"
+    },
+    "archive-members-sha256.json": {
+      "bytes": 117829,
+      "sha256": "277cff716a21476aaf1b261b92a8da20c183c1c6315c42d1d20ef913e627f477"
+    }
+  },
+  "source_files": {
+    "reconstructed-overlay/metrics.py": {
+      "bytes": 44962,
+      "sha256": "b7b572573e372e9f185ee56eec4036141c80ab4227efa9d81d3bfc2845ec95f3"
+    },
+    "source/aggregate-perf-report.sh": {
+      "bytes": 23574,
+      "sha256": "012856a3921851e02705bd7dde91a5b07d98d61d28944df9b85f03737405760c"
+    },
+    "source/extend-issue24-metrics.sh": {
+      "bytes": 2769,
+      "sha256": "923d3450527b5b4921a103dfdeaa19236df3eaf86ea12475d315f8f6e7901c77"
+    },
+    "source/merge-recovery-soak.yml": {
+      "bytes": 172259,
+      "sha256": "8bf29bcafaab28a34faae9d697da27bf2f2cff2dbd3b29bba4099b6debc4852b"
+    },
+    "source/metrics.py": {
+      "bytes": 43983,
+      "sha256": "a1ea6e96c8ba5271dd1ef20f0c1f1678ac755c93a6fbcf4f19a010bbb1f6929e"
+    },
+    "source/node-defaults.conf": {
+      "bytes": 41561,
+      "sha256": "fc964d165d54b8f89429dd0be3b96f3007e4c624714724414735581c1a8bb373"
+    },
+    "source/node-extend-issue24-metrics.sh": {
+      "bytes": 2769,
+      "sha256": "923d3450527b5b4921a103dfdeaa19236df3eaf86ea12475d315f8f6e7901c77"
+    },
+    "source/resource_monitor.py": {
+      "bytes": 36080,
+      "sha256": "6fb265127cc5078e2f4c9f8c1c47bf3ef3df52e2726e1333a8571091e0be06d9"
+    },
+    "source/run-merge-recovery-soak.sh": {
+      "bytes": 60172,
+      "sha256": "8d6c071e85c57ed4d1d9a5666f3ef99d47aaae898383a1c80822f66977c83f68"
+    },
+    "source/test_load.py": {
+      "bytes": 26011,
+      "sha256": "9717a51313d54c0a13db7f7727fa1ffd11759d3b481f30f8eede884922866de7"
+    },
+    "source/write-soak-summary.sh": {
+      "bytes": 7306,
+      "sha256": "373b612d2b3e09b84cb4d5d5943e7ae13fc21b0b1cb535dbd7a7f4c0678cb061"
+    }
+  },
+  "source_revisions": {
+    "control": {
+      "repository": "F1R3FLY-io/f1r3node-rust",
+      "ref": "be2324661e474bba0cd0f44a8c06864f69f7d0fb",
+      "paths": [
+        "scripts/run-merge-recovery-soak.sh",
+        "scripts/bench/aggregate-perf-report.sh",
+        "scripts/bench/write-soak-summary.sh",
+        ".github/workflows/merge-recovery-soak.yml"
+      ]
+    },
+    "reference_only_overlay": {
+      "path": "source/extend-issue24-metrics.sh",
+      "ref": "be2324661e474bba0cd0f44a8c06864f69f7d0fb",
+      "executed_in_run": false
+    },
+    "node": {
+      "repository": "F1R3FLY-io/f1r3node-rust",
+      "ref": "0f5d2b7414786cd27b8a686ca636485c35a5edce",
+      "paths": [
+        "scripts/bench/extend-issue24-metrics.sh",
+        "node/src/main/resources/defaults.conf"
+      ]
+    },
+    "harness": {
+      "repository": "F1R3FLY-io/system-integration",
+      "ref": "0fb633729a22f600d2c2de4c8fdc3b1f57e9ecb6",
+      "paths": [
+        "integration-tests/test/infra/resource_monitor.py",
+        "integration-tests/test/infra/metrics.py",
+        "integration-tests/test/tests/custom/test_load.py"
+      ]
+    },
+    "overlay": {
+      "command": "bash source/node-extend-issue24-metrics.sh reconstructed-overlay/metrics.py",
+      "input": "source/metrics.py",
+      "result": "reconstructed-overlay/metrics.py",
+      "limitation": "Reconstructed locally, not captured from the runner."
+    }
+  },
+  "output_sha256": {
+    "README.md": "27c314d5365c1665fd4bd3211981dea1335e6016935c840128eac3e26527da0e",
+    "archive-members-sha256.json": "277cff716a21476aaf1b261b92a8da20c183c1c6315c42d1d20ef913e627f477",
+    "inspect.rb": "7c01506787c049630524451a57de894fb8a9a776237ef145d140fa6b0f05bbbc",
+    "iterations.csv": "e5233c0c363205fa56171339b58e4cf700a5c252ad27fed96c488cc6d4b14956",
+    "observations.json": "a75ed0becd6b0356d17ebae53e7707f537bd462eeb44817514858e30b63ba125",
+    "phases.csv": "2f834e4079780fd9b0dc631592507ec9d7ccd7eb6bbf4efb9bcac137666a056d",
+    "raw-metrics-inspection.json": "0f52ab2d82a0b074edf86c3c311fcdec57015cf4e517800b42d87d2147e8cfbb",
+    "storage.json": "792fa8346c3fa98762177457b79d52c6e9c3c0d81673f0dd4084ad07a8f36ce6"
+  },
+  "verification": {
+    "archive_matches_github_digest": true,
+    "extracted_files_verified": 652,
+    "archive_backup_matches": true,
+    "repeated_derivation_byte_equal": true,
+    "iteration_records": 51,
+    "distinct_phase_records": 255,
+    "complete_raw_csv_rows": 3834849,
+    "csv_headers_checked": 153,
+    "ruby": "ruby 3.2.3 (2024-01-18 revision 52bb2ac0a6) [aarch64-linux-gnu]",
+    "jq": "jq-1.7",
+    "earlier_revalidation_timeout_seconds": 240,
+    "timeout_scope": "Combined repeat derivation and member revalidation. No behavioral RED result.",
+    "provider_guard_revalidation": {
+      "repeated_derivation_byte_equal": true,
+      "invalid_provider_rejected_before_file_reads": true,
+      "source_change": "The inspector now requires a Docker or subprocess provider.",
+      "documentation_change": "The report now links the subsequent merged-harness repin separately."
+    }
+  },
+  "limitations": [
+    "Only the artifact ZIP has an independently published GitHub digest.",
+    "The local backup is not an off-host backup.",
+    "The full raw archives contain potentially sensitive fixture data and are not Git inputs.",
+    "File lengths are not filesystem allocation or an all-writer growth bound.",
+    "This inspection does not discharge claims or establish full-duration acceptance."
+  ]
+}

@@ -1,0 +1,1 @@
+The combined supporting regression command reached its 650-second tool limit during release-gate tests. Completed checks remain retained. This timeout is not behavioral RED. The release-gate test and remaining checks run separately.

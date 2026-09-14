@@ -1,0 +1,59 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 89 and seed 8471452545050290158 with 2 workers on 20 cores with 491MB heap and 64MB offheap memory (Linux 6.17.0-1032-nvidia aarch64, Private Build 1.8.0_502 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file [EVIDENCE_ROOT]/d2-cleanup-outcome-eTKwRQgd/formal-source/MC_CleanupOutcome.tla
+Parsing file [EVIDENCE_ROOT]/d2-cleanup-outcome-eTKwRQgd/formal-source/CleanupOutcome.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/TLC.tla
+Parsing file /tmp/Sequences.tla
+Parsing file /tmp/FiniteSets.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module CleanupOutcome
+Semantic processing of module MC_CleanupOutcome
+Starting... (2026-09-10 04:13:34)
+Implied-temporal checking--satisfiability problem has 1 branches.
+Computing initial states...
+Computed 2 initial states...
+Computed 4 initial states...
+Finished computing initial states: 6 distinct states generated at 2026-09-10 04:13:35.
+Progress(7) at 2026-09-10 04:13:35: 42 states generated, 42 distinct states found, 0 states left on queue.
+Checking temporal properties for the complete state space with 42 total distinct states at (2026-09-10 04:13:35)
+Finished checking temporal properties in 00s at 2026-09-10 04:13:36
+Model checking completed. No error has been found.
+  Estimates of the probability that TLC did not check all reachable states
+  because two distinct states had the same fingerprint:
+  calculated (optimistic):  val = 0.0
+The coverage statistics at 2026-09-10 04:13:36
+<Init line 6, col 1 to line 6, col 4 of module CleanupOutcome>: 6:6
+  line 7, col 8 to line 7, col 23 of module CleanupOutcome: 1
+  line 9, col 8 to line 9, col 21 of module CleanupOutcome: 6
+  line 11, col 8 to line 11, col 23 of module CleanupOutcome: 6
+<ObserveCommand line 12, col 1 to line 12, col 14 of module CleanupOutcome>: 30:30
+  line 13, col 8 to line 13, col 25 of module CleanupOutcome: 72
+  |line 13, col 8 to line 13, col 12 of module CleanupOutcome: 42
+  line 14, col 8 to line 14, col 46 of module CleanupOutcome: 30
+  |line 14, col 19 to line 14, col 45 of module CleanupOutcome: 30
+  ||line 14, col 19 to line 14, col 24 of module CleanupOutcome: 30
+  ||line 14, col 29 to line 14, col 45 of module CleanupOutcome: 20
+  line 15, col 8 to line 15, col 29 of module CleanupOutcome: 30
+  line 16, col 8 to line 16, col 63 of module CleanupOutcome: 30
+  line 17, col 8 to line 17, col 38 of module CleanupOutcome: 30
+<Decide line 18, col 1 to line 18, col 6 of module CleanupOutcome>: 6:6
+  line 19, col 8 to line 19, col 26 of module CleanupOutcome: 48
+  |line 19, col 8 to line 19, col 12 of module CleanupOutcome: 42
+  line 20, col 8 to line 20, col 48 of module CleanupOutcome: 6
+  line 21, col 8 to line 21, col 25 of module CleanupOutcome: 6
+  line 22, col 8 to line 22, col 45 of module CleanupOutcome: 6
+<TypeOK line 25, col 1 to line 25, col 6 of module CleanupOutcome>
+  line 26, col 5 to line 30, col 27 of module CleanupOutcome: 42
+<CleanupFailurePreventsAdmission line 31, col 1 to line 31, col 31 of module CleanupOutcome>
+  line 31, col 36 to line 31, col 54 of module CleanupOutcome: 42
+  |line 31, col 36 to line 31, col 43 of module CleanupOutcome: 42
+  |line 31, col 48 to line 31, col 54 of module CleanupOutcome: 1
+End of statistics.
+42 states generated, 42 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 7.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 1 and the 95th percentile is 1).
+Finished in 02s at (2026-09-10 04:13:36)

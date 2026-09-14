@@ -1,0 +1,71 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 11 and seed -1963191579479381636 with 2 workers on 20 cores with 491MB heap and 64MB offheap memory (Linux 6.17.0-1032-nvidia aarch64, Private Build 1.8.0_502 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file [EVIDENCE_ROOT]/d2-benchmark-cancel-cEJkF60i/b19/formal-source/MC_GuardianAdmission_unchecked_pre_fix.tla
+Parsing file [EVIDENCE_ROOT]/d2-benchmark-cancel-cEJkF60i/b19/formal-source/GuardianAdmission.tla
+Parsing file /tmp/TLC.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/Sequences.tla
+Parsing file /tmp/FiniteSets.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module GuardianAdmission
+Semantic processing of module MC_GuardianAdmission_unchecked_pre_fix
+Starting... (2026-09-09 20:22:06)
+Implied-temporal checking--satisfiability problem has 1 branches.
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-09-09 20:22:07.
+Error: Invariant AdmissionRequiresGuardian is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ alive = TRUE
+/\ phase = "boundary"
+/\ admitted = FALSE
+/\ breachRecorded = FALSE
+
+State 2: <Crash line 15, col 5 to line 17, col 52 of module GuardianAdmission>
+/\ alive = FALSE
+/\ phase = "boundary"
+/\ admitted = FALSE
+/\ breachRecorded = FALSE
+
+State 3: <Decide line 20, col 5 to line 24, col 22 of module GuardianAdmission>
+/\ alive = FALSE
+/\ phase = "decided"
+/\ admitted = TRUE
+/\ breachRecorded = FALSE
+
+The coverage statistics at 2026-09-09 20:22:07
+<Init line 8, col 1 to line 8, col 4 of module GuardianAdmission>: 2:2
+  line 9, col 5 to line 12, col 29 of module GuardianAdmission: 2
+<Crash line 14, col 1 to line 14, col 5 of module GuardianAdmission>: 1:4
+  line 15, col 8 to line 15, col 25 of module GuardianAdmission: 9
+  |line 15, col 8 to line 15, col 12 of module GuardianAdmission: 5
+  line 16, col 8 to line 16, col 21 of module GuardianAdmission: 4
+  line 17, col 8 to line 17, col 52 of module GuardianAdmission: 4
+<Decide line 19, col 1 to line 19, col 6 of module GuardianAdmission>: 2:3
+  line 20, col 8 to line 20, col 25 of module GuardianAdmission: 6
+  |line 20, col 8 to line 20, col 12 of module GuardianAdmission: 4
+  line 21, col 8 to line 21, col 51 of module GuardianAdmission: 2
+  |line 21, col 21 to line 21, col 50 of module GuardianAdmission: 3
+  line 22, col 8 to line 22, col 35 of module GuardianAdmission: 2
+  |line 22, col 26 to line 22, col 35 of module GuardianAdmission: 3
+  line 23, col 8 to line 23, col 25 of module GuardianAdmission: 2
+  line 24, col 8 to line 24, col 22 of module GuardianAdmission: 2
+<TypeOK line 29, col 1 to line 29, col 6 of module GuardianAdmission>
+  line 30, col 5 to line 33, col 33 of module GuardianAdmission: 4
+<AdmissionRequiresGuardian line 35, col 1 to line 35, col 25 of module GuardianAdmission>
+  line 35, col 30 to line 35, col 46 of module GuardianAdmission: 4
+  |line 35, col 30 to line 35, col 37 of module GuardianAdmission: 4
+  |line 35, col 42 to line 35, col 46 of module GuardianAdmission: 2
+<RefusalRecorded line 36, col 1 to line 36, col 15 of module GuardianAdmission>
+  line 36, col 20 to line 36, col 69 of module GuardianAdmission: 3
+  |line 36, col 21 to line 36, col 50 of module GuardianAdmission: 3
+  ||line 36, col 21 to line 36, col 37 of module GuardianAdmission: 3
+  ||line 36, col 42 to line 36, col 50 of module GuardianAdmission: 1
+End of statistics.
+5 states generated, 4 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 3.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 2 and the 95th percentile is 2).
+Finished in 03s at (2026-09-09 20:22:07)

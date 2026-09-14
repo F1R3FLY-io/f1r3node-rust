@@ -1,0 +1,164 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 22 and seed -4600989125774130867 with 2 workers on 20 cores with 491MB heap and 64MB offheap memory (Linux 6.17.0-1032-nvidia aarch64, Private Build 1.8.0_502 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file [EVIDENCE_ROOT]/d2-benchmark-cancel-cEJkF60i/formal-source/MC_BenchmarkCancellation_unwatched_death_pre_fix.tla
+Parsing file [EVIDENCE_ROOT]/d2-benchmark-cancel-cEJkF60i/formal-source/BenchmarkCancellation.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/TLC.tla
+Parsing file /tmp/Sequences.tla
+Parsing file /tmp/FiniteSets.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module BenchmarkCancellation
+Semantic processing of module MC_BenchmarkCancellation_unwatched_death_pre_fix
+Starting... (2026-09-09 20:12:22)
+Implied-temporal checking--satisfiability problem has 1 branches.
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-09-09 20:12:23.
+Error: Invariant BenchmarkCancellationObserved is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ elapsed = 0
+/\ termSent = FALSE
+/\ clientAlive = TRUE
+/\ guardianAlive = TRUE
+/\ faultKind = "death"
+/\ phase = "active"
+/\ summaryPublished = FALSE
+/\ breachRecorded = FALSE
+
+State 2: <Fault line 21, col 5 to line 25, col 80 of module BenchmarkCancellation>
+/\ elapsed = 0
+/\ termSent = FALSE
+/\ clientAlive = TRUE
+/\ guardianAlive = FALSE
+/\ faultKind = "death"
+/\ phase = "watch"
+/\ summaryPublished = FALSE
+/\ breachRecorded = FALSE
+
+State 3: <Watch line 28, col 5 to line 31, col 95 of module BenchmarkCancellation>
+/\ elapsed = 0
+/\ termSent = FALSE
+/\ clientAlive = TRUE
+/\ guardianAlive = FALSE
+/\ faultKind = "death"
+/\ phase = "waiting"
+/\ summaryPublished = FALSE
+/\ breachRecorded = FALSE
+
+State 4: <WaitUnwatched line 59, col 5 to line 62, col 109 of module BenchmarkCancellation>
+/\ elapsed = 1
+/\ termSent = FALSE
+/\ clientAlive = TRUE
+/\ guardianAlive = FALSE
+/\ faultKind = "death"
+/\ phase = "waiting"
+/\ summaryPublished = FALSE
+/\ breachRecorded = FALSE
+
+State 5: <WaitUnwatched line 59, col 5 to line 62, col 109 of module BenchmarkCancellation>
+/\ elapsed = 2
+/\ termSent = FALSE
+/\ clientAlive = TRUE
+/\ guardianAlive = FALSE
+/\ faultKind = "death"
+/\ phase = "waiting"
+/\ summaryPublished = FALSE
+/\ breachRecorded = FALSE
+
+State 6: <WaitUnwatched line 59, col 5 to line 62, col 109 of module BenchmarkCancellation>
+/\ elapsed = 3
+/\ termSent = FALSE
+/\ clientAlive = TRUE
+/\ guardianAlive = FALSE
+/\ faultKind = "death"
+/\ phase = "waiting"
+/\ summaryPublished = FALSE
+/\ breachRecorded = FALSE
+
+State 7: <WaitUnwatched line 59, col 5 to line 62, col 109 of module BenchmarkCancellation>
+/\ elapsed = 4
+/\ termSent = FALSE
+/\ clientAlive = TRUE
+/\ guardianAlive = FALSE
+/\ faultKind = "death"
+/\ phase = "waiting"
+/\ summaryPublished = FALSE
+/\ breachRecorded = FALSE
+
+State 8: <ObserveUnwatched line 65, col 5 to line 68, col 111 of module BenchmarkCancellation>
+/\ elapsed = 4
+/\ termSent = FALSE
+/\ clientAlive = TRUE
+/\ guardianAlive = FALSE
+/\ faultKind = "death"
+/\ phase = "observed"
+/\ summaryPublished = FALSE
+/\ breachRecorded = FALSE
+
+The coverage statistics at 2026-09-09 20:12:23
+<Init line 10, col 1 to line 10, col 4 of module BenchmarkCancellation>: 2:2
+  line 11, col 5 to line 18, col 18 of module BenchmarkCancellation: 2
+<Fault line 20, col 1 to line 20, col 5 of module BenchmarkCancellation>: 1:2
+  line 21, col 8 to line 21, col 23 of module BenchmarkCancellation: 18
+  |line 21, col 8 to line 21, col 12 of module BenchmarkCancellation: 16
+  line 22, col 8 to line 22, col 45 of module BenchmarkCancellation: 2
+  line 23, col 8 to line 23, col 47 of module BenchmarkCancellation: 2
+  line 24, col 8 to line 24, col 23 of module BenchmarkCancellation: 2
+  line 25, col 8 to line 25, col 80 of module BenchmarkCancellation: 2
+<Watch line 27, col 1 to line 27, col 5 of module BenchmarkCancellation>: 1:2
+  line 28, col 8 to line 28, col 22 of module BenchmarkCancellation: 17
+  |line 28, col 8 to line 28, col 12 of module BenchmarkCancellation: 15
+  line 29, col 8 to line 29, col 59 of module BenchmarkCancellation: 2
+  line 30, col 8 to line 30, col 99 of module BenchmarkCancellation: 2
+  line 31, col 8 to line 31, col 95 of module BenchmarkCancellation: 2
+<Term line 33, col 1 to line 33, col 4 of module BenchmarkCancellation>: 0:0
+  line 34, col 8 to line 34, col 21 of module BenchmarkCancellation: 14
+  line 35, col 8 to line 35, col 23 of module BenchmarkCancellation: 0
+  line 36, col 8 to line 36, col 23 of module BenchmarkCancellation: 0
+  line 37, col 8 to line 37, col 101 of module BenchmarkCancellation: 0
+<WaitGrace line 39, col 1 to line 39, col 9 of module BenchmarkCancellation>: 0:0
+  line 40, col 8 to line 40, col 22 of module BenchmarkCancellation: 14
+  line 42, col 8 to line 42, col 29 of module BenchmarkCancellation: 0
+  line 43, col 8 to line 43, col 109 of module BenchmarkCancellation: 0
+<Kill line 45, col 1 to line 45, col 4 of module BenchmarkCancellation>: 0:0
+  line 46, col 8 to line 46, col 22 of module BenchmarkCancellation: 14
+  line 48, col 8 to line 48, col 27 of module BenchmarkCancellation: 0
+  line 49, col 8 to line 49, col 25 of module BenchmarkCancellation: 0
+  line 50, col 8 to line 50, col 98 of module BenchmarkCancellation: 0
+<Publish line 52, col 1 to line 52, col 7 of module BenchmarkCancellation>: 0:0
+  line 53, col 8 to line 53, col 24 of module BenchmarkCancellation: 14
+  line 54, col 8 to line 54, col 31 of module BenchmarkCancellation: 0
+  line 55, col 8 to line 55, col 26 of module BenchmarkCancellation: 0
+  line 56, col 8 to line 56, col 93 of module BenchmarkCancellation: 0
+<WaitUnwatched line 58, col 1 to line 58, col 13 of module BenchmarkCancellation>: 4:10
+  line 59, col 8 to line 59, col 24 of module BenchmarkCancellation: 24
+  |line 59, col 8 to line 59, col 12 of module BenchmarkCancellation: 14
+  line 60, col 8 to line 60, col 33 of module BenchmarkCancellation: 10
+  |line 60, col 8 to line 60, col 14 of module BenchmarkCancellation: 12
+  |line 60, col 18 to line 60, col 33 of module BenchmarkCancellation: 12
+  line 61, col 8 to line 61, col 29 of module BenchmarkCancellation: 10
+  line 62, col 8 to line 62, col 109 of module BenchmarkCancellation: 10
+<ObserveUnwatched line 64, col 1 to line 64, col 16 of module BenchmarkCancellation>: 1:2
+  line 65, col 8 to line 65, col 24 of module BenchmarkCancellation: 11
+  |line 65, col 8 to line 65, col 12 of module BenchmarkCancellation: 10
+  line 66, col 8 to line 66, col 33 of module BenchmarkCancellation: 9
+  |line 66, col 8 to line 66, col 14 of module BenchmarkCancellation: 8
+  |line 66, col 18 to line 66, col 33 of module BenchmarkCancellation: 8
+  line 67, col 8 to line 67, col 26 of module BenchmarkCancellation: 1
+  line 68, col 8 to line 68, col 111 of module BenchmarkCancellation: 1
+<TypeOK line 73, col 1 to line 73, col 6 of module BenchmarkCancellation>
+  line 74, col 5 to line 81, col 38 of module BenchmarkCancellation: 8
+<BenchmarkCancellationObserved line 83, col 1 to line 83, col 29 of module BenchmarkCancellation>
+  line 84, col 5 to line 84, col 78 of module BenchmarkCancellation: 8
+  |line 84, col 5 to line 84, col 22 of module BenchmarkCancellation: 8
+  |line 84, col 28 to line 84, col 77 of module BenchmarkCancellation: 1
+<TermBeforeStop line 86, col 1 to line 86, col 14 of module BenchmarkCancellation>
+  line 86, col 19 to line 86, col 42 of module BenchmarkCancellation: 7
+End of statistics.
+8 states generated, 8 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 8.
+The average outdegree of the complete state graph is 1 (minimum is 1, the maximum 1 and the 95th percentile is 1).
+Finished in 02s at (2026-09-09 20:12:23)

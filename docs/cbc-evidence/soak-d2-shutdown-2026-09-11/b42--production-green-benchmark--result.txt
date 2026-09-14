@@ -1,0 +1,1 @@
+PASS: Monitor death prevents benchmark admission and retains one failure across two refused restarts.

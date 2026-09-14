@@ -1,0 +1,3 @@
+Remote GREEN batch exit: 0. Retrieve evidence before termination.
+PASS: The evidence archive was retrieved, validated, and extracted.
+Diagnostic VM final state: TERMINATED

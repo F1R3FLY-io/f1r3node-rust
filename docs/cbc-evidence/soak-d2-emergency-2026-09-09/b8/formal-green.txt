@@ -1,0 +1,70 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 125 and seed 6298010704635363985 with 2 workers on 20 cores with 491MB heap and 64MB offheap memory (Linux 6.17.0-1032-nvidia aarch64, Private Build 1.8.0_502 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /home/bf_spark/src/F1r3fly/f1r3node-rust/formal/tlaplus/soak_disk/MC_DiskEmergencyRecord.tla
+Parsing file /home/bf_spark/src/F1r3fly/f1r3node-rust/formal/tlaplus/soak_disk/DiskEmergencyRecord.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/TLC.tla
+Parsing file /tmp/Sequences.tla
+Parsing file /tmp/FiniteSets.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module DiskEmergencyRecord
+Semantic processing of module MC_DiskEmergencyRecord
+Starting... (2026-09-09 04:01:34)
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-09-09 04:01:35.
+Model checking completed. No error has been found.
+  Estimates of the probability that TLC did not check all reachable states
+  because two distinct states had the same fingerprint:
+  calculated (optimistic):  val = 9.5E-18
+The coverage statistics at 2026-09-09 04:01:35
+<Init line 8, col 1 to line 8, col 4 of module DiskEmergencyRecord>: 1:1
+  line 9, col 5 to line 12, col 26 of module DiskEmergencyRecord: 1
+<ExternalWrite line 14, col 1 to line 14, col 13 of module DiskEmergencyRecord>: 2:18
+  line 15, col 8 to line 15, col 66 of module DiskEmergencyRecord: 18
+  |line 15, col 21 to line 15, col 66 of module DiskEmergencyRecord: 11:29
+  ||line 15, col 50 to line 15, col 65 of module DiskEmergencyRecord: 33
+  ||line 15, col 32 to line 15, col 46 of module DiskEmergencyRecord: 11:44
+  line 16, col 8 to line 16, col 49 of module DiskEmergencyRecord: 18
+<Detect line 18, col 1 to line 18, col 6 of module DiskEmergencyRecord>: 2:2
+  line 19, col 8 to line 19, col 22 of module DiskEmergencyRecord: 13
+  |line 19, col 8 to line 19, col 12 of module DiskEmergencyRecord: 11
+  line 20, col 8 to line 20, col 21 of module DiskEmergencyRecord: 2
+  |line 20, col 8 to line 20, col 14 of module DiskEmergencyRecord: 3
+  line 21, col 8 to line 21, col 56 of module DiskEmergencyRecord: 2
+  line 22, col 8 to line 22, col 51 of module DiskEmergencyRecord: 2
+<Record line 24, col 1 to line 24, col 6 of module DiskEmergencyRecord>: 2:2
+  line 25, col 8 to line 25, col 23 of module DiskEmergencyRecord: 13
+  |line 25, col 8 to line 25, col 12 of module DiskEmergencyRecord: 11
+  line 26, col 8 to line 26, col 23 of module DiskEmergencyRecord: 2
+  line 27, col 8 to line 27, col 22 of module DiskEmergencyRecord: 2
+  line 28, col 8 to line 28, col 41 of module DiskEmergencyRecord: 2
+<BeginStop line 30, col 1 to line 30, col 9 of module DiskEmergencyRecord>: 2:2
+  line 31, col 8 to line 31, col 21 of module DiskEmergencyRecord: 13
+  |line 31, col 8 to line 31, col 12 of module DiskEmergencyRecord: 11
+  line 32, col 8 to line 32, col 26 of module DiskEmergencyRecord: 2
+  line 33, col 8 to line 33, col 25 of module DiskEmergencyRecord: 2
+  line 34, col 8 to line 34, col 38 of module DiskEmergencyRecord: 2
+<StopReturns line 36, col 1 to line 36, col 11 of module DiskEmergencyRecord>: 2:2
+  line 37, col 8 to line 37, col 24 of module DiskEmergencyRecord: 13
+  |line 37, col 8 to line 37, col 12 of module DiskEmergencyRecord: 11
+  line 38, col 8 to line 38, col 26 of module DiskEmergencyRecord: 2
+  line 39, col 8 to line 39, col 51 of module DiskEmergencyRecord: 2
+<PublishLate line 41, col 1 to line 41, col 11 of module DiskEmergencyRecord>: 0:0
+  line 42, col 8 to line 42, col 25 of module DiskEmergencyRecord: 11
+  line 43, col 8 to line 43, col 16 of module DiskEmergencyRecord: 2
+  line 44, col 8 to line 44, col 23 of module DiskEmergencyRecord: 0
+  line 45, col 8 to line 45, col 48 of module DiskEmergencyRecord: 0
+<TypeOK line 50, col 1 to line 50, col 6 of module DiskEmergencyRecord>
+  line 51, col 5 to line 54, col 30 of module DiskEmergencyRecord: 11
+<StopRequiresRecord line 56, col 1 to line 56, col 18 of module DiskEmergencyRecord>
+  line 56, col 23 to line 56, col 45 of module DiskEmergencyRecord: 11
+  |line 56, col 23 to line 56, col 33 of module DiskEmergencyRecord: 11
+  |line 56, col 38 to line 56, col 45 of module DiskEmergencyRecord: 4
+End of statistics.
+27 states generated, 11 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 6.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 2 and the 95th percentile is 2).
+Finished in 01s at (2026-09-09 04:01:35)

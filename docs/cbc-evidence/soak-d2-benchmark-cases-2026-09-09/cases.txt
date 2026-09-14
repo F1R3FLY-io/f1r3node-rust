@@ -1,0 +1,9 @@
+PASS: Opening benchmark admission preserved the allowed path (benchmark-equal).
+Evidence: [EVIDENCE_ROOT]/d2-benchmark-admission-cases-ccO7ZZPD/cases/benchmark-equal
+PASS: Opening benchmark admission preserved the allowed path (benchmark-sufficient).
+Evidence: [EVIDENCE_ROOT]/d2-benchmark-admission-cases-ccO7ZZPD/cases/benchmark-sufficient
+PASS: An unavailable opening benchmark sample refused work and recorded one protection failure.
+Evidence: [EVIDENCE_ROOT]/d2-benchmark-admission-cases-ccO7ZZPD/cases/benchmark-missing
+PASS: Opening benchmark admission preserved the allowed path (benchmark-disabled).
+Evidence: [EVIDENCE_ROOT]/d2-benchmark-admission-cases-ccO7ZZPD/cases/benchmark-disabled
+PASS: All four opening benchmark admission cases passed.

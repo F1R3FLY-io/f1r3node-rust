@@ -1,0 +1,53 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 119 and seed 1285275475925831546 with 2 workers on 20 cores with 491MB heap and 64MB offheap memory (Linux 6.17.0-1032-nvidia aarch64, Private Build 1.8.0_502 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /home/bf_spark/src/F1r3fly/f1r3node-rust/formal/tlaplus/soak_disk/MC_DiskDiagnosticDeadline.tla
+Parsing file /home/bf_spark/src/F1r3fly/f1r3node-rust/formal/tlaplus/soak_disk/DiskDiagnosticDeadline.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/TLC.tla
+Parsing file /tmp/Sequences.tla
+Parsing file /tmp/FiniteSets.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module DiskDiagnosticDeadline
+Semantic processing of module MC_DiskDiagnosticDeadline
+Starting... (2026-09-09 04:45:06)
+Computing initial states...
+Computed 2 initial states...
+Finished computing initial states: 3 distinct states generated at 2026-09-09 04:45:06.
+Model checking completed. No error has been found.
+  Estimates of the probability that TLC did not check all reachable states
+  because two distinct states had the same fingerprint:
+  calculated (optimistic):  val = 1.4E-17
+The coverage statistics at 2026-09-09 04:45:07
+<Init line 8, col 1 to line 8, col 4 of module DiskDiagnosticDeadline>: 3:3
+  line 11, col 8 to line 11, col 31 of module DiskDiagnosticDeadline: 1
+  line 12, col 8 to line 12, col 18 of module DiskDiagnosticDeadline: 3
+<Tick line 14, col 1 to line 14, col 4 of module DiskDiagnosticDeadline>: 96:96
+  line 15, col 8 to line 15, col 28 of module DiskDiagnosticDeadline: 161
+  |line 15, col 8 to line 15, col 12 of module DiskDiagnosticDeadline: 129
+  line 16, col 8 to line 16, col 18 of module DiskDiagnosticDeadline: 32
+  line 17, col 8 to line 17, col 29 of module DiskDiagnosticDeadline: 32
+  line 18, col 8 to line 18, col 30 of module DiskDiagnosticDeadline: 96
+  |line 18, col 21 to line 18, col 30 of module DiskDiagnosticDeadline: 32
+  line 19, col 8 to line 19, col 83 of module DiskDiagnosticDeadline: 96
+  line 20, col 8 to line 20, col 26 of module DiskDiagnosticDeadline: 96
+<CompleteRoot line 22, col 1 to line 22, col 12 of module DiskDiagnosticDeadline>: 30:32
+  line 23, col 8 to line 23, col 28 of module DiskDiagnosticDeadline: 161
+  |line 23, col 8 to line 23, col 12 of module DiskDiagnosticDeadline: 129
+  line 24, col 8 to line 24, col 20 of module DiskDiagnosticDeadline: 32
+  line 25, col 8 to line 25, col 33 of module DiskDiagnosticDeadline: 32
+  line 26, col 8 to line 26, col 64 of module DiskDiagnosticDeadline: 32
+  line 27, col 8 to line 27, col 37 of module DiskDiagnosticDeadline: 32
+<TypeOK line 32, col 1 to line 32, col 6 of module DiskDiagnosticDeadline>
+  line 33, col 5 to line 36, col 23 of module DiskDiagnosticDeadline: 129
+<AttributionWithinBudget line 38, col 1 to line 38, col 23 of module DiskDiagnosticDeadline>
+  line 38, col 28 to line 38, col 63 of module DiskDiagnosticDeadline: 129
+  |line 38, col 28 to line 38, col 48 of module DiskDiagnosticDeadline: 129
+  |line 38, col 53 to line 38, col 63 of module DiskDiagnosticDeadline: 32
+End of statistics.
+131 states generated, 129 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 30.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 4 and the 95th percentile is 4).
+Finished in 02s at (2026-09-09 04:45:07)

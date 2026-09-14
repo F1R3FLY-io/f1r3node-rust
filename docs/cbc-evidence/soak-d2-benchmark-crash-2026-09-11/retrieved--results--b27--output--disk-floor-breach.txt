@@ -1,0 +1,11 @@
+Filesystem 1M-blocks Used Available Capacity Mounted on
+/dev/fixture 47000 40000 7000 85% /
+1	[RUNNER_ROOT]/b37/results/b27/output
+1	[RUNNER_ROOT]/b37/results/b27/harness/integration-tests/data
+1	[RUNNER_ROOT]/b37/results/b27/harness/integration-tests/log-archive
+1	[RUNNER_ROOT]/b37/results/b27/harness/integration-tests/.subprocess-data
+TYPE            TOTAL     ACTIVE    SIZE      RECLAIMABLE
+Images          3         1         370MB     367.5MB (99%)
+Containers      1         0         12.29kB   12.29kB (100%)
+Local Volumes   0         0         0B        0B
+Build Cache     0         0         0B        0B

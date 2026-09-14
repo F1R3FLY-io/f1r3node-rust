@@ -1,0 +1,10 @@
+scripts/bench/collect-soak-metrics.sh: OK
+scripts/bench/run-soak-contained.sh: OK
+scripts/bench/soak-containment.py: OK
+scripts/bench/soak-metrics.json: OK
+scripts/bench/test-soak-controller-loss.sh: OK
+scripts/bench/test-soak-native-containment.py: OK
+scripts/bench/write-soak-summary.sh: OK
+scripts/run-merge-recovery-soak.sh: OK
+PASS: Both controllers died, native containment stopped the owned writer, and two refused restarts retained one failure.
+Docker commands were substitutes. This case does not verify Docker containment or durable publication.

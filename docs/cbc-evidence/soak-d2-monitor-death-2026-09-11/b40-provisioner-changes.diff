@@ -1,0 +1,17 @@
+--- [LOCAL_HOME]/soak-evidence/f1r3node-rust/d2-crash-stop-final-runner-R5H4F0iK/complete-provisioning.sh	2026-09-11 07:12:23.988255321 -0700
++++ [RUNNER_EVIDENCE_ROOT]/complete-provisioning.sh	2026-09-11 09:04:55.008312874 -0700
+@@ -15,12 +15,12 @@
+     date -u +%FT%TZ >"$RAW/operation-finished-at.txt"
+     if [[ "$status" != 0 ]]; then
+         printf 'The operation stopped during %s with exit %s. Evidence: %s\n' "$STAGE" "$status" "$RAW" >&2
+-        bash '[LOCAL_HOME]/soak-evidence/f1r3node-rust/d2-crash-stop-U2VSGFv7/final-real/terminate-runner.sh' || true
++        bash '[EVIDENCE_ROOT]/real-system/terminate-runner.sh' || true
+     fi
+ }
+ trap finish EXIT
+ cd "$WORKSPACE"
+-test "$(git rev-parse HEAD)" = 5a211fb5c6de8b02a4d5593781b91811df0260d0
++test "$(git rev-parse HEAD)" = ab9519a5da26f95322d08fb38ded0d9cbbccc7f3
+ printf '%s\n' "$RAW" >/tmp/soak-d2-runner-current-path
+ printf '%s\n' "$PREVIOUS" >"$RAW/previous-evidence-root.txt"
+ printf 'The user authorized the recommended ownership-safe stop work, including a fresh disposable diagnostic VM. Earlier authorization covers provisioning, SSH verification, and source transfer. This operation does not start a soak or change Git history.\n' >"$RAW/authorization.txt"

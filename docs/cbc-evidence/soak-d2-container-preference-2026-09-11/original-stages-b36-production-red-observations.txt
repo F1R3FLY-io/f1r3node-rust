@@ -1,0 +1,2 @@
+run: unrelated 0 -> 1000; owned after 1000
+compose: unrelated 0 -> 1000; owned after 1000

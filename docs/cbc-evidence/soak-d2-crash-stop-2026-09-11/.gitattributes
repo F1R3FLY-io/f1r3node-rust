@@ -1,0 +1,6 @@
+# Preserve recorded spaces in generated logs and commit displays.
+*.log whitespace=-blank-at-eol,cr-at-eol
+external-commit.txt whitespace=-blank-at-eol,cr-at-eol
+external-final-commit.txt whitespace=-blank-at-eol,cr-at-eol
+# Preserve the context prefix before tabs in recorded diffs.
+*.diff whitespace=-blank-at-eol,-space-before-tab,cr-at-eol

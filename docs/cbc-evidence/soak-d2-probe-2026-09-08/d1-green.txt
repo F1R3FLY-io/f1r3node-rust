@@ -1,0 +1,2 @@
+PASS: Disk hygiene left 7000 MiB below 8192 MiB. No iteration started, and the driver recorded refusal.
+Evidence: /home/bf_spark/soak-evidence/f1r3node-rust/d2-probe-kTz5sRKN/d1-green

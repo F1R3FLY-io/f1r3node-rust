@@ -1,0 +1,29 @@
+Soak host protection: node RSS ceiling=0MB; host free floor=0MB; disk free floor=4096MB (hygiene band +4096MB)
+orchestrator host guardian watching MemAvailable floor 0MB (hard floor 0MB, warn 4096MB) and disk free floor 4096MB (hard floor 2048MB); pid 71018
+free disk 7000MB inside hygiene band (floor 4096MB + band 4096MB); reclaiming
+disk hygiene: Docker resources and temporary sessions retained because ownership is unconfirmed
+disk hygiene: 7000MB free -> 7000MB free
+disk usage: Filesystem 1M-blocks Used Available Capacity Mounted on
+disk usage: /dev/fixture 47000 40000 7000 85% /
+disk usage: 1	[RUNNER_ROOT]/b37/results/b27/output
+disk usage: 1	[RUNNER_ROOT]/b37/results/b27/harness/integration-tests/data
+disk usage: 1	[RUNNER_ROOT]/b37/results/b27/harness/integration-tests/log-archive
+disk usage: 1	[RUNNER_ROOT]/b37/results/b27/harness/integration-tests/.subprocess-data
+disk usage: TYPE            TOTAL     ACTIVE    SIZE      RECLAIMABLE
+disk usage: Images          3         1         370MB     367.5MB (99%)
+disk usage: Containers      1         0         12.29kB   12.29kB (100%)
+disk usage: Local Volumes   0         0         0B        0B
+disk usage: Build Cache     0         0         0B        0B
+orchestrator disk floor: free disk 7000MB still inside hygiene band (floor 4096MB + band 4096MB) after hygiene; ending soak (fail-closed)
+started_at=1789127502
+segments=1
+finished_at=1789127502
+target_ref=unknown
+target_sha=unknown
+requested_seconds=30
+elapsed_seconds=0
+iterations=0
+failures=1
+bench_segments=0
+bench_failures=0
+early_exit_reason=host_protection_breach

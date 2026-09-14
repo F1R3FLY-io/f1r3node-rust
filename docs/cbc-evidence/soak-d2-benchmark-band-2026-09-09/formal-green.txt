@@ -1,0 +1,72 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 38 and seed -7654867905400315590 with 2 workers on 20 cores with 491MB heap and 64MB offheap memory (Linux 6.17.0-1032-nvidia aarch64, Private Build 1.8.0_502 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file [EVIDENCE_ROOT]/d2-benchmark-band-xzY4nTYN/formal-source/MC_BenchmarkDiskAdmission.tla
+Parsing file [EVIDENCE_ROOT]/d2-benchmark-band-xzY4nTYN/formal-source/BenchmarkDiskAdmission.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/TLC.tla
+Parsing file /tmp/Sequences.tla
+Parsing file /tmp/FiniteSets.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module BenchmarkDiskAdmission
+Semantic processing of module MC_BenchmarkDiskAdmission
+Starting... (2026-09-09 17:59:30)
+Implied-temporal checking--satisfiability problem has 1 branches.
+Computing initial states...
+Computed 2 initial states...
+Finished computing initial states: 3 distinct states generated at 2026-09-09 17:59:31.
+Progress(4) at 2026-09-09 17:59:31: 12 states generated, 12 distinct states found, 0 states left on queue.
+Checking temporal properties for the complete state space with 12 total distinct states at (2026-09-09 17:59:31)
+Finished checking temporal properties in 00s at 2026-09-09 17:59:31
+Model checking completed. No error has been found.
+  Estimates of the probability that TLC did not check all reachable states
+  because two distinct states had the same fingerprint:
+  calculated (optimistic):  val = 0.0
+The coverage statistics at 2026-09-09 17:59:31
+<Init line 8, col 1 to line 8, col 4 of module BenchmarkDiskAdmission>: 3:3
+  line 10, col 8 to line 10, col 29 of module BenchmarkDiskAdmission: 1
+  line 12, col 8 to line 12, col 23 of module BenchmarkDiskAdmission: 3
+  line 13, col 8 to line 13, col 22 of module BenchmarkDiskAdmission: 3
+  line 14, col 8 to line 14, col 19 of module BenchmarkDiskAdmission: 3
+<Probe line 16, col 1 to line 16, col 5 of module BenchmarkDiskAdmission>: 3:3
+  line 17, col 8 to line 17, col 23 of module BenchmarkDiskAdmission: 16
+  |line 17, col 8 to line 17, col 12 of module BenchmarkDiskAdmission: 13
+  line 18, col 8 to line 18, col 27 of module BenchmarkDiskAdmission: 3
+  line 19, col 8 to line 19, col 24 of module BenchmarkDiskAdmission: 3
+  line 20, col 8 to line 20, col 57 of module BenchmarkDiskAdmission: 3
+<Decide line 22, col 1 to line 22, col 6 of module BenchmarkDiskAdmission>: 3:3
+  line 23, col 8 to line 23, col 23 of module BenchmarkDiskAdmission: 16
+  |line 23, col 8 to line 23, col 12 of module BenchmarkDiskAdmission: 13
+  line 24, col 8 to line 24, col 70 of module BenchmarkDiskAdmission: 3
+  line 25, col 8 to line 25, col 67 of module BenchmarkDiskAdmission: 3
+  line 26, col 8 to line 26, col 25 of module BenchmarkDiskAdmission: 3
+  line 27, col 8 to line 27, col 49 of module BenchmarkDiskAdmission: 3
+<Publish line 29, col 1 to line 29, col 7 of module BenchmarkDiskAdmission>: 3:4
+  line 30, col 8 to line 30, col 24 of module BenchmarkDiskAdmission: 17
+  |line 30, col 8 to line 30, col 12 of module BenchmarkDiskAdmission: 13
+  line 31, col 8 to line 31, col 43 of module BenchmarkDiskAdmission: 4
+  line 32, col 8 to line 32, col 22 of module BenchmarkDiskAdmission: 4
+  line 33, col 8 to line 33, col 58 of module BenchmarkDiskAdmission: 4
+<TypeOK line 38, col 1 to line 38, col 6 of module BenchmarkDiskAdmission>
+  line 39, col 5 to line 44, col 24 of module BenchmarkDiskAdmission: 12
+<BenchmarkRequiresBand line 46, col 1 to line 46, col 21 of module BenchmarkDiskAdmission>
+  line 46, col 26 to line 46, col 68 of module BenchmarkDiskAdmission: 12
+  |line 46, col 26 to line 46, col 33 of module BenchmarkDiskAdmission: 12
+  |line 46, col 38 to line 46, col 68 of module BenchmarkDiskAdmission: 4
+<RefusalStopsAdmission line 47, col 1 to line 47, col 21 of module BenchmarkDiskAdmission>
+  line 47, col 26 to line 47, col 45 of module BenchmarkDiskAdmission: 12
+  |line 47, col 26 to line 47, col 32 of module BenchmarkDiskAdmission: 12
+  |line 47, col 37 to line 47, col 45 of module BenchmarkDiskAdmission: 2
+<RefusalRecorded line 48, col 1 to line 48, col 15 of module BenchmarkDiskAdmission>
+  line 48, col 20 to line 48, col 62 of module BenchmarkDiskAdmission: 12
+  |line 48, col 21 to line 48, col 45 of module BenchmarkDiskAdmission: 12
+  ||line 48, col 21 to line 48, col 34 of module BenchmarkDiskAdmission: 12
+  ||line 48, col 39 to line 48, col 45 of module BenchmarkDiskAdmission: 3
+  |line 48, col 51 to line 48, col 62 of module BenchmarkDiskAdmission: 1
+End of statistics.
+12 states generated, 12 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 4.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 1 and the 95th percentile is 1).
+Finished in 01s at (2026-09-09 17:59:31)

@@ -1,0 +1,4 @@
+PASS: .github/scripts/test-release-gates.sh
+PASS: scripts/test-repin-system-integration.sh
+PASS: scripts/bench/test-extend-issue24-metrics.sh
+PASS: scripts/bench/test-write-soak-summary.sh

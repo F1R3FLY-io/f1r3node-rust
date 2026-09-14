@@ -1,0 +1,4 @@
+f66bb3afe8b6e626519e40d4b33ac643790ff5063a1fe69a60bacb13d52683e9  /home/ubuntu/native-admission-results.tar.gz
+archive_bytes=412882
+regular_members=524
+PASS: The retrieval archive contains only selected regular files. Private environment files are excluded.

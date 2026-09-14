@@ -1,0 +1,5 @@
+PASS: The guardian fault canceled the stalled benchmark client and preserved failure before fixture release (benchmark-cancel-death).
+Evidence: [EVIDENCE_ROOT]/d2-benchmark-cancel-cEJkF60i/production-green/benchmark-cancel-death
+PASS: The guardian fault canceled the stalled benchmark client and preserved failure before fixture release (benchmark-cancel-breach).
+Evidence: [EVIDENCE_ROOT]/d2-benchmark-cancel-cEJkF60i/production-green/benchmark-cancel-breach
+PASS: Both active benchmark cancellation cases passed.

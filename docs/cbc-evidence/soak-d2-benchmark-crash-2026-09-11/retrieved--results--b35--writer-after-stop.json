@@ -1,0 +1,224 @@
+[
+    {
+        "Id": "57b139f8f57a75d52b7f8dbde056c6feb223371369330e027b5d842985814853",
+        "Created": "2026-09-11T11:51:14.534466975Z",
+        "Path": "/bin/sh",
+        "Args": [
+            "-c",
+            "i=0; while [ \"$i\" -lt 1200 ]; do printf \"%s\\n\" \"$i\" >>/tmp/writes; i=$((i+1)); sleep 0.1; done"
+        ],
+        "State": {
+            "Status": "running",
+            "Running": true,
+            "Paused": false,
+            "Restarting": false,
+            "OOMKilled": false,
+            "Dead": false,
+            "Pid": 54647,
+            "ExitCode": 0,
+            "Error": "",
+            "StartedAt": "2026-09-11T11:51:14.565435597Z",
+            "FinishedAt": "0001-01-01T00:00:00Z"
+        },
+        "Image": "sha256:fc6dddc4c44b1bfe37f41cae8e67d1693828e8f42a91862816d7953e2c9d3f23",
+        "ResolvConfPath": "/var/lib/docker/containers/57b139f8f57a75d52b7f8dbde056c6feb223371369330e027b5d842985814853/resolv.conf",
+        "HostnamePath": "/var/lib/docker/containers/57b139f8f57a75d52b7f8dbde056c6feb223371369330e027b5d842985814853/hostname",
+        "HostsPath": "/var/lib/docker/containers/57b139f8f57a75d52b7f8dbde056c6feb223371369330e027b5d842985814853/hosts",
+        "LogPath": "/var/lib/docker/containers/57b139f8f57a75d52b7f8dbde056c6feb223371369330e027b5d842985814853/57b139f8f57a75d52b7f8dbde056c6feb223371369330e027b5d842985814853-json.log",
+        "Name": "/soak-bench-writer-1",
+        "RestartCount": 0,
+        "Driver": "overlayfs",
+        "Platform": "linux",
+        "MountLabel": "",
+        "ProcessLabel": "",
+        "AppArmorProfile": "docker-default",
+        "ExecIDs": null,
+        "HostConfig": {
+            "Binds": null,
+            "ContainerIDFile": "",
+            "LogConfig": {
+                "Type": "json-file",
+                "Config": {
+                    "max-file": "3",
+                    "max-size": "20m"
+                }
+            },
+            "NetworkMode": "none",
+            "PortBindings": {},
+            "RestartPolicy": {
+                "Name": "no",
+                "MaximumRetryCount": 0
+            },
+            "AutoRemove": false,
+            "VolumeDriver": "",
+            "VolumesFrom": null,
+            "ConsoleSize": [
+                0,
+                0
+            ],
+            "CapAdd": null,
+            "CapDrop": [
+                "ALL"
+            ],
+            "CgroupnsMode": "private",
+            "Dns": null,
+            "DnsOptions": null,
+            "DnsSearch": null,
+            "ExtraHosts": [],
+            "GroupAdd": null,
+            "IpcMode": "private",
+            "Cgroup": "",
+            "Links": null,
+            "OomScoreAdj": 0,
+            "PidMode": "",
+            "Privileged": false,
+            "PublishAllPorts": false,
+            "ReadonlyRootfs": false,
+            "SecurityOpt": [
+                "no-new-privileges"
+            ],
+            "UTSMode": "",
+            "UsernsMode": "",
+            "ShmSize": 67108864,
+            "Runtime": "runc",
+            "Isolation": "",
+            "CpuShares": 0,
+            "Memory": 33554432,
+            "NanoCpus": 500000000,
+            "CgroupParent": "",
+            "BlkioWeight": 0,
+            "BlkioWeightDevice": null,
+            "BlkioDeviceReadBps": null,
+            "BlkioDeviceWriteBps": null,
+            "BlkioDeviceReadIOps": null,
+            "BlkioDeviceWriteIOps": null,
+            "CpuPeriod": 0,
+            "CpuQuota": 0,
+            "CpuRealtimePeriod": 0,
+            "CpuRealtimeRuntime": 0,
+            "CpusetCpus": "",
+            "CpusetMems": "",
+            "Devices": null,
+            "DeviceCgroupRules": null,
+            "DeviceRequests": null,
+            "MemoryReservation": 0,
+            "MemorySwap": 67108864,
+            "MemorySwappiness": null,
+            "OomKillDisable": null,
+            "PidsLimit": 32,
+            "Ulimits": null,
+            "CpuCount": 0,
+            "CpuPercent": 0,
+            "IOMaximumIOps": 0,
+            "IOMaximumBandwidth": 0,
+            "MaskedPaths": [
+                "/proc/acpi",
+                "/proc/asound",
+                "/proc/interrupts",
+                "/proc/kcore",
+                "/proc/keys",
+                "/proc/latency_stats",
+                "/proc/sched_debug",
+                "/proc/scsi",
+                "/proc/timer_list",
+                "/proc/timer_stats",
+                "/sys/devices/virtual/powercap",
+                "/sys/firmware"
+            ],
+            "ReadonlyPaths": [
+                "/proc/bus",
+                "/proc/fs",
+                "/proc/irq",
+                "/proc/sys",
+                "/proc/sysrq-trigger"
+            ]
+        },
+        "Storage": {
+            "RootFS": {
+                "Snapshot": {
+                    "Name": "overlayfs"
+                }
+            }
+        },
+        "Mounts": [],
+        "Config": {
+            "Hostname": "57b139f8f57a",
+            "Domainname": "",
+            "User": "65534:65534",
+            "AttachStdin": false,
+            "AttachStdout": true,
+            "AttachStderr": true,
+            "Tty": false,
+            "OpenStdin": false,
+            "StdinOnce": false,
+            "Env": [
+                "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+            ],
+            "Cmd": [
+                "/bin/sh",
+                "-c",
+                "i=0; while [ \"$i\" -lt 1200 ]; do printf \"%s\\n\" \"$i\" >>/tmp/writes; i=$((i+1)); sleep 0.1; done"
+            ],
+            "Image": "busybox@sha256:fc6dddc4c44b1bfe37f41cae8e67d1693828e8f42a91862816d7953e2c9d3f23",
+            "Volumes": null,
+            "WorkingDir": "",
+            "Entrypoint": null,
+            "Labels": {
+                "com.docker.compose.config-hash": "70704b18d95199a705ddb96319b759e190ab578971593291f8cb71dab56b7b86",
+                "com.docker.compose.container-number": "1",
+                "com.docker.compose.depends_on": "",
+                "com.docker.compose.image": "sha256:fc6dddc4c44b1bfe37f41cae8e67d1693828e8f42a91862816d7953e2c9d3f23",
+                "com.docker.compose.oneoff": "False",
+                "com.docker.compose.project": "soak-bench",
+                "com.docker.compose.project.config_files": "[RUNNER_ROOT]/b37/results/b35/node/docker/shard.yml,[RUNNER_ROOT]/b37/results/b35/output/.docker-owner.nCqqQvAc/labels.wAQh58ng.json",
+                "com.docker.compose.project.working_dir": "[RUNNER_ROOT]/b37/results/b35/node/docker",
+                "com.docker.compose.service": "writer",
+                "com.docker.compose.version": "5.3.1",
+                "fixture.owner": "benchmark-recovery",
+                "io.f1r3fly.soak.owner": "38d0edd4-4d18-43a4-9663-1233ffb08717"
+            }
+        },
+        "NetworkSettings": {
+            "SandboxID": "9129db4c04e4955155890d628f3da32fa0c8f9ea74e58f1c68c047d36b421b0d",
+            "SandboxKey": "/var/run/docker/netns/9129db4c04e4",
+            "Ports": {},
+            "Networks": {
+                "none": {
+                    "IPAMConfig": null,
+                    "Links": null,
+                    "Aliases": null,
+                    "DriverOpts": null,
+                    "GwPriority": 0,
+                    "NetworkID": "a7715833689ce07bce358247798ab59fe3e98feba6609d08a534b34b77fa8407",
+                    "EndpointID": "bc2d56f57258a87f6de66a9bde60d50df4b427a0ff8667576a678f23b9d68b5e",
+                    "Gateway": "",
+                    "IPAddress": "",
+                    "MacAddress": "",
+                    "IPPrefixLen": 0,
+                    "IPv6Gateway": "",
+                    "GlobalIPv6Address": "",
+                    "GlobalIPv6PrefixLen": 0,
+                    "DNSNames": null
+                }
+            }
+        },
+        "ImageManifestDescriptor": {
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "digest": "sha256:29989570aeecad61a019f684218ea74d4b8c1c74f9e0abeb34ca926b81174ee1",
+            "size": 608,
+            "annotations": {
+                "com.docker.official-images.bashbrew.arch": "amd64",
+                "org.opencontainers.image.base.name": "scratch",
+                "org.opencontainers.image.created": "2026-07-27T21:40:37Z",
+                "org.opencontainers.image.revision": "70ce0fb98bee360bbcce132660d727bf6ce55a99",
+                "org.opencontainers.image.source": "https://github.com/docker-library/busybox.git",
+                "org.opencontainers.image.url": "https://hub.docker.com/_/busybox",
+                "org.opencontainers.image.version": "1.37.0-musl"
+            },
+            "platform": {
+                "architecture": "amd64",
+                "os": "linux"
+            }
+        }
+    }
+]

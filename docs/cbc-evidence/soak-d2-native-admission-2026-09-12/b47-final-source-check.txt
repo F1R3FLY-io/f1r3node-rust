@@ -1,0 +1,4 @@
+PASS: All eight final integrated runtime files and all seven formal files match current source bytes.
+35399004d7ac8b9eab14db2fd9f9d1514bd46fbd8993ce530ef3ea94ac69d0c6 scripts/bench/soak-containment.py
+6c62dcc2184d54112acc55112d58f74bda2eaf39ddff57b8040f27a03c5b2210 scripts/bench/run-soak-contained.sh
+08e0fa0c07cb8cf4ec3b326052e65de31421b335b9ad7e5ef08dc8499cb69ce7 scripts/run-merge-recovery-soak.sh

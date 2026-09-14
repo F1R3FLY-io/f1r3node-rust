@@ -1,0 +1,15 @@
+{
+  "active_probes": [
+    {"paths": 5, "clean": 5, "findings": 0, "inconclusive": 0, "scope": "ControllerLoss.md, NativeControllerLoss.md, the TDD plan, Glossary.md, and the package README"},
+    {"paths": 7, "clean": 4, "findings": 3, "inconclusive": 0, "scope": "The six executable files and the work log"}
+  ],
+  "earlier_timeout": "The follow-up probes cover all paths. No path remains unconfirmed in these final probes.",
+  "auxiliary_findings": 12,
+  "dispositions": [
+    {"count": 11, "disposition": "false-positive", "evidence": "handoff-checks/diagnostic-review.jsonc", "reason": "The exception handlers, validated conversions, and strict boolean identity check remain unchanged after the fixture permission correction."},
+    {"count": 1, "file": "docs/work-logs/task-soak-disk-hygiene-stop-2026-09-08T05-06Z.md", "line": 722, "tool": "typos", "disposition": "false-positive", "reason": "The reported letters belong to the exact historical commit identifier bef79ba48."}
+  ],
+  "source_suppressions": false,
+  "blanket_clean_claim": false,
+  "semantic_prose_review": "The added prose keeps scope, ownership, failure, termination, and publication distinct. Human STE Review and maintainer ratification remain pending."
+}

@@ -1,0 +1,31 @@
+[
+    {
+        "Id": "sha256:1231f9bf6c076ef3ee5deac5d45a257276f7b765ebd43d49226a0a327069834c",
+        "RepoTags": [],
+        "RepoDigests": [],
+        "Comment": "Imported from -",
+        "Created": "2026-09-11T06:00:05.412199359Z",
+        "Config": {
+            "Cmd": [
+                "/bin/true"
+            ]
+        },
+        "Architecture": "amd64",
+        "Os": "linux",
+        "Size": 900314,
+        "RootFS": {
+            "Type": "layers",
+            "Layers": [
+                "sha256:25e9719b8227ca784eadc0c7e30ee6640c5214a9c0cf7633baabc5a10a395e22"
+            ]
+        },
+        "Metadata": {
+            "LastTagTime": "2026-09-11T06:00:05.428217856Z"
+        },
+        "Descriptor": {
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "digest": "sha256:1231f9bf6c076ef3ee5deac5d45a257276f7b765ebd43d49226a0a327069834c",
+            "size": 404
+        }
+    }
+]

@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-cat > "$tmp/metrics.py" <<'PY'
+cat >"$tmp/metrics.py" <<'PY'
 METRICS_TO_SCRAPE = [
     "dag_merge_apply_trie_actions_time",
 ]
@@ -13,6 +13,15 @@ METRICS_TO_SCRAPE = [
 COUNTERS_TO_SCRAPE = [
     "is_mergeable_channel_calls",
 ]
+
+
+def compute_metric_deltas(before, after):
+    return {}
+
+
+def format_node_metrics(metrics):
+    lines = []
+    return "\n".join(lines)
 PY
 
 bash "$SCRIPT_DIR/extend-issue24-metrics.sh" "$tmp/metrics.py"

@@ -1,0 +1,26 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 59 and seed 4075303183299927274 with 2 workers on 20 cores with 491MB heap and 64MB offheap memory (Linux 6.17.0-1032-nvidia aarch64, Private Build 1.8.0_502 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file [EVIDENCE_ROOT]/b44/formal/MC_ControllerLoss_current.tla
+Parsing file [EVIDENCE_ROOT]/b44/formal/ControllerLoss.tla
+Semantic processing of module ControllerLoss
+Semantic processing of module MC_ControllerLoss_current
+Starting... (2026-09-11 12:14:07)
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-09-11 12:14:08.
+Error: Invariant ControllerLossStopsOwnedWriter is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ ownedRunning = TRUE
+/\ unownedRunning = TRUE
+/\ driverRunning = TRUE
+/\ monitorRunning = TRUE
+
+State 2: <ControllersCrash line 13, col 5 to line 16, col 49 of module ControllerLoss>
+/\ ownedRunning = TRUE
+/\ unownedRunning = TRUE
+/\ driverRunning = FALSE
+/\ monitorRunning = FALSE
+
+2 states generated, 2 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 2.
+Finished in 01s at (2026-09-11 12:14:08)

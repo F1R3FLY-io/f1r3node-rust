@@ -1,0 +1,1 @@
+PASS: Collector overlay applied, compiled, and remained byte-identical on repeat application.

@@ -1,0 +1,11 @@
+{
+  "launcher_exit": 2,
+  "query_fault_observed": true,
+  "admissions": [
+    "Iteration admitted."
+  ],
+  "unrelated_dead": false,
+  "unrelated_before_bytes": 174,
+  "unrelated_after_bytes": 189,
+  "cleanup_started": false
+}

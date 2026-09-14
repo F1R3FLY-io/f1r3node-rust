@@ -1,0 +1,1 @@
+PASS: 200 captured verification inputs match the current source.

@@ -1,0 +1,8 @@
+docker.io/library/busybox@sha256:fc6dddc4c44b1bfe37f41cae8e67d1693828e8f42a91862816d7953e2c9d3f23: Pulling from library/busybox
+f4255029a25b: Pulling fs layer
+f4255029a25b: Download complete
+f4255029a25b: Pull complete
+d5882b4ad448: Download complete
+Digest: sha256:fc6dddc4c44b1bfe37f41cae8e67d1693828e8f42a91862816d7953e2c9d3f23
+Status: Downloaded newer image for busybox@sha256:fc6dddc4c44b1bfe37f41cae8e67d1693828e8f42a91862816d7953e2c9d3f23
+docker.io/library/busybox@sha256:fc6dddc4c44b1bfe37f41cae8e67d1693828e8f42a91862816d7953e2c9d3f23

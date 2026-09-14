@@ -1,0 +1,4 @@
+## fix/soak-disk-hygiene-stop...origin/fix/soak-disk-hygiene-stop
+ M docs/tdd-plans/soak-gates-2026-09-08.md
+?? scripts/bench/test-soak-native-admission.py
+?? scripts/bench/test-soak-run-domain-admission.sh

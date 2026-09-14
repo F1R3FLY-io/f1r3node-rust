@@ -1,6 +1,7 @@
 # F1R3node Rust — Pure Rust Blockchain Node
 
 ## Project Context
+
 - Pure Rust implementation of the F1R3FLY.io blockchain platform
 - Extracted from the `rust/dev` branch of [f1r3fly](https://github.com/F1R3FLY-io/f1r3fly) as a standalone Rust workspace
 - **No Nix, no SBT, no Scala** — this repo builds with standard Rust tooling (cargo + system deps)
@@ -19,6 +20,7 @@ phrasings. Mathematical notation and theorem naming remain in
 The workspace separates consensus, execution, storage, networking, and node services into focused Rust crates.
 
 ## Platform Requirements
+
 - **Rust nightly** — pinned in `rust-toolchain.toml` (currently nightly-2026-02-09)
 - **protoc** — Protocol Buffers compiler (required by build.rs in node, models, comm)
 - **OpenSSL** — headers and libraries (required by crypto crate)
@@ -27,11 +29,13 @@ The workspace separates consensus, execution, storage, networking, and node serv
 - **Docker** — for running node networks (optional)
 
 ### macOS Quick Setup
+
 ```bash
 brew install protobuf openssl pkg-config just
 ```
 
 ### Workspace Crates (10 crates)
+
 | Crate | Purpose |
 |-------|---------|
 | `node` | Main binary: CLI, gRPC server, HTTP API, REPL, metrics |
@@ -46,8 +50,10 @@ brew install protobuf openssl pkg-config just
 | `graphz` | DAG traversal and graph algorithms |
 
 ### Multi-Consensus Design
+
 The platform is designed to be neutral about consensus and state-machine
 replication. One consensus mechanism is implemented today:
+
 1. **Casper CBC** — BFT with mathematical safety proofs (implemented:
    Rust consensus in the `casper` crate, with a Rholang economic layer
    in `casper/src/main/resources/PoS.rhox` — bonds, rewards, slashing
@@ -60,10 +66,13 @@ artifacts in this repository yet:
 4. **Casanova** — Adaptive consensus for high-performance scenarios
 
 ### External Dependency: rholang-parser
+
 The Rholang parser is an external crate:
+
 ```toml
 rholang-parser = { git = "https://github.com/F1R3FLY-io/rholang-rs", rev = "d25f953a" }
 ```
+
 Used by `rholang` and `rspace++` crates.
 
 ## Development Commands
@@ -95,7 +104,8 @@ docker compose -f docker/shard.yml up
 ## Code Style and Standards
 
 ### Rust Guidelines
-- **No comments** unless explicitly requested by user
+
+- Do not add source code comments unless the user explicitly requests them.
 - Zero-cost abstractions, proper ownership
 - Async/await with Tokio runtime
 - Error handling: `eyre` for application errors, `thiserror` for library errors
@@ -103,17 +113,21 @@ docker compose -f docker/shard.yml up
 - Serialization: `prost` for protobuf, `serde` for JSON/bincode
 
 ### Build Scripts
+
 Three crates have `build.rs` for protobuf code generation:
+
 - `node/build.rs` — `repl.proto`, `lsp.proto`
 - `models/build.rs` — `RhoTypes.proto`, `CasperMessage.proto`, `DeployServiceV1.proto`, etc.
 - `comm/build.rs` — `kademlia.proto`
 
 ### Important Configuration
+
 - `.cargo/config.toml` — stack size (8MB for rholang recursion), native CPU features
 - `rust-toolchain.toml` — nightly channel pin
 - `Cross.toml` — cross-compilation for amd64/arm64
 
 ### Recommended Claude Code local settings
+
 Add to `.claude/settings.local.json` (personal, not committed) when working
 in this repo with Claude Code:
 
@@ -139,6 +153,7 @@ in this repo with Claude Code:
 Both settings take effect at the next session start.
 
 ## Network Ports
+
 | Port | Service |
 |------|---------|
 | 40400 | Protocol Server |
@@ -148,6 +163,7 @@ Both settings take effect at the next session start.
 | 40404 | Peer Discovery |
 
 ## Security
+
 - Never log or expose private keys
 - Validate all user inputs and state transitions
 - TLS 1.3 for P2P communications
@@ -156,6 +172,7 @@ Both settings take effect at the next session start.
 ## Git and Version Control
 
 ### Git Interaction Policy (agents)
+
 - Use `/quick-commit` for git add/commit operations
 - Use `/recursive-push` for git push operations
 - Do not run `git add`, `git commit`, or `git push` directly unless explicitly requested
@@ -180,12 +197,14 @@ Both settings take effect at the next session start.
 **Full Documentation**: [Git Interaction Policy](https://gitlab.com/smart-assets.io/gitlab-profile/-/blob/master/docs/common/git-interaction-policy.md) (canonical; also available at `../../SA/top-level-gitlab-profile/docs/common/git-interaction-policy.md` in a multi-repo workspace checkout).
 
 ### Commit Messages
+
 - Use `[agent]` prefix in agentic mode
 - Do NOT include Claude Code attribution footer or emoji
 - Do NOT include Co-Authored-By lines
 - Keep commit messages clean and professional
 
 ### Branch Strategy
+
 - `master` is the default branch and release line. Maintainers promote `dev` to `master`.
 - `dev` is the integration branch. Feature and fix pull requests target this branch.
 - Feature branches (`feature/`, `fix/`, `docs/`, `perf/`, `chore/`) branch from and target `dev`
@@ -193,7 +212,9 @@ Both settings take effect at the next session start.
 - There is no `main` branch, and `staging` is deprecated (fully contained in `dev`)
 
 ## Relationship to f1r3node
+
 This repo was extracted from `F1R3FLY-io/f1r3fly` (`rust/dev` branch). Key differences:
+
 - **Removed**: Nix flake, SBT build, Scala source, `.envrc`, JVM tooling
 - **Kept**: All 10 Rust crates, Cargo workspace, protobuf definitions, Docker configs, docs
 - **Added**: Native dependency install instructions (Homebrew, apt)
@@ -258,49 +279,40 @@ next_steps:
 
 ### Configuration File Conventions
 
-When creating or modifying configuration files, follow these conventions to respect existing project preferences:
+Prefer JSON with Comments (JSONC), with the `.jsonc` extension, for new human-edited configuration and metadata files.
 
-**JSON Format Preference Order:**
+This preference includes claim inventories and other maintained structured records. It applies to assistant actions, commands, and scripts that create these files.
 
-1. **Check for existing files first**: Before creating any `.json` file, check if `.jsonc` or `.json5` variants exist
-2. **Prefer existing format**: If `config.jsonc` or `config.json5` exists, use that format instead of creating `config.json`
-3. **Default to JSONC**: When creating new config files, prefer `.jsonc` (JSON with Comments) for better maintainability
+Allow explanatory comments in these files. The source code comment restriction does not apply to JSONC configuration or metadata files.
 
-**Why This Matters:**
-- Projects may have established preferences for comment-supporting JSON formats
-- Creating duplicate configs (e.g., both `biome.json` and `biome.jsonc`) causes confusion
-- JSONC allows inline documentation which improves maintainability
+- Check for existing `.jsonc`, `.json5`, and `.json` variants before creating a file.
+- Edit the existing supported variant instead of creating duplicate files.
+- For repository-owned readers, add JSONC support rather than changing human-edited files back to `.json`.
+- Use a JSONC-aware parser, not regular expressions that remove comments.
+- Preserve strict `.json` filenames and syntax when an external tool, protocol, or data format requires them.
+- Preserve immutable historical evidence and machine-generated JSON artifacts.
 
-**Examples:**
+For an authorized migration to `.jsonc`:
 
-| If this exists... | Do not create this... | Use this action... |
-|--------------|-----------------|------------|
-| `biome.jsonc` | `biome.json` | Edit the existing `biome.jsonc` |
-| `tsconfig.json5` | `tsconfig.json` | Edit the existing `tsconfig.json5` |
-| `eslint.config.jsonc` | `eslint.config.json` | Edit the existing file |
-| Nothing | - | Create new file as `.jsonc` when comments are useful |
+1. Update all consumers, references, validators, and tests for the new path and comment syntax.
+2. Test comment support and rejection of malformed input.
 
-**File Discovery Pattern:**
-
-Before creating any config file, check for variants:
-```bash
-# Check for config variants (example for biome)
-ls biome.json biome.jsonc biome.json5 2>/dev/null
-```
-
-This applies to all slash commands and scripts that create configuration files.
+A filename change alone does not provide JSONC parsing support.
 
 #### Git Operations
+
 - `/quick-commit` - Stage and commit changes (required in safe mode)
 - `/recursive-push` - Push across repositories
 
 #### Task Management
+
 - `/nextTask` - Find and select next task to work on
 - `/implement` - Begin implementation of a task
 - `/epic-review` - Preview and summarize epics
 - `/epic-hygiene` - Archive completed epics
 
 #### Workspace Sync
+
 - `/harmonize` - Sync workspace policies into this repo
 - `/multi-repo-sync` - Workspace-wide sync orchestration
 
@@ -313,6 +325,7 @@ This applies to all slash commands and scripts that create configuration files.
 Contributors MUST ensure their code, commits, and documentation do NOT contain PII:
 
 **Check before committing:**
+
 - [ ] No absolute file paths with usernames in code or documentation
 - [ ] No personal email addresses in code (use generic examples like `user@example.com`)
 - [ ] No real user data in tests or examples (use synthetic/fake data only)
@@ -323,12 +336,14 @@ Contributors MUST ensure their code, commits, and documentation do NOT contain P
 - [ ] No IP addresses, MAC addresses, or device identifiers in examples
 
 **If you accidentally committed PII:**
+
 1. **DO NOT** push to remote repository
 2. Use `git reset` to remove the commit
 3. If already pushed, contact maintainers immediately
 4. Repository history may need to be rewritten to remove PII
 
 **Use these instead:**
+
 - File paths: Use relative paths or generic placeholders (`[WORKSPACE_ROOT]/project/`)
 - Email addresses: Use `user@example.com`, `admin@example.com`
 - Names: Use `John Doe`, `Jane Smith`, `User123`
@@ -337,6 +352,7 @@ Contributors MUST ensure their code, commits, and documentation do NOT contain P
 - Dates: Use recent but generic dates, not specific personal dates
 
 **For test data:**
+
 - Use test data generators that create realistic but fake data
 - Use well-known test fixtures (e.g., `test@example.com`)
 - Never use production or real user data in development/testing

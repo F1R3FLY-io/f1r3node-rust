@@ -1,0 +1,13 @@
+64b02472c fix(soak): refuse work after a crashed benchmark
+ docs/claims/soak-claim-inventory.jsonc             |  14 ++-
+ .../tlaplus/soak_disk/BenchmarkCrashRecovery.tla   |  37 ++++++
+ .../soak_disk/MC_BenchmarkCrashRecovery.cfg        |   6 +
+ .../soak_disk/MC_BenchmarkCrashRecovery.tla        |   3 +
+ ...C_BenchmarkCrashRecovery_unrecorded_pre_fix.cfg |   6 +
+ ...C_BenchmarkCrashRecovery_unrecorded_pre_fix.tla |   3 +
+ .../test-soak-real-benchmark-crash-recovery.sh     | 134 +++++++++++++++++++++
+ scripts/ci/check-tla-invariants.sh                 |   3 +
+ scripts/ci/test-check-tla-invariants.sh            |   4 +-
+ scripts/ci/test-soak-pr-formal-gate.sh             |   3 +
+ scripts/run-merge-recovery-soak.sh                 |  25 ++++
+ 11 files changed, 233 insertions(+), 5 deletions(-)

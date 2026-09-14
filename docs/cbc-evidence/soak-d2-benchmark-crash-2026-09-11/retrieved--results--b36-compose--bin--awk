@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${*: -1}" == /proc/meminfo && "$1" == *MemAvailable* ]]; then
+    result=$(/usr/bin/awk "$@")
+    printf '%s\n' "$result" >>"$SOAK_REAL_EVIDENCE/memory-samples.txt"
+    printf '%s\n' "$result"
+    exit 0
+fi
+exec /usr/bin/awk "$@"

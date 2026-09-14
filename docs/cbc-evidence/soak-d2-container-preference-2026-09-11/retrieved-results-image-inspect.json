@@ -1,0 +1,44 @@
+[
+    {
+        "Id": "sha256:fc6dddc4c44b1bfe37f41cae8e67d1693828e8f42a91862816d7953e2c9d3f23",
+        "RepoTags": [
+            "busybox@sha256:fc6dddc4c44b1bfe37f41cae8e67d1693828e8f42a91862816d7953e2c9d3f23"
+        ],
+        "RepoDigests": [
+            "busybox@sha256:fc6dddc4c44b1bfe37f41cae8e67d1693828e8f42a91862816d7953e2c9d3f23"
+        ],
+        "Created": "2024-09-26T21:31:42Z",
+        "Config": {
+            "Env": [
+                "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+            ],
+            "Cmd": [
+                "sh"
+            ]
+        },
+        "Architecture": "amd64",
+        "Os": "linux",
+        "Size": 880582,
+        "RootFS": {
+            "Type": "layers",
+            "Layers": [
+                "sha256:cdb90b3acfad4e427a5bb3dc46cef97d9b63942f7c572d385ac61eb545a7cef2"
+            ]
+        },
+        "Metadata": {
+            "LastTagTime": "2026-09-11T05:59:12.509203634Z"
+        },
+        "Descriptor": {
+            "mediaType": "application/vnd.oci.image.index.v1+json",
+            "digest": "sha256:fc6dddc4c44b1bfe37f41cae8e67d1693828e8f42a91862816d7953e2c9d3f23",
+            "size": 8422
+        },
+        "Identity": {
+            "Pull": [
+                {
+                    "Repository": "docker.io/library/busybox"
+                }
+            ]
+        }
+    }
+]

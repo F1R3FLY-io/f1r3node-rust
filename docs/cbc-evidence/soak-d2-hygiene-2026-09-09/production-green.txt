@@ -1,0 +1,2 @@
+PASS: The driver canceled the stalled hygiene client and published failure before fixture release.
+Evidence: [EVIDENCE_ROOT]/d2-hygiene-3Wqnuu6P/production-green

@@ -1,0 +1,8 @@
+/case/test.sh: line 78: evidence/attribution-started.txt: No such file or directory
+/case/test.sh: line 78: evidence/attribution-started.txt: No such file or directory
+/case/test.sh: line 78: evidence/attribution-started.txt: No such file or directory
+/case/test.sh: line 78: evidence/attribution-started.txt: No such file or directory
+/case/test.sh: line 78: evidence/attribution-started.txt: No such file or directory
+/case/test.sh: line 78: evidence/attribution-started.txt: No such file or directory
+/case/test.sh: line 78: evidence/attribution-started.txt: No such file or directory
+FAIL: Disk attribution started before the minimal breach record was published.

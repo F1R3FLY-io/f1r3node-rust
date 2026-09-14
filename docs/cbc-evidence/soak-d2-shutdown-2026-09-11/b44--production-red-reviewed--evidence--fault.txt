@@ -1,0 +1,1 @@
+The fixture confirmed driver and monitor death through their pidfds.

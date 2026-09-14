@@ -1,0 +1,2 @@
+FAIL: A stalled benchmark prevented failure publication and client cancellation before fixture release (benchmark-cancel-death).
+Evidence: [EVIDENCE_ROOT]/d2-benchmark-cancel-cEJkF60i/production-red-death

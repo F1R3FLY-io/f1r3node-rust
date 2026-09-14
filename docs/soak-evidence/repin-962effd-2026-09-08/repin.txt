@@ -1,0 +1,22 @@
+verified: 962effd17708192627bd249362761c0ccb1fd5fa exists in F1R3FLY-io/system-integration
+re-pinned 022ae6d304ff47a112d7db76be956736cf056e0b -> 962effd17708192627bd249362761c0ccb1fd5fa in:
+  /home/bf_spark/src/F1r3fly/f1r3node-rust/.github/oci-validation.env
+  /home/bf_spark/src/F1r3fly/f1r3node-rust/.github/workflows/_integration-pipeline.yml
+  /home/bf_spark/src/F1r3fly/f1r3node-rust/.github/workflows/merge-recovery-soak.yml
+ok: launch_ephemeral_runners gates on await_approval
+ok: build_docker_image gates on await_approval
+ok: credentials confined to launch_ephemeral_runners
+ok: every credential-reading job names an environment
+ok: both pipeline callers pass secrets down
+ok: each push SHA runs tests independently and release side effects use ref-scoped controls
+ok: CI_RUNNER_COMPARTMENT_OCID pinned as a literal in .github/workflows/ci-runner-reaper.yml, and consistent wherever else it appears
+ok: fork-code checkouts set persist-credentials:false and allow-unsafe-pr-checkout:true
+ok: every workflow run: block parses under bash -n
+ok: soak canaries are isolated and scheduled routing maps daily to dev and weekend to master
+ok: .github/workflows/merge-recovery-soak.yml drops unfetchable chart SVGs and re-filters the manifest instead of blocking the publish
+ok: .github/workflows/soak-checkpoint-publish.yml drops unfetchable chart SVGs and re-filters the manifest instead of blocking the publish
+ok: .github/workflows/soak-dashboard-pages.yml drops unfetchable chart SVGs and re-filters the manifest instead of blocking the publish
+ok: .github/workflows/merge-recovery-soak.yml stages chart renders before publishing them
+ok: .github/workflows/soak-dashboard-pages.yml stages chart renders before publishing them
+All workflow security invariants hold.
+reminder: add a dated entry to the pin-history comment above the pin in .github/workflows/merge-recovery-soak.yml — what the new ref carries and how it was verified

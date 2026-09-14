@@ -1,0 +1,107 @@
+{
+  "schema_version": 1,
+  "role": "hosted-g0-verification-record",
+  "authority": "source-binding-hosted-baselines-and-enforcement-observations-only",
+  "candidate_head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+  "historical_b3_sha": "9310ae2ceda65d1944e1235336fd12df489e4197",
+  "source_binding": "read-source-sha256-at-candidate-head-not-at-future-working-tree",
+  "source_sha256": {
+    ".github/workflows/ci.yml": "5e73cf64ac529828ca1871959e60f644118766d4493b3c59647f4c24b053588c",
+    ".github/workflows/slashing-tests.yml": "460be11512b1f01f79387d7a3dad6c60d3c45627b5790436f9db6e165eac69fb",
+    "scripts/ci/test-soak-claim-inventory.sh": "dbd16e78ab45353585a3beff0942141fd9c6ce9a1f45dccc9392e790b0fb165e",
+    "scripts/ci/check-tla-invariants.sh": "0b03474948e8738539515d15f734cfd47e0201045a0f8fd5648bdcd929c61b27",
+    "scripts/ci/test-check-tla-invariants.sh": "31291fc837b98385f5c7d3497ee20bb152b3d62e4b6e889ba94a4e74c8f1c46b",
+    "scripts/ci/test-soak-pr-formal-gate.sh": "5e349346e03a2b534b35c6c30e152152f8c3bceb32d2982a00217b442eb71756",
+    "docs/claims/soak-claim-inventory.json": "a34407af5a6c2696f14a298d697e6881713ae313f7828ca986bcc05ff0544765",
+    "docs/plans/soak-recurrence-prevention-2026-09-08.md": "26a5f966baa060be79899e51b6c2762c799264e7c82adb813d940d6a9ca6de0c"
+  },
+  "raw_directory": "/home/bf_spark/soak-evidence/f1r3node-rust/g0-hosted-d6aaba962-20260908T153728Z",
+  "raw_sources_sha256": {
+    "check-runs-9310ae2ce.json": "323ce6c927b5850d7fd7f7cb93e728e961b89079b98d0eaa1a21546890e2a8a8",
+    "check-runs-d6aaba962.json": "ddb29025cf36cea9e3bc0aff53a49e4024edf50ca8cafd3ed3686c6e7254dc63",
+    "check-runs-final.json": "ddb29025cf36cea9e3bc0aff53a49e4024edf50ca8cafd3ed3686c6e7254dc63",
+    "dev-classic-protection-error.txt": "685157c935a04272c2f9e8d1f4d69761d4e1c2d6c8f7c4d76ded2a04fdedf107",
+    "dev-classic-protection-exit.txt": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+    "dev-classic-protection-response.txt": "3e4ef127d5082de86c763db188444b4f827c342ced0279eb45170732b0bc8370",
+    "dev-rules.json": "bb8d060d7de40671a7f91d712fccc25a52b05ddf83a6c4921eef20f58658d9fc",
+    "final-observed-at.txt": "8807c8b8dd93d8165beebef3632d319a48b10cd5ca7acc1c1d82524a299b8b0e",
+    "git-commit-28444208dd1db4a4928a0a8e20e1f586b9c9c065.json": "37ad186cab4dbce6d9207510ff93c9f7808229e239a59497406fe5c7c005b380",
+    "git-commit-d50dc533ddac3acf8277c31a4fb75c8232cb99ea.json": "a4bbb7eec3ccab129d7fc5e086c2f8d87878882012e0f692b7b3fac8dde3acae",
+    "job-102109798473.json": "da598d7334fdb3d4157a769af4b85a60ac14f6110f8e39d28fbc1fefa78391d7",
+    "job-102109798473.txt": "e7cc288af743ca8ebaaaecbfa95417cef52267affe0b030e8fc2c82e20d465a7",
+    "job-102121946596.json": "32d7e459298d052ab0261e6b67f3913eb5cc6ebf22e6b7ed5d7db1e267bf21a4",
+    "job-102121946596.txt": "57d7f878fc5d626a1246f9fc93bba7bb202d696f712b7238f8b7b8d179af3480",
+    "job-102122023044.json": "5fc6737cc3712c1a8dbdd48f1c281b42b7ef86dc3992267ce7f74e3928066c95",
+    "job-102122023044.txt": "ce3dbc05f907a447fd68b1bde5b6afdaeb4302cadffc3399b6d6fa7651f5cebb",
+    "job-102123184076.json": "795c8b87896182d8a5fcd084a2b3503d773ff6ae0d5b3e4ab5608d5035f47a19",
+    "job-102123184076.txt": "56c68df7bbffc8c8c2d3fd7a256f15a3dc2df63706c9f3a06e7f9e39c060da48",
+    "job-102127145707.json": "677e6b28edebc7f796250626fc8d735444114be3701720bd52f5f9b8cb49bf68",
+    "job-102127145707.txt": "4ea5763a18a73cf8ea9651da513722e471f296820d80cf1aa7bc3769c8a44800",
+    "job-102127145754.json": "441debc3905a31656bc88da3f3185f261ea284a2093c7f06129eb2fac86b10ac",
+    "job-102127145754.txt": "3c6d5b20e25b59cad6782c3da64b001029ca90c83ea2f25ad9bcd08112339ff8",
+    "jobs-34244230926.json": "f22eb2166a15a29454749a8d619e0a4221792c392bffc93e97ecf675d87c329d",
+    "jobs-34244231314.json": "a3f9bc65a9cfe5f6f4e09511f56a92c78a4154d7745985c7b1086ff99f4fa71c",
+    "observed-at.txt": "b2bb968f843f54a15449f3bb14cc6a34fe09cfebcb0491a742e0dadfa968aa86",
+    "pr-399-final.json": "030163fb7d47e599e14c3575f816fe4ce9c253bcb8d2ad92868a165925773c14",
+    "pr-399.json": "030163fb7d47e599e14c3575f816fe4ce9c253bcb8d2ad92868a165925773c14",
+    "ruleset-14299997.json": "7f55e7756594c1984694f224f5f1eb0d5afbd9fd13490ad1583087c5097e9cf6",
+    "ruleset-15773875.json": "9f83f8991cb23b405f447950b2f993eec98a08e89f480c7156de34b2c4bbaae6",
+    "rulesets.json": "e67e5c3c1cdb2d9c7e36e442feda3b5fd4d066024f1f0941dd4a6f7f3504421a",
+    "run-34232911628.json": "354f2105840093747dbe952e69ef506d7b446b5593432b3fdfbbc9ca34698534",
+    "run-34244230926.json": "bebfcb4d3d92754381552d7f6270554eb71a4eb40c5a935538fd250a63701f68",
+    "run-34244231314-final.json": "034f60a9c8ba53c3f6be528ee3d8c5be9f931aaf736b1a0a99ec8e4ad19c27dc",
+    "run-34244231314.json": "034f60a9c8ba53c3f6be528ee3d8c5be9f931aaf736b1a0a99ec8e4ad19c27dc",
+    "source-bindings.json": "8a7da01e46a41c38ba5dc7921032b30664aca7c62ab060629e6a88c50dc8b04f",
+    "tla-artifact-10063312912.zip": "67c33849b3cd439fb5e6ded2fd8294b29413086562b66d52d19b9045298252e0",
+    "tla-artifacts.json": "f44da7381f7850b67b0cc8c1adc262de0197affeca65bbd3e5ea85d32654cedb",
+    "tlc/tlc-carrier_index-MC_CarrierIndex.log": "ef3781f9e0611bd647a976f61a6fb53a2f4b22e70d78f6aa364eac0c76e5a813",
+    "tlc/tlc-carrier_index-MC_CarrierIndex_dag_first_pre_fix.log": "a9ee123af53042e36bbc15ba61bb48e651effbd158ee232a4027c453df4f8bb5",
+    "tlc/tlc-carrier_index-MC_CarrierIndex_read_failure_pre_fix.log": "e61315cca5cc3f418d9d8138ad294b7f1842c978532ae66a0e01eb29ddd56df1",
+    "tlc/tlc-replay_liveness-MC_ReplayHotLoop.log": "f0f3a348b7146cbf31ec5112f6be9a23994c5a3eead2fe34b4eeed817557d81e"
+  },
+  "tlc_archive_members": [
+    {
+      "archive_member": "tlc-carrier_index-MC_CarrierIndex.log",
+      "retained_file": "tlc-carrier_index-MC_CarrierIndex.txt",
+      "sha256": "ef3781f9e0611bd647a976f61a6fb53a2f4b22e70d78f6aa364eac0c76e5a813"
+    },
+    {
+      "archive_member": "tlc-carrier_index-MC_CarrierIndex_dag_first_pre_fix.log",
+      "retained_file": "tlc-carrier_index-MC_CarrierIndex_dag_first_pre_fix.txt",
+      "sha256": "a9ee123af53042e36bbc15ba61bb48e651effbd158ee232a4027c453df4f8bb5"
+    },
+    {
+      "archive_member": "tlc-carrier_index-MC_CarrierIndex_read_failure_pre_fix.log",
+      "retained_file": "tlc-carrier_index-MC_CarrierIndex_read_failure_pre_fix.txt",
+      "sha256": "e61315cca5cc3f418d9d8138ad294b7f1842c978532ae66a0e01eb29ddd56df1"
+    },
+    {
+      "archive_member": "tlc-replay_liveness-MC_ReplayHotLoop.log",
+      "retained_file": "tlc-replay_liveness-MC_ReplayHotLoop.txt",
+      "sha256": "f0f3a348b7146cbf31ec5112f6be9a23994c5a3eead2fe34b4eeed817557d81e"
+    }
+  ],
+  "output_sha256": {
+    "README.md": "39018998d3e4fa3cedbfdd8e587966137df96d5260ff050684d14b3f9e9567d1",
+    "log-excerpts.json": "6486760bca3b8f4892347f8c44a8375a4850f6a0b472d29d363e0d8126811ddc",
+    "observation.json": "e2c1503860fcb6655167daee90f2b6e530171a4df802d2483df127729cf4c489",
+    "source-bindings.json": "0fde9288cce6fdfb2aea6bfcdda55b16a7ca85c3df2ac288524ef09899c07029",
+    "tlc-carrier_index-MC_CarrierIndex.txt": "ef3781f9e0611bd647a976f61a6fb53a2f4b22e70d78f6aa364eac0c76e5a813",
+    "tlc-carrier_index-MC_CarrierIndex_dag_first_pre_fix.txt": "a9ee123af53042e36bbc15ba61bb48e651effbd158ee232a4027c453df4f8bb5",
+    "tlc-carrier_index-MC_CarrierIndex_read_failure_pre_fix.txt": "e61315cca5cc3f418d9d8138ad294b7f1842c978532ae66a0e01eb29ddd56df1",
+    "tlc-replay_liveness-MC_ReplayHotLoop.txt": "f0f3a348b7146cbf31ec5112f6be9a23994c5a3eead2fe34b4eeed817557d81e"
+  },
+  "g0_status": "pending",
+  "claims_discharged": [
+
+  ],
+  "limitations": [
+    "Complete checkout-tree equality does not independently attest the workflow-control revision.",
+    "Inventory validity and bounded formal baselines do not discharge the pending finalization and disk claims.",
+    "The classic-protection query failed with HTTP 403. Maintainer confirmation remains required.",
+    "Native required-status checks accept skipped and neutral outcomes. Success-only execution needs separate enforcement.",
+    "No protected-branch fault experiment or bypass-policy validation was performed.",
+    "No acceptance identity or full-duration result was established.",
+    "Raw records remain local, outside target/. They are not an off-host backup."
+  ]
+}

@@ -1,0 +1,52 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 21 and seed 1327608234578418815 with 2 workers on 20 cores with 491MB heap and 64MB offheap memory (Linux 6.17.0-1032-nvidia aarch64, Private Build 1.8.0_502 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /home/bf_spark/src/F1r3fly/f1r3node-rust/formal/tlaplus/soak_disk/MC_DiskStopDeadline.tla
+Parsing file /home/bf_spark/src/F1r3fly/f1r3node-rust/formal/tlaplus/soak_disk/DiskStopDeadline.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/TLC.tla
+Parsing file /tmp/Sequences.tla
+Parsing file /tmp/FiniteSets.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module DiskStopDeadline
+Semantic processing of module MC_DiskStopDeadline
+Starting... (2026-09-09 13:58:58)
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-09-09 13:58:59.
+Model checking completed. No error has been found.
+  Estimates of the probability that TLC did not check all reachable states
+  because two distinct states had the same fingerprint:
+  calculated (optimistic):  val = 0.0
+The coverage statistics at 2026-09-09 13:58:59
+<Init line 8, col 1 to line 8, col 4 of module DiskStopDeadline>: 1:1
+  line 9, col 5 to line 12, col 23 of module DiskStopDeadline: 1
+<Tick line 14, col 1 to line 14, col 4 of module DiskStopDeadline>: 2:2
+  line 15, col 8 to line 15, col 25 of module DiskStopDeadline: 7
+  |line 15, col 8 to line 15, col 12 of module DiskStopDeadline: 5
+  line 16, col 8 to line 16, col 18 of module DiskStopDeadline: 2
+  line 17, col 8 to line 17, col 29 of module DiskStopDeadline: 2
+  line 18, col 8 to line 18, col 53 of module DiskStopDeadline: 2
+  line 19, col 8 to line 19, col 52 of module DiskStopDeadline: 2
+  line 20, col 8 to line 20, col 60 of module DiskStopDeadline: 2
+<CommandsReturn line 22, col 1 to line 22, col 14 of module DiskStopDeadline>: 2:2
+  line 23, col 8 to line 23, col 25 of module DiskStopDeadline: 7
+  |line 23, col 8 to line 23, col 12 of module DiskStopDeadline: 5
+  line 24, col 8 to line 24, col 26 of module DiskStopDeadline: 2
+  line 25, col 8 to line 25, col 48 of module DiskStopDeadline: 2
+<TypeOK line 30, col 1 to line 30, col 6 of module DiskStopDeadline>
+  line 31, col 5 to line 34, col 27 of module DiskStopDeadline: 5
+<StopWithinBudget line 36, col 1 to line 36, col 16 of module DiskStopDeadline>
+  line 36, col 21 to line 36, col 53 of module DiskStopDeadline: 5
+  |line 36, col 21 to line 36, col 38 of module DiskStopDeadline: 5
+  |line 36, col 43 to line 36, col 53 of module DiskStopDeadline: 2
+<KillFollowsTerm line 37, col 1 to line 37, col 15 of module DiskStopDeadline>
+  line 37, col 20 to line 37, col 39 of module DiskStopDeadline: 5
+  |line 37, col 20 to line 37, col 27 of module DiskStopDeadline: 5
+  |line 37, col 32 to line 37, col 39 of module DiskStopDeadline: 1
+End of statistics.
+5 states generated, 5 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 3.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 2 and the 95th percentile is 2).
+Finished in 01s at (2026-09-09 13:58:59)

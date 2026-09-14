@@ -1,0 +1,14 @@
+commit bef79ba48cf024f13f5cf568894c174ac0a9ad2f
+Author:     Jeff Turner <1573697+jeffrey-l-turner@users.noreply.github.com>
+AuthorDate: Fri Sep 11 07:15:51 2026 -0700
+Commit:     Jeff Turner <1573697+jeffrey-l-turner@users.noreply.github.com>
+CommitDate: Fri Sep 11 07:15:51 2026 -0700
+
+    fix(soak): skip the crash monitor stop after a handled exit
+    
+    - Write a handled-exit marker when the driver completes its own exit handling.
+    - Make the crash monitor read the marker and exit without a second stop.
+    - Add the CrashMonitorExit model with its unconditional control and register it in the gates.
+    - Add the B38 crash stop and B39 monitor exit plan entries.
+    - Rebind the claim inventory to 5a211fb5c and the new model files.
+    - Keep B38 and B39 evidence, D2, and acceptance pending.

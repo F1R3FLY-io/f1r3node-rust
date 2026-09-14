@@ -1,0 +1,1 @@
+The initial verification attempt stopped at its changed-HEAD guard before creating a TLC output directory. The runtime payloads still match current source.

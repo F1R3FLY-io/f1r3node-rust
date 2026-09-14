@@ -1,0 +1,1 @@
+orchestrator host guardian: host available RAM 1024MB < floor 4096MB (hard floor 2048MB, consecutive 1); writer termination is unconfirmed

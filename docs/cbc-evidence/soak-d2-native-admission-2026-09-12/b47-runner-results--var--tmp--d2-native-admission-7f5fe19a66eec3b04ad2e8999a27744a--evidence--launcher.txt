@@ -1,0 +1,1 @@
+Native containment refused work: Command '['/usr/bin/systemctl', 'show', 'soak-native-26ccc6c5189042eb8590ac64eff9fff2.service', '--property=MainPID,InvocationID,ControlGroup,ActiveState,SubState,Result,ExecMainStatus,KillMode,Restart,User,Description,NoNewPrivileges,CapabilityBoundingSet']' timed out after 3 seconds

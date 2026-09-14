@@ -1,0 +1,2 @@
+[EVIDENCE_ROOT]/build-record.rb:60: warning: nested repeat operator '+' and '?' was replaced with '*' in regular expression
+[EVIDENCE_ROOT]/build-record.rb:26:in `<main>': The actual TLC logs are incomplete. (RuntimeError)

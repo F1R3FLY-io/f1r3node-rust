@@ -1,0 +1,1 @@
+{"backend": "systemd-native", "unit": "soak-native-34f8d2cd19ad4f9684ac73181b968518.service", "uid": 65534, "driver_pid": 6388, "termination": "unconfirmed", "invocation_id": "6d30e76016fe43d7a4deea0c8b4286d9", "cgroup": "/system.slice/soak-native-34f8d2cd19ad4f9684ac73181b968518.service"}

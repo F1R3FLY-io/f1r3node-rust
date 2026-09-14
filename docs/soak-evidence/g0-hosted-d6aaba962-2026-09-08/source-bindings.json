@@ -1,0 +1,47 @@
+[
+  {
+    "job_id": 102122023044,
+    "pr_head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+    "actual_checkout_sha": "28444208dd1db4a4928a0a8e20e1f586b9c9c065",
+    "tree_sha": "3340e45c5dc961ec5a97a7679cc961669c6d7935",
+    "checkout_parents": [
+      "cdf447ac18710d9702a27379bce6c946f421be46",
+      "d6aaba9628536245fc42183d1682539583d6550b"
+    ],
+    "complete_tree_equal": true,
+    "workflow_control_sha": null,
+    "inventory_sha256": "a34407af5a6c2696f14a298d697e6881713ae313f7828ca986bcc05ff0544765",
+    "inventory_input_count": 126,
+    "inventory_inputs_verified_at_head": true
+  },
+  {
+    "job_id": 102121946596,
+    "pr_head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+    "actual_checkout_sha": "28444208dd1db4a4928a0a8e20e1f586b9c9c065",
+    "tree_sha": "3340e45c5dc961ec5a97a7679cc961669c6d7935",
+    "checkout_parents": [
+      "cdf447ac18710d9702a27379bce6c946f421be46",
+      "d6aaba9628536245fc42183d1682539583d6550b"
+    ],
+    "complete_tree_equal": true,
+    "workflow_control_sha": null,
+    "inventory_sha256": "a34407af5a6c2696f14a298d697e6881713ae313f7828ca986bcc05ff0544765",
+    "inventory_input_count": 126,
+    "inventory_inputs_verified_at_head": true
+  },
+  {
+    "job_id": 102109798473,
+    "pr_head_sha": "9310ae2ceda65d1944e1235336fd12df489e4197",
+    "actual_checkout_sha": "d50dc533ddac3acf8277c31a4fb75c8232cb99ea",
+    "tree_sha": "6107b8b25c0a5422b4a1e967f99e261275498e86",
+    "checkout_parents": [
+      "cdf447ac18710d9702a27379bce6c946f421be46",
+      "9310ae2ceda65d1944e1235336fd12df489e4197"
+    ],
+    "complete_tree_equal": true,
+    "workflow_control_sha": null,
+    "inventory_sha256": "ed3ae9cd290e0f19a4c38523bbbd0beb53d48062f2e7a348660d6c4cdfc122a5",
+    "inventory_input_count": 101,
+    "inventory_inputs_verified_at_head": true
+  }
+]

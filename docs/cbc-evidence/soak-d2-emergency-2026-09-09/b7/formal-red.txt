@@ -1,0 +1,70 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 72 and seed 6474178220362947730 with 2 workers on 20 cores with 491MB heap and 64MB offheap memory (Linux 6.17.0-1032-nvidia aarch64, Private Build 1.8.0_502 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /home/bf_spark/src/F1r3fly/f1r3node-rust/formal/tlaplus/soak_disk/MC_ActiveDiskProbe_missing_pre_fix.tla
+Parsing file /home/bf_spark/src/F1r3fly/f1r3node-rust/formal/tlaplus/soak_disk/ActiveDiskProbe.tla
+Parsing file /tmp/TLC.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/Sequences.tla
+Parsing file /tmp/FiniteSets.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module ActiveDiskProbe
+Semantic processing of module MC_ActiveDiskProbe_missing_pre_fix
+Starting... (2026-09-09 03:52:41)
+Implied-temporal checking--satisfiability problem has 1 branches.
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-09-09 03:52:42.
+Error: Invariant InvalidSampleRequiresInterrupt is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ interruptRequested = FALSE
+/\ phase = "probe"
+/\ known = TRUE
+/\ breachRecorded = FALSE
+
+State 2: <Probe line 16, col 5 to line 19, col 55 of module ActiveDiskProbe>
+/\ interruptRequested = FALSE
+/\ phase = "decide"
+/\ known = FALSE
+/\ breachRecorded = FALSE
+
+State 3: <Decide line 22, col 5 to line 26, col 22 of module ActiveDiskProbe>
+/\ interruptRequested = FALSE
+/\ phase = "decided"
+/\ known = FALSE
+/\ breachRecorded = FALSE
+
+The coverage statistics at 2026-09-09 03:52:42
+<Init line 9, col 1 to line 9, col 4 of module ActiveDiskProbe>: 2:2
+  line 10, col 5 to line 13, col 29 of module ActiveDiskProbe: 2
+<Probe line 15, col 1 to line 15, col 5 of module ActiveDiskProbe>: 2:4
+  line 16, col 8 to line 16, col 22 of module ActiveDiskProbe: 8
+  |line 16, col 8 to line 16, col 12 of module ActiveDiskProbe: 6
+  line 17, col 8 to line 17, col 25 of module ActiveDiskProbe: 4
+  |line 17, col 19 to line 17, col 25 of module ActiveDiskProbe: 2
+  line 18, col 8 to line 18, col 24 of module ActiveDiskProbe: 4
+  line 19, col 8 to line 19, col 55 of module ActiveDiskProbe: 4
+<Decide line 21, col 1 to line 21, col 6 of module ActiveDiskProbe>: 2:3
+  line 22, col 8 to line 22, col 23 of module ActiveDiskProbe: 7
+  |line 22, col 8 to line 22, col 12 of module ActiveDiskProbe: 5
+  line 23, col 8 to line 23, col 58 of module ActiveDiskProbe: 2
+  |line 23, col 31 to line 23, col 57 of module ActiveDiskProbe: 3
+  line 24, col 8 to line 24, col 44 of module ActiveDiskProbe: 2
+  |line 24, col 26 to line 24, col 44 of module ActiveDiskProbe: 3
+  line 25, col 8 to line 25, col 25 of module ActiveDiskProbe: 2
+  line 26, col 8 to line 26, col 22 of module ActiveDiskProbe: 2
+<TypeOK line 31, col 1 to line 31, col 6 of module ActiveDiskProbe>
+  line 32, col 5 to line 35, col 33 of module ActiveDiskProbe: 5
+<InvalidSampleRequiresInterrupt line 37, col 1 to line 37, col 30 of module ActiveDiskProbe>
+  line 38, col 5 to line 38, col 75 of module ActiveDiskProbe: 5
+  |line 38, col 6 to line 38, col 32 of module ActiveDiskProbe: 5
+  ||line 38, col 6 to line 38, col 22 of module ActiveDiskProbe: 5
+  ||line 38, col 27 to line 38, col 32 of module ActiveDiskProbe: 2
+  |line 38, col 39 to line 38, col 74 of module ActiveDiskProbe: 1
+End of statistics.
+5 states generated, 5 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 3.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 2 and the 95th percentile is 2).
+Finished in 02s at (2026-09-09 03:52:42)

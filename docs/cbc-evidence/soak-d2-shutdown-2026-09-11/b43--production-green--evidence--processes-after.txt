@@ -1,0 +1,5 @@
+    PID    PPID     SID STAT COMMAND
+      1       0       1 Ss   bash /case/test.sh --inside
+     11       1      11 Ss   bash evidence/writer.sh /case/evidence/unrelated
+    354      11      11 S    sleep 0.1
+    355       1       1 R    ps -eo pid,ppid,sid,stat,args

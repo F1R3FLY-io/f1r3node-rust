@@ -1,0 +1,2 @@
+PASS: A valid maximum disk setting preserved admission behavior (disk-max-band).
+Evidence: [EVIDENCE_ROOT]/d2-settings-DPaH5adL/baseline-confirmed-disk-max-band

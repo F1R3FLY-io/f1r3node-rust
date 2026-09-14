@@ -1,0 +1,108 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 48 and seed 7316346192458494775 with 2 workers on 20 cores with 491MB heap and 64MB offheap memory (Linux 6.17.0-1032-nvidia aarch64, Private Build 1.8.0_502 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /home/bf_spark/src/F1r3fly/f1r3node-rust/formal/tlaplus/soak_disk/MC_DiskSampleValidation_numeric_prefix_pre_fix.tla
+Parsing file /home/bf_spark/src/F1r3fly/f1r3node-rust/formal/tlaplus/soak_disk/DiskSampleValidation.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/TLC.tla
+Parsing file /tmp/Sequences.tla
+Parsing file /tmp/FiniteSets.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module DiskSampleValidation
+Semantic processing of module MC_DiskSampleValidation_numeric_prefix_pre_fix
+Starting... (2026-09-09 00:18:17)
+Implied-temporal checking--satisfiability problem has 1 branches.
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-09-09 00:18:17.
+Error: Invariant AdmissionRequiresValidSample is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ parsed = [known |-> FALSE, freeMiB |-> 0]
+/\ phase = "probe"
+/\ evidence = FALSE
+/\ admitted = FALSE
+/\ raw = [wellFormed |-> FALSE, numericPrefix |-> 16384]
+
+State 2: <Probe line 29, col 5 to line 32, col 47 of module DiskSampleValidation>
+/\ parsed = [known |-> FALSE, freeMiB |-> 0]
+/\ phase = "decode"
+/\ evidence = FALSE
+/\ admitted = FALSE
+/\ raw = [wellFormed |-> FALSE, numericPrefix |-> 16384]
+
+State 3: <Decode line 35, col 5 to line 40, col 44 of module DiskSampleValidation>
+/\ parsed = [known |-> TRUE, freeMiB |-> 16384]
+/\ phase = "decide"
+/\ evidence = FALSE
+/\ admitted = FALSE
+/\ raw = [wellFormed |-> FALSE, numericPrefix |-> 16384]
+
+State 4: <Decide line 43, col 5 to line 46, col 52 of module DiskSampleValidation>
+/\ parsed = [known |-> TRUE, freeMiB |-> 16384]
+/\ phase = "admit"
+/\ evidence = FALSE
+/\ admitted = FALSE
+/\ raw = [wellFormed |-> FALSE, numericPrefix |-> 16384]
+
+State 5: <Admit line 49, col 5 to line 52, col 42 of module DiskSampleValidation>
+/\ parsed = [known |-> TRUE, freeMiB |-> 16384]
+/\ phase = "running"
+/\ evidence = FALSE
+/\ admitted = TRUE
+/\ raw = [wellFormed |-> FALSE, numericPrefix |-> 16384]
+
+The coverage statistics at 2026-09-09 00:18:17
+<Init line 21, col 1 to line 21, col 4 of module DiskSampleValidation>: 2:2
+  line 22, col 5 to line 26, col 23 of module DiskSampleValidation: 2
+<Probe line 28, col 1 to line 28, col 5 of module DiskSampleValidation>: 4:8
+  line 29, col 8 to line 29, col 22 of module DiskSampleValidation: 22
+  |line 29, col 8 to line 29, col 12 of module DiskSampleValidation: 20
+  line 30, col 8 to line 30, col 26 of module DiskSampleValidation: 8
+  |line 30, col 17 to line 30, col 26 of module DiskSampleValidation: 2
+  line 31, col 8 to line 31, col 24 of module DiskSampleValidation: 8
+  line 32, col 8 to line 32, col 47 of module DiskSampleValidation: 8
+<Decode line 34, col 1 to line 34, col 6 of module DiskSampleValidation>: 4:5
+  line 35, col 8 to line 35, col 23 of module DiskSampleValidation: 24
+  |line 35, col 8 to line 35, col 12 of module DiskSampleValidation: 19
+  line 36, col 8 to line 38, col 72 of module DiskSampleValidation: 5
+  line 39, col 8 to line 39, col 24 of module DiskSampleValidation: 5
+  line 40, col 8 to line 40, col 44 of module DiskSampleValidation: 5
+<Decide line 42, col 1 to line 42, col 6 of module DiskSampleValidation>: 4:5
+  line 43, col 8 to line 43, col 23 of module DiskSampleValidation: 23
+  |line 43, col 8 to line 43, col 12 of module DiskSampleValidation: 18
+  line 44, col 8 to line 45, col 46 of module DiskSampleValidation: 5
+  line 46, col 8 to line 46, col 52 of module DiskSampleValidation: 5
+<Admit line 48, col 1 to line 48, col 5 of module DiskSampleValidation>: 3:4
+  line 49, col 8 to line 49, col 22 of module DiskSampleValidation: 20
+  |line 49, col 8 to line 49, col 12 of module DiskSampleValidation: 17
+  line 50, col 8 to line 50, col 23 of module DiskSampleValidation: 3
+  |line 50, col 20 to line 50, col 23 of module DiskSampleValidation: 4
+  line 51, col 8 to line 51, col 25 of module DiskSampleValidation: 3
+  line 52, col 8 to line 52, col 42 of module DiskSampleValidation: 3
+<PublishRefusal line 54, col 1 to line 54, col 14 of module DiskSampleValidation>: 1:1
+  line 55, col 8 to line 55, col 24 of module DiskSampleValidation: 16
+  |line 55, col 8 to line 55, col 12 of module DiskSampleValidation: 15
+  line 56, col 8 to line 56, col 23 of module DiskSampleValidation: 1
+  line 57, col 8 to line 57, col 22 of module DiskSampleValidation: 1
+  line 58, col 8 to line 58, col 42 of module DiskSampleValidation: 1
+<TypeOK line 63, col 1 to line 63, col 6 of module DiskSampleValidation>
+  line 64, col 5 to line 68, col 27 of module DiskSampleValidation: 17
+<AdmissionRequiresValidSample line 70, col 1 to line 70, col 28 of module DiskSampleValidation>
+  line 70, col 33 to line 70, col 58 of module DiskSampleValidation: 17
+  |line 70, col 33 to line 70, col 40 of module DiskSampleValidation: 17
+  |line 70, col 45 to line 70, col 58 of module DiskSampleValidation: 3
+<AdmissionRequiresBand line 71, col 1 to line 71, col 21 of module DiskSampleValidation>
+  line 71, col 26 to line 71, col 89 of module DiskSampleValidation: 16
+  |line 71, col 26 to line 71, col 33 of module DiskSampleValidation: 16
+  |line 71, col 38 to line 71, col 89 of module DiskSampleValidation: 2
+<RefusalRecorded line 72, col 1 to line 72, col 15 of module DiskSampleValidation>
+  line 72, col 20 to line 72, col 58 of module DiskSampleValidation: 16
+  |line 72, col 20 to line 72, col 33 of module DiskSampleValidation: 16
+  |line 72, col 38 to line 72, col 58 of module DiskSampleValidation: 1
+End of statistics.
+17 states generated, 17 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 5.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 4 and the 95th percentile is 4).
+Finished in 01s at (2026-09-09 00:18:17)

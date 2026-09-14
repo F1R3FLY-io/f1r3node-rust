@@ -1,0 +1,59 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 56 and seed -8581789562868107589 with 2 workers on 20 cores with 491MB heap and 64MB offheap memory (Linux 6.17.0-1032-nvidia aarch64, Private Build 1.8.0_502 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file [EVIDENCE_ROOT]/d2-benchmark-6twD3cJY/formal-source/MC_BenchmarkBreachAdmission.tla
+Parsing file [EVIDENCE_ROOT]/d2-benchmark-6twD3cJY/formal-source/BenchmarkBreachAdmission.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/TLC.tla
+Parsing file /tmp/Sequences.tla
+Parsing file /tmp/FiniteSets.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module BenchmarkBreachAdmission
+Semantic processing of module MC_BenchmarkBreachAdmission
+Starting... (2026-09-09 16:56:22)
+Implied-temporal checking--satisfiability problem has 1 branches.
+Computing initial states...
+Finished computing initial states: 2 distinct states generated at 2026-09-09 16:56:23.
+Progress(3) at 2026-09-09 16:56:23: 6 states generated, 6 distinct states found, 0 states left on queue.
+Checking temporal properties for the complete state space with 6 total distinct states at (2026-09-09 16:56:23)
+Finished checking temporal properties in 00s at 2026-09-09 16:56:23
+Model checking completed. No error has been found.
+  Estimates of the probability that TLC did not check all reachable states
+  because two distinct states had the same fingerprint:
+  calculated (optimistic):  val = 0.0
+The coverage statistics at 2026-09-09 16:56:23
+<Init line 8, col 1 to line 8, col 4 of module BenchmarkBreachAdmission>: 2:2
+  line 10, col 8 to line 10, col 25 of module BenchmarkBreachAdmission: 1
+  line 11, col 8 to line 11, col 23 of module BenchmarkBreachAdmission: 2
+  line 12, col 8 to line 12, col 19 of module BenchmarkBreachAdmission: 2
+<Benchmark line 14, col 1 to line 14, col 9 of module BenchmarkBreachAdmission>: 2:2
+  line 15, col 8 to line 15, col 26 of module BenchmarkBreachAdmission: 8
+  |line 15, col 8 to line 15, col 12 of module BenchmarkBreachAdmission: 6
+  line 16, col 8 to line 16, col 52 of module BenchmarkBreachAdmission: 2
+  line 17, col 8 to line 17, col 25 of module BenchmarkBreachAdmission: 2
+  line 18, col 8 to line 18, col 37 of module BenchmarkBreachAdmission: 2
+<Recover line 20, col 1 to line 20, col 7 of module BenchmarkBreachAdmission>: 2:2
+  line 21, col 8 to line 21, col 24 of module BenchmarkBreachAdmission: 8
+  |line 21, col 8 to line 21, col 12 of module BenchmarkBreachAdmission: 6
+  line 22, col 8 to line 22, col 42 of module BenchmarkBreachAdmission: 2
+  line 23, col 8 to line 23, col 22 of module BenchmarkBreachAdmission: 2
+  line 24, col 8 to line 24, col 37 of module BenchmarkBreachAdmission: 2
+<TypeOK line 29, col 1 to line 29, col 6 of module BenchmarkBreachAdmission>
+  line 30, col 5 to line 33, col 24 of module BenchmarkBreachAdmission: 6
+<RetainedBreachPreventsBenchmark line 35, col 1 to line 35, col 31 of module BenchmarkBreachAdmission>
+  line 35, col 36 to line 35, col 54 of module BenchmarkBreachAdmission: 6
+  |line 35, col 36 to line 35, col 41 of module BenchmarkBreachAdmission: 6
+  |line 35, col 46 to line 35, col 54 of module BenchmarkBreachAdmission: 3
+<RecoveryRecordsFailure line 36, col 1 to line 36, col 22 of module BenchmarkBreachAdmission>
+  line 36, col 27 to line 36, col 68 of module BenchmarkBreachAdmission: 6
+  |line 36, col 28 to line 36, col 51 of module BenchmarkBreachAdmission: 6
+  ||line 36, col 28 to line 36, col 41 of module BenchmarkBreachAdmission: 6
+  ||line 36, col 46 to line 36, col 51 of module BenchmarkBreachAdmission: 2
+  |line 36, col 57 to line 36, col 68 of module BenchmarkBreachAdmission: 1
+End of statistics.
+6 states generated, 6 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 3.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 1 and the 95th percentile is 1).
+Finished in 01s at (2026-09-09 16:56:23)

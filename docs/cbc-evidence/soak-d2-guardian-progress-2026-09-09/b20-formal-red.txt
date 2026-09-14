@@ -1,0 +1,82 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 11 and seed -8916560015939713602 with 2 workers on 20 cores with 491MB heap and 64MB offheap memory (Linux 6.17.0-1032-nvidia aarch64, Private Build 1.8.0_502 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file [EVIDENCE_ROOT]/d2-guardian-progress-k69aoiLY/formal-source/MC_GuardianProgress_alive_only_pre_fix.tla
+Parsing file [EVIDENCE_ROOT]/d2-guardian-progress-k69aoiLY/formal-source/GuardianProgress.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/TLC.tla
+Parsing file /tmp/Sequences.tla
+Parsing file /tmp/FiniteSets.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module GuardianProgress
+Semantic processing of module MC_GuardianProgress_alive_only_pre_fix
+Starting... (2026-09-09 22:33:17)
+Implied-temporal checking--satisfiability problem has 1 branches.
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-09-09 22:33:18.
+Error: Invariant StaleGuardianRequiresInterrupt is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ interrupted = FALSE
+/\ age = 0
+/\ guardianAlive = TRUE
+/\ phase = "waiting"
+
+State 2: <Tick line 14, col 5 to line 17, col 54 of module GuardianProgress>
+/\ interrupted = FALSE
+/\ age = 1
+/\ guardianAlive = TRUE
+/\ phase = "waiting"
+
+State 3: <Tick line 14, col 5 to line 17, col 54 of module GuardianProgress>
+/\ interrupted = FALSE
+/\ age = 2
+/\ guardianAlive = TRUE
+/\ phase = "waiting"
+
+State 4: <Tick line 14, col 5 to line 17, col 54 of module GuardianProgress>
+/\ interrupted = FALSE
+/\ age = 3
+/\ guardianAlive = TRUE
+/\ phase = "waiting"
+
+State 5: <Observe line 20, col 5 to line 24, col 39 of module GuardianProgress>
+/\ interrupted = FALSE
+/\ age = 3
+/\ guardianAlive = TRUE
+/\ phase = "checked"
+
+The coverage statistics at 2026-09-09 22:33:18
+<Init line 7, col 1 to line 7, col 4 of module GuardianProgress>: 2:2
+  line 8, col 5 to line 11, col 26 of module GuardianProgress: 2
+<Tick line 13, col 1 to line 13, col 4 of module GuardianProgress>: 3:7
+  line 14, col 8 to line 14, col 24 of module GuardianProgress: 16
+  |line 14, col 8 to line 14, col 12 of module GuardianProgress: 9
+  line 15, col 8 to line 15, col 26 of module GuardianProgress: 7
+  |line 15, col 8 to line 15, col 10 of module GuardianProgress: 9
+  |line 15, col 15 to line 15, col 26 of module GuardianProgress: 9
+  line 16, col 8 to line 16, col 21 of module GuardianProgress: 7
+  line 17, col 8 to line 17, col 54 of module GuardianProgress: 7
+<Observe line 19, col 1 to line 19, col 7 of module GuardianProgress>: 1:2
+  line 20, col 8 to line 20, col 24 of module GuardianProgress: 7
+  |line 20, col 8 to line 20, col 12 of module GuardianProgress: 6
+  line 21, col 8 to line 21, col 29 of module GuardianProgress: 7
+  |line 21, col 8 to line 21, col 10 of module GuardianProgress: 6
+  |line 21, col 14 to line 21, col 29 of module GuardianProgress: 6
+  line 22, col 8 to line 22, col 35 of module GuardianProgress: 1
+  |line 22, col 23 to line 22, col 35 of module GuardianProgress: 2
+  line 23, col 8 to line 23, col 25 of module GuardianProgress: 1
+  line 24, col 8 to line 24, col 39 of module GuardianProgress: 1
+<TypeOK line 28, col 1 to line 28, col 6 of module GuardianProgress>
+  line 29, col 5 to line 32, col 30 of module GuardianProgress: 5
+<StaleGuardianRequiresInterrupt line 33, col 1 to line 33, col 30 of module GuardianProgress>
+  line 33, col 35 to line 33, col 66 of module GuardianProgress: 5
+  |line 33, col 35 to line 33, col 51 of module GuardianProgress: 5
+  |line 33, col 56 to line 33, col 66 of module GuardianProgress: 1
+End of statistics.
+5 states generated, 5 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 5.
+The average outdegree of the complete state graph is 1 (minimum is 1, the maximum 1 and the 95th percentile is 1).
+Finished in 03s at (2026-09-09 22:33:18)

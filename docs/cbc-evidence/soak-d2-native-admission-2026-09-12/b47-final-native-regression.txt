@@ -1,0 +1,2 @@
+PASS: Both controllers died, native containment stopped the owned writer, and two refused restarts retained one failure.
+Docker commands were substitutes. This case does not verify Docker containment or durable publication.

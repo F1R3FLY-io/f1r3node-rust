@@ -1,0 +1,15 @@
+PASS: A failed cleanup command prevented admission despite a sufficient later disk sample (cleanup-error-list).
+Evidence: [EVIDENCE_ROOT]/d2-cleanup-outcome-eTKwRQgd/production-green-final/list
+PASS: A failed cleanup command prevented admission despite a sufficient later disk sample (cleanup-error-remove).
+Evidence: [EVIDENCE_ROOT]/d2-cleanup-outcome-eTKwRQgd/production-green-final/remove
+PASS: A failed cleanup command prevented admission despite a sufficient later disk sample (cleanup-error-network).
+Evidence: [EVIDENCE_ROOT]/d2-cleanup-outcome-eTKwRQgd/production-green-final/network
+PASS: A failed cleanup command prevented admission despite a sufficient later disk sample (cleanup-error-image).
+Evidence: [EVIDENCE_ROOT]/d2-cleanup-outcome-eTKwRQgd/production-green-final/image
+PASS: A failed cleanup command prevented admission despite a sufficient later disk sample (cleanup-error-builder).
+Evidence: [EVIDENCE_ROOT]/d2-cleanup-outcome-eTKwRQgd/production-green-final/builder
+PASS: Successful cleanup preserved the admission result for its disk sample (cleanup-partial).
+Evidence: [EVIDENCE_ROOT]/d2-cleanup-outcome-eTKwRQgd/production-green-final/partial
+PASS: Successful cleanup preserved the admission result for its disk sample (cleanup-sufficient).
+Evidence: [EVIDENCE_ROOT]/d2-cleanup-outcome-eTKwRQgd/production-green-final/sufficient
+PASS: All five cleanup error cases and two reclamation cases passed.

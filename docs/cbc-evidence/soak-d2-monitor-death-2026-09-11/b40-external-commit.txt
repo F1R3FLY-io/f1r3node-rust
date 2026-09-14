@@ -1,0 +1,16 @@
+ab9519a5d fix(soak): treat crash monitor death during an iteration as a breach
+ .../soak-d2-crash-stop-2026-09-11/.gitattributes   |   6 +
+ docs/claims/soak-claim-inventory.jsonc             |   1 +
+ docs/tdd-plans/soak-gates-2026-09-08.md            |   7 +
+ formal/tlaplus/soak_disk/CrashMonitorDeath.tla     |  54 +++++++
+ formal/tlaplus/soak_disk/MC_CrashMonitorDeath.cfg  |   8 +
+ formal/tlaplus/soak_disk/MC_CrashMonitorDeath.tla  |   3 +
+ .../MC_CrashMonitorDeath_startup_only_pre_fix.cfg  |   8 +
+ .../MC_CrashMonitorDeath_startup_only_pre_fix.tla  |   3 +
+ scripts/bench/test-soak-crash-monitor-death.sh     | 165 +++++++++++++++++++++
+ scripts/bench/test-soak-disk-emergency.sh          |   2 +
+ scripts/ci/check-tla-invariants.sh                 |   3 +
+ scripts/ci/test-check-tla-invariants.sh            |   4 +-
+ scripts/ci/test-soak-pr-formal-gate.sh             |   3 +
+ scripts/run-merge-recovery-soak.sh                 |   5 +
+ 14 files changed, 271 insertions(+), 1 deletion(-)

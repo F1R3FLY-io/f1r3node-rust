@@ -1,0 +1,46 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 8 and seed -6166755832911080575 with 2 workers on 20 cores with 491MB heap and 64MB offheap memory (Linux 6.17.0-1032-nvidia aarch64, Private Build 1.8.0_502 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file [WORKSPACE_ROOT]/formal/tlaplus/soak_disk/MC_CleanupOwnership.tla
+Parsing file [WORKSPACE_ROOT]/formal/tlaplus/soak_disk/CleanupOwnership.tla
+Parsing file /tmp/TLC.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/Sequences.tla
+Parsing file /tmp/FiniteSets.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module CleanupOwnership
+Semantic processing of module MC_CleanupOwnership
+Starting... (2026-09-10 03:37:41)
+Implied-temporal checking--satisfiability problem has 1 branches.
+Computing initial states...
+Finished computing initial states: 2 distinct states generated at 2026-09-10 03:37:42.
+Progress(2) at 2026-09-10 03:37:42: 4 states generated, 4 distinct states found, 0 states left on queue.
+Checking temporal properties for the complete state space with 4 total distinct states at (2026-09-10 03:37:42)
+Finished checking temporal properties in 00s at 2026-09-10 03:37:42
+Model checking completed. No error has been found.
+  Estimates of the probability that TLC did not check all reachable states
+  because two distinct states had the same fingerprint:
+  calculated (optimistic):  val = 0.0
+The coverage statistics at 2026-09-10 03:37:42
+<Init line 6, col 1 to line 6, col 4 of module CleanupOwnership>: 2:2
+  line 7, col 8 to line 7, col 32 of module CleanupOwnership: 1
+  line 8, col 8 to line 8, col 21 of module CleanupOwnership: 2
+  line 10, col 8 to line 10, col 25 of module CleanupOwnership: 2
+  line 11, col 8 to line 11, col 25 of module CleanupOwnership: 2
+<Sweep line 12, col 1 to line 12, col 5 of module CleanupOwnership>: 2:2
+  line 13, col 8 to line 13, col 24 of module CleanupOwnership: 6
+  |line 13, col 8 to line 13, col 12 of module CleanupOwnership: 4
+  line 14, col 8 to line 14, col 45 of module CleanupOwnership: 2
+  line 15, col 8 to line 15, col 25 of module CleanupOwnership: 2
+  line 16, col 8 to line 16, col 49 of module CleanupOwnership: 2
+<TypeOK line 18, col 1 to line 18, col 6 of module CleanupOwnership>
+  line 19, col 5 to line 23, col 25 of module CleanupOwnership: 4
+<UnownedSessionPreserved line 24, col 1 to line 24, col 23 of module CleanupOwnership>
+  line 24, col 28 to line 24, col 49 of module CleanupOwnership: 4
+End of statistics.
+4 states generated, 4 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 2.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 1 and the 95th percentile is 1).
+Finished in 02s at (2026-09-10 03:37:42)

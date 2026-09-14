@@ -1,0 +1,2 @@
+PASS: Disk hygiene preserved the unowned active session and refused new work below the admission threshold.
+Evidence: [EVIDENCE_ROOT]/d2-cleanup-session-EjFge6F9/production-green

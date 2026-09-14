@@ -1,0 +1,1 @@
+The first diagnostic VM was observed TERMINATED after its 2026-09-11T04:38:43Z expiry. The corrected-driver SCP returned 255 before remote GREEN execution. This infrastructure interruption is not behavioral RED. The termination mechanism is not attributed.

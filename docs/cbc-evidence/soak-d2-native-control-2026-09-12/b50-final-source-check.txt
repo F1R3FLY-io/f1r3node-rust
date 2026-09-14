@@ -1,0 +1,3 @@
+PASS: All three runtime snapshots retain their hashes, and all nine integrated runtime files match the current source.
+PASS: The matched fixture and seven formal inputs are unchanged.
+PASS: The termination observation identifies the same diagnostic runner.

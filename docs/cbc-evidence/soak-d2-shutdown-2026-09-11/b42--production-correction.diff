@@ -1,0 +1,24 @@
+--- [EVIDENCE_ROOT]/b42/input/scripts/run-merge-recovery-soak.sh	2026-09-11 11:58:04.893322823 -0700
++++ scripts/run-merge-recovery-soak.sh	2026-09-11 12:00:54.810267470 -0700
+@@ -1043,6 +1043,9 @@
+ 			return 1
+ 		fi
+ 	fi
++	if ! jobs -pr | grep -Fxq "$CRASH_MONITOR_PID" && [ ! -s "$HOST_GUARDIAN_BREACH" ]; then
++		printf 'The crash monitor failed its benchmark admission check. Workload termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
++	fi
+ 	if [ -s "$HOST_GUARDIAN_BREACH" ] || { [ -n "$HOST_GUARDIAN_PID" ] && { ! kill -0 "$HOST_GUARDIAN_PID" 2>/dev/null || ! guardian_progress_fresh; }; }; then
+ 		if [ ! -s "$HOST_GUARDIAN_BREACH" ]; then
+ 			printf 'The host guardian failed its benchmark admission check. Workload termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
+@@ -1562,7 +1565,10 @@
+ 			break
+ 		fi
+ 	fi
+-	if [ -n "$HOST_GUARDIAN_PID" ] && { ! kill -0 "$HOST_GUARDIAN_PID" 2>/dev/null || ! guardian_progress_fresh; }; then
++	if ! jobs -pr | grep -Fxq "$CRASH_MONITOR_PID" && [ ! -s "$HOST_GUARDIAN_BREACH" ]; then
++		printf 'The crash monitor failed its iteration admission check. Workload termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
++	fi
++	if [ -s "$HOST_GUARDIAN_BREACH" ] || { [ -n "$HOST_GUARDIAN_PID" ] && { ! kill -0 "$HOST_GUARDIAN_PID" 2>/dev/null || ! guardian_progress_fresh; }; }; then
+ 		if [ ! -s "$HOST_GUARDIAN_BREACH" ]; then
+ 			printf 'The host guardian failed its iteration admission check. Workload termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
+ 		fi

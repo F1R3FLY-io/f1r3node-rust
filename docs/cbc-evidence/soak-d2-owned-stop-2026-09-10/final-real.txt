@@ -1,0 +1,8 @@
+b30-run-red: exit 1, expected 1
+b30-compose-red: exit 1, expected 1
+b30-run-green: exit 0, expected 0
+b30-compose-green: exit 0, expected 0
+b31-green: exit 0, expected 0
+b27-composed: exit 0, expected 0
+b28-composed: exit 0, expected 0
+b29-composed: exit 0, expected 0

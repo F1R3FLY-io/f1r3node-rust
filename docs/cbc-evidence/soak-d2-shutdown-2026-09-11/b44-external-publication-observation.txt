@@ -1,0 +1,12 @@
+2026-09-11T19:53:45Z
+cdc0a57f553285d06905bb0456d8c29191c83efa fix(soak): check the crash monitor before admission and stop writers before drain
+84a9c8fbde09639c88085afa21e61770bc4a022d chore(evidence): finish the rerun cut and gate evidence packaging in CI
+5e1842688b6920c7f012fb4e9fe04e593a002883 chore(evidence): trim rerun files from CbC packages and record B40
+M	docs/Glossary.md
+M	docs/ToDos.md
+M	docs/plans/soak-recurrence-prevention-2026-09-08.md
+M	docs/tdd-plans/soak-gates-2026-09-08.md
+M	docs/work-logs/task-soak-disk-hygiene-stop-2026-09-08T05-06Z.md
+M	formal/tlaplus/soak_disk/ControllerLoss.md
+M	formal/tlaplus/soak_disk/ControllerLoss.tla
+M	scripts/bench/test-soak-controller-loss.sh

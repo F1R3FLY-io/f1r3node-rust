@@ -1,0 +1,27 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 5 and seed -31148637006227651 with 2 workers on 20 cores with 27305MB heap and 64MB offheap memory (Linux 6.17.0-1032-nvidia aarch64, Private Build 1.8.0_502 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file [WORKSPACE_ROOT]/formal/tlaplus/soak_disk/MC_BreachRecordOrder_attribute_first_pre_fix.tla
+Parsing file [WORKSPACE_ROOT]/formal/tlaplus/soak_disk/BreachRecordOrder.tla
+Semantic processing of module BreachRecordOrder
+Semantic processing of module MC_BreachRecordOrder_attribute_first_pre_fix
+Starting... (2026-09-12 01:43:50)
+Implied-temporal checking--satisfiability problem has 1 branches.
+Computing initial states...
+Finished computing initial states: 2 distinct states generated at 2026-09-12 01:43:51.
+Error: Invariant AttributionRequiresRecord is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ stalled = FALSE
+/\ attributionStarted = FALSE
+/\ recorded = FALSE
+/\ phase = "breach"
+
+State 2: <Attribute line 21, col 5 to line 25, col 38 of module BreachRecordOrder>
+/\ stalled = FALSE
+/\ attributionStarted = TRUE
+/\ recorded = FALSE
+/\ phase = "attributing"
+
+4 states generated, 4 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 2.
+Finished in 03s at (2026-09-12 01:43:51)

@@ -1,0 +1,122 @@
+diff --git a/docs/Glossary.md b/docs/Glossary.md
+index fe6eb5c18..423231cc1 100644
+--- a/docs/Glossary.md
++++ b/docs/Glossary.md
+@@ -485,0 +486,8 @@ Do not treat a process name or numeric identifier alone as equivalent ownership
++### Crash monitor
++
++A **crash monitor** is an independent process that waits for the soak driver to exit.
++It requests an ownership-checked writer stop when the driver has no valid exit-handling acknowledgment.
++
++**Preferred usage:** Use this term for the process-crash response, not the periodic host guardian.
++An exit-handling acknowledgment does not confirm writer termination.
++
+diff --git a/docs/ToDos.md b/docs/ToDos.md
+index 60cb0cb33..bee7af446 100644
+--- a/docs/ToDos.md
++++ b/docs/ToDos.md
+@@ -35 +35 @@ This document tracks implementation work through **epics** (logical groupings of
+-- **Soak recurrence prevention (2026-09-11, pi-session).** B37 benchmark crash recovery passes matched production and formal RED/GREEN checks on branch `fix/soak-disk-hygiene-stop`. Two restarts retain one interrupted benchmark failure without new work. All ten real-system GREEN cases and composed regressions pass. The diagnostic virtual machine was observed terminated. Another agent retains refactoring ownership, and all three harness pins identify `962effd1`.
++- **Soak recurrence prevention (2026-09-11, pi-session).** B38 and B39 pass matched production and formal RED/GREEN checks on branch `fix/soak-disk-hygiene-stop`. Production stops the tested Docker writer after a driver crash without another stop after handled exits. All 11 final real-system cases and composed regressions pass. Both diagnostic virtual machines were observed terminated. Another agent retains refactoring ownership, and all three harness pins identify `962effd1`.
+diff --git a/docs/plans/soak-recurrence-prevention-2026-09-08.md b/docs/plans/soak-recurrence-prevention-2026-09-08.md
+index 2d7273d80..0c792cd68 100644
+--- a/docs/plans/soak-recurrence-prevention-2026-09-08.md
++++ b/docs/plans/soak-recurrence-prevention-2026-09-08.md
+@@ -360,0 +361,8 @@ Storage faults, durable publication, complete ownership, aggregate deadlines, re
++The [B38–B39 cycles](../cbc-evidence/soak-d2-crash-stop-2026-09-11/README.md) add production crash response and prevent a duplicate stop after handled exits.
++The final fixture stops its owned Docker writer without fixture intervention and preserves an unrelated writer.
++The acknowledgment records exit handling, not successful writer termination.
++All 11 final real-system cases and the composed regressions pass.
++
++This result does not cover monitor death, late creation, every launch path, storage faults, or all remaining crash windows.
++Durable publication, one aggregate emergency deadline, safe reclamation, D3 reserve bounds, hosted verification, and maintainer review remain completion requirements.
++
+diff --git a/docs/tdd-plans/soak-gates-2026-09-08.md b/docs/tdd-plans/soak-gates-2026-09-08.md
+index f2d5a0c0f..e9e36bf71 100644
+--- a/docs/tdd-plans/soak-gates-2026-09-08.md
++++ b/docs/tdd-plans/soak-gates-2026-09-08.md
+@@ -581,2 +581,12 @@ behaviors:
+-    done: false
+-    cycle_log: []
++    done: true
++    cycle_log:
++      - evidence: docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/manifest.jsonc
++        test: scripts/bench/test-soak-real-crash-stop.sh
++        red_binding: source-sha256
++        red_exit: 1
++        formal_red_exit: 12
++        green_exit: 0
++        formal_green_exit: 0
++        composed_regression_resolved_by: B39
++        construction: not-applicable
++        claim_discharge: pending
+@@ -587,2 +597,12 @@ behaviors:
+-    done: false
+-    cycle_log: []
++    done: true
++    cycle_log:
++      - evidence: docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/manifest.jsonc
++        test: scripts/bench/test-soak-disk-stop-deadline.sh
++        red_origin: composed-b38-regression
++        red_binding: source-sha256
++        red_exit: 1
++        formal_red_exit: 12
++        green_exit: 0
++        formal_green_exit: 0
++        construction: not-applicable
++        claim_discharge: pending
+@@ -623,0 +644,11 @@ The fixture is not proof authority. Separate runs use the pinned TLA+ model chec
++B38 and B39 add [crash monitor evidence](../cbc-evidence/soak-d2-crash-stop-2026-09-11/README.md).
++B38 stops the owned Docker writer after a driver process-group crash and preserves an unrelated writer without fixture intervention.
++B39 removes a duplicate monitor stop after completed exit handling.
++The failed intermediate regression retained its failure summary and identified the extra stop client in a process snapshot.
++
++Both cycles retain matching production and formal RED/GREEN results.
++The final source passes 11 real-system cases, 41 emergency cases, 34 positive configurations, 36 exact controls, 252 classifier cases, and supporting checks.
++Both diagnostic virtual machines were observed terminated after archive retrieval and validation.
++Storage faults, other ownership and crash windows, aggregate deadlines, reserve bounds, hosted checks, and maintainer review remain open.
++D2 and claim discharge remain pending.
++
+diff --git a/docs/work-logs/task-soak-disk-hygiene-stop-2026-09-08T05-06Z.md b/docs/work-logs/task-soak-disk-hygiene-stop-2026-09-08T05-06Z.md
+index 1109d2c6c..fb1c24eca 100644
+--- a/docs/work-logs/task-soak-disk-hygiene-stop-2026-09-08T05-06Z.md
++++ b/docs/work-logs/task-soak-disk-hygiene-stop-2026-09-08T05-06Z.md
+@@ -689,0 +690,38 @@ D2 and acceptance remain pending.
++
++## B38 and B39 crash monitor work
++
++The user authorized implementation in the proposed priority order.
++B38 addresses the observed Docker writer that survives a driver process-group crash.
++The production fixture exits 1 before correction, and the exact `DriverCrashStopsOwnedWriter` control exits 12.
++An independent crash monitor waits on the parent process descriptor and invokes the existing ownership-checked stop helper.
++The corrected fixture stops the owned Docker writer and preserves the unrelated writer before fixture cleanup.
++
++The composed emergency suite then finds a separate regression.
++The B13 failure summary already exists, but a new stalled Docker client remains below the crash monitor.
++B39 acknowledges completed exit handling and avoids that duplicate stop.
++The exact `HandledExitHasNoExtraStop` control exits 12 before correction.
++The unchanged production regression and both three-state models pass after correction.
++An acknowledgment does not establish successful writer termination.
++
++The [combined evidence](../cbc-evidence/soak-d2-crash-stop-2026-09-11/README.md) retains both RED/GREEN cycles and the intermediate regression.
++The final source passes 11 real-system cases, 41 emergency cases, 34 positive configurations, 36 exact controls, and 252 classifier cases.
++Six routing scenarios and the supporting regressions also pass.
++All 70 actual model logs were saved before verifier substitutes ran.
++The 228 verification input snapshots match the final source.
++
++The two diagnostic archives contain 524 and 418 verified regular files.
++Each archive passed validation before extraction, and every extracted digest matched.
++Both diagnostic virtual machines were observed terminated after retrieval.
++All eleven diagnostic virtual machines used so far have termination observations.
++The earlier bootstrap archive and separate runtime payloads retain distinct source roles.
++
++The unchanged B37 fixture fails its old surviving-writer assumption after B38.
++Its adapted Docker boundary rejects kill requests explicitly and retains the same restart-admission and failure-count assertions.
++The initial formal batch stopped at a changed-HEAD guard before TLC ran.
++That guard result is not a behavioral RED.
++External commits `5a211fb5c` and `bef79ba48` contain the production changes, and this session does not attest their hooks.
++No assistant commit, push, hosted dispatch, node workload, or acceptance soak occurred in these cycles.
++
++Storage faults, monitor health, late creation, other launch and crash paths, safe reclamation, aggregate deadlines, and reserve bounds remain open.
++Hosted verification, enforcement, maintainer review, and claim ratification remain open.
++D2 and acceptance remain pending.

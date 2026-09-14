@@ -1,0 +1,13 @@
+    PID    PPID     SID STAT COMMAND
+      1       0       1 Ss   bash /case/test.sh --inside
+     11       1      11 Ss   bash evidence/writer.sh /case/evidence/unrelated
+     19       1      19 Ss   bash repo/scripts/run-merge-recovery-soak.sh
+     71      19      19 S    timeout --signal=TERM --kill-after=1 1199 bash -c trap "while :; do sleep 1; done" TERM; "$@" bash /case/repo/scripts/bench/run-bench-segment.sh
+     73      71      19 S    bash -c trap "while :; do sleep 1; done" TERM; "$@" bash /case/repo/scripts/bench/run-bench-segment.sh
+     74      73      19 S    bash /case/repo/scripts/bench/run-bench-segment.sh
+     90       1      90 Ss   bash /case/evidence/writer.sh /case/evidence/owned
+    491      74      19 S    sleep 5
+    610      19      19 S    sleep 0.1
+    611      11      11 S    sleep 0.1
+    612       1       1 R    ps -eo pid,ppid,sid,stat,args
+    613      90      90 S    sleep 0.1

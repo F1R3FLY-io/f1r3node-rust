@@ -1,0 +1,152 @@
+{
+  "schema_version": 1,
+  "role": "merged-harness-repin",
+  "recorded_at": "2026-09-08T14:46:53Z",
+  "node_base_commit": "9310ae2ceda65d1944e1235336fd12df489e4197",
+  "old_harness_sha": "022ae6d304ff47a112d7db76be956736cf056e0b",
+  "merged_harness_sha": "962effd17708192627bd249362761c0ccb1fd5fa",
+  "verified_ancestors": [
+    "022ae6d304ff47a112d7db76be956736cf056e0b",
+    "3eb9b5fa2c0477868e50f2cfe283735617163547",
+    "70e2e40d2f96f21b1d555de4a33a03a75f0f7656"
+  ],
+  "merged_prs": [
+    139,
+    138
+  ],
+  "pin_sites": [
+    ".github/oci-validation.env",
+    ".github/workflows/_integration-pipeline.yml",
+    ".github/workflows/merge-recovery-soak.yml"
+  ],
+  "harness_source_sha256": {
+    "docs/ToDos.md": "27498e5081b4f44f432ce58fb8d951257f226bdc9a5f9791232a04393167f19c",
+    "integration-tests/test/docs/test_consensus_safety.md": "809f833c8de673331d91b911e7f74fc3e938e7243bf06ca2a1b58d2c4f680764",
+    "integration-tests/test/docs/test_joiner_self_proposes_at_epoch_boundary.md": "91ff614a140a38abc8f0b7436c3b8b07a040a6b83e278b881674d52565098fe0",
+    "integration-tests/test/infra/assertions.py": "aacbc4f289d2401bd660afd8888d94de1599a3369fa13468ef2a483963c64d47",
+    "integration-tests/test/infra/log_events.py": "173fb41506ffc7178eb162a6ac793a96c37f688584450e434993fe690f91aeb6",
+    "integration-tests/test/infra/metrics.py": "a1ea6e96c8ba5271dd1ef20f0c1f1678ac755c93a6fbcf4f19a010bbb1f6929e",
+    "integration-tests/test/infra/resource_monitor.py": "6fb265127cc5078e2f4c9f8c1c47bf3ef3df52e2726e1333a8571091e0be06d9",
+    "integration-tests/test/tests/custom/test_concurrent_bridge_locks.py": "7127b06cf2457e1aac359a95e383d464104a1f11922fc06cfba8d1f6dbd5638b",
+    "integration-tests/test/tests/custom/test_joiner_self_proposes_at_epoch_boundary.py": "e6709ce2c1e0323e0fba13209f23368265cf687acc2f8d8c9f05672b980a4324",
+    "integration-tests/test/tests/custom/test_load.py": "9717a51313d54c0a13db7f7727fa1ffd11759d3b481f30f8eede884922866de7",
+    "integration-tests/test/tests/custom/test_observer_overload.py": "629a19697947d0c34c177edf0099a41db12e19e0b8b2cc48575d2f9888431744",
+    "integration-tests/test/tests/standalone/test_token_metadata.py": "1282aa0af378532f056184b1bda8775d668088469562ed9faa859af63831dfb7",
+    "poetry.lock": "966e518dacdc812c6bcb95463d5188b19e79d5f4febeff40d7af3482416ac0c8",
+    "pyproject.toml": "f349acb108bbcf16ae7ace74a05733d583cc809888c9b2a935cadb7d0819b54a",
+    "unit-tests/test_deploy_finalization_assertions.py": "f960851261fdb640f8d2d35eac5c04dd922561e646e15e3d101e8577bb73bd89",
+    "unit-tests/test_joiner_propose_round.py": "8a5e57a07ffcaf1757f7af1df060dc2218452fd7a94eab02eb2575be8209a779",
+    "unit-tests/test_token_metadata_poll_budget.py": "836e56c5c0762e15c996a60d1a4fdd11dd39e5988c6b6afec4d0a1a804e8fda8"
+  },
+  "source_sha256": {
+    ".github/oci-validation.env": "da5d1df8788aac42b85aa75dc54f927aad567265fd3679f8984f5b2538b4cbf6",
+    ".github/workflows/_integration-pipeline.yml": "2931f47de27ec73093e3a03a3bb91473203e1e7b7759450b4ebbd71e0098f11d",
+    ".github/workflows/merge-recovery-soak.yml": "8e113745d06684ac9bd096f7d0ad52275777bc5df987316e2bd8be7f97891a7d",
+    "scripts/repin-system-integration.sh": "762e421890952bc4c84ac7f1c4a844356edefe4786cf86e65e12f21590018a06",
+    "scripts/test-repin-system-integration.sh": "cf238a85019b74c232106fbcd2c357f09095d01f65f40bd8941e30e99f57c104",
+    "scripts/bench/extend-issue24-metrics.sh": "923d3450527b5b4921a103dfdeaa19236df3eaf86ea12475d315f8f6e7901c77",
+    "scripts/bench/test-extend-issue24-metrics.sh": "52cc1b8ac82a395ca187de577d28276ad79798ed6132b3289d3b4b6957dbc34d",
+    ".github/scripts/check-workflow-invariants.sh": "c25862d66eebe51282ca854da920a75f7553ac27590326a0650dadb1e42d2905",
+    ".github/scripts/test-release-workflows.sh": "91fee0b371c66df859f0d178e9daff89ff277a063e24286fd8a9842501f70503",
+    ".github/scripts/test-release-gates.sh": "ba92e9f13fd6a055335a6a9968af354d577179990d7a8b1b1b28a58bb5645b35",
+    "scripts/ci/test-check-tla-invariants.sh": "31291fc837b98385f5c7d3497ee20bb152b3d62e4b6e889ba94a4e74c8f1c46b",
+    "scripts/ci/test-soak-pr-formal-gate.sh": "5e349346e03a2b534b35c6c30e152152f8c3bceb32d2982a00217b442eb71756",
+    "scripts/ci/test-soak-claim-inventory.sh": "dbd16e78ab45353585a3beff0942141fd9c6ce9a1f45dccc9392e790b0fb165e",
+    "docs/claims/soak-claim-inventory.json": "a34407af5a6c2696f14a298d697e6881713ae313f7828ca986bcc05ff0544765",
+    "docs/plans/soak-recurrence-prevention-2026-09-08.md": "26a5f966baa060be79899e51b6c2762c799264e7c82adb813d940d6a9ca6de0c",
+    "docs/work-logs/task-soak-disk-hygiene-stop-2026-09-08T05-06Z.md": "5cb2c75eb62af1e041e49497e96bd7c74381097b507f41098a4bba07ec1b580a"
+  },
+  "evidence_sha256": {
+    "README.md": "c772223fc765587915efaebb32a1383f9fbe0a3ea7acb3af1b524763b0d1ec37",
+    "branch-dev.json": "131a6c6a5576df02c6d9196bc339e84dba2e4fe0db4bee5dd6971fb34c8c37a3",
+    "branch-main.json": "4bbb299165454a12b7c14c8f28effaf1b0ff1a8b7eed91f6c9a63f712bc80816",
+    "collector-compatibility.txt": "0d9b73d658029adc8b614817950b2b15183d127d67adf35d68e92f0cd34e836c",
+    "formal-classifier.txt": "7c164485b09885d34fb6fa5cad90ff4c6bab602d8e04d2fc701fb2d620ea16ac",
+    "formal-routing.txt": "5bf9a0d60c04a9d56eb1eb237609c5639bec78b1bb44e905e72def58e8a55bc7",
+    "harness-unit-tests-initial.txt": "ca31cbd334cbf339a443d064ea527213b88820d1f8450f13aa167f7a40a35cea",
+    "harness-unit-tests.txt": "a4636a8c0542f9dd01488b0b2b531e9039610c41335e17445062076a21157c0f",
+    "inventory-check.txt": "a25059e56410a6f6144528b6c9c6b76b5271049619efc354d1bbe6783ac3d5e9",
+    "metrics-regression.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "pr-138.json": "d0cce266969d6721b997c1624d8f48c9c37365ad9afe3d1cc0a82bfbe7b7e139",
+    "pr-139.json": "2a9249b609e4beedbfff31af24dbbb2022b6f4e84bd74bd3848f4e73979b3acb",
+    "release-gates.txt": "cfe6567acc34cb3ac6b04d1b1fc407615684a85d34e48f05d93777dece12ae2b",
+    "release-workflows.txt": "a55ff24e1452a38de29ad829c85bbb561ac396d848ec6526a97b394f6e16a82f",
+    "repin-regression.txt": "c163764ac6a691d0f60831fac3197a8392645d49ac35fc4353d818e37be01aaf",
+    "repin.txt": "19c345e18685824f7a6b5ab4def851f9b2f83202826d56962413342e95ab6437"
+  },
+  "tests": [
+    {
+      "command": "poetry run pytest unit-tests -q --tb=short",
+      "directory": "target/soak-repin-2026-09-08/harness",
+      "exit_code": 0,
+      "passed": 313,
+      "warnings": 3,
+      "python": "3.12.3",
+      "pytest": "7.4.4",
+      "poetry": "2.1.3",
+      "environment": "Existing sibling virtual environment with exported harness first on PYTHONPATH."
+    },
+    {
+      "command": "python -m pytest unit-tests -q --tb=short",
+      "directory": "target/soak-repin-2026-09-08/harness",
+      "exit_code": 1,
+      "passed": 311,
+      "failed": 2,
+      "result": "Poetry executable missing. Not behavioral RED."
+    },
+    {
+      "command": "bash scripts/test-repin-system-integration.sh",
+      "exit_code": 0
+    },
+    {
+      "command": "bash scripts/bench/test-extend-issue24-metrics.sh",
+      "exit_code": 0
+    },
+    {
+      "command": "bash .github/scripts/check-workflow-invariants.sh",
+      "exit_code": 0
+    },
+    {
+      "command": "bash .github/scripts/test-release-workflows.sh",
+      "exit_code": 0
+    },
+    {
+      "command": "bash .github/scripts/test-release-gates.sh",
+      "exit_code": 0
+    },
+    {
+      "command": "bash scripts/ci/test-check-tla-invariants.sh",
+      "exit_code": 0
+    },
+    {
+      "command": "bash scripts/ci/test-soak-pr-formal-gate.sh",
+      "exit_code": 0
+    },
+    {
+      "command": "bash scripts/ci/test-soak-claim-inventory.sh",
+      "exit_code": 0
+    },
+    {
+      "command": "Apply collector extension twice to a copy of merged metrics.py, compare bytes, and run py_compile.",
+      "exit_code": 0
+    }
+  ],
+  "unchanged_across_repin": [
+    "integration-tests/test/tests/custom/test_load.py",
+    "integration-tests/test/infra/metrics.py",
+    "integration-tests/test/infra/resource_monitor.py"
+  ],
+  "authority": "merge-provenance-and-local-regression-only",
+  "commit_review_revalidation": {
+    "recorded_at": "2026-09-08T15:13:34Z",
+    "change": "Clarify that cleanup preceded the run stop. Rebind the work log and inventory.",
+    "executable_inputs_changed": false
+  },
+  "limitations": [
+    "No node soak ran.",
+    "Formal classifier and routing tests use process fixtures, not actual verifier execution.",
+    "No Rust, Rocq, or actual TLC suite was repeated.",
+    "Local tests do not establish full-duration acceptance or discharge finalization and disk claims.",
+    "Static path-sink warnings concern caller-selected local evidence directories. The inspector validates provider components before path construction."
+  ]
+}

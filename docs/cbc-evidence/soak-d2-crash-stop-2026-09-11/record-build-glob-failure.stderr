@@ -1,0 +1,2 @@
+<internal:dir>:128:in `[]': no implicit conversion of Integer into String (TypeError)
+	from [EVIDENCE_ROOT]/build-record.rb:41:in `<main>'
