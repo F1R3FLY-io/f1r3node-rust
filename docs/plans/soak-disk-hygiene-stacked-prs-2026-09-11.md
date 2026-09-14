@@ -165,7 +165,7 @@ Every git-state action, which means branch creation, staging, pushes, and PR cre
 
 The staging branch holds 2,070 legacy files, about 247,000 lines, that stay behind:
 
-- The per-defect TLA+ modules, 51 standalone specs with their configurations and correspondence notes, superseded by the two consolidated models.
+- The per-defect TLA+ modules, 52 standalone specs with their configurations and correspondence notes, superseded by the two consolidated models.
 - The 35 generated evidence packages under `docs/cbc-evidence/soak-*` and the run inspection under `docs/soak-evidence`, bound by digest in the driver evidence record instead.
 - The digest inventory `docs/claims/soak-claim-inventory.jsonc`, the retention record, the inventory tests, and the formal-gate claim.
 - The root `.gitignore` rerun patterns and the package `.gitattributes` files, which only serve the packages.
