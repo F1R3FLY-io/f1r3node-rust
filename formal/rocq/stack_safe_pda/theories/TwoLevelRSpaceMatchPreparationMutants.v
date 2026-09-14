@@ -100,6 +100,164 @@ Example malformed_frame_and_nonbyte_construction_are_refused :
   absolute_datum_key_checked [1] [2] [256] [3] = None.
 Proof. vm_compute. auto. Qed.
 
+Definition preparation_fixture_codec : CanonicalDatumCodec :=
+  CanonicalDatumCodecState
+    (fun identity =>
+      if path_eqb identity [5; 0] then
+        Some (DecodedCanonicalDatumState [4; 0] false [5; 0])
+      else if path_eqb identity [6; 0] then
+        Some (DecodedCanonicalDatumState [4; 0] true [6; 0])
+      else None)
+    (fun _ => repeat 0 32).
+
+Definition fixture_candidate (marker : Path) (persistent : bool)
+    (count : Multiplicity) : MatchCandidate :=
+  let identity := if persistent then [6; 0] else [5; 0] in
+  let relative := relative_datum_key [4; 0] identity in
+  MatchCandidateState (StoredAddress (marker ++ relative)) marker relative
+    [4; 0] identity (repeat 0 32) persistent count.
+
+Definition fixture_commit (persistent : bool) (count : Multiplicity) : TwoLevelAuthority :=
+  [(marker_a, if N.eqb count 0 then [] else
+    [(relative_datum_key [4; 0] (if persistent then [6; 0] else [5; 0]), count)])].
+
+Definition preparation_fixture (observed commit : TwoLevelAuthority)
+    (selected : list MatchCandidate) (fresh : option Path) : MatchPreparationInput :=
+  MatchPreparationInputState preparation_fixture_codec observed commit
+    (selected_channels selected) fresh true [] selected.
+
+Definition preparation_succeeds (input : MatchPreparationInput) : bool :=
+  match prepare_match_changes input with
+  | PreparationReady _ => true
+  | PreparationRefused _ => false
+  end.
+
+Example nonempty_preparation_uses_constructed_candidate :
+  construct_candidate_at preparation_fixture_codec (StoredAddress absolute_a)
+    absolute_a 2%N = BuildOk (fixture_candidate marker_a false 2%N) /\
+  preparation_succeeds (preparation_fixture
+    (fixture_commit false 2%N) (fixture_commit false 2%N)
+    [fixture_candidate marker_a false 2%N; fixture_candidate marker_a false 2%N] None) = true.
+Proof. vm_compute. auto. Qed.
+
+Example repeated_selection_refuses_stale_commit_count :
+  prepare_match_changes (preparation_fixture
+    (fixture_commit false 2%N) (fixture_commit false 1%N)
+    [fixture_candidate marker_a false 2%N; fixture_candidate marker_a false 2%N] None) =
+    PreparationRefused RefuseCommitLiveness.
+Proof. vm_compute. reflexivity. Qed.
+
+Example persistent_selection_requires_commit_presence :
+  preparation_succeeds (preparation_fixture
+    (fixture_commit true 1%N) (fixture_commit true 1%N)
+    [fixture_candidate marker_a true 1%N] None) = true /\
+  prepare_match_changes (preparation_fixture
+    (fixture_commit true 1%N) (fixture_commit true 0%N)
+    [fixture_candidate marker_a true 1%N] None) =
+    PreparationRefused RefuseCommitLiveness.
+Proof. vm_compute. auto. Qed.
+
+Example forged_observed_multiplicity_cannot_authorize_preparation :
+  prepare_match_changes (preparation_fixture
+    (fixture_commit false 1%N) (fixture_commit false 2%N)
+    [fixture_candidate marker_a false 2%N] None) =
+    PreparationRefused RefuseObservedPoolFeasibility.
+Proof. vm_compute. reflexivity. Qed.
+
+Example unselected_arrival_checks_current_not_observed_multiplicity :
+  preparation_succeeds (preparation_fixture
+    (fixture_commit false 0%N) (fixture_commit false (N.pred multiplicity_max))
+    [] (Some absolute_a)) = true /\
+  prepare_match_changes (preparation_fixture
+    (fixture_commit false 0%N) (fixture_commit false multiplicity_max)
+    [] (Some absolute_a)) = PreparationRefused RefuseCommitDelta.
+Proof. vm_compute. auto. Qed.
+
+Example unrelated_commit_channel_does_not_refuse_preparation :
+  preparation_succeeds (preparation_fixture
+    (fixture_commit false 2%N)
+    (fixture_commit false 2%N ++ [(marker_b, [(relative_a, multiplicity_max)])])
+    [fixture_candidate marker_a false 2%N; fixture_candidate marker_a false 2%N] None) = true.
+Proof. vm_compute. reflexivity. Qed.
+
+Example later_stale_channel_refuses_complete_preparation :
+  prepare_match_changes (preparation_fixture
+    [(marker_a, [(relative_a, 1%N)]); (marker_b, [(relative_a, 1%N)])]
+    [(marker_a, [(relative_a, 1%N)]); (marker_b, [])]
+    [fixture_candidate marker_a false 1%N; fixture_candidate marker_b false 1%N] None) =
+    PreparationRefused RefuseCommitLiveness.
+Proof. vm_compute. reflexivity. Qed.
+
+Example malformed_arrival_refuses_complete_preparation :
+  prepare_match_changes (preparation_fixture
+    (fixture_commit false 1%N) (fixture_commit false 1%N)
+    [fixture_candidate marker_a false 1%N] (Some malformed_path)) =
+    PreparationRefused (RefuseMalformedFreshPath malformed_path).
+Proof. vm_compute. reflexivity. Qed.
+
+Example forged_absolute_address_refuses_preparation :
+  prepare_match_changes (preparation_fixture
+    (fixture_commit false 1%N) (fixture_commit false 1%N)
+    [MatchCandidateState (StoredAddress malformed_path) marker_a relative_a
+      [4; 0] [5; 0] (repeat 0 32) false 1%N] None) =
+    PreparationRefused RefuseObservedPoolFeasibility.
+Proof. vm_compute. reflexivity. Qed.
+
+Example preflight_respects_aggregated_strict_subtraction :
+  strict_flat_preflightb (fun _ => 2%N)
+    (FlatBagDeltaState [] [(absolute_a, 2%N)]) = true /\
+  strict_flat_preflightb (fun _ => 1%N)
+    (FlatBagDeltaState [] [(absolute_a, 2%N)]) = false.
+Proof. vm_compute. auto. Qed.
+
+Example preflight_does_not_require_selection_order :
+  let delta := FlatBagDeltaState [(absolute_b, 1%N); (absolute_a, 1%N)] [] in
+  flat_delta_well_formedb delta = true /\
+  entries_orderedb (flat_delta_additions delta) = false /\
+  strict_flat_preflightb (fun _ => 1%N) delta = true.
+Proof. vm_compute. auto. Qed.
+
+Example arrival_cancellation_does_not_authorize_a_stale_stored_selection :
+  preparation_succeeds (preparation_fixture
+    (fixture_commit false 1%N) (fixture_commit false 1%N)
+    [fixture_candidate marker_a false 1%N] (Some absolute_a)) = true /\
+  prepare_match_changes (preparation_fixture
+    (fixture_commit false 1%N) (fixture_commit false 0%N)
+    [fixture_candidate marker_a false 1%N] (Some absolute_a)) =
+    PreparationRefused RefuseCommitLiveness.
+Proof. vm_compute. auto. Qed.
+
+Example no_cancellation_needs_no_guard :
+  guarded_record_addition (initialize_guarded_removals [(absolute_a, 2%N)]) absolute_b 1%N =
+    Some (CancellationGuardedDeltaState
+      (FlatBagDeltaState [(absolute_b, 1%N)] [(absolute_a, 2%N)]) []).
+Proof. vm_compute. reflexivity. Qed.
+
+Example partial_cancellation_retains_full_not_cancelled_demand :
+  guarded_record_addition (initialize_guarded_removals [(absolute_a, 3%N)]) absolute_a 1%N =
+    Some (CancellationGuardedDeltaState
+      (FlatBagDeltaState [] [(absolute_a, 2%N)]) [(absolute_a, 3%N)]).
+Proof. vm_compute. reflexivity. Qed.
+
+Example full_cancellation_retains_liveness_when_delta_is_empty :
+  guarded_record_addition (initialize_guarded_removals [(absolute_a, 1%N)]) absolute_a 1%N =
+    Some (CancellationGuardedDeltaState empty_flat_delta [(absolute_a, 1%N)]).
+Proof. vm_compute. reflexivity. Qed.
+
+Example repeated_cancellation_never_lowers_original_demand :
+  record_guarded_additions (initialize_guarded_removals [(absolute_a, 3%N)])
+    [(absolute_a, 1%N); (absolute_a, 1%N); (absolute_a, 1%N); (absolute_a, 1%N)] =
+    Some (CancellationGuardedDeltaState
+      (FlatBagDeltaState [(absolute_a, 1%N)] []) [(absolute_a, 3%N)]).
+Proof. vm_compute. reflexivity. Qed.
+
+Example failed_guarded_record_preserves_guard_and_delta :
+  let before := CancellationGuardedDeltaState
+    (FlatBagDeltaState [(absolute_b, multiplicity_max)] []) [(absolute_a, 3%N)] in
+  guarded_record_addition before absolute_b 1%N = None /\
+  atomic_guarded_addition before absolute_b 1%N = before.
+Proof. vm_compute. auto. Qed.
+
 Print Assumptions exact_partition_positive_control.
 Print Assumptions wrong_channel_partition_is_distinguished.
 Print Assumptions shifted_channel_boundary_is_distinguished.
@@ -112,5 +270,22 @@ Print Assumptions overflow_record_is_refused.
 Print Assumptions valid_prefix_then_malformed_partition_is_refused.
 Print Assumptions malformed_fresh_construction_is_refused.
 Print Assumptions malformed_frame_and_nonbyte_construction_are_refused.
+Print Assumptions nonempty_preparation_uses_constructed_candidate.
+Print Assumptions repeated_selection_refuses_stale_commit_count.
+Print Assumptions persistent_selection_requires_commit_presence.
+Print Assumptions forged_observed_multiplicity_cannot_authorize_preparation.
+Print Assumptions unselected_arrival_checks_current_not_observed_multiplicity.
+Print Assumptions unrelated_commit_channel_does_not_refuse_preparation.
+Print Assumptions later_stale_channel_refuses_complete_preparation.
+Print Assumptions malformed_arrival_refuses_complete_preparation.
+Print Assumptions forged_absolute_address_refuses_preparation.
+Print Assumptions preflight_respects_aggregated_strict_subtraction.
+Print Assumptions preflight_does_not_require_selection_order.
+Print Assumptions arrival_cancellation_does_not_authorize_a_stale_stored_selection.
+Print Assumptions no_cancellation_needs_no_guard.
+Print Assumptions partial_cancellation_retains_full_not_cancelled_demand.
+Print Assumptions full_cancellation_retains_liveness_when_delta_is_empty.
+Print Assumptions repeated_cancellation_never_lowers_original_demand.
+Print Assumptions failed_guarded_record_preserves_guard_and_delta.
 
 End TwoLevelRSpaceMatchPreparationMutants.

@@ -113,6 +113,7 @@ Inductive PreparationRefusal : Type :=
 | RefuseObservedPoolFeasibility
 | RefuseReservationOverflow (absolute_path : Path)
 | RefuseCommitLiveness
+| RefuseCommitDelta
 | RefuseFlatDelta (absolute_path : Path)
 | RefuseFlatDeltaInvariant
 | RefuseFlatDeltaPartition (absolute_path : Path).
@@ -1481,6 +1482,32 @@ Definition observed_pool_feasibleb
   path_list_eqb (selected_channels selected) (pool_requested_channels pool) &&
   forallb (selected_candidate_feasibleb pool selected) selected.
 
+Lemma absent_fresh_flag_does_not_change_authorization : forall
+    observed requested catalogs excluded first second candidate,
+  candidate_authorizedb (CandidatePoolState observed requested catalogs None first excluded) candidate =
+  candidate_authorizedb (CandidatePoolState observed requested catalogs None second excluded) candidate.
+Proof.
+  intros observed requested catalogs excluded first second candidate.
+  unfold candidate_authorizedb.
+  destruct (candidate_address candidate); simpl; [now rewrite !andb_false_r|reflexivity].
+Qed.
+
+Theorem absent_fresh_flag_does_not_change_feasibility : forall
+    observed requested catalogs excluded first second selected,
+  observed_pool_feasibleb (CandidatePoolState observed requested catalogs None first excluded) selected =
+  observed_pool_feasibleb (CandidatePoolState observed requested catalogs None second excluded) selected.
+Proof.
+  intros observed requested catalogs excluded first second selected.
+  unfold observed_pool_feasibleb. simpl. f_equal.
+  assert (Hext : forall (A : Type) (f g : A -> bool) values,
+    (forall value, f value = g value) -> forallb f values = forallb g values).
+  { intros A f g values Hsame. induction values; simpl; [reflexivity|].
+    now rewrite Hsame, IHvalues. }
+  apply Hext. intro candidate. unfold selected_candidate_feasibleb.
+  rewrite (@absent_fresh_flag_does_not_change_authorization observed requested catalogs
+    excluded first second candidate). reflexivity.
+Qed.
+
 Fixpoint reserve_selected_stored
     (selected : list MatchCandidate) (reserved : FlatBag)
     : option FlatBag :=
@@ -1612,76 +1639,98 @@ Proof.
         discriminate Hbuild.
 Qed.
 
-Definition check_observed_pool
+Lemma built_candidate_pool_input_projections : forall
+    codec observed requested fresh_absolute fresh_available excluded pool,
+  build_candidate_pool codec observed requested fresh_absolute fresh_available excluded =
+    BuildOk pool ->
+  pool_observed_authority pool = observed /\ pool_requested_channels pool = requested.
+Proof.
+  intros codec observed requested fresh_absolute fresh_available excluded pool Hbuild.
+  unfold build_candidate_pool in Hbuild.
+  destruct (build_candidate_catalog_set codec observed requested)
+    as [catalogs|reason] eqn:Hcatalogs; [|discriminate].
+  destruct fresh_absolute as [absolute|].
+  - destruct (construct_fresh_candidate codec absolute) as [fresh|reason] eqn:Hfresh;
+      [|discriminate].
+    destruct (replay_exclusions_validb catalogs excluded) eqn:Hexcluded.
+    + inversion Hbuild; auto.
+    + destruct excluded as [|[path count] rest]; discriminate.
+  - destruct (replay_exclusions_validb catalogs excluded) eqn:Hexcluded.
+    + inversion Hbuild; auto.
+    + destruct excluded as [|[path count] rest]; discriminate.
+Qed.
+
+Definition certify_candidate_pool codec observed requested fresh available excluded pool
+    (Hbuild : build_candidate_pool codec observed requested fresh available excluded = BuildOk pool)
+    (Hobserved : authority_well_formedb observed = true) selected reserved
+    (Hfeasible : observed_pool_feasibleb pool selected = true)
+    (Hreserved : reserve_selected_stored selected [] = Some reserved) : CheckedObservedPool.
+Proof.
+  refine {| checked_pool_codec := codec;
+    checked_pool_value := pool;
+    checked_pool_observed_authority_well_formed := _;
+    checked_pool_selection := selected;
+    checked_pool_reserved := reserved;
+    checked_pool_fresh_reserved := negb (N.eqb (nonpersistent_fresh_demand selected) 0);
+    checked_pool_catalog_construction := _;
+    checked_pool_replay_exclusions_are_full_or_none := _;
+    checked_pool_fresh_codec_is_exact := _;
+    checked_pool_feasibility := Hfeasible;
+    checked_pool_reservations_are_exact := Hreserved;
+    checked_pool_fresh_reservation_is_exact := eq_refl |}.
+  - rewrite (proj1 (@built_candidate_pool_input_projections _ _ _ _ _ _ _ Hbuild)).
+    exact Hobserved.
+  - rewrite (proj1 (@built_candidate_pool_input_projections _ _ _ _ _ _ _ Hbuild)),
+      (proj2 (@built_candidate_pool_input_projections _ _ _ _ _ _ _ Hbuild)).
+    exact (proj1 (@built_candidate_pool_is_exact _ _ _ _ _ _ _ Hbuild)).
+  - exact (proj1 (proj2 (@built_candidate_pool_is_exact _ _ _ _ _ _ _ Hbuild))).
+  - exact (proj2 (proj2 (@built_candidate_pool_is_exact _ _ _ _ _ _ _ Hbuild))).
+Defined.
+
+Definition check_observed_pool_with_inputs
     (codec : CanonicalDatumCodec) (observed : TwoLevelAuthority)
     (observed_well_formed : authority_well_formedb observed = true)
     (requested : list Path) (fresh_absolute : option Path)
     (fresh_available : bool) (excluded : FlatBag)
-    (selected : list MatchCandidate) : BuildResult CheckedObservedPool.
+    (selected : list MatchCandidate) : BuildResult
+      { checked : CheckedObservedPool |
+        checked_pool_selection checked = selected /\
+        pool_observed_authority (checked_pool_value checked) = observed }.
 Proof.
   destruct (build_candidate_pool codec observed requested fresh_absolute
     fresh_available excluded) as [pool|reason] eqn:Hpool.
-  - unfold build_candidate_pool in Hpool.
-    destruct (build_candidate_catalog_set codec observed requested)
-      as [catalogs|catalog_reason] eqn:Hcatalogs; [|discriminate].
-    destruct fresh_absolute as [fresh_absolute|].
-    + destruct (construct_fresh_candidate codec fresh_absolute)
-        as [fresh|fresh_reason] eqn:Hfresh; [|discriminate].
-      destruct (replay_exclusions_validb catalogs excluded) eqn:Hexcluded.
-      * inversion Hpool; subst pool.
-      destruct (observed_pool_feasibleb
-        (CandidatePoolState observed requested catalogs (Some fresh)
-          (fresh_available && true) excluded) selected) eqn:Hfeasible;
-        [ destruct (reserve_selected_stored selected []) as [reserved|]
-            eqn:Hreserved;
-          [ refine (BuildOk {| checked_pool_codec := codec;
-            checked_pool_value := CandidatePoolState observed requested catalogs
-              (Some fresh) (fresh_available && true) excluded;
-            checked_pool_observed_authority_well_formed := observed_well_formed;
-            checked_pool_selection := selected;
-            checked_pool_reserved := reserved;
-            checked_pool_fresh_reserved :=
-              negb (N.eqb (nonpersistent_fresh_demand selected) 0);
-            checked_pool_catalog_construction := Hcatalogs;
-            checked_pool_replay_exclusions_are_full_or_none := Hexcluded;
-            checked_pool_fresh_codec_is_exact :=
-              (@constructed_fresh_candidate_is_exact codec fresh_absolute
-                fresh Hfresh);
-            checked_pool_feasibility := Hfeasible;
-            checked_pool_reservations_are_exact := Hreserved;
-            checked_pool_fresh_reservation_is_exact := eq_refl |})
-          | exact (BuildRefused (RefuseReservationOverflow [])) ]
-        | exact (BuildRefused RefuseObservedPoolFeasibility) ].
-      * destruct excluded as [|[excluded_path excluded_count] excluded_tail];
-          discriminate Hpool.
-    + destruct (replay_exclusions_validb catalogs excluded) eqn:Hexcluded;
-        [|idtac].
-      * inversion Hpool; subst pool.
-      destruct (observed_pool_feasibleb
-        (CandidatePoolState observed requested catalogs None
-          fresh_available excluded) selected) eqn:Hfeasible;
-        [ destruct (reserve_selected_stored selected []) as [reserved|]
-            eqn:Hreserved;
-          [ refine (BuildOk {| checked_pool_codec := codec;
-            checked_pool_value := CandidatePoolState observed requested catalogs
-              None fresh_available excluded;
-            checked_pool_observed_authority_well_formed := observed_well_formed;
-            checked_pool_selection := selected;
-            checked_pool_reserved := reserved;
-            checked_pool_fresh_reserved :=
-              negb (N.eqb (nonpersistent_fresh_demand selected) 0);
-            checked_pool_catalog_construction := Hcatalogs;
-            checked_pool_replay_exclusions_are_full_or_none := Hexcluded;
-            checked_pool_fresh_codec_is_exact := I;
-            checked_pool_feasibility := Hfeasible;
-            checked_pool_reservations_are_exact := Hreserved;
-            checked_pool_fresh_reservation_is_exact := eq_refl |})
-          | exact (BuildRefused (RefuseReservationOverflow [])) ]
-        | exact (BuildRefused RefuseObservedPoolFeasibility) ].
-      * destruct excluded as [|[excluded_path excluded_count] excluded_tail];
-          discriminate Hpool.
+  - destruct (observed_pool_feasibleb pool selected) eqn:Hfeasible.
+    + destruct (reserve_selected_stored selected []) as [reserved|] eqn:Hreserved.
+      * refine (BuildOk (exist _ (@certify_candidate_pool codec observed requested fresh_absolute
+          fresh_available excluded pool Hpool observed_well_formed selected reserved
+          Hfeasible Hreserved) _)).
+        split; [reflexivity|].
+        exact (proj1 (@built_candidate_pool_input_projections _ _ _ _ _ _ _ Hpool)).
+      * exact (BuildRefused (RefuseReservationOverflow [])).
+    + exact (BuildRefused RefuseObservedPoolFeasibility).
   - exact (BuildRefused reason).
 Defined.
+
+Definition check_observed_pool codec observed Hwell requested fresh available excluded selected
+    : BuildResult CheckedObservedPool :=
+  match check_observed_pool_with_inputs codec observed Hwell requested fresh available excluded selected with
+  | BuildOk checked => BuildOk (proj1_sig checked)
+  | BuildRefused reason => BuildRefused reason
+  end.
+
+Lemma checked_pool_matches_supplied_input : forall
+    codec observed Hwell requested fresh available excluded selected checked,
+  check_observed_pool codec observed Hwell requested fresh available excluded selected =
+    BuildOk checked ->
+  checked_pool_selection checked = selected /\
+  pool_observed_authority (checked_pool_value checked) = observed.
+Proof.
+  intros codec observed Hwell requested fresh available excluded selected checked Hchecked.
+  unfold check_observed_pool in Hchecked.
+  destruct (check_observed_pool_with_inputs codec observed Hwell requested fresh
+    available excluded selected) as [[value Hinputs]|reason]; [|discriminate].
+  inversion Hchecked; subst checked. exact Hinputs.
+Qed.
 
 Theorem checked_pool_replay_exclusion_is_full_multiplicity : forall
     checked absolute amount,
@@ -2996,16 +3045,167 @@ Qed.
 
 (** End-to-end executable PREPARE -------------------------------------- *)
 
-Definition check_commit_liveness
+Definition check_commit_liveness_with_input
     (checked : CheckedObservedPool) (commit : TwoLevelAuthority)
-    : BuildResult (CheckedCommitLiveness checked).
+    : BuildResult { live : CheckedCommitLiveness checked | checked_commit_authority live = commit }.
 Proof.
   destruct (authority_well_formedb commit) eqn:Hauthority.
   - destruct (commit_selection_liveb commit (checked_pool_selection checked))
       eqn:Hlive.
-    + exact (BuildOk (CheckedCommitLivenessState checked commit Hlive)).
+    + exact (BuildOk (exist _ (CheckedCommitLivenessState checked commit Hlive) eq_refl)).
     + exact (BuildRefused RefuseCommitLiveness).
   - exact (BuildRefused RefuseCommitAuthority).
+Defined.
+
+Definition check_commit_liveness checked commit : BuildResult (CheckedCommitLiveness checked) :=
+  match check_commit_liveness_with_input checked commit with
+  | BuildOk live => BuildOk (proj1_sig live)
+  | BuildRefused reason => BuildRefused reason
+  end.
+
+Definition checked_operation_succeeds {A : Type} (result : option A) : bool :=
+  match result with Some _ => true | None => false end.
+
+Lemma checked_liveness_matches_supplied_authority : forall checked commit live,
+  check_commit_liveness checked commit = BuildOk live ->
+  checked_commit_authority live = commit.
+Proof.
+  intros checked commit live Hlive. unfold check_commit_liveness in Hlive.
+  destruct (check_commit_liveness_with_input checked commit) as [[value Hinput]|reason];
+    [|discriminate].
+  inversion Hlive; subst live. exact Hinput.
+Qed.
+
+Definition strict_flat_preflightb
+    (count : Path -> Multiplicity) (delta : FlatBagDelta) : bool :=
+  forallb (fun entry => checked_operation_succeeds
+    (checked_subtract_multiplicity (count (fst entry)) (snd entry)))
+    (flat_delta_removals delta) &&
+  forallb (fun entry => checked_operation_succeeds
+    (checked_add_multiplicity
+      (count (fst entry) - flat_lookup (fst entry) (flat_delta_removals delta))
+      (snd entry))) (flat_delta_additions delta).
+
+Definition strict_flat_feasible
+    (count : Path -> Multiplicity) (delta : FlatBagDelta) : Prop :=
+  (forall path, flat_lookup path (flat_delta_removals delta) <= count path) /\
+  (forall path, flat_lookup path (flat_delta_additions delta) <> 0 ->
+    count path - flat_lookup path (flat_delta_removals delta) +
+      flat_lookup path (flat_delta_additions delta) <= multiplicity_max).
+
+Lemma checked_subtraction_success_iff : forall available removed,
+  checked_operation_succeeds (checked_subtract_multiplicity available removed) = true
+    <-> removed <= available.
+Proof.
+  intros available removed. unfold checked_subtract_multiplicity.
+  destruct (N.leb removed available) eqn:Hle.
+  - apply N.leb_le in Hle. destruct (N.eqb removed available); simpl; tauto.
+  - apply N.leb_gt in Hle. simpl. split; [discriminate|lia].
+Qed.
+
+Lemma checked_addition_success_iff : forall available added,
+  0 < added ->
+  (checked_operation_succeeds (checked_add_multiplicity available added) = true
+    <-> available + added <= multiplicity_max).
+Proof.
+  intros available added Hpositive. unfold checked_add_multiplicity.
+  assert (Hsum : (0 <? available + added) = true) by (apply N.ltb_lt; lia).
+  rewrite Hsum. simpl.
+  destruct (N.leb (available + added) multiplicity_max) eqn:Hle; simpl.
+  - apply N.leb_le in Hle. tauto.
+  - apply N.leb_gt in Hle. split; [discriminate|lia].
+Qed.
+
+Lemma well_formed_flat_member : forall bag path amount,
+  flat_bag_well_formedb bag = true -> In (path, amount) bag ->
+  flat_lookup path bag = amount /\ 0 < amount.
+Proof.
+  intros bag path amount Hvalid Hin.
+  apply andb_true_iff in Hvalid as [Hentries Hunique]. split.
+  - apply flat_lookup_member_value; [now apply flat_paths_unique_implies_nodup|exact Hin].
+  - apply forallb_forall with (x := (path, amount)) in Hentries; [|exact Hin].
+    apply andb_true_iff in Hentries as [_ Hamount].
+    apply andb_true_iff in Hamount as [Hpositive _]. now apply N.ltb_lt.
+Qed.
+
+Theorem strict_flat_preflight_reflects_feasibility : forall count delta,
+  flat_delta_well_formedb delta = true ->
+  (strict_flat_preflightb count delta = true <-> strict_flat_feasible count delta).
+Proof.
+  intros count delta Hvalid.
+  pose proof (@partition_side_well_formed delta ChangeAddition Hvalid) as Hadd.
+  pose proof (@partition_side_well_formed delta ChangeRemoval Hvalid) as Hremove.
+  cbn [partition_side] in Hadd, Hremove.
+  unfold strict_flat_preflightb, strict_flat_feasible.
+  rewrite andb_true_iff, !forallb_forall. split.
+  - intros [Hsub Hplus]. split.
+    + intro path. destruct (N.eq_dec (flat_lookup path (flat_delta_removals delta)) 0)
+        as [Hzero|Hnonzero]; [rewrite Hzero; lia|].
+      apply flat_lookup_nonzero_member in Hnonzero.
+      apply in_map_iff in Hnonzero as [[current amount] [Heq Hin]]. simpl in Heq.
+      subst current. destruct (@well_formed_flat_member _ _ _ Hremove Hin) as [Hlookup _].
+      rewrite Hlookup. apply checked_subtraction_success_iff.
+      exact (Hsub (path, amount) Hin).
+    + intros path Hnonzero. apply flat_lookup_nonzero_member in Hnonzero.
+      apply in_map_iff in Hnonzero as [[current amount] [Heq Hin]]. simpl in Heq.
+      subst current. destruct (@well_formed_flat_member _ _ _ Hadd Hin) as [Hlookup Hpositive].
+      rewrite Hlookup. apply (proj1 (@checked_addition_success_iff _ amount Hpositive)).
+      exact (Hplus (path, amount) Hin).
+  - intros [Hsub Hplus]. split; intros [path amount] Hin; simpl.
+    + destruct (@well_formed_flat_member _ _ _ Hremove Hin) as [Hlookup _].
+      apply checked_subtraction_success_iff. rewrite <- Hlookup. apply Hsub.
+    + destruct (@well_formed_flat_member _ _ _ Hadd Hin) as [Hlookup Hpositive].
+      apply (proj2 (@checked_addition_success_iff _ amount Hpositive)).
+      rewrite <- Hlookup. apply Hplus. rewrite Hlookup. lia.
+Qed.
+
+Theorem strict_flat_preflight_is_extensional : forall count first second,
+  flat_delta_well_formedb first = true -> flat_delta_well_formedb second = true ->
+  (forall path, flat_lookup path (flat_delta_additions first) =
+    flat_lookup path (flat_delta_additions second)) ->
+  (forall path, flat_lookup path (flat_delta_removals first) =
+    flat_lookup path (flat_delta_removals second)) ->
+  (strict_flat_preflightb count first = true <-> strict_flat_preflightb count second = true).
+Proof.
+  intros count first second Hfirst Hsecond Hadd Hremove.
+  rewrite (@strict_flat_preflight_reflects_feasibility count first Hfirst),
+    (@strict_flat_preflight_reflects_feasibility count second Hsecond).
+  unfold strict_flat_feasible.
+  setoid_rewrite Hadd. setoid_rewrite Hremove. reflexivity.
+Qed.
+
+Theorem strict_flat_preflight_ignores_unrelated_counts : forall before after delta,
+  flat_delta_well_formedb delta = true ->
+  (forall path, flat_lookup path (flat_delta_removals delta) <> 0 \/
+    flat_lookup path (flat_delta_additions delta) <> 0 -> before path = after path) ->
+  (strict_flat_preflightb before delta = true <-> strict_flat_preflightb after delta = true).
+Proof.
+  intros before after delta Hvalid Hsame.
+  rewrite (@strict_flat_preflight_reflects_feasibility before delta Hvalid),
+    (@strict_flat_preflight_reflects_feasibility after delta Hvalid).
+  unfold strict_flat_feasible. split; intros [Hremove Hadd]; split.
+  - intro path. destruct (N.eq_dec (flat_lookup path (flat_delta_removals delta)) 0).
+    + rewrite e. lia.
+    + rewrite <- Hsame; [apply Hremove|now left].
+  - intros path Hnonzero. rewrite <- Hsame; [now apply Hadd|now right].
+  - intro path. destruct (N.eq_dec (flat_lookup path (flat_delta_removals delta)) 0).
+    + rewrite e. lia.
+    + rewrite Hsame; [apply Hremove|now left].
+  - intros path Hnonzero. rewrite Hsame; [now apply Hadd|now right].
+Qed.
+
+Record CheckedCommitDelta (commit : TwoLevelAuthority) (delta : FlatBagDelta) : Type :=
+  CheckedCommitDeltaState {
+    checked_commit_delta_preflight :
+      strict_flat_preflightb (commit_absolute_count commit) delta = true
+  }.
+
+Definition check_commit_delta (commit : TwoLevelAuthority) (delta : FlatBagDelta)
+    : BuildResult (CheckedCommitDelta commit delta).
+Proof.
+  destruct (strict_flat_preflightb (commit_absolute_count commit) delta) eqn:Hchecked.
+  - exact (BuildOk (@CheckedCommitDeltaState commit delta Hchecked)).
+  - exact (BuildRefused RefuseCommitDelta).
 Defined.
 
 Lemma built_match_flat_delta_is_well_formed : forall pool selected delta,
@@ -3040,6 +3240,8 @@ Record PreparedMatchChanges : Type := PreparedMatchChangesState {
     CheckedCommitLiveness prepared_checked_pool;
   prepared_flat_delta : FlatBagDelta;
   prepared_partition_permit : FullyParsedPartition prepared_flat_delta;
+  prepared_commit_delta : CheckedCommitDelta
+    (checked_commit_authority prepared_checked_commit) prepared_flat_delta;
   prepared_observed_authority_is_checked :
     authority_well_formedb
       (pool_observed_authority
@@ -3092,8 +3294,14 @@ Definition checked_observed_authority_or_default
   | BuildRefused _ => default
   end.
 
-Definition prepare_match_changes
-    (input : MatchPreparationInput) : MatchPreparationOutcome.
+Definition preparation_matches_input input prepared : Prop :=
+  checked_pool_selection (prepared_checked_pool prepared) = preparation_selected_candidates input /\
+  pool_observed_authority (checked_pool_value (prepared_checked_pool prepared)) =
+    preparation_observed_authority input /\
+  checked_commit_authority (prepared_checked_commit prepared) = preparation_commit_authority input.
+
+Definition prepare_match_changes_with_input (input : MatchPreparationInput)
+    : BuildResult { prepared : PreparedMatchChanges | preparation_matches_input input prepared }.
 Proof.
   destruct (authority_well_formedb (preparation_observed_authority input))
     eqn:Hobserved.
@@ -3118,21 +3326,44 @@ Proof.
             delta Hdelta) as Hdelta_valid.
            destruct (authorize_fully_parsed_partition delta)
              as [partition|partition_reason] eqn:Hpartition.
-           ++ apply PreparationReady.
-              refine ({| prepared_checked_pool := checked;
+           ++ destruct (check_commit_delta (checked_commit_authority live) delta)
+                as [arithmetic|arithmetic_reason] eqn:Harithmetic.
+              ** apply BuildOk.
+              refine (exist _ {| prepared_checked_pool := checked;
                 prepared_checked_commit := live;
                 prepared_flat_delta := delta;
                 prepared_partition_permit := partition;
-                prepared_observed_authority_is_checked := _;
+                prepared_commit_delta := arithmetic;
+                prepared_observed_authority_is_checked :=
+                  checked_pool_observed_authority_well_formed checked;
                 prepared_delta_is_primary_executable_output := Hdelta;
-                prepared_delta_invariant := Hdelta_valid |}).
-              ** exact (checked_pool_observed_authority_well_formed checked).
-           ++ exact (PreparationRefused partition_reason).
-        -- exact (PreparationRefused delta_reason).
-      * exact (PreparationRefused live_reason).
-    + exact (PreparationRefused reason).
-  - exact (PreparationRefused RefuseObservedAuthority).
+                prepared_delta_invariant := Hdelta_valid |} _).
+                 unfold preparation_matches_input. simpl.
+                 destruct (@checked_pool_matches_supplied_input _ _ _ _ _ _ _ _ _ Hpool)
+                   as [Hselection Hauthority].
+                 split; [exact Hselection|]. split; [exact Hauthority|].
+                 exact (@checked_liveness_matches_supplied_authority _ _ _ Hlive).
+              ** exact (BuildRefused arithmetic_reason).
+           ++ exact (BuildRefused partition_reason).
+        -- exact (BuildRefused delta_reason).
+      * exact (BuildRefused live_reason).
+    + exact (BuildRefused reason).
+  - exact (BuildRefused RefuseObservedAuthority).
 Defined.
+
+Definition prepare_match_changes input : MatchPreparationOutcome :=
+  match prepare_match_changes_with_input input with
+  | BuildOk prepared => PreparationReady (proj1_sig prepared)
+  | BuildRefused reason => PreparationRefused reason
+  end.
+
+Theorem preparation_ready_is_bound_to_supplied_input : forall input prepared,
+  prepare_match_changes input = PreparationReady prepared -> preparation_matches_input input prepared.
+Proof.
+  intros input prepared Hready. unfold prepare_match_changes in Hready.
+  destruct (prepare_match_changes_with_input input) as [[value Hinput]|reason]; [|discriminate].
+  inversion Hready; subst prepared. exact Hinput.
+Qed.
 
 (** A publication permit can only be extracted from [PreparationReady].  It
     carries the fully parsed partition and exact checked authorities; a
@@ -3198,6 +3429,34 @@ Proof.
   - exact (prepared_delta_invariant prepared).
 Qed.
 
+Theorem preparation_ready_has_strict_commit_delta : forall input prepared,
+  prepare_match_changes input = PreparationReady prepared ->
+  strict_flat_feasible
+    (commit_absolute_count (checked_commit_authority (prepared_checked_commit prepared)))
+    (prepared_flat_delta prepared).
+Proof.
+  intros input prepared _.
+  apply (proj1 (@strict_flat_preflight_reflects_feasibility _ _
+    (prepared_delta_invariant prepared))).
+  exact (checked_commit_delta_preflight (prepared_commit_delta prepared)).
+Qed.
+
+Theorem preparation_ready_checks_actual_input_counts : forall input prepared,
+  prepare_match_changes input = PreparationReady prepared ->
+  commit_selection_liveb (preparation_commit_authority input)
+    (preparation_selected_candidates input) = true /\
+  strict_flat_feasible (commit_absolute_count (preparation_commit_authority input))
+    (prepared_flat_delta prepared).
+Proof.
+  intros input prepared Hready.
+  destruct (@preparation_ready_is_bound_to_supplied_input input prepared Hready)
+    as [Hselected [Hobserved Hcommit]].
+  split.
+  - rewrite <- Hcommit, <- Hselected.
+    exact (checked_commit_liveness (prepared_checked_commit prepared)).
+  - rewrite <- Hcommit. now apply (@preparation_ready_has_strict_commit_delta input prepared).
+Qed.
+
 Theorem preparation_refusal_is_atomic : forall input reason prepared,
   prepare_match_changes input = PreparationRefused reason ->
   preparation_publication_gate (prepare_match_changes input) <>
@@ -3234,6 +3493,178 @@ Proof.
   unfold build_candidate_catalog in Hbuild. rewrite Hvalid, Hloaded in Hbuild.
   simpl in Hbuild. inversion Hbuild; subst catalog. split; reflexivity.
 Qed.
+
+Record CancellationGuardedDelta : Type := CancellationGuardedDeltaState {
+  guarded_delta : FlatBagDelta;
+  cancellation_guards : FlatBag
+}.
+
+Definition initialize_guarded_removals (removals : FlatBag) : CancellationGuardedDelta :=
+  CancellationGuardedDeltaState (FlatBagDeltaState [] removals) [].
+
+Definition remember_cancelled_demand (guards : FlatBag) (path : Path)
+    (removal : Multiplicity) : FlatBag :=
+  if N.eqb removal 0 then guards
+  else flat_set_count path (N.max (flat_lookup path guards) removal) guards.
+
+Definition guarded_record_addition (before : CancellationGuardedDelta)
+    (path : Path) (amount : Multiplicity) : option CancellationGuardedDelta :=
+  match flat_record_addition (guarded_delta before) path amount with
+  | None => None
+  | Some after => Some (CancellationGuardedDeltaState after
+      (remember_cancelled_demand (cancellation_guards before) path
+        (flat_lookup path (flat_delta_removals (guarded_delta before)))))
+  end.
+
+Definition guarded_original_demand (state : CancellationGuardedDelta) (path : Path) :=
+  N.max (flat_lookup path (cancellation_guards state))
+    (flat_lookup path (flat_delta_removals (guarded_delta state))).
+
+Definition guarded_delta_well_formed (state : CancellationGuardedDelta) : Prop :=
+  flat_delta_well_formedb (guarded_delta state) = true /\
+  flat_bag_well_formedb (cancellation_guards state) = true.
+
+Lemma remembered_demand_at_target : forall guards path removal,
+  flat_bag_well_formedb guards = true ->
+  flat_lookup path (remember_cancelled_demand guards path removal) =
+    N.max (flat_lookup path guards) removal.
+Proof.
+  intros guards path removal Hvalid. unfold remember_cancelled_demand.
+  destruct (N.eqb removal 0) eqn:Hzero.
+  - apply N.eqb_eq in Hzero. subst removal. now rewrite N.max_0_r.
+  - apply flat_set_count_target. apply flat_paths_unique_implies_nodup.
+    now apply andb_true_iff in Hvalid as [_ Hvalid].
+Qed.
+
+Lemma remembered_demand_at_other : forall guards path removal other,
+  path <> other ->
+  flat_lookup other (remember_cancelled_demand guards path removal) = flat_lookup other guards.
+Proof.
+  intros guards path removal other Hdifferent. unfold remember_cancelled_demand.
+  destruct (N.eqb removal 0); [reflexivity|now apply flat_set_count_other].
+Qed.
+
+Lemma remembered_demand_preserves_well_formedness : forall guards path removal,
+  flat_bag_well_formedb guards = true -> path_valid path = true ->
+  removal <= multiplicity_max ->
+  flat_bag_well_formedb (remember_cancelled_demand guards path removal) = true.
+Proof.
+  intros guards path removal Hguards Hpath Hbound. unfold remember_cancelled_demand.
+  destruct (N.eqb removal 0); [exact Hguards|].
+  apply flat_set_count_preserves_well_formed; auto.
+  apply N.max_lub; [now apply flat_lookup_well_formed_bound|exact Hbound].
+Qed.
+
+Lemma flat_record_addition_checks_path : forall delta path amount after,
+  flat_record_addition delta path amount = Some after -> path_valid path = true.
+Proof.
+  intros delta path amount after Hrecord.
+  unfold flat_record_addition, flat_record_change in Hrecord.
+  destruct (path_valid path && multiplicity_valid amount) eqn:Hvalid; [|discriminate].
+  now apply andb_true_iff in Hvalid as [Hpath _].
+Qed.
+
+Theorem guarded_addition_preserves_original_demand : forall before path amount after,
+  guarded_delta_well_formed before -> guarded_record_addition before path amount = Some after ->
+  guarded_delta_well_formed after /\
+  forall endpoint, guarded_original_demand after endpoint = guarded_original_demand before endpoint.
+Proof.
+  intros [delta guards] path amount after [Hdelta Hguards] Hrecord.
+  change (match flat_record_addition delta path amount with
+    | None => None
+    | Some updated => Some (CancellationGuardedDeltaState updated
+        (remember_cancelled_demand guards path (flat_lookup path (flat_delta_removals delta))))
+    end = Some after) in Hrecord.
+  destruct (flat_record_addition delta path amount) as [updated|] eqn:Hupdate; [|discriminate].
+  inversion Hrecord; subst after. clear Hrecord.
+  pose proof (@partition_side_well_formed delta ChangeAddition Hdelta) as Hadd.
+  pose proof (@partition_side_well_formed delta ChangeRemoval Hdelta) as Hremove.
+  cbn [partition_side] in Hadd, Hremove.
+  split.
+  - split; cbn [guarded_delta cancellation_guards].
+    + now apply (@flat_record_addition_preserves_normalization delta path amount updated).
+    + apply remembered_demand_preserves_well_formedness; auto.
+      * now apply (@flat_record_addition_checks_path delta path amount updated).
+      * now apply flat_lookup_well_formed_bound.
+  - intro endpoint. unfold guarded_original_demand.
+    cbn [guarded_delta cancellation_guards].
+    destruct (path_eq_dec path endpoint) as [Hequal|Hdifferent].
+    + subst endpoint. rewrite remembered_demand_at_target; [|exact Hguards].
+      destruct updated as [additions removals].
+      apply andb_true_iff in Hadd as [_ Hadd].
+      apply andb_true_iff in Hremove as [_ Hremove].
+      pose proof (proj1 (@flat_record_addition_is_exact_opposite_cancellation
+        delta path amount additions removals Hadd Hremove Hupdate)) as Hremaining.
+      cbn [flat_delta_removals]. rewrite Hremaining.
+      apply N.max_l. pose proof (N.le_max_r (flat_lookup path guards)
+        (flat_lookup path (flat_delta_removals delta))). lia.
+    + rewrite remembered_demand_at_other; [|exact Hdifferent].
+      rewrite (proj2 (@flat_record_addition_preserves_other delta path amount updated
+        endpoint Hdifferent Hupdate)). reflexivity.
+Qed.
+
+Theorem initial_guarded_removals_are_exact : forall removals,
+  flat_bag_well_formedb removals = true ->
+  guarded_delta_well_formed (initialize_guarded_removals removals) /\
+  forall path, guarded_original_demand (initialize_guarded_removals removals) path =
+    flat_lookup path removals.
+Proof.
+  intros removals Hvalid. split.
+  - split.
+    + change ((true && flat_bag_well_formedb removals) && true = true).
+      now rewrite Hvalid.
+    + reflexivity.
+  - intro path. change (N.max 0 (flat_lookup path removals) = flat_lookup path removals).
+    apply N.max_0_l.
+Qed.
+
+Fixpoint record_guarded_additions (before : CancellationGuardedDelta) (additions : list Entry)
+    : option CancellationGuardedDelta :=
+  match additions with
+  | [] => Some before
+  | (path, amount) :: tail =>
+      match guarded_record_addition before path amount with
+      | None => None
+      | Some after => record_guarded_additions after tail
+      end
+  end.
+
+Theorem finite_guarded_additions_preserve_original_demand : forall additions before after,
+  guarded_delta_well_formed before -> record_guarded_additions before additions = Some after ->
+  guarded_delta_well_formed after /\
+  forall path, guarded_original_demand after path = guarded_original_demand before path.
+Proof.
+  induction additions as [|[path amount] tail IH]; intros before after Hvalid Hrecord; simpl in Hrecord.
+  - inversion Hrecord; subst after. auto.
+  - destruct (guarded_record_addition before path amount) as [next|] eqn:Hnext; [|discriminate].
+    destruct (@guarded_addition_preserves_original_demand before path amount next Hvalid Hnext)
+      as [Hnext_valid Hnext_demand].
+    destruct (IH next after Hnext_valid Hrecord) as [Hafter_valid Hafter_demand].
+    split; [exact Hafter_valid|]. intro endpoint. now rewrite Hafter_demand, Hnext_demand.
+Qed.
+
+Theorem guards_and_net_removals_check_full_demand : forall count state,
+  ((forall path, flat_lookup path (cancellation_guards state) <= count path) /\
+   (forall path, flat_lookup path (flat_delta_removals (guarded_delta state)) <= count path)) <->
+  (forall path, guarded_original_demand state path <= count path).
+Proof.
+  intros count state. unfold guarded_original_demand. split.
+  - intros [Hguard Hnet] path. apply N.max_lub; auto.
+  - intro Hmax. split; intro path; specialize (Hmax path).
+    + eapply N.le_trans; [apply N.le_max_l|exact Hmax].
+    + eapply N.le_trans; [apply N.le_max_r|exact Hmax].
+Qed.
+
+Definition atomic_guarded_addition before path amount :=
+  match guarded_record_addition before path amount with
+  | Some after => after
+  | None => before
+  end.
+
+Theorem failed_guarded_addition_preserves_both_authorities : forall before path amount,
+  guarded_record_addition before path amount = None ->
+  atomic_guarded_addition before path amount = before.
+Proof. intros before path amount Hfailure. unfold atomic_guarded_addition. now rewrite Hfailure. Qed.
 
 (** Closed capstones used by the proof gate. *)
 Print Assumptions constructed_candidate_is_codec_exact.
@@ -3274,5 +3705,17 @@ Print Assumptions normalized_parsed_partition_exists.
 Print Assumptions grouped_partition_preserves_both_flat_sides.
 Print Assumptions grouped_partition_has_exact_source_endpoints.
 Print Assumptions normalized_partition_refusal_is_exactly_parse_refusal.
+Print Assumptions strict_flat_preflight_reflects_feasibility.
+Print Assumptions strict_flat_preflight_is_extensional.
+Print Assumptions strict_flat_preflight_ignores_unrelated_counts.
+Print Assumptions preparation_ready_has_strict_commit_delta.
+Print Assumptions preparation_ready_is_bound_to_supplied_input.
+Print Assumptions absent_fresh_flag_does_not_change_feasibility.
+Print Assumptions preparation_ready_checks_actual_input_counts.
+Print Assumptions guarded_addition_preserves_original_demand.
+Print Assumptions initial_guarded_removals_are_exact.
+Print Assumptions finite_guarded_additions_preserve_original_demand.
+Print Assumptions guards_and_net_removals_check_full_demand.
+Print Assumptions failed_guarded_addition_preserves_both_authorities.
 
 End TwoLevelRSpaceMatchPreparation.

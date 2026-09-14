@@ -11580,6 +11580,215 @@ No production selection, reservation, serialization or consensus semantics
 were changed; the only production-source edit binds the test module under
 `cfg(test)`.
 
+### J-160 — 2026-09-14 Commit-time delta feasibility
+
+**Status: DERIVED; final native qualification in progress.** Task 6590 extends the existing
+executable PREPARE checker, rather than replacing its observed-pool or
+commit-liveness checks. The reviewed gap is that parsed, normalized deltas
+do not by themselves prove successful arithmetic against commit-time
+multiplicities. In particular, recording one arrival is valid even when
+adding it to the current endpoint would overflow `u64`.
+
+The preflight reuses `checked_subtract_multiplicity` and
+`checked_add_multiplicity`. For each removal it checks the complete
+aggregated demand against the exact absolute-path count. For each addition
+it checks the count after removal plus the addition. PREPARE returns a
+dependent witness only after every endpoint and the complete path partition
+have passed. The model observes trie cursors as finite lists; preflight
+must not require the selection order to be sorted or introduce a production
+projection, sort, or alternative arithmetic implementation.
+
+The proof-to-property obligations are:
+
+| Invariant | Required executable control |
+|---|---|
+| Selected observed-pool provenance and exact input binding | Forged candidate metadata cannot grant permission |
+| Persistent absolute-path presence | Count one succeeds; count zero refuses |
+| Aggregated nonpersistent removal | Repeated demand two succeeds at two and refuses at one |
+| Checked remove-then-add arithmetic | A fresh addition to maximum multiplicity refuses |
+| Complete preparation before publication | A valid first channel followed by an invalid channel changes no native state or journal |
+| Exact-path locality and order independence | Unrelated commit mutation and equivalent side order do not cause refusal |
+| Actual transition progress | Nonempty successful native transitions produce the independent expected state |
+
+`CurrentPublication` already demands a strict successor certificate; the
+finding does not show that parsed partition evidence alone can authorize
+native publication. Constructing that complete successor also needs a
+canonical, proof-only cursor observation: selection-order lists cannot be
+asserted equal to ordered merge streams. This distinction remains explicit
+until the corresponding refinement is proved. No new production defect,
+performance result, or consensus-visible change is claimed by this design.
+
+The implementation adds `strict_flat_preflightb` and proves its equivalence
+to per-path aggregated removal and remove-then-add bounds for every
+well-formed normalized delta. Two further universal laws establish
+extensional side-order independence and invariance under changes outside
+the delta supports. These laws concern exact endpoint arithmetic using the
+existing strict BagDelta primitives; they are not a proof that an arbitrary
+selection-order list can be fed to a canonical merge stream.
+
+`check_observed_pool_with_inputs`, `check_commit_liveness_with_input`, and
+`prepare_match_changes_with_input` construct certificates indexed by their
+actual inputs. Their nondependent wrappers preserve the existing model API.
+The certificates add proof fields, not an additional computational decision
+or native runtime validation pass. `preparation_ready_checks_actual_input_counts`
+binds both selected-path liveness and strict delta feasibility to the supplied
+commit authority, rather than merely projecting a property of some checked
+record. The model passes 45 closed-context reports; its controls pass 23,
+including 11 new nonempty success/refusal cases.
+
+During this simplification the checker stopped reconstructing a duplicate
+candidate pool and retained the actual builder output. With no fresh arrival,
+the former reconstruction could carry `fresh_available=true`, whereas the
+builder normalizes it to false. The universal
+`absent_fresh_flag_does_not_change_feasibility` theorem proves that either
+flag gives identical feasibility when the arrival is absent. This is an
+explicit formal bookkeeping correction, not an unreported production
+semantic change or a claim of byte-identical internal formal records.
+
+The native binding uses an independent sparse-count oracle over 216 bounded
+two-channel transitions plus exact-capability, stale selected-path,
+unrelated-mutation, malformed-address and maximum-count boundary cases.
+The `u64::MAX` fixtures retain five distinct paths and never expand the data
+into occurrences. Refusal checks compare all those counts, endpoint and
+loaded-channel counts, exact bounded continuation/join namespaces and the
+complete pending journal. An exact `u128` sum is derived from the known
+sparse paths; this is not access to the index's private aggregate counter.
+Success checks compare the authoritative returned continuation, independent
+expected counts and distinct endpoint count, excluding unexpected endpoints.
+
+Proof iterations r2–r5 exposed dependent-elimination errors when attempting
+to recover input identity from a completed proof-carrying result. Input-indexed
+construction resolved that issue without proof irrelevance, axioms or an
+extra checking pass. Iteration r7 referenced an unavailable library lemma;
+local finite-list induction repaired it in r8. These failed commands remain
+in `target/verification/commit-liveness-proof-r*.log`. A first seven-test
+release run passed; exact namespace assertions were subsequently strengthened
+and require the final gate below before acceptance.
+
+### J-161 — 2026-09-14 Cancellation must preserve selected-datum liveness
+
+**Status: MEASURED counterexample and focused repair; broader qualification pending in required task 8498.**
+The J-160 maintained gate passed 89 test executions and independent kernel
+checks. The broader release nextest run passed 735 tests with one existing
+skip. A subsequent final-audit counterexample nevertheless finds a native
+commit-boundary mismatch: an unselected identical arrival cancels a selected
+stored removal, the selected datum disappears before commit, and the
+normalized delta no longer carries that selected occurrence's requirement.
+`HotStore::apply_accepted_match` commits instead of returning `Stale`.
+
+The new formal control refuses this case and passes; the corresponding
+native regression fails with exit 101 in
+`target/verification/commit-liveness-cancellation-control-r2.log`.
+The first regression compile attempt used the wrong Bag accessor; the
+corrected test uses `Bag::count` and reaches the failing assertion. The
+earlier green suites do not establish completion of task 6590. Its required
+child 8498 records the repair, and scheduler revision 1116 selects that child.
+
+This proves a stale-ticket contract mismatch at the commit boundary, not a
+race through ordinary `produce`: channel locks and Fresh-first selection
+may exclude this particular execution there. Exact stored/arrival identity
+is possible because the produce identity is deterministic, rather than a
+unique occurrence nonce. The compatibility analysis must retain this scope
+distinction before classifying any runtime change.
+
+**DECISION.** Complete selected-removal aggregation first. Addition-only
+preparation subsequently retains a guard only at an endpoint where an
+addition cancels a removal. The guard retains the full original requirement,
+not just the cancelled amount. For a path $`p`$, let $`G(p)`$ be its guard,
+$`R(p)`$ its normalized remaining removal and $`D(p)`$ its original selected
+demand. Prove and maintain:
+
+```math
+\max(G(p), R(p)) = D(p).
+```
+
+Then guard checks together with strict normalized subtraction are equivalent
+to checking the original selected demand. Repeated additions preserve the
+guard by maximum, and additions at unrelated endpoints leave it unchanged.
+No-cancellation commits retain an empty guard trie and need no additional
+endpoint lookups. Borrowed Bag cursor traversal avoids owned-path copies.
+Raw prefix-aware PathMap masking is not interchangeable with exact endpoint
+membership, so the helper uses existing exact Bag operations.
+
+Before runtime adoption, prove initialization, step preservation, arbitrary
+finite addition traces, guard/net feasibility equivalence, and unchanged
+state on ordinary returned preparation errors. Extract no/partial/full/
+repeated cancellation properties and original-demand sufficient/insufficient
+controls. Encapsulation must prevent adding more selected removals after the
+addition phase begins. The native counterexample remains enabled until the
+repair makes it pass; it is not skipped or weakened.
+
+**Formal-first result.** Before the Rust change, the preparation model compiled
+with 50 closed-context reports and its control module with 29. Independent
+kernel checking of both modules succeeded. Five new capstones establish
+initial exact demand, successful addition preservation, finite-trace
+preservation, guard/net-check equivalence and unchanged authority on returned
+addition errors. This is not a claim of allocator-panic rollback or a complete
+machine-code refinement proof.
+
+The implementation encapsulates `AcceptedDatumChanges` in `internal.rs`.
+`from_candidates` aggregates selected removals once; only additions can follow.
+`BagDelta::record_addition_with_prior_removal` returns the cancellation count
+already read by the normalizer, avoiding a second preparation lookup. Guards
+use the existing exact Bag setter and borrowed relative-prefix visitor.
+HotStore checks them under its existing state write lock before applying the
+normalized delta; persistent presence checks remain independent. Play and
+replay each use this preparation in their two accepted-match paths. A
+removal-only fixture constructor is restricted to tests and the existing
+accepted-match experiment feature; it rejects mixed deltas.
+
+**Native invariant mapping.** The twelve focused tests include the original
+216-case oracle and a new 150-case cancellation matrix (60 stale refusals,
+90 successful commits), spanning demand 1–3, current count 0–4, arrivals 0–4
+and both continuation persistence modes. Preparation precedes current-count
+mutation, so the 1/0/1 and 2/1/1 stale cases test actual invalidated tickets.
+Every refusal preserves all namespace snapshots and pending journals;
+success checks exact counts, distinct endpoints, returned continuations,
+continuation/join namespaces and composed datum journals. Unrelated mutation
+is retained. Generated finite traces use root, prefix and descendant keys to
+test exact-endpoint normalization and equivalence between guard/net checks
+and original-demand checks after every addition. Separate controls cover
+zero additional uncancelled-path lookups, rejection of mixed fixture input,
+and overflow leaving the delta and existing guard unchanged.
+
+The focused release run passed 12/12 in 0.26 seconds. This is test execution
+time, not a performance benchmark. The broader nextest and maintained gate
+must pass against this source before completion; earlier J-160 green results
+remain historical rather than repair evidence.
+
+| Evidence artifact under `target/verification/` | Result | SHA-256 |
+|---|---|---|
+| `cancellation-guard-proof-r4.log` | 50 closed reports | `6b7ad09c59daea75b269ef00fd34c169bc493df916857e935aabd67464c442ee` |
+| `cancellation-guard-controls-r1.log` | 29 closed reports | `748b2c0c3d75c6342cdd6884fb6883c6817547a199518477718c897f0c0433c1` |
+| `cancellation-guard-kernel-r1.log` | independent kernel check passed | `844c04c3ca6574860a9401e2361ac9150227162560b7bec1fa72f77c6dbef7de` |
+| `cancellation-guard-native-r1.log` | 12 tests passed | `3a3d6d71893dfdd0ee8301f7289243e91c90b99daf31f6c1bf8ef8ae3ca59bc2` |
+
+**Pause checkpoint.** The post-repair release nextest run passed 740 tests
+with one existing skip; the maintained preparation gate passed 94 test
+executions and independent kernel checking. Five dependent transaction,
+publication and recovery proof modules were rebuilt and independently checked.
+The feature-enabled experiment semantic audit passed, but its instrumentation
+test failed when run concurrently (four measured locks versus three expected).
+That same test passed alone. Inspection found process-global counters shared
+with the concurrently running semantic audit; it does not establish an added
+commit lock or a new runtime performance regression.
+
+The reviewed next step is measurement-thread-local
+`Cell<Option<TransitionInstrumentation>>` sessions, preserving same-thread
+nonreentrancy and exact counter assertions. All current measurement callers
+execute synchronously, with non-Send write guards dropped before session end.
+Deterministic cross-thread audit and concurrent-session controls must precede
+adoption. This repair is not implemented at the owner's requested pause;
+task 8498 remains in progress rather than being declared complete. No new
+benchmark magnitude or corrected historical profiling result is claimed.
+
+| Final checkpoint artifact under `target/verification/` | Result | SHA-256 |
+|---|---|---|
+| `cancellation-guard-nextest-r1.log` | 740 passed, one existing skip | `b86b817f8aeae4eeffa7a8fa5a4d695cc106f26577f444629a02f1448e6e78d6` |
+| `cancellation-guard-maintained-gate-r1.log` | 94 test executions and formal gate passed | `2c59aa765c904ec94de7580d8af83857a47946b6553ce7593e1194bc95e620ee` |
+| `cancellation-guard-dependent-kernel.log` | five dependent modules checked | `6461687abeda2e5d68636592392f0b2c9f9ef1bd52869ad03b8977d7fd679588` |
+| `cancellation-guard-experiment-feature-r1.log` | semantic audit passed; instrumentation failed | `32c304c88bec66e83b5cda0cff40861271b39858f929056310c358e2eca8daf8` |
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

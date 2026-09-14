@@ -8,7 +8,7 @@ use counter::Counter;
 use dashmap::DashMap;
 use proptest_derive::Arbitrary;
 
-use super::bag::{BagDelta, BagError, Multiplicity};
+use super::bag::{Bag, BagDelta, BagError, Multiplicity};
 use super::hashing::stable_hash_provider::StableHashSerialize;
 use super::hot_store::ContinuationAddress;
 use super::trace::event::{Consume, Produce};
@@ -137,6 +137,64 @@ pub fn stored_datum_removal_delta<C, A: Clone>(
         }
     }
     Ok(delta)
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct AcceptedDatumChanges {
+    normalized: BagDelta,
+    cancellation_guards: Bag,
+}
+
+impl AcceptedDatumChanges {
+    pub(crate) fn from_candidates<C, A: Clone>(
+        candidates: &[ConsumeCandidate<C, A>],
+    ) -> Result<Self, BagError> {
+        Ok(Self {
+            normalized: stored_datum_removal_delta(candidates)?,
+            cancellation_guards: Bag::new(),
+        })
+    }
+
+    #[cfg(any(test, feature = "accepted-match-transition-experiment"))]
+    pub(crate) fn from_removals(normalized: BagDelta) -> Option<Self> {
+        normalized.additions().is_empty().then(|| Self {
+            normalized,
+            cancellation_guards: Bag::new(),
+        })
+    }
+
+    pub(crate) fn record_addition(
+        &mut self,
+        path: &[u8],
+        amount: Multiplicity,
+    ) -> Result<(), BagError> {
+        if let Some(prior) = self
+            .normalized
+            .record_addition_with_prior_removal(path, amount)?
+        {
+            if self.cancellation_guards.count(path) < prior.get() {
+                self.cancellation_guards.set_count(path, Some(prior));
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn delta(&self) -> &BagDelta { &self.normalized }
+
+    pub(crate) fn guards_satisfied_by(&self, mut count: impl FnMut(&[u8]) -> u64) -> bool {
+        if self.cancellation_guards.is_empty() {
+            return true;
+        }
+        self.cancellation_guards
+            .try_visit_relative_prefix(&[], |path, required| {
+                if count(path) >= required.get() {
+                    Ok(())
+                } else {
+                    Err(())
+                }
+            })
+            .is_ok()
+    }
 }
 
 /// `Clone` mirrors [`ConsumeCandidate`]'s, and is what lets a caller HOLD an

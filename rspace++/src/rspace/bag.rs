@@ -981,11 +981,20 @@ impl BagDelta {
     pub fn removals(&self) -> &Bag { &self.removals }
 
     pub fn record_addition(&mut self, path: &[u8], amount: Multiplicity) -> Result<(), BagError> {
-        Self::record_change(&mut self.additions, &mut self.removals, path, amount)
+        self.record_addition_with_prior_removal(path, amount)
+            .map(|_| ())
     }
 
     pub fn record_removal(&mut self, path: &[u8], amount: Multiplicity) -> Result<(), BagError> {
-        Self::record_change(&mut self.removals, &mut self.additions, path, amount)
+        Self::record_change(&mut self.removals, &mut self.additions, path, amount).map(|_| ())
+    }
+
+    pub(crate) fn record_addition_with_prior_removal(
+        &mut self,
+        path: &[u8],
+        amount: Multiplicity,
+    ) -> Result<Option<Multiplicity>, BagError> {
+        Self::record_change(&mut self.additions, &mut self.removals, path, amount)
     }
 
     pub fn inverse(&self) -> Self {
@@ -1008,8 +1017,9 @@ impl BagDelta {
         cancellation: &mut Bag,
         path: &[u8],
         amount: Multiplicity,
-    ) -> Result<(), BagError> {
-        let cancelled = cancellation.count(path).min(amount.get());
+    ) -> Result<Option<Multiplicity>, BagError> {
+        let prior_cancellation = cancellation.count(path);
+        let cancelled = prior_cancellation.min(amount.get());
         if cancelled != 0 {
             let remaining = amount.get() - cancelled;
             if remaining != 0 {
@@ -1032,7 +1042,7 @@ impl BagDelta {
         } else {
             destination.insert_many(path, amount)?;
         }
-        Ok(())
+        Ok(Multiplicity::new(prior_cancellation).ok())
     }
 
     fn apply_parts(target: &mut Bag, additions: &Bag, removals: &Bag) -> Result<(), BagError> {

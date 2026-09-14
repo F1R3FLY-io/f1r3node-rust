@@ -1175,7 +1175,7 @@ where
         if selected_fresh && arrival.is_none() {
             return Ok(None);
         }
-        let mut datum_delta = stored_datum_removal_delta(&data_candidates)
+        let mut datum_delta = AcceptedDatumChanges::from_candidates(&data_candidates)
             .map_err(super::data_index::DataIndexError::from)?;
         if !selected_fresh {
             if let Some((arrival_channel, arrival_datum)) = &arrival {
@@ -1393,7 +1393,7 @@ where
         &self,
         data_candidates: &[ConsumeCandidate<C, A>],
     ) -> Result<bool, RSpaceError> {
-        let delta = stored_datum_removal_delta(data_candidates)
+        let delta = AcceptedDatumChanges::from_candidates(data_candidates)
             .map_err(super::data_index::DataIndexError::from)?;
         let required_persistent_paths = data_candidates
             .iter()

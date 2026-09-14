@@ -4,6 +4,7 @@ use super::*;
 use crate::rspace::data_index::RSpaceDataIndex;
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::history::history_reader::HistoryReaderBase;
+use crate::rspace::internal::AcceptedDatumChanges;
 use crate::rspace::trace::event::Consume;
 
 struct EmptyHistory;
@@ -133,7 +134,7 @@ fn a_cross_group_continuation_capability_is_stale_before_any_state_change() {
                 persist: left.persist,
                 peeks: left.peeks,
             }),
-            datum_delta: BagDelta::new(),
+            datum_delta: AcceptedDatumChanges::from_removals(BagDelta::new()).unwrap(),
             required_persistent_paths: Vec::new(),
             join_channels: Vec::new(),
         })
@@ -176,7 +177,7 @@ fn an_accepted_match_atomically_removes_the_selected_datum_continuation_and_join
                 persist: continuation.persist,
                 peeks: continuation.peeks.clone(),
             }),
-            datum_delta,
+            datum_delta: AcceptedDatumChanges::from_removals(datum_delta).unwrap(),
             required_persistent_paths: Vec::new(),
             join_channels: channels.clone(),
         })
@@ -245,7 +246,7 @@ fn an_accepted_multichannel_match_preserves_unconsumed_datum_multiplicity() {
                 persist: selected.persist,
                 peeks: selected.peeks.clone(),
             }),
-            datum_delta,
+            datum_delta: AcceptedDatumChanges::from_removals(datum_delta).unwrap(),
             required_persistent_paths: Vec::new(),
             join_channels: channels.clone(),
         })
@@ -293,7 +294,7 @@ fn an_insufficient_datum_delta_is_stale_and_failure_atomic() {
                 persist: selected.persist,
                 peeks: selected.peeks.clone(),
             }),
-            datum_delta,
+            datum_delta: AcceptedDatumChanges::from_removals(datum_delta).unwrap(),
             required_persistent_paths: Vec::new(),
             join_channels: Vec::new(),
         })
@@ -337,7 +338,7 @@ fn a_missing_required_persistent_path_is_stale_before_any_mutation() {
                 persist: selected.persist,
                 peeks: selected.peeks.clone(),
             }),
-            datum_delta,
+            datum_delta: AcceptedDatumChanges::from_removals(datum_delta).unwrap(),
             required_persistent_paths: vec![Arc::from([0xFF_u8, 0x00_u8])],
             join_channels: Vec::new(),
         })
@@ -383,7 +384,7 @@ fn a_present_required_persistent_path_allows_the_atomic_transition() {
                 persist: selected.persist,
                 peeks: selected.peeks.clone(),
             }),
-            datum_delta,
+            datum_delta: AcceptedDatumChanges::from_removals(datum_delta).unwrap(),
             required_persistent_paths: vec![Arc::from(
                 RSpaceDataIndex::datum_path(&channels[0], &witness),
             )],
@@ -439,7 +440,7 @@ fn an_accepted_match_preserves_a_persistent_continuation() {
                 persist: selected.persist,
                 peeks: selected.peeks.clone(),
             }),
-            datum_delta,
+            datum_delta: AcceptedDatumChanges::from_removals(datum_delta).unwrap(),
             required_persistent_paths: Vec::new(),
             join_channels: channels.clone(),
         })
@@ -474,6 +475,7 @@ fn an_accepted_match_can_remove_the_selected_datum_and_publish_a_new_arrival() {
             super::super::bag::Multiplicity::ONE,
         )
         .expect("fixture removal fits u64");
+    let mut datum_delta = AcceptedDatumChanges::from_removals(datum_delta).unwrap();
     datum_delta
         .record_addition(
             &RSpaceDataIndex::datum_path(&channels[0], &arrival),
@@ -526,7 +528,7 @@ fn a_datum_only_accepted_match_commits_without_a_continuation_capability() {
         .apply_accepted_match(AcceptedMatch {
             channels,
             continuation: None,
-            datum_delta,
+            datum_delta: AcceptedDatumChanges::from_removals(datum_delta).unwrap(),
             required_persistent_paths: Vec::new(),
             join_channels: Vec::new(),
         })
@@ -565,7 +567,7 @@ fn replaying_a_committed_one_shot_match_is_stale_and_nonmutating() {
             persist: selected.persist,
             peeks: selected.peeks.clone(),
         }),
-        datum_delta,
+        datum_delta: AcceptedDatumChanges::from_removals(datum_delta).unwrap(),
         required_persistent_paths: Vec::new(),
         join_channels: Vec::new(),
     };
@@ -623,7 +625,7 @@ fn a_continuation_source_mismatch_is_stale_before_a_nonempty_delta() {
                 persist: selected.persist,
                 peeks: selected.peeks.clone(),
             }),
-            datum_delta,
+            datum_delta: AcceptedDatumChanges::from_removals(datum_delta).unwrap(),
             required_persistent_paths: Vec::new(),
             join_channels: Vec::new(),
         })
@@ -692,6 +694,7 @@ fn shallow_oracle_matches_one_channel_accepted_transition_matrix() {
                         super::super::bag::Multiplicity::ONE,
                     )
                     .expect("fixture removal fits u64");
+                let mut datum_delta = AcceptedDatumChanges::from_removals(datum_delta).unwrap();
                 if let Some(arrival) = &arrival {
                     datum_delta
                         .record_addition(

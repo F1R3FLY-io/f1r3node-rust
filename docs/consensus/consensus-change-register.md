@@ -10,7 +10,7 @@
 | **Companion surface** | `mettail-rust`, branch `feature/rho-native-set-automata`. |
 | **Companion reports** | the [stack-safety report](../design/stack-safety/stack-safety-report-2026-07-29.md) and the [PathMap report](../design/pathmap/pathmap-report-2026-08-03.md), which carry the equivalence evidence this register's retirements cite. |
 | **Audience** | F1r3node consensus reviewers deciding whether to accept the fork risk of a coordinated protocol-version bump. |
-| **Date** | 2026-07-29, re-scoped to the final criterion 2026-08-03, revised through 2026-09-08 |
+| **Date** | 2026-07-29, re-scoped to the final criterion 2026-08-03, revised through 2026-09-14 |
 | **Maintenance** | [§7](#7-maintenance). Adding an entry is filling the form in [Appendix A](#appendix-a--the-entry-template). |
 
 ---
@@ -6456,3 +6456,30 @@ not a newly landed semantic change. No current canonical RhoPath/protobuf/bincod
 format, root preimage, Rholang behavior, blessed contract, compute/storage charge or consensus
 epoch changes. See [J-071](../design/pathmap/pathmap-engineering-journal-2026-08-23.md#j-071--2026-09-07-bind-legacy-identity-to-coupled-state-not-a-presumed-root-projection)
 and its exhaustive invariant/implementation-boundary catalog.
+
+**CBR-053 living continuation (2026-09-14, selected-demand cancellation).**
+Task 8498 repairs a demonstrated accepted-match commit-boundary mismatch.
+An identical unselected arrival could cancel a selected stored removal in
+the normalized delta, losing the selected occurrence's liveness requirement.
+The native counterexample committed after that stored occurrence disappeared;
+the formal preparation contract refused. The repair retains the original
+selected count only at cancellation endpoints and checks it under the existing
+state write lock before mutation. A formerly accepted stale ticket now returns
+`Stale`; sufficient counts retain the normalized successor and continuation.
+
+| Surface | Finding at this checkpoint |
+|---|---|
+| Commit acceptance | Deliberate refusal correction for stale selected demand; reproduced at the direct HotStore boundary |
+| Ordinary evaluation and replay | Four preparation paths migrated; ordinary `locked_produce` reachability of the counterexample is not proved, because channel locking and fresh-first selection may exclude it |
+| State and cryptographic identities | No encoding, hash preimage, digest, channel identity or valid-delta arithmetic is changed; refused stale tickets do not publish their former successor |
+| Serialization and persistence | No RhoPath, protobuf, bincode, ACT, WAL or catalog format changes |
+| Language and metering | No syntax, blessed-contract, charge formula or storage-metering change; downstream effects of changed refusal are not presumed universally neutral |
+| Classification | CBR-053 compatibility qualification retained; no new consensus-neutral ruling or retirement is inferred from bounded tests |
+
+The model and controls pass independent kernel checking (50 and 29 closed
+reports); twelve native tests include the reproduced defect and 150 bounded
+cancellation transitions. These establish the local contract correction,
+not complete consensus equivalence of every possible caller history. The
+broader runtime/replay qualification remains required. See
+[J-161](../design/pathmap/pathmap-engineering-journal-2026-08-23.md#j-161--2026-09-14-cancellation-must-preserve-selected-datum-liveness)
+for exact proof/property coverage and the pre-repair negative control.

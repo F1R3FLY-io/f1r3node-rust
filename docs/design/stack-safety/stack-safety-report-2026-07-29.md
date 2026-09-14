@@ -14962,6 +14962,35 @@ formal workers 2 GiB/one CPU, with swap disabled. Production algorithms and
 consensus-visible behavior are unchanged. Persistence lifecycle acceptance,
 trusted task verification and the qualified LMDB comparison remain open.
 
+## 2026-09-14 verification addendum — selected-demand cancellation guards
+
+Tasks 6590/8498 bind commit liveness to actual supplied counts and preserve
+selected demand when an identical arrival cancels a normalized removal.
+The preparation model now passes 50 closed-context reports, its controls 29,
+and independent kernel checking succeeds. The native counterexample first
+failed against the unguarded implementation; the repaired focused suite
+passes 12/12, including 216 ordinary and 150 cancellation matrix cases plus
+generated finite-addition traces over root/prefix/descendant endpoints.
+
+This closes a coverage gap, not a newly demonstrated stack overflow: the
+earlier 735-test release pass did not include arrival cancellation. The new
+guard retains only affected exact endpoints in a Bag, traversed with a
+borrowed zipper. Uncancelled changes perform no extra guard count lookups.
+No input-shaped native recursion, depth cap, stack enlargement or PathMap
+dependency change is introduced. No new timing, allocation, RSS-slope or
+end-to-end performance improvement is inferred from these correctness tests.
+
+Formal checks preceded runtime implementation. Rust validation uses
+`MemoryHigh=4G`, `MemoryMax=6G`, four CPU equivalents and zero swap; the formal
+proof runs use a 2 GiB cap. Journal [J-161](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-161--2026-09-14-cancellation-must-preserve-selected-datum-liveness)
+records the proof/property mapping, failing control and artifact hashes.
+At the requested pause, the broader release run passed 740 tests with one
+existing skip and the maintained gate passed 94 executions. The experiment
+feature's semantic audit passed, but its concurrent instrumentation assertion
+exposed shared process-global counters; the isolated assertion passed.
+The reviewed measurement-session repair is recorded in J-161 and remains
+unimplemented. Task acceptance and persistence qualification remain open.
+
 ## Appendix G — the maintenance contract
 
 1. **A stack-safety fix lands $`\rightarrow`$ a §0 row and an Appendix F body land in the same commit**, with

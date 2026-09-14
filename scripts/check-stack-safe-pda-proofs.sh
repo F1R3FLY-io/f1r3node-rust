@@ -254,11 +254,11 @@ match_preparation_proof_clients() {
     theories/TwoLevelRSpaceMatchPreparation.v \
     theories/TwoLevelRSpaceFlatDeltaTrace.v \
     theories/TwoLevelRSpaceMatchPreparationMutants.v
-  rocq_compile_with_closed_count theories/TwoLevelRSpaceMatchPreparation.v 38 \
+  rocq_compile_with_closed_count theories/TwoLevelRSpaceMatchPreparation.v 50 \
     "constructive RSpace preparation and grouped delta refinement"
   rocq_compile_with_closed_count theories/TwoLevelRSpaceFlatDeltaTrace.v 4 \
     "finite flat-delta traces and separate normalized supports"
-  rocq_compile_with_closed_count theories/TwoLevelRSpaceMatchPreparationMutants.v 12 \
+  rocq_compile_with_closed_count theories/TwoLevelRSpaceMatchPreparationMutants.v 29 \
     "absolute-address and flat-delta mutation controls"
 }
 
@@ -512,6 +512,7 @@ if [[ "${1:-}" == "--match-preparation" ]]; then
   popd >/dev/null
   pushd "$repo_root" >/dev/null
   rspace_preparation_run_tests 6 --lib flat_delta_refinement_tests
+  rspace_preparation_run_tests 12 --lib accepted_match_formal_bindings
   rspace_preparation_run_tests 26 --test data_index_spec
   rspace_preparation_run_tests 19 --lib two_level_channel_authority
   rspace_preparation_run_tests 6 --lib candidate_pool_reservation

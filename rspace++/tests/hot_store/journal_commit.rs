@@ -1,6 +1,6 @@
 use super::*;
 use crate::rspace::history::history_reader::HistoryReaderBase;
-use crate::rspace::internal::{Datum, WaitingContinuation};
+use crate::rspace::internal::{AcceptedDatumChanges, Datum, WaitingContinuation};
 use crate::rspace::persistence::{CountTransition, ObjectDigest, ObjectRefV1, StateVersionV1};
 
 struct EmptyHistory;
@@ -442,11 +442,12 @@ fn every_durable_mutator_invalidates_retained_journal_versions() {
                     .apply_accepted_match(AcceptedMatch {
                         channels: channels.clone(),
                         continuation,
-                        datum_delta: if operation == 10 {
+                        datum_delta: AcceptedDatumChanges::from_removals(if operation == 10 {
                             removal
                         } else {
                             BagDelta::new()
-                        },
+                        })
+                        .unwrap(),
                         required_persistent_paths: Vec::new(),
                         join_channels: vec![channel.clone()],
                     })
@@ -494,7 +495,7 @@ fn durable_reads_noops_and_refused_mutations_preserve_the_capture() {
         .apply_accepted_match(AcceptedMatch {
             channels,
             continuation: None,
-            datum_delta: impossible,
+            datum_delta: AcceptedDatumChanges::from_removals(impossible).unwrap(),
             required_persistent_paths: Vec::new(),
             join_channels: Vec::new(),
         })

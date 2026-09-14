@@ -24,7 +24,7 @@ use crate::rspace::hot_store_action::{
     DeleteJoins, HotStoreAction, InsertAction, InsertCanonicalCollection, InsertCanonicalData,
     InsertContinuations, InsertData, InsertJoins,
 };
-use crate::rspace::internal::{Datum, Row, WaitingContinuation};
+use crate::rspace::internal::{AcceptedDatumChanges, Datum, Row, WaitingContinuation};
 use crate::rspace::metrics_constants::{
     HOT_STORE_GET_CONT_CALLS_METRIC, HOT_STORE_GET_CONT_HISTORY_FILL_METRIC,
     HOT_STORE_GET_DATA_CALLS_METRIC, HOT_STORE_GET_DATA_HISTORY_FILL_METRIC,
@@ -491,7 +491,7 @@ pub struct StoredContinuationCommit {
 pub struct AcceptedMatch<C> {
     pub(crate) channels: Vec<C>,
     pub(crate) continuation: Option<StoredContinuationCommit>,
-    pub(crate) datum_delta: BagDelta,
+    pub(crate) datum_delta: AcceptedDatumChanges,
     pub(crate) required_persistent_paths: Vec<Arc<[u8]>>,
     pub(crate) join_channels: Vec<C>,
 }
@@ -1554,14 +1554,21 @@ where
             return Ok(AcceptedMatchOutcome::Stale);
         }
 
-        match state.data.apply_delta(&transition.datum_delta) {
+        if !transition
+            .datum_delta
+            .guards_satisfied_by(|path| state.data.index().count_path(path))
+        {
+            return Ok(AcceptedMatchOutcome::Stale);
+        }
+
+        match state.data.apply_delta(transition.datum_delta.delta()) {
             Ok(()) => {}
             Err(DataIndexError::Bag(BagError::InsufficientMultiplicity { .. })) => {
                 return Ok(AcceptedMatchOutcome::Stale);
             }
             Err(error) => return Err(error.into()),
         }
-        if !transition.datum_delta.is_empty() {
+        if !transition.datum_delta.delta().is_empty() {
             state.advance_journal_version();
         }
 
@@ -2225,6 +2232,10 @@ where
 #[cfg(test)]
 #[path = "../../tests/hot_store/group_scoped_version.rs"]
 mod group_scoped_version_tests;
+
+#[cfg(test)]
+#[path = "../../tests/hot_store/accepted_match_formal_bindings.rs"]
+mod accepted_match_formal_bindings_tests;
 
 #[cfg(test)]
 #[path = "../../tests/hot_store/journal_commit.rs"]

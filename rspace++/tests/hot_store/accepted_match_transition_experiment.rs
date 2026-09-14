@@ -13,7 +13,7 @@ use std::collections::{BTreeSet, HashMap};
 use super::*;
 use crate::rspace::data_index::RSpaceDataIndex;
 use crate::rspace::history::history_reader::HistoryReaderBase;
-use crate::rspace::internal::{Datum, WaitingContinuation};
+use crate::rspace::internal::{AcceptedDatumChanges, Datum, WaitingContinuation};
 
 type ExperimentStore = Box<dyn HotStore<String, String, String, String>>;
 
@@ -344,7 +344,8 @@ impl AcceptedMatchTransitionExperiment {
             let datum = Datum::create(&channel, "unconsumed-arrival".to_owned(), false);
             (channel, datum)
         });
-        let mut atomic_delta = frozen_delta.clone();
+        let mut atomic_delta = AcceptedDatumChanges::from_removals(frozen_delta.clone())
+            .expect("the frozen control contains only aggregated removals");
         if let Some((channel, datum)) = &arrival {
             atomic_delta
                 .record_addition(
