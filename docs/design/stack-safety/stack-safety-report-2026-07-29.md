@@ -11499,7 +11499,8 @@ eight kernel-check invocations succeed, and the positive ACT span compilation
 plus all sixteen exact compiler-rejection controls pass. This completes the
 finite task-5976 local reconciliation, not whole-workspace CI, task-6023
 performance qualification or persistence acceptance. Journal J-157 records the
-scope and the separate, still-unconfigured pgmcp verification obligations.
+scope and the separate pgmcp verification obligations; a manually recorded
+passing log does not satisfy its trusted completion gate.
 
 | Artifact | SHA-256 |
 |---|---|
