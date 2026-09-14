@@ -330,7 +330,7 @@ These local results do not complete D2.
 
 The remaining completion requirements include:
 
-1. Complete the ownership review for memory-protection metadata and all workload launch paths. The [ownership review](soak-d2-ownership-review-2026-09-14.md) records the owners and finds two open out-of-memory items, on the subprocess and native paths.
+1. Complete the remaining ownership checks in the [ownership review](soak-d2-ownership-review-2026-09-14.md) for all workload launch paths.
 2. Verify failed benchmark-stop recovery, storage faults, and the remaining crash windows.
 3. Verify minimal durable evidence and one aggregate emergency deadline.
 4. Establish D3 growth and reserve bounds for every remaining writer.

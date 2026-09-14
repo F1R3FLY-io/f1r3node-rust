@@ -686,3 +686,36 @@ The tools do not remove retained evidence automatically or discharge correctness
 The other agent changed HEAD during this work.
 This session preserved those changes and did not create a commit or push.
 D2 and B44 remain outside this storage scope.
+
+## Out-of-memory claim review, 2026-09-14
+
+The user authorized review of the ownership claims in commit `2c1bc5241bd8ac2df57932f68977602e7ad156eb` after storage completion.
+This scope covers the ownership document, its plan references, and the correction record.
+It does not authorize runtime changes, privileged tests, another cleanup, claim discharge, a commit, or a push.
+The other agent retains the production D2 and B44 work.
+
+The review uses the committed driver and native launcher with harness revision `962effd17708192627bd249362761c0ccb1fd5fa`.
+The review retains 18 selected source files in the external `oom-ownership-review-j5cltem1` directory.
+The generated `inputs.json` records their source revisions, sizes, and digests.
+No private environment, process environment, or key material was collected.
+
+The driver already applies host-process preferences through `guardian_mark_workload_oom_preferred`.
+The Docker settings depend on the host-memory floor and the supported wrapper route.
+Neither mechanism guarantees runner survival or complete containment.
+The historical pytest incident concerned Docker-provider containers, not a demonstrated subprocess-provider preference defect.
+The corrected ownership review distinguishes these source observations from historical tests and remaining runtime obligations.
+
+The corrected ownership review also records that the host helper can select marked harness processes, not only node processes.
+The native launcher sets a diagnostic memory limit but has no explicit `OOMScoreAdjust` setting or corresponding property verification.
+No new runtime defect is classified as a behavioral RED in this review.
+
+The repository inventory validator and all 10 JSONC regression cases passed.
+A semantic comparison confirms that only the two revised documentation digests changed in the inventory.
+Claim statuses, gate results, and acceptance data are unchanged.
+The scoped STE Check passed, but human STE Review remains necessary.
+The language-server check found one spelling false positive within a historical commit identifier.
+The JSONC language-server result was inconclusive, so the repository parser and inventory validator provide the metadata check.
+
+The external review directory retains the source capture, public Linux references, check outputs, and the final documentation diff.
+This review leaves the driver, launcher, harness pins, workload, and 45-second finalization wait unchanged.
+D2, D3, and acceptance remain pending.
