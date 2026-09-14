@@ -1334,3 +1334,11 @@ The bounded configuration passes, and the unbounded control violates `OperatingR
 The model stays unregistered in the formal gate, because the admission cleanup edits the same gate lists.
 The integration owner registers it once that cleanup settles.
 This session added no evidence package and no driver change, to avoid conflict with the parallel work.
+
+### D3 diagnostic methodology, 2026-09-14
+
+This session wrote the [D3 diagnostic methodology](../plans/soak-d3-diagnostic-methodology-2026-09-14.md) while the native-admission session finishes the storage and admission-check cleanup.
+The document specifies the run that names the growing writer and derives the reserve terms G, J, and R.
+It records the open-deleted-files hazard as the first hypothesis, because an unlinked but open file exhausts space without a path for `du` to find.
+This session added no evidence package, no driver change, and no gate registration, to avoid conflict with the parallel work.
+The run itself needs the runner, the O1 observability prerequisites, and separate authorization.

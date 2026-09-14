@@ -31,7 +31,7 @@ def digest_file(stream, limit=None):
 
 def relative_name(name):
     path = PurePosixPath(name)
-    if (not name or path.is_absolute() or str(path) != name
+    if (not name or name == "." or path.is_absolute() or str(path) != name
             or any(part in (".", "..") for part in path.parts)
             or any(ord(char) < 32 for char in name) or "\\" in name):
         raise ValueError("A relative path is invalid.")
@@ -124,6 +124,12 @@ def verify_object(target, entries):
     records, _ = inventory(target / "source")
     if set(records) != {entry["path"] for entry in entries}:
         raise ValueError("The stored snapshot has a different file set.")
+    source = target / "source"
+    expected_directories = {source / str(parent) for entry in entries for parent in PurePosixPath(entry["path"]).parents}
+    actual_directories = {Path(directory) for directory, _, _ in os.walk(source)}
+    if (actual_directories != expected_directories
+            or any(stat.S_IMODE(path.stat().st_mode) != 0o555 for path in actual_directories)):
+        raise ValueError("The stored snapshot has different directories or directory permissions.")
     for entry in entries:
         with open_source(target / "source", entry["path"]) as stream:
             status = os.fstat(stream.fileno())
@@ -144,6 +150,10 @@ def snapshot(args):
     extras = [relative_name(name) for name in args.extra_file]
     head = git(root, "rev-parse", "--verify", "HEAD", required=False).decode().strip() or None
     before_index = selected_index(root, selections)
+    requested = set(before_index) | set(extras)
+    if any(not any(prefix == "." or name == prefix or name.startswith(prefix + "/") for name in requested)
+           for prefix in selections):
+        raise ValueError("A requested source selection has no inputs.")
     excluded = sorted(name for name in before_index if generated(name))
     if any(generated(name) for name in extras):
         raise ValueError("An extra input is generated output.")
@@ -210,11 +220,11 @@ def snapshot(args):
                             raise ValueError("A source input grew during copying.")
                     output.chmod(entry["mode"] & ~0o222)
                 (stage / "manifest.json").write_bytes(encoded)
-                verify_object(stage, entries)
                 verify_source(root, names, stamps, before_index, selections, head)
                 for directory, _, _ in os.walk(stage / "source", topdown=False):
                     Path(directory).chmod(0o555)
                 (stage / "manifest.json").chmod(0o444)
+                verify_object(stage, entries)
                 try:
                     os.rename(stage, target)
                 except OSError as error:
@@ -222,7 +232,7 @@ def snapshot(args):
         verify_source(root, names, stamps, before_index, selections, head)
     return {"status": "captured", "source_state": "worktree", "source_commit": head,
             "snapshot": str(target), "manifest_sha256": identity, "files": len(entries), "source_bytes": total,
-            "excluded_tracked_paths": excluded, "extra_files": extras, "reused": reused}
+            "selections": selections, "excluded_tracked_paths": excluded, "extra_files": extras, "reused": reused}
 
 
 def verify_source(root, names, stamps, before_index, selections, head):

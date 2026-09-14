@@ -21,10 +21,12 @@ class StorageTests(unittest.TestCase):
         self.base = Path(self.temporary.name)
         self.source = self.base / "repo"
         self.source.mkdir()
-        subprocess.run(["git", "init", "-q", str(self.source)], check=True)
+        self.environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+        self.environment.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
+        subprocess.run(["git", "init", "-q", str(self.source)], check=True, env=self.environment)
         self.put("scripts/tool.sh", "#!/bin/sh\nprintf ok\n")
         self.put("scripts/charts/Cargo.toml", "[package]\nname='fixture'\n")
-        subprocess.run(["git", "-C", str(self.source), "add", "--", "scripts"], check=True)
+        subprocess.run(["git", "-C", str(self.source), "add", "--", "scripts"], check=True, env=self.environment)
         self.put("scripts/charts/target/debug/generated", "x" * 65536)
         self.put("scripts/untracked-secret", "not for capture")
         self.store = self.base / "store"
@@ -37,7 +39,7 @@ class StorageTests(unittest.TestCase):
 
     def command(self, *args, success=True):
         result = subprocess.run([sys.executable, "-I", str(TOOL), *map(str, args)],
-                                capture_output=True, text=True, timeout=20)
+                                capture_output=True, text=True, timeout=20, env=self.environment)
         self.assertEqual(result.returncode, 0 if success else 2, result.stderr)
         try:
             return json.loads(result.stdout) if success else {}
@@ -46,6 +48,16 @@ class StorageTests(unittest.TestCase):
 
     def capture(self, *args, success=True):
         return self.command("snapshot", self.source, self.store, "scripts", "--min-free-bytes", "1", *args, success=success)
+
+    def test_inherited_git_index_is_preserved(self):
+        sentinel = self.base / "external-index"
+        sentinel.write_bytes(b"unrelated-index-bytes")
+        environment = dict(self.environment, GIT_INDEX_FILE=str(sentinel))
+        result = subprocess.run([sys.executable, "-I", str(Path(__file__).resolve()),
+                                 "StorageTests.test_source_only_capture_and_index_preservation"],
+                                env=environment, capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(sentinel.read_bytes(), b"unrelated-index-bytes")
 
     def test_legacy_recipe_copies_build_output(self):
         destination = self.base / "legacy"
@@ -80,7 +92,7 @@ class StorageTests(unittest.TestCase):
         self.assertTrue((Path(result["snapshot"]) / "source/fixture.py").is_file())
 
     def test_tracked_generated_input_is_reported_not_copied(self):
-        subprocess.run(["git", "-C", str(self.source), "add", "--", "scripts/charts/target"], check=True)
+        subprocess.run(["git", "-C", str(self.source), "add", "--", "scripts/charts/target"], check=True, env=self.environment)
         result = self.capture()
         self.assertEqual(result["excluded_tracked_paths"], ["scripts/charts/target/debug/generated"])
         self.assertEqual(result["files"], 2)
@@ -182,6 +194,28 @@ class StorageTests(unittest.TestCase):
     def test_extra_snapshot_output_refused(self):
         result = self.capture()
         (Path(result["snapshot"]) / "unrecorded-output").write_text("extra")
+        self.capture(success=False)
+
+    def test_missing_requested_selection_refused(self):
+        self.command("snapshot", self.source, self.store, "scripts", "missing-source.rs",
+                     "--min-free-bytes", "1", success=False)
+        self.assertFalse(self.store.exists())
+
+    def test_dot_extra_file_refused(self):
+        self.capture("--extra-file", ".", success=False)
+        self.assertFalse(self.store.exists())
+
+    def test_writable_stored_directory_refused(self):
+        result = self.capture()
+        (Path(result["snapshot"]) / "source/scripts").chmod(0o755)
+        self.capture(success=False)
+
+    def test_extra_stored_directory_refused(self):
+        result = self.capture()
+        source = Path(result["snapshot"]) / "source"
+        source.chmod(0o755)
+        (source / "unexpected").mkdir(mode=0o555)
+        source.chmod(0o555)
         self.capture(success=False)
 
     def test_source_directories_are_read_only(self):
