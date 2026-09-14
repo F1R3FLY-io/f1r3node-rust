@@ -1769,6 +1769,142 @@ Definition aba_colliding_line_writer_tree : writer_tree :=
 
 Definition forced_collision_hash (_line : list bbyte) : nat := 0.
 
+Definition line_collision_mismatch (line_hash : list bbyte -> nat)
+    (line : list bbyte) (state : act_writer_state) : bool :=
+  match lookup_line_hash (line_hash line) (aws_lines state) with
+  | None => false
+  | Some previous =>
+      if list_eq_dec Nat.eq_dec (lce_bytes previous) line then false else true
+  end.
+
+Definition collision_observed_add_or_reuse_line
+    (line_hash : list bbyte -> nat) (line : list bbyte)
+    (state : traced_writer_state) (count : nat)
+    : (nat * traced_writer_state) * nat :=
+  (traced_add_or_reuse_line line_hash line state,
+   count + if line_collision_mismatch line_hash line (tws_state state)
+           then 1 else 0).
+
+Fixpoint traced_line_sequence (line_hash : list bbyte -> nat)
+    (lines : list (list bbyte)) (state : traced_writer_state)
+    : list nat * traced_writer_state :=
+  match lines with
+  | [] => ([], state)
+  | line :: rest =>
+      let '(id, after) := traced_add_or_reuse_line line_hash line state in
+      let '(ids, final) := traced_line_sequence line_hash rest after in
+      (id :: ids, final)
+  end.
+
+Fixpoint collision_observed_line_sequence (line_hash : list bbyte -> nat)
+    (lines : list (list bbyte)) (state : traced_writer_state) (count : nat)
+    : (list nat * traced_writer_state) * nat :=
+  match lines with
+  | [] => (([], state), count)
+  | line :: rest =>
+      let '((id, after), next) :=
+        collision_observed_add_or_reuse_line line_hash line state count in
+      let '((ids, final), total) :=
+        collision_observed_line_sequence line_hash rest after next in
+      ((id :: ids, final), total)
+  end.
+
+Theorem collision_observation_erases_traced_result :
+  forall line_hash line state count,
+  fst (collision_observed_add_or_reuse_line line_hash line state count) =
+    traced_add_or_reuse_line line_hash line state.
+Proof. reflexivity. Qed.
+
+Theorem collision_observation_erases_writer_result :
+  forall line_hash line state count id after total,
+  collision_observed_add_or_reuse_line line_hash line state count =
+    ((id, after), total) ->
+  add_or_reuse_line line_hash line (tws_state state) = (id, tws_state after).
+Proof.
+  intros line_hash line state count id after total observed.
+  apply traced_add_or_reuse_line_erases.
+  exact (f_equal fst observed).
+Qed.
+
+Theorem collision_observation_counts_exactly_unequal_bucket_hits :
+  forall line_hash line state,
+  line_collision_mismatch line_hash line state = true <->
+  exists previous,
+    lookup_line_hash (line_hash line) (aws_lines state) = Some previous /\
+    lce_bytes previous <> line.
+Proof.
+  intros line_hash line state. unfold line_collision_mismatch.
+  destruct (lookup_line_hash (line_hash line) (aws_lines state))
+    as [previous |] eqn:found.
+  - destruct (list_eq_dec Nat.eq_dec (lce_bytes previous) line)
+      as [equal | unequal].
+    + split; [discriminate |]. intros [other [same different]].
+      inversion same; subst. contradiction.
+    + split; [intros _; exists previous; auto | intros _; reflexivity].
+  - split; [discriminate |]. intros [previous [impossible _]]. discriminate.
+Qed.
+
+Theorem collision_observation_step_is_zero_or_one :
+  forall line_hash line state count,
+  let total := snd
+    (collision_observed_add_or_reuse_line line_hash line state count) in
+  total = count \/ total = S count.
+Proof.
+  intros line_hash line state count.
+  unfold collision_observed_add_or_reuse_line; cbn.
+  destruct (line_collision_mismatch line_hash line (tws_state state));
+    [right | left]; lia.
+Qed.
+
+Theorem collision_observed_sequence_erases_exactly :
+  forall line_hash lines state count,
+  fst (collision_observed_line_sequence line_hash lines state count) =
+    traced_line_sequence line_hash lines state.
+Proof.
+  intros line_hash lines. induction lines as [|line rest IH];
+    intros state count; [reflexivity |].
+  cbn [collision_observed_line_sequence traced_line_sequence
+    collision_observed_add_or_reuse_line].
+  destruct (traced_add_or_reuse_line line_hash line state) as [id after].
+  specialize (IH after
+    (count + if line_collision_mismatch line_hash line (tws_state state)
+             then 1 else 0)).
+  destruct (collision_observed_line_sequence line_hash rest after
+    (count + if line_collision_mismatch line_hash line (tws_state state)
+             then 1 else 0)) as [[ids final] total].
+  cbn in IH. rewrite <- IH. reflexivity.
+Qed.
+
+Definition forced_abaa_collision_observation :=
+  collision_observed_line_sequence forced_collision_hash
+    [[120]; [121]; [120]; [120]]
+    {| tws_state := empty_writer_state; tws_objects := [] |} 0.
+
+Theorem forced_abaa_counts_two_mismatches_and_reuses_last_id :
+  snd forced_abaa_collision_observation = 2 /\
+  fst (fst forced_abaa_collision_observation) =
+    [ACT_HEADER_LEN; ACT_HEADER_LEN + 2;
+     ACT_HEADER_LEN + 4; ACT_HEADER_LEN + 4] /\
+  aws_arena (tws_state (snd (fst forced_abaa_collision_observation))) =
+    [1; 120; 1; 121; 1; 120] /\
+  length (tws_objects (snd (fst forced_abaa_collision_observation))) = 3.
+Proof. vm_compute. repeat split; reflexivity. Qed.
+
+Theorem collision_misses_and_equal_reuse_do_not_increment :
+  snd (collision_observed_line_sequence forced_collision_hash
+    [[120]; [120]; [120]]
+    {| tws_state := empty_writer_state; tws_objects := [] |} 7) = 7.
+Proof. vm_compute. reflexivity. Qed.
+
+Theorem counting_every_occupied_bucket_is_not_collision_counting :
+  line_collision_mismatch forced_collision_hash [120]
+    {| aws_arena := [];
+       aws_lines := [{| lce_hash := 0; lce_bytes := [120]; lce_id := 19 |}] |}
+    = false /\
+  lookup_line_hash 0
+    [{| lce_hash := 0; lce_bytes := [120]; lce_id := 19 |}] <> None.
+Proof. vm_compute. split; [reflexivity | discriminate]. Qed.
+
 Theorem concrete_writer_matches_pathmap_three_way_image :
   encode_writer_tree fixture_line_hash three_way_writer_tree =
     Some ACT_THREE_WAY_IMAGE.
@@ -10113,6 +10249,14 @@ Print Assumptions concrete_writer_matches_pathmap_line_image.
 Print Assumptions concrete_writer_reuses_equal_lines_under_equal_hash.
 Print Assumptions concrete_writer_collision_mismatch_allocates_and_overwrites.
 Print Assumptions concrete_writer_aba_collision_reemits_first_line.
+Print Assumptions collision_observation_erases_traced_result.
+Print Assumptions collision_observation_erases_writer_result.
+Print Assumptions collision_observation_counts_exactly_unequal_bucket_hits.
+Print Assumptions collision_observation_step_is_zero_or_one.
+Print Assumptions collision_observed_sequence_erases_exactly.
+Print Assumptions forced_abaa_counts_two_mismatches_and_reuses_last_id.
+Print Assumptions collision_misses_and_equal_reuse_do_not_increment.
+Print Assumptions counting_every_occupied_bucket_is_not_collision_counting.
 Print Assumptions concrete_writer_images_parse_with_the_v3_physical_parser.
 Print Assumptions sparse_labels_valid_of_canonical_order.
 Print Assumptions parse_branch_labels_sparse_writer_roundtrip.

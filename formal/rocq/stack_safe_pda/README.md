@@ -4021,3 +4021,39 @@ of the 441 prior debug successes and this one success equals the full release
 inventory of 442, with no omissions or overlap. This is aggregate qualification
 across two invocations, not a successful single full-debug run. The original
 900-second timeout is retained. See J-133 for hashes and resource scope.
+
+### Interior ACT source-read observations (2026-09-12; task 6023)
+
+`CheckedACTLineTransport` now separates immutable provenance calculation from
+byte fetching. Its independently defined `observed_scalar_next` and
+`observed_scalar_run` erase to the existing scalar transition and exact event
+stream. A successful interior `LineEdge` emits one source-read observation;
+`LineValue` and `LineLeave` use provenance only. Metadata transitions are
+independent of the supplied byte-fetch function.
+
+| Checked invariant | Native binding |
+|---|---|
+| Erasure preserves cursor state, values, event order and provenance | Compare production events with the independent legacy topology oracle in `pathmap_codec_validated_plan.rs`. |
+| Width `w` emits reads at exactly the ordered logical suffix indices `start..start+w` | `check_observed_event` observes real `IndexedByteSource` calls and checks one suffix read, rather than trusting production counters. |
+| Metadata and reverse line leaves perform no source reads | `independent_source_witness_checks_empty_sparse_dense_and_compressed_rewinds` covers retained metadata, branch edges, final bytes, pops and exhaustion as native controls. |
+| Every finite sequence of rewinds has an empty read trace, increments generation once per rewind, and preserves identity, record and event count | `check_observed_rewind` checks actual source accesses and cursor replay; finite prefix rewinds are exercised independently of the model. |
+| Metadata reads and duplicate suffix reads are detectable | `independent_source_witness_rejects_metadata_and_duplicate_suffix_reads` supplies causal witness mutations. |
+
+The formal forward theorem retains the original strict interior bound and does
+not cover the final line byte, value-bearing node events, cached branch edges,
+node pops or the full concrete parser. In particular, a native branch `Edge`
+can be emitted from retained plan data without a source read; the model's
+interior event classifier must not be generalized to every native `Edge`.
+Provenance mapping may be discontinuous or alias physical locations: the proved
+sequence is one read per logical suffix index, not a blanket claim that physical
+addresses are globally unique. The source function is total in this model;
+native source failures and byte-slice ownership remain separate obligations.
+
+These six added reports bring `RPB3Admission.v` to 357 closed contexts. The full
+module compiled and passed independent kernel checking under MemoryHigh=1536M,
+MemoryMax=2G, no swap, one CPU quota, TasksMax=64 and a 900-second limit. Logs are
+`target/verification/act-source-reads-formal-r3.log` and
+`act-source-reads-kernel-r3.log`; the two earlier failed rewind-proof attempts
+remain retained. The maintained `--canonical-key-proofs` route enforces the new
+count and rebuilds dependent proof modules. This formal qualification does not
+declare the combined native acceptance gate complete.

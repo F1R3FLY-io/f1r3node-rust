@@ -135,6 +135,10 @@ name = "rspace_act_lmdb"
 harness = false
 
 [[bench]]
+name = "rspace_act_codec_profile"
+harness = false
+
+[[bench]]
 name = "rspace_identity_order_index"
 harness = false
 required-features = ["canonical-egress-experiment"]

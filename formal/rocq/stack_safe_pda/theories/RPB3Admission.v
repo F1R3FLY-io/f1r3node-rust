@@ -6570,6 +6570,184 @@ Proof.
   now rewrite H, andb_false_r.
 Qed.
 
+Definition split_located_source (position : nat -> provenance)
+    (read_byte : nat -> nat) (index : nat) : located_byte :=
+  let '(owner, offset) := position index in
+  LocatedByte (read_byte index) owner offset.
+
+Definition observed_scalar_next (position : nat -> provenance)
+    (read_byte : nat -> nat) (current : cursor)
+    : option ((cursor * event) * list provenance) :=
+  let index := cursor_index current in
+  match cursor_phase current with
+  | LineEdge =>
+      if S index <? cursor_length current then
+        let byte := split_located_source position read_byte index in
+        Some ((cursor_at current index LineValue (S (cursor_events current))
+          (Some (position index)), Edge byte), [position index])
+      else None
+  | LineValue =>
+      if S index <? cursor_length current then
+        let place := position index in
+        Some ((cursor_at current (S index) LineEdge (S (cursor_events current))
+          (Some place), AbsentValue place), [])
+      else None
+  | LineLeave =>
+      if index <? cursor_length current then
+        let place := position (cursor_length current - S index) in
+        Some ((cursor_at current (S index) LineLeave (S (cursor_events current))
+          (Some place), Leave place), [])
+      else None
+  | Boundary => None
+  end.
+
+Definition event_source_reads (observed : event) : list provenance :=
+  match observed with Edge byte => [byte_provenance byte] | _ => [] end.
+
+Fixpoint events_source_reads (observations : list event) : list provenance :=
+  match observations with
+  | [] => []
+  | observed :: rest => event_source_reads observed ++ events_source_reads rest
+  end.
+
+Fixpoint observed_scalar_run position read_byte count current
+    : option ((cursor * list event) * list provenance) :=
+  match count with
+  | 0 => Some ((current, []), [])
+  | S remaining =>
+      match observed_scalar_next position read_byte current with
+      | None => None
+      | Some ((next, observed), reads) =>
+          option_map
+            (fun '((final, observations), later_reads) =>
+              ((final, observed :: observations), reads ++ later_reads))
+            (observed_scalar_run position read_byte remaining next)
+      end
+  end.
+
+Lemma split_located_source_has_exact_provenance position read_byte index :
+  byte_provenance (split_located_source position read_byte index) = position index.
+Proof.
+  unfold split_located_source. destruct (position index); reflexivity.
+Qed.
+
+Theorem observed_scalar_next_refines_exact_event_and_reads position read_byte current :
+  observed_scalar_next position read_byte current =
+  option_map (fun '(next, observed) =>
+    ((next, observed), event_source_reads observed))
+    (scalar_next (split_located_source position read_byte) current).
+Proof.
+  unfold observed_scalar_next, scalar_next.
+  destruct (cursor_phase current); try reflexivity;
+    destruct (S (cursor_index current) <? cursor_length current) eqn:forward_guard;
+    try destruct (cursor_index current <? cursor_length current) eqn:reverse_guard;
+    cbn; repeat rewrite split_located_source_has_exact_provenance; reflexivity.
+Qed.
+
+Theorem metadata_steps_do_not_depend_on_byte_fetch position left right current :
+  cursor_phase current <> LineEdge ->
+  observed_scalar_next position left current =
+    observed_scalar_next position right current.
+Proof.
+  intro metadata. unfold observed_scalar_next.
+  destruct (cursor_phase current); [contradiction | reflexivity | reflexivity | reflexivity].
+Qed.
+
+Theorem observed_scalar_run_refines_exact_events_and_reads position read_byte count :
+  forall current,
+  observed_scalar_run position read_byte count current =
+  option_map (fun '(final, observations) =>
+    ((final, observations), events_source_reads observations))
+    (scalar_run (split_located_source position read_byte) count current).
+Proof.
+  induction count as [|remaining IH]; intro current; [reflexivity |].
+  cbn [observed_scalar_run scalar_run].
+  rewrite observed_scalar_next_refines_exact_event_and_reads.
+  destruct (scalar_next (split_located_source position read_byte) current)
+    as [[next observed] |]; [|reflexivity].
+  cbn. rewrite IH.
+  destruct (scalar_run (split_located_source position read_byte) remaining next)
+    as [[final observations] |]; reflexivity.
+Qed.
+
+Lemma forward_events_read_exact_suffix position read_byte index width :
+  events_source_reads
+    (forward_events (split_located_source position read_byte) index width) =
+    map position (seq index width).
+Proof.
+  revert index. induction width; intro index; [reflexivity |].
+  cbn [forward_events events_source_reads event_source_reads seq map].
+  rewrite split_located_source_has_exact_provenance, IHwidth. reflexivity.
+Qed.
+
+Lemma leave_events_have_no_source_reads source size index width :
+  events_source_reads (leave_events source size index width) = [].
+Proof.
+  revert index. induction width; intro index; [reflexivity |].
+  cbn [leave_events events_source_reads event_source_reads]. apply IHwidth.
+Qed.
+
+Theorem observed_forward_reads_each_interior_suffix_byte_once
+    position read_byte width current :
+  cursor_phase current = LineEdge ->
+  cursor_index current + width < cursor_length current ->
+  observed_scalar_run position read_byte (2 * width) current =
+    Some ((forward (split_located_source position read_byte) width current,
+      forward_events (split_located_source position read_byte)
+        (cursor_index current) width),
+      map position (seq (cursor_index current) width)).
+Proof.
+  intros stage bounded. rewrite observed_scalar_run_refines_exact_events_and_reads.
+  rewrite checked_line_expands_to_exact_scalar_events by assumption.
+  cbn [option_map]. rewrite forward_events_read_exact_suffix. reflexivity.
+Qed.
+
+Theorem observed_unwind_performs_no_source_reads position read_byte width current :
+  cursor_phase current = LineLeave ->
+  cursor_index current + width <= cursor_length current ->
+  observed_scalar_run position read_byte width current =
+    Some ((unwind (split_located_source position read_byte) width current,
+      leave_events (split_located_source position read_byte)
+        (cursor_length current) (cursor_index current) width), []).
+Proof.
+  intros stage bounded. rewrite observed_scalar_run_refines_exact_events_and_reads.
+  rewrite checked_unwind_expands_to_exact_scalar_leaves by assumption.
+  cbn [option_map]. rewrite leave_events_have_no_source_reads. reflexivity.
+Qed.
+
+Fixpoint observed_rewinds (count : nat) (current : cursor)
+    : cursor * list provenance :=
+  match count with
+  | 0 => (current, [])
+  | S remaining => observed_rewinds remaining (rewind current)
+  end.
+
+Theorem finite_rewinds_preserve_source_free_generation_authority count current :
+  snd (observed_rewinds count current) = [] /\
+  cursor_generation (fst (observed_rewinds count current)) =
+    count + cursor_generation current /\
+  cursor_identity (fst (observed_rewinds count current)) = cursor_identity current /\
+  cursor_record (fst (observed_rewinds count current)) = cursor_record current /\
+  cursor_events (fst (observed_rewinds count current)) = cursor_events current.
+Proof.
+  revert current. induction count; intro current; [repeat split; reflexivity |].
+  cbn [observed_rewinds]. specialize (IHcount (rewind current)).
+  destruct IHcount as [reads [generation [identity [record events]]]].
+  split; [exact reads |].
+  split.
+  - rewrite generation.
+    change (count + S (cursor_generation current) =
+      S (count + cursor_generation current)).
+    apply Nat.add_succ_r.
+  - split; [exact identity |]. split; [exact record | exact events].
+Qed.
+
+Print Assumptions observed_scalar_next_refines_exact_event_and_reads.
+Print Assumptions metadata_steps_do_not_depend_on_byte_fetch.
+Print Assumptions observed_scalar_run_refines_exact_events_and_reads.
+Print Assumptions observed_forward_reads_each_interior_suffix_byte_once.
+Print Assumptions observed_unwind_performs_no_source_reads.
+Print Assumptions finite_rewinds_preserve_source_free_generation_authority.
 Print Assumptions pending_children_never_admit_reverse_transport.
 Print Assumptions reverse_normalization_changes_only_the_unobservable_phase.
 Print Assumptions accepted_reverse_entry_commit_matches_the_exact_scalar_trace.

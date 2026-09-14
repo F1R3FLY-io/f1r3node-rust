@@ -11397,6 +11397,64 @@ Proofs run under 2 GiB and Rust cohorts under 6 GiB, with swap disabled.
 Whole-workspace acceptance and the production persistence-versus-LMDB
 comparison are not complete at this checkpoint.
 
+#### 5.33.66 Isolated ACT admission and scalar replay measurements (2026-09-12)
+
+**MEASURED; MIXED RESULT.** Experiment 343 isolates canonical ACT admission,
+cold admission plus full topology traversal, and retained replay. Both the
+allocation and separate uninstrumented timing matrices contain 372 cells,
+each with five excluded warmups and 30 observations. Inputs cover geometric
+deep, wide, compressed, repeated-suffix and distinct-suffix shapes, with
+valued and valueless endpoints. Exact native topology/value digests qualify
+both arms outside the measured interval. Neither arm decodes `Par` values.
+
+| Cold full traversal, valued input | Legacy canonical parser | Validated plan |
+|---|---:|---:|
+| Wide, 4096 keys: median time | 1,603,547 ns | 288,267 ns |
+| Wide, 4096 keys: requested allocation bytes | 2,276,488 B | 1,155,375 B |
+| Wide, 4096 keys: allocation calls | 82 | 20 |
+| Deep, 2048 levels: median time | 1,896,810 ns | 472,542 ns |
+| Compressed, 65,536-byte path: median time | 230,938 ns | 726,088 ns |
+
+The compressed-path result is a live scalar-throughput regression, not a
+stack overflow or a superlinear bound demonstrated by these measurements.
+Warm replay shows the same penalty, while admission is faster. Disassembly
+retains an out-of-line scalar `next_event` call with frame/record dispatch on
+each event. AMD uProf attributes 4.506 seconds to that function in a
+10.714-second diagnostic run; the run also includes untimed digest audits,
+so those samples are not exclusively operation-time attribution. The next
+bounded experiment is to expose unchanged scalar transitions to compiler
+inlining before considering a hot/boundary dispatcher split.
+
+Headless Heaptrack reports peak heap of 1.76 MB for the legacy worker and
+558.59 KB for the plan worker on the wide fixture. These figures include
+fixture construction and audits; per-operation requested allocation totals
+above come from separate scoped allocator counters. Reported process RSS
+also includes profiler/runtime/input storage and must not be presented as
+operation-only memory. All workers were memory-capped with swap disabled;
+timing used core 3, the performance governor, and boost enabled. Roughly
+80% of the machine was idle before the timing run. Thirty observations in
+one worker are not thirty independently randomized process launches.
+
+Raw samples and RSS logs are preserved in
+`measurements/act-codec-raw-2026-09-12.tar.gz`; generated cell summaries are
+`measurements/act-codec-allocation-2026-09-12.tsv` and
+`measurements/act-codec-timing-2026-09-12.tsv`. The archive SHA-256 is
+`7ef2ccfb6f773221af3d4fb92ae73cb9c327bf9563e7abc0a55dedb1bd6e500a`.
+Instrumented-build timing is not used for the timing comparison. Requested
+allocation counts are deterministic within every recorded cell; repeated
+identical observations do not supply statistical variance.
+
+Correctness qualification is separate: the full release RSpace library at
+the preceding checkpoint passes 707 tests with one existing ignore; the
+subsequent complete ACT codec group passes 26 tests including independent
+source-read controls and generated collision histories. V5 collision
+observation proves 195 closed reports, including eight new reports, and
+RPB3 interior-source observations prove 357, including six new reports;
+both pass independent kernel checks and their dependent proof cohorts.
+These observations do not establish whole-workspace acceptance or complete
+persistence-versus-LMDB performance. The compressed scalar regression must
+be resolved and measured before claiming this optimization complete.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate

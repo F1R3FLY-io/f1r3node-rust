@@ -472,8 +472,89 @@ fn writer_image_from_operations(operations: &[(Vec<u8>, Option<u64>)]) -> Vec<u8
     map.compact_u64_bytes(|value| *value)
 }
 
+fn check_forced_collision_history(
+    lines: &[Vec<u8>],
+) -> Result<(), proptest::test_runner::TestCaseError> {
+    let mut source_bytes = Vec::new();
+    let mut latest: Option<(&[u8], super::ActLineData)> = None;
+    let mut expected = Vec::new();
+    let mut collisions = 0;
+    for line in lines {
+        prop_assert!(!line.is_empty());
+        prop_assert!(line.len() <= usize::from(super::ACT_VARINT_BIAS));
+        let descriptor = match &latest {
+            Some((content, descriptor)) if *content == line.as_slice() => descriptor.clone(),
+            previous => {
+                collisions += usize::from(previous.is_some());
+                let start = source_bytes.len();
+                source_bytes.push(line.len() as u8);
+                let suffix_start = source_bytes.len();
+                source_bytes.extend_from_slice(line);
+                super::ActLineData {
+                    suffix: suffix_start..source_bytes.len(),
+                    encoded: start..source_bytes.len(),
+                }
+            }
+        };
+        expected.push((descriptor.clone(), source_bytes.len(), collisions));
+        latest = Some((line.as_slice(), descriptor));
+    }
+
+    let source = AsRefIndexedByteSource::new(source_bytes.as_slice());
+    let mut replay = super::DirectCanonicalLineReplay::new(&source);
+    replay.force_hash(7);
+    let mut counters = new_act_work_counters();
+    let mut position = 0;
+    for (ordinal, (descriptor, expected_position, expected_collisions)) in
+        expected.iter().enumerate()
+    {
+        let id = replay
+            .expected_line_id(descriptor, &mut position, &mut counters)
+            .map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))?;
+        prop_assert_eq!(id, descriptor.encoded.start, "line ordinal {}", ordinal);
+        prop_assert_eq!(position, *expected_position, "line ordinal {}", ordinal);
+        prop_assert_eq!(
+            counters.line_hash_collisions,
+            *expected_collisions,
+            "line ordinal {}",
+            ordinal
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn forced_collision_history_covers_reuse_aba_and_unequal_lengths() {
+    check_forced_collision_history(&[
+        b"a".to_vec(),
+        b"a".to_vec(),
+        b"b".to_vec(),
+        b"a".to_vec(),
+        b"a".to_vec(),
+        b"longer".to_vec(),
+        b"longer".to_vec(),
+        b"a".to_vec(),
+    ])
+    .unwrap();
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(128))]
+
+    #[test]
+    fn forced_collision_histories_match_latest_content_and_physical_writer_order(
+        lines in proptest::collection::vec(
+            prop_oneof![
+                Just(b"a".to_vec()),
+                Just(b"b".to_vec()),
+                Just(b"aa".to_vec()),
+                proptest::collection::vec(any::<u8>(), 1..65),
+            ],
+            0..48,
+        ),
+    ) {
+        check_forced_collision_history(&lines)?;
+    }
 
     #[test]
     fn arbitrary_pathmap_writer_images_are_accepted_with_exact_preorder_plans(

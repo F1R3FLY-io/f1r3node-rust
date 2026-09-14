@@ -656,6 +656,7 @@ pub struct CanonicalCompactTrieWorkCounters {
     pub dense_mask_bytes: usize,
     pub line_hash_bytes: usize,
     pub line_equality_bytes: usize,
+    pub line_hash_collisions: usize,
     pub validation_source_byte_reads: usize,
     pub validation_source_copy_bytes: usize,
     pub validation_source_contiguous_bytes: usize,
@@ -2681,6 +2682,10 @@ where S: IndexedByteSource + ?Sized
             {
                 return Ok(previous.encoded.start);
             }
+            #[cfg(any(test, feature = "act-codec-instrumentation"))]
+            {
+                counters.line_hash_collisions += 1;
+            }
         }
 
         if line.encoded.start != *position {
@@ -3027,12 +3032,14 @@ mod indexed_direct_tests {
                 .unwrap(),
             0,
         );
+        assert_eq!(counters.line_hash_collisions, 0);
         assert_eq!(
             replay
                 .expected_line_id(&second, &mut position, &mut counters)
                 .unwrap(),
             1,
         );
+        assert_eq!(counters.line_hash_collisions, 1);
         assert_eq!(
             replay
                 .expected_line_id(&third, &mut position, &mut counters)
@@ -3040,6 +3047,7 @@ mod indexed_direct_tests {
             2,
             "the unequal second line must replace the first in the hash bucket",
         );
+        assert_eq!(counters.line_hash_collisions, 2);
         assert_eq!(
             replay
                 .expected_line_id(&third, &mut position, &mut counters)
@@ -3047,6 +3055,7 @@ mod indexed_direct_tests {
             2,
             "equal ranges may reuse the latest physical line",
         );
+        assert_eq!(counters.line_hash_collisions, 2);
         assert_eq!(position, 3);
         assert_eq!(counters.line_hash_bytes, 3);
         assert_eq!(counters.line_equality_bytes, 3);

@@ -11314,6 +11314,45 @@ allocation evidence must not be misrepresented as noisy independent samples
 merely because the experiment service offers a default statistical test.
 Results, full-library verification and campaign acceptance remain open.
 
+### J-155 — 2026-09-12 ACT collision observations and isolated resource baseline
+
+**FORMAL AND NATIVE QUALIFICATION.** The existing writer's collision branch
+now has an observational refinement: only an occupied hash bucket whose
+stored bytes differ increments the diagnostic counter. A/B/A/A produces
+counts 0, 1, 2, 2 and three physical line allocations. The implementation
+increments inside the existing unequal branch, without additional hashing
+or equality work. V5 has 195 closed reports; the RPB3 interior-line read
+refinement has 357. Independent kernel checks and downstream proof clients
+pass. Interior read laws do not purport to cover the entire concrete parser;
+the independent native witness covers actual complete event/read sequences.
+The ACT codec cohort passes all 26 tests including 128-case collision
+histories. The preceding full RSpace release library passed 707 tests with
+one existing ignore. No API or consensus byte-format change is introduced.
+
+**MEASURED; NOT A UNIVERSAL WIN.** Experiment 343 produced complete 372-cell
+allocation and uninstrumented timing matrices with 30 observations after
+five warmups. Wide 4096-key cold traversal improves from 1,603,547 to 288,267
+ns median and from 2,276,488 to 1,155,375 requested allocation bytes. Deep
+2048-level cold traversal improves from 1,896,810 to 472,542 ns. Conversely,
+a single 65,536-byte compressed path regresses from 230,938 to 726,088 ns;
+warm traversal also regresses. This is scalar event overhead, not slower
+canonical admission. The independently retained legacy visitor loops over
+compressed bytes internally; the new scalar caller repeatedly crosses an
+out-of-line dispatch boundary. uProf and disassembly identify that hot
+function, while preserving the distinction between measured operation time
+and whole-process profiling that includes audits.
+
+**NEXT HYPOTHESIS.** Inlining the unchanged scalar forwarding and dispatcher
+functions may eliminate repeated call/dispatch overhead. This changes no
+parser/state semantics and reuses the existing proof and native witnesses.
+Only if measurement rejects it should a casewise-equivalent hot/boundary
+split be considered; neither changing the benchmark contract nor adding a
+decoded projection is an acceptable way to hide the regression.
+
+The full methodology, headless Heaptrack results, exact raw archive and
+summary paths are in stack-safety report §5.33.66. This is an isolated ACT
+codec comparison, not a production PathMap/ACT-versus-LMDB comparison.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
