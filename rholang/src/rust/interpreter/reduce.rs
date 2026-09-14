@@ -6350,7 +6350,9 @@ impl DebruijnInterpreter {
             fn length(&self, base_expr: Expr) -> Result<Expr, InterpreterError> {
                 match base_expr.expr_instance {
                     Some(expr_instance) => match expr_instance {
-                        ExprInstance::GString(string) => Ok(new_gint_expr(string.len() as i64)),
+                        ExprInstance::GString(string) => {
+                            Ok(new_gint_expr(string.chars().count() as i64))
+                        }
 
                         ExprInstance::GByteArray(bytes) => Ok(new_gint_expr(bytes.len() as i64)),
 
@@ -6412,8 +6414,8 @@ impl DebruijnInterpreter {
                 match base_expr.expr_instance {
                     Some(expr_instance) => match expr_instance {
                         ExprInstance::GString(string) => Ok(new_gstring_par(
-                            if from <= until && until <= string.len() {
-                                string[from..until].to_string()
+                            if from <= until && until <= string.chars().count() {
+                                string.chars().skip(from).take(until - from).collect()
                             } else {
                                 "".to_string()
                             },

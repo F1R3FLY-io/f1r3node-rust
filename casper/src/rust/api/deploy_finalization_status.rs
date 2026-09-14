@@ -260,7 +260,14 @@ fn bfs_finalized_window(
             PrettyPrinter::build_string_bytes(&lfb_hash),
         )
     })?;
-    let scan_floor = (lfb_height - deploy_lifespan).max(0);
+    let oldest_valid_after = per_sig
+        .values()
+        .map(|state| state.valid_after_block_number)
+        .min()
+        .unwrap_or(lfb_height);
+    let scan_floor = (lfb_height - deploy_lifespan)
+        .min(oldest_valid_after)
+        .max(0);
 
     // Active sigs as a HashSet for O(1) membership checks during body scans.
     // Cloning sig bytes once here avoids per-block-per-sig clones.

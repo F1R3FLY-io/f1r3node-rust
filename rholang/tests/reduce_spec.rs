@@ -5317,3 +5317,47 @@ async fn cross_bind_guard_non_commutative_does_not_fire_when_data_violates_per_b
     let row_b = result.get(&vec![chan_b]).expect("chan b state present");
     assert_eq!(row_b.data.len(), 1, "rejected b=200 stays");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unicode_length_and_slices_use_characters_without_panicking() {
+    let (_, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let value = "Aé’🙂中";
+    let eval = |method: &str, arguments: Vec<Par>| {
+        reducer
+            .eval_expr(
+                &Par::default().with_exprs(vec![Expr {
+                    expr_instance: Some(ExprInstance::EMethodBody(EMethod {
+                        method_name: method.to_owned(),
+                        target: Some(new_gstring_par(value.to_owned(), Vec::new(), false)),
+                        arguments,
+                        locally_free: Vec::new(),
+                        connective_used: false,
+                    })),
+                }]),
+                &Env::new(),
+            )
+            .expect("Unicode string operation must not panic or fail")
+    };
+    assert_eq!(eval("length", vec![]).exprs, vec![new_gint_expr(5)]);
+    for (from, until, expected) in [
+        (0, 1, "A"),
+        (1, 2, "é"),
+        (2, 3, "’"),
+        (3, 4, "🙂"),
+        (4, 5, "中"),
+        (1, 4, "é’🙂"),
+        (0, 5, value),
+        (5, 5, ""),
+        (4, 6, ""),
+        (3, 1, ""),
+        (-2, 2, "Aé"),
+    ] {
+        let result = eval("slice", vec![
+            new_gint_par(from, vec![], false),
+            new_gint_par(until, vec![], false),
+        ]);
+        assert_eq!(result.exprs, vec![new_gstring_expr(expected.to_owned())]);
+    }
+}

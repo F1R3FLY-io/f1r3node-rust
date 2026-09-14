@@ -1565,3 +1565,89 @@ async fn resolve_returns_pending_for_non_canonical_clean_with_canonical_reject()
         "exactly one canonical rejection event in C",
     );
 }
+
+#[tokio::test]
+async fn finalized_and_failed_deploys_retain_their_status_beyond_lifespan() {
+    use std::collections::HashSet;
+
+    use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+    use casper::rust::util::construct_deploy;
+    use models::rust::block_implicits;
+    use models::rust::casper::protocol::casper_message::ProcessedDeploy;
+
+    use crate::util::rholang::resources::{
+        block_dag_storage_from_dyn, mk_test_rnode_store_manager_from_genesis,
+    };
+
+    let ctx = TestContext::new().await;
+    let genesis = ctx.genesis.genesis_block.clone();
+    let mut kvm = mk_test_rnode_store_manager_from_genesis(&ctx.genesis);
+    let store = KeyValueBlockStore::create_from_kvm(&mut *kvm)
+        .await
+        .unwrap();
+    let storage = block_dag_storage_from_dyn(&mut *kvm).await.unwrap();
+    store.put_block_message(&genesis).unwrap();
+    storage.insert(&genesis, InsertMode::Approved).unwrap();
+    let mut processed = Vec::new();
+    let mut expectations = Vec::new();
+    for failed in [false, true] {
+        let deploy = construct_deploy::source_deploy_now_full(
+            format!("@1!({failed})"),
+            None,
+            None,
+            None,
+            Some(0),
+            None,
+        )
+        .unwrap();
+        expectations.push((
+            deploy.sig.clone(),
+            if failed {
+                DeployFinalizationState::Failed
+            } else {
+                DeployFinalizationState::Finalized
+            },
+        ));
+        let mut item = ProcessedDeploy::empty(deploy);
+        item.is_failed = failed;
+        processed.push(item);
+    }
+    let mut parent = genesis.block_hash.clone();
+    for height in 1..=6 {
+        let block = block_implicits::get_random_block(
+            Some(height),
+            Some(i32::try_from(height).unwrap()),
+            None,
+            None,
+            None,
+            None,
+            Some(0),
+            Some(vec![parent]),
+            Some(Vec::new()),
+            Some(if height == 1 {
+                processed.clone()
+            } else {
+                Vec::new()
+            }),
+            Some(Vec::new()),
+            Some(genesis.body.state.bonds.clone()),
+            Some(genesis.shard_id.clone()),
+            None,
+        );
+        store.put_block_message(&block).unwrap();
+        storage.insert(&block, InsertMode::Normal).unwrap();
+        parent = block.block_hash;
+    }
+    let mut dag = storage.get_representation().unwrap();
+    dag.last_finalized_block_hash = parent;
+    let sigs = expectations
+        .iter()
+        .map(|(sig, _)| sig.clone())
+        .collect::<HashSet<_>>();
+    let batch = deploy_finalization_status::resolve_batch(&dag, &store, 2, &sigs).unwrap();
+    for (sig, expected) in expectations {
+        let single = deploy_finalization_status::resolve(&dag, &store, 2, &sig).unwrap();
+        assert_eq!(single.state, expected);
+        assert_eq!(batch[&sig].state, expected);
+    }
+}
