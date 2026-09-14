@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 use casper::rust::estimator::Estimator;
+use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::protocol::casper_message::Bond;
 
 use crate::helper::block_dag_storage_fixture::with_storage;
@@ -156,7 +157,13 @@ async fn estimator_on_empty_latest_messages_should_return_the_genesis_regardless
             .expect("dag representation");
         let estimator = Estimator::apply();
         let forkchoice = estimator
-            .tips_with_latest_messages(&mut dag, &genesis, HashMap::new(), i32::MAX, None)
+            .tips_with_latest_messages(
+                &mut dag,
+                &BlockMetadata::from_block(&genesis, false, None, None),
+                HashMap::new(),
+                i32::MAX,
+                None,
+            )
             .await
             .unwrap();
 
@@ -274,7 +281,13 @@ async fn estimator_on_simple_dag_should_return_the_appropriate_score_map_and_for
 
         let estimator = Estimator::apply();
         let forkchoice = estimator
-            .tips_with_latest_messages(&mut dag, &genesis, latest_blocks, i32::MAX, None)
+            .tips_with_latest_messages(
+                &mut dag,
+                &BlockMetadata::from_block(&genesis, false, None, None),
+                latest_blocks,
+                i32::MAX,
+                None,
+            )
             .await
             .unwrap();
 
@@ -398,12 +411,110 @@ async fn estimator_on_flipping_forkchoice_dag_should_return_the_appropriate_scor
 
         let estimator = Estimator::apply();
         let forkchoice = estimator
-            .tips_with_latest_messages(&mut dag, &genesis, latest_blocks, i32::MAX, None)
+            .tips_with_latest_messages(&mut dag, &BlockMetadata::from_block(&genesis, false, None, None), latest_blocks, i32::MAX, None)
             .await
             .unwrap();
 
         assert_eq!(forkchoice.tips[0], b8.block_hash);
         assert_eq!(forkchoice.tips[1], b7.block_hash);
+    })
+    .await
+}
+
+/// A silent validator's latest message sits far below a finalized band. Scored
+/// from a floor above it, fork choice picks the same head without walking the
+/// band beneath the floor.
+#[tokio::test]
+async fn estimator_scored_from_a_floor_keeps_the_head_and_skips_the_band_below() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let v1 = generate_validator(Some("Validator One"));
+        let v2 = generate_validator(Some("Validator Two"));
+        let silent_validator = generate_validator(Some("Validator Three"));
+        let bonds: Vec<Bond> = [&v1, &v2, &silent_validator]
+            .into_iter()
+            .map(|v| Bond {
+                validator: v.clone(),
+                stake: 10,
+            })
+            .collect();
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            Some(bonds.clone()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let silent = create_test_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            std::slice::from_ref(&genesis.block_hash),
+            &genesis,
+            &silent_validator,
+            &bonds,
+            justifications!(v1 => genesis.block_hash, v2 => genesis.block_hash, silent_validator => genesis.block_hash),
+        );
+        let (mut tip, mut floor) = (silent.clone(), silent.clone());
+        let (mut v1_latest, mut v2_latest) = (genesis.block_hash.clone(), genesis.block_hash.clone());
+        for i in 0..30 {
+            let creator = if i % 2 == 0 { &v1 } else { &v2 };
+            tip = create_test_block(
+                &mut block_store,
+                &mut block_dag_storage,
+                std::slice::from_ref(&tip.block_hash),
+                &genesis,
+                creator,
+                &bonds,
+                justifications!(v1 => v1_latest, v2 => v2_latest, silent_validator => silent.block_hash),
+            );
+            if i % 2 == 0 {
+                v1_latest = tip.block_hash.clone();
+            } else {
+                v2_latest = tip.block_hash.clone();
+            }
+            if i == 25 {
+                floor = tip.clone();
+            }
+        }
+        let latest = HashMap::from([
+            (v1.clone(), v1_latest),
+            (v2.clone(), v2_latest),
+            (silent_validator.clone(), silent.block_hash.clone()),
+        ]);
+        let mut dag = block_dag_storage.get_representation().expect("dag");
+        let estimator = Estimator::apply();
+        let from_genesis = estimator
+            .tips_with_latest_messages(
+                &mut dag,
+                &BlockMetadata::from_block(&genesis, false, None, None),
+                latest.clone(),
+                i32::MAX,
+                None,
+            )
+            .await
+            .expect("fork choice from genesis");
+        let floor_meta = BlockMetadata::from_block(&floor, false, None, None);
+        let from_floor = estimator
+            .tips_with_latest_messages(&mut dag, &floor_meta, latest, i32::MAX, None)
+            .await
+            .expect("fork choice from the floor");
+
+        assert_eq!(from_floor.tips.first(), from_genesis.tips.first());
+        let floor_parent = floor_meta.parents.first().expect("floor has a main parent");
+        for scored in from_floor.scores.keys() {
+            assert!(
+                *scored == silent.block_hash
+                    || scored == floor_parent
+                    || dag.lookup_unsafe(scored).expect("scored block").block_number
+                        >= floor_meta.block_number,
+                "below the floor only the floor's main parent and the latest messages may be scored"
+            );
+        }
+        assert!(from_genesis.scores.len() > from_floor.scores.len());
     })
     .await
 }

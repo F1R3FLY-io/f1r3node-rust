@@ -198,11 +198,26 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
     // anchored. A proposer-side parent filter cannot be a consensus-safety
     // mechanism (validators replay declared parents, not fork-choice), so it
     // was redundant. See docs/sealed-floor-merge-v2-status.md.
+    let fork_choice_floor = crate::rust::finality::floor::fork_choice_floor(
+        &dag,
+        &this.block_store,
+        valid_latest_msgs.values(),
+        models::rust::block_metadata::BlockMetadata::from_block(
+            &this.approved_block,
+            false,
+            None,
+            None,
+        ),
+        crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
+            this.casper_shard_conf.fault_tolerance_threshold_ppm,
+        ),
+    )
+    .await?;
     let fork_choice = this
         .estimator
         .tips_with_latest_messages(
             &mut dag,
-            &this.approved_block,
+            &fork_choice_floor,
             valid_latest_msgs.clone(),
             this.casper_shard_conf.max_number_of_parents,
             Some(this.casper_shard_conf.max_parent_depth),

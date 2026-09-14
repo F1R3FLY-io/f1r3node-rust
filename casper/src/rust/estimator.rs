@@ -27,7 +27,6 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
-use models::rust::casper::protocol::casper_message::BlockMessage;
 use models::rust::validator::Validator;
 use shared::rust::shared::list_ops::ListOps;
 use shared::rust::store::key_value_store::KvStoreError;
@@ -57,12 +56,13 @@ impl Estimator {
 
     pub fn apply() -> Self { Self }
 
-    /// When the BlockDag has an empty latestMessages, tips will return IndexedSeq(genesis.blockHash)
+    /// Fork choice scored from `floor`: no LCA walk or score descends below it.
+    /// With no latest messages the only tip is `floor`.
     #[tracing::instrument(name = "tips1", target = "f1r3fly.casper.estimator.tips1", skip_all)]
     pub async fn tips_with_latest_messages(
         &self,
         dag: &mut KeyValueDagRepresentation,
-        genesis: &BlockMessage,
+        floor: &BlockMetadata,
         latest_messages_hashes: HashMap<Validator, BlockHash>,
         max_number_of_parents: i32,
         max_parent_depth_opt: Option<i32>,
@@ -92,11 +92,8 @@ impl Estimator {
             filtered_latest_messages_hashes.remove(&validator);
         }
 
-        let genesis_metadata = BlockMetadata::from_block(genesis, false, None, None);
-
         tracing::debug!(target: "f1r3fly.casper.estimator.tips_fallback", "lca");
-        let lca =
-            Self::calculate_lca(dag, &genesis_metadata, &filtered_latest_messages_hashes).await?;
+        let lca = Self::calculate_lca(dag, floor, &filtered_latest_messages_hashes).await?;
 
         tracing::debug!(target: "f1r3fly.casper.estimator.tips_fallback", "score-map");
         let scores_map =
@@ -192,7 +189,7 @@ impl Estimator {
 
     async fn calculate_lca(
         block_dag: &KeyValueDagRepresentation,
-        genesis: &BlockMetadata,
+        floor: &BlockMetadata,
         latest_messages_hashes: &HashMap<Validator, BlockHash>,
     ) -> Result<BlockHash, KvStoreError> {
         let latest_messages: Vec<BlockMetadata> = latest_messages_hashes
@@ -211,9 +208,9 @@ impl Estimator {
             .collect();
 
         let result = if filtered_lm.is_empty() {
-            genesis.block_hash.clone()
+            floor.block_hash.clone()
         } else {
-            DagOperations::lowest_universal_common_ancestor_many(&filtered_lm, block_dag, genesis)
+            DagOperations::lowest_universal_common_ancestor_many(&filtered_lm, block_dag, floor)
                 .await?
                 .block_hash
         };

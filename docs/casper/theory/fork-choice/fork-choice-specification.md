@@ -33,7 +33,11 @@ Given a DAG `d` and a frozen `latest_messages` map (validator → their latest b
 - **R-LCA.** The estimator MUST compute a lowest universal common ancestor `lca` of the
   (depth-filtered) latest messages, and score relative to it. A latest message deeper
   than `LATEST_MESSAGE_MAX_DEPTH` below the top MUST be filtered out **deterministically**
-  (a pure function of the DAG), bounding the scored band.
+  (a pure function of the DAG), bounding the scored band. Neither the LCA walk nor
+  scoring descends below the **fork-choice floor**: under θ ≥ 0 the highest per-block
+  finalized floor among the latest messages (floors lie on one spine, so nothing
+  below it supports a live fork); under θ < 0 the approved block. The floor MUST be a
+  pure function of the DAG and the latest messages.
 - **R-SCORE.** Each block's score MUST be the **sum** of the weights of the validators
   whose latest message supports it (i.e. descends from it), accumulated down the
   supporting chains to the `lca`. The accumulation MUST be order-independent
@@ -60,8 +64,8 @@ Given a DAG `d` and a frozen `latest_messages` map (validator → their latest b
      read from block-structural bonds (the main parent's on-chain weight map) — never a
      node-local view and never floating-point. (Contrast: finalization's `f32` ratio is
      a separate, disclosed precision residual; fork choice has no such residual.)
-  3. **Deterministic LCA** (R-LCA): the depth filter and LCA MUST be pure functions of
-     the DAG (structural top height), identical across nodes.
+  3. **Deterministic LCA** (R-LCA): the depth filter, fork-choice floor and LCA MUST be
+     pure functions of the DAG (structural top height), identical across nodes.
 
 ## 4. Bounds and truncation (normative)
 

@@ -154,7 +154,15 @@ async fn merged_siblings_must_not_score_equal() {
         ]);
 
         let fork_choice = Estimator::apply()
-            .tips_with_latest_messages(&mut dag, &genesis, latest, i32::MAX, None)
+            .tips_with_latest_messages(
+                &mut dag,
+                &models::rust::block_metadata::BlockMetadata::from_block(
+                    &genesis, false, None, None,
+                ),
+                latest,
+                i32::MAX,
+                None,
+            )
             .await
             .expect("tips");
 

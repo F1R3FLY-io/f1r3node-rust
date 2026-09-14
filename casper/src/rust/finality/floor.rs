@@ -27,6 +27,7 @@ use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresenta
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
+use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::Bond;
 use models::rust::validator::Validator;
@@ -430,6 +431,43 @@ pub async fn floor_of_view(
         }
         Err(CasperError::BlockNotHeld(missing, _)) => Ok(FloorOfView::AbsenceHold { missing }),
         Err(other) => Err(other),
+    }
+}
+
+/// The block fork choice scores from: the highest floor among the latest
+/// messages. Under θ ≥ 0 floors lie on one spine, so a latest message below it
+/// supports no live fork; under θ < 0 floors may diverge and the approved block
+/// stays the bound. A latest message whose floor this node cannot derive
+/// abstains, and the result never drops below the approved block.
+pub async fn fork_choice_floor<'a>(
+    dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
+    latest_messages: impl IntoIterator<Item = &'a BlockHash>,
+    approved: BlockMetadata,
+    ftt: FtThreshold,
+) -> Result<BlockMetadata, CasperError> {
+    if ftt.num < 0 {
+        return Ok(approved);
+    }
+    let mut highest: Option<Floor> = None;
+    for hash in latest_messages {
+        match floor_of_block(dag, block_store, hash, ftt).await {
+            Ok(floor)
+                if highest
+                    .as_ref()
+                    .is_none_or(|h| floor.block_number > h.block_number) =>
+            {
+                highest = Some(floor)
+            }
+            Ok(_) | Err(CasperError::BlockNotHeld(..)) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    match highest {
+        Some(floor) if floor.block_number > approved.block_number => {
+            Ok(dag.lookup_unsafe(&floor.hash)?)
+        }
+        _ => Ok(approved),
     }
 }
 
@@ -1275,6 +1313,55 @@ mod frontier_determinism_tests {
             "the child's own floor must be cached, so the block above IT inherits \
              from the child rather than reaching for the anchor again"
         );
+    }
+
+    #[tokio::test]
+    async fn fork_choice_floor_is_the_highest_latest_message_floor_under_nonnegative_threshold() {
+        let (dag, _absent, held) = mk_truncated_dag();
+        dag.put_cached_floor(held[4].clone(), held[2].clone())
+            .unwrap();
+        dag.put_cached_floor(held[3].clone(), held[1].clone())
+            .unwrap();
+        let approved = dag.lookup_unsafe(&held[0]).unwrap();
+
+        let floor = fork_choice_floor(
+            &dag,
+            &mk_store(),
+            [&held[3], &held[4]],
+            approved.clone(),
+            FtThreshold::from_f32_lossy(0.1),
+        )
+        .await
+        .unwrap();
+        assert_eq!(floor.block_hash, held[2]);
+
+        let negative = fork_choice_floor(
+            &dag,
+            &mk_store(),
+            [&held[3], &held[4]],
+            approved.clone(),
+            FtThreshold::from_f32_lossy(-0.1),
+        )
+        .await
+        .unwrap();
+        assert_eq!(negative.block_hash, approved.block_hash);
+    }
+
+    #[tokio::test]
+    async fn fork_choice_floor_abstains_a_latest_message_whose_floor_is_not_derivable() {
+        let (dag, _absent, held) = mk_truncated_dag();
+        let approved = dag.lookup_unsafe(&held[0]).unwrap();
+
+        let floor = fork_choice_floor(
+            &dag,
+            &mk_store(),
+            [&held[4]],
+            approved.clone(),
+            FtThreshold::from_f32_lossy(0.1),
+        )
+        .await
+        .expect("an underivable floor abstains rather than failing the snapshot");
+        assert_eq!(floor.block_hash, approved.block_hash);
     }
 
     fn seed_number(dag: &KeyValueDagRepresentation, hash: &Bytes) -> i64 {

@@ -265,7 +265,18 @@ async fn fork_choice_determinism_correct() {
                 .map(|&i| scenario.canonical_latest[i].clone())
                 .collect();
             let tips = estimator
-                .tips_with_latest_messages(&mut dag, &scenario.genesis, latest, i32::MAX, None)
+                .tips_with_latest_messages(
+                    &mut dag,
+                    &models::rust::block_metadata::BlockMetadata::from_block(
+                        &scenario.genesis,
+                        false,
+                        None,
+                        None,
+                    ),
+                    latest,
+                    i32::MAX,
+                    None,
+                )
                 .await
                 .expect("tips")
                 .tips;
@@ -372,7 +383,15 @@ async fn filter_t10_invalid_latest_message_excluded() {
         let estimator = Estimator::apply();
 
         let tips_all = estimator
-            .tips_with_latest_messages(&mut dag, &genesis, latest_all, i32::MAX, None)
+            .tips_with_latest_messages(
+                &mut dag,
+                &models::rust::block_metadata::BlockMetadata::from_block(
+                    &genesis, false, None, None,
+                ),
+                latest_all,
+                i32::MAX,
+                None,
+            )
             .await
             .expect("tips (all)")
             .tips;
@@ -381,7 +400,15 @@ async fn filter_t10_invalid_latest_message_excluded() {
         let latest_v1_only: HashMap<Validator, BlockHash> =
             HashMap::from([(v1.clone(), b_valid.block_hash.clone())]);
         let tips_v1_only = estimator
-            .tips_with_latest_messages(&mut dag, &genesis, latest_v1_only, i32::MAX, None)
+            .tips_with_latest_messages(
+                &mut dag,
+                &models::rust::block_metadata::BlockMetadata::from_block(
+                    &genesis, false, None, None,
+                ),
+                latest_v1_only,
+                i32::MAX,
+                None,
+            )
             .await
             .expect("tips (v1 only)")
             .tips;
@@ -436,7 +463,7 @@ proptest! {
             let reference: HashMap<Validator, BlockHash> =
                 scenario.canonical_latest.iter().cloned().collect();
             let reference_tips = estimator
-                .tips_with_latest_messages(&mut dag, &scenario.genesis, reference, i32::MAX, None)
+                .tips_with_latest_messages(&mut dag, &models::rust::block_metadata::BlockMetadata::from_block(&scenario.genesis, false, None, None), reference, i32::MAX, None)
                 .await
                 .expect("reference tips")
                 .tips;
@@ -449,7 +476,7 @@ proptest! {
                 .map(|&i| scenario.canonical_latest[i].clone())
                 .collect();
             let permuted_tips = estimator
-                .tips_with_latest_messages(&mut dag, &scenario.genesis, permuted, i32::MAX, None)
+                .tips_with_latest_messages(&mut dag, &models::rust::block_metadata::BlockMetadata::from_block(&scenario.genesis, false, None, None), permuted, i32::MAX, None)
                 .await
                 .expect("permuted tips")
                 .tips;
@@ -490,7 +517,7 @@ proptest! {
                 .map(|&i| scenario.canonical_latest[i].clone())
                 .collect();
             let first_tips = estimator
-                .tips_with_latest_messages(&mut dag, &scenario.genesis, first, i32::MAX, None)
+                .tips_with_latest_messages(&mut dag, &models::rust::block_metadata::BlockMetadata::from_block(&scenario.genesis, false, None, None), first, i32::MAX, None)
                 .await
                 .expect("first tips")
                 .tips;
@@ -503,7 +530,7 @@ proptest! {
                 .map(|&i| scenario.canonical_latest[i].clone())
                 .collect();
             let second_tips = estimator
-                .tips_with_latest_messages(&mut dag, &scenario.genesis, second, i32::MAX, None)
+                .tips_with_latest_messages(&mut dag, &models::rust::block_metadata::BlockMetadata::from_block(&scenario.genesis, false, None, None), second, i32::MAX, None)
                 .await
                 .expect("second tips")
                 .tips;
