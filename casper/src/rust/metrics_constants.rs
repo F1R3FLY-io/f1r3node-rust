@@ -93,6 +93,8 @@ pub const CASPER_INIT_TIME_TO_RUNNING_METRIC: &str = "casper.init.time-to-runnin
 
 // Casper record/histogram metrics
 pub const BLOCK_SIZE_METRIC: &str = "block.size";
+pub const BLOCK_ARRIVAL_DEPTH_METRIC: &str = "block.arrival.depth";
+pub const BLOCK_ARRIVED_UNCITABLE_METRIC: &str = "block.arrived-uncitable";
 pub const BLOCK_DOWNLOAD_END_TO_END_TIME_METRIC: &str = "block.download.end-to-end-time";
 pub const BLOCK_REPLAY_PHASE_RESET_TIME_METRIC: &str = "block.replay.phase.reset.time";
 pub const BLOCK_REPLAY_PHASE_USER_DEPLOYS_TIME_METRIC: &str =
