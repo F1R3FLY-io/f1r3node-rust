@@ -11493,8 +11493,13 @@ MemoryMax 4 GiB and zero swap.
 709 tests, zero failures and one existing ignore. Five production
 `joint_epm_transport` tests pass the matched scalar/batch result, score,
 provenance, fragmented-source and small-stack controls. The broader maintained
-EPathMap import proof/runtime gate is tracked separately; these results alone
-do not establish its completion, whole-workspace CI or persistence acceptance.
+`scripts/check-stack-safe-pda-proofs.sh --epathmap-import` gate subsequently
+completes with exit zero: 28 exact-count cohorts total 400 test executions,
+eight kernel-check invocations succeed, and the positive ACT span compilation
+plus all sixteen exact compiler-rejection controls pass. This completes the
+finite task-5976 local reconciliation, not whole-workspace CI, task-6023
+performance qualification or persistence acceptance. Journal J-157 records the
+scope and the separate, still-unconfigured pgmcp verification obligations.
 
 | Artifact | SHA-256 |
 |---|---|
@@ -11504,6 +11509,7 @@ do not establish its completion, whole-workspace CI or persistence acceptance.
 | [Production import cell summaries](measurements/act-production-import-2026-09-14.tsv) | `d7b25ae7007291b8ac31f6f1b2deec54677a588c1ff12bd5debccfe351db5a9b` |
 | `target/verification/act-restored-full-library-r1.log` | `a076a42aa3bc4dd53e913d8a8e574976d73abc42c3799c6001181c3fed01d52f` |
 | `target/verification/act-restored-joint-transport-r1.log` | `01f2796412d22e1ddc7b1eb90455a20418a1fff4874cb80587874542cc01d731` |
+| `target/verification/epathmap-import-final-r1.log` | `0ae807bbcdff6c149e1cd8f4494bfad6c9fac2ee7c2c0f8a5eb33df0b0f4ebac` |
 
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
