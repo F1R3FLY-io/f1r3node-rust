@@ -98,7 +98,7 @@ The node also has a `logging { }` section in `defaults.conf` for controlling log
 
 ```hocon
 logging {
-  filter = "info"       # overridden by RUST_LOG env var
+  filter = "info,tonic=error,..." # INFO baseline with dependency and transport noise lowered. RUST_LOG overrides it.
   format = "json"       # "json" or "pretty"
   sink   = "stdout"     # "stdout", "file", or "both"
   file {
@@ -116,7 +116,7 @@ The Rust node reads a small set of environment variables. All other configuratio
 
 | Variable | Description |
 |---|---|
-| `RUST_LOG` | Overrides `logging.filter` from config (e.g. `info`, `info,f1r3fly.casper=debug`) |
+| `RUST_LOG` | Overrides `logging.filter` from config (e.g. `info`, `info,f1r3fly.casper=debug`). The compose files pass it to a node only when it is set in the shell or in `.env`. |
 | `OPENAI_ENABLED` | Enable OpenAI AI services (`true`/`false`) |
 | `OPENAI_API_KEY` | OpenAI API key (required when `OPENAI_ENABLED=true`) |
 | `OLLAMA_ENABLED` | Enable local Ollama AI services (`true`/`false`) |
