@@ -11463,6 +11463,45 @@ implementation task is introduced. The register remains living after this
 finite reconciliation; recording an optional upstream API does not defer
 required local correctness or performance.
 
+### J-158 — 2026-09-14 Single-parse ACT requirement-to-evidence reconciliation
+
+**DERIVED SCOPE AND LOCAL RESULT.** Task 6023 requires a validated, single-parse
+ACT plan, exact canonical admission and provenance, deferred value summaries,
+stack-safe traversal, independently observed resource behavior and qualification
+of valid dangling-path construction. The implementation is unchanged from the
+restored J-156 source. The following mapping closes that implementation slice
+locally; it does not declare the broader performance campaign complete.
+
+| Required property | Implementation and executable evidence |
+|---|---|
+| Parse metadata once; retain one owned plan; rewind without metadata replay | `rspace++/src/rspace/pathmap_codec.rs` owns `ValidatedActPlan` inline. `rspace++/tests/support/pathmap_codec_validated_plan.rs` independently observes all four indexed-source access methods, compares event reads with the legacy physical parser, and rejects extra metadata or duplicate suffix reads. |
+| Preserve canonical errors, physical provenance and logical topology | The same test module compares truncations and single-bit mutations with the independent oracle, checks contiguous/fragmented sources, wrappers, line sharing, endpoint provenance and exact forward/rewound topology. This is exhaustive over the specified mutation corpus, not all possible byte strings. |
+| Exact collision behavior, sparse/dense reads and deferred summaries | Forced collision histories include A/B/A reuse and unequal lengths; sparse/dense tests assert single reads; ordinal diagnostics require no event prepass. V5 and RPB3 formal observation checks are recorded in J-155, with native binding rather than a claim of extracted Rust-parser correctness. |
+| EPM value table traversed once without an endpoint prewalk | `models/src/rust/epathmap_trie_codec.rs::tests::indexed_topology_cursor_is_a_single_pass_over_epm1_topology_and_values` checks zero initial table reads, bounded progress, exact final table coverage, one terminal check and unchanged exhausted state. |
+| Valid source histories, production Set/Map entry points and fixed stack | The unfiltered writer-history property retains its original regression seed. Guarded leaf-boundary mutation, source sharing and teardown are exercised by the maintained import gate; deep and wide plan tests retain their small native stacks. PMU-006 through PMU-009 preserve upstream distinctions and removal criteria. |
+| Measured allocation and scaling behavior | J-155/§5.33.66 retain instrumented and uninstrumented ladders and headless Heaptrack results. J-156/§5.33.67 retain all rejected dispatcher variants and the separate production-import matrix. Counter coverage includes node/wrapper parses, branches, hash/equality/collisions, source accesses, plan storage, depth and EPM value-table progress. |
+
+**MEASURED FINAL LIBRARY GATES.** The restored RSpace release library passes
+709 tests with zero failures and one existing ignore. The complete models
+release library passes 502 tests with zero failures or ignores; its log
+`target/verification/act-models-final-r1.log` has SHA-256
+`1c9ced38c84a1427c9e7de402a8b91b6b2be913e8ce8d786490de0bed01555de`.
+The maintained import gate additionally supplies J-157's 400 test executions,
+eight successful kernel-check invocations and sixteen expected compiler
+refusals. These are overlapping scopes, not an additive unique-test count.
+
+**DECISION AND REMAINING BOUNDARY.** Mark task 6023 agent-claimed done for the
+recorded single-parse implementation and measurement obligations, not trusted
+verified. The earlier demand to resolve the compressed scalar slowdown remains
+applicable to an overall performance-completion claim; rejecting three
+candidates does not satisfy it. The broader required admission/performance
+work under parent 6018 remains open, with these negative results carried
+forward. Neither a universal scalar speedup nor production batching speedup
+has been demonstrated. Persistence lifecycle, LMDB comparison, trusted task
+verification and whole-workspace release acceptance also remain open. No
+upstream fork, format change, dependency change or acceptance-criterion
+weakening accompanies this checkpoint.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

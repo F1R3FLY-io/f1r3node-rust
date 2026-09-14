@@ -11512,6 +11512,19 @@ passing log does not satisfy its trusted completion gate.
 | `target/verification/act-restored-joint-transport-r1.log` | `01f2796412d22e1ddc7b1eb90455a20418a1fff4874cb80587874542cc01d731` |
 | `target/verification/epathmap-import-final-r1.log` | `0ae807bbcdff6c149e1cd8f4494bfad6c9fac2ee7c2c0f8a5eb33df0b0f4ebac` |
 
+**FINAL SINGLE-PARSE RECONCILIATION.** Journal J-158 maps task 6023's exact
+implementation and measurement requirements to source and independent tests.
+The final complete models release library passes 502 tests without failures
+or ignores, including the indexed EPM1 single-pass value-table test. Its log
+`target/verification/act-models-final-r1.log` has SHA-256
+`1c9ced38c84a1427c9e7de402a8b91b6b2be913e8ce8d786490de0bed01555de`.
+This supports local completion of that single-parse slice, not a claim that
+all performance issues are resolved. The compressed scalar slowdown in
+§5.33.66 remains open under the broader required admission/performance work;
+the rejected dispatcher experiments do not remove it. Trusted pgmcp
+verification, complete persistence acceptance and the LMDB comparison remain
+separate outstanding requirements.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate
