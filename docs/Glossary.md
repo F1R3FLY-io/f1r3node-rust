@@ -29,6 +29,26 @@ correctness — proved, model-checked, and tested — is the organizing concern.
 
 ## Canonical Terms
 
+### Source snapshot
+
+A source snapshot retains selected source files and a manifest of their paths, digests, and permission modes.
+
+**Preferred usage.** Use this term for captured source inputs, not build output or a complete filesystem image.
+
+### Source store
+
+A source store keeps source snapshots under content-derived identifiers.
+Identical source inputs can use one stored snapshot.
+
+**Preferred usage.** Distinguish the source store from the build cache and the results of individual verification attempts.
+
+### Build cache
+
+A build cache contains replaceable compiler output.
+Required executed binaries must also remain with their evidence.
+
+**Preferred usage.** Use this term for reusable build output, not the sole retained copy of evidence.
+
 ### Release candidate
 
 A release candidate is one immutable source commit with its tested artifacts and [release evidence](#release-evidence). Standard release gates evaluate this identity.

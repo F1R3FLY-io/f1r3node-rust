@@ -596,3 +596,93 @@ Cache removal requires the Cargo build lock and a fresh writer check.
 Evidence removal requires verified archive coverage and a retrieval test.
 Original manifests and attempt records must remain unchanged.
 This work does not authorize a commit, push, or acceptance soak.
+
+### Storage completion and retained archives, 2026-09-14
+
+The operation records remain under `$HOME/soak-evidence/f1r3node-rust/storage-cleanup-20260914-JILmoOsl`.
+The earlier storage-development attempts remain under `storage-practicality-Esi6iuNc` in the same evidence directory.
+This session removed the following allocations after the required checks.
+
+| Removed scope | Allocated size before removal |
+| --- | ---: |
+| `target/debug/incremental` | 41.59 GiB |
+| `target/soak-evidence/34180346282/attempt-1/extracted` | 13.12 GiB |
+| Five frozen `scripts/soak-charts/target` copies | 3.93 GiB |
+
+These figures describe removed allocations, not an exact increase in filesystem free space.
+Hardlinks and concurrent work can change the free-space difference.
+The existing `target/debug/deps`, `target/release`, and live chart build cache remain untouched.
+The operation did not run `cargo clean`.
+
+The incremental removal held the Cargo build lock.
+Its inventory contained 60,679 entries and only recognized, non-executable compiler products.
+The operation found no active Cargo or Rust compiler process before removal.
+The compressed inventory and removal receipt remain in the operation records.
+
+The historical archive matched all 652 extracted files and 14,083,145,744 file bytes.
+A separate retrieval recovered `early-exit.txt` before removal.
+The archive remains at `$HOME/soak-evidence/f1r3node-rust/34180346282/attempt-1/archive.zip`.
+Its digest is `3b25041120055e32a49810ec81f762cdbf570af9b2bdba8bf93c14569489a4cc`.
+The original manifest remains unchanged.
+The former extraction has a sibling `extracted.archived.json` receipt.
+
+An initial attempt rejected a malformed digest copied from the session summary.
+The successful attempts used the authoritative repository manifest instead.
+
+The five chart caches had identical file bytes and modes.
+The operation retained one `chart-cache.tar.gz` archive of 284,506,363 bytes.
+Its digest is `ef6c7e008757b6e00514f913d3e4d9e3b98aae0b4de882acd872773ec0cf7d22`.
+A complete extraction matched the original cache before removal.
+This archive preserves file bytes and modes, not a complete filesystem image or original hardlink topology.
+All five non-cache source trees and inventoried checksum manifests remained unchanged.
+
+Post-removal verification matched 4,844 original checksum entries from two candidate manifests.
+The check retrieved 4,580 entries from the archive and read 264 entries from retained source files.
+This integrity check did not rerun the historical tests.
+
+The continuation evidence root now contains `archived-chart-caches.json` with the archive reference and removed paths.
+The retained archives are local copies, not verified remote backups.
+A replay that checks original source manifests requires restoration of the archived cache paths.
+
+1. Verify the recorded archive digest.
+2. Create a new empty cache directory at the required original path.
+3. Restore the archived cache into that directory.
+4. Verify the original checksum manifest.
+
+### Source workflow validation
+
+The initial real source capture retained 694 files and 1,653,100 source bytes without the nested chart cache.
+A second capture reused the same verified snapshot.
+The public-driver summary case passed directly from that snapshot.
+The optional local Cargo profile passed 48 `graphz` tests with a 204 MiB external cache.
+It did not create another populated incremental cache.
+
+Review found four additional snapshot refusal gaps.
+The new cases covered an unmatched selection, a dot extra-file argument, a writable stored directory, and an unrecorded stored directory.
+All four failed against the frozen baseline.
+The unchanged 33-case fixture passed against the frozen correction.
+The correction validates selections and the complete stored directory structure before reuse.
+
+The workflow capture retained 700 files and 1,660,406 source bytes and reused the same source-store entry on a second invocation.
+Its snapshot identifier is `84e1c7a27ae0ab7719fc07dd45c22a26cf7cf85d7e34fcf1d7cde56c529649aa`.
+All nine existing telemetry cases passed from that snapshot through the public driver.
+The fixture retained its declared external workload substitutions.
+These tests validate source-store use, not production Docker containment or complete observability.
+The scripts README now describes the receipt-based workflow.
+
+A final safety check found that the regression fixture inherited the caller's Git index selection.
+The corrected fixture removes inherited Git environment variables and disables external Git configuration for its disposable repositories.
+The final 34-case suite passed with normal settings and an inherited index sentinel.
+The sentinel remained unchanged.
+The nine-case workflow's six execution inputs still match the retained snapshot after this test-only correction.
+
+The scoped STE Check, whitespace check, Python syntax check, and Bash syntax check passed.
+The language-server sweep reported three clean files and two inconclusive files, with no findings.
+These results do not establish full language-standard conformance or discharge correctness claims.
+
+The source-store and Cargo limits remain admission checks, not runtime filesystem quotas.
+The tools do not remove retained evidence automatically or discharge correctness claims.
+
+The other agent changed HEAD during this work.
+This session preserved those changes and did not create a commit or push.
+D2 and B44 remain outside this storage scope.

@@ -61,6 +61,8 @@ The tool excludes these generated paths:
 The receipt lists excluded tracked paths.
 The tool refuses symbolic links, Git links, unresolved Git stages, and source changes during capture.
 The source store must be outside the repository.
+Every requested selection must match an input.
+Reuse also checks the complete directory set and read-only directory permissions.
 
 The default limits are 64 MiB per snapshot, 20,000 files, and a 1 GiB source-store admission budget.
 The tool also requires 10 GiB of free space before capture.
@@ -76,6 +78,35 @@ Do not modify an existing snapshot to prepare another candidate.
 These controls are not filesystem quotas or hostile-filesystem isolation.
 The capture does not preserve ownership, extended attributes, or a filesystem image.
 A successful capture does not establish power-loss durability or archive retention.
+
+### Evidence workflow
+
+Keep the capture receipt beside the result of each attempt.
+Pass the receipt's snapshot directory to the test fixture instead of copying an earlier candidate.
+The following example uses the public-driver telemetry fixture.
+`PINNED_HARNESS` must identify a verified harness tree at the required revision.
+The harness tree must contain `integration-tests/test`.
+The example requires the existing integration-test Python environment.
+
+```bash
+EVIDENCE_ROOT="$HOME/soak-evidence/f1r3node-rust"
+mkdir -p "$EVIDENCE_ROOT"
+ATTEMPT=$(mktemp -d "$EVIDENCE_ROOT/telemetry-XXXXXXXX")
+python3 -I scripts/verification-storage.py snapshot "$PWD" \
+  "$EVIDENCE_ROOT/source-store-v1" scripts formal/tlaplus \
+  > "$ATTEMPT/source.json"
+SOURCE=$(python3 -I -c \
+  'import json,sys; print(json.load(open(sys.argv[1]))["snapshot"] + "/source")' \
+  "$ATTEMPT/source.json")
+../system-integration/.venv/bin/python -I \
+  "$SOURCE/scripts/bench/test-soak-telemetry.py" "$SOURCE" \
+  "${PINNED_HARNESS:?Set a verified harness directory}" \
+  "$ATTEMPT/summary" summary
+```
+
+Use a shell with `set -euo pipefail` for this procedure.
+Keep the command output and exit status with the receipt.
+The fixture substitutes external workload boundaries and does not establish production Docker containment.
 
 ### Local Cargo builds
 
@@ -103,10 +134,10 @@ Do not use local-profile results as acceptance evidence.
 Inspect exact storage roots without deleting files:
 
 ```bash
-python3 -I scripts/verification-storage.py audit \
-  target/debug/incremental target/soak-evidence
+python3 -I scripts/verification-storage.py audit target/soak-evidence
 ```
 
+Audit only directories that still exist.
 Do not add overlapping audit rows or count shared files twice.
 Keep build caches, temporary verification files, and retained evidence in separate directories.
 Keep required executed binaries with the evidence, not only in an expendable cache.
