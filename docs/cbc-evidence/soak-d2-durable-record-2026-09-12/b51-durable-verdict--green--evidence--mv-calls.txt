@@ -1,0 +1,16 @@
+rename /case/evidence/output/.soak-state.tmp.17 /case/evidence/output/.soak-state
+rename /case/evidence/output/.soak-checkpoint-state.json.tmp.17 /case/evidence/output/.soak-checkpoint-state.json
+rename /case/evidence/output/.host-guardian-progress.tmp /case/evidence/output/.host-guardian-progress
+rename /case/evidence/output/.soak-state.tmp.17 /case/evidence/output/.soak-state
+rename /case/evidence/output/.soak-checkpoint-state.json.tmp.17 /case/evidence/output/.soak-checkpoint-state.json
+rename /case/evidence/output/host-guardian-breach.txt.tmp.59 /case/evidence/output/host-guardian-breach.txt
+rename /case/evidence/output/protection-breach.txt.tmp.17 /case/evidence/output/protection-breach.txt
+rename /case/evidence/output/early-exit.txt.tmp.17 /case/evidence/output/early-exit.txt
+rename /case/evidence/output/.soak-state.tmp.17 /case/evidence/output/.soak-state
+rename /case/evidence/output/.soak-checkpoint-state.json.tmp.17 /case/evidence/output/.soak-checkpoint-state.json
+rename /case/evidence/output/protection-breach.txt.tmp.17 /case/evidence/output/protection-breach.txt
+rename /case/evidence/output/early-exit.txt.tmp.17 /case/evidence/output/early-exit.txt
+rename /case/evidence/output/.soak-state.tmp.17 /case/evidence/output/.soak-state
+rename /case/evidence/output/.soak-checkpoint-state.json.tmp.17 /case/evidence/output/.soak-checkpoint-state.json
+rename /case/evidence/output/summary.txt.tmp.17 /case/evidence/output/summary.txt
+rename /case/evidence/output/summary.json.tmp.625 /case/evidence/output/summary.json

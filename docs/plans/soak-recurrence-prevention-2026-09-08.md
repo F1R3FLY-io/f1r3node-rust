@@ -474,6 +474,7 @@ The [durable record package](../cbc-evidence/soak-d2-durable-record-2026-09-12/R
 Every breach record, the early-exit record, the persisted state, and both summaries now pass through one helper.
 The helper syncs a temporary file, renames it into place, and syncs the directory, so a record under its final name is complete or absent.
 The [model](../../formal/tlaplus/soak_disk/DurableRecord.md) refutes the in-place baseline.
+
 The fixture proves ordering and atomic visibility with a substituted `sync` command and does not prove kernel durability.
 Storage faults during publication, upload acknowledgment, and the guardian and crash-monitor bounds remain unverified.
 D2 and claim discharge remain pending.
@@ -579,6 +580,10 @@ Property tests and fuzzing connect production to the model. They are not proof a
 Do not delete active node state or required evidence. Do not replace attribution with a larger volume or lower protection threshold.
 
 **Exit evidence:** The measured writer has a verified lifecycle bound. A controlled early stop alone does not satisfy this gate.
+
+The [reserve argument](soak-reserve-argument-2026-09-12.md) bounds the response-latency term T from the guardian sampling and the composed emergency deadline. It leaves the growth, burst, and reserve terms open for this diagnostic run to supply.
+
+The [durable publication package](../cbc-evidence/soak-d2-durable-record-2026-09-12/README.md) records the B51 review corrections R1 and R3. R1 bounds record publication and keeps the writer stop independent of a stalled sync, with an explicit unconfirmed result. R3 proves the atomic rename and rejects in-place publication. The [bounded publication model](../../formal/tlaplus/soak_disk/BoundedPublication.md) and the [atomic record model](../../formal/tlaplus/soak_disk/DurableRecord.md) refute the respective baselines. Durable power-loss survival and hosted enforcement remain pending.
 
 ### Gate A1: Run the acceptance soak and gate completion
 

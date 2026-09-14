@@ -2,7 +2,7 @@
 (* The emergency path of one soak iteration in                               *)
 (* scripts/run-merge-recovery-soak.sh: the guardian probes, records a        *)
 (* breach, stops the writers, attributes the space, and the next segment     *)
-(* finds the marker. Twenty-two constants switch the corrections on and off  *)
+(* finds the marker. Twenty-three constants switch the corrections on and off*)
 (* so that each pre-fix configuration reproduces one historical defect.      *)
 (* Four more constants state the conditional no-overrun theorem: free space  *)
 (* stays positive when the hard floor covers the writers' worst consumption   *)
@@ -31,6 +31,7 @@ CONSTANTS DetectDeath,       \* the watcher treats a dead guardian as a breach
           VerifyBeforeRelease, \* the launcher verifies manager placement and gate identity before it releases the driver, so a stalled status query prevents native admission (B47, launcher prototype)
           ComposedDeadline, \* the driver's whole emergency response after a breach runs under one composed budget, and a stalled evidence copy is skipped when the budget is spent (B49)
           ValidateAncestors, \* the launcher refuses work when any ancestor of its control directory is not a root-owned, unwritable directory (B50, launcher prototype)
+          IndependentStop, \* the breach record is renamed into place first, and the writer stop never waits on its bounded durability sync (B51 review)
           WriteRateMax,     \* MiB the writers can consume per clock unit (measured, not derived)
           SamplePeriod,     \* clock units between guardian probes (the 5s sleep)
           HardFloorMiB,     \* free MiB at the last healthy sample; the breach line
@@ -42,7 +43,7 @@ ASSUME /\ {DetectDeath, RejectUnavailable, EnforceTimeout, RecordFirst,
            SelectOwnedHost, MarkOwnedOnly, ConfigureAtCreation,
            SurvivesDriverCrash, RememberHandledExit, DetectMonitorDeath,
            StopBeforeDrain, ManagedContainment, VerifyBeforeRelease,
-           ComposedDeadline, ValidateAncestors} \subseteq BOOLEAN
+           ComposedDeadline, ValidateAncestors, IndependentStop} \subseteq BOOLEAN
        /\ WriteRateMax \in Nat
        /\ SamplePeriod \in Nat
        /\ HardFloorMiB \in Nat \ {0}
@@ -77,6 +78,8 @@ VARIABLES phase, alive, monitorAlive, interruptRequested, breachRecorded,
           copied, \* the failure-evidence copy completed or was skipped (B49)
           copyElapsed, \* budget units the evidence copy consumed (B49)
           copyStalled, \* the evidence copy command ignores its termination signal (B49)
+          syncState, \* the durability sync of the breach record: pending, done, or stalled (B51 review)
+          wedged, \* the writer stop waited on a stalled sync (B51 review)
           freeMiB,      \* free space, consumed at WriteRateMax while the writers run
           writersAlive, \* the writers still consume space
           lateUnits,    \* clock units of unconfirmed consumption after the stop
@@ -93,7 +96,7 @@ vars == <<phase, alive, monitorAlive, interruptRequested, breachRecorded,
           diagElapsed, rootsLeft,
           marker, priorFailures, failures, admitted, stale, exitStop, crashStop, repeatedStop,
           pipeHeld, drained, containedStop, queryAvailable, controlTrusted,
-          copied, copyElapsed, copyStalled,
+          copied, copyElapsed, copyStalled, syncState, wedged,
           freeMiB, writersAlive, lateUnits,
           unownedStopped, exitRejected, exitFailureRetained,
           unownedHostStopped, unownedMarked, unownedContainersMarked>>
@@ -133,6 +136,8 @@ Init ==
     /\ copied = FALSE
     /\ copyElapsed = 0
     /\ copyStalled \in BOOLEAN
+    /\ syncState = "pending"
+    /\ wedged = FALSE
     /\ freeMiB = HardFloorMiB
     /\ writersAlive = TRUE
     /\ lateUnits = 0
@@ -380,6 +385,7 @@ Record ==
 \* pkill and docker kill start; termination is never confirmed.
 BeginStop ==
     /\ phase = "stop"
+    /\ IndependentStop \/ syncState = "done"
     /\ stopStarted' = TRUE
     /\ interruptRequested' = TRUE
     /\ unownedStopped' = ~SelectOwned
@@ -470,6 +476,23 @@ Drain ==
                    unownedMarked, unownedContainersMarked>>
 
 \* The segment ends with the marker on disk; the next segment starts.
+\* The durability sync of the breach record (B51 review). The corrected driver
+\* renames the record into place first and reaps the sync under a bound, so the
+\* writer stop never waits on it. The pre-fix driver synced inside the stop
+\* path, and a stalled sync wedged the stop.
+SyncDone ==
+    /\ breachRecorded
+    /\ syncState = "pending"
+    /\ syncState' = "done"
+    /\ UNCHANGED <<phase, alive, monitorAlive, interruptRequested, breachRecorded, elapsed, timedOut, known, stopStarted, stopElapsed, termSent, killSent, diagElapsed, rootsLeft, marker, priorFailures, failures, admitted, stale, exitStop, crashStop, repeatedStop, pipeHeld, drained, containedStop, queryAvailable, controlTrusted, copied, copyElapsed, copyStalled, wedged, freeMiB, writersAlive, lateUnits, unownedStopped, exitRejected, exitFailureRetained, unownedHostStopped, unownedMarked, unownedContainersMarked>>
+
+SyncStall ==
+    /\ breachRecorded
+    /\ syncState = "pending"
+    /\ syncState' = "stalled"
+    /\ wedged' = (~IndependentStop /\ ~stopStarted)
+    /\ UNCHANGED <<phase, alive, monitorAlive, interruptRequested, breachRecorded, elapsed, timedOut, known, stopStarted, stopElapsed, termSent, killSent, diagElapsed, rootsLeft, marker, priorFailures, failures, admitted, stale, exitStop, crashStop, repeatedStop, pipeHeld, drained, containedStop, queryAvailable, controlTrusted, copied, copyElapsed, copyStalled, freeMiB, writersAlive, lateUnits, unownedStopped, exitRejected, exitFailureRetained, unownedHostStopped, unownedMarked, unownedContainersMarked>>
+
 \* The driver's failure-evidence copy after the attribution (B49). The
 \* corrected driver runs the whole response under one composed budget that
 \* starts at the breach decision: when the budget is spent, a stalled copy is
@@ -483,7 +506,7 @@ CopyEvidence ==
     /\ ~copyStalled
     /\ copied' = TRUE
     /\ copyElapsed' = copyElapsed + 1
-    /\ UNCHANGED <<phase, alive, monitorAlive, interruptRequested, breachRecorded, elapsed, timedOut, known, stopStarted, stopElapsed, termSent, killSent, diagElapsed, rootsLeft, marker, priorFailures, failures, admitted, stale, exitStop, crashStop, repeatedStop, pipeHeld, drained, containedStop, queryAvailable, controlTrusted, copyStalled, freeMiB, writersAlive, lateUnits, unownedStopped, exitRejected, exitFailureRetained, unownedHostStopped, unownedMarked, unownedContainersMarked>>
+    /\ UNCHANGED <<phase, alive, monitorAlive, interruptRequested, breachRecorded, elapsed, timedOut, known, stopStarted, stopElapsed, termSent, killSent, diagElapsed, rootsLeft, marker, priorFailures, failures, admitted, stale, exitStop, crashStop, repeatedStop, pipeHeld, drained, containedStop, queryAvailable, controlTrusted, copyStalled, freeMiB, writersAlive, lateUnits, unownedStopped, exitRejected, exitFailureRetained, unownedHostStopped, unownedMarked, unownedContainersMarked, syncState, wedged>>
 
 StallCopy ==
     /\ phase = "finished"
@@ -491,7 +514,7 @@ StallCopy ==
     /\ copyStalled
     /\ ~ComposedDeadline \/ ResponseElapsed < EmergencyBudget
     /\ copyElapsed' = copyElapsed + 1
-    /\ UNCHANGED <<phase, alive, monitorAlive, interruptRequested, breachRecorded, elapsed, timedOut, known, stopStarted, stopElapsed, termSent, killSent, diagElapsed, rootsLeft, marker, priorFailures, failures, admitted, stale, exitStop, crashStop, repeatedStop, pipeHeld, drained, containedStop, queryAvailable, controlTrusted, copyStalled, freeMiB, writersAlive, lateUnits, unownedStopped, exitRejected, exitFailureRetained, unownedHostStopped, unownedMarked, unownedContainersMarked, copied>>
+    /\ UNCHANGED <<phase, alive, monitorAlive, interruptRequested, breachRecorded, elapsed, timedOut, known, stopStarted, stopElapsed, termSent, killSent, diagElapsed, rootsLeft, marker, priorFailures, failures, admitted, stale, exitStop, crashStop, repeatedStop, pipeHeld, drained, containedStop, queryAvailable, controlTrusted, copyStalled, freeMiB, writersAlive, lateUnits, unownedStopped, exitRejected, exitFailureRetained, unownedHostStopped, unownedMarked, unownedContainersMarked, copied, syncState, wedged>>
 
 SkipCopy ==
     /\ phase = "finished"
@@ -500,7 +523,7 @@ SkipCopy ==
     /\ ComposedDeadline
     /\ ResponseElapsed >= EmergencyBudget
     /\ copied' = TRUE
-    /\ UNCHANGED <<phase, alive, monitorAlive, interruptRequested, breachRecorded, elapsed, timedOut, known, stopStarted, stopElapsed, termSent, killSent, diagElapsed, rootsLeft, marker, priorFailures, failures, admitted, stale, exitStop, crashStop, repeatedStop, pipeHeld, drained, containedStop, queryAvailable, controlTrusted, copyStalled, freeMiB, writersAlive, lateUnits, unownedStopped, exitRejected, exitFailureRetained, unownedHostStopped, unownedMarked, unownedContainersMarked, copyElapsed>>
+    /\ UNCHANGED <<phase, alive, monitorAlive, interruptRequested, breachRecorded, elapsed, timedOut, known, stopStarted, stopElapsed, termSent, killSent, diagElapsed, rootsLeft, marker, priorFailures, failures, admitted, stale, exitStop, crashStop, repeatedStop, pipeHeld, drained, containedStop, queryAvailable, controlTrusted, copyStalled, freeMiB, writersAlive, lateUnits, unownedStopped, exitRejected, exitFailureRetained, unownedHostStopped, unownedMarked, unownedContainersMarked, copyElapsed, syncState, wedged>>
 
 Finish ==
     /\ phase = "finished"
@@ -555,8 +578,9 @@ NextCore == (DriverExit /\ UNCHANGED <<monitorAlive, DrainVars, Consumption, Sto
 
 \* The launcher's query outcome, the control-directory trust, and the copy
 \* command's behavior are fixed at launch. The copy steps change nothing else.
-Next == \/ NextCore /\ UNCHANGED <<queryAvailable, controlTrusted, copied, copyElapsed, copyStalled>>
+Next == \/ NextCore /\ UNCHANGED <<queryAvailable, controlTrusted, copied, copyElapsed, copyStalled, syncState, wedged>>
         \/ CopyEvidence \/ StallCopy \/ SkipCopy
+        \/ SyncDone \/ SyncStall
 
 Spec == Init /\ [][Next]_vars
 
@@ -596,6 +620,8 @@ TypeOK ==
     /\ copied \in BOOLEAN
     /\ copyElapsed \in Nat
     /\ copyStalled \in BOOLEAN
+    /\ syncState \in {"pending", "done", "stalled"}
+    /\ wedged \in BOOLEAN
     /\ freeMiB \in Int
     /\ writersAlive \in BOOLEAN
     /\ lateUnits \in 0..LateUnits
@@ -630,6 +656,7 @@ ControllerLossStopsOwnedWriters == phase = "containment-checked" => containedSto
 UnavailableQueryPreventsRelease == ~queryAvailable => phase \in {"launch", "launch-refused"}
 UntrustedControlPreventsRelease == ~controlTrusted => phase \in {"launch", "launch-refused"}
 ResponseWithinDeadline == ResponseElapsed <= EmergencyBudget
+ShutdownIndependentOfSync == ~wedged
 FailedStopRetained == (phase = "exited" /\ exitRejected) => exitFailureRetained
 UnownedWritersPreserved == ~unownedStopped
 UnownedHostWritersPreserved == ~unownedHostStopped

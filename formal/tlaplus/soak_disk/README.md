@@ -23,7 +23,7 @@ a Boolean constant and must violate exactly the invariant named below.
 | `MonitorCrash` | The crash monitor dies before the benchmark admission or the iteration admission (B42) |
 | `GuardianCrash` | The guardian process dies before the workload starts |
 | `Admit` | Start the iteration |
-| `PublishRefusal`, `CompletePublish` | Write `protection-breach.txt`, `early-exit.txt`, and the failure summary. The corrected driver writes each record to a temporary name, syncs it, renames it into place, and syncs the directory (B51) |
+| `PublishRefusal`, `CompletePublish` | Write `protection-breach.txt`, `early-exit.txt`, and the failure summary. The corrected driver writes each record to a temporary name and renames it into place, and a failed producer keeps the previous record (B51) |
 | `Attribute` | Run the disk usage attribution after a disk breach. The corrected driver writes the records first (B48) |
 
 | Constant | Correction | Pre-fix configuration | Expected violation |
@@ -49,9 +49,10 @@ a Boolean constant and must violate exactly the invariant named below.
 | `VerifyPlacement` | Under required containment, the benchmark and an iteration are admitted only when the trusted run-domain record matches the driver's own control group and uid. A failed comparison retains a failure. The pre-fix driver ignored the containment setting and took the unmanaged path (B45) | `MC_SoakDiskAdmission_unchecked_placement_pre_fix` | `UnverifiedPlacementPreventsAdmission` |
 | `BindIdentity` | The record is trusted only when the driver opened each root-owned, unwritable path component from the filesystem root, within the size bound. The pre-fix driver inspected the pathname and read the record separately (B46). The `unchecked_placement` control omits this invariant, which a driver with no placement check also violates | `MC_SoakDiskAdmission_pathname_pre_fix` | `UntrustedRecordPreventsAdmission` |
 | `RecordBeforeAttribution` | The driver writes the breach record and the early-exit record before any disk usage attribution starts, so a stalled attribution cannot delay them. The pre-fix driver attributed on the hygiene-pass path before it decided (B48) | `MC_SoakDiskAdmission_attribute_first_pre_fix` | `AttributionRequiresRecord` |
-| `AtomicPublish` | Every minimal record is synced under a temporary name, renamed into place, and followed by a directory sync. A reader sees the record complete or not at all. The pre-fix driver wrote each record in place, and a reader could see an empty or partial record (B51) | `MC_SoakDiskAdmission_in_place_pre_fix` | `VisibleImpliesDurable` |
+| `AtomicPublish` | Every minimal record is written to a temporary name and renamed into place, so a reader sees the record complete or not at all. The pre-fix driver wrote each record in place, and a reader could see a partial record (B51) | `MC_SoakDiskAdmission_in_place_pre_fix` | `VisibleImpliesComplete` |
+| `RequireProducerSuccess` | A failed producer command discards its output and keeps the previous record. The pre-fix helper published the empty output of a failed producer (B51 review) | `MC_SoakDiskAdmission_unchecked_producer_pre_fix` | `FailedProducerPreservesRecord` |
 
-`MC_SoakDiskAdmission` enables all twenty-two corrections with all three benchmark fault kinds. It checks `TypeOK`, the twenty-two invariants above, `HygieneKillFollowsTerm`, `StopPreventsAdmission`, `RefusalRecorded`, and the liveness property `Completes`. It completes with 37744 distinct states.
+`MC_SoakDiskAdmission` enables all twenty-three corrections with all three benchmark fault kinds. It checks `TypeOK`, the twenty-three invariants above, `HygieneKillFollowsTerm`, `StopPreventsAdmission`, `RefusalRecorded`, and the liveness property `Completes`. It completes with 52528 distinct states.
 
 Constants: floor 4096 MiB, band 4096 MiB, free-space samples `{7000, 8191, 8192, 8193, 16384}`, initial free space 7000 MiB, malformed prefix 16384.
 
@@ -76,6 +77,7 @@ Each step corresponds to one historical defect and one correction constant. The 
 | `ControllerLoss`, `ContainmentResponse` | The driver and the crash monitor die together. Only a service manager that owns the writers' control group stops them (B44, launcher prototype) |
 | `Release` | The launcher verifies the manager placement and the gate identity, then releases the driver. A status query that never returns refuses the launch (B47), and so does an untrusted ancestor of the control directory (B50, launcher prototype) |
 | `CopyEvidence`, `StallCopy`, `SkipCopy` | The driver copies the failure evidence after the attribution. A stalled copy consumes the composed budget, and the corrected driver skips it when the budget is spent (B49) |
+| `SyncDone`, `SyncStall` | The durability sync of the breach record completes or stalls after the record is renamed into place. The corrected driver's stop never waits on it (B51 review) |
 | `Stall`, `WatcherPollStale` | The guardian is alive but its progress record has expired; the watcher reads the record (B20 benchmark, B21 iteration) |
 | `DriverExit`, `ExitTrap` | The driver exits mid-iteration, and the corrected trap stops the writers (B28). Docker may reject the stop. The corrected trap then records a failure and a refusal (B31) |
 | `MonitorObservesExit` | The trap's exit handling leaves a marker, and the crash monitor reads it before it acts (B39) |
@@ -111,9 +113,10 @@ Each step corresponds to one historical defect and one correction constant. The 
 | `ManagedContainment` | A service manager kills the owned writers' control group when both controllers die. The launcher prototype provides it, the direct launch does not, and B44 stays open on the source | `MC_SoakDiskGuardian_unmanaged_pre_fix` | `ControllerLossStopsOwnedWriters` |
 | `VerifyBeforeRelease` | The launcher starts a trusted gate, verifies the manager placement and the gate identity, and only then releases the driver. The pre-fix launcher started the driver before its status query returned (B47, launcher prototype) | `MC_SoakDiskGuardian_start_first_pre_fix` | `UnavailableQueryPreventsRelease` |
 | `ComposedDeadline` | The driver's whole emergency response after a breach runs under one composed budget, `SOAK_EMERGENCY_DEADLINE_SECONDS`. A stalled evidence copy is skipped when the budget is spent, and the summary still publishes. The pre-fix driver had no bound on the copy (B49) | `MC_SoakDiskGuardian_unbounded_pre_fix` | `ResponseWithinDeadline` |
-| `ValidateAncestors` | The launcher refuses work when any ancestor of its control directory is not a root-owned, unwritable directory, before it creates the directory or starts the manager. The pre-fix launcher checked only the immediate parent (B50, launcher prototype) | `MC_SoakDiskGuardian_parent_only_pre_fix` | `UntrustedControlPreventsRelease` |
+| `ValidateAncestors` | The launcher refuses work when any ancestor of its control directory is not a root-owned, unwritable directory. The check runs before it creates the directory or starts the manager. The pre-fix launcher checked only the immediate parent (B50, launcher prototype) | `MC_SoakDiskGuardian_parent_only_pre_fix` | `UntrustedControlPreventsRelease` |
+| `IndependentStop` | The breach record is renamed into place first, and its durability sync runs under a bound that the writer stop never waits on. A stalled sync records an unconfirmed result. The first B51 correction synced inside the stop path, and a stalled sync wedged the stop (B51 review) | `MC_SoakDiskGuardian_blocking_pre_fix` | `ShutdownIndependentOfSync` |
 
-`MC_SoakDiskGuardian` enables all twenty-two corrections. It also checks `TimedOutSampleRejected`, `PriorFailuresPreserved`, `KillFollowsTerm`, and the conditional theorem below. It completes with 73740 distinct states.
+`MC_SoakDiskGuardian` enables all twenty-three corrections. It also checks `TimedOutSampleRejected`, `PriorFailuresPreserved`, `KillFollowsTerm`, and the conditional theorem below. It completes with 217788 distinct states.
 
 ### Conditional no-overrun theorem
 

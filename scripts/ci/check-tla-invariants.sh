@@ -181,7 +181,8 @@ NEGATIVE_CONTROLS=(
     soak_disk/MC_SoakDiskAdmission_unchecked_placement_pre_fix:UnverifiedPlacementPreventsAdmission
     soak_disk/MC_SoakDiskAdmission_pathname_pre_fix:UntrustedRecordPreventsAdmission
     soak_disk/MC_SoakDiskAdmission_attribute_first_pre_fix:AttributionRequiresRecord
-    soak_disk/MC_SoakDiskAdmission_in_place_pre_fix:VisibleImpliesDurable
+    soak_disk/MC_SoakDiskAdmission_in_place_pre_fix:VisibleImpliesComplete
+    soak_disk/MC_SoakDiskAdmission_unchecked_producer_pre_fix:FailedProducerPreservesRecord
     soak_disk/MC_SoakDiskGuardian_unwatched_pre_fix:DeadGuardianRequiresInterrupt
     soak_disk/MC_SoakDiskGuardian_unavailable_sample_pre_fix:InvalidSampleRequiresInterrupt
     soak_disk/MC_SoakDiskGuardian_unbounded_probe_pre_fix:ProbeWithinDeadline
@@ -206,6 +207,7 @@ NEGATIVE_CONTROLS=(
     soak_disk/MC_SoakDiskGuardian_start_first_pre_fix:UnavailableQueryPreventsRelease
     soak_disk/MC_SoakDiskGuardian_unbounded_pre_fix:ResponseWithinDeadline
     soak_disk/MC_SoakDiskGuardian_parent_only_pre_fix:UntrustedControlPreventsRelease
+    soak_disk/MC_SoakDiskGuardian_blocking_pre_fix:ShutdownIndependentOfSync
     soak_disk/MC_SoakStorageBudget_uncapped_blocks_pre_fix:WithinBudget
     soak_disk/MC_SoakStorageBudget_uncapped_logs_pre_fix:WithinBudget
     soak_disk/MC_SoakStorageBudget_uncapped_history_pre_fix:WithinBudget

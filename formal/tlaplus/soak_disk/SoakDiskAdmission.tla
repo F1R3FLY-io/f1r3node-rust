@@ -1,7 +1,7 @@
 -------------------------- MODULE SoakDiskAdmission --------------------------
 (* One iteration-boundary disk admission decision in                         *)
 (* scripts/run-merge-recovery-soak.sh: probe, optional hygiene, re-probe,    *)
-(* decide, after the opening benchmark on the first segment. Twenty-two      *)
+(* decide, after the opening benchmark on the first segment. Twenty-three    *)
 (* Boolean constants switch the corrections on and off so that each pre-fix  *)
 (* configuration reproduces one historical defect; BenchmarkFaults selects   *)
 (* the fault kinds an admitted benchmark can suffer.                         *)
@@ -29,7 +29,8 @@ CONSTANTS FloorMiB, BandMiB, FreeSamples, InitialFreeMiB, MalformedPrefixMiB,
           VerifyPlacement, \* required containment admits work only when the trusted run-domain record matches the driver's own placement (B45)
           BindIdentity, \* the record is trusted only when every path component was opened from the root, root-owned, unwritable, and within the size bound (B46)
           RecordBeforeAttribution, \* the driver writes the breach record and the early-exit record before any disk usage attribution starts (B48)
-          AtomicPublish, \* every minimal record is synced under a temporary name, renamed into place, and followed by a directory sync (B51)
+          AtomicPublish, \* every minimal record is written to a temporary name and renamed into place, so a reader sees it complete or not at all (B51)
+          RequireProducerSuccess, \* a failed producer command discards its output and keeps the previous record (B51 review)
           BenchmarkFaults \* fault kinds an admitted benchmark can suffer: "breach", "death"
 
 ASSUME /\ FloorMiB \in Nat \ {0}
@@ -42,7 +43,8 @@ ASSUME /\ FloorMiB \in Nat \ {0}
            CheckProgress, EnforceHygieneDeadline, CheckRange, PreserveUnowned,
            EnforceCleanupFailures, PreserveDockerResources, RememberInFlight,
            RememberBenchmark, WatchMonitor, CheckMonitorAlive, VerifyPlacement,
-           BindIdentity, RecordBeforeAttribution, AtomicPublish} \subseteq BOOLEAN
+           BindIdentity, RecordBeforeAttribution, AtomicPublish,
+           RequireProducerSuccess} \subseteq BOOLEAN
        /\ BenchmarkFaults \subseteq {"breach", "death", "monitor-death"}
 
 Threshold == IF RequireBand THEN FloorMiB + BandMiB ELSE FloorMiB
@@ -91,7 +93,8 @@ VARIABLES phase, free, raw, sample, guardian, guardianAlive, admitted,
           recordMatches, \* the launcher's run-domain record matches the driver's cgroup and uid (B45)
           recordTrusted, \* the record the driver opened sits below a root-owned, unwritable chain and ends within its bound (B46)
           attributionStarted, \* the disk usage attribution has started after a disk breach (B48)
-          recordVisible \* what a reader sees under the record's final name: none, partial, or full (B51)
+          recordVisible, \* what a reader sees under the record's final name: none, partial, empty, or full (B51)
+          producerFailed \* the command that produces the record's content failed (B51 review)
 
 HygieneVars == <<hygieneStalled, hygieneElapsed, hygieneTermSent, hygieneKillSent>>
 
@@ -104,7 +107,7 @@ DriverVars == <<phase, free, raw, sample, guardian, guardianAlive, admitted,
           interrupted, benchmarkInterrupted, monitorAlive, benchmarkMonitorAlive, recordMatches,
           recordTrusted>>
 
-vars == <<DriverVars, attributionStarted, recordVisible>>
+vars == <<DriverVars, attributionStarted, recordVisible, producerFailed>>
 
 Init ==
     /\ phase = "config"
@@ -121,6 +124,7 @@ Init ==
     /\ recordTrusted \in BOOLEAN
     /\ attributionStarted = FALSE
     /\ recordVisible = "none"
+    /\ producerFailed = FALSE
     /\ free = InitialFreeMiB
     /\ raw = MissingRaw
     /\ sample = Unknown
@@ -376,7 +380,7 @@ Admit ==
 
 \* The guardian marker can appear at any point before the workload starts.
 GuardianTrip ==
-    /\ phase \notin {"running", "stopped", "publishing", "done"}
+    /\ phase \notin {"running", "stopped", "publishing", "publish-failed", "done"}
     /\ ~guardian
     /\ guardian' = TRUE
     /\ UNCHANGED <<phase, free, raw, sample, guardianAlive, admitted,
@@ -386,7 +390,7 @@ GuardianTrip ==
 \* check and the workload start are one step here, as in the B14 model; the
 \* production window between them is not closed by this correction.
 GuardianCrash ==
-    /\ phase \notin {"admit", "running", "stopped", "publishing", "done"}
+    /\ phase \notin {"admit", "running", "stopped", "publishing", "publish-failed", "done"}
     /\ guardianAlive
     /\ guardianAlive' = FALSE
     /\ UNCHANGED <<phase, free, raw, sample, guardian, admitted,
@@ -396,7 +400,7 @@ GuardianCrash ==
 \* corrected driver checks it before the benchmark and before each iteration.
 \* The pre-fix driver checked it only at startup and mid-work.
 MonitorCrash ==
-    /\ phase \notin {"admit", "running", "stopped", "publishing", "done"}
+    /\ phase \notin {"admit", "running", "stopped", "publishing", "publish-failed", "done"}
     /\ monitorAlive
     /\ monitorAlive' = FALSE
     /\ UNCHANGED <<phase, free, raw, sample, guardian, guardianAlive, admitted,
@@ -405,31 +409,43 @@ MonitorCrash ==
 \* The guardian stays alive but stops recording progress (SIGSTOP, a paused
 \* host) at any point up to the admission check, as GuardianCrash does.
 GuardianStall ==
-    /\ phase \notin {"admit", "running", "stopped", "publishing", "done"}
+    /\ phase \notin {"admit", "running", "stopped", "publishing", "publish-failed", "done"}
     /\ guardianFresh
     /\ guardianFresh' = FALSE
     /\ UNCHANGED <<phase, free, raw, sample, guardian, guardianAlive, admitted,
                    admissionRaw, admissionSample, stopReason, evidence>>
 
 \* The refusal records are written in two steps. The corrected driver (B51)
-\* writes each record to a temporary name beside the target, syncs it, renames
-\* it into place, and syncs the directory, so a reader sees the record complete
-\* or not at all. The pre-fix driver wrote in place, and a reader could see an
-\* empty or partial record under its final name.
+\* writes each record to a temporary name beside the target and renames it
+\* into place, so a reader sees the record complete or not at all. The pre-fix
+\* driver wrote in place, and a reader could see a partial record under its
+\* final name. The producer command may fail: the corrected driver (B51 review)
+\* discards its output and keeps the previous record, and the pre-fix driver
+\* published the empty output.
 PublishRefusal ==
     /\ phase = "stopped"
-    /\ recordVisible' = IF AtomicPublish THEN "none" ELSE "partial"
+    /\ \E fails \in BOOLEAN :
+          /\ producerFailed' = fails
+          /\ recordVisible' = IF AtomicPublish THEN "none" ELSE "partial"
     /\ phase' = "publishing"
     /\ UNCHANGED <<free, raw, sample, guardian, guardianAlive, admitted,
                    admissionRaw, admissionSample, stopReason, evidence>>
 
 CompletePublish ==
     /\ phase = "publishing"
-    /\ recordVisible' = "full"
-    /\ evidence' = TRUE
-    /\ phase' = "done"
+    /\ IF ~producerFailed
+          THEN /\ recordVisible' = "full"
+               /\ evidence' = TRUE
+               /\ phase' = "done"
+          ELSE IF RequireProducerSuccess
+          THEN /\ recordVisible' = "none"
+               /\ evidence' = FALSE
+               /\ phase' = "publish-failed"
+          ELSE /\ recordVisible' = "empty"
+               /\ evidence' = TRUE
+               /\ phase' = "done"
     /\ UNCHANGED <<free, raw, sample, guardian, guardianAlive, admitted,
-                   admissionRaw, admissionSample, stopReason>>
+                   admissionRaw, admissionSample, stopReason, producerFailed>>
 
 \* After a disk breach the driver attributes the usage with df, du, and
 \* docker system df. The corrected driver (B48) writes the breach record and
@@ -441,7 +457,7 @@ Attribute ==
     /\ ~attributionStarted
     /\ ~RecordBeforeAttribution \/ evidence
     /\ attributionStarted' = TRUE
-    /\ UNCHANGED <<DriverVars, recordVisible>>
+    /\ UNCHANGED <<DriverVars, recordVisible, producerFailed>>
 
 FrozenAfterBenchmark == <<retained, benchmark, benchmarkSample, benchmarkFault,
                           benchmarkObserved, benchmarkCancelled,
@@ -451,33 +467,33 @@ FrozenAfterBenchmark == <<retained, benchmark, benchmarkSample, benchmarkFault,
 
 HygieneOutcome == <<sessionPresent, cleanupFailed, dockerPresent>>
 
-Next == (Benchmark /\ UNCHANGED <<HygieneVars, attributionStarted, recordVisible>>)
+Next == (Benchmark /\ UNCHANGED <<HygieneVars, attributionStarted, recordVisible, producerFailed>>)
         \/ (/\ Admit
-            /\ UNCHANGED <<FrozenAfterBenchmark, attributionStarted, recordVisible>>
+            /\ UNCHANGED <<FrozenAfterBenchmark, attributionStarted, recordVisible, producerFailed>>
             /\ UNCHANGED <<guardianFresh, monitorAlive, HygieneVars, HygieneOutcome>>)
         \/ (/\ GuardianStall
-            /\ UNCHANGED <<FrozenAfterBenchmark, attributionStarted, recordVisible>>
+            /\ UNCHANGED <<FrozenAfterBenchmark, attributionStarted, recordVisible, producerFailed>>
             /\ UNCHANGED <<admissionFresh, monitorAlive, HygieneVars, HygieneOutcome>>)
         \/ (/\ HygieneStall \/ HygieneTick
-            /\ UNCHANGED <<FrozenAfterBenchmark, attributionStarted, recordVisible>>
+            /\ UNCHANGED <<FrozenAfterBenchmark, attributionStarted, recordVisible, producerFailed>>
             /\ UNCHANGED <<guardianFresh, admissionFresh, monitorAlive, HygieneOutcome>>)
         \/ (/\ HygieneReturns
-            /\ UNCHANGED <<FrozenAfterBenchmark, attributionStarted, recordVisible>>
+            /\ UNCHANGED <<FrozenAfterBenchmark, attributionStarted, recordVisible, producerFailed>>
             /\ UNCHANGED <<guardianFresh, admissionFresh, monitorAlive>>)
         \/ (/\ Hygiene
-            /\ UNCHANGED <<FrozenAfterBenchmark, attributionStarted, recordVisible>>
+            /\ UNCHANGED <<FrozenAfterBenchmark, attributionStarted, recordVisible, producerFailed>>
             /\ UNCHANGED <<guardianFresh, admissionFresh, monitorAlive, HygieneVars>>)
         \/ (/\ ValidateSettings
                \/ CheckGuardian \/ ProbeBoundary \/ DecideHygiene
                \/ ProbeAfterHygiene \/ DecideAfterHygiene \/ CheckAdmission
                \/ GuardianTrip \/ GuardianCrash
-            /\ UNCHANGED <<FrozenAfterBenchmark, attributionStarted, recordVisible>>
+            /\ UNCHANGED <<FrozenAfterBenchmark, attributionStarted, recordVisible, producerFailed>>
             /\ UNCHANGED <<guardianFresh, admissionFresh, monitorAlive, HygieneVars, HygieneOutcome>>)
         \/ (/\ PublishRefusal \/ CompletePublish
             /\ UNCHANGED <<FrozenAfterBenchmark, attributionStarted>>
             /\ UNCHANGED <<guardianFresh, admissionFresh, monitorAlive, HygieneVars, HygieneOutcome>>)
         \/ (/\ MonitorCrash
-            /\ UNCHANGED <<FrozenAfterBenchmark, attributionStarted, recordVisible>>
+            /\ UNCHANGED <<FrozenAfterBenchmark, attributionStarted, recordVisible, producerFailed>>
             /\ UNCHANGED <<guardianFresh, admissionFresh, HygieneVars, HygieneOutcome>>)
         \/ Attribute
 
@@ -487,7 +503,7 @@ TypeOK ==
     /\ phase \in {"config", "rejected", "benchmark", "guard", "probe",
                   "boundary-decide", "hygiene", "hygiene-stalled", "post-guard",
                   "post-probe", "post-decide", "admission-check", "admit",
-                  "running", "stopped", "publishing", "done"}
+                  "running", "stopped", "publishing", "publish-failed", "done"}
     /\ free \in FreeSamples
     /\ raw \in RawSamples
     /\ sample \in ParsedSamples
@@ -524,7 +540,8 @@ TypeOK ==
     /\ recordMatches \in BOOLEAN
     /\ recordTrusted \in BOOLEAN
     /\ attributionStarted \in BOOLEAN
-    /\ recordVisible \in {"none", "partial", "full"}
+    /\ recordVisible \in {"none", "partial", "empty", "full"}
+    /\ producerFailed \in BOOLEAN
 
 AdmissionRequiresBand ==
     admitted /\ admissionSample.known => admissionSample.mib >= FloorMiB + BandMiB
@@ -547,7 +564,8 @@ MonitorDeathPreventsAdmission ==
 UnverifiedPlacementPreventsAdmission == ~recordMatches => ~admitted /\ ~benchmark
 UntrustedRecordPreventsAdmission == ~recordTrusted => ~admitted /\ ~benchmark
 AttributionRequiresRecord == attributionStarted => evidence
-VisibleImpliesDurable == recordVisible \in {"none", "full"}
+VisibleImpliesComplete == recordVisible # "partial"
+FailedProducerPreservesRecord == recordVisible # "empty"
 StaleProgressPreventsAdmission ==
     /\ admitted => admissionFresh
     /\ benchmark => benchmarkFresh
@@ -561,5 +579,5 @@ BenchmarkCrashRequiresRefusal == benchmarkInterrupted => ~admitted /\ ~benchmark
 HygieneKillFollowsTerm == hygieneKillSent => hygieneTermSent
 StopPreventsAdmission == stopReason # "none" => ~admitted
 RefusalRecorded == phase = "done" => evidence /\ stopReason # "none" /\ ~admitted
-Completes == <>(admitted \/ (phase = "done" /\ evidence) \/ phase = "rejected")
+Completes == <>(admitted \/ (phase = "done" /\ evidence) \/ phase \in {"rejected", "publish-failed"})
 =============================================================================

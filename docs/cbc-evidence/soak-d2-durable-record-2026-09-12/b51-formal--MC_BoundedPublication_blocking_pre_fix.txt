@@ -1,0 +1,36 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 16 and seed -4482708722985196004 with 2 workers on 20 cores with 27305MB heap and 64MB offheap memory (Linux 6.17.0-1032-nvidia aarch64, Private Build 1.8.0_502 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file [WORKSPACE_ROOT]/formal/tlaplus/soak_disk/MC_BoundedPublication_blocking_pre_fix.tla
+Parsing file [WORKSPACE_ROOT]/formal/tlaplus/soak_disk/BoundedPublication.tla
+Semantic processing of module BoundedPublication
+Semantic processing of module MC_BoundedPublication_blocking_pre_fix
+Starting... (2026-09-12 20:45:12)
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-09-12 20:45:12.
+Error: Invariant ShutdownIndependentOfSync is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ sync = "pending"
+/\ confirmed = FALSE
+/\ visible = FALSE
+/\ stopped = FALSE
+/\ wedged = FALSE
+
+State 2: <MakeVisible line 15, col 5 to line 17, col 53 of module BoundedPublication>
+/\ sync = "pending"
+/\ confirmed = FALSE
+/\ visible = TRUE
+/\ stopped = FALSE
+/\ wedged = FALSE
+
+State 3: <SyncStall line 26, col 5 to line 30, col 48 of module BoundedPublication>
+/\ sync = "stalled"
+/\ confirmed = FALSE
+/\ visible = TRUE
+/\ stopped = FALSE
+/\ wedged = TRUE
+
+8 states generated, 7 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 5.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 2 and the 95th percentile is 2).
+Finished in 01s at (2026-09-12 20:45:12)
