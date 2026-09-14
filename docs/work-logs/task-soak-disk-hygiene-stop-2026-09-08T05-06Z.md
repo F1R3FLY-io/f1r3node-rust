@@ -1316,3 +1316,12 @@ The classifier, routing, driver, and summary regressions pass.
 Every emergency sub-fixture passes in an individual run, because the full single-invocation suite exceeds this host's memory.
 The user approved the removal of fourteen stale test containers to free memory for the individual runs.
 Producer failure remains the native-admission session's cycle, and `MetricSummary` remains their telemetry work.
+
+### Production emergency deadline set, 2026-09-13
+
+This session set `SOAK_EMERGENCY_DEADLINE_SECONDS` to 10 in the soak workflow while the native-admission session optimizes disk usage.
+The three incident runners vanished 18, 20, and 23 seconds after the guardian stamp.
+The 60-second driver default is longer than that window, so the composed emergency response would be truncated and lose evidence.
+A 10-second budget fits inside the 18-second minimum with margin for the final upload.
+The [reserve argument](../plans/soak-reserve-argument-2026-09-12.md) records the derivation and folds in the R1 bounded publication.
+This session added no evidence package, to avoid growing the branch storage during the parallel optimization.

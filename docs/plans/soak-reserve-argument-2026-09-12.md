@@ -58,17 +58,29 @@ It covers the output drain, the writer stop, each evidence copy, the diagnostics
 The iteration termination wait is at most fifteen seconds and never exceeds the remaining budget.
 Each evidence copy and the summary writer run under the remaining budget in their own sessions.
 
+## The production deadline
+
+The composed emergency response must publish its evidence before the runner disappears.
+The three incident runners vanished 18, 20, and 23 seconds after the guardian stamp.
+The guardian stamp marks the breach decision, so the response and publication budget must fit inside that window.
+The default deadline of 60 seconds is far longer than the 18-second minimum, so the default truncates the response and loses evidence.
+
+The production workflow must set `SOAK_EMERGENCY_DEADLINE_SECONDS` to a value below the observed minimum, with margin.
+A budget of 10 seconds leaves about 8 seconds below the 18-second minimum for the final upload.
+The detection latency precedes the stamp and does not consume this window.
+The bounded reap and the summary writer keep their own minimums inside this budget.
+A short budget still publishes the minimal record and the fallback summary.
+
 ## The publication dependency
 
-The bound `T <= 5*N + P + D` holds only after the record publication runs inside the deadline.
-The current `publish_record` helper calls `sync`, `mv`, and a directory `sync` without the remaining budget.
-The guardian waits for publication before it stops the writers, and the iteration controller waits for two publications before it sends the termination signal.
-A stalled storage sync can therefore delay the stop and exceed the deadline.
+The bound `T <= 5*N + P + D` holds once the record publication runs inside the deadline.
+Review finding R1 corrected the earlier `publish_record` helper, which synced each record before the rename and inside the stop path.
+The corrected driver renames each record into place first, then runs durability through a bounded reap.
+The reap never blocks the writer stop.
+A stalled sync records an explicit unconfirmed result rather than confirmed termination.
 
-This gap is review finding R1 against the B51 commit.
-The native-admission session owns the correction.
-Until publication runs inside the composed deadline, the T bound is provisional on that path.
-A timeout alone must not become termination confirmation, so the driver must retain an explicit unconfirmed result when publication cannot complete.
+The [bounded publication package](../cbc-evidence/soak-d2-durable-record-2026-09-12/README.md) records this correction.
+With that correction, the response and publication part of T stays inside the composed deadline.
 
 ## The constraint on the growth term
 
