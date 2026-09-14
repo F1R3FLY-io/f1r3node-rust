@@ -299,15 +299,15 @@ pub struct HeartbeatConf {
         default = "default_self_propose_cooldown"
     )]
     pub self_propose_cooldown: Duration,
-    /// Minimum age of LFB/frontier before stale-recovery, leader-recovery,
-    /// and pending-deploy backstop are allowed to fire. Debounces empty-block
-    /// churn when the cluster is healthy.
+    /// Explicit override for the stale-recovery pacing interval; `None`
+    /// derives it from `check_interval`. Read it only through
+    /// [`HeartbeatConf::resolved_stale_recovery_min_interval`].
     #[serde(
         rename = "stale-recovery-min-interval",
-        deserialize_with = "de_duration",
-        default = "default_stale_recovery_min_interval"
+        deserialize_with = "de_opt_duration",
+        default
     )]
-    pub stale_recovery_min_interval: Duration,
+    pub stale_recovery_min_interval: Option<Duration>,
     /// Time without a new finalized block before one additional, deterministic
     /// convergence proposal is allowed. This does not delay or replace the
     /// routine stale-LFB recovery governed by `max_lfb_age`.
@@ -338,7 +338,7 @@ impl Default for HeartbeatConf {
             check_interval: Duration::from_secs(5),
             max_lfb_age: Duration::from_secs(5),
             self_propose_cooldown: default_self_propose_cooldown(),
-            stale_recovery_min_interval: default_stale_recovery_min_interval(),
+            stale_recovery_min_interval: None,
             finality_progress_timeout: default_finality_progress_timeout(),
             deploy_finalization_grace: default_deploy_finalization_grace(),
             advanced: HeartbeatAdvancedConf::default(),
@@ -346,16 +346,22 @@ impl Default for HeartbeatConf {
     }
 }
 
+impl HeartbeatConf {
+    /// The pacing interval for stale-LFB recovery, the pending-deploy
+    /// backstop, and the empty-frontier cap exemption. Derived as 1.5 ticks:
+    /// the gate is evaluated on heartbeat ticks, so this fires on the second
+    /// tick after a validator's own block, with half a tick of margin against
+    /// timing jitter in both directions.
+    pub fn resolved_stale_recovery_min_interval(&self) -> Duration {
+        self.stale_recovery_min_interval
+            .unwrap_or(self.check_interval * 3 / 2)
+    }
+}
+
 // Code fallbacks MUST equal the shipped defaults.conf values (pinned by the
 // embedded-defaults test): a sparse operator conf omitting a key must get
 // the same behavior every tested deployment runs, not an untested stranger.
 fn default_self_propose_cooldown() -> Duration { Duration::from_secs(3) }
-
-// Must exceed the heartbeat check-interval: the empty-frontier cap's
-// per-validator exemption keys on this interval, and at or below the tick
-// every validator is "idle for a full interval" at every tick, so the cap
-// never binds.
-fn default_stale_recovery_min_interval() -> Duration { Duration::from_secs(15) }
 
 fn default_finality_progress_timeout() -> Duration { Duration::from_secs(30) }
 
@@ -461,6 +467,11 @@ where D: serde::Deserializer<'de> {
             Ok(Duration::from_secs_f64(f))
         }
     }
+}
+
+fn de_opt_duration<'de, D>(deserializer: D) -> Result<Option<Duration>, D::Error>
+where D: serde::Deserializer<'de> {
+    de_duration(deserializer).map(Some)
 }
 
 /// Reject negative `i64` values at deserialization time. The lag-cap
