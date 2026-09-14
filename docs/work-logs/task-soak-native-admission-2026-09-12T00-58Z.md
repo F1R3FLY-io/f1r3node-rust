@@ -578,3 +578,21 @@ The peer query stops after a broker timeout.
 That result does not establish peer absence or exclusive ownership.
 Shared-file ownership remains unchanged.
 The private gateway, creation fence, and remaining telemetry corrections remain incomplete.
+
+### Storage scope and cleanup authorization, 2026-09-14
+
+The user assigned storage completion and cleanup to this session.
+The other agent owns D2 and B44.
+This session will not change the driver, containment implementation, workflow deadlines, shared gates, or claim inventory.
+
+The storage work uses `scripts/verification-storage.py` and `scripts/cargo-low-disk.sh`.
+The plan requires real source capture and reuse, archive coverage checks, and focused regression tests.
+The source snapshot must exclude the nested chart cache.
+Required source bytes must remain identical after capture.
+Each removal must retain its authorization, scope, archive reference when applicable, and measured result.
+
+The cleanup candidates are the inactive incremental cache, historical extractions, and five duplicated chart-cache copies.
+Cache removal requires the Cargo build lock and a fresh writer check.
+Evidence removal requires verified archive coverage and a retrieval test.
+Original manifests and attempt records must remain unchanged.
+This work does not authorize a commit, push, or acceptance soak.

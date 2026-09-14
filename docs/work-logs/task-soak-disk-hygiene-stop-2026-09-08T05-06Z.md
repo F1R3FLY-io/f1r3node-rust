@@ -1325,3 +1325,12 @@ The 60-second driver default is longer than that window, so the composed emergen
 A 10-second budget fits inside the 18-second minimum with margin for the final upload.
 The [reserve argument](../plans/soak-reserve-argument-2026-09-12.md) records the derivation and folds in the R1 bounded publication.
 This session added no evidence package, to avoid growing the branch storage during the parallel optimization.
+
+### D3 reserve bound model, 2026-09-14
+
+This session added a `ReserveBound` model while the native-admission session finishes the storage and admission-check cleanup.
+The model formalizes the reserve argument: a bounded emergency deadline holds the operating reserve, and an unbounded response exhausts it.
+The bounded configuration passes, and the unbounded control violates `OperatingReserveHeld` with TLC exit 12.
+The model stays unregistered in the formal gate, because the admission cleanup edits the same gate lists.
+The integration owner registers it once that cleanup settles.
+This session added no evidence package and no driver change, to avoid conflict with the parallel work.
