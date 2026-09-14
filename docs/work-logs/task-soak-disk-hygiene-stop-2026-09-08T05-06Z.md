@@ -1368,3 +1368,52 @@ Complete ownership, launch-time coverage, process races, resource bounds, and in
 Storage cleanup is complete, and it does not own shared gate registration or production D2 corrections.
 This review changes documentation only and leaves runtime code, formal results, and claim statuses unchanged.
 The inventory digest update binds revised documentation and is not a test rerun or claim discharge.
+
+### D2/B44 assignment to another machine, 2026-09-14
+
+The user assigned production containment and its real-Docker verification to another agent on a different machine.
+The agent and machine identities remain to be recorded.
+The assignment is pending execution, not complete or verified.
+Local agents must not duplicate this step.
+The receiving agent must coordinate shared driver, launcher, gate, and inventory edits with the branch integration agent.
+
+This assignment supersedes the earlier local allocation of the D2/B44 containment step.
+It does not transfer unrelated work or authorize an acceptance soak.
+The receiving agent must confirm the diagnostic authorization before privileged execution.
+This session will not provision a runner or execute the remote tests.
+
+The [private Docker specification](../plans/soak-private-docker-containment-2026-09-12.md) and [corrected ownership review](../plans/soak-d2-ownership-review-2026-09-14.md) define the starting contract.
+The earlier private-engine probes establish selected capabilities only.
+They do not complete public-driver containment, permanent creation closure, or runner-survival verification.
+
+Required completion evidence:
+
+- [ ] Record the receiving agent, machine, exact source revisions, source digests, and runtime tool identities.
+- [ ] Confirm an approved disposable guarded runner with exclusive use, resource limits, expiry, and an independent teardown path.
+- [ ] Use a real private Docker daemon isolated from unrelated resources.
+- [ ] Keep trusted management and observation outside the workload domain and independent of both controllers.
+- [ ] Complete launch mediation and accounting for accepted, deferred, and retained-connection requests.
+- [ ] Exercise the public driver against the specification's PD01–PD12 cases, including combined controller loss and failed stops.
+- [ ] Verify effective out-of-memory preferences at launch and restart without treating those preferences as a survival guarantee.
+- [ ] Preserve the required Docker and Compose behavior, including restart, exec, root use, mounts, sysctls, and host-loopback access.
+- [ ] Preserve unrelated processes and resources throughout the tests.
+- [ ] Verify permanent creation closure after shutdown begins.
+- [ ] Confirm owned-writer termination independently before fixture cleanup.
+- [ ] Retain production counterexamples, applicable formal counterexamples, and unchanged-fixture GREEN results for each correction.
+- [ ] Retrieve and verify the source-bound evidence, including failed and incomplete attempts.
+- [ ] Observe runner termination and retain the teardown record.
+- [ ] Return the results, source identities, remaining limits, and integration instructions to the branch integration agent.
+
+The workload, three harness pins, protection controls, and 45-second finalization wait must remain unchanged.
+Privileged tests require the approved infrastructure, not an ordinary developer host or a shared Docker daemon.
+Complete D2 still depends on the remaining emergency-response, durability, and D3 reserve obligations.
+The inventory remains pending until the complete evidence requirements pass.
+
+### F-track preparation: C5 resolution and F1 methodology, 2026-09-14
+
+This session prepared two finalization-track documents in parallel while the containment and Docker work continues on another machine.
+The [C5 conflict resolution](../plans/soak-c5-conflict-resolution-2026-09-14.md) resolves the unreadable-history conflict.
+A certified index watermark records absence when the ancestry is readable, so its Valid verdict is a sound durable proof, not a live read.
+The proposal splits C5 into uncertified equivalence and certified soundness, which keeps the equality where the paths share information.
+The [F1 finalization diagnostic methodology](../plans/soak-f1-finalization-diagnostic-2026-09-14.md) specifies the stage attribution and the input-size dimensions for the finalization bound.
+Both documents are maintainer-facing proposals, add no code change, and do not touch the soak driver or the gate lists.

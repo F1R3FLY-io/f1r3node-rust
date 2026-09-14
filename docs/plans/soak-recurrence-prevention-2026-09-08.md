@@ -78,6 +78,8 @@ However, `repeat_deploy_certified_index_engagement_skips_the_scan` expects refer
 
 This conflict is not evidence of the measured performance cause. It must nevertheless be resolved before claim discharge, without silently weakening the claim.
 
+The [C5 conflict resolution](soak-c5-conflict-resolution-2026-09-14.md) proposes two precise sub-claims. They keep the equality where the paths share information and add the certified-skip soundness the blanket form omitted.
+
 ### 3. A green workflow did not mean all formal checks ran
 
 The continuous integration (CI) workflow does not run every formal job on every event.
@@ -529,6 +531,8 @@ If telemetry remains insufficient, add narrowly scoped instrumentation first. Do
 
 **Exit evidence:** A reproducible workload shape and a justified operation-bound obligation.
 
+The [finalization diagnostic methodology](soak-f1-finalization-diagnostic-2026-09-14.md) specifies the stage attribution, the input-size dimensions, and how the run separates an algorithmic cause from a backlog and repeated work.
+
 ### Gate F2: Perform the production and formal RED/GREEN repair
 
 **Owner:** The Casper maintainer.
@@ -551,7 +555,7 @@ Use inductive verification for any claimed unbounded relation. Label finite mode
 
 **Owner:** The Casper maintainer, with protocol review for the availability contract.
 
-1. Resolve C5's unreadable-history conflict before claiming full carrier equivalence.
+1. Resolve C5's unreadable-history conflict before claiming full carrier equivalence. See the [C5 conflict resolution](soak-c5-conflict-resolution-2026-09-14.md).
 2. Compare forced-index and forced-reference paths on identical generated DAGs.
 3. Verify validation results, post-state roots, and rejected-deploy records where the correction affects them.
 4. Exercise valid, invalid, and approved carriers across forks and expiration boundaries.
