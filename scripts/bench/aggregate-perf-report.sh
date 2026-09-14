@@ -45,9 +45,9 @@ SOAK_STATUS="${SOAK_STATUS:-complete}"
 case "$SOAK_STATUS" in
 complete | in_progress) ;;
 *)
-	echo "SOAK_STATUS must be 'complete' or 'in_progress'" >&2
-	exit 2
-	;;
+  echo "SOAK_STATUS must be 'complete' or 'in_progress'" >&2
+  exit 2
+  ;;
 esac
 # Belt and braces: the verdict is overridden for a checkpoint anyway, but
 # dropping the baseline here means none of the comparison branches can fire
@@ -57,15 +57,15 @@ RUN_ID="${RUN_ID:-unknown}"
 RUN_ATTEMPT="${RUN_ATTEMPT:-1}"
 SOAK_KIND="${SOAK_KIND:-unknown}"
 if ! [[ "$RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]; then
-	echo "RUN_ATTEMPT must be a positive integer" >&2
-	exit 2
+  echo "RUN_ATTEMPT must be a positive integer" >&2
+  exit 2
 fi
 case "$SOAK_KIND" in
 daily | weekend | unknown) ;;
 *)
-	echo "SOAK_KIND must be 'daily', 'weekend', or 'unknown'" >&2
-	exit 2
-	;;
+  echo "SOAK_KIND must be 'daily', 'weekend', or 'unknown'" >&2
+  exit 2
+  ;;
 esac
 DURATION_SECONDS="${DURATION_SECONDS:-0}"
 # Restart provenance. A run restarted mid-window covers only part of its
@@ -76,24 +76,24 @@ DURATION_SECONDS="${DURATION_SECONDS:-0}"
 # the requested duration, which is exact for non-restarted runs.
 RETRY_ATTEMPT="${RETRY_ATTEMPT:-0}"
 if ! [[ "$RETRY_ATTEMPT" =~ ^[0-9]+$ ]]; then
-	echo "RETRY_ATTEMPT must be a non-negative integer" >&2
-	exit 2
+  echo "RETRY_ATTEMPT must be a non-negative integer" >&2
+  exit 2
 fi
 WINDOW_SECONDS="${WINDOW_SECONDS:-0}"
 if ! [[ "$WINDOW_SECONDS" =~ ^[0-9]+$ ]]; then
-	echo "WINDOW_SECONDS must be a non-negative integer" >&2
-	exit 2
+  echo "WINDOW_SECONDS must be a non-negative integer" >&2
+  exit 2
 fi
 DASHBOARD_URL="${DASHBOARD_URL:-https://f1r3fly-io.github.io/f1r3node-rust/}"
 
 command -v jq >/dev/null || {
-	echo "jq not found" >&2
-	exit 2
+  echo "jq not found" >&2
+  exit 2
 }
 mkdir -p "$OUT_DIR"
 
 valid_checkpoint_summary() {
-	jq -e '
+  jq -e '
     type == "object"
     and (.target_ref | type) == "string"
     and (.target_sha | type) == "string"
@@ -105,9 +105,9 @@ valid_checkpoint_summary() {
 }
 
 recover_checkpoint_summary() {
-	local state="$SOAK_DIR/.soak-checkpoint-state.json"
-	local finished_at
-	jq -e '
+  local state="$SOAK_DIR/.soak-checkpoint-state.json"
+  local finished_at
+  jq -e '
     type == "object"
     and (.target_ref | type) == "string"
     and (.target_sha | type) == "string"
@@ -121,71 +121,78 @@ recover_checkpoint_summary() {
     and (.bench_segments | type) == "number" and .bench_segments >= 0
     and (.bench_failures | type) == "number" and .bench_failures >= 0
   ' "$state" >/dev/null 2>&1 || return 1
-	finished_at="$(date +%s)"
-	SOAK_OUTPUT_DIR="$SOAK_DIR" \
-		SOAK_METRICS_REGISTRY="$SCRIPT_DIR/soak-metrics.json" \
-		SOAK_TARGET_REF="$(jq -r '.target_ref' "$state")" \
-		SOAK_TARGET_SHA="$(jq -r '.target_sha' "$state")" \
-		SOAK_TRIGGER_SOURCE="$(jq -r '.trigger_source' "$state")" \
-		SOAK_SLOT_DELAY_SECONDS="$(jq -r '.slot_delay_seconds' "$state")" \
-		SOAK_VERSION="$(jq -r '.version' "$state")" \
-		SOAK_STARTED_AT="$(jq -r '.started_at' "$state")" \
-		SOAK_FINISHED_AT="$finished_at" \
-		SOAK_DURATION_SECONDS="$(jq -r '.requested_seconds' "$state")" \
-		SOAK_ITERATIONS="$(jq -r '.iterations' "$state")" \
-		SOAK_FAILURES="$(jq -r '.failures' "$state")" \
-		SOAK_BENCH_SEGMENTS="$(jq -r '.bench_segments' "$state")" \
-		SOAK_BENCH_FAILURES="$(jq -r '.bench_failures' "$state")" \
-		"$SCRIPT_DIR/write-soak-summary.sh"
-	valid_checkpoint_summary
+  finished_at="$(date +%s)"
+  SOAK_OUTPUT_DIR="$SOAK_DIR" \
+    SOAK_METRICS_REGISTRY="$SCRIPT_DIR/soak-metrics.json" \
+    SOAK_TARGET_REF="$(jq -r '.target_ref' "$state")" \
+    SOAK_TARGET_SHA="$(jq -r '.target_sha' "$state")" \
+    SOAK_TRIGGER_SOURCE="$(jq -r '.trigger_source' "$state")" \
+    SOAK_SLOT_DELAY_SECONDS="$(jq -r '.slot_delay_seconds' "$state")" \
+    SOAK_VERSION="$(jq -r '.version' "$state")" \
+    SOAK_STARTED_AT="$(jq -r '.started_at' "$state")" \
+    SOAK_FINISHED_AT="$finished_at" \
+    SOAK_DURATION_SECONDS="$(jq -r '.requested_seconds' "$state")" \
+    SOAK_ITERATIONS="$(jq -r '.iterations' "$state")" \
+    SOAK_FAILURES="$(jq -r '.failures' "$state")" \
+    SOAK_BENCH_SEGMENTS="$(jq -r '.bench_segments' "$state")" \
+    SOAK_BENCH_FAILURES="$(jq -r '.bench_failures' "$state")" \
+    "$SCRIPT_DIR/write-soak-summary.sh"
+  valid_checkpoint_summary
 }
 
 if [ "$SOAK_STATUS" = "in_progress" ] && ! valid_checkpoint_summary; then
-	recover_checkpoint_summary || {
-		echo "checkpoint has no valid summary or recoverable persisted state" >&2
-		exit 2
-	}
+  recover_checkpoint_summary || {
+    echo "checkpoint has no valid summary or recoverable persisted state" >&2
+    exit 2
+  }
 fi
 
 SEGMENTS_JSON="$OUT_DIR/.segments.json"
 find "$SOAK_DIR" -mindepth 2 -maxdepth 2 -type f \
-	-path '*/bench-segment-*/metrics.json' -print0 |
-	sort -z |
-	xargs -0 --no-run-if-empty cat |
-	jq -s 'sort_by(.segment_index)' >"$SEGMENTS_JSON"
+  -path '*/bench-segment-*/metrics.json' -print0 |
+  sort -z |
+  xargs -0 --no-run-if-empty cat |
+  jq -s 'sort_by(.segment_index)' >"$SEGMENTS_JSON"
 [ -s "$SEGMENTS_JSON" ] || echo '[]' >"$SEGMENTS_JSON"
 
-PASSIVE_ARG='null'
+REPORT_INPUTS="$(mktemp -d "$OUT_DIR/.report-inputs.XXXXXXXX")"
+trap 'rm -rf -- "$REPORT_INPUTS"' EXIT
+
+PASSIVE_JSON=/dev/null
 if [ -s "$SOAK_DIR/summary.json" ]; then
-	PASSIVE_ARG="$(cat "$SOAK_DIR/summary.json")"
+  cp -- "$SOAK_DIR/summary.json" "$REPORT_INPUTS/passive.json"
+  PASSIVE_JSON="$REPORT_INPUTS/passive.json"
 fi
 
-BASELINE_ARG='null'
 if [ -n "$BASELINE_JSON" ] && [ -s "$BASELINE_JSON" ]; then
-	BASELINE_ARG="$(cat "$BASELINE_JSON")"
+  cp -- "$BASELINE_JSON" "$REPORT_INPUTS/baseline.json"
+  BASELINE_JSON="$REPORT_INPUTS/baseline.json"
+else
+  BASELINE_JSON=/dev/null
 fi
 
 PROTECTION_BREACH=false
 if [ -s "$SOAK_DIR/host-guardian-breach.txt" ] ||
-	grep -q '^host_protection_breach:' "$SOAK_DIR/early-exit.txt" 2>/dev/null; then
-	PROTECTION_BREACH=true
+  grep -q '^host_protection_breach:' "$SOAK_DIR/early-exit.txt" 2>/dev/null; then
+  PROTECTION_BREACH=true
 fi
 
 jq -n \
-	--slurpfile segments "$SEGMENTS_JSON" \
-	--argjson passive "$PASSIVE_ARG" \
-	--arg run_id "$RUN_ID" \
-	--argjson run_attempt "$RUN_ATTEMPT" \
-	--arg kind "$SOAK_KIND" \
-	--argjson duration "$DURATION_SECONDS" \
-	--argjson retry_attempt "$RETRY_ATTEMPT" \
-	--argjson window "$WINDOW_SECONDS" \
-	--argjson protection_breach "$PROTECTION_BREACH" \
-	--arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-	--arg status "$SOAK_STATUS" \
-	'
+  --slurpfile segments "$SEGMENTS_JSON" \
+  --rawfile passive "$PASSIVE_JSON" \
+  --arg run_id "$RUN_ID" \
+  --argjson run_attempt "$RUN_ATTEMPT" \
+  --arg kind "$SOAK_KIND" \
+  --argjson duration "$DURATION_SECONDS" \
+  --argjson retry_attempt "$RETRY_ATTEMPT" \
+  --argjson window "$WINDOW_SECONDS" \
+  --argjson protection_breach "$PROTECTION_BREACH" \
+  --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  --arg status "$SOAK_STATUS" \
+  '
   def median: sort | if length == 0 then null else .[(length - 1) / 2 | floor] end;
-  ($segments[0]) as $segs
+  ($passive | if . == "" then null else fromjson end) as $passive
+  | ($segments[0]) as $segs
   | ($segs | map(select(.ok == true))) as $ok
   | {
       run: {
@@ -253,19 +260,25 @@ jq -n \
     }
 ' >"$OUT_DIR/weekly-summary.json"
 
+cp -- "$THRESHOLDS_JSON" "$REPORT_INPUTS/thresholds.json"
+THRESHOLDS_JSON="$REPORT_INPUTS/thresholds.json"
+
 jq -n \
-	--argjson current "$(cat "$OUT_DIR/weekly-summary.json")" \
-	--argjson baseline "$BASELINE_ARG" \
-	--argjson thresholds "$(cat "$THRESHOLDS_JSON")" \
-	--argjson protection_breach "$PROTECTION_BREACH" \
-	--arg status "$SOAK_STATUS" \
-	'
+  --rawfile current "$OUT_DIR/weekly-summary.json" \
+  --rawfile baseline "$BASELINE_JSON" \
+  --rawfile thresholds "$THRESHOLDS_JSON" \
+  --argjson protection_breach "$PROTECTION_BREACH" \
+  --arg status "$SOAK_STATUS" \
+  '
   def pct_over(cur; base; pct):
     (cur != null and base != null and base > 0 and cur > (base * (1 + pct)));
   def pct_under(cur; base; pct):
     (cur != null and base != null and base > 0 and cur < (base * (1 - pct)));
 
-  ($current.passive) as $p
+  ($current | fromjson) as $current
+  | ($baseline | if . == "" then null else fromjson end) as $baseline
+  | ($thresholds | fromjson) as $thresholds
+  | ($current.passive) as $p
   | ($baseline.passive // null) as $bp
   | ($current.active) as $a
   | ($baseline.active // null) as $ba
@@ -332,7 +345,7 @@ jq -n \
 # cannot vary colour by value — it would render "regress" in the same colour as
 # "pass", which is the exact failure the static badges this replaces already had.
 jq \
-	'
+  '
   def branch_label:
     # Prefer the branch actually soaked, so the badge self-corrects if the
     # weekend/daily targeting ever changes. Fall back to the series name when
@@ -378,9 +391,10 @@ jq \
 # brightgreen here and `regress` there, which is correct: perfect iterations
 # that got slower are still a regression.
 jq \
-	--argjson verdict "$(cat "$OUT_DIR/verdict.json")" \
-	'
-  (.passive // null) as $p
+  --rawfile verdict "$OUT_DIR/verdict.json" \
+  '
+  ($verdict | fromjson) as $verdict
+  | (.passive // null) as $p
   | ($verdict.verdict == "in_progress") as $partial
   | if $p == null or (($p.iterations // 0) == 0)
     then {schemaVersion: 1, label: "stability", message: "no data", color: "lightgrey"}
@@ -402,8 +416,8 @@ jq \
 # red would invent a standard that does not exist; the verdict badge carries the
 # pass/regress call.
 jq \
-	--argjson verdict "$(cat "$OUT_DIR/verdict.json")" \
-	'
+  --rawfile verdict "$OUT_DIR/verdict.json" \
+  '
   # One decimal, always, including the .0. jq drops a trailing zero — 2966.9ms
   # would render "p95 3s", which reads like a suspiciously round number rather
   # than a measurement — so the tenths digit is assembled by hand.
@@ -411,7 +425,8 @@ jq \
   def ms_short: if . == null then null
                 elif . >= 1000 then "\((. / 1000) | one_dp)s"
                 else "\(. | round)ms" end;
-  (.passive // null) as $p
+  ($verdict | fromjson) as $verdict
+  | (.passive // null) as $p
   | ($verdict.verdict == "in_progress") as $partial
   | if $p == null then {schemaVersion: 1, label: "perf", message: "no data", color: "lightgrey"}
     else [($p.finalization_p95_ms | ms_short | if . == null then null else "p95 \(.)" end),
@@ -428,12 +443,14 @@ jq \
 ' "$OUT_DIR/weekly-summary.json" >"$OUT_DIR/badge-perf.json"
 
 jq -r \
-	--argjson verdict "$(cat "$OUT_DIR/verdict.json")" \
-	--argjson baseline "$BASELINE_ARG" \
-	--arg dashboard "$DASHBOARD_URL" \
-	'
+  --rawfile verdict "$OUT_DIR/verdict.json" \
+  --rawfile baseline "$BASELINE_JSON" \
+  --arg dashboard "$DASHBOARD_URL" \
+  '
   def fmt: if . == null then "-" else tostring end;
-  ($baseline.passive // {}) as $bp
+  ($verdict | fromjson) as $verdict
+  | ($baseline | if . == "" then null else fromjson end) as $baseline
+  | ($baseline.passive // {}) as $bp
   | ($baseline.active // {}) as $ba
   | "# \(if .run.kind == "daily" then "Daily" elif .run.kind == "weekend" then "Weekend" else "Soak" end) Soak Benchmark Report",
   "",
@@ -487,4 +504,4 @@ jq -r \
 rm -f "$SEGMENTS_JSON"
 echo "wrote weekly-summary.json, verdict.json, badge.json, badge-stability.json, badge-perf.json, perf-report.md to $OUT_DIR" >&2
 jq -r '"verdict: \(.verdict)" + (if .failures | length > 0 then " — " + (.failures | join("; ")) else "" end)' \
-	"$OUT_DIR/verdict.json" >&2
+  "$OUT_DIR/verdict.json" >&2
