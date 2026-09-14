@@ -11502,6 +11502,84 @@ verification and whole-workspace release acceptance also remain open. No
 upstream fork, format change, dependency change or acceptance-criterion
 weakening accompanies this checkpoint.
 
+### J-159 — 2026-09-14 Selector-produced reservation feasibility
+
+**FORMAL-FIRST RESULT.** Task 6587's existing acceptance certificate required
+reservation replay as a caller premise. The new theorem derives successful
+replay from arbitrary-channel recursive search, transfers it through the
+existing generated-PDA equivalence, and constructively supplies the witness.
+Selected candidates and bindings are preserved exactly. The final Rocq runs
+report 25 closed assumptions for the model and 20 for its control module.
+Universal lemmas also establish Fresh exhaustion, exclusion regardless of
+persistence and pointwise equivalence of count-decrement rollback with the
+saved-authority model. These are model proofs, not extracted Rust code.
+
+**INVARIANTS TO EXECUTABLE PROPERTIES.** Before adding native tests, the exact
+reservation obligations and intended bindings are:
+
+| Formal obligation | Native property to bind through the existing caller |
+|---|---|
+| Search success implies feasible replay; exact selected channel vector and bindings | Compare first selection and complete ordered enumeration with an independent bounded multiset assignment oracle, including exact Fresh/stored addresses and data. |
+| Stored capacity is observed count minus exclusions; nonpersistent repetitions consume one unit each | Generate multiplicities and repeated bind counts; compare selection against independent count-based assignments. Compare the stopped residual pool with replay of the independently selected positions. |
+| Replay exclusion is all-or-none and applies even to persistent candidates | Invoke actual `retain_before_selection`, not a manually populated partial exclusion Bag; include both stored and Fresh exclusion. |
+| Fresh has one nonpersistent slot; persistence skips reservation without bypassing eligibility | Exercise actual `SpaceMatcher` selection and enumeration with independently varied Fresh/stored persistence. `CandidatePool::reserve` alone does not implement that skip. |
+| Backtracking restores exact previous reservation counts, while stopped success retains its reservations | Compare complete pools before/after failed guards and exhaustive enumeration; compare stopped-success pools with production reservation replay of independently selected positions. Existing identity-isolation/double-release tests remain complementary. |
+
+The existing 18-invariant catalog continues to cover order, completeness,
+exclusions, shared address identity, guard/failure distinctions, termination
+and matcher equivalence. The new controls strengthen reservation feasibility
+with nonempty two-use success, three-use refusal, persistent reuse, excluded
+persistent/nonpersistent refusal, Fresh reuse refusal and a constructed
+certificate containing the exact final count. CandidatePool's implementation
+is unchanged: no production defect has been demonstrated by this proof audit.
+
+**MEASURED NATIVE BINDING.** The test-only module
+`rspace++/tests/space_matcher/reservation_feasibility.rs` exercises the shared
+production `walk_candidate_selections` used by both selector and enumerator.
+Its independent bounded assignment oracle agrees across 768 exhaustive cases
+and 128 generated cases, with requested seed `41316587`. The finite matrix
+crosses stored count 0–3, bind count 1–4, both stored persistence states,
+absent/nonpersistent/persistent Fresh, independent stored/Fresh replay filters
+and guard acceptance/refusal. Generated cases extend count to 8 and binds to 6.
+It verifies exact addresses, payloads, flags, complete enumeration, unchanged
+stored multiplicity and complete rollback to the initial pool. The stopped
+residual comparison reuses `reserve`; it is not an independent implementation
+of reservation arithmetic. Existing primitive tests independently assert the
+underlying counts and exact identity isolation.
+
+The complete release RSpace library passes **710 tests, zero failures and one
+existing ignore**. All **18 guarded-matching integration tests** pass, including
+play/replay, repeated identities, guard backtracking and the existing 20,000-bind
+selector/enumerator test on a 256 KiB native stack. This is not a new measured
+stack-slope or speedup claim. Native checks use a 6 GiB/four-CPU cap; proofs use
+2 GiB/one CPU; all scopes disable swap. No benchmark was run in this slice.
+
+**REPRODUCIBILITY AND LIMITS.** The model, control module, current publication,
+checkpoint recovery and recovery controls pass an independent kernel check.
+Their closed-report counts are respectively 25, 20, 8, 14 and 6. An initial
+consumer build found stale compiled catalog dependencies; rebuilding that
+unchanged prerequisite resolved it. The first native attempt incorrectly
+imported the private matcher module from integration tests; test-only module
+placement corrected that without changing the public API. Two subsequent
+test-source compile errors were repaired before the passing run. Logs are
+retained under `target/verification/`:
+
+| Evidence | SHA-256 |
+|---|---|
+| `reservation-feasibility-proof-r3.log` | `219f3b3db8b921b34c01238167d8097d4c8d4f449043f3a63e1bab879593e229` |
+| `reservation-feasibility-dependent-r1-TwoLevelRSpaceMatchTransactionMutants.log` | `9142003af0ddfc667b3be918398301beda2b58ef86b659f73c468d6f1ff51d73` |
+| `reservation-feasibility-kernel-r3.log` | `bcd134dbb1b03e35079f931c68f66f0c4f6c29d32c7b7d0e57ac8104b442f178` |
+| `reservation-feasibility-native-r4.log` | `37f00ead1fba3f679c56c885d76981f39d7fbd00fcd087e33782255481adab43` |
+| `reservation-feasibility-release-r1.log` | `dabbf2d41ffff0565f5dec22ca0fbb4e08e9a9a410413e661fa36f198fbca048` |
+
+This establishes the finite task-6587 local proof/property binding. It does
+not establish whole-workspace CI, complete durable recovery, trusted pgmcp
+verification or the unresolved performance obligations recorded in J-158.
+The proof certificate is a formal witness, not a new production replay pass.
+No production selection, reservation, serialization or consensus semantics
+were changed; the only production-source edit binds the test module under
+`cfg(test)`.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

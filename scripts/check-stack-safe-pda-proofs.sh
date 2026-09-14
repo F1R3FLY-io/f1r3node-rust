@@ -772,10 +772,10 @@ rocq_compile_with_closed_count \
   "the continuation and join authority causal controls"
 match_preparation_proof_clients
 rocq_compile_with_closed_count \
-  theories/TwoLevelRSpaceMatchTransaction.v 15 \
+  theories/TwoLevelRSpaceMatchTransaction.v 25 \
   "the exact two-level RSpace accepted-match authority"
 rocq_compile_with_closed_count \
-  theories/TwoLevelRSpaceMatchTransactionMutants.v 11 \
+  theories/TwoLevelRSpaceMatchTransactionMutants.v 20 \
   "the two-level RSpace accepted-match causal controls"
 rocq_compile_with_closed_count \
   theories/TwoLevelRSpaceCheckpointRecovery.v 14 \

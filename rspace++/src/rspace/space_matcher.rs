@@ -348,6 +348,10 @@ where
     None
 }
 
+#[cfg(test)]
+#[path = "../../tests/space_matcher/reservation_feasibility.rs"]
+mod reservation_feasibility_tests;
+
 pub trait SpaceMatcher<C, P, A, K>: ISpace<C, P, A, K>
 where
     C: Clone + std::hash::Hash + Eq + Send + Sync,

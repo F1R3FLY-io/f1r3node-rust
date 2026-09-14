@@ -313,6 +313,18 @@ Definition rollback_reservation
   | Some selected => reservation_previous_authority selected
   end.
 
+Theorem reservation_capacity_matches_separate_exclusion_bag : forall
+    (observed excluded reserved : N),
+  (excluded <= observed)%N ->
+  ((excluded + reserved < observed)%N <->
+   (reserved < observed - excluded)%N).
+Proof. intros; lia. Qed.
+
+Theorem reservation_increment_decrement_restores_prior_count : forall
+    (excluded reserved : N),
+  (excluded + N.succ reserved - 1 = excluded + reserved)%N.
+Proof. intros; lia. Qed.
+
 Lemma set_reservation_count_target : forall before key count,
   set_reservation_count before key count key = count.
 Proof.
@@ -422,6 +434,58 @@ Proof.
   - reflexivity.
   - now apply (@successful_reservation_rolls_back_exactly
       search channel candidate before after_first (Some first_ticket)).
+Qed.
+
+Theorem fully_excluded_candidates_are_unavailable : forall
+    search channel candidate reservations,
+  reservations (candidate_reservation_key candidate) =
+    candidate_capacity search candidate ->
+  candidate_available search channel candidate reservations = false.
+Proof.
+  intros search channel candidate reservations Hfull.
+  destruct (candidate_available search channel candidate reservations)
+    eqn:Havailable; [|reflexivity].
+  pose proof (@candidate_available_implies_below_capacity
+    search channel candidate reservations Havailable). lia.
+Qed.
+
+Theorem fresh_nonpersistent_reservation_exhausts_single_slot : forall
+    search channel candidate before after ticket,
+  candidate_origin (ordinal_candidate_value candidate) = CandidateFresh ->
+  candidate_persistent (ordinal_candidate_value candidate) = false ->
+  reserve_candidate search channel candidate before = Some (after, ticket) ->
+  candidate_available search channel candidate after = false.
+Proof.
+  intros search channel candidate before after ticket Hfresh Hpersistent Hreserve.
+  unfold reserve_candidate in Hreserve. rewrite Hpersistent in Hreserve.
+  assert (Hcapacity : candidate_capacity search candidate = 1%N).
+  { unfold candidate_capacity. now rewrite Hfresh. }
+  rewrite Hcapacity in Hreserve.
+  destruct (N.ltb (before (candidate_reservation_key candidate)) 1)
+    eqn:Hbelow; [|discriminate].
+  apply N.ltb_lt in Hbelow.
+  inversion Hreserve; subst after ticket.
+  apply fully_excluded_candidates_are_unavailable.
+  rewrite set_reservation_count_target, Hcapacity. lia.
+Qed.
+
+Theorem decrement_rollback_refines_saved_authority : forall
+    search channel candidate before after ticket,
+  candidate_persistent (ordinal_candidate_value candidate) = false ->
+  reserve_candidate search channel candidate before = Some (after, ticket) ->
+  forall key,
+    set_reservation_count after (candidate_reservation_key candidate)
+      (N.pred (after (candidate_reservation_key candidate))) key = before key.
+Proof.
+  intros search channel candidate before after ticket Hpersistent Hreserve key.
+  unfold reserve_candidate in Hreserve. rewrite Hpersistent in Hreserve.
+  destruct (N.ltb (before (candidate_reservation_key candidate))
+    (candidate_capacity search candidate)); [|discriminate].
+  inversion Hreserve; subst after ticket.
+  rewrite set_reservation_count_target, N.pred_succ.
+  unfold set_reservation_count.
+  destruct (reservation_key_eq_dec key (candidate_reservation_key candidate));
+    congruence.
 Qed.
 
 Theorem eligible_persistent_candidate_is_reusable_without_reservation : forall
@@ -1169,6 +1233,82 @@ Fixpoint replay_selection_reservations
       else None
   end.
 
+Theorem recursive_selection_produces_feasible_reservations : forall
+    search channels reservations bindings selected final_bindings,
+  recursive_candidate_search search channels reservations bindings =
+    SearchAccepted selected final_bindings ->
+  exists final,
+    replay_selection_reservations search selected reservations = Some final.
+Proof.
+  intros search channels. induction channels as [|channel tail IH];
+    intros reservations bindings selected final_bindings Haccepted.
+  - simpl in Haccepted.
+    destruct (match_program_guard (search_program search) bindings);
+      inversion Haccepted; subst. exists reservations. reflexivity.
+  - simpl in Haccepted.
+    destruct (lookup_catalog channel (search_catalogs search))
+      as [catalog|] eqn:Hcatalog; [|discriminate].
+    destruct (@scan_reference_acceptance_is_first
+      (fun candidate =>
+        if candidate_available search channel candidate reservations then
+          match candidate_spatial_result
+              (search_program search) channel candidate bindings with
+          | Some next =>
+              match reserve_candidate search channel candidate reservations with
+              | Some (reserved, _) =>
+                  match recursive_candidate_search search tail reserved next with
+                  | SearchAccepted suffix final =>
+                      SearchAccepted ((channel, candidate) :: suffix) final
+                  | SearchRefused failure => SearchRefused failure
+                  end
+              | None => SearchRefused NoSpatialMatch
+              end
+          | None => SearchRefused NoSpatialMatch
+          end
+        else SearchRefused NoSpatialMatch)
+      (search_projection search channel catalog) false selected final_bindings
+      Haccepted) as [prefix [candidate [suffix [Hscan [Hprior Hhit]]]]].
+    destruct (candidate_available search channel candidate reservations)
+      eqn:Havailable; [|discriminate].
+    destruct (candidate_spatial_result
+      (search_program search) channel candidate bindings) as [next|];
+      [|discriminate].
+    destruct (reserve_candidate search channel candidate reservations)
+      as [[reserved ticket]|] eqn:Hreserve; [|discriminate].
+    destruct (recursive_candidate_search search tail reserved next)
+      as [selected_tail tail_bindings|failure] eqn:Htail; [|discriminate].
+    inversion Hhit; subst selected final_bindings.
+    simpl. rewrite Havailable, Hreserve.
+    now apply IH with next tail_bindings.
+Qed.
+
+Theorem recursive_oracle_selection_produces_feasible_reservations : forall
+    search channels reservations bindings selected final_bindings,
+  recursive_candidate_search_oracle search channels reservations bindings =
+    SearchAccepted selected final_bindings ->
+  exists final,
+    replay_selection_reservations search selected reservations = Some final.
+Proof.
+  intros search channels reservations bindings selected final_bindings Haccepted.
+  apply recursive_selection_produces_feasible_reservations with
+    channels bindings final_bindings.
+  now rewrite recursive_candidate_search_uses_exact_recursive_spatial_oracle.
+Qed.
+
+Theorem pda_selection_produces_feasible_reservations : forall
+    search selected bindings,
+  pda_candidate_search search = Some (SearchAccepted selected bindings) ->
+  exists final,
+    replay_selection_reservations search selected (initial_reservations search) =
+      Some final.
+Proof.
+  intros search selected bindings Haccepted.
+  rewrite generated_candidate_pda_equals_pda_matcher_reference in Haccepted.
+  injection Haccepted as Haccepted.
+  now apply recursive_selection_produces_feasible_reservations with
+    (search_requested_channels search) empty_free_map bindings.
+Qed.
+
 Record WellFormedCandidateSearch (search : CandidateSearch) : Type := {
   well_formed_search_observed_is_well_formed :
     authority_well_formedb (search_observed_authority search) = true;
@@ -1205,6 +1345,42 @@ Record CertifiedSearchAcceptance (search : CandidateSearch) : Type := {
       (initial_reservations search) = Some accepted_reservation_authority
 }.
 
+Definition selector_reservation_witness
+    (search : CandidateSearch) (selected : OrdinalSelection) (bindings : free_map)
+    (Haccepted : pda_candidate_search search =
+      Some (SearchAccepted selected bindings)) :
+    { final : ReservationAuthority |
+      replay_selection_reservations search selected
+        (initial_reservations search) = Some final }.
+Proof.
+  destruct (replay_selection_reservations search selected
+    (initial_reservations search)) as [final|] eqn:Hreplay.
+  - now exists final.
+  - exfalso.
+    destruct (@pda_selection_produces_feasible_reservations
+      search selected bindings Haccepted) as [final Hfinal].
+    rewrite Hreplay in Hfinal. discriminate.
+Defined.
+
+Definition certify_selector_acceptance
+    (search : CandidateSearch) (selected : OrdinalSelection) (bindings : free_map)
+    (Haccepted : pda_candidate_search search =
+      Some (SearchAccepted selected bindings)) : CertifiedSearchAcceptance search :=
+  let witness := @selector_reservation_witness search selected bindings Haccepted in
+  {| accepted_selected_ordinals := selected;
+     accepted_bindings := bindings;
+     accepted_search_result_is_selector_produced := Haccepted;
+     accepted_reservation_authority := proj1_sig witness;
+     accepted_selection_replays_exactly := proj2_sig witness |}.
+
+Theorem certified_selector_preserves_exact_result : forall
+    search selected bindings Haccepted,
+  accepted_selected_ordinals
+    (@certify_selector_acceptance search selected bindings Haccepted) = selected /\
+  accepted_bindings
+    (@certify_selector_acceptance search selected bindings Haccepted) = bindings.
+Proof. intros; split; reflexivity. Qed.
+
 Theorem certified_acceptance_is_recursive_first_admissible : forall
     search (accepted : CertifiedSearchAcceptance search),
   recursive_candidate_search search (search_requested_channels search)
@@ -1225,7 +1401,10 @@ Theorem certified_acceptance_carries_exact_reservation_feasibility : forall
     replay_selection_reservations search
       (accepted_selected_ordinals accepted) (initial_reservations search) =
     Some final.
-Proof. intros; eexists; apply accepted_selection_replays_exactly. Qed.
+Proof.
+  intros. eapply pda_selection_produces_feasible_reservations.
+  apply accepted_search_result_is_selector_produced.
+Qed.
 
 Theorem recursive_candidate_acceptance_has_exact_channel_vector : forall
     search channels reservations bindings selected final_bindings,
@@ -1981,5 +2160,15 @@ Print Assumptions certified_acceptance_has_exact_channel_vector.
 Print Assumptions leaf_guard_rejection_is_distinct.
 Print Assumptions missing_channel_is_no_spatial_match.
 Print Assumptions independent_match_invariant_catalog_is_duplicate_free_and_exact.
+Print Assumptions reservation_capacity_matches_separate_exclusion_bag.
+Print Assumptions reservation_increment_decrement_restores_prior_count.
+Print Assumptions recursive_selection_produces_feasible_reservations.
+Print Assumptions recursive_oracle_selection_produces_feasible_reservations.
+Print Assumptions pda_selection_produces_feasible_reservations.
+Print Assumptions certify_selector_acceptance.
+Print Assumptions certified_selector_preserves_exact_result.
+Print Assumptions fully_excluded_candidates_are_unavailable.
+Print Assumptions fresh_nonpersistent_reservation_exhausts_single_slot.
+Print Assumptions decrement_rollback_refines_saved_authority.
 
 End TwoLevelRSpaceMatchTransaction.

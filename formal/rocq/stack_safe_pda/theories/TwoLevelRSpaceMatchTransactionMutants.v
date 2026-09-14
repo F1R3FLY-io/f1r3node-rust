@@ -347,6 +347,159 @@ Proof.
   intros [catalog Hcatalog]. discriminate Hcatalog.
 Qed.
 
+Definition fixture_live_stored (persistent : bool) : MatchCandidate :=
+  MatchCandidateState (StoredAddress [9; 1]) [9] [1] [] [11] [] persistent 2%N.
+
+Definition fixture_live_catalog (persistent : bool) : CandidateCatalog :=
+  CandidateCatalogState [9] true [fixture_live_stored persistent].
+
+Definition fixture_live_search (requests : nat) (persistent excluded : bool)
+    : CandidateSearch.
+Proof.
+  refine {| search_observed_authority := fixture_authority;
+            search_requested_channels := repeat [9] requests;
+            search_catalogs := CandidateCatalogSetState
+              (repeat [9] requests) [[9]] [fixture_live_catalog persistent];
+            search_arrival := None;
+            search_excluded_count := fun _ => if excluded then 2%N else 0%N;
+            search_fresh_available := false;
+            search_program := accepting_program;
+            search_scan := fun channel catalog =>
+              identity_query_scan accepting_program channel
+                (combined_candidate_projection None catalog) |}.
+  - intros channel catalog candidate Hlookup Hin.
+    apply lookup_candidate_catalog_some_is_member in Hlookup.
+    destruct Hlookup as [Hcatalog|[]]. subst catalog.
+    cbn [combined_candidate_projection enumerate_candidates_from
+      candidate_catalog_authority fixture_live_catalog] in Hin.
+    destruct Hin as [Hcandidate|[]]. subst candidate.
+    destruct excluded; vm_compute; discriminate.
+  - intros channel catalog candidate Hlookup Hin.
+    apply lookup_candidate_catalog_some_is_member in Hlookup.
+    destruct Hlookup as [Hcatalog|[]]. subst catalog.
+    cbn [combined_candidate_projection enumerate_candidates_from
+      candidate_catalog_authority fixture_live_catalog] in Hin.
+    destruct Hin as [Hcandidate|[]]. subst candidate.
+    destruct excluded; [right|left]; reflexivity.
+  - intros channel catalog fresh Hlookup Hhead Hfresh.
+    apply lookup_candidate_catalog_some_is_member in Hlookup.
+    destruct Hlookup as [Hcatalog|[]]. subst catalog.
+    inversion Hhead; subst fresh. discriminate Hfresh.
+Defined.
+
+Definition fixture_live_ordinal (persistent : bool) : OrdinalCandidate :=
+  OrdinalCandidateState 0%N (fixture_live_stored persistent).
+
+Definition fixture_live_fresh (persistent : bool) : MatchCandidate :=
+  MatchCandidateState FreshAddress [9] [1] [] [14] [] persistent 1%N.
+
+Definition fixture_fresh_search (requests : nat) (persistent excluded : bool)
+    : CandidateSearch.
+Proof.
+  refine {| search_observed_authority := [];
+            search_requested_channels := repeat [9] requests;
+            search_catalogs := CandidateCatalogSetState
+              (repeat [9] requests) [[9]] [CandidateCatalogState [9] true []];
+            search_arrival := Some (fixture_live_fresh persistent);
+            search_excluded_count := fun _ => if excluded then 1%N else 0%N;
+            search_fresh_available := negb excluded;
+            search_program := accepting_program;
+            search_scan := fun channel catalog =>
+              identity_query_scan accepting_program channel
+                (combined_candidate_projection
+                  (Some (fixture_live_fresh persistent)) catalog) |}.
+  - intros channel catalog candidate Hlookup Hin.
+    apply lookup_candidate_catalog_some_is_member in Hlookup.
+    destruct Hlookup as [Hcatalog|[]]. subst catalog.
+    cbn [combined_candidate_projection enumerate_candidates_from
+      candidate_catalog_authority] in Hin.
+    destruct Hin as [Hcandidate|[]]. subst candidate.
+    destruct excluded; vm_compute; discriminate.
+  - intros channel catalog candidate Hlookup Hin.
+    apply lookup_candidate_catalog_some_is_member in Hlookup.
+    destruct Hlookup as [Hcatalog|[]]. subst catalog.
+    cbn [combined_candidate_projection enumerate_candidates_from
+      candidate_catalog_authority] in Hin.
+    destruct Hin as [Hcandidate|[]]. subst candidate.
+    destruct excluded; [right|left]; reflexivity.
+  - intros channel catalog fresh Hlookup Hhead Hfresh.
+    destruct excluded; reflexivity.
+Defined.
+
+Example fresh_selector_accepts_once_and_refuses_reuse :
+  pda_candidate_search (fixture_fresh_search 1 false false) =
+    Some (SearchAccepted
+      [([9], OrdinalCandidateState 0%N (fixture_live_fresh false))]
+      empty_free_map) /\
+  pda_candidate_search (fixture_fresh_search 2 false false) =
+    Some (SearchRefused NoSpatialMatch).
+Proof. vm_compute. split; reflexivity. Qed.
+
+Example fresh_selector_reuses_persistent_arrival :
+  pda_candidate_search (fixture_fresh_search 3 true false) =
+    Some (SearchAccepted
+      (repeat ([9], OrdinalCandidateState 0%N (fixture_live_fresh true)) 3)
+      empty_free_map).
+Proof. vm_compute. reflexivity. Qed.
+
+Example fresh_selector_refuses_excluded_arrival_regardless_of_persistence :
+  pda_candidate_search (fixture_fresh_search 1 false true) =
+    Some (SearchRefused NoSpatialMatch) /\
+  pda_candidate_search (fixture_fresh_search 1 true true) =
+    Some (SearchRefused NoSpatialMatch).
+Proof. vm_compute. split; reflexivity. Qed.
+
+Example nonempty_selector_accepts_exact_repeated_capacity :
+  pda_candidate_search (fixture_live_search 2 false false) =
+    Some (SearchAccepted
+      (repeat ([9], fixture_live_ordinal false) 2) empty_free_map).
+Proof. vm_compute. reflexivity. Qed.
+
+Example nonempty_selector_refuses_insufficient_repeated_capacity :
+  pda_candidate_search (fixture_live_search 3 false false) =
+    Some (SearchRefused NoSpatialMatch) /\
+  mutant_accept_without_reservation_replay
+    (repeat ([9], fixture_live_ordinal false) 3) = true.
+Proof. vm_compute. split; reflexivity. Qed.
+
+Example nonempty_selector_reuses_persistent_without_capacity_consumption :
+  pda_candidate_search (fixture_live_search 3 true false) =
+    Some (SearchAccepted
+      (repeat ([9], fixture_live_ordinal true) 3) empty_free_map) /\
+  replay_selection_reservations (fixture_live_search 3 true false)
+    (repeat ([9], fixture_live_ordinal true) 3) zero_reservations =
+      Some zero_reservations.
+Proof. vm_compute. split; reflexivity. Qed.
+
+Example nonempty_selector_refuses_excluded_persistent_and_nonpersistent :
+  pda_candidate_search (fixture_live_search 1 true true) =
+    Some (SearchRefused NoSpatialMatch) /\
+  pda_candidate_search (fixture_live_search 1 false true) =
+    Some (SearchRefused NoSpatialMatch).
+Proof. vm_compute. split; reflexivity. Qed.
+
+Example fresh_replay_refuses_second_nonpersistent_use :
+  (exists final, replay_selection_reservations fixture_search
+    [([9], fixture_fresh_ordinal)] zero_reservations = Some final) /\
+  replay_selection_reservations fixture_search
+    (repeat ([9], fixture_fresh_ordinal) 2) zero_reservations = None /\
+  mutant_accept_without_reservation_replay
+    (repeat ([9], fixture_fresh_ordinal) 2) = true.
+Proof. vm_compute. split; [eexists; reflexivity|split; reflexivity]. Qed.
+
+Example nonempty_selector_constructs_exact_certificate :
+  accepted_selected_ordinals
+    (@certify_selector_acceptance (fixture_live_search 2 false false)
+      (repeat ([9], fixture_live_ordinal false) 2) empty_free_map
+      nonempty_selector_accepts_exact_repeated_capacity) =
+    repeat ([9], fixture_live_ordinal false) 2 /\
+  accepted_reservation_authority
+    (@certify_selector_acceptance (fixture_live_search 2 false false)
+      (repeat ([9], fixture_live_ordinal false) 2) empty_free_map
+      nonempty_selector_accepts_exact_repeated_capacity)
+      (StoredReservation [9; 1]) = 2%N.
+Proof. vm_compute. split; reflexivity. Qed.
+
 Inductive independent_match_mutant_id : Type :=
 | MutantReversePruning
 | MutantDropAcceptedCandidate
@@ -409,5 +562,14 @@ Print Assumptions strict_work_rejects_stationary_walk_mutant.
 Print Assumptions generated_pda_equivalence_rejects_none_mutant.
 Print Assumptions reservation_feasibility_rejects_over_capacity_mutant.
 Print Assumptions independent_match_mutant_catalog_is_duplicate_free_and_exact.
+Print Assumptions nonempty_selector_accepts_exact_repeated_capacity.
+Print Assumptions nonempty_selector_refuses_insufficient_repeated_capacity.
+Print Assumptions nonempty_selector_reuses_persistent_without_capacity_consumption.
+Print Assumptions nonempty_selector_refuses_excluded_persistent_and_nonpersistent.
+Print Assumptions fresh_replay_refuses_second_nonpersistent_use.
+Print Assumptions nonempty_selector_constructs_exact_certificate.
+Print Assumptions fresh_selector_accepts_once_and_refuses_reuse.
+Print Assumptions fresh_selector_reuses_persistent_arrival.
+Print Assumptions fresh_selector_refuses_excluded_arrival_regardless_of_persistence.
 
 End TwoLevelRSpaceMatchTransactionMutants.

@@ -14938,6 +14938,30 @@ obligations.
 
 ---
 
+## 2026-09-14 verification addendum — selector-produced reservation feasibility
+
+Task 6587 strengthens the existing recursive-oracle/generated-PDA model:
+successful selection now proves reservation replay feasible, and constructs
+the acceptance witness without a caller-supplied feasibility premise. Direct
+laws cover capacity minus exclusions, Fresh exhaustion, persistent eligibility
+and count-based rollback. The maintained proof gate now expects 25 closed
+reports for `TwoLevelRSpaceMatchTransaction.v` and 20 for its mutant module;
+the earlier September 3 counts above remain historical observations.
+
+The shared native selection loop passes a 768-case bounded matrix and 128
+generated cases against an independent multiset assignment oracle. The full
+release RSpace library passes 710 tests with one existing ignore; all 18
+guarded-matching integration tests pass, including the existing 20,000-bind
+256 KiB stack check. Five affected formal modules pass independent kernel
+checking after the unchanged catalog prerequisite was rebuilt. Journal J-159
+records the invariant mapping, exact log hashes and limits of each claim.
+
+This is proof/test qualification, not a new traversal conversion, timing
+measurement or memory-slope result. Rust uses a 6 GiB/four-CPU systemd cap and
+formal workers 2 GiB/one CPU, with swap disabled. Production algorithms and
+consensus-visible behavior are unchanged. Persistence lifecycle acceptance,
+trusted task verification and the qualified LMDB comparison remain open.
+
 ## Appendix G — the maintenance contract
 
 1. **A stack-safety fix lands $`\rightarrow`$ a §0 row and an Appendix F body land in the same commit**, with
