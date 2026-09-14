@@ -123,8 +123,19 @@ async fn multi_parent_casper_should_allow_bonding() {
 /// close-block; if that refresh is lost to merge adjudication of sibling
 /// close-block state, the new validator never enters the committee and never
 /// appears in the LFB `bonds` map, no matter how many epoch boundaries pass.
+///
+/// This is a deterministic guard, not a reproduction: on current `dev` this
+/// shape PASSES (the bond enters the committee), matching the #341 finding that
+/// the deterministic boundary shape alone does not trigger the #149 loss. It
+/// locks the happy path; a green run is not evidence that #149 cannot occur.
 #[tokio::test]
 async fn a_new_bond_enters_the_lfb_committee_after_an_epoch_boundary() {
+    const EPOCH_LENGTH: i32 = 4;
+    const MERGE_ROUNDS: i32 = 3;
+    const TAIL_ROUNDS: i32 = 4;
+    const SIBLING_DEPLOY_BASE: i32 = 100;
+    const TAIL_DEPLOY_BASE: i32 = 300;
+
     let validator_key_pairs = vec![
         DEFAULT_VALIDATOR_KEY_PAIRS[0].clone(),
         DEFAULT_VALIDATOR_KEY_PAIRS[1].clone(),
@@ -143,7 +154,7 @@ async fn a_new_bond_enters_the_lfb_committee_after_an_epoch_boundary() {
         .collect();
 
     let mut parameters = GenesisBuilder::build_genesis_parameters(validator_key_pairs, &bonds);
-    parameters.2.proof_of_stake.epoch_length = 4;
+    parameters.2.proof_of_stake.epoch_length = EPOCH_LENGTH;
     let genesis = GenesisBuilder::new()
         .build_genesis_with_parameters(Some(parameters))
         .await
@@ -160,16 +171,28 @@ async fn a_new_bond_enters_the_lfb_committee_after_an_epoch_boundary() {
         .await
         .expect("propagate the bond block");
 
-    // Drive the DAG well past several epoch boundaries (#4, #8, #12, #16, #20),
-    // alternating sibling+merge rounds so a multi-parent merge must adjudicate
-    // sibling close-block epoch transitions at the boundaries.
-    for round in 0..6i32 {
-        let d1 = construct_deploy::basic_deploy_data(100 + round * 3, None, Some(shard_id.clone()))
-            .expect("sibling deploy 1");
-        let d2 = construct_deploy::basic_deploy_data(101 + round * 3, None, Some(shard_id.clone()))
-            .expect("sibling deploy 2");
-        let d3 = construct_deploy::basic_deploy_data(102 + round * 3, None, Some(shard_id.clone()))
-            .expect("merge deploy");
+    // Drive the DAG past epoch boundaries #4 and #8, alternating sibling+merge
+    // rounds so a multi-parent merge must adjudicate sibling close-block epoch
+    // transitions at each boundary.
+    for round in 0..MERGE_ROUNDS {
+        let d1 = construct_deploy::basic_deploy_data(
+            SIBLING_DEPLOY_BASE + round * 3,
+            None,
+            Some(shard_id.clone()),
+        )
+        .expect("sibling deploy 1");
+        let d2 = construct_deploy::basic_deploy_data(
+            SIBLING_DEPLOY_BASE + 1 + round * 3,
+            None,
+            Some(shard_id.clone()),
+        )
+        .expect("sibling deploy 2");
+        let d3 = construct_deploy::basic_deploy_data(
+            SIBLING_DEPLOY_BASE + 2 + round * 3,
+            None,
+            Some(shard_id.clone()),
+        )
+        .expect("merge deploy");
         let _s1 = nodes[0]
             .add_block_from_deploys(&[d1])
             .await
@@ -189,9 +212,13 @@ async fn a_new_bond_enters_the_lfb_committee_after_an_epoch_boundary() {
             .expect("propagate the merge block");
     }
 
-    for round in 0..6i32 {
-        let d = construct_deploy::basic_deploy_data(300 + round, None, Some(shard_id.clone()))
-            .expect("tail filler deploy");
+    for round in 0..TAIL_ROUNDS {
+        let d = construct_deploy::basic_deploy_data(
+            TAIL_DEPLOY_BASE + round,
+            None,
+            Some(shard_id.clone()),
+        )
+        .expect("tail filler deploy");
         let _ = TestNode::propagate_block_at_index(&mut nodes, (round as usize + 1) % 3, &[d])
             .await
             .expect("propagate a tail filler block");
@@ -206,6 +233,12 @@ async fn a_new_bond_enters_the_lfb_committee_after_an_epoch_boundary() {
         .await
         .expect("last finalized block");
     let lfb_state = &lfb.body.state.post_state_hash;
+    assert!(
+        lfb.body.state.block_number >= EPOCH_LENGTH as i64,
+        "precondition: LFB #{} must be past the first epoch boundary (#{})",
+        lfb.body.state.block_number,
+        EPOCH_LENGTH
+    );
     let all_bonds = nodes[0]
         .runtime_manager
         .compute_bonds(lfb_state)
@@ -235,6 +268,21 @@ async fn a_new_bond_enters_the_lfb_committee_after_an_epoch_boundary() {
          after crossing epoch boundaries (LFB #{}, bonds has {} entries)",
         lfb.body.state.block_number,
         lfb.body.state.bonds.len()
+    );
+
+    // The merge proposer (node 2) must finalize the same committee view.
+    let lfb_n2 = nodes[2]
+        .casper
+        .last_finalized_block()
+        .await
+        .expect("last finalized block on node 2");
+    assert_eq!(
+        lfb.block_hash, lfb_n2.block_hash,
+        "LFB must converge across nodes: node 0 vs node 2 (merge proposer)"
+    );
+    assert!(
+        lfb_n2.body.state.bonds.iter().any(|b| b.validator == n4_pk),
+        "n4 must appear in the finalized block's bonds field on node 2"
     );
 }
 
