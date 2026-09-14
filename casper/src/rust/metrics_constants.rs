@@ -339,3 +339,5 @@ pub const REPLAY_SYSTEM_DEPLOY_SPAN: &str = "replay-system-deploy";
 pub const COMPUTE_MAX_CLIQUE_WEIGHT_SPAN: &str = "compute-max-clique-weight";
 pub const NORMALIZED_FAULT_TOLERANCE_SPAN: &str = "normalized-fault-tolerance";
 pub const FINALIZER_RUN_SPAN: &str = "finalizer-run";
+
+pub const MERGEABLE_CHANNELS_GC_METRICS_SOURCE: &str = "f1r3fly.casper.mergeable-channels-gc";
