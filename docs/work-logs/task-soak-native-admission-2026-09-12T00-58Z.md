@@ -719,3 +719,15 @@ The JSONC language-server result was inconclusive, so the repository parser and 
 The external review directory retains the source capture, public Linux references, check outputs, and the final documentation diff.
 This review leaves the driver, launcher, harness pins, workload, and 45-second finalization wait unchanged.
 D2, D3, and acceptance remain pending.
+
+## D2/B44 assignment update, 2026-09-14
+
+The user assigned production containment and real-Docker verification to another agent on a different machine.
+The [assignment notes](task-soak-disk-hygiene-stop-2026-09-08T05-06Z.md#d2b44-assignment-to-another-machine-2026-09-14) contain the runner requirements and completion checklist.
+The receiving agent and machine identities remain to be recorded.
+This session will not duplicate that step or provision its infrastructure.
+The branch integration agent retains shared-file coordination.
+
+This note records the assignment only and does not start another agent or a diagnostic run.
+Storage cleanup is complete.
+D2, D3, and acceptance remain pending.

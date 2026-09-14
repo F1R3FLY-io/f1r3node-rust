@@ -67,7 +67,7 @@ deny = [
 allow-build-scripts = [
   "comm", "models", "node",
   "ahash@0.7.8", "ahash@0.8.12", "anyhow@1.0.104",
-  "aws-lc-rs@1.17.3", "aws-lc-rs@1.18.0", "aws-lc-sys@0.43.0", "aws-lc-sys@0.44.0",
+  "aws-lc-rs@1.17.3", "aws-lc-rs@1.18.0", "aws-lc-rs@1.18.1", "aws-lc-sys@0.43.0", "aws-lc-sys@0.44.0", "aws-lc-sys@0.45.0",
   "blake3@1.8.5", "blake3@1.8.7", "borsh@1.8.0", "bytecheck@0.6.12",
   "bzip2-sys@0.1.13+1.0.8", "chroma-types@0.10.0", "crc32fast@1.5.0",
   "crossbeam-deque@0.8.7", "crossbeam-epoch@0.9.20", "crossbeam-utils@0.8.22",
@@ -88,7 +88,7 @@ allow-build-scripts = [
   "quinn@0.11.11", "quote@1.0.47", "radium@0.7.0", "rayon-core@1.13.0",
   "ref-cast@1.0.26", "rend@0.4.2", "rholang-tree-sitter@0.1.2", "ring@0.17.14",
   "rkyv@0.7.46", "rstest_macros@0.19.0", "rust-bert@0.23.0", "rust_decimal@1.42.1",
-  "rust_tokenizers@8.1.1", "rustix@1.1.4", "rustls@0.21.12", "rustls@0.23.43",
+  "rust_tokenizers@8.1.1", "rustix@1.1.4", "rustls@0.21.12", "rustls@0.23.43", "rustls@0.23.45",
   "rustversion@1.0.23", "serde@1.0.229", "serde_core@1.0.229", "serde_json@1.0.151",
   "stacker@0.1.24", "stacker@0.1.25", "syn@1.0.109",
   "system-configuration-sys@0.5.0", "system-configuration-sys@0.6.0", "tch@0.17.0",
