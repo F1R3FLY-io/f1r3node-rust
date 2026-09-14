@@ -11353,6 +11353,81 @@ The full methodology, headless Heaptrack results, exact raw archive and
 summary paths are in stack-safety report §5.33.66. This is an isolated ACT
 codec comparison, not a production PathMap/ACT-versus-LMDB comparison.
 
+### J-156 — 2026-09-14 Scalar dispatcher experiments rejected; production import measured separately
+
+**QUESTION AND CONTROL.** Can compiler inlining or separating frequent line
+events from node-boundary transitions improve the J-155 scalar cursor without
+regressing representative branch-heavy inputs? The exact full-provenance
+cursor at `8ec979e3c` is the incumbent. Each experimental build repeats 24
+cells: compressed width 65,536, wide cardinality 4,096, and depth 2,048;
+valued/valueless inputs; cold/warm traversal; plan/legacy arms. Each cell has
+five excluded warmups and 30 measured operations in one worker, pinned to
+core 3. These are descriptive within-worker measurements, not independently
+randomized process samples or a statistical acceptance verdict.
+
+| Valued plan median, ns | Incumbent | Inline only | Split, normal inline | Split, forced inline |
+|---|---:|---:|---:|---:|
+| Compressed cold | 726,088 | 981,829 | 636,091 | 383,282 |
+| Compressed warm | 723,146 | 938,161.5 | 638,390 | 703,198 |
+| Wide cold | 288,267 | 287,746 | 370,197 | 308,891 |
+| Wide warm | 47,160 | 47,345 | 127,913 | 66,486 |
+| Deep cold | 472,542 | 466,285 | 546,005 | 494,227.5 |
+| Deep warm | 52,675 | 47,976 | 125,538.5 | 76,214.5 |
+
+**DECISION: REJECT ALL THREE CANDIDATES.** Inline-only worsens the compressed
+case. The split improves compressed cold traversal but materially regresses
+wide/deep warm traversal, even with forced inlining. The split is not retained
+in production. Its exact patch and negative measurements are preserved; the
+restored codec SHA-256 is
+`2ede381bdc80ef7a6944815c65ac9880074653ec6b5a40cea0e6039ede4f664d`.
+The pre-inlining split passed all 26 codec tests; this establishes semantic
+qualification, not performance acceptance. The restored full RSpace release
+library passes 709 tests, with zero failures and one existing ignore.
+
+**ATTRIBUTION CORRECTION.** J-155's out-of-line function attribution does not
+prove dispatch alone causes the entire legacy/plan difference. The legacy
+push visitor supplies presence/edge events; the pull cursor supplies actual
+values and physical source provenance before the benchmark erases them.
+Both produce the same compared logical digests, but their interfaces do
+different work. The recorded legacy-relative slowdown remains real for those
+interfaces. Neither this distinction nor the rejected experiments eliminate
+it. No new visitor, decoded projection, or reduced semantic contract is
+introduced to manufacture parity.
+
+**PRODUCTION ROUTE, DISTINCT MEASUREMENT.** The existing
+`models/benches/epathmap_pathmap_native.rs` `compact_import` lane exercises
+`ParBag::from_compact_bytes`, including canonical admission, trie reconstruction
+and destruction of the imported Bag. EPathMap admission uses the existing
+prepared ACT line-span transport. Before timing, the benchmark independently
+constructs a typed fixture, checks imported Bag equality, and checks exact
+compact re-emission. Ten cells cover region/opaque carriers, widths
+32/1,024/65,536, depth 1/8, and endpoint count 1/16. All complete with the
+existing five warmups and 30 retained samples per cell.
+
+For depth 1 and one endpoint, width 65,536 measures 108.42 ms for the region
+carrier and 102.84 ms for the opaque carrier. Process peak RSS is respectively
+65,040 and 75,516 KiB and includes fixture construction and audits. These
+are full-import-plus-Drop costs, not scalar event latency, retained plan
+memory, or proof of batching speedup. This harness has no scalar-disable arm;
+there is no causal scalar/batch timing conclusion. The five existing
+`joint_epm_transport` tests separately pass exact scalar/batch result, score,
+error/provenance, fragmented-source and unchanged 64 KiB stack controls.
+
+**REPRODUCIBILITY.** Worker caps are 4 GiB with swap disabled; compilation and
+the full-library test use 6 GiB. CPU samples before the dispatcher run show
+78.75% machine idle and 95.15% idle on core 3; the import matrix also checks
+idle cores before running. The first dispatcher command produced one valid
+cell then stopped because systemd expanded the output filename variables;
+that extra cell is preserved but excluded from the 24-cell matrix. The retry
+disables systemd environment expansion and overwrites no samples. Build logs
+and full verification output remain under `target/verification/`.
+
+Raw and summarized measurements are linked from stack-safety report
+§5.33.67. Experiment 343 and task 6023 retain the negative results. Required
+production performance qualification, upstream-register reconciliation,
+persistence lifecycle acceptance and the LMDB comparison remain open; this
+checkpoint is not campaign completion or a change of the acceptance contract.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

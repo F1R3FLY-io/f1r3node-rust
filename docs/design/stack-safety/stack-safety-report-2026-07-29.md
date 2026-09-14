@@ -11455,6 +11455,56 @@ These observations do not establish whole-workspace acceptance or complete
 persistence-versus-LMDB performance. The compressed scalar regression must
 be resolved and measured before claiming this optimization complete.
 
+#### 5.33.67 Dispatcher rejection and full-import qualification (2026-09-14)
+
+**MEASURED NEGATIVE; INCUMBENT RESTORED.** J-156 in the PathMap engineering
+journal records the complete three-candidate comparison against `8ec979e3c`.
+None is adopted. Inlining alone slows compressed traversal. The best split
+cold result is 383,282 ns for a valued 65,536-byte path versus 726,088 ns for
+the incumbent, but wide warm traversal grows from 47,160 to 66,486 ns and
+deep warm traversal from 52,675 to 76,214.5 ns. The representative regressions
+reject the split despite its isolated improvement. All paired topology/value
+digests agree in the 72 measured cells; each has five warmups and 30 retained
+observations. The rejected source patch remains available in the archive.
+
+The preceding attribution is narrowed: uProf identifies a hot function,
+not the exclusive cause of the legacy-relative difference. The legacy push
+visitor reports reduced events; the new pull cursor produces values and
+physical provenance. The legacy-relative scalar slowdown remains recorded.
+The fair dispatcher-change control is the same full-provenance incumbent,
+not a newly weakened event contract. The current codec is restored exactly
+to the committed source; no new stack transformation or format change is
+claimed here.
+
+**PRODUCTION IMPORT, NOT A BATCHING SPEEDUP CLAIM.** The existing models
+`compact_import` benchmark completes ten cells spanning region/opaque
+carriers, widths 32/1,024/65,536, depth 1/8 and endpoint counts 1/16. It
+checks independently constructed typed equality and exact compact bytes
+before timing. The timer includes canonical admission, reconstruction and
+Drop; fixture construction and audits are excluded from time but included
+in process RSS. Its depth-1/single-endpoint/width-65,536 cases measure
+108,421,782 ns (region) and 102,838,145 ns (opaque), with peak process RSS
+65,040 and 75,516 KiB. With no scalar-disable arm, this does not isolate
+line-span speedup or justify comparing whole-import time to the isolated
+scalar cursor fixture. All runs use core 3 after an idle-core check,
+MemoryMax 4 GiB and zero swap.
+
+**REFRESHED CORRECTNESS.** The restored release RSpace library passes
+709 tests, zero failures and one existing ignore. Five production
+`joint_epm_transport` tests pass the matched scalar/batch result, score,
+provenance, fragmented-source and small-stack controls. The broader maintained
+EPathMap import proof/runtime gate is tracked separately; these results alone
+do not establish its completion, whole-workspace CI or persistence acceptance.
+
+| Artifact | SHA-256 |
+|---|---|
+| [Dispatcher raw samples and rejected patch](measurements/act-dispatch-raw-2026-09-14.tar.gz) | `f94e2b8d0fb586202d54bcfd32f46800f18e0d73e070287e4521f9bfc6147af6` |
+| [Dispatcher cell summaries](measurements/act-dispatch-timing-2026-09-14.tsv) | `f0abfc7bc6e3d9315d156cbd7d03a563c355dca03dad0504a73d558c180e610e` |
+| [Production import raw samples](measurements/act-production-import-raw-2026-09-14.tar.gz) | `edcbaa5bd71a8f69540b695431cf4be27fb8935a52983a67cea20e61390bfd33` |
+| [Production import cell summaries](measurements/act-production-import-2026-09-14.tsv) | `d7b25ae7007291b8ac31f6f1b2deec54677a588c1ff12bd5debccfe351db5a9b` |
+| `target/verification/act-restored-full-library-r1.log` | `a076a42aa3bc4dd53e913d8a8e574976d73abc42c3799c6001181c3fed01d52f` |
+| `target/verification/act-restored-joint-transport-r1.log` | `01f2796412d22e1ddc7b1eb90455a20418a1fff4874cb80587874542cc01d731` |
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate
