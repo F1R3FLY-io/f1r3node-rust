@@ -254,7 +254,13 @@ env:
   #   hard config error, so the old conf refuses to boot (run
   #   34494283638, every leg). Re-pin to the merged main SHA once #142
   #   lands.
-  SYSTEM_INTEGRATION_REF: cffb055b43d50ac369844230e013974c5f7497b7
+  # 2026-09-13: cffb055 -> 7018213 (SI PR #142 branch head): the harness
+  #   and test_load drop their stale-recovery-min-interval overrides and
+  #   inherit the node's derived interval (1.5 x check-interval); the
+  #   epoch_transition budget is 90s. Verified: descends from cffb055
+  #   (merge-base --is-ancestor). Re-pin to the merged main SHA once #142
+  #   lands.
+  SYSTEM_INTEGRATION_REF: 70182132d2ccb51660bf6c3f26667813863a1945
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
