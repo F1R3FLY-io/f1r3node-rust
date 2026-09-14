@@ -81,7 +81,7 @@ Split files:
 - `.github/workflows/ci.yml`: the "Verify isolated disk admission and emergency scenarios" step only.
 - `docs/Glossary.md`: the six disk terms, which are disk hygiene, disk admission, disk probe, disk guardian, crash monitor, and controller loss.
 - `docs/ToDos.md`: the three soak bullets.
-- `.github/workflows/merge-recovery-soak.yml`: four comment lines, or drop them. They add no behavior.
+- `.github/workflows/merge-recovery-soak.yml`: the `SOAK_EMERGENCY_DEADLINE_SECONDS` setting of 10 seconds with its comment. The driver default is 60, and the incident runners vanished 18 to 23 seconds after the guardian stamp. The four legacy comment lines add no behavior and can be dropped.
 
 Verification: the host suite on Linux, since the driver needs pidfd and Python 3. Also the Docker harness in CI, the workflow invariants, and the release workflow tests. The evidence record's digest table binds manifests that PR 2 does not carry. Section 6 records that decision.
 
@@ -165,12 +165,12 @@ Every git-state action, which means branch creation, staging, pushes, and PR cre
 
 The staging branch holds 2,070 legacy files, about 247,000 lines, that stay behind:
 
-- The per-defect TLA+ modules, 50 standalone specs with their configurations and correspondence notes, superseded by the two consolidated models.
+- The per-defect TLA+ modules, 51 standalone specs with their configurations and correspondence notes, superseded by the two consolidated models.
 - The 35 generated evidence packages under `docs/cbc-evidence/soak-*` and the run inspection under `docs/soak-evidence`, bound by digest in the driver evidence record instead.
 - The digest inventory `docs/claims/soak-claim-inventory.jsonc`, the retention record, the inventory tests, and the formal-gate claim.
 - The root `.gitignore` rerun patterns and the package `.gitattributes` files, which only serve the packages.
 - Every Ruby file. None is tracked on the staging branch now, and none is carried.
-- The source's telemetry track, an open decision in section 8. It holds the four metric validity models, the telemetry module and its test, and the change to the issue-24 metrics extension. It also holds the three glossary metric terms, the verification storage tool and its test, the low-disk cargo profile, and the reserve-argument plan.
+- The source's telemetry track, an open decision in section 8. It holds the four metric validity models, the telemetry module and its test, and the change to the issue-24 metrics extension. It also holds the three glossary metric terms, the verification storage tool and its test, the low-disk cargo profile, and the reserve-argument plan. The verification-storage section of `scripts/README.md` belongs to it as well.
 
 The phase-two list in the work log names each item.
 
