@@ -1342,3 +1342,12 @@ The document specifies the run that names the growing writer and derives the res
 It records the open-deleted-files hazard as the first hypothesis, because an unlinked but open file exhausts space without a path for `du` to find.
 This session added no evidence package, no driver change, and no gate registration, to avoid conflict with the parallel work.
 The run itself needs the runner, the O1 observability prerequisites, and separate authorization.
+
+### Resource foundation and ownership review, 2026-09-14
+
+This session added the `RetentionReserve` model and the D2 ownership review while the native-admission session finishes the cleanup.
+The `RetentionReserve` model shows that the emergency response must skip an evidence copy that would breach the operating reserve.
+It records a finding: the driver bounds each evidence copy by the emergency deadline, not by free space, so a space-aware skip is a pending D3 correction.
+The [ownership review](../plans/soak-d2-ownership-review-2026-09-14.md) confirms the Docker and Compose out-of-memory ownership and finds two open items on the subprocess and native paths.
+The subprocess item matches the incident, in which the kernel killed pytest at score 500 rather than the preferred workload.
+Both new models stay unregistered in the formal gate, and both driver corrections wait for the admission-check cleanup.

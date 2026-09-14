@@ -121,8 +121,12 @@ The `EmergencyDeadline` model bounds the response in copy steps, not in seconds.
 The `DurableRecord` model bounds the publication ordering, not its latency.
 Neither model represents writer growth during the bounded response.
 A D3 resource model must add external writes and stalled optional diagnostics, because fairness alone cannot prove a bounded emergency deadline.
+
 The [reserve bound model](../../formal/tlaplus/soak_disk/ReserveBound.md) makes a first step: it shows that the bounded deadline holds the operating reserve while an unbounded response exhausts it.
 It still needs the diagnostic growth, burst, and reserve values.
+
+The [retention reserve model](../../formal/tlaplus/soak_disk/RetentionReserve.md) adds the evidence-retention consumption: the response must skip a copy that would breach the operating reserve.
+It records that the driver bounds each copy by the emergency deadline, not by free space, so a space-aware skip is a pending D3 correction.
 
 ## Status
 
