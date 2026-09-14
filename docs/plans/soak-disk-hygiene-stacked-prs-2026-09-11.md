@@ -170,7 +170,7 @@ The staging branch holds 2,070 legacy files, about 247,000 lines, that stay behi
 - The digest inventory `docs/claims/soak-claim-inventory.jsonc`, the retention record, the inventory tests, and the formal-gate claim.
 - The root `.gitignore` rerun patterns and the package `.gitattributes` files, which only serve the packages.
 - Every Ruby file. None is tracked on the staging branch now, and none is carried.
-- The source's telemetry track, an open decision in section 8. It holds the four metric validity models, the telemetry module and its test, and the change to the issue-24 metrics extension. It also holds the three glossary metric terms, the verification storage tool and its test, the low-disk cargo profile, and the reserve-argument plan. The verification-storage section of `scripts/README.md` belongs to it as well.
+- The source's telemetry track, an open decision in section 8. It holds the four metric validity models, the telemetry module and its test, and the change to the issue-24 metrics extension. It also holds the six glossary metric and storage terms, the verification storage tool and its test, the low-disk cargo profile, and the reserve-argument plan. The verification-storage section of `scripts/README.md` belongs to it as well.
 
 The phase-two list in the work log names each item.
 

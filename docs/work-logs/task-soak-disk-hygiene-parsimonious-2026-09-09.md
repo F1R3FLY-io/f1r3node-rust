@@ -209,6 +209,7 @@ After phase two the README paragraph about legacy modules in `formal/tlaplus/soa
 - 2026-09-14, `754636b85` (D3 reserve-bound model, production emergency deadline): no driver change, and the merge had no conflicts. The soak workflow now sets `SOAK_EMERGENCY_DEADLINE_SECONDS` to 10. The three incident runners vanished 18 to 23 seconds after the guardian stamp, so the 60-second driver default would lose the evidence. PR 2 carries that setting.
   - The source's `ReserveBound` model states the reserve inequality: a bounded response holds the operating reserve, and an unbounded one exhausts it. The source leaves it unregistered until the second session's gate cleanup settles, so nothing is folded. When the source registers it, the fold target is the guardian's conditional theorem. That theorem carries the growth rate and the floor and would gain the operating reserve and the burst terms. The spec is on the phase-two lists.
   - The verification-storage section of `scripts/README.md` joins the telemetry track in the plan. The source added no evidence package.
+- 2026-09-14, `82d049b9d` (D3 diagnostic methodology, storage-tool completion): docs and the storage tool only, and the merge had no conflicts. The source wrote the methodology for the D3 diagnostic run that names the growing writer, which is a source record the plan does not carry. The three storage glossary terms and the storage-tool changes join the telemetry track. No model, driver, or gate change.
 
 ## D3 evidence: the disk-usage timeline (2026-09-10)
 
