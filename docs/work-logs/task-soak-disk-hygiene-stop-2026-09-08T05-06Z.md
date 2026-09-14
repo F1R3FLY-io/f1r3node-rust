@@ -1351,3 +1351,20 @@ It records a finding: the driver bounds each evidence copy by the emergency dead
 The [ownership review](../plans/soak-d2-ownership-review-2026-09-14.md) confirms the Docker and Compose out-of-memory ownership and finds two open items on the subprocess and native paths.
 The subprocess item matches the incident, in which the kernel killed pytest at score 500 rather than the preferred workload.
 Both new models stay unregistered in the formal gate, and both driver corrections wait for the admission-check cleanup.
+
+### Ownership claim correction, 2026-09-14
+
+The user authorized a review of the ownership claims in commit `2c1bc5241bd8ac2df57932f68977602e7ad156eb`.
+The corrected [ownership review](../plans/soak-d2-ownership-review-2026-09-14.md) supersedes the preceding section's ownership conclusions.
+The driver already has a periodic host-process preference setter, which can also select marked harness processes.
+The Docker and Compose preferences require host-memory protection and supported wrapper routes.
+A preference value does not guarantee runner survival or complete containment.
+
+The historical pytest incident concerned Docker-provider containers, not a demonstrated subprocess-provider preference defect.
+The native launcher has no explicit preference setting, but this does not establish its effective process scores.
+B34 and B36 remain historical, scoped observations without actual memory exhaustion.
+Complete ownership, launch-time coverage, process races, resource bounds, and independent termination confirmation remain open.
+
+Storage cleanup is complete, and it does not own shared gate registration or production D2 corrections.
+This review changes documentation only and leaves runtime code, formal results, and claim statuses unchanged.
+The inventory digest update binds revised documentation and is not a test rerun or claim discharge.
