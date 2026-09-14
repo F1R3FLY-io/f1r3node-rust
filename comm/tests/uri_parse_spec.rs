@@ -15,12 +15,13 @@ mod tests {
 
     #[test]
     fn well_formed_rnode_uri_should_parse_into_peer_node() {
-        let uri = "rnode://abcdef@localhost?protocol=12345&discovery=12346";
-        let result = PeerNode::from_address(uri);
+        let id = "1e780e5dfbe0a3d9470a2b414f502d59402e09c2";
+        let uri = format!("rnode://{id}@localhost?protocol=12345&discovery=12346");
+        let result = PeerNode::from_address(&uri);
 
         let expected = PeerNode {
             id: NodeIdentifier {
-                key: Bytes::from(vec![0xAB, 0xCD, 0xEF]),
+                key: Bytes::from(hex::decode(id).unwrap()),
             },
             endpoint: Endpoint {
                 host: "localhost".to_string(),
@@ -73,6 +74,22 @@ mod tests {
         match (&result, &expected) {
             (Err(CommError::ParseError(_)), Err(CommError::ParseError(_))) => (),
             _ => panic!("Expected ParseError for both result and expected"),
+        }
+    }
+
+    #[test]
+    fn malformed_node_ids_should_parse_as_error() {
+        for id in [
+            "0000000000000000000000000000000000000000",
+            "zzzz",
+            "abcdef",
+            "1e780e5dfbe0a3d9470a2b414f502d59402e09c2ff",
+        ] {
+            let uri = format!("rnode://{id}@localhost?protocol=12345&discovery=12346");
+            assert!(
+                matches!(PeerNode::from_address(&uri), Err(CommError::ParseError(_))),
+                "node id {id:?} must be rejected"
+            );
         }
     }
 
