@@ -553,6 +553,17 @@ async fn lag_past_the_height_threshold_still_mints_recovery() {
             dag_representation,
         ));
 
+        let manual = proposer
+            .propose(casper.clone(), false)
+            .await
+            .expect("propose");
+        assert!(
+            manual.block_message_opt.is_none(),
+            "a manual propose must keep the height gate even with the lag that enables empty \
+             blocks, got {:?}",
+            manual.propose_result.propose_status
+        );
+
         let result = proposer.propose(casper, true).await.expect("propose");
         assert!(
             result.block_message_opt.is_some(),

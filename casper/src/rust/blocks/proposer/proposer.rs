@@ -85,6 +85,15 @@ impl DeploySelection {
     pub fn allows_empty(&self) -> bool { !matches!(self, DeploySelection::Standard) }
 }
 
+/// Whether a propose request may mint a block without user deploys. Only the
+/// heartbeat lane may also mint past the height constraint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EmptyBlocks {
+    Forbidden,
+    Allowed,
+    HeartbeatLane,
+}
+
 #[allow(async_fn_in_trait)]
 pub trait BlockCreator {
     async fn create_block(
@@ -204,7 +213,7 @@ where
         &mut self,
         casper_snapshot: &mut CasperSnapshot,
         casper: Arc<dyn Casper + Send + Sync + 'static>,
-        allow_empty_blocks_for_request: bool,
+        empty_blocks: EmptyBlocks,
     ) -> Result<(ProposeResult, Option<BlockMessage>), CasperError> {
         // check if node is allowed to propose a block
         let constraint_check = self.check_propose_constraints(casper_snapshot).await?;
@@ -213,11 +222,11 @@ where
         // be rescued by: past the threshold, no proposal can land, so no new
         // justifications, so the clique never re-forms. An empty recovery
         // mint carries the justifications without burying deploys at a
-        // never-finalizing height; every other lane keeps the gate.
+        // never-finalizing height; manual proposals keep the gate.
         let selection = match constraint_check {
             CheckProposeConstraintsResult::Failure(
                 CheckProposeConstraintsFailure::TooFarAheadOfLastFinalized,
-            ) if allow_empty_blocks_for_request => {
+            ) if empty_blocks == EmptyBlocks::HeartbeatLane => {
                 tracing::info!(
                     "Height constraint exceeded with recovery eligible: minting an \
                      empty recovery block instead of failing the recovery lane"
@@ -230,10 +239,10 @@ where
                     None,
                 ))
             }
-            CheckProposeConstraintsResult::Success if allow_empty_blocks_for_request => {
-                DeploySelection::StandardAllowEmpty
+            CheckProposeConstraintsResult::Success if empty_blocks == EmptyBlocks::Forbidden => {
+                DeploySelection::Standard
             }
-            CheckProposeConstraintsResult::Success => DeploySelection::Standard,
+            CheckProposeConstraintsResult::Success => DeploySelection::StandardAllowEmpty,
         };
 
         let block_result = self
@@ -472,8 +481,13 @@ where
             );
         }
 
-        let allow_empty_blocks_for_request =
-            (self.allow_empty_blocks && is_async) || allow_empty_for_recovery;
+        let empty_blocks = if self.allow_empty_blocks && is_async {
+            EmptyBlocks::HeartbeatLane
+        } else if allow_empty_for_recovery {
+            EmptyBlocks::Allowed
+        } else {
+            EmptyBlocks::Forbidden
+        };
 
         let (result, propose_core_ms) = if is_async {
             // Empty blocks are reserved for heartbeat/liveness-driven proposes.
@@ -481,11 +495,7 @@ where
             // propose
             let propose_start = std::time::Instant::now();
             let (propose_result, block_opt) = self
-                .do_propose(
-                    &mut casper_snapshot,
-                    casper.clone(),
-                    allow_empty_blocks_for_request,
-                )
+                .do_propose(&mut casper_snapshot, casper.clone(), empty_blocks)
                 .await?;
             let propose_core_ms = propose_start.elapsed().as_millis();
 
@@ -516,7 +526,7 @@ where
             // propose
             let propose_start = std::time::Instant::now();
             let (propose_result, block_opt) = self
-                .do_propose(&mut casper_snapshot, casper, allow_empty_blocks_for_request)
+                .do_propose(&mut casper_snapshot, casper, empty_blocks)
                 .await?;
             let propose_core_ms = propose_start.elapsed().as_millis();
 
