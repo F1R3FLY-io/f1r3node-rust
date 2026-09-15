@@ -51,6 +51,7 @@ use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{BlockMessage, RejectedDeploy};
 use prost::bytes::Bytes;
+use shared::rust::store::key_value_store::MissingBlockContext;
 
 use super::floor::{in_floor_closure, Floor};
 use crate::rust::errors::CasperError;
@@ -105,7 +106,10 @@ fn effect_in_state_of_above(
         // typed so every availability classifier downstream can defer,
         // fetch, or abstain instead of laundering it into a verdict.
         let Some(block) = block_store.get(&cur)? else {
-            return Err(CasperError::BlockNotHeld(cur));
+            return Err(CasperError::BlockNotHeld(
+                cur,
+                MissingBlockContext::new("membership carrier-body read"),
+            ));
         };
         if block.body.state.block_number < min_height {
             return Ok(false);
@@ -240,13 +244,19 @@ fn lineage_step_of(
         if block_store.contains_key(block_hash)? {
             return Ok(step);
         }
-        return Err(CasperError::BlockNotHeld(block_hash.clone()));
+        return Err(CasperError::BlockNotHeld(
+            block_hash.clone(),
+            MissingBlockContext::new("lineage-step cache revalidation"),
+        ));
     }
     // Miss path: two short lock acquisitions (lookup above, insert below)
     // are deliberate — the store read between them is I/O and must not run
     // under the lock.
     let Some(block) = block_store.get(block_hash)? else {
-        return Err(CasperError::BlockNotHeld(block_hash.clone()));
+        return Err(CasperError::BlockNotHeld(
+            block_hash.clone(),
+            MissingBlockContext::new("lineage-step body read"),
+        ));
     };
     let next = if !block.body.merge_base.is_empty() {
         LineageNext::Base(block.body.merge_base.clone())
@@ -585,7 +595,7 @@ fn evaluate(
         // absent hash is on the lineage, so the early stop ends every
         // later walk there without re-reading), and re-arm — a readable
         // re-application above the horizon can still finalize it.
-        Err(CasperError::BlockNotHeld(missing)) => {
+        Err(CasperError::BlockNotHeld(missing, _)) => {
             tracing::warn!(
                 target: "f1r3fly.casper.lifecycle",
                 sig = %hex::encode(&sig[..8.min(sig.len())]),
@@ -1152,7 +1162,7 @@ mod tests {
         let err = effect_in_state_of(&store, &b.block_hash, &sig, 0)
             .expect_err("an unreadable lineage segment must refuse, not answer");
         assert!(
-            matches!(err, CasperError::BlockNotHeld(ref h) if *h == absent.block_hash),
+            matches!(err, CasperError::BlockNotHeld(ref h, _) if *h == absent.block_hash),
             "absence must carry the missing block's name typed; got: {}",
             err
         );
@@ -1491,7 +1501,7 @@ mod tests {
             .settled(&store, &sig_unknown)
             .expect_err("an unanswered probe must reach the gap and refuse");
         assert!(
-            matches!(err, CasperError::BlockNotHeld(ref h) if *h == absent.block_hash),
+            matches!(err, CasperError::BlockNotHeld(ref h, _) if *h == absent.block_hash),
             "the refusal must name the missing block typed; got: {}",
             err
         );
@@ -1542,12 +1552,12 @@ mod tests {
         let absent = block_at(3, vec![], 323);
         let err =
             rejected_records_of(&store, &absent.block_hash).expect_err("absence must refuse typed");
-        assert!(matches!(err, CasperError::BlockNotHeld(ref h) if *h == absent.block_hash));
+        assert!(matches!(err, CasperError::BlockNotHeld(ref h, _) if *h == absent.block_hash));
 
         let other_store = store_fn_second().await;
         let err = rejected_records_of(&other_store, &a.block_hash)
             .expect_err("a store that does not hold the block must refuse despite the cache");
-        assert!(matches!(err, CasperError::BlockNotHeld(ref h) if *h == a.block_hash));
+        assert!(matches!(err, CasperError::BlockNotHeld(ref h, _) if *h == a.block_hash));
     }
 
     async fn store_fn_second() -> KeyValueBlockStore {
@@ -1580,7 +1590,7 @@ mod tests {
         let err = settled_sigs_of_lineage(&store, &b.block_hash, 0)
             .expect_err("the batched walk must refuse a gapped segment");
         assert!(
-            matches!(err, CasperError::BlockNotHeld(ref h) if *h == absent.block_hash),
+            matches!(err, CasperError::BlockNotHeld(ref h, _) if *h == absent.block_hash),
             "the refusal must carry the missing block typed; got: {}",
             err
         );

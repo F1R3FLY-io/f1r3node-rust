@@ -34,7 +34,6 @@ use crate::rust::engine::engine_cell::EngineCell;
 use crate::rust::engine::genesis_ceremony_master::GenesisCeremonyMaster;
 use crate::rust::engine::genesis_validator::GenesisValidator;
 use crate::rust::engine::multi_parent_casper::MultiParentCasperImpl;
-use crate::rust::engine::running::RunningRecoveryContext;
 use crate::rust::errors::CasperError;
 use crate::rust::estimator::Estimator;
 use crate::rust::genesis::contracts::proof_of_stake::ProofOfStake;
@@ -84,9 +83,7 @@ pub struct CasperLaunchImpl<T: TransportLayer + Send + Sync + Clone + 'static> {
     >,
 }
 
-const MAX_BLOCKS_IN_PROCESSING: usize = 2_048;
-
-fn max_blocks_in_processing() -> usize { MAX_BLOCKS_IN_PROCESSING }
+use crate::rust::blocks::block_processor::MAX_BLOCKS_IN_PROCESSING;
 
 impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
     /// Helper method to create MultiParentCasper instance
@@ -168,7 +165,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             max_parent_depth: conf.max_parent_depth,
             synchrony_constraint_threshold: conf.synchrony_constraint_threshold,
             height_constraint_threshold: conf.height_constraint_threshold,
-            deploy_lifespan: 50,
+            deploy_lifespan: conf.deploy_lifespan,
             // Zero derives the budget from the citability window
             // (max-parent-depth heights of cadence) with a 5x margin. The
             // launch always produces a bound: `None` (unbounded) is
@@ -182,17 +179,16 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             } else {
                 conf.deploy_play_budget
             }),
-            casper_version: 1,
-            config_version: 1,
+            // A derived budget is provisional: hash_set_casper recomputes it
+            // from the ADOPTED max-parent-depth.
+            deploy_play_budget_is_derived: conf.deploy_play_budget.is_zero(),
+            heartbeat_check_interval: conf.heartbeat_conf.check_interval,
+            casper_version: crate::rust::casper::CASPER_PROTOCOL_VERSION,
             bond_minimum: conf.genesis_block_data.bond_minimum,
             bond_maximum: conf.genesis_block_data.bond_maximum,
             epoch_length: conf.genesis_block_data.epoch_length,
             quarantine_length: conf.genesis_block_data.quarantine_length,
             min_phlo_price: conf.min_phlo_price,
-            // Late block filtering disabled = deploys from "late" blocks (blocks not yet seen by
-            // all validators) are included in merged state. Prevents deploy loss during network
-            // partitions or validator catchup. Default is true (disabled).
-            disable_late_block_filtering: conf.disable_late_block_filtering,
             deploy_heartbeat_wake_enabled: false,
             disable_validator_progress_check: standalone,
             enable_mergeable_channel_gc: conf.enable_mergeable_channel_gc,
@@ -207,10 +203,8 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             native_token_name: conf.genesis_block_data.native_token_name.clone(),
             native_token_symbol: conf.genesis_block_data.native_token_symbol.clone(),
             native_token_decimals: conf.genesis_block_data.native_token_decimals,
-            // Phase 13: default matches the previous hardcoded constant
-            // (`MAX_ACTIVE_VALIDATORS_CACHE_ENTRIES = 4096`). When CasperConf
-            // gains a corresponding field, plumb it through here.
-            active_validators_cache_max_entries: 4096,
+            active_validators_cache_max_entries:
+                crate::rust::casper::ACTIVE_VALIDATORS_CACHE_MAX_ENTRIES_DEFAULT,
         };
 
         Self {
@@ -350,9 +344,10 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
                         );
                         continue;
                     }
-                    let max_in_flight = max_blocks_in_processing();
+                    let max_in_flight = MAX_BLOCKS_IN_PROCESSING;
                     if blocks_in_processing.len() > max_in_flight {
                         blocks_in_processing.remove(&block_hash);
+                        block_retriever.note_local_backpressure_drop(&block_hash, "launch-pendant");
                         tracing::warn!(
                             "Skipping pendant {} enqueue because in-flight block cap {} is reached",
                             PrettyPrinter::build_string_bytes(&block_hash),
@@ -454,22 +449,6 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.transport_layer.clone(),
             self.rp_conf_ask.clone(),
             self.block_retriever.clone(),
-            Some(RunningRecoveryContext {
-                connections_cell: self.connections_cell.clone(),
-                last_approved_block: self.last_approved_block.clone(),
-                block_store: self.block_store.clone(),
-                block_dag_storage: self.block_dag_storage.clone(),
-                deploy_storage: self.deploy_storage.clone(),
-                rejected_deploy_buffer: self.rejected_deploy_buffer.clone(),
-                casper_buffer_storage: self.casper_buffer_storage.clone(),
-                rspace_state_manager: self.rspace_state_manager.clone(),
-                event_publisher: self.event_publisher.clone(),
-                engine_cell: self.engine_cell.clone(),
-                runtime_manager: self.runtime_manager.clone(),
-                estimator: self.estimator.clone(),
-                casper_shard_conf: self.casper_shard_conf.clone(),
-                heartbeat_signal_ref: self.heartbeat_signal_ref.clone(),
-            }),
             &self.engine_cell,
             &self.event_publisher,
             self.state_items_tx.clone(),
@@ -550,6 +529,9 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.conf.genesis_block_data.quarantine_length,
             self.conf.genesis_block_data.number_of_active_validators,
             self.casper_shard_conf.fault_tolerance_threshold_ppm,
+            self.casper_shard_conf.max_parent_depth,
+            self.casper_shard_conf.deploy_lifespan,
+            self.casper_shard_conf.min_phlo_price,
             self.conf.genesis_ceremony.required_signatures,
             self.conf
                 .genesis_block_data
@@ -644,6 +626,9 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.conf.genesis_block_data.quarantine_length,
             self.conf.genesis_block_data.number_of_active_validators,
             self.casper_shard_conf.fault_tolerance_threshold_ppm,
+            self.casper_shard_conf.max_parent_depth,
+            self.casper_shard_conf.deploy_lifespan,
+            self.casper_shard_conf.min_phlo_price,
             self.casper_shard_conf.shard_name.clone(),
             self.conf.genesis_block_data.deploy_timestamp,
             self.conf.genesis_ceremony.required_signatures,

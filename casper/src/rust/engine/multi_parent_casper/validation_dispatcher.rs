@@ -235,11 +235,15 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
     )
     .await?;
     tracing::debug!(target: "f1r3fly.casper", "phlogiston-price-validated");
-    if let Either::Left(_) = phlo_price_result {
+    // Enforced, not warned: the floor is a chain-adopted consensus value, so
+    // every validator reaches this verdict identically (LowDeployCost is
+    // deliberately non-slashable — admission-only).
+    if let Either::Left(block_error) = phlo_price_result {
         tracing::warn!(
             "One or more deploys has phloPrice lower than {}",
             this.casper_shard_conf.min_phlo_price
         );
+        return Ok(Either::Left(block_error));
     }
 
     let requested_as_dependency = this

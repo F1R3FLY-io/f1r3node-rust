@@ -791,6 +791,7 @@ mod tests {
                 finalization_rate: 1,
                 max_number_of_parents: 1,
                 max_parent_depth: 1,
+                deploy_lifespan: 50,
                 deploy_play_budget: Duration::ZERO,
                 fork_choice_stale_threshold: Duration::from_secs(30),
                 fork_choice_check_if_stale_interval: Duration::from_secs(30),
@@ -834,7 +835,6 @@ mod tests {
                     self_propose_cooldown: Duration::from_secs(15),
                     ..casper::rust::casper_conf::HeartbeatConf::default()
                 },
-                disable_late_block_filtering: true,
                 enable_mergeable_channel_gc: false,
                 mergeable_channels_gc_interval: Duration::from_secs(5 * 60),
                 mergeable_channels_gc_depth_buffer: 10,

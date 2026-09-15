@@ -13,9 +13,7 @@ use casper::rust::casper::{
 };
 use casper::rust::engine::engine::Engine;
 use casper::rust::engine::engine_cell::EngineCell;
-use casper::rust::engine::running::{
-    update_fork_choice_tips_if_stuck, Running, RunningRecoveryContext,
-};
+use casper::rust::engine::running::{update_fork_choice_tips_if_stuck, Running};
 use casper::rust::errors::CasperError;
 use casper::rust::validator_identity::ValidatorIdentity;
 use models::casper::ApprovedBlockRequestProto;
@@ -407,29 +405,10 @@ mod tests {
             fixture.transport_layer.clone(),
             fixture.rp_conf_ask.clone(),
             fixture.block_retriever.clone(),
-            Some(RunningRecoveryContext {
-                connections_cell: fixture.connections_cell.clone(),
-                last_approved_block: fixture.last_approved_block.clone(),
-                block_store: fixture.block_store.clone(),
-                block_dag_storage: fixture.block_dag_storage.clone(),
-                deploy_storage: fixture.deploy_storage.clone(),
-                rejected_deploy_buffer: fixture.rejected_deploy_buffer.clone(),
-                casper_buffer_storage: fixture.casper_buffer_storage.clone(),
-                rspace_state_manager: fixture.rspace_state_manager.clone(),
-                event_publisher: fixture.event_publisher.clone(),
-                engine_cell: engine_cell.clone(),
-                runtime_manager: fixture.runtime_manager.clone(),
-                estimator: fixture.estimator.clone(),
-                casper_shard_conf: fixture.casper_shard_conf.clone(),
-                heartbeat_signal_ref: casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
-            }),
             None,
         );
         engine_cell.set(Arc::new(running)).await;
 
-        // The rejoin requires receive-quiescence in addition to the stale
-        // own message: no peer block has arrived since construction, so
-        // aging past the threshold makes the node genuinely quiescent.
         tokio::time::sleep(Duration::from_millis(1_100)).await;
 
         update_fork_choice_tips_if_stuck(
@@ -519,22 +498,6 @@ mod tests {
             fixture.transport_layer.clone(),
             fixture.rp_conf_ask.clone(),
             fixture.block_retriever.clone(),
-            Some(RunningRecoveryContext {
-                connections_cell: fixture.connections_cell.clone(),
-                last_approved_block: fixture.last_approved_block.clone(),
-                block_store: fixture.block_store.clone(),
-                block_dag_storage: fixture.block_dag_storage.clone(),
-                deploy_storage: fixture.deploy_storage.clone(),
-                rejected_deploy_buffer: fixture.rejected_deploy_buffer.clone(),
-                casper_buffer_storage: fixture.casper_buffer_storage.clone(),
-                rspace_state_manager: fixture.rspace_state_manager.clone(),
-                event_publisher: fixture.event_publisher.clone(),
-                engine_cell: engine_cell.clone(),
-                runtime_manager: fixture.runtime_manager.clone(),
-                estimator: fixture.estimator.clone(),
-                casper_shard_conf: fixture.casper_shard_conf.clone(),
-                heartbeat_signal_ref: casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
-            }),
             None,
         );
         engine_cell.set(Arc::new(running)).await;

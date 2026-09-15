@@ -110,10 +110,8 @@ fn create_snapshot_with_parent(
     shard_conf.deploy_lifespan = DEPLOY_LIFESPAN;
     shard_conf.max_number_of_parents = 10;
     shard_conf.casper_version = 1;
-    shard_conf.config_version = 1;
     shard_conf.bond_minimum = 0;
     shard_conf.bond_maximum = i64::MAX;
-    shard_conf.disable_late_block_filtering = false;
     shard_conf.disable_validator_progress_check = false;
 
     let mut bonds_map = HashMap::new();
@@ -207,6 +205,9 @@ async fn run_block_creator_create_memory_profile() {
             quarantine_length: 50000,
             number_of_active_validators: 1,
             fault_tolerance_threshold_ppm: 0,
+            max_parent_depth: 15,
+            deploy_lifespan: 50,
+            min_phlo_price: 0,
             pos_multi_sig_public_keys: vec![
                 "04db91a53a2b72fcdcb201031772da86edad1e4979eb6742928d27731b1771e0bc40c9e9c9fa6554bdec041a87cee423d6f2e09e9dfb408b78e85a4aa611aad20c".to_string(),
                 "042a736b30fffcc7d5a58bb9416f7e46180818c82b15542d0a7819d1a437aa7f4b6940c50db73a67bfc5f5ec5b5fa555d24ef8339b03edaa09c096de4ded6eae14".to_string(),
@@ -451,6 +452,9 @@ async fn run_block_creator_phase_split_memory_profile() {
             quarantine_length: 50000,
             number_of_active_validators: 1,
             fault_tolerance_threshold_ppm: 0,
+            max_parent_depth: 15,
+            deploy_lifespan: 50,
+            min_phlo_price: 0,
             pos_multi_sig_public_keys: vec![
                 "04db91a53a2b72fcdcb201031772da86edad1e4979eb6742928d27731b1771e0bc40c9e9c9fa6554bdec041a87cee423d6f2e09e9dfb408b78e85a4aa611aad20c".to_string(),
                 "042a736b30fffcc7d5a58bb9416f7e46180818c82b15542d0a7819d1a437aa7f4b6940c50db73a67bfc5f5ec5b5fa555d24ef8339b03edaa09c096de4ded6eae14".to_string(),
@@ -581,7 +585,6 @@ async fn run_block_creator_phase_split_memory_profile() {
                 &snapshot,
                 &runtime_manager,
                 &latest_messages,
-                None,
                 None,
                 None,
                 None,

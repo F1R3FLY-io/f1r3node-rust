@@ -27,6 +27,9 @@ use super::errors::InterpreterError;
 ///   validation-timeout-sec = 15
 /// }
 /// ```
+const DEFAULT_VALIDATE_API_KEY: bool = true;
+const DEFAULT_VALIDATION_TIMEOUT_SEC: u64 = 15;
+
 #[derive(Clone, Debug)]
 pub struct OpenAIConfig {
     /// Whether OpenAI service is enabled
@@ -49,7 +52,12 @@ impl OpenAIConfig {
     /// Use this when no HOCON config is available
     pub fn from_env() -> Self {
         // Use empty config values as base, let env vars take priority
-        Self::from_config_values(false, String::new(), true, 15)
+        Self::from_config_values(
+            false,
+            String::new(),
+            DEFAULT_VALIDATE_API_KEY,
+            DEFAULT_VALIDATION_TIMEOUT_SEC,
+        )
     }
 
     /// Load configuration merging HOCON config values with environment variables
@@ -114,8 +122,8 @@ impl OpenAIConfig {
         Self {
             enabled: false,
             api_key: None,
-            validate_api_key: true,
-            validation_timeout_sec: 15,
+            validate_api_key: DEFAULT_VALIDATE_API_KEY,
+            validation_timeout_sec: DEFAULT_VALIDATION_TIMEOUT_SEC,
         }
     }
 

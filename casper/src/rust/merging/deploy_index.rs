@@ -11,16 +11,18 @@ pub struct DeployIndex {
 }
 
 impl DeployIndex {
-    // This cost is required because rejection option selection rule depends on how much branch costs.
-    // For now system deploys do not have any weight, cost is 0.
+    // Rejection-option selection weighs branches by cost; system deploys
+    // carry none.
     pub const SYS_SLASH_DEPLOY_COST: u64 = 0;
     pub const SYS_CLOSE_BLOCK_DEPLOY_COST: u64 = 0;
     pub const SYS_EMPTY_DEPLOY_COST: u64 = 0;
 
-    // These are to be put in rejected set in blocks, so prefix format is defined for identification purposes.
-    pub const SYS_SLASH_DEPLOY_ID: &'static [u8] = &[1];
-    pub const SYS_CLOSE_BLOCK_DEPLOY_ID: &'static [u8] = &[2];
-    pub const SYS_EMPTY_DEPLOY_ID: &'static [u8] = &[3];
+    // Trailing byte of a system deploy's 33-byte id, defined from the
+    // system-deploy markers `is_system_deploy_id` recognizes.
+    pub const SYS_SLASH_DEPLOY_ID: &'static [u8] = &[crate::rust::system_deploy::SLASH_MARKER];
+    pub const SYS_CLOSE_BLOCK_DEPLOY_ID: &'static [u8] =
+        &[crate::rust::system_deploy::CLOSE_BLOCK_MARKER];
+    pub const SYS_EMPTY_DEPLOY_ID: &'static [u8] = &[crate::rust::system_deploy::HEARTBEAT_MARKER];
 
     pub fn new(
         sig: prost::bytes::Bytes,

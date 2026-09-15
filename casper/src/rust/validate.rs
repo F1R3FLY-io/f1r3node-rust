@@ -81,6 +81,8 @@ pub type PublicKey = Vec<u8>;
 pub type Data = Vec<u8>;
 pub type Signature = Vec<u8>;
 
+/// Wall-clock tolerance of the timestamp validity rule; consensus-bearing,
+/// so compiled.
 const DRIFT: i64 = 15000; // 15 seconds
 
 /// Namespace for the block-validation functions. P4-6 (slashing audit)
@@ -800,10 +802,11 @@ impl Validate {
             init_parents,
             |block_metadata| {
                 ancestor_metadata_visits.increment(1);
-                proto_util::get_parent_metadatas_above_block_number(
+                proto_util::parent_metadatas_above_block_number(
                     block_metadata,
                     earliest_block_number,
                     &s.dag,
+                    proto_util::UnheldParent::Surface,
                 )
             },
             |block_metadata| {

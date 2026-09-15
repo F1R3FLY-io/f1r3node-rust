@@ -119,6 +119,7 @@ pub struct BlockRetriever<T: TransportLayer + Send + Sync> {
     peer_requery_last_request: Arc<Mutex<HashMap<BlockHash, u64>>>,
     peer_requery_attempts_by_hash: Arc<Mutex<HashMap<BlockHash, u32>>>,
     retry_attempts_by_hash: Arc<Mutex<HashMap<BlockHash, u32>>>,
+    local_backpressure_credits: Arc<Mutex<HashSet<BlockHash>>>,
     retry_budget_quarantine_until: Arc<Mutex<HashMap<BlockHash, u64>>>,
     transport: Arc<T>,
     connections_cell: ConnectionsCell,
@@ -284,6 +285,14 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
             retry_attempts.remove(hash);
         }
         {
+            let mut credits = self.local_backpressure_credits.lock().map_err(|_| {
+                CasperError::RuntimeError(
+                    "Failed to acquire local_backpressure_credits lock".to_string(),
+                )
+            })?;
+            credits.remove(hash);
+        }
+        {
             let mut quarantine = self.retry_budget_quarantine_until.lock().map_err(|_| {
                 CasperError::RuntimeError(
                     "Failed to acquire retry_budget_quarantine_until lock".to_string(),
@@ -368,6 +377,14 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
                     )
                 })?;
             peer_requery_attempts.retain(|hash, _| active_hashes.contains(hash));
+        }
+        {
+            let mut credits = self.local_backpressure_credits.lock().map_err(|_| {
+                CasperError::RuntimeError(
+                    "Failed to acquire local_backpressure_credits lock".to_string(),
+                )
+            })?;
+            credits.retain(|hash| active_hashes.contains(hash));
         }
 
         Ok(())
@@ -492,6 +509,7 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
             peer_requery_last_request: Arc::new(Mutex::new(HashMap::new())),
             peer_requery_attempts_by_hash: Arc::new(Mutex::new(HashMap::new())),
             retry_attempts_by_hash: Arc::new(Mutex::new(HashMap::new())),
+            local_backpressure_credits: Arc::new(Mutex::new(HashSet::new())),
             retry_budget_quarantine_until: Arc::new(Mutex::new(HashMap::new())),
             transport,
             connections_cell,
@@ -553,12 +571,38 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
     }
 
     fn register_retry_attempt(&self, hash: &BlockHash) -> Result<(), CasperError> {
+        // A re-request caused by this node's own in-flight cap is not the
+        // peer's failure to deliver: the drop deposited a credit, and the
+        // credited attempt does not spend the retry budget.
+        {
+            let mut credits = self.local_backpressure_credits.lock().map_err(|_| {
+                CasperError::RuntimeError(
+                    "Failed to acquire local_backpressure_credits lock".to_string(),
+                )
+            })?;
+            if credits.remove(hash) {
+                return Ok(());
+            }
+        }
         let mut retry_attempts = self.retry_attempts_by_hash.lock().map_err(|_| {
             CasperError::RuntimeError("Failed to acquire retry_attempts_by_hash lock".to_string())
         })?;
         let counter = retry_attempts.entry(hash.clone()).or_insert(0);
         *counter = counter.saturating_add(1);
         Ok(())
+    }
+
+    /// Record that this node dropped `hash` at its own in-flight cap. The
+    /// next retry attempt for the hash is free, and the drop is metered.
+    pub fn note_local_backpressure_drop(&self, hash: &BlockHash, site: &'static str) {
+        metrics::counter!(
+            crate::rust::metrics_constants::BLOCK_INFLIGHT_CAP_DROP_METRIC,
+            "site" => site
+        )
+        .increment(1);
+        if let Ok(mut credits) = self.local_backpressure_credits.lock() {
+            credits.insert(hash.clone());
+        }
     }
 
     fn register_peer_requery_attempt(&self, hash: &BlockHash) -> Result<(), CasperError> {
@@ -1630,6 +1674,43 @@ mod tests {
     #[test]
     fn the_full_rerequest_span_matches_the_ladder() {
         assert_eq!(super::total_unresolved_rerequest_span_ms(), 58_000);
+    }
+
+    /// A drop at this node's own in-flight cap must not spend the per-hash
+    /// retry budget: the credited re-request is free, later ones count again.
+    #[test]
+    fn a_local_backpressure_drop_credits_one_retry_attempt() {
+        let local = peer_node("local", 40400);
+        let rp_conf = create_rp_conf_ask(local.clone(), None, None);
+        let connections = Connections::from_vec(vec![local]);
+        let connections_cell = ConnectionsCell {
+            peers: Arc::new(Mutex::new(connections)),
+        };
+        let requested_blocks: RequestedBlocks = Arc::new(Mutex::new(HashMap::new()));
+        let transport = Arc::new(TransportLayerStub::new());
+        let block_retriever =
+            BlockRetriever::new(requested_blocks, transport, connections_cell, rp_conf);
+
+        let hash: BlockHash = Bytes::from_static(b"backpressured-hash");
+        block_retriever
+            .register_retry_attempt(&hash)
+            .expect("count");
+        assert_eq!(block_retriever.retry_attempt_count(&hash).expect("read"), 1);
+
+        block_retriever.note_local_backpressure_drop(&hash, "test");
+        block_retriever
+            .register_retry_attempt(&hash)
+            .expect("credited");
+        assert_eq!(
+            block_retriever.retry_attempt_count(&hash).expect("read"),
+            1,
+            "the attempt caused by our own cap drop must be free"
+        );
+
+        block_retriever
+            .register_retry_attempt(&hash)
+            .expect("count");
+        assert_eq!(block_retriever.retry_attempt_count(&hash).expect("read"), 2);
     }
 
     #[tokio::test]

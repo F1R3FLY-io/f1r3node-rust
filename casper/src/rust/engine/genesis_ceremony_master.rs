@@ -163,7 +163,6 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisCeremonyMaster<T>
                     transport_layer.clone(),
                     rp_conf_ask.clone(),
                     block_retriever.clone(),
-                    None,
                     &engine_cell,
                     event_publisher,
                     // The ceremony master transitions genesis-rooted: its

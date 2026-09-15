@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
 use casper::rust::blocks::block_processor::{
-    validation_error_attempts_max, BlockProcessorDependencies, ValidationFailureDisposition,
+    BlockProcessorDependencies, ValidationFailureDisposition, VALIDATION_ERROR_ATTEMPTS_MAX,
 };
 use casper::rust::engine::block_retriever::BlockRetriever;
 use comm::rust::rp::connect::{Connections, ConnectionsCell};
@@ -83,7 +83,7 @@ async fn validation_failures_are_bounded_and_end_in_purge() {
     let serde_hash = BlockHashSerde(block.block_hash.clone());
     assert!(deps.casper_buffer().is_pendant(&serde_hash));
 
-    let max = validation_error_attempts_max();
+    let max = VALIDATION_ERROR_ATTEMPTS_MAX;
     for attempt in 1..max {
         assert_eq!(
             deps.note_validation_failure(&block.block_hash).unwrap(),

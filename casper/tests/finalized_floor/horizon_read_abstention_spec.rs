@@ -289,9 +289,9 @@ async fn a_stale_latest_message_does_not_fail_fork_choice() {
     let latest_messages: HashMap<Validator, BlockHash> =
         dag.latest_messages_map.clone().into_iter().collect();
 
-    let estimator = Estimator::apply(1, None);
+    let estimator = Estimator::apply();
     let result = estimator
-        .tips_with_latest_messages(&mut dag, &genesis, latest_messages)
+        .tips_with_latest_messages(&mut dag, &genesis, latest_messages, 1, None)
         .await;
 
     match result {

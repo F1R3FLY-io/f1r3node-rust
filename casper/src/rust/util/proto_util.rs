@@ -18,7 +18,7 @@ use models::rust::casper::protocol::casper_message::{
 };
 use models::rust::validator::Validator;
 use rholang::rust::interpreter::deploy_parameters::DeployParameters;
-use shared::rust::store::key_value_store::KvStoreError;
+use shared::rust::store::key_value_store::{KvStoreError, MissingBlockContext};
 use shared::rust::ByteString;
 
 use crate::rust::errors::CasperError;
@@ -177,7 +177,7 @@ pub fn weight_from_validator_by_dag(
         .lookup(block_hash)?
         .ok_or_else(|| KvStoreError::MissingBlock {
             hash: block_hash.clone(),
-            context: " [weight_from_validator_by_dag: traversed block]".to_string(),
+            context: MissingBlockContext::new("weight_from_validator_by_dag: traversed block"),
         })?;
 
     // Try to get parent's weight for this validator
@@ -188,7 +188,9 @@ pub fn weight_from_validator_by_dag(
                 dag.lookup(parent_hash)?
                     .ok_or_else(|| KvStoreError::MissingBlock {
                         hash: parent_hash.clone(),
-                        context: " [weight_from_validator_by_dag: main parent]".to_string(),
+                        context: MissingBlockContext::new(
+                            "weight_from_validator_by_dag: main parent",
+                        ),
                     })?;
             // Return validator's weight from parent or 0 if not found
             Ok(parent_metadata
@@ -263,22 +265,63 @@ pub fn get_parents_metadata(
         .map(|parent| {
             dag.lookup(parent)
                 .map_err(CasperError::from)?
-                .ok_or_else(|| CasperError::BlockNotHeld(parent.clone()))
+                .ok_or_else(|| {
+                    CasperError::BlockNotHeld(
+                        parent.clone(),
+                        MissingBlockContext::new("get_parents_metadata"),
+                    )
+                })
         })
         .collect()
 }
 
-pub fn get_parent_metadatas_above_block_number(
+/// How a walk treats a parent this node does not hold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnheldParent {
+    /// Verdict walks: surfaced as `BlockNotHeld` — a swallowed gap admits a
+    /// repeated deploy.
+    Surface,
+    /// Live-decision walks: settled ancestry below the restore horizon,
+    /// skipped with a warn. Under an undersized block floor the skip
+    /// under-fills the proposer's dedup window — self-harm, not a safety
+    /// hole.
+    SkipSettled,
+}
+
+pub fn parent_metadatas_above_block_number(
     block: &BlockMetadata,
     block_number: i64,
     dag: &KeyValueDagRepresentation,
+    on_unheld: UnheldParent,
 ) -> Result<Vec<BlockMetadata>, CasperError> {
-    get_parents_metadata(dag, block).map(|parents| {
-        parents
-            .into_iter()
-            .filter(|p| p.block_number >= block_number)
-            .collect()
-    })
+    let mut result = Vec::with_capacity(block.parents.len());
+    for parent in &block.parents {
+        match dag.lookup(parent).map_err(CasperError::from)? {
+            Some(meta) => {
+                if meta.block_number >= block_number {
+                    result.push(meta);
+                }
+            }
+            None => match on_unheld {
+                UnheldParent::Surface => {
+                    return Err(CasperError::BlockNotHeld(
+                        parent.clone(),
+                        MissingBlockContext::new("parent_metadatas_above_block_number"),
+                    ))
+                }
+                UnheldParent::SkipSettled => {
+                    tracing::warn!(
+                        parent = %PrettyPrinter::build_string_bytes(parent),
+                        child = %PrettyPrinter::build_string_bytes(&block.block_hash),
+                        earliest_wanted = block_number,
+                        "in-scope walk skipped an unheld parent: settled ancestry below \
+                         a restore horizon, or an undersized block floor"
+                    );
+                }
+            },
+        }
+    }
+    Ok(result)
 }
 
 pub fn deploys(block: &BlockMessage) -> Vec<ProcessedDeploy> { block.body.deploys.clone() }
@@ -731,13 +774,60 @@ mod fork_choice_b1_repro_tests {
             "unheld main parent must be MissingBlock naming the parent, got {err:?}"
         );
         // The deferral collapse the block pipeline routes on: the typed
-        // absence becomes BlockNotHeld, never a judged exception.
+        // absence becomes BlockNotHeld with the accessor tag riding along.
+        match crate::rust::errors::CasperError::from(err) {
+            crate::rust::errors::CasperError::BlockNotHeld(hash, site) => {
+                assert_eq!(hash, missing);
+                assert!(
+                    !site.accessor().is_empty(),
+                    "the accessor tag must survive the collapse, got {site:?}"
+                );
+            }
+            other => panic!("MissingBlock must collapse to BlockNotHeld, got {other:?}"),
+        }
+    }
+
+    /// The live-decision policy skips a sub-horizon parent instead of
+    /// erroring; the held sibling and the number filter are unaffected.
+    #[test]
+    fn in_scope_walk_skips_an_unheld_parent_and_keeps_the_held_window() {
+        let v = h(9);
+        let held_parent = h(4);
+        let missing_parent = h(2); // below the horizon: referenced, never indexed
+        let child = h(1);
+        let held_meta = md(held_parent.clone(), vec![], 5, &v);
+        let child_meta = md(
+            child.clone(),
+            vec![held_parent.clone(), missing_parent.clone()],
+            6,
+            &v,
+        );
+        let dag = dag_with(vec![held_meta, child_meta.clone()]);
+
+        let in_window =
+            parent_metadatas_above_block_number(&child_meta, 3, &dag, UnheldParent::SkipSettled)
+                .expect("unheld parent must be skipped, not an error");
+        assert_eq!(
+            in_window.iter().map(|m| &m.block_hash).collect::<Vec<_>>(),
+            vec![&held_parent],
+            "the held parent survives; the unheld one is silently settled"
+        );
+
+        let above_window =
+            parent_metadatas_above_block_number(&child_meta, 6, &dag, UnheldParent::SkipSettled)
+                .expect("unheld parent must be skipped, not an error");
+        assert!(
+            above_window.is_empty(),
+            "the number filter still bounds the held parent"
+        );
+
+        // The verdict policy refuses the same DAG.
         assert!(
             matches!(
-                crate::rust::errors::CasperError::from(err),
-                crate::rust::errors::CasperError::BlockNotHeld(hash) if hash == missing
+                parent_metadatas_above_block_number(&child_meta, 3, &dag, UnheldParent::Surface),
+                Err(crate::rust::errors::CasperError::BlockNotHeld(ref h, _)) if *h == missing_parent
             ),
-            "MissingBlock must collapse to BlockNotHeld for the deferral path"
+            "the verdict walk must surface the unheld parent"
         );
     }
 

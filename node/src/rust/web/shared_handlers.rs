@@ -1,6 +1,10 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+/// A /status response slower than this is logged as a warning, in both the
+/// handler and the underlying API.
+pub(crate) const STATUS_SLOW_THRESHOLD: Duration = Duration::from_millis(500);
+
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{FromRequest, FromRequestParts, Path, Query, Request, State};
 use axum::http::request::Parts;
@@ -332,7 +336,7 @@ fn classify_casper_error(err: &CasperError) -> (StatusCode, &'static str, String
         // a node restored from a sync anchor is still filling in below it, and
         // the same request may succeed once it has. 503 tells the caller to
         // retry; the 500 class would say the node is broken.
-        BlockNotHeld(_) => (S::SERVICE_UNAVAILABLE, "block_not_held", err.to_string()),
+        BlockNotHeld(..) => (S::SERVICE_UNAVAILABLE, "block_not_held", err.to_string()),
 
         SigningError(_) => internal("signing_error"),
         KvStoreError(_) => internal("kv_store_error"),
@@ -440,13 +444,12 @@ fn classify_interpreter_error(ie: &InterpreterError) -> (StatusCode, &'static st
     tag = "Status"
 )]
 pub async fn status_handler(State(app_state): State<AppState>) -> Response {
-    const STATUS_HANDLER_SLOW_THRESHOLD: Duration = Duration::from_millis(500);
     let started = Instant::now();
     let web_api = app_state.web_api.clone();
     match offload(move || async move { web_api.status().await }).await {
         Ok(response) => {
             let elapsed = started.elapsed();
-            if elapsed >= STATUS_HANDLER_SLOW_THRESHOLD {
+            if elapsed >= STATUS_SLOW_THRESHOLD {
                 warn!(?elapsed, "HTTP /status handler responded slowly");
             }
             Json(response).into_response()
@@ -826,7 +829,10 @@ mod tests {
                     "other_error",
                 ),
                 (
-                    CasperError::BlockNotHeld(vec![0xab].into()),
+                    CasperError::BlockNotHeld(
+                        vec![0xab].into(),
+                        shared::rust::store::key_value_store::MissingBlockContext::new(""),
+                    ),
                     StatusCode::SERVICE_UNAVAILABLE,
                     "block_not_held",
                 ),
