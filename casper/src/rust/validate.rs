@@ -802,10 +802,11 @@ impl Validate {
             init_parents,
             |block_metadata| {
                 ancestor_metadata_visits.increment(1);
-                proto_util::get_parent_metadatas_above_block_number(
+                proto_util::parent_metadatas_above_block_number(
                     block_metadata,
                     earliest_block_number,
                     &s.dag,
+                    proto_util::UnheldParent::Surface,
                 )
             },
             |block_metadata| {
