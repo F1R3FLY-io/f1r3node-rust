@@ -433,7 +433,7 @@ async fn check_lfb_and_propose(
     let frontier_chase_max_lag = config.advanced.frontier_chase_max_lag;
     let pending_deploy_max_lag = config.advanced.pending_deploy_max_lag;
     let advanced_deploy_recovery_max_lag = config.advanced.deploy_recovery_max_lag;
-    let stale_recovery_min_interval_ms = config.stale_recovery_min_interval.as_millis();
+    let stale_recovery_min_interval_ms = config.resolved_stale_recovery_min_interval().as_millis();
 
     // Check if we have pending user deploys in storage (not yet included in blocks)
     let has_pending_deploys = casper
@@ -1651,7 +1651,7 @@ mod tests {
                 check_interval: Duration::from_secs(1),
                 max_lfb_age: Duration::from_millis(1),
                 self_propose_cooldown: Duration::from_secs(15),
-                stale_recovery_min_interval: Duration::from_millis(0),
+                stale_recovery_min_interval: Some(Duration::from_millis(0)),
                 advanced: casper::rust::casper_conf::HeartbeatAdvancedConf {
                     frontier_chase_max_lag: 20,
                     pending_deploy_max_lag: 20,
@@ -2166,7 +2166,7 @@ mod tests {
             let casper: Arc<dyn MultiParentCasper + Send + Sync> = Arc::new(casper_impl);
             let (propose_count, propose_func) = create_counting_propose_function();
             let mut config = empty_frontier_backpressure_config();
-            config.stale_recovery_min_interval = Duration::from_secs(60);
+            config.stale_recovery_min_interval = Some(Duration::from_secs(60));
             let mut finality_progress = FinalityProgress::new(Instant::now());
 
             let result = do_heartbeat_check(
@@ -2185,6 +2185,79 @@ mod tests {
                 propose_count.load(Ordering::SeqCst),
                 0,
                 "Should not create empty frontier-follow proposals when unresolved DAG width exceeds cap"
+            );
+        }
+
+        /// Proposals from one backpressured heartbeat check at a 5s tick, for a
+        /// validator whose own latest block is `own_block_age_ms` old.
+        async fn capped_proposals_at(interval: Option<Duration>, own_block_age_ms: i64) -> usize {
+            let validator = create_test_validator_identity();
+            let validator_id = validator.public_key.bytes.clone();
+            let (snapshot, lfb) = wide_unfinalized_snapshot(validator_id);
+            let casper_impl =
+                casper::rust::casper::test_helpers::TestCasperWithSnapshot::new(snapshot, lfb);
+            let mut self_tip = models::rust::block_implicits::get_random_block_default();
+            self_tip.block_hash = test_hash(0x18);
+            let now_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as i64;
+            self_tip.header.timestamp = now_ms - own_block_age_ms;
+            casper_impl.insert_block(&self_tip);
+            let casper: Arc<dyn MultiParentCasper + Send + Sync> = Arc::new(casper_impl);
+            let (propose_count, propose_func) = create_counting_propose_function();
+            let mut config = empty_frontier_backpressure_config();
+            config.check_interval = Duration::from_secs(5);
+            config.stale_recovery_min_interval = interval;
+            let mut finality_progress = FinalityProgress::new(Instant::now());
+
+            do_heartbeat_check(
+                casper,
+                &*propose_func,
+                &validator,
+                &config,
+                false,
+                false,
+                &mut finality_progress,
+            )
+            .await
+            .expect("do_heartbeat_check");
+            propose_count.load(Ordering::SeqCst)
+        }
+
+        /// With the exemption interval below the tick, a validator that
+        /// minted one tick ago counts as idle-for-a-full-interval at every
+        /// tick — the width cap never binds and a stalled shard mints one
+        /// recovery block per validator per tick. Above the tick the same
+        /// validator is paced.
+        #[tokio::test]
+        async fn a_tick_old_mint_is_cap_exempt_below_the_tick_and_paced_above_it() {
+            let one_tick_ago_ms: i64 = 5_200;
+
+            assert_eq!(
+                capped_proposals_at(Some(Duration::from_secs(3)), one_tick_ago_ms).await,
+                1,
+                "interval below the tick: the exemption opens every tick and \
+                 the cap never binds (the box's one-mint-per-tick)"
+            );
+            assert_eq!(
+                capped_proposals_at(Some(Duration::from_secs(15)), one_tick_ago_ms).await,
+                0,
+                "interval above the tick: a tick-old mint is paced and the cap binds"
+            );
+        }
+
+        #[tokio::test]
+        async fn the_derived_interval_paces_one_tick_and_releases_on_the_second() {
+            assert_eq!(
+                capped_proposals_at(None, 5_200).await,
+                0,
+                "derived interval: a mint one tick old is still paced"
+            );
+            assert_eq!(
+                capped_proposals_at(None, 10_200).await,
+                1,
+                "derived interval: the exemption opens on the second tick"
             );
         }
 
@@ -2382,7 +2455,7 @@ mod tests {
             // recovery lane through its own pacing, so the 0 below asserts
             // the ROUTINE lanes' cooldown — the claim under test — rather
             // than a degenerate always-open recovery lane.
-            config.stale_recovery_min_interval = Duration::from_secs(15);
+            config.stale_recovery_min_interval = Some(Duration::from_secs(15));
             let mut finality_progress = FinalityProgress::new(Instant::now());
 
             let result = do_heartbeat_check(
@@ -2431,7 +2504,7 @@ mod tests {
 
             let (propose_count, propose_func) = create_counting_propose_function();
             let mut config = empty_frontier_backpressure_config();
-            config.stale_recovery_min_interval = Duration::from_secs(60);
+            config.stale_recovery_min_interval = Some(Duration::from_secs(60));
             let mut finality_progress = FinalityProgress::new(Instant::now());
 
             let result = do_heartbeat_check(
