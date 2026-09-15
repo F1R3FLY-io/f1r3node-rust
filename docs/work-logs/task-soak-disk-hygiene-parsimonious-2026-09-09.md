@@ -218,7 +218,31 @@ After phase two the README paragraph about legacy modules in `formal/tlaplus/soa
   - The source assigned production containment and its real-Docker verification for D2 and B44 to another agent on a different machine. The ToDos bullet says the identities remain to be recorded. On 2026-09-14 the user told this session that the other agents re-assigned it to check the Docker daemon and the guarded runner for verification. This session is therefore the receiving agent for that check.
   - The Docker daemon on this host is not running, since its socket is absent. The assignment requires an approved disposable guarded runner with a real private daemon, not a developer host. The verification waits for that runner and its authorization. This session records the runner, the source revisions, and the results in this log when they exist.
 
-## D3 evidence: the disk-usage timeline (2026-09-10)
+## Docker daemon check (2026-09-14)
+
+The user asked this session to run the Docker daemon and guarded-runner check. Docker Desktop was installed but stopped, and it now runs a Linux arm64 daemon with 12 CPUs and about 31 GiB. The fixtures run in disposable containers with no host mounts, no socket, and all capabilities dropped, the same way CI runs them. A developer daemon is therefore within the source's rules for them. The guarded runner is a separate matter, recorded below.
+
+Results on `3ea2beee5` with the fixture image `sha256:7d402dd7f1922bcdbdbeb90d14cecf398fdd36bc5105242fa4a4dc1d1cd596c5`:
+
+- `scripts/bench/test-soak-disk-admission.sh`, the CI step: all 42 isolated disk scenarios passed.
+- `scripts/bench/test-soak-disk-emergency.sh`, the 32 host fixtures the evidence record marks as not run on this host: 31 passed, including every B30 to B51 fixture. One failed twice, `test-soak-breach-record-order.sh` for B48.
+- macOS ships bsdtar, and 13 fixtures transfer their sources with GNU tar's mode option. GNU tar from Homebrew, placed first on the path, ran them unchanged. No source changed.
+
+The B48 failure is not the source's defect. The same fixture, image, and host pass with the source branch's driver. The staging driver differs from it only by the disk-usage timeline of 2026-09-10.
+
+The timeline's segment-start row runs `du` in the foreground under the diagnostic deadline before any breach decision. The fixture stalls `du` and counts that row as an attribution before the record. Its wait loop stops at two attributions, so it samples the driver mid-attribution and reports it as still running. The order check itself passes, since the last attribution sees the record.
+
+The timeline therefore cannot coexist with the source's B48 fixture as written. Its foreground rows also delay segment and iteration start by up to the diagnostic deadline when `du` stalls. On 2026-09-15 the user took the recommendation, and the timeline is removed. The driver and the host suite are the source's files, and the claim's D3 row now points at the source's methodology. The raw evidence for this check is session-local and is not committed.
+
+After the removal, the same checks ran again on the same daemon and image. The CI harness passed all 42 scenarios. The emergency suite passed every fixture, including the B48 fixture, and the three late fixtures passed. This host had moved to macOS 27 overnight, which stopped the Intel builds of GNU tar, coreutils, and jq. The arm64 builds from Homebrew, placed first on the path, ran the fixtures unchanged.
+
+### Guarded runner
+
+No runner is live in the ci-runner compartment, and the OCI runner profile authenticates from this host. The second session's runners were a custom variant of the system-integration launcher. Each was an OCI VM from the baked image, not registered with GitHub, with SSH and Docker verification, a source archive, and a two-hour expiry. That variant is not in any local checkout. A launch from here is possible with the OCI CLI. It waits for the user's authorization, since the source's rule requires an approved runner before any privileged run.
+
+## D3 evidence: the disk-usage timeline (2026-09-10, removed 2026-09-15)
+
+Removed on 2026-09-15 after the Docker daemon check below. That check found that its segment-start row breaks the source's B48 fixture and delays segment and iteration start when `du` stalls. The driver and the host suite are now byte-identical to the source's, and the source's D3 diagnostic methodology covers the timeline's purpose. The section stays as history.
 
 The breach snapshot names the consumer only at the end. The driver now records the growth curve as well. Every five minutes, and at each iteration start, it appends one row to `disk-usage-timeline.tsv` in the output directory. A row holds the epoch, a label, the free MiB, and the same per-root summary the breach tag carries. The guardian writes its rows in the background, so a slow `du` never delays the probe or the progress record. `SOAK_DISK_USAGE_INTERVAL_SECONDS` sets the interval, and 0 disables the timeline.
 

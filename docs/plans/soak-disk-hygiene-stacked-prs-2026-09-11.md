@@ -202,3 +202,4 @@ The maintainer took these decisions on 2026-09-11:
 | Question | Recommendation |
 | --- | --- |
 | The telemetry track that arrived with the B51 review corrections on 2026-09-13. Section 5 lists its files | Not carried in this stack. The track is a separate concern, metric validity, with its own models and fixtures. It can form its own pull request from the staging branch after PR 2. |
+| The disk-usage timeline of 2026-09-10, the only driver difference from the source. Its segment-start row breaks the source's B48 fixture, and its foreground rows delay segment and iteration start when `du` stalls. The work log's Docker daemon check records the evidence | Decided on 2026-09-15: removed. The driver and the host suite are the source's files, the source's D3 methodology covers the timeline's purpose, and the recurring driver conflicts end. |
