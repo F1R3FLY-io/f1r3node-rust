@@ -529,6 +529,7 @@ impl RuntimeOps {
                 // Handle evaluation errors from PreCharge
                 // - assigning 0 cost - replay should reach the same state
                 let mut empty_pd = ProcessedDeploy::empty(deploy);
+                empty_pd.is_failed = true;
                 empty_pd.system_deploy_error = Some(error.error_message);
 
                 // Update result with accumulated event logs
