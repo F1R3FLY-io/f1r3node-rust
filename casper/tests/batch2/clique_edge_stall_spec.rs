@@ -171,7 +171,6 @@ async fn certified(
         snapshot,
         FtThreshold::from_f32_lossy(FTT),
         false,
-        None,
     )
     .await
     .expect("ft_witnessed_exact")
