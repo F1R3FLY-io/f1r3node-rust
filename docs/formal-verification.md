@@ -92,7 +92,7 @@ and reused by every verified area:
 | Carrier index | [`formal/tlaplus/carrier_index/`](../formal/tlaplus/carrier_index) | Index-first publication, absence soundness, read-failure refusal, and pruning safety |
 | Promotion convergence | [`formal/tlaplus/fork_choice/PromotionConvergence.tla`](../formal/tlaplus/fork_choice/PromotionConvergence.tla) | Novel-signature gating and eventual GHOST restoration |
 | Deploy storage | [`formal/tlaplus/deploy_storage/`](../formal/tlaplus/deploy_storage) | Retained bytes per deploy bounded by the phlo limit; consensus-side, isolated from host models |
-| Soak disk protection | [`formal/tlaplus/soak_disk/`](../formal/tlaplus/soak_disk) | Admission and emergency paths of the soak driver, the conditional no-overrun theorem, and the consumer storage budget |
+| Soak disk protection | [`formal/tlaplus/soak_disk/`](../formal/tlaplus/soak_disk) | Admission and emergency paths of the soak driver, the conditional no-overrun theorem, the metric validity and reserve models, and the consumer storage budget |
 
 ## Worked example: byte-bounded block admission
 

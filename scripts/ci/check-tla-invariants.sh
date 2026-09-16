@@ -106,6 +106,13 @@ POST_FIX_CONFIGS=(
     soak_disk/MC_SoakDiskAdmission
     soak_disk/MC_SoakDiskGuardian
     soak_disk/MC_SoakStorageBudget
+    soak_disk/MC_MetricBaseline
+    soak_disk/MC_MetricBaseline_available
+    soak_disk/MC_MetricMonotonicity
+    soak_disk/MC_MetricSampleValidity
+    soak_disk/MC_MetricSummary
+    soak_disk/MC_ReserveBound
+    soak_disk/MC_RetentionReserve
 )
 
 TLC_WORKERS=auto
@@ -117,6 +124,13 @@ if [[ "$SOAK_PR" == true ]]; then
         soak_disk/MC_SoakDiskAdmission
         soak_disk/MC_SoakDiskGuardian
         soak_disk/MC_SoakStorageBudget
+        soak_disk/MC_MetricBaseline
+        soak_disk/MC_MetricBaseline_available
+        soak_disk/MC_MetricMonotonicity
+        soak_disk/MC_MetricSampleValidity
+        soak_disk/MC_MetricSummary
+        soak_disk/MC_ReserveBound
+        soak_disk/MC_RetentionReserve
     )
     TLC_WORKERS=2
 fi
@@ -211,6 +225,12 @@ NEGATIVE_CONTROLS=(
     soak_disk/MC_SoakStorageBudget_uncapped_blocks_pre_fix:WithinBudget
     soak_disk/MC_SoakStorageBudget_uncapped_logs_pre_fix:WithinBudget
     soak_disk/MC_SoakStorageBudget_uncapped_history_pre_fix:WithinBudget
+    soak_disk/MC_MetricBaseline_zero_pre_fix:MissingBaselineUnavailable
+    soak_disk/MC_MetricMonotonicity_unchecked_pre_fix:DecreasingSamplesUnavailable
+    soak_disk/MC_MetricSampleValidity_unchecked_pre_fix:InvalidSamplesRejected
+    soak_disk/MC_MetricSummary_omitted_pre_fix:CollectedRequiredPublished
+    soak_disk/MC_ReserveBound_unbounded_pre_fix:OperatingReserveHeld
+    soak_disk/MC_RetentionReserve_unskipped_pre_fix:ReserveHeld
     deploy_storage/MC_DeployStorageBound_unmetered_pre_fix:RetainedWithinPhlo
 )
 

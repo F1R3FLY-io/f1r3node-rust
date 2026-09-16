@@ -161,6 +161,21 @@ The LMDB environments open with a map size, which is a hard ceiling on the state
 
 Clock units: the probe deadline is 3 units (a 2-second timeout plus a 1-second kill grace), a stalled `df` returns at 4 units, the stop budget is 2 units (TERM at 1, KILL at 2), and attribution has 1 unit for all roots. Root counts are 1, 3, and 32. Prior failure counts are 0 and 2.
 
+## Registered standalone models
+
+Six small models from the source branch are registered in the gate as they are, beside the three consolidated models. Four come from the second session's telemetry track and two from the D3 reserve argument. Each has one positive configuration, and `MetricBaseline` has a second positive with the baseline available.
+
+| Model | Behavior | Control | Invariant |
+| --- | --- | --- | --- |
+| `MetricBaseline` | A metric delta with no baseline observation is unavailable, not zero | `MC_MetricBaseline_zero_pre_fix` | `MissingBaselineUnavailable` |
+| `MetricMonotonicity` | A cumulative series that decreases within an interval is unavailable | `MC_MetricMonotonicity_unchecked_pre_fix` | `DecreasingSamplesUnavailable` |
+| `MetricSampleValidity` | A non-finite or negative sample is rejected before it enters a delta | `MC_MetricSampleValidity_unchecked_pre_fix` | `InvalidSamplesRejected` |
+| `MetricSummary` | The summary formatter publishes every collected required metric | `MC_MetricSummary_omitted_pre_fix` | `CollectedRequiredPublished` |
+| `ReserveBound` | A bounded emergency response holds the operating reserve, and an unbounded one exhausts it | `MC_ReserveBound_unbounded_pre_fix` | `OperatingReserveHeld` |
+| `RetentionReserve` | The response skips an evidence copy that would breach the operating reserve | `MC_RetentionReserve_unskipped_pre_fix` | `ReserveHeld` |
+
+The reserve models state the D3 reserve argument with small concrete constants, and their growth, burst, and reserve values still need the D3 diagnostic run. The retention model records a driver gap: the evidence-copy skip is bound by the deadline, not by free space.
+
 ## Counterexamples
 
 Counterexamples are not stored. Each pre-fix configuration regenerates its historical counterexample deterministically: TLC explores the same finite state space and reports the named invariant with exit 12. The gate checks that message and exit code, and `scripts/ci/test-check-tla-invariants.sh` checks that the gate rejects every other outcome. A pre-fix configuration that stops violating its invariant is a verification failure, not a success.
