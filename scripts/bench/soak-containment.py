@@ -25,7 +25,7 @@ os.umask(0o077)
 source, directory, uid, gid = sys.argv[1:]
 control = Path(directory)
 uid, gid = int(uid), int(gid)
-if uid <= 0 or gid < 0:
+if uid <= 0 or gid <= 0:
     sys.exit("The native workload identity is invalid.")
 invocation = os.environ.get("INVOCATION_ID", "")
 if not re.fullmatch(r"[a-f0-9]{32}", invocation):
@@ -77,6 +77,8 @@ def launch_native(source, control, uid):
     if not driver.is_file():
         raise ValueError("The source directory has no soak driver.")
     account = pwd.getpwuid(uid)
+    if account.pw_gid <= 0:
+        raise ValueError("The native workload account must not use the root group.")
     base = source.parent
     if base.stat().st_uid != 0 or base.stat().st_mode & 0o022:
         raise ValueError("The native run directory must be root-owned and not writable by other users.")
@@ -197,9 +199,12 @@ def launch_native(source, control, uid):
     finally:
         environment_path.unlink(missing_ok=True)
         if process.poll() is None:
-            observed = unit_properties(unit)
-            if invocation is not None and observed.get("InvocationID") == invocation and observed.get("Description") == description:
-                subprocess.run(["/usr/bin/systemctl", "stop", unit], check=True, timeout=5)
+            try:
+                observed = unit_properties(unit)
+                if invocation is not None and observed.get("InvocationID") == invocation and observed.get("Description") == description:
+                    subprocess.run(["/usr/bin/systemctl", "stop", unit], check=False, timeout=5)
+            except (subprocess.SubprocessError, OSError):
+                pass
             try:
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
