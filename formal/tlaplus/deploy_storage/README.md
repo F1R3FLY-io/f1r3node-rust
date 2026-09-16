@@ -4,7 +4,7 @@
 | --- | --- |
 | `DeployStorageBound.tla` | One deploy under phlo accounting: storage effects are charged per encoded byte before they are retained, and execution halts when the limit is exhausted. |
 | `MC_DeployStorageBound.cfg` | Requires `RetainedWithinPhlo`: retained bytes times the storage rate never exceed the phlo limit. 237 states. |
-| `MC_DeployStorageBound_unmetered_pre_fix.cfg` | Storage effects are not charged. It must violate `RetainedWithinPhlo`. |
+| `MC_DeployStorageBound_unmetered_pre_fix.cfg` | Storage effects are not charged. It must violate `RetainedWithinPhlo`. It checks no liveness property, because an unmetered deploy is not claimed to terminate. |
 
 This area belongs to the consensus and execution component. It cites only the
 interpreter's cost table and exports one number to consumers: a deploy retains
@@ -20,6 +20,12 @@ as a constant and cites this README.
 | `ComputeStep` | every non-storage cost in the same table |
 | `PhloLimit` | the deploy's `phlo_limit` |
 
+## Fairness and termination
+
+`Spec` uses weak fairness on the whole `Next` action, not on `Finish` alone. That is enough for `Terminates` in the metered configuration for one reason. Every `StorageEffect` and every `ComputeStep` strictly decreases `phloRemaining`, so a run can take only finitely many of them. After that, `Finish` and the out-of-phlo transition are the only enabled steps, and either one leaves the running phase. Fairness on `Finish` alone would make termination hold without metering, so it would prove less.
+
+The unmetered control does not have this property. `StorageEffect` stays enabled forever there, so a run can stutter on it under weak fairness. The control therefore checks only the invariant that the gate registers it for.
+
 ## Promotion decision
 
 The interpreter is a mandatory subsystem under
@@ -29,6 +35,8 @@ refutation tier above does not close it. Promotion is pending. The Rocq
 theorem belongs on the execution side after the consensus component moves to
 its own repository. Its name goes in the table above when it lands.
 Until then the cycle record for this area carries `construction: pending`.
+
+The tiers link above is a permalink into the staging branch of the soak disk hygiene stack. The document itself lands on `dev` with the last PR of that stack, and the link becomes the relative path `docs/cbc-verification-tiers.md` then.
 
 The model does not bound how many deploys a block admits. It also does not
 bound how the tuple space stores a byte on disk, or the history trie's growth
