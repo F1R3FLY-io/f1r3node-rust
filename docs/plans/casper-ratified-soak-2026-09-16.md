@@ -4,7 +4,11 @@
 
 **Branch.** `formal/soak-casper-consensus`
 
-**Epic.** [EPIC-017](../ToDos.md#epic-017-ratified-casper-conformance-and-soak-evidence)
+**Pre-merge epic.** [EPIC-017](../ToDos.md#epic-017-ratified-casper-conformance-and-soak-evidence)
+
+**Post-merge epic.** [EPIC-018](../ToDos.md#epic-018-post-merge-casper-soak-formal-verification)
+
+**Follow-on branch.** Proposed: `formal/soak-casper-post-cost-accounting`. Create it only after PR #216 merges.
 
 **Baseline.** `a2fe60c7255bf4ba035d41fb65b6d6f1c0f02632`, the checked-out `dev` baseline on 2026-09-16.
 
@@ -16,7 +20,9 @@ The PR #216 comments record the [integration decisions](https://github.com/F1R3F
 
 Current `dev` remains the default Casper authority. A branch proposal does not independently authorize protocol changes.
 
-This branch prepares formal claims, production conformance tests, and separate soak profiles. It does not activate deferred policies or approve a protocol release.
+This branch prepares pre-merge formal claims, baseline conformance tests, and separate soak profiles. A follow-on formal-methods harness PR verifies the merged PR #216 implementation.
+
+Neither phase activates deferred policies or approves a protocol release.
 
 Correct by Construction (CbC) work must distinguish a model result from production conformance. A passing soak does not discharge an unbounded theorem.
 
@@ -42,7 +48,9 @@ The source PRs report verification results. Those reports are inherited evidence
 
 ## Decisions and acceptance obligations
 
-| Decision | Required disposition | Evidence or activation condition | Task |
+The table names pre-merge preparation tasks. The phase handoff below assigns their merged-runtime verification to EPIC-018.
+
+| Decision | Required disposition | Evidence or activation condition | Pre-merge task |
 | --- | --- | --- | --- |
 | D-01 | Use one Casper protocol-7 authority chain and fresh genesis. Keep reusable accounting authority version 8 separate. | FIPS approval, ceremony/adoption/reception agreement, unsupported-version refusal | TASK-017-11 |
 | D-02 | Preserve upstream committee and stake provenance, exact justifications, duplicate rejection, and validator signatures. Do not require certificate sidecars. | Integration tests must pass before removing coupled certificate code. Cover replay, settlement, restart, dependencies, and finalization. | TASK-017-5 |
@@ -81,21 +89,64 @@ Do not relabel those tasks merely to satisfy the parser. TASK-017-1 records this
 
 No `docs/handoffs/` directory exists at this baseline. Relevant work logs include the issue-24 fast path and the 60-hour preflight handoff.
 
-## Integration sequence
+## Pre- and post-merge sequence
 
-1. Review this epic and its authority map.
-2. Define the claim inventory and reference oracles before changing production code.
-3. Integrate reviewed prerequisites in stack order with separate Git approval.
-4. Bind all evidence to exact node, model, harness, and configuration revisions.
-5. Run deterministic baseline conformance before comparative soak profiles.
-6. Exercise deferred policies only in isolated experimental builds or test fixtures.
-7. Submit evidence for review before any deferred policy becomes an activation candidate.
+### Phase A: Before PR #216 merges
 
-PR #390 documentation publication and PR #216 implementation alignment remain separate prerequisites. Neither requires adopting PR #216 wholesale.
+EPIC-017 belongs to the current branch and PR. It does not depend on PR #216 merging.
+
+1. Review the authority map and pre/post task split.
+2. Define claims, reference oracles, negative controls, and exact evidence scopes.
+3. Integrate reviewed harness prerequisites in stack order with separate Git approval.
+4. Bind existing production behavior to current-dev models and tests.
+5. Prepare candidate-specific models and experimental profiles without claiming merged-runtime conformance.
+6. Run the required baseline soak and available isolated candidate experiments.
+7. Review pre-merge claim evidence and hand off post-merge obligations to EPIC-018.
+
+Unavailable candidate functionality remains a named post-merge obligation. It is not a passing result or a reason to weaken a pre-merge claim.
+
+### Phase B: After PR #216 merges
+
+EPIC-018 owns a separate formal-methods PR for the soak harness. Its start gate requires the accepted EPIC-017 handoff and PR #216 merged into `dev`.
+
+1. Verify PR #216's merged state and the merge commit's ancestry in the selected updated `dev` baseline.
+2. Create the follow-on branch from that baseline with separate Git approval.
+3. Record the actual merge SHA and node, model, harness, image, and configuration identities.
+4. Reconcile changed implementation behavior with the pre-merge models and ratified decisions.
+5. Adapt the harness and rerun production bindings, negative controls, and applicable proofs.
+6. Run new merged-runtime conformance and comparative soak profiles.
+7. Discharge the post-merge scope and submit the follow-on PR evidence for review.
+
+An open PR #216 head cannot satisfy the merge gate. A merge does not itself establish conformance with the ratifications.
+
+### Phase handoff
+
+| Pre-merge output | Post-merge owner | Required post-merge work |
+| --- | --- | --- |
+| TASK-017-1, TASK-017-3, TASK-017-13: source inventory and accepted handoff | TASK-018-1 | Verify the merge gate and select an exact updated baseline. |
+| TASK-017-2, TASK-017-4: claims, controls, scope, and evidence contracts | TASK-018-2 | Audit changed assumptions, rebind artifacts, and adapt harness interfaces. |
+| TASK-017-5, TASK-017-6, TASK-017-9: authority, finality, publication, and slashing | TASK-018-3 | Run the actual merged-runtime bindings and regression tests. |
+| TASK-017-8, TASK-017-10, TASK-017-11: merge, accounting, identity, version, and Phlo | TASK-018-4 | Verify the merged implementation and rerun applicable construction proofs. |
+| TASK-017-7, TASK-017-12: recovery profiles and baseline results | TASK-018-3, TASK-018-5 | Bind recovery behavior and run new comparative soaks. |
+| TASK-017-13: pre-merge closure and pending obligations | TASK-018-6 | Discharge post-merge claims and link all new evidence. |
+
+The handoff retains revisions, claim statements, assumptions, model bounds, oracle versions, artifact digests, seeds, and pending production bindings.
+
+Pre-merge proofs may remain reusable when their statements and inputs are unchanged. Changed production artifacts require new bindings and claim-specific evidence.
+
+Do not copy discharge statuses from the candidate branch onto the merged runtime. Pre-merge completion does not discharge post-merge obligations.
+
+### Conditions that apply to both phases
+
+PR #390 documentation publication and PR #216 implementation alignment remain separate concerns. Neither requires adopting PR #216 wholesale.
 
 Protocol-changing comparisons need separate fresh-genesis shards. Do not mix incompatible block formats or node-local validity switches within a shard.
 
-Missing candidate implementations produce a blocked profile, not a skipped success. Ordinary `dev` baseline tests do not wait for protocol-7 activation.
+Missing functionality blocks the profile that requires it, rather than producing a skipped success. Ordinary `dev` baseline tests do not wait for protocol-7 activation.
+
+Certificate-removal integration tests remain prerequisites to removal. The phase split does not postpone those tests until after unsafe removal.
+
+FIPS approval and fresh genesis remain activation conditions. A successful post-merge soak does not approve a deferred policy.
 
 ## CbC claim inventory to prepare
 
@@ -115,6 +166,8 @@ TASK-017-2 must create or refine claims before the related code changes. The fol
 Reuse existing claims when their statements match the ratified requirement. Do not discharge an old claim against a different property.
 
 Each claim must name authenticated inputs, outputs, assumptions, boundedness, negative controls, production functions, and required evidence tiers.
+
+Each claim must also state its pre-merge and post-merge obligations. TASK-018-2 revalidates the inventory against the actual merged implementation.
 
 ### Verification tiers
 
@@ -163,6 +216,10 @@ The PR #432 description states a 15-minute bounded workflow tier. PR #433 descri
 
 ## Evidence profiles
 
+EPIC-017 establishes model controls, reference oracles, baseline bindings, and profile definitions. It records available candidate experiments separately.
+
+EPIC-018 adapts these profiles to the merged runtime and produces new conformance and soak evidence. Pre-merge run IDs cannot satisfy post-merge run requirements.
+
 | Profile | Scenarios and required observations |
 | --- | --- |
 | Authority and finality | Missing dependencies, replay, settlement, restart, committee provenance, inclusive threshold equality, strict majority, divergent local views, retained finalized effects |
@@ -186,6 +243,12 @@ Timeout, cancellation, missing evidence, and tool failure are not passing result
 
 Use `/cbc identify`, `/cbc verify`, and `/cbc discharge --strict` for the applicable artifact scope. Record unavailable verifiers as gaps, not mock proof.
 
-A clean documentation diff does not discharge planned runtime claims. Final closure requires model results, construction evidence where applicable, production bridges, and completed soak evidence.
+A clean documentation diff does not discharge planned runtime claims. Each phase needs model results, construction evidence where applicable, production bridges, and its required soak evidence.
 
-Do not mark the epic complete or close related issues while required claims remain pending or refuted.
+EPIC-017 closes only when its pre-merge obligations pass and the EPIC-018 handoff is accepted. It need not wait for PR #216 to merge.
+
+EPIC-018 closes only after the merge gate, new production bindings, post-merge soaks, and strict claim discharge pass.
+
+Do not defer a required pre-merge claim merely to close EPIC-017. Keep genuine post-merge obligations pending under EPIC-018, not waived.
+
+Do not close related issues or claim complete protocol conformance while required post-merge claims remain pending or refuted.

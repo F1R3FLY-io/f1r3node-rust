@@ -5,7 +5,7 @@ claimed_by: pi-casper-ratification-planning
 claimed_at: 2026-09-16T20:29:37Z
 handoff_status: paused
 next_steps:
-  - Review the EPIC-017 plan and task order with the maintainer.
+  - Review the EPIC-017 pre-merge and EPIC-018 post-merge plan with the maintainer.
   - Define claim-specific reference oracles under TASK-017-2.
   - Resolve prerequisite integration under TASK-017-3 with separate Git consent.
 ---
@@ -18,7 +18,8 @@ Prepare the checked-out branch from the ratification meeting. Review ToDos and e
 
 ## Changes
 
-- Added EPIC-017 with thirteen tasks in `docs/ToDos.md`.
+- Added EPIC-017 with thirteen pre-merge tasks in `docs/ToDos.md`.
+- Added blocked EPIC-018 with six tasks for the post-#216 formal-methods harness PR.
 - Added the [branch plan](../plans/casper-ratified-soak-2026-09-16.md).
 - Recorded all twelve decisions, exact source revisions, evidence profiles, and existing epic overlaps.
 - Kept production code, workflow code, existing task claims, and unrelated epic statuses unchanged.
@@ -68,10 +69,24 @@ Java, the TLC jar, and Z3 are present. Rocq and Coq are not on the current PATH.
 
 No prover, runtime test, or soak was run during planning. No claim was waived or discharged.
 
+## Pre/post amendment
+
+The maintainer requested a separate follow-on formal-methods harness PR after PR #216 merges.
+
+EPIC-017 now owns the pre-merge models, oracles, baseline bindings, profiles, and baseline evidence. Its completion does not depend on PR #216 merging.
+
+EPIC-018 starts only after the accepted pre-merge handoff and the actual PR #216 merge into `dev`. The proposed follow-on branch is `formal/soak-casper-post-cost-accounting`.
+
+The post-merge tasks rebind claims and adapt the harness to actual merged APIs, fields, metrics, storage, and lifecycle behavior. They require new runs and evidence.
+
+The handoff records genuine pending production obligations without waiving them. It cannot excuse an incomplete claim required by the pre-merge scope.
+
+No follow-on branch or PR was created. This amendment changes planning documents only.
+
 ## Planning validation
 
-- The epic parser reports thirteen TASK-017 entries, with one in progress and twelve pending.
-- YAML parsing confirms unique task identifiers and an acyclic TASK-017 dependency graph.
+- YAML parsing reports thirteen TASK-017 entries and six TASK-018 entries.
+- Dependency checks confirm unique task identifiers, acyclic task dependencies, and explicit merge and handoff gates.
 - Relative file links and all twelve decision rows pass the local checks.
 - The deterministic STE Check passes for the new plan, work log, and changed ToDos sections.
 - `git diff --check` passes.
@@ -80,6 +95,6 @@ These checks validate planning artifacts only. The strict CbC scope check remain
 
 ## Next step
 
-Review the plan before implementation. Then start TASK-017-2 with claim statements, negative controls, source bridges, and a precise artifact scope.
+Review the two-phase plan before implementation. Then start TASK-017-2 with claim statements, negative controls, source bridges, phase ownership, and a precise artifact scope.
 
 Keep deferred policies experimental. Retain both `phloLimit` and `phloPrice` in every protocol-7 acceptance contract.

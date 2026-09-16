@@ -24,7 +24,7 @@ This document tracks implementation work through **epics** (logical groupings of
 
 ## Active Coordination
 
-- **Casper ratification follow-up (2026-09-16).** EPIC-017 prepares conformance and soak evidence on `formal/soak-casper-consensus`. The [meeting record](https://github.com/F1R3FLY-io/f1r3node-rust/pull/390#pullrequestreview-5227717933) controls the decisions. PRs #430 through #433 remain open prerequisites in stack order. The [branch plan](./plans/casper-ratified-soak-2026-09-16.md) maps all twelve decisions to tasks and evidence. No deferred policy is authorized by an experiment.
+- **Casper ratification follow-up (2026-09-16).** EPIC-017 owns the pre-#216 models, baseline conformance, and harness preparation on `formal/soak-casper-consensus`. EPIC-018 owns a separate formal-methods harness PR after PR #216 merges. The [meeting record](https://github.com/F1R3FLY-io/f1r3node-rust/pull/390#pullrequestreview-5227717933) controls both phases. PRs #430 through #433 remain prerequisites in stack order. The [branch plan](./plans/casper-ratified-soak-2026-09-16.md) defines the handoff, separate completion gates, and deferred-policy restrictions.
 
 <!-- Compact, current-state-only. This section replaces the free-form status
      entries that previously accumulated at the top of this file; the full
@@ -87,15 +87,18 @@ claimed_by: pi-casper-ratification-planning
 claimed_at: 2026-09-16T20:29:37Z
 branch: formal/soak-casper-consensus
 plan: docs/plans/casper-ratified-soak-2026-09-16.md
-related_epics: [EPIC-010, EPIC-012, EPIC-013, EPIC-015, EPIC-016]
+related_epics: [EPIC-010, EPIC-012, EPIC-013, EPIC-015, EPIC-016, EPIC-018]
+phase: pre_pr216_merge
+follow_on_epic: EPIC-018
 source_prs: [216, 390, 430, 431, 432, 433]
 execution_contract:
   base_branch: dev
   authority: "The 2026-09-16 ratification meeting controls the selected dispositions. Current dev remains the default Casper authority."
   integration_order: "PR #430 -> #431 -> #432 -> #433. PR #390 records decisions. PR #216 remains a candidate implementation."
-  scope: "Prepare claims, deterministic conformance, and comparative soak evidence. Do not activate deferred policies."
+  scope: "Pre-#216 models, reference oracles, current-dev bindings, and baseline harness profiles. Candidate evidence is exploratory, not post-merge conformance."
   git_policy: "Do not merge, commit, push, or create a PR without separate user authorization."
-  completion_policy: "Close only after required claims and production bridges pass, completed soaks supply evidence, and maintainers review the result."
+  completion_policy: "Close after pre-merge scope claims pass, baseline evidence is reviewed, and the EPIC-018 handoff is accepted. PR #216 merge is not a blocker."
+  evidence_boundary: "Keep post-merge production claims pending under EPIC-018. Do not waive them or represent candidate results as merged-runtime evidence."
 files:
   - casper/src/rust/estimator.rs
   - casper/src/rust/util/dag_operations.rs
@@ -117,7 +120,7 @@ tasks:
       - "The branch plan maps D-01 through D-12 to tasks, activation conditions, and evidence."
       - "The inventory separates current dev, local ratification records, and open PR revisions."
       - "Existing epic overlaps, claims, parser limitations, and stale specification conflicts are recorded."
-      - "The maintainer reviews the plan before implementation starts."
+      - "The maintainer reviews the pre/post split and plan before implementation starts."
 
   - id: TASK-017-2
     title: "Define CbC claims, reference oracles, and source scope"
@@ -132,6 +135,7 @@ tasks:
       - "Existing claims and waivers are audited for revision and property coverage before reuse."
       - "Missing mandatory attributes are proposed for review before the related code changes."
       - "Unavailable verifiers remain explicit gaps. No mock result discharges a production claim."
+      - "Each claim identifies its pre-merge scope and any post-merge production obligation owned by EPIC-018."
 
   - id: TASK-017-3
     title: "Integrate reviewed harness prerequisites and pin the candidate matrix"
@@ -145,6 +149,7 @@ tasks:
       - "PR #431 containment limitations and inherited evidence remain explicit."
       - "The 15-minute and two-minute bounded-tier descriptions are reconciled against the implemented gate."
       - "The system-integration fixture contract is reviewed before any coordinated harness edit or repin."
+      - "PR #216 stays an optional candidate reference. Its merge does not gate this phase."
 
   - id: TASK-017-4
     title: "Bind experiment manifests and formal controls to workflow evidence"
@@ -161,7 +166,7 @@ tasks:
       - "Property tiers report their actual case counts, and claim-discharge scripts run in workflows."
 
   - id: TASK-017-5
-    title: "Verify upstream authority, floor-bounded fork choice, and finality"
+    title: "Model authority and finality and bind current-dev reference paths"
     status: pending
     claimed_by: null
     blocked_by: [TASK-017-4]
@@ -171,11 +176,12 @@ tasks:
       - "Identical admissible DAGs produce identical valid heads under bounded and reference LCA traversal."
       - "Tests preserve stake provenance, electorate, depth rules, truncation, and progress."
       - "Finality tests cover inclusive equality, strict majority, cross-view state retention, and missing-history holds."
-      - "Replay, settlement, restart, missing dependencies, and finalization tests pass before coupled certificate code is removed."
+      - "Certificate-removal integration tests are specified before removal. This task does not remove coupled PR #216 certificate code."
+      - "Candidate-specific replay, settlement, restart, dependency, and finalization bindings transfer to TASK-018-3."
       - "The model and production bridge state a measured traversal work bound."
 
   - id: TASK-017-6
-    title: "Verify publication atomicity and durable eviction authority"
+    title: "Model publication atomicity and test baseline eviction authority"
     status: pending
     claimed_by: null
     blocked_by: [TASK-017-4]
@@ -185,9 +191,10 @@ tasks:
       - "Stale evaluations cannot publish and local finality markers cannot evict unresolved deploy work."
       - "Direct-finalization FT remains distinguishable from later display projections."
       - "Any parallel experiment preserves publication order and finalized results without replacing the single-flight default."
+      - "Model and current-dev results are separate from merged-#216 publication bindings under TASK-018-3."
 
   - id: TASK-017-7
-    title: "Compare deferred heartbeat and retry policies in isolated profiles"
+    title: "Prepare isolated heartbeat and retry experiments against the baseline"
     status: pending
     claimed_by: null
     blocked_by: [TASK-017-4]
@@ -200,9 +207,10 @@ tasks:
       - "Reports include duplicates, custody consistency, retry completion, expiry, recovery time, cadence, latency, and resources."
       - "Lease expiry never bypasses floor, custody, lifespan, replay, or validation requirements."
       - "An experiment cannot grant authority to activate its policy."
+      - "Record baseline results and candidate availability. The merged-runtime comparison belongs to TASK-018-5."
 
   - id: TASK-017-8
-    title: "Verify conditional additive merge and accounting conformance"
+    title: "Prepare additive merge models, oracles, and accounting controls"
     status: pending
     claimed_by: null
     blocked_by: [TASK-017-4]
@@ -213,12 +221,13 @@ tasks:
       - "The corpus distinguishes duplicate observations from independent identical effects and retains the required multiplicity."
       - "Causal rejection preserves unrelated effects and rejects dependent effects transitively."
       - "Tests cover local evidence authentication, admission alignment, failed settlement, overflow, pooling, and conservation."
-      - "Rocq construction evidence and production bindings cover unbounded claims."
+      - "Rocq construction evidence covers unbounded model claims. Available baseline bindings identify their exact implementation scope."
+      - "Merged accounting and additive-runtime bindings remain pending under TASK-018-4."
       - "Compatibility differences are classified rather than treated as unconditional equivalence failures."
       - "Production activation remains blocked on the protocol-7 FIP, fresh genesis, and required evidence."
 
   - id: TASK-017-9
-    title: "Compare upstream and supplementary slash authorization"
+    title: "Build slash-authorization oracles and baseline comparisons"
     status: pending
     claimed_by: null
     blocked_by: [TASK-017-4]
@@ -228,9 +237,10 @@ tasks:
       - "The soak profile repeats concurrency, delayed dependencies, restart, and evidence-order variations."
       - "Current recovery and Rust-to-Scala bisimilarity remain authoritative."
       - "Reconstruction cannot replace upstream recovery without complete equivalence evidence."
+      - "TASK-018-3 reruns the authorization comparison against the actual merged PR #216 implementation."
 
   - id: TASK-017-10
-    title: "Complete the carrier-index differential and work-bound evidence"
+    title: "Establish signature-domain carrier evidence and typed-key controls"
     status: pending
     claimed_by: null
     blocked_by: [TASK-017-4]
@@ -242,10 +252,11 @@ tasks:
       - "The absence path meets its distinct-signature probe bound and reads no ancestor body."
       - "Typed identity controls cannot collide across domains or replace deploy authentication."
       - "Typed identity activation waits for the FIP-defined commitment, while signature-domain baseline tests run independently."
-      - "The existing claim remains pending until its full differential and soak requirements pass."
+      - "The existing claim remains pending until its full differential and soak requirements pass for its stated revision and identity domain."
+      - "Merged protocol-7 identity bindings remain pending under TASK-018-4."
 
   - id: TASK-017-11
-    title: "Verify protocol authority and retention of both Phlo fields"
+    title: "Specify protocol-7 authority and test baseline Phlo retention"
     status: pending
     claimed_by: null
     blocked_by: [TASK-017-4]
@@ -258,32 +269,35 @@ tasks:
       - "Tests preserve minimum price, prepayment, refund, exhaustion, replay, and the storage-bound relationship."
       - "Token accounting cannot replace either field, and undefined multi-wallet funding cannot activate."
       - "Protocol-7 activation requires FIPS approval and fresh genesis."
+      - "TASK-018-4 verifies the actual merged envelope, accounting boundary, and Phlo behavior. This task supplies models and baseline evidence."
 
   - id: TASK-017-12
-    title: "Run the bounded comparative soak campaign and retain evidence"
+    title: "Run the pre-merge baseline soak and package candidate experiments"
     status: pending
     claimed_by: null
     blocked_by: [TASK-017-5, TASK-017-6, TASK-017-7, TASK-017-8, TASK-017-9, TASK-017-10, TASK-017-11]
     related_epics: [EPIC-010, EPIC-013]
     acceptance:
       - "The maintainer approves the resource budget, durations, repetitions, and candidate matrix before dispatch."
-      - "The disk-protected harness completes each required profile or reports an explicit non-passing outcome."
+      - "The disk-protected harness completes required pre-merge baseline profiles or reports an explicit non-passing outcome."
+      - "Unavailable #216 candidate profiles remain pending for EPIC-018 and are not reported as passes."
       - "Every report retains exact revisions, seeds, run IDs, configuration, metrics, and artifact digests."
       - "Infrastructure termination does not erase prior product failures."
       - "Deferred policy findings return to the team for a separate decision."
 
   - id: TASK-017-13
-    title: "Discharge CbC claims and prepare the evidence review"
+    title: "Close pre-merge CbC scope and hand off post-merge obligations"
     status: pending
     claimed_by: null
     blocked_by: [TASK-017-12]
     decisions: [D-11]
     acceptance:
-      - "Every mandatory artifact has current claim-specific evidence or an explicitly approved waiver."
-      - "Strict discharge passes for the actual changed scope, not only for the planning documents."
-      - "The scan benchmark and concurrency-gate obligations have evidence or remain explicit blockers."
+      - "Every changed mandatory artifact has current pre-merge claim evidence or an explicitly approved waiver."
+      - "Strict discharge passes for the actual pre-merge changed scope, not only for the planning documents."
+      - "The scan benchmark and concurrency-gate obligations have baseline evidence and named post-merge rerun tasks."
+      - "The handoff lists model and artifact digests, seeds, assumptions, pending bindings, and TASK-018 owners."
       - "The review distinguishes bounded results, unbounded proofs, production bindings, and soak observations."
-      - "No pending or refuted required claim is hidden by a task completion label."
+      - "No required pre-merge claim is deferred merely to close this epic. Post-merge obligations stay pending, not waived."
 ---
 ```
 
@@ -291,7 +305,122 @@ tasks:
 
 **Next task:** After plan approval, TASK-017-2 defines the claims and reference oracles. TASK-017-3 handles reviewed prerequisites with separate Git consent.
 
-**Scope:** The [branch plan](./plans/casper-ratified-soak-2026-09-16.md) records source revisions, all twelve decisions, existing epic overlaps, and evidence profiles.
+**Scope:** This epic covers the pre-#216 PR only. The [branch plan](./plans/casper-ratified-soak-2026-09-16.md) records both phases and their evidence boundary.
+
+---
+
+### EPIC-018: Post-Merge Casper Soak Formal Verification
+
+```yaml
+---
+epic_id: EPIC-018
+title: "Post-Merge Casper Soak Formal Verification"
+status: blocked
+priority: p0
+user_story: null
+blocked_by: [EPIC-017]
+created_at: 2026-09-16
+updated_at: 2026-09-16
+claimed_by: null
+claimed_at: null
+phase: post_pr216_merge
+proposed_branch: formal/soak-casper-post-cost-accounting
+plan: docs/plans/casper-ratified-soak-2026-09-16.md
+related_epics: [EPIC-010, EPIC-013, EPIC-017]
+external_dependencies:
+  - repo: F1R3FLY-io/f1r3node-rust
+    pr: 216
+    required_state: merged
+    required_ancestor_of: origin/dev
+execution_contract:
+  base_branch: dev
+  scope: "A separate follow-on formal-methods PR for the soak harness after PR #216 merges."
+  start_gate: "EPIC-017 handoff accepted and PR #216 merge verified in origin/dev. An open candidate head is insufficient."
+  branch_policy: "Create the follow-on branch from updated dev after the start gate passes. Record the actual merge and baseline SHAs."
+  completion_policy: "Require new merged-runtime bindings, applicable proofs, completed soaks, strict CbC discharge, and maintainer review."
+  authority: "Merge does not authorize deferred policies, waive ratification conditions, or replace FIPS activation approval."
+tasks:
+  - id: TASK-018-1
+    title: "Verify the merge gate and establish the post-merge baseline"
+    status: blocked
+    claimed_by: null
+    blocked_by: [TASK-017-13]
+    external_prs: [216]
+    acceptance:
+      - "PR #216 is merged and its merge commit is an ancestor of the selected updated dev baseline."
+      - "The pre-merge evidence handoff is accepted and its exact revisions are available."
+      - "The follow-on branch and PR are separate from formal/soak-casper-consensus."
+      - "Record the actual merge SHA, node revision, harness revision, image digest, configuration, and protocol version."
+
+  - id: TASK-018-2
+    title: "Rebind formal claims and harness interfaces to the merged implementation"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-018-1]
+    decisions: [D-11]
+    acceptance:
+      - "Compare the merged implementation with the pre-merge models, assumptions, and artifact digests."
+      - "Refine affected models and negative controls and update the actual mandatory artifact scope."
+      - "Adapt the soak harness to merged APIs, wire fields, metrics, storage, and lifecycle behavior."
+      - "Do not copy pre-merge discharge statuses onto changed production artifacts."
+      - "Any mismatch with the ratifications is a blocker or a separately ratified change, not a silent test relaxation."
+
+  - id: TASK-018-3
+    title: "Verify merged Casper authority, finality, publication, recovery, and slashing"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-018-2]
+    decisions: [D-02, D-03, D-04, D-05, D-06, D-07, D-09]
+    acceptance:
+      - "Rerun the TASK-017-5, TASK-017-6, TASK-017-7, and TASK-017-9 production bindings against the merged node."
+      - "Cover certificate-removal regressions, bounded LCA equivalence, finality boundaries, crash publication, custody, and slash authorization."
+      - "Retain the inclusive threshold, upstream recovery rules, and Rust-to-Scala slashing anchor."
+      - "Missing merged functionality remains a blocker rather than a skipped success."
+
+  - id: TASK-018-4
+    title: "Verify merged accounting, deploy identity, protocol authority, and Phlo retention"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-018-2]
+    decisions: [D-01, D-08, D-10, D-12]
+    acceptance:
+      - "Bind TASK-017-8, TASK-017-10, and TASK-017-11 models to the actual merged implementation."
+      - "Verify multiplicity, causal closure, settlement, conservation, typed identity, and carrier-index equivalence."
+      - "Verify separate protocol and accounting authorities and retain both signed phloLimit and phloPrice."
+      - "Rerun applicable construction proofs and production bridges with current digests."
+      - "FIPS approval, fresh genesis, and normative multi-wallet rules remain activation conditions."
+
+  - id: TASK-018-5
+    title: "Run the post-merge comparative soak campaign"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-018-3, TASK-018-4]
+    decisions: [D-06, D-07, D-11]
+    acceptance:
+      - "The maintainer approves the post-merge matrix, resource budget, durations, and repetitions before dispatch."
+      - "Run the merged baseline and isolated deferred-policy experiments with new run IDs and artifact digests."
+      - "Compare against pre-merge evidence only when workload, environment, and metric definitions are compatible."
+      - "Report recovery, retry expiry, duplicates, custody, finalization, work bounds, disk, and memory outcomes."
+      - "Rerun the scan benchmark and concurrency gate. Preserve failures, timeouts, and incomplete outcomes."
+
+  - id: TASK-018-6
+    title: "Discharge post-merge claims and submit the formal harness PR evidence"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-018-5]
+    decisions: [D-11]
+    acceptance:
+      - "Strict CbC discharge covers the actual post-merge changed scope and all required claim bindings."
+      - "The report separates bounded model results, unbounded proofs, production bindings, and soak observations."
+      - "No required pending or refuted claim is hidden by epic completion."
+      - "The follow-on PR links the meeting, pre-merge handoff, actual #216 merge revision, and new evidence."
+      - "Deferred-policy activation requires a separate team decision even when experimental evidence passes."
+---
+```
+
+**Start condition:** PR #216 must merge before this follow-on branch starts. TASK-018-1 enforces the external gate explicitly.
+
+**Current state:** Blocked. No follow-on branch, PR, model run, or soak run has been created.
 
 ---
 
@@ -1662,9 +1791,10 @@ tasks:
 ## Epic Dependency Graph
 
 ```text
-PR #390 meeting record + PR #216 candidate ─> EPIC-017 claim and conformance plan
+PR #390 meeting record + PR #216 candidate ─> EPIC-017 pre-merge plan and baseline
 PR #430 ─> PR #431 ─> PR #432 ─> PR #433 ─> EPIC-017 harness prerequisites
 EPIC-010 / EPIC-012 / EPIC-015 / EPIC-016 ─> EPIC-017 shared evidence and fixtures
+EPIC-017 handoff + PR #216 merged into dev ─> EPIC-018 post-merge formal harness PR
 EPIC-011 (TLA exhaustive baseline, complete) ─> EPIC-012 / TASK-012-22
 EPIC-012 (open-issue PR queue)              (all other lanes start independently)
 PR #299 ─> PR #312 ─> EPIC-016 (key-contention close-out) ─> PR #311 (formal, merges last)
