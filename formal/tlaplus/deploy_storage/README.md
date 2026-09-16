@@ -23,7 +23,7 @@ as a constant and cites this README.
 ## Promotion decision
 
 The interpreter is a mandatory subsystem under
-[CbC verification tiers](../../../docs/cbc-verification-tiers.md), and the
+[CbC verification tiers](https://github.com/F1R3FLY-io/f1r3node-rust/blob/2388a8eedf33d07018f0630bced51a6e054ba439/docs/cbc-verification-tiers.md), and the
 claim here is unbounded: it holds for every deploy and every phlo limit. The
 refutation tier above does not close it. Promotion is pending. The Rocq
 theorem belongs on the execution side after the consensus component moves to
