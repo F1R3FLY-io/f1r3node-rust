@@ -2,7 +2,7 @@
 
 - **Status:** pending (local RED/GREEN complete; hosted execution and maintainer review open)
 - **Adapter:** embedded
-- **Claim:** [CLAIM-SOAK-001](../claims/soak-disk-protection.md), proposed and unratified
+- **Claim:** [CLAIM-SOAK-001](https://github.com/F1R3FLY-io/f1r3node-rust/blob/2388a8eedf33d07018f0630bced51a6e054ba439/docs/claims/soak-disk-protection.md), proposed and unratified
 - **Commit:** 1e2dc07f4 (corrections landed in ca85cfe3e, 59430d59b, ac94c1755, 3d2aa7904, e6fdd343b, 3498fa4f3, 7f0f46923, 6e0b50f26, 59b90568c, 8ab599e5c, 706b11b6e, 9c99de84e, 4e9dd432b, d64ae3bbf, 14ffb4d3a)
 - **Verified:** locally, 2026-09-08 to 2026-09-09
 
