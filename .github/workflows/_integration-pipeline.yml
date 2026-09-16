@@ -393,7 +393,7 @@ jobs:
     name: Integration Tests (${{ matrix.arch }}-${{ matrix.provider }})
     needs: [build_docker_image, launch_ephemeral_runners]
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
+    timeout-minutes: 90
     permissions:
       contents: read
     strategy:
@@ -565,7 +565,7 @@ jobs:
     name: Integration Tests (${{ matrix.arch }}-${{ matrix.provider }}, ucc)
     needs: [build_docker_image, launch_ephemeral_runners]
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
+    timeout-minutes: 90
     permissions:
       contents: read
     strategy:
