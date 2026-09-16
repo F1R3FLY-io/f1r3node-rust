@@ -10,7 +10,7 @@
 
 **Base:** `dev` at `4d8d9d79c`, the tip when the cut started on 2026-09-16. It was `6f48d638c` when the plan was written on 2026-09-11.
 
-**Work log:** [task-soak-disk-hygiene-parsimonious-2026-09-09.md](../work-logs/task-soak-disk-hygiene-parsimonious-2026-09-09.md), which records the decisions this plan applies.
+**Work log:** [task-soak-disk-hygiene-parsimonious-2026-09-09.md](https://github.com/F1R3FLY-io/f1r3node-rust/blob/2388a8eedf33d07018f0630bced51a6e054ba439/docs/work-logs/task-soak-disk-hygiene-parsimonious-2026-09-09.md), which records the decisions this plan applies.
 
 ---
 
