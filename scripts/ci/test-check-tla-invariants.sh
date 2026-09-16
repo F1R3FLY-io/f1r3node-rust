@@ -3,10 +3,12 @@
 # place of TLC. The registered negative controls are read from the gate itself
 # so this test never carries a second copy of that list.
 #
-#  1. Classification: for every registered control the gate accepts only the
-#     exact expected violation (exit 12 plus the invariant message) and rejects
-#     clean, other-invariant, tool-error, wrong-exit, timeout, and missing-config
-#     outcomes.
+#  1. Classification: the gate accepts a registered control only on the exact
+#     expected violation (exit 12 plus the invariant message). The full-tier run
+#     in part 2 proves the acceptance for every control. The rejection of clean,
+#     other-invariant, tool-error, wrong-exit, timeout, and missing-config
+#     outcomes is one code path in the gate, exercised on one control per
+#     registered area.
 #  2. Routing: the slashing-tests workflow sends pull requests and pushes
 #     through the bounded --soak-pr tier and schedule/dispatch through the full
 #     list; the PR tier is a strict subset that still carries every control and
@@ -88,19 +90,18 @@ run_gate() {
 checked() { awk '$1 == "CHECK" { print $2 }' "$WORK/run.log" | sort; }
 
 # 1. Classification.
-for check in "${CONTROLS[@]}"; do
+mapfile -t AREAS < <(sed -n 's/^REGISTERED_CONTROL_AREAS=(\(.*\))$/\1/p' "$GATE" | tr ' ' '\n')
+((${#AREAS[@]})) || fail 'The gate registers no control areas.'
+for area in "${AREAS[@]}"; do
+    check="$(printf '%s\n' "${CONTROLS[@]}" | grep -m1 "^$area/")" || fail "The area $area registers no control."
     target="${check%%:*}"
-    for result in clean wrong-invariant tool-error wrong-exit timeout missing expected; do
+    for result in clean wrong-invariant tool-error wrong-exit timeout missing; do
         config="$WORK/repo/formal/tlaplus/$target.cfg"
         [[ "$result" != missing ]] || mv "$config" "$config.saved"
         status=0
         run_gate gate TEST_TLC_TARGET="${target##*/}.cfg" TEST_TLC_RESULT="$result" || status=$?
         [[ "$result" != missing ]] || mv "$config.saved" "$config"
-        if [[ "$result" == expected ]]; then
-            ((status == 0)) || fail "The gate rejected the expected violation for $target."
-        elif ((status == 0)); then
-            fail "The gate accepted $target with result $result."
-        fi
+        ((status != 0)) || fail "The gate accepted $target with result $result."
     done
 done
 
@@ -196,6 +197,10 @@ open(f"{work}/workflow-run.sh", "w").write(run)
 PY
 
 run_gate gate || fail 'The full gate failed with the fixture.'
+for check in "${CONTROLS[@]}"; do
+    grep -Fq "EXPECTED-FAIL ${check%%:*} (${check#*:}, " "$WORK/run.log" ||
+        fail "The gate did not accept the expected violation for ${check%%:*}."
+done
 checked >"$WORK/full"
 run_gate gate-pr || fail 'The PR-tier gate failed with the fixture.'
 checked >"$WORK/pr"
