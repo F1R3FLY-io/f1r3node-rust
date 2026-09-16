@@ -25,7 +25,7 @@
       "casper/src/rust/validate.rs": "87d72346aa9a1050e58cf0d08adcd6ceb55de212c2899685f8153c7c89bd0aa9",
       "casper/tests/batch2/validate_test.rs": "d2b2a5436a31da1021d634bbbbcf478cc53f812a2f9d3808f36f1d47bb765cb9",
       "docs/Glossary.md": "835d74c73083235e27f0127d127eaca2940f12693040ae23ca56d60139af5091",
-      "docs/ToDos.md": "bffdced919c04c96e7d1e19afb2e64b6892c7c1493ff44f54a33dd123fc34116",
+      "docs/ToDos.md": "10f430feb7f897bf7985e9ce1c6f4a2cf4fd9ae85ac5846ebbdc3ae4030d15eb",
       "docs/cbc-evidence/.gitattributes": "730a35ae3d558080083c3103d9ac8100c3f6561678092abe341701dfa331eb1d",
       "docs/cbc-evidence/casper-src-rust-finality-deploy-lifecycle-rs.md": "6f05187d21932fb3178582857cb12742a02e1d0aac12034a86d9f04ab5008df4",
       "docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md": "d1beaad52820cd00d45751153d48d346c83e0ad5a3144753bd6c3796427760f2",

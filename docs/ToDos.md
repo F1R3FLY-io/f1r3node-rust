@@ -1,7 +1,7 @@
 ---
 doc_type: todos
 version: "1.1"
-last_updated: 2026-08-19
+last_updated: 2026-09-16
 mr_status:
   ready: false
   target_branch: master
@@ -33,14 +33,16 @@ This document tracks implementation work through **epics** (logical groupings of
      current operative facts only. -->
 
 - [ ] **Branch decomposition into four pull requests (2026-09-15, claude-session-e3a67b91).** A later agent splits `fix/soak-disk-hygiene-stop` into four ordered pull requests. Each pull request stays independently reviewable and preserves the execution split.
-  - PR 1, deploy storage bound. A small Machine A model bounds the storage a deploy retains within its phlo. It gives the D3 disk-growth diagnostic a formal reference for the per-deploy on-disk allowance. It stays independent of the harness for the later execution split.
+  - PR 1, deploy storage bound. A small Machine A model bounds the storage a deploy retains within its phlo. This model does not yet exist in `formal/tlaplus/`, so the follow-on agent creates it before the split. It gives the D3 disk-growth diagnostic a formal reference for the per-deploy on-disk allowance. It stays independent of the harness for the later execution split.
   - PR 2, soak driver disk protection. The driver admits an iteration only inside the disk band. It stops the soak deliberately when hygiene cannot clear the band. It bounds every stop and cleanup command and completes the whole emergency response within one deadline. It publishes each breach record atomically so the record survives a producer failure. The real-daemon checks and native fixtures prove this against a live Docker daemon.
   - PR 3, soak formal models and gate. Two consolidated TLA+ models cover 23 driver corrections each, and every correction has a negative control that fails on the pre-fix driver. The gate registry runs the bounded tier on every pull request, and the fixture test proves the gate classifies and routes correctly. The six standalone metric and reserve models are now registered in the gate and make the telemetry summary and the storage reserve checkable.
   - PR 4, verification split. It places the soak models as shared infrastructure for every ordering medium, separate from Casper verification. It stops the harness work from being read as consensus work.
 
-- [ ] **F1 prerequisite review: blocked (2026-09-16).** The [task log](work-logs/task-soak-f1-2026-09-16T03-23Z.md) records preparation and the handoff review by `pi-session-f1-01a050ce`. The integration work is on [PR #406](https://github.com/F1R3FLY-io/f1r3node-rust/pull/406) at `271d9d189`, not this branch. Its records leave O1 and B44 open. Visible required-check rules omit the formal check, and the reviewed approvals cover older commits. F1 execution still requires complete source-bound evidence, tested containment, and an approved isolated node runner.
+- [ ] **F1 prerequisites: EPIC-018 (2026-09-16).** [EPIC-018](#epic-018-f1-diagnostic-readiness) tracks O1, D2/B44, runner readiness, and F1 execution. The [task log](work-logs/task-soak-f1-2026-09-16T03-23Z.md) records preparation and the remote handoff review. Commit `6e85a52cc` now registers the six metric and reserve models locally. O1 coverage, production containment, hosted enforcement, and candidate-specific review remain open.
 
-- [ ] **D2/B44 production containment: transferred to this session (2026-09-16).** The user transferred D2/B44 to `pi-session-disk-protection-01a050ce` on `spark-f718`. This transfer supersedes the other-machine assignment. The [continuation log](work-logs/task-soak-disk-protection-2026-09-16T02-54Z.md) records ownership, D3 preparation, and the diagnostic prerequisites. No peer is visible, but remote activity remains unverified. D2, D3, and acceptance remain open.
+- [ ] **Remote F1 runner discovery: pending assignment (2026-09-16).** `TASK-018-3` records the proposed remote-agent role. No machine or agent is selected. Discovery produces a runner proposal without provisioning or workload execution. `TASK-018-4` requires user approval before provisioning, and `TASK-018-7` requires verified O1/D2 prerequisites before F1 execution.
+
+- [ ] **D2/B44 production containment: transferred to this session (2026-09-16).** The user transferred D2/B44 to `pi-session-disk-protection-01a050ce` on `spark-f718`. This transfer supersedes the other-machine assignment. `TASK-018-2` and the [continuation log](work-logs/task-soak-disk-protection-2026-09-16T02-54Z.md) record ownership and the diagnostic prerequisites. No peer is visible, but remote activity remains unverified. D2, D3, and acceptance remain open.
 
 - **Durable publication corrections (2026-09-13, claude-session-e3a67b91).** The B51 review findings R1 and R3 are complete, and R4 completed the bindings. The driver publishes each record with an atomic rename and a bounded durability reap that never blocks the writer stop. The reap records an unconfirmed result on a stall, and the emergency-deadline race under load is closed. The verdict proves the atomic rename, and the gate registers the new models including the producer-failure model. B44, D2, and acceptance remain pending.
 - **Durable record publication (2026-09-12, claude-session-e3a67b91).** B51 has matched local production and formal RED/GREEN results. The driver publishes every minimal record through a synced temporary file, an atomic rename, and a directory sync. A record under its final name is complete or absent. The fixture proves ordering and atomic visibility, not kernel durability. B44, D2, and acceptance remain pending.
@@ -90,6 +92,163 @@ mr_status:
 ## Active Epics
 
 <!-- Epics are ordered by priority. Work on the highest priority epic first. -->
+
+---
+
+### EPIC-018: F1 Diagnostic Readiness
+
+```yaml
+---
+epic_id: EPIC-018
+title: "F1 Diagnostic Readiness"
+status: in_progress
+priority: p1
+user_story: null
+blocked_by: []
+created_at: 2026-09-16
+claimed_by: pi-session-f1-01a050ce
+claimed_at: 2026-09-16T03:23:48Z
+references:
+  - docs/plans/soak-recurrence-prevention-2026-09-08.md
+  - docs/plans/soak-f1-finalization-diagnostic-2026-09-14.md
+  - docs/plans/soak-private-docker-containment-2026-09-12.md
+  - docs/work-logs/task-soak-f1-2026-09-16T03-23Z.md
+  - docs/work-logs/task-soak-disk-protection-2026-09-16T02-54Z.md
+tasks:
+  - id: TASK-018-1
+    title: "Close the O1 observability gaps"
+    status: in_progress
+    claimed_by: pi-session-f1-01a050ce
+    claimed_at: 2026-09-16T04:19:22Z
+    blocked_by: []
+    acceptance:
+      - "The evidence covers carrier-hit, absence, fallback, merge, and replay paths through the complete collectors."
+      - "Summary and raw records preserve units, labels, process epochs, outcomes, and missing intervals."
+      - "The driver records free inodes with filesystem identity and explicit unavailable results."
+      - "Bounded block-attempt records support F1 attribution without unbounded metric labels."
+      - "Controlled-stop retrieval verifies artifact identity, schema, source bindings, completeness, and digests."
+      - "The owner retains source-bound production and formal RED/GREEN evidence for each correction."
+    notes:
+      - "The integration log reports partial O1 coverage, not completion."
+      - "The raw runner and telemetry evidence still needs a shared retrieval location."
+      - "Bash, jq, and a CSV-aware reader support analysis. This task adds no Python summarizer."
+
+  - id: TASK-018-2
+    title: "Complete D2/B44 production containment and testing"
+    status: in_progress
+    claimed_by: pi-session-disk-protection-01a050ce
+    claimed_at: 2026-09-16T02:54:00Z
+    blocked_by: []
+    acceptance:
+      - "Production containment mediates all accepted, deferred, restarted, exec, and retained-connection creators."
+      - "Public-driver tests confirm permanent creation closure and independent writer termination before fixture cleanup."
+      - "Tests preserve unrelated writers and required Docker/Compose behavior across the private-Docker specification cases."
+      - "The emergency response has tested bounds that include detection, creation closure, termination confirmation, and required evidence handling."
+      - "The owner retains matching production/formal RED and GREEN results with unchanged fixtures and exact source identities."
+      - "Privileged tests use a separately approved disposable D2 runner, not the developer host or a shared daemon."
+      - "Raw evidence retrieval and observed runner termination have verified records."
+    notes:
+      - "The user transferred this task to this session. Remote F1 runner discovery does not transfer containment ownership."
+      - "Existing native fixtures and private-engine capability probes do not complete production Docker containment."
+      - "D2 runner approval is separate from the F1 provisioning approval in TASK-018-4."
+
+  - id: TASK-018-3
+    title: "Assign a remote agent and discover an F1 runner"
+    status: pending
+    claimed_by: null
+    blocked_by: []
+    acceptance:
+      - "The user identifies the remote machine and agent, and the agent acknowledges the discovery scope."
+      - "The handoff identifies an exclusive disposable runner with location, image, architecture, operating system, and resource specifications."
+      - "The proposal supports the unchanged node workload, Docker/Compose interfaces, cgroup v2, and systemd requirements."
+      - "The proposal covers enforced memory, task, byte, inode, and evidence limits, plus CPU allocation."
+      - "The proposal names a trusted observer outside the workload domain and an independent teardown authority."
+      - "The proposal states maximum cost, maximum lifetime, and an absolute expiry."
+      - "The handoff specifies source-transfer verification, evidence retrieval, and source-selection ownership."
+      - "Discovery performs no provisioning, host changes, or workload execution."
+    notes:
+      - "The remote machine and agent remain unselected. No agent has received this assignment."
+      - "Discovery can proceed while the local O1 and D2 work remains open."
+
+  - id: TASK-018-4
+    title: "Obtain user approval for F1 runner provisioning"
+    status: blocked
+    claimed_by: null
+    blocked_by: [TASK-018-3]
+    acceptance:
+      - "The user explicitly approves the proposed runner, limits, cost, lifetime, expiry, evidence budget, and teardown authority."
+      - "The approval records its scope and the approved non-workload setup checks."
+      - "The record distinguishes provisioning approval from F1 execution readiness and from acceptance authorization."
+    notes:
+      - "This task requires a user decision. Task assignment alone does not authorize allocation."
+      - "The earlier harmless-writer proposal does not authorize an F1 node diagnostic."
+
+  - id: TASK-018-5
+    title: "Provision and verify the approved F1 runner"
+    status: blocked
+    claimed_by: null
+    blocked_by: [TASK-018-4]
+    acceptance:
+      - "The assigned agent provisions only the approved resource and records its actual identity and configuration."
+      - "The readiness evidence confirms exclusive use, with no overlapping soak or shared Docker daemon."
+      - "Effective resource limits and trusted control placement match the approved proposal."
+      - "Independent expiry and teardown controls remain available when the workload controllers fail."
+      - "The agent verifies transferred source and tool identities before use."
+      - "A harmless evidence-transfer check verifies retrieval without exposing credentials or private keys."
+      - "The agent records readiness or refusal and launches no F1 workload before TASK-018-7 prerequisites pass."
+    notes:
+      - "The provisioning agent remains unassigned."
+      - "Provisioning approval does not remove the O1, D2, or hosted-enforcement requirements."
+
+  - id: TASK-018-6
+    title: "Verify final-candidate gates and maintainer review"
+    status: blocked
+    claimed_by: null
+    blocked_by: [TASK-018-1, TASK-018-2]
+    acceptance:
+      - "G0 and D1 prerequisites pass for the selected diagnostic candidate."
+      - "The candidate has current input bindings and retained combined verification evidence."
+      - "Hosted enforcement rejects missing, skipped, canceled, stale, or failed required results."
+      - "The maintainer approves any required-check setting changes before they occur."
+      - "The maintainer reviews candidate-specific safety evidence and records remaining claim obligations."
+    notes:
+      - "The integration owner retains shared gate and inventory changes. The maintainer owns hosted settings and review decisions."
+      - "Enforcement and review preparation can proceed before the final combined check."
+      - "Commit 6e85a52cc registers the six models. Registration alone does not complete this task."
+
+  - id: TASK-018-7
+    title: "Execute F1 and retain the measured work-bound evidence"
+    status: blocked
+    claimed_by: pi-session-f1-01a050ce
+    claimed_at: 2026-09-16T03:23:48Z
+    blocked_by: [TASK-018-1, TASK-018-2, TASK-018-5, TASK-018-6]
+    acceptance:
+      - "The owner verifies the approved scope and all prerequisite evidence before workload admission."
+      - "The diagnostic preserves the workload, three harness pins, and the 45-second finalization wait and assertion."
+      - "The execution record binds the node, harness, workflow, tools, runner, configuration, and retained evidence."
+      - "Measurements distinguish algorithmic work, queue delay, repeated attempts, storage effects, and observation gaps."
+      - "A reproducible failure supports a justified operation-bound obligation for F2."
+      - "A non-reproduction or incomplete observation leaves F1 open."
+      - "The result retains verified evidence retrieval and independently observed runner termination."
+    notes:
+      - "All three harness pins remain 962effd17708192627bd249362761c0ccb1fd5fa."
+      - "An open full reserve claim requires enforced writer limits on the isolated diagnostic runner."
+      - "The run must not enable LOAD_TEST_TELEMETRY_ONLY or replace the assertion with a percentile threshold."
+      - "F2 repair, F3 semantic verification, D3 resource bounds, and the separately authorized 60-hour acceptance remain outside this epic."
+---
+```
+
+**Context:** This epic tracks the prerequisites for the user-selected F1 diagnostic.
+Local O1/D2 work and remote runner discovery can proceed in parallel.
+The remote discovery role remains unassigned.
+The user retains provisioning approval, and F1 execution waits for verified prerequisites.
+
+**Scope:** The epic includes observability, containment, runner discovery, approved provisioning, source verification, hosted enforcement, review, and the F1 diagnostic.
+It does not complete [EPIC-010](#epic-010-soak-benchmark-metrics--reporting) or authorize an acceptance soak.
+The pull-request split remains separate work on the staging branch, where EPIC-017 already names that split.
+
+**Follow-up:** F2 uses the measured F1 obligation, and F3 verifies the correction under reviewed claims.
+The [recurrence plan](plans/soak-recurrence-prevention-2026-09-08.md) retains those gates and the separate D3 and acceptance requirements.
 
 ---
 
@@ -1463,6 +1622,9 @@ tasks:
 EPIC-011 (TLA exhaustive baseline, complete) ─> EPIC-012 / TASK-012-22
 EPIC-012 (open-issue PR queue)              (all other lanes start independently)
 PR #299 ─> PR #312 ─> EPIC-016 (key-contention close-out) ─> PR #311 (formal, merges last)
+EPIC-018: TASK-018-3 (discovery) -> TASK-018-4 (approval) -> TASK-018-5 (runner readiness)
+EPIC-018: TASK-018-1 (O1) + TASK-018-2 (D2) -> TASK-018-6 (final gate review)
+EPIC-018: TASK-018-1 + TASK-018-2 + TASK-018-5 + TASK-018-6 -> TASK-018-7 (F1)
 
 EPIC-001 (system-integration alignment)    EPIC-003 (f1r3node: merge critical PRs)
 EPIC-002 (monitoring separation)               |
