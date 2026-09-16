@@ -13,7 +13,6 @@ name: Slashing test suite
 #     • property-based      — T-* proptests at PROPTEST_CASES=10000
 #     • pre-fix-regressions — out-of-band per-bug counter-examples (matrix 1..11)
 #     • loom-interleavings  — exhaustive 2-thread T-9.2 atomic-RMW model check
-#     • tla-model-check     — TLC against every post-fix MC_*.cfg under formal/tlaplus/
 #     • rocq-build          — re-verify the Rocq mechanization closes, axiom-free
 #     • search-horizon-smoke — scripts/ci/slashing-search-horizon.sh smoke tier
 #   Nightly only (schedule / workflow_dispatch):
@@ -213,16 +212,8 @@ jobs:
 
   tla-model-check:
     name: TLA+ invariant check
-    # Demoted from PR-gate to nightly/dispatch: on hosted runners the FIRST
-    # MC config alone exceeded 60 minutes (job cancelled at the deadline
-    # with zero configs completed), so the full frontier cannot gate PRs
-    # until per-config runtimes are profiled (the nightly run's per-config
-    # progress lines provide exactly that) or the job moves to faster
-    # runners. See docs/theory/slashing/design/14-test-plan.md section 14.9
-    # for the original PR-gate intent this temporarily deviates from.
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 240 || 15 }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
@@ -246,11 +237,22 @@ jobs:
           TLA_TOOLS_JAR: /home/runner/.tla/tla2tools.jar
           RUN_EXHAUSTIVE_TLA: ${{ (github.event_name == 'workflow_dispatch' && inputs.run_exhaustive) && '1' || '0' }}
         run: |
-          args=(--tla)
-          if [[ "$RUN_EXHAUSTIVE_TLA" == "1" ]]; then
-            args+=(--exhaustive)
+          if [[ "$GITHUB_EVENT_NAME" == schedule || "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            args=(--tla)
+            if [[ "$RUN_EXHAUSTIVE_TLA" == "1" ]]; then
+              args+=(--exhaustive)
+            fi
+            bash scripts/ci/check-formal-invariants.sh "${args[@]}"
+          else
+            bash scripts/ci/check-tla-invariants.sh --soak-pr
           fi
-          bash scripts/ci/check-formal-invariants.sh "${args[@]}"
+      - name: Retain TLA+ logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: tla-invariant-logs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /tmp/tlc-*.log
+          if-no-files-found: error
 
   rocq-build:
     name: Rocq slashing, fork-choice and rspace-guards rebuild
