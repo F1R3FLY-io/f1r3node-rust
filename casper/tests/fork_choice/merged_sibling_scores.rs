@@ -9,6 +9,7 @@ use std::collections::HashMap;
 
 use casper::rust::estimator::Estimator;
 use models::rust::block_hash::BlockHash;
+use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::protocol::casper_message::Bond;
 use models::rust::validator::Validator;
 
@@ -156,9 +157,7 @@ async fn merged_siblings_must_not_score_equal() {
         let fork_choice = Estimator::apply()
             .tips_with_latest_messages(
                 &mut dag,
-                &models::rust::block_metadata::BlockMetadata::from_block(
-                    &genesis, false, None, None,
-                ),
+                &BlockMetadata::from_block(&genesis, false, None, None),
                 latest,
                 i32::MAX,
                 None,

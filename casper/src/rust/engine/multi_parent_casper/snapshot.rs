@@ -12,6 +12,7 @@ use std::sync::Arc;
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use comm::rust::transport::transport_layer::TransportLayer;
 use models::rust::block_hash::BlockHash;
+use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{BlockMessage, Justification};
 use models::rust::validator::Validator;
@@ -140,7 +141,7 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
     // the consensus hot path. Bug #17 / T-9.20 hardened this contract
     // for crash-window drift; same discipline applies to general
     // storage I/O.
-    let mut valid_latest_metas: HashMap<Validator, models::rust::block_metadata::BlockMetadata> =
+    let mut valid_latest_metas: HashMap<Validator, BlockMetadata> =
         HashMap::with_capacity(valid_latest_msgs.len());
     // A latest message this node does not hold (a stale slot below an LFS
     // restore horizon) cannot be cited as a parent; abstain the validator
@@ -202,12 +203,7 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
         &dag,
         &this.block_store,
         valid_latest_msgs.values(),
-        models::rust::block_metadata::BlockMetadata::from_block(
-            &this.approved_block,
-            false,
-            None,
-            None,
-        ),
+        BlockMetadata::from_block(&this.approved_block, false, None, None),
         crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
             this.casper_shard_conf.fault_tolerance_threshold_ppm,
         ),
@@ -296,10 +292,8 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
         // `retain` on the vector. Eliminates one intermediate Vec
         // allocation per snapshot and a redundant `.iter()` walk for
         // the max computation.
-        let mut parents_with_meta: Vec<(
-            BlockMessage,
-            models::rust::block_metadata::BlockMetadata,
-        )> = Vec::with_capacity(parents_after_count_limit.len());
+        let mut parents_with_meta: Vec<(BlockMessage, BlockMetadata)> =
+            Vec::with_capacity(parents_after_count_limit.len());
         let mut max_block_num: i64 = 0;
         for b in parents_after_count_limit {
             let meta = dag.lookup_unsafe(&b.block_hash)?;
@@ -396,10 +390,9 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
     let max_seq_nums = valid_latest_metas
         .iter()
         .map(
-            |(validator, block_metadata): (
-                &Validator,
-                &models::rust::block_metadata::BlockMetadata,
-            )| (validator.clone(), block_metadata.sequence_number as u64),
+            |(validator, block_metadata): (&Validator, &BlockMetadata)| {
+                (validator.clone(), block_metadata.sequence_number as u64)
+            },
         )
         .collect::<HashMap<_, _>>();
 
@@ -454,17 +447,15 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
             // single parent would shrink `deploys_in_scope`, which
             // could then admit a duplicate-signature deploy past
             // `InvalidRepeatDeploy` detection.
-            let neighbor_fn = |block_metadata: &models::rust::block_metadata::BlockMetadata| -> Result<
-                Vec<models::rust::block_metadata::BlockMetadata>,
-                CasperError,
-            > {
-                proto_util::parent_metadatas_above_block_number(
-                    block_metadata,
-                    earliest_block_number,
-                    &dag,
-                    proto_util::UnheldParent::SkipSettled,
-                )
-            };
+            let neighbor_fn =
+                |block_metadata: &BlockMetadata| -> Result<Vec<BlockMetadata>, CasperError> {
+                    proto_util::parent_metadatas_above_block_number(
+                        block_metadata,
+                        earliest_block_number,
+                        &dag,
+                        proto_util::UnheldParent::SkipSettled,
+                    )
+                };
 
             let traversal_result = dag_ops::try_bf_traverse(parent_metas, neighbor_fn)?;
 

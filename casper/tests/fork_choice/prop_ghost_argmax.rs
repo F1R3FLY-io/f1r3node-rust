@@ -50,6 +50,7 @@ use std::collections::HashMap;
 
 use casper::rust::estimator::Estimator;
 use models::rust::block_hash::BlockHash;
+use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::protocol::casper_message::{BlockMessage, Bond};
 use models::rust::validator::Validator;
 use proptest::prelude::*;
@@ -234,7 +235,7 @@ proptest! {
             let estimator = Estimator::apply();
 
             let tips = estimator
-                .tips_with_latest_messages(&mut dag, &models::rust::block_metadata::BlockMetadata::from_block(&genesis, false, None, None), latest, i32::MAX, None)
+                .tips_with_latest_messages(&mut dag, &BlockMetadata::from_block(&genesis, false, None, None), latest, i32::MAX, None)
                 .await
                 .expect("tips")
                 .tips;
@@ -298,9 +299,7 @@ async fn main_parent_is_ghost_head_deterministic() {
             let ghost_main_parent = estimator
                 .tips_with_latest_messages(
                     &mut dag,
-                    &models::rust::block_metadata::BlockMetadata::from_block(
-                        &genesis, false, None, None,
-                    ),
+                    &BlockMetadata::from_block(&genesis, false, None, None),
                     permuted,
                     i32::MAX,
                     None,

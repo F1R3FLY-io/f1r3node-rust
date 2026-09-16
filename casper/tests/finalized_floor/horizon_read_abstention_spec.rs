@@ -293,7 +293,7 @@ async fn a_stale_latest_message_does_not_fail_fork_choice() {
     let result = estimator
         .tips_with_latest_messages(
             &mut dag,
-            &models::rust::block_metadata::BlockMetadata::from_block(&genesis, false, None, None),
+            &BlockMetadata::from_block(&genesis, false, None, None),
             latest_messages,
             1,
             None,

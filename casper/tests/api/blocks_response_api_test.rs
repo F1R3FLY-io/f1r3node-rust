@@ -11,6 +11,7 @@ use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::engine::engine_with_casper::EngineWithCasper;
 use casper::rust::estimator::Estimator;
 use models::rust::block_hash::BlockHash;
+use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::protocol::casper_message::{BlockMessage, Bond};
 use models::rust::validator::Validator;
 
@@ -285,7 +286,7 @@ async fn show_main_chain_should_return_only_blocks_in_the_main_chain() {
     let tips = Estimator::apply()
         .tips_with_latest_messages(
             &mut dag,
-            &models::rust::block_metadata::BlockMetadata::from_block(&genesis, false, None, None),
+            &BlockMetadata::from_block(&genesis, false, None, None),
             latest_messages,
             Estimator::UNLIMITED_PARENTS,
             None,
@@ -341,7 +342,7 @@ async fn get_blocks_should_return_all_blocks() {
     let tips = Estimator::apply()
         .tips_with_latest_messages(
             &mut dag,
-            &models::rust::block_metadata::BlockMetadata::from_block(&genesis, false, None, None),
+            &BlockMetadata::from_block(&genesis, false, None, None),
             latest_messages,
             Estimator::UNLIMITED_PARENTS,
             None,
@@ -395,7 +396,7 @@ async fn get_blocks_should_return_until_depth() {
     let tips = Estimator::apply()
         .tips_with_latest_messages(
             &mut dag,
-            &models::rust::block_metadata::BlockMetadata::from_block(&genesis, false, None, None),
+            &BlockMetadata::from_block(&genesis, false, None, None),
             latest_messages,
             Estimator::UNLIMITED_PARENTS,
             None,
@@ -454,7 +455,7 @@ async fn get_blocks_by_heights_should_return_blocks_between_start_and_end() {
     let tips = Estimator::apply()
         .tips_with_latest_messages(
             &mut dag,
-            &models::rust::block_metadata::BlockMetadata::from_block(&genesis, false, None, None),
+            &BlockMetadata::from_block(&genesis, false, None, None),
             latest_messages,
             Estimator::UNLIMITED_PARENTS,
             None,
