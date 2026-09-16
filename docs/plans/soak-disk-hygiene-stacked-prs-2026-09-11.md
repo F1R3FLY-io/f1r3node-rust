@@ -1,12 +1,12 @@
 # Soak Disk Hygiene: Stacked Pull Request Plan
 
-**Status:** plan, not started. The cut begins when the source agent confirms its last cycle.
+**Status:** plan, not started. The cut begins when the source agent confirms its last cycle. The work is tracked as EPIC-017 in [docs/ToDos.md](../ToDos.md), one task per PR.
 
 **Staging branch:** `fix/parsimonious-maintainble-soak-disk-hygiene`, draft PR #406. It closes unmerged after the cut.
 
 **Lifetime of this plan:** PR 1 carries this file onto dev so that reviewers of the stack can read it. PR 4 deletes it on the final merge. Git history keeps it.
 
-**Base:** `dev` at the time of the cut. On 2026-09-11 that is `6f48d638c`.
+**Base:** `dev` at the time of the cut. On 2026-09-11 that was `6f48d638c`. On 2026-09-16 it is `4d8d9d79c`. Refresh this line again when the cut starts.
 
 **Work log:** [task-soak-disk-hygiene-parsimonious-2026-09-09.md](../work-logs/task-soak-disk-hygiene-parsimonious-2026-09-09.md), which records the decisions this plan applies.
 
@@ -203,5 +203,5 @@ The maintainer took these decisions on 2026-09-11:
 | Question | Recommendation |
 | --- | --- |
 | The telemetry track that arrived with the B51 review corrections on 2026-09-13. Section 5 lists its files | Decided in part on 2026-09-15: the four metric models are registered in the shared gate and go with PR 3. The scripts, the glossary terms, the storage tool, and the reserve-argument plan stay open, recommended as their own pull request after PR 2. |
-| The soak report JSON transport repair of 2026-09-14 in `scripts/bench/aggregate-perf-report.sh` and its regression script. The script exists on dev, and the repair fixes a real failure on large inputs | Not carried in this stack, since it is soak reporting rather than disk hygiene. It can form its own small pull request from the staging branch at any time, independent of the stack. |
+| The soak report JSON transport repair of 2026-09-14 in `scripts/bench/aggregate-perf-report.sh` and its regression script. The script exists on dev, and the repair fixes a real failure on large inputs | Not carried in this stack, since it is soak reporting rather than disk hygiene. It can form its own small pull request from the staging branch at any time, independent of the stack. Recommended first since 2026-09-16: the scheduled run 34921498873 hit the defect in production and published two empty weekly summaries. |
 | The disk-usage timeline of 2026-09-10, the only driver difference from the source. Its segment-start row breaks the source's B48 fixture, and its foreground rows delay segment and iteration start when `du` stalls. The work log's Docker daemon check records the evidence | Decided on 2026-09-15: removed. The driver and the host suite are the source's files, the source's D3 methodology covers the timeline's purpose, and the recurring driver conflicts end. |

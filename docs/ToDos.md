@@ -1,7 +1,7 @@
 ---
 doc_type: todos
 version: "1.1"
-last_updated: 2026-08-19
+last_updated: 2026-09-16
 mr_status:
   ready: false
   target_branch: master
@@ -36,9 +36,9 @@ This document tracks implementation work through **epics** (logical groupings of
 - **Parsimonious rewrite of PR #399 (2026-09-09, claude-session-00e7a6fd).** Branch `fix/parsimonious-maintainble-soak-disk-hygiene` carries the same driver fix with two consolidated TLA+ models, one gate test, one table-driven container harness, short evidence records, and no digest inventory. `fix/soak-disk-hygiene-stop` keeps merging in; superseded files are removed last. Work log: docs/work-logs/task-soak-disk-hygiene-parsimonious-2026-09-09.md.
 - [ ] **D2/B44 production containment: assigned to another machine (2026-09-14).** The user assigned this step to another agent on a different machine. On 2026-09-15 the parsimonious integration session ran every fixture group green on a guarded runner, per its [work log](work-logs/task-soak-disk-hygiene-parsimonious-2026-09-09.md), and B44 stays open. The agent must complete production containment and verification with a real Docker daemon on an approved disposable guarded runner. The [assignment notes](work-logs/task-soak-disk-hygiene-stop-2026-09-08T05-06Z.md#d2b44-assignment-to-another-machine-2026-09-14) define the required evidence and coordination. Local agents must not duplicate this pending step.
 - [ ] **Soak staging branch handoff (2026-09-15, claude-session-c942697b).** Status: pending, unclaimed. Three items wait on the maintainer, and the next downstream agent takes them on in this order. The [stacked-PR plan](plans/soak-disk-hygiene-stacked-prs-2026-09-11.md) and the [work log](work-logs/task-soak-disk-hygiene-parsimonious-2026-09-09.md) hold the details.
-  - [ ] The telemetry track. Section 8 of the plan records it as an open decision, recommended as its own pull request from the staging branch after PR 2.
-  - [ ] The perf-report transport repair in `scripts/bench/aggregate-perf-report.sh`. The plan records it as a separate small pull request candidate, independent of the stack.
-  - [ ] The stacked-PR cut. The plan is ready and its counts are current. It starts when the source agent confirms its last cycle and the maintainer creates the PR 1 branch from dev.
+  - [ ] The perf-report transport repair in `scripts/bench/aggregate-perf-report.sh`. The plan records it as a separate small pull request candidate, independent of the stack. It comes first since 2026-09-16. The scheduled soak run 34921498873 hit the defect in production. Its checkpoint aggregation failed twice on argument length, and its artifact holds two empty weekly summaries. The repaired script on this branch produced a valid summary and verdict from the same artifact.
+  - [ ] The telemetry track. Section 8 of the plan records it as an open decision, recommended as its own pull request from the staging branch after PR 2. Its fixture passed all nine cases in a Linux container on 2026-09-16.
+  - [ ] The stacked-PR cut. The plan is ready and its counts are current. It starts when the source agent confirms its last cycle and the maintainer creates the PR 1 branch from dev. Tracked as EPIC-017 below with one task per PR, the staging PR closure, and the two side PRs.
 
 - **Durable publication corrections (2026-09-13, claude-session-e3a67b91).** The B51 review findings R1 and R3 are complete, and R4 completed the bindings. The driver publishes each record with an atomic rename and a bounded durability reap that never blocks the writer stop. The reap records an unconfirmed result on a stall, and the emergency-deadline race under load is closed. The verdict proves the atomic rename, and the gate registers the new models including the producer-failure model. B44, D2, and acceptance remain pending.
 - **Durable record publication (2026-09-12, claude-session-e3a67b91).** B51 has matched local production and formal RED/GREEN results. The driver publishes every minimal record through a synced temporary file, an atomic rename, and a directory sync. A record under its final name is complete or absent. The fixture proves ordering and atomic visibility, not kernel durability. B44, D2, and acceptance remain pending.
@@ -1455,12 +1455,157 @@ tasks:
 
 ---
 
+### EPIC-017: Soak Disk Hygiene Stacked-PR Cut
+
+```yaml
+---
+epic_id: EPIC-017
+title: "Soak Disk Hygiene Stacked-PR Cut"
+status: blocked
+priority: p1
+user_story: null
+issues: []
+blocked_by: []
+created_at: 2026-09-16
+updated_at: 2026-09-16
+claimed_by: null
+claimed_at: null
+plan: docs/plans/soak-disk-hygiene-stacked-prs-2026-09-11.md
+work_log: docs/work-logs/task-soak-disk-hygiene-parsimonious-2026-09-09.md
+execution_contract:
+  staging_branch: fix/parsimonious-maintainble-soak-disk-hygiene
+  staging_pr: 406
+  base_branch: dev
+  stack: "PR 1 formal/deploy-storage-bound -> PR 2 fix/soak-driver-disk-protection -> PR 3 formal/soak-disk-models -> PR 4 docs/consensus-neutral-execution. Each PR is based on the one below it and merges bottom-up. Never merge a higher PR while a lower one is open."
+  git_state_policy: "Branch creation, staging, commits, pushes, and PR creation belong to the maintainer. The assistant prepares the files and the verification for each PR and hands each step back."
+  source_cycles_after_cut: "Merge each new source cycle into the staging branch as before, then port the delta to the affected PR branch by path."
+prerequisites:
+  - "The source agent confirms its last cycle on fix/soak-disk-hygiene-stop and the staging branch carries it."
+  - "The maintainer refreshes the plan's base line to the dev tip at cut time and creates the PR 1 branch from that tip."
+tasks:
+  - id: TASK-017-1
+    title: "PR 1: deploy storage bound"
+    status: blocked
+    priority: p1
+    claimed_by: null
+    blocked_by: [prerequisites]
+    notes:
+      - "Branch formal/deploy-storage-bound from origin/dev. Plan section 2 lists the 6 files, about 130 lines, and the split rows in docs/formal-verification.md and the area README."
+      - "PR 1 carries the plan file onto dev so reviewers of the stack can read it. PR 4 deletes it."
+      - "Dev's TLA+ job runs on schedule only, so PR 1's CI does not run TLC. The local TLC run is the evidence until PR 3 lands."
+    acceptance:
+      - "TLC passes the positive configuration with 237 states and the control exits 12 on RetainedWithinPhlo"
+      - "The STE check passes on the prose the PR adds"
+      - "The PR targets dev, is not a draft, and its body names the stack and the plan file"
+
+  - id: TASK-017-2
+    title: "PR 2: soak driver disk protection"
+    status: blocked
+    priority: p1
+    claimed_by: null
+    blocked_by: [TASK-017-1]
+    notes:
+      - "Branch fix/soak-driver-disk-protection from the PR 1 branch. Plan section 2 lists the 57 files, about 6,400 changed lines: the driver, the host suite, the Docker harness and its Dockerfile, the real-daemon checks, the B44 launcher prototype, and the driver evidence record."
+      - "Split files: the ci.yml step 'Verify isolated disk admission and emergency scenarios' only, and the workflow env SOAK_EMERGENCY_DEADLINE_SECONDS: \"10\"."
+      - "The evidence record's digest table binds manifests that PR 2 does not carry. Plan section 6 records that decision, and the record says where the packages live."
+      - "The launcher prototype is flagged as code the normal workflow does not use. B44 stays open and is tracked in the D2/B44 coordination bullet, not here."
+    acceptance:
+      - "The host suite passes on Linux, since the driver needs pidfd and Python 3"
+      - "The Docker harness step, the workflow invariants, and the release workflow tests pass in the PR's CI"
+      - "The STE check passes on the prose the PR adds"
+      - "The PR targets the PR 1 branch and stays a draft until PR 1 merges, then is rebased on dev and marked ready"
+
+  - id: TASK-017-3
+    title: "PR 3: soak formal models and the gate registry"
+    status: blocked
+    priority: p1
+    claimed_by: null
+    blocked_by: [TASK-017-2]
+    notes:
+      - "Branch formal/soak-disk-models from the PR 2 branch. Plan section 2 lists the 157 files, about 4,400 lines: the two consolidated models, the six registered standalone metric and reserve models, the storage budget, the control registry with its bounded PR tier, the gate fixture test, the soak README, the claim, and the gate record."
+      - "PR 3 also registers the deploy storage control from PR 1 and the two carrier index controls that dev keeps as manual controls."
+      - "Split files: the ci.yml step 'Verify TLA+ gate classification and routing' only, and the soak row and gate text in docs/formal-verification.md."
+    acceptance:
+      - "TLC passes the three positives with 52528, 217788, and 5616 states"
+      - "scripts/ci/check-tla-invariants.sh --soak-pr passes with 13 positives and 61 controls"
+      - "scripts/ci/test-check-tla-invariants.sh passes for 61 controls times seven outcomes plus the routing scenarios"
+      - "The STE check passes on the prose the PR adds"
+      - "The PR targets the PR 2 branch and stays a draft until PR 2 merges, then is rebased on dev and marked ready"
+
+  - id: TASK-017-4
+    title: "PR 4: consensus-neutral execution note"
+    status: blocked
+    priority: p2
+    claimed_by: null
+    blocked_by: [TASK-017-3]
+    notes:
+      - "Branch docs/consensus-neutral-execution from the PR 3 branch. Plan section 2 lists the 3 files, about 650 lines: the architecture note, the verification tiers document, and the links from the docs index and the formal-verification guide."
+      - "PR 4 deletes the plan file. Git history keeps it."
+    acceptance:
+      - "Every relative link in the note and the tiers document resolves"
+      - "The STE check passes on the note"
+      - "The PR targets the PR 3 branch and stays a draft until PR 3 merges, then is rebased on dev and marked ready"
+
+  - id: TASK-017-5
+    title: "Close the staging PR and retire the phase-two removal list"
+    status: blocked
+    priority: p2
+    claimed_by: null
+    blocked_by: [TASK-017-4]
+    notes:
+      - "PR #406 is a staging pull request. It closes unmerged after PR 4 merges. Its branch is kept until TASK-017-6 and TASK-017-7 have cut their branches from it."
+      - "The stack carries only the files it needs, so nothing on the staging branch is deleted. The work log's phase-two removal list is superseded by the cut and must not be run."
+    acceptance:
+      - "PR #406 is closed unmerged with a comment that names the four merged PRs"
+      - "The work log's phase-two section states that the cut superseded it"
+      - "The coordination bullets for the staging branch and the handoff are removed from this file, and this epic moves to docs/CompletedTasks.md"
+
+  - id: TASK-017-6
+    title: "Telemetry track as its own pull request"
+    status: blocked
+    priority: p2
+    claimed_by: null
+    blocked_by: [TASK-017-2]
+    notes:
+      - "Plan section 8 decided this in part on 2026-09-15. The four metric validity models are registered in the gate and go with PR 3. The remainder is recommended as its own pull request from the staging branch after PR 2."
+      - "Remainder: the telemetry module and its test, the change to the issue-24 metrics extension, the six glossary metric and storage terms, the verification storage tool and its test, the low-disk cargo profile, the reserve-argument plan, and the verification-storage section of scripts/README.md. Plan section 5 lists them."
+      - "The maintainer decides whether the remainder is carried at all. This task records the decision either way."
+    acceptance:
+      - "A decision is recorded in plan section 8: carried in one PR from the staging branch, or not carried"
+      - "If carried, the PR's own tests pass and the STE check passes on its prose"
+
+  - id: TASK-017-7
+    title: "Perf-report transport repair as its own pull request"
+    status: pending
+    priority: p1
+    claimed_by: null
+    blocked_by: []
+    notes:
+      - "The soak report JSON transport repair of 2026-09-14 in scripts/bench/aggregate-perf-report.sh and its regression script. The script exists on dev, and the repair fixes a real failure on large inputs."
+      - "Recommended first since 2026-09-16. The scheduled run 34921498873 hit the defect in production and published two empty weekly summaries. The work log's Gate O1 section records it."
+      - "Plan section 8 records it as not carried in the stack, since it is soak reporting rather than disk hygiene. It can be cut from the staging branch at any time, independent of the stack."
+    acceptance:
+      - "A PR against dev carries the script change and its regression script only"
+      - "The regression script passes and the STE check passes on the PR's prose"
+---
+```
+
+**Context:** The maintainer decided on 2026-09-10 that PR #406 does not merge as one unit. The stacked-PR plan identifies the four pull requests and the whole and split files of each. It also gives the verification of each and the seven-step mechanics of the cut. This epic tracks the cut as claimable work. It is blocked on its two prerequisites, and each PR task waits on the one below it.
+
+**Scope:**
+
+- Included: the four stacked PRs, the closure of the staging PR, and the retirement of the phase-two removal list. Also the two side PRs the handoff names
+- Excluded: D2/B44 production containment, which the coordination section assigns to another machine, and the follow-ups in the work log that the verification split depends on
+
+---
+
 ## Epic Dependency Graph
 
 ```text
 EPIC-011 (TLA exhaustive baseline, complete) ─> EPIC-012 / TASK-012-22
 EPIC-012 (open-issue PR queue)              (all other lanes start independently)
 PR #299 ─> PR #312 ─> EPIC-016 (key-contention close-out) ─> PR #311 (formal, merges last)
+PR #406 (staging) ─> EPIC-017 (soak disk hygiene cut: PR 1 -> PR 2 -> PR 3 -> PR 4; PR #406 closes unmerged)
 
 EPIC-001 (system-integration alignment)    EPIC-003 (f1r3node: merge critical PRs)
 EPIC-002 (monitoring separation)               |

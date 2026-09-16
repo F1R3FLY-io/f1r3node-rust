@@ -50,7 +50,7 @@ The claim is not discharged. Gates from the prevention plan:
 | G0 | Evidence binding and required-check enforcement | Pending. `TLA+ invariant check` is not a required check on `dev`. |
 | D1 | Band admission | Local RED/GREEN complete. Maintainer review pending. |
 | D2 | Emergency response bounds | Partial. Stop commands are bounded (B13) and guardian death blocks admission (B14). Cleanup command bounds, confirmed termination, durable publication, and a composed deadline remain open. |
-| O1 | Observability before the diagnostic soak | Pending. |
+| O1 | Observability before the diagnostic soak | Partial. The [work log](../work-logs/task-soak-disk-hygiene-parsimonious-2026-09-09.md#gate-o1-observability-verification-2026-09-16) records the result of 2026-09-16. The raw CSV writer, the disk records, the artifact retrieval, and the checkpoint deadlines are verified. The carrier hit path, the ancestor counters, and a free-inode record are absent from the candidate. |
 | D3 | Identify and remove the disk-growth cause | Open. The source's D3 diagnostic methodology specifies the run that names the growing writer. The cause is not yet identified. |
 | F1, F2, F3 | Finalization work bound and repair | Pending and separate from this claim. |
 | A1 | 60-hour acceptance soak on the exact candidate | Pending. |

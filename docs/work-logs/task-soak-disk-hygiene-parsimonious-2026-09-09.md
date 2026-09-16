@@ -49,6 +49,8 @@ Unchanged on purpose (the source's B25 later changed `test-run-merge-recovery-so
 
 ## Phase two (pending the source agent's confirmation)
 
+**Superseded on 2026-09-16.** The stacked-PR cut, tracked as EPIC-017 in `docs/ToDos.md`, carries only the files each PR needs. Nothing on the staging branch is deleted, and the commands below must not be run. The list stays as the record of what the stack leaves behind.
+
 The historical manifests are digest-bound in the two `docs/cbc-evidence/*.md` records and the run README before removal, so the source agent's raw store stays verifiable.
 
 Remove the superseded files, then rerun the five checks above:
@@ -255,6 +257,31 @@ Every check passed on the runner:
 The real-daemon and native fixtures require provisioning metadata that the second session's provisioner wrote. That is a record naming the runner and confirming no GitHub registration, a ready marker, and the instance id as an acknowledgment. The first pass lacked them. A second pass wrote them on the runner from its own instance identity and reran those groups.
 
 The native fixtures substitute the Docker commands and the external workload, so they verify the launcher's admission and refusal paths and not Docker containment. B44 therefore stays open, and the private Docker cases of the source's specification are not implemented on any branch. The retrieved evidence is session-local, digest `3a7171c1ac83e28150df1a236771b35411f522a4ad76074e6074a4c7cec190fb`, and is not committed. After the retrieval this session started the runner's own expiry service, and the instance reached the terminated state at 20:52:48 UTC.
+
+## Gate O1: observability verification (2026-09-16)
+
+The user asked this session to complete the O1 telemetry and retrieval verification. The gate has six items in the [recurrence plan](../plans/soak-recurrence-prevention-2026-09-08.md#gate-o1-verify-observability-before-the-diagnostic-soak). The results below come from three sources. The first is the scheduled soak run 34921498873 of 2026-09-15. The second is the guarded runner of 2026-09-15. The third is the telemetry fixture of the telemetry track, run on this host in a Linux container. The raw evidence is session-local and is not committed.
+
+The scheduled run is the only recent nightly run with a real workload. The other nightly runs of the week are cron fallbacks with every job skipped. The run targeted `ffefd6932` on `dev` under the master workflow at `adcc3fa74`, dispatched by the OCI resource scheduler. It completed 51 iterations with three product failures in iterations 7, 16, and 22, and no disk event. It ended because `dev` advanced. Its artifact holds 684 files and expands to 14 GB.
+
+| Item | Status | Evidence and gaps |
+| --- | --- | --- |
+| 1. Carrier absence, hit, fallback, merge, and replay | Partial | The raw time series of every iteration holds the carrier absence, row-read, and watermark counters, the fallback cap and enabled flags, the merge relation items, branches, conflict edges, rejection options, and state actions, the replay spawn, reset, user work, system work, and checkpoint counters, and the stage durations. The carrier hit counter is zero in all 51 iterations, so the nightly workload never exercised the hit path. The candidate has no ancestor metadata or ancestor body counters. Those two rows of the required raw evidence do not exist in `ffefd6932`. |
+| 2. Metrics against the summary collector and the raw CSV writer | Partial | The raw CSV writer retains every family above per node, label set, and scrape, with 1285 series per iteration. The summary collector on the master workflow publishes only the finality spread. The 27-family phase summary is the telemetry track's overlay on this branch. Its fixture passes all nine cases on Linux, listed below. |
+| 3. Disk usage, free space, inode, protection, and ownership records | Partial | The driver records free megabytes, directory usage, and the Docker disk report before and after cleanup in every iteration. No driver version records free inodes. The breach, protection, and ownership records exist only on breach paths. The guarded runner of 2026-09-15 verified them through the host suite and the real-daemon checks. The scheduled run had no breach, so its artifact holds none. |
+| 4. Artifact download, schema, and candidate identity | Done, with one defect found | The artifact downloaded and unpacked, and every iteration holds its time series, resource series, and result record under the expected names. The target is an ancestor of `origin/dev` and the version is 0.4.46. The run's own checkpoint aggregation failed twice with an argument-length error from `jq` at line 174 of the aggregator. Both `weekly-summary.json` files in the artifact are empty. The repaired aggregator on this branch produced a valid weekly summary and verdict from the same artifact. The verdict is regress with one active failure. |
+| 5. Evidence retrieval after a controlled writer stop | Done | The guarded runner record above covers it. The real-daemon checks stopped a digest-pinned writer under the driver's control and retrieved the evidence before the runner terminated itself. |
+| 6. Checkpoint deadlines before dispatch | Done | The schedule routing test of the workflow scripts passes on this host. It covers the late-start and manual-dispatch cases. |
+
+The telemetry fixture, `scripts/bench/test-soak-telemetry.py`, cannot run on macOS. The driver needs bash 5, the proc filesystem, and process descriptors. It ran as root in the CI fixture image on the local Docker daemon. The source and the pinned harness were mounted read-only, and three harness dependencies came from Debian packages. All nine cases passed at `365204039` with harness `962effd17`. The cases are the summary, the missing baseline, the two decreasing cumulative cases, the zero deltas, and the four invalid-sample cases.
+
+Three findings matter beyond this gate:
+
+- The aggregation defect is in production. The perf-report transport repair of 2026-09-14 fixes it, and its regression script reproduces it. The handoff task in `docs/ToDos.md` now lists that repair first.
+- The carrier hit path and the ancestor counters are not observable in the nightly workload. F1 needs an instrumented run that exercises them, or the missing metrics must be recorded as absent and not as zero work.
+- No inode record exists. Adding one is a small driver change and belongs to the source's driver.
+
+The O1 exit condition is therefore not met in full. The retrieved artifact holds the exercised metrics, and the missing metrics are recorded as absent. The claim's O1 row records the partial result.
 
 ## D3 evidence: the disk-usage timeline (2026-09-10, removed 2026-09-15)
 
