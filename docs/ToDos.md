@@ -1549,9 +1549,10 @@ tasks:
     blocked_by: [TASK-017-3]
     notes:
       - "Branch docs/consensus-neutral-execution from the PR 3 branch. Plan section 2 lists the 3 files, about 650 lines: the architecture note, the verification tiers document, and the links from the docs index and the formal-verification guide."
-      - "PR 4 deletes the plan file. Git history keeps it."
+      - "PR 4 deletes the plan file, the work log that PR 2 carried, and the three soak coordination bullets in docs/ToDos.md. Git history keeps them. Maintainer decision of 2026-09-16."
     acceptance:
       - "Every relative link in the note and the tiers document resolves"
+      - "After PR 4 merges, dev holds no soak staging work log, no soak coordination bullets, and no plan file"
       - "The STE check passes on the note"
       - "The PR targets the PR 3 branch and stays a draft until PR 3 merges, then is rebased on dev and marked ready"
 

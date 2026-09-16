@@ -320,6 +320,8 @@ The maintainer decided that PR #406 does not merge as one unit. It is a staging 
 3. Soak formal models: the two consolidated models, the storage budget, the gate registry and test, the README, and the claim.
 4. Docs: the consensus-neutral execution note, its links from the docs index and the formal-verification guide, and this split section.
 
+On 2026-09-16 the maintainer added that the last merged PR removes the stigmergic artifacts the stack carries. Those are this work log, the three coordination bullets in `docs/ToDos.md`, and the plan. Dev keeps the deliverable, and git history keeps the record.
+
 ### Verification split by machine and medium (2026-09-11)
 
 The maintainer's architecture note, [F1r3fly: Parallel State Machines and Consensus-Neutral Execution](../artifacts/f1r3fly-consensus-neutral-sm.md), replaces the earlier casper, execution, node split. The node has two execution machines and four ordering media. Machine A is Rholang reduction over RSpace. Machine B is the RGB client-side contract machine. The media are CBC Casper, RGB seals, Casanova, and Cordial Miners.

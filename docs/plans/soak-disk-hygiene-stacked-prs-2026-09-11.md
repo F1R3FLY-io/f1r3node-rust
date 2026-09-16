@@ -4,7 +4,7 @@
 
 **Staging branch:** `fix/parsimonious-maintainble-soak-disk-hygiene`, draft PR #406. It closes unmerged after the cut.
 
-**Lifetime of this plan:** PR 1 carries this file onto dev so that reviewers of the stack can read it. PR 4 deletes it on the final merge. Git history keeps it.
+**Lifetime of this plan:** PR 1 carries this file onto dev so that reviewers of the stack can read it. PR 4 deletes it on the final merge. Git history keeps it. PR 4 also removes the other stigmergic artifacts the stack carries, the work log and the coordination bullets. Dev keeps the deliverable and not the coordination record.
 
 **Base:** `dev` at the time of the cut. On 2026-09-11 that was `6f48d638c`. On 2026-09-16 it is `4d8d9d79c`. Refresh this line again when the cut starts.
 
@@ -123,7 +123,10 @@ Split files:
 Deletions:
 
 - `docs/plans/soak-disk-hygiene-stacked-prs-2026-09-11.md`, this plan. The stack is complete when PR 4 merges, so the plan leaves the tree with it.
-- The work log's link to this plan becomes a permalink to the plan at its last staging-branch commit. The link then still resolves after the deletion.
+- `docs/work-logs/task-soak-disk-hygiene-parsimonious-2026-09-09.md`, the work log that PR 2 carries. It serves the reviewers of PR 2 and PR 3, and it leaves the tree with the stack.
+- The three soak coordination bullets in `docs/ToDos.md` that PR 2 carries. The cut is complete, so the coordination record leaves the task file.
+
+Git history keeps all three, and the staging branch on PR #406 stays as the permalink source for the work log and the plan.
 
 Verification: the STE check on the note, and every relative link resolves.
 
@@ -139,7 +142,8 @@ These files receive hunks from more than one PR. Each is copied from the staging
 | `.github/workflows/ci.yml` | | harness step | fixture step | |
 | `docs/formal-verification.md` | deploy storage row | | soak row, gate text | note and tiers links |
 | `docs/Glossary.md` | | six disk terms | | three CbC terms |
-| `docs/ToDos.md` | | three bullets | | |
+| `docs/ToDos.md` | | three bullets | | three bullets removed |
+| `docs/work-logs/task-soak-disk-hygiene-parsimonious-2026-09-09.md` | | added | | deleted |
 | `docs/plans/soak-disk-hygiene-stacked-prs-2026-09-11.md` | added | | | deleted |
 
 ---
@@ -189,6 +193,7 @@ The maintainer took these decisions on 2026-09-11:
 | The deploy storage negative control stays manual between PR 1 and PR 3 | Accepted. The area README says so, and PR 3 registers it. |
 | Source cycles that land after the cut starts | Merge them into the staging branch as before, then port the delta to the affected PR branch by path. |
 | This plan file | PR 1 carries it, and PR 4 deletes it. |
+| The stigmergic artifacts the stack carries: this plan, the work log, and the three coordination bullets (maintainer, 2026-09-16) | PR 4 removes all three on the final merge. Git history keeps them. EPIC-017 is not carried and stays on the staging branch as the record of the cut. |
 | The B44 launcher prototype: the containment launcher, its Python module, and its fixture | Carried in PR 2, flagged as a prototype the normal workflow does not use. The guardian model's `ManagedContainment` control then describes code that is in the tree. B44 stays open. |
 
 ## 7. Risks
