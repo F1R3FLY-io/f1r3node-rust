@@ -227,7 +227,7 @@ The formal tree and the CbC tags follow the same cut. Each check covers one mach
 
 **Follow-ups the split depends on**
 
-- **Interface crate.** The `MultiParentCasper` trait is defined inside the casper crate. The node therefore names its boundary through the medium it should be neutral to. A neutral interface crate comes first. Section 11 records the open question of a thinner `OrderingMedium` trait for RGB.
+- **Interface crate.** The `MultiParentCasper` trait is defined inside the casper crate. The node therefore names its boundary through the medium it should be neutral to. A neutral interface crate comes first. Section 12 records the open question of a thinner `OrderingMedium` trait for RGB.
 - **Rocq coverage gap.** The formal gate rebuilds only slashing, fork choice, and rspace guards. The merge algebra, finalized floor, and runtime isolation proofs ship as committed build outputs, and CI does not recheck them. The keystone needs a CI rebuild before anything cites it by pin.
 - **Execution glue in the medium crate.** Three Rholang runtime files under the casper crate are machine A code. They move with the interface work.
 - **Runtime isolation splits.** `ShardRuntimeIsolation` is machine A. `BlockHeapLifecycle` is substrate. The area is cut in two at the move.
