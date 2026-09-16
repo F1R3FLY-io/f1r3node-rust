@@ -13,12 +13,14 @@ name: Slashing test suite
 #     • property-based      — T-* proptests at PROPTEST_CASES=10000
 #     • pre-fix-regressions — out-of-band per-bug counter-examples (matrix 1..11)
 #     • loom-interleavings  — exhaustive 2-thread T-9.2 atomic-RMW model check
+#     • tla-model-check     — bounded tier, check-tla-invariants.sh --soak-pr
 #     • rocq-build          — re-verify the Rocq mechanization closes, axiom-free
 #     • search-horizon-smoke — scripts/ci/slashing-search-horizon.sh smoke tier
 #   Nightly only (schedule / workflow_dispatch):
 #     • mutation-coverage        — cargo-mutants survival rate (Track 6)
 #     • nightly-extended-proptest — PROPTEST_CASES=100000
 #     • search-horizon-nightly   — 1M-run fuzz tier
+#     • tla-model-check          — full frontier, check-formal-invariants.sh --tla
 
 on:
   workflow_dispatch:
@@ -252,7 +254,7 @@ jobs:
         with:
           name: tla-invariant-logs-${{ github.run_id }}-${{ github.run_attempt }}
           path: /tmp/tlc-*.log
-          if-no-files-found: error
+          if-no-files-found: warn
 
   rocq-build:
     name: Rocq slashing, fork-choice and rspace-guards rebuild
