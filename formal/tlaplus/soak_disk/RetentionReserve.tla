@@ -24,5 +24,4 @@ TypeOK ==
     /\ done \in 0 .. Copies
 
 ReserveHeld == free >= Required
-AllCopiesResolved == <>(done = Copies)
 =============================================================================

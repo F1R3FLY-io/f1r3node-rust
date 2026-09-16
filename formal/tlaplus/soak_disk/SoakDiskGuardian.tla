@@ -85,7 +85,7 @@ VARIABLES phase, alive, monitorAlive, interruptRequested, breachRecorded,
           lateUnits,    \* clock units of unconfirmed consumption after the stop
           unownedStopped, \* a stop command also killed containers this run does not own (B30)
           exitRejected,   \* the exit trap's stop command was rejected by Docker (B31)
-          exitFailureRetained, \* that rejection became a counted failure and a refusal (B31)
+          exitFailureRetained, \* that rejection was retained as a counted failure (B31)
           unownedHostStopped, \* a host stop also killed processes this run does not own (B32, B33)
           unownedMarked, \* OOM preference was set on processes this run does not own (B34)
           unownedContainersMarked \* OOM preference was set on containers this run does not own (B36)

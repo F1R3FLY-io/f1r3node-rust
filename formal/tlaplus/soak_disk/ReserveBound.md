@@ -38,6 +38,5 @@ It does not represent the driver, the guardian, or the storage stall.
 The margin term M is folded into the concrete reserve value and is not a separate variable.
 
 The growth rate, the burst, and the operating reserve still need the D3 diagnostic run.
-This model is not registered in the formal gate yet, because the second session is cleaning up the admission checks that share the gate lists.
-Registration follows once that cleanup settles.
+The gate runs this model and its unbounded control.
 D2, D3, and claim discharge remain pending.

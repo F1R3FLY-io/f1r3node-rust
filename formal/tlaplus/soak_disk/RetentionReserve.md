@@ -38,6 +38,6 @@ It represents the space bound only, not the emergency-deadline time bound that t
 It does not represent the driver, the stall, or the summary writer.
 The copy footprint and the operating reserve still need the D3 diagnostic run.
 
-This model is not registered in the formal gate yet, because the admission-check cleanup edits the same gate lists.
-The space-aware skip is a driver change and waits for that cleanup and for the diagnostic reserve values.
+The gate runs this model and its unskipped control.
+The space-aware skip is a driver change and waits for the diagnostic reserve values.
 D2, D3, and claim discharge remain pending.
