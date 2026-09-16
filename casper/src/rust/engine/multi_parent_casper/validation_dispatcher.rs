@@ -356,7 +356,7 @@ pub(crate) async fn dispatch_validate<T: TransportLayer + Send + Sync>(
             status,
             elapsed
         );
-        record_arrival_depth(this, block, snapshot)?;
+        record_arrival_depth(this, block);
         update_mergeable_cache_after_validation(this, block, "block").await;
     }
 
@@ -368,16 +368,22 @@ pub(crate) async fn dispatch_validate<T: TransportLayer + Send + Sync>(
 fn record_arrival_depth<T: TransportLayer + Send + Sync>(
     this: &MultiParentCasperImpl<T>,
     block: &BlockMessage,
-    snapshot: &CasperSnapshot,
-) -> Result<(), CasperError> {
-    let frontier = this
-        .block_dag_storage
-        .get_representation()?
-        .latest_block_number();
+) {
+    let frontier = match this.block_dag_storage.get_representation() {
+        Ok(dag) => dag.latest_block_number(),
+        Err(error) => {
+            tracing::warn!(
+                target: "f1r3fly.casper.recovery",
+                %error,
+                "arrival depth not recorded: DAG representation unavailable"
+            );
+            return;
+        }
+    };
     let depth = frontier - block.body.state.block_number;
     metrics::histogram!(BLOCK_ARRIVAL_DEPTH_METRIC, "source" => CASPER_METRICS_SOURCE)
         .record(depth as f64);
-    let max_parent_depth = snapshot.on_chain_state.shard_conf.max_parent_depth;
+    let max_parent_depth = this.casper_shard_conf.max_parent_depth;
     if depth > i64::from(max_parent_depth) {
         metrics::counter!(BLOCK_ARRIVED_UNCITABLE_METRIC, "source" => CASPER_METRICS_SOURCE)
             .increment(1);
@@ -390,7 +396,6 @@ fn record_arrival_depth<T: TransportLayer + Send + Sync>(
             "block validated beyond the parent-depth horizon: this node can no longer cite it"
         );
     }
-    Ok(())
 }
 
 pub(crate) async fn dispatch_validate_self_created<T: TransportLayer + Send + Sync>(
