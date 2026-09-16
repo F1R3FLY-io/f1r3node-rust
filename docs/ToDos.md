@@ -1634,15 +1634,15 @@ tasks:
 ---
 epic_id: EPIC-017
 title: "Soak Disk Hygiene Stacked-PR Cut"
-status: blocked
+status: in_progress
 priority: p1
 user_story: null
 issues: []
 blocked_by: []
 created_at: 2026-09-16
 updated_at: 2026-09-16
-claimed_by: null
-claimed_at: null
+claimed_by: claude-session-c942697b
+claimed_at: 2026-09-16T05:00:00Z
 plan: docs/plans/soak-disk-hygiene-stacked-prs-2026-09-11.md
 work_log: docs/work-logs/task-soak-disk-hygiene-parsimonious-2026-09-09.md
 execution_contract:
@@ -1653,15 +1653,15 @@ execution_contract:
   git_state_policy: "Branch creation, staging, commits, pushes, and PR creation belong to the maintainer. The assistant prepares the files and the verification for each PR and hands each step back."
   source_cycles_after_cut: "Merge each new source cycle into the staging branch as before, then port the delta to the affected PR branch by path."
 prerequisites:
-  - "The source agent confirms its last cycle on fix/soak-disk-hygiene-stop and the staging branch carries it."
-  - "The maintainer refreshes the plan's base line to the dev tip at cut time and creates the PR 1 branch from that tip."
+  - "Met 2026-09-16: the maintainer started the cut with the source at bb503deae. Later source cycles are merged into the staging branch and ported to the affected PR branch by path."
+  - "Met 2026-09-16: the plan base line is dev 4d8d9d79c, and the maintainer creates each PR branch by hand."
 tasks:
   - id: TASK-017-1
     title: "PR 1: deploy storage bound"
-    status: blocked
+    status: in_progress
     priority: p1
-    claimed_by: null
-    blocked_by: [prerequisites]
+    claimed_by: claude-session-c942697b
+    blocked_by: []
     notes:
       - "Branch formal/deploy-storage-bound from origin/dev. Plan section 2 lists the 6 files, about 130 lines, and the split rows in docs/formal-verification.md and the area README."
       - "PR 1 carries the plan file onto dev so reviewers of the stack can read it. PR 4 deletes it."

@@ -19,7 +19,7 @@ references:
 
 ## Claim
 
-With disk protection enabled, the soak driver never starts an iteration from a free-space sample that is missing, malformed, or below floor plus band, and never starts one after its guardian process has died. During an iteration, the guardian records a breach before it stops the writers. A dead guardian or an unavailable sample stops the iteration. Every probe and attribution command runs under a deadline. A retained breach marker blocks the next segment.
+With disk protection enabled, the soak driver never starts an iteration from a free-space sample that is missing, malformed, or below floor plus band. It never starts one after its guardian process has died. During an iteration, the guardian records a breach before it stops the writers. A dead guardian or an unavailable sample stops the iteration. Every probe and attribution command runs under a deadline. A retained breach marker blocks the next segment.
 
 ## Implementation surface
 

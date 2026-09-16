@@ -3,7 +3,7 @@
 - **Status:** pending (local and hosted execution green; required-check enforcement open)
 - **Adapter:** embedded
 - **Claim:** [CLAIM-SOAK-GATE-001](../claims/soak-formal-gate.md)
-- **Verified:** locally 2026-09-08 and 2026-09-09; hosted 2026-09-08
+- **Verified:** locally 2026-09-08 and 2026-09-09, hosted 2026-09-08
 
 ## Cycles
 
@@ -35,7 +35,7 @@ The B1 and B2 tests are merged into `scripts/ci/test-check-tla-invariants.sh`. I
 
 ## Historical manifests
 
-Retained outside Git by the agent that ran the cycles. The digests bind that raw store to this record; a regenerated manifest is a new record, not renewed verification.
+Retained outside Git by the agent that ran the cycles. The digests bind that raw store to this record. A regenerated manifest is a new record, not renewed verification.
 
 | Manifest | SHA-256 |
 | --- | --- |

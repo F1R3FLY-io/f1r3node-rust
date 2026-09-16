@@ -6,7 +6,7 @@
 - **Commit:** 1e2dc07f4 (corrections landed in ca85cfe3e, 59430d59b, ac94c1755, 3d2aa7904, e6fdd343b, 3498fa4f3, 7f0f46923, 6e0b50f26, 59b90568c, 8ab599e5c, 706b11b6e, 9c99de84e, 4e9dd432b, d64ae3bbf, 14ffb4d3a)
 - **Verified:** locally, 2026-09-08 to 2026-09-09
 
-Each cycle ran the real driver inside a disposable container through `scripts/bench/test-soak-disk-admission.sh` (no host mounts, no network, no Docker socket, UID 65534, 256 MiB, one CPU). `df`, `docker`, and the workload command were fixtures. In every cycle the production regression failed on the pre-fix source, TLC reported the named invariant with exit 12 on the pre-fix configuration, and both passed after the correction.
+Each cycle ran the real driver inside a disposable container through `scripts/bench/test-soak-disk-admission.sh` (no host mounts, no network, no Docker socket, UID 65534, 256 MiB, one CPU). `df`, `docker`, and the workload command were fixtures. In every cycle the production regression failed on the pre-fix source. TLC reported the named invariant with exit 12 on the pre-fix configuration, and both passed after the correction.
 
 On 2026-09-15 every host fixture, real-daemon check, and native fixture below ran green on a guarded Linux runner at `89810c27a`. The parsimonious work log records the runner, the results, and the limits. A row's note that a check did not run on this host describes the merge cycle that folded the behavior.
 
@@ -69,7 +69,7 @@ Formal results after the 2026-09-09 consolidation into two modules (the per-cycl
 
 Regression suites green on the corrected driver: `test-soak-disk-admission.sh` (42 scenarios), `test-run-merge-recovery-soak.sh` (3 scenarios), `check-tla-invariants.sh --soak-pr` (4 positives, 24 controls, about 25 s).
 
-Fixture corrections during the cycles: one B9 driver-suite run failed on a readiness race at the resource CSV assertion, and the fixture now waits for every required telemetry file (30 repetitions passed). The first B5 model attempt exited 75 on a mixed string and numeric sample encoding before any behavioral result and was replaced by uniform sample records.
+Fixture corrections during the cycles: one B9 driver-suite run failed on a readiness race at the resource CSV assertion. The fixture now waits for every required telemetry file, and 30 repetitions passed. The first B5 model attempt exited 75 on a mixed string and numeric sample encoding before any behavioral result and was replaced by uniform sample records.
 
 ## Historical manifests
 

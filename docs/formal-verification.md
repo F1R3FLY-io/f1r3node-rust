@@ -26,9 +26,9 @@ Two rules distinguish this repo's practice from decorative verification:
 5. **Consensus liveness includes resource bounds.** A semantically correct path
    fails verification when unbounded work prevents validation progress.
 
-The division of labor between TLC, Rocq, and the Rust binding tests, and the
-rule that promotes a bounded result into an unbounded theorem, are in
-[CbC verification tiers](./cbc-verification-tiers.md).
+The division of labor between TLC, Rocq, and the Rust binding tests is in
+[CbC verification tiers](./cbc-verification-tiers.md). So is the rule that
+promotes a bounded result into an unbounded theorem.
 
 The split of the formal areas by execution machine and ordering medium, and
 the follow-ups that split depends on, are in

@@ -159,7 +159,7 @@ Each control shows that the budget fails without its cap. The three caps are the
 
 The LMDB environments open with a map size, which is a hard ceiling on the state stores. The failure it produces is a write error inside the node, not a guardian refusal. That path is not modeled here.
 
-Clock units: the probe deadline is 3 units (a 2-second timeout plus a 1-second kill grace), a stalled `df` returns at 4 units, the stop budget is 2 units (TERM at 1, KILL at 2), and attribution has 1 unit for all roots. Root counts are 1, 3, and 32. Prior failure counts are 0 and 2.
+Clock units: the probe deadline is 3 units, a 2-second timeout plus a 1-second kill grace. A stalled `df` returns at 4 units, the stop budget is 2 units with TERM at 1 and KILL at 2, and attribution has 1 unit for all roots. Root counts are 1, 3, and 32. Prior failure counts are 0 and 2.
 
 ## Registered standalone models
 

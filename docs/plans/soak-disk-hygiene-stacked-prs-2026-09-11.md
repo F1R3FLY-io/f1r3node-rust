@@ -1,12 +1,14 @@
 # Soak Disk Hygiene: Stacked Pull Request Plan
 
-**Status:** plan, not started. The cut begins when the source agent confirms its last cycle. The work is tracked as EPIC-017 in [docs/ToDos.md](../ToDos.md), one task per PR.
+**Status:** cut in progress since 2026-09-16. The maintainer started the cut with the source branch at `bb503deae`. Later source cycles follow the rule in section 6. The work is tracked as EPIC-017 in [docs/ToDos.md](../ToDos.md), one task per PR.
+
+**Baseline pass (2026-09-16):** on the staging tip after the six-model registration, the bounded gate passed with 13 positives and 61 controls on an arm64 JDK. The gate fixture test was still running when the cut started, and its result goes into the work log. The driver and host suite are byte-identical to the source and were last proven on a guarded runner on 2026-09-15. The STE check ran on every carried document. The remaining findings are table-row artifacts, legacy coordination bullets, and the work log that PR 4 removes.
 
 **Staging branch:** `fix/parsimonious-maintainble-soak-disk-hygiene`, draft PR #406. It closes unmerged after the cut.
 
 **Lifetime of this plan:** PR 1 carries this file onto dev so that reviewers of the stack can read it. PR 4 deletes it on the final merge. Git history keeps it. PR 4 also removes the other stigmergic artifacts the stack carries, the work log and the coordination bullets. Dev keeps the deliverable and not the coordination record.
 
-**Base:** `dev` at the time of the cut. On 2026-09-11 that was `6f48d638c`. On 2026-09-16 it is `4d8d9d79c`. Refresh this line again when the cut starts.
+**Base:** `dev` at `4d8d9d79c`, the tip when the cut started on 2026-09-16. It was `6f48d638c` when the plan was written on 2026-09-11.
 
 **Work log:** [task-soak-disk-hygiene-parsimonious-2026-09-09.md](../work-logs/task-soak-disk-hygiene-parsimonious-2026-09-09.md), which records the decisions this plan applies.
 
