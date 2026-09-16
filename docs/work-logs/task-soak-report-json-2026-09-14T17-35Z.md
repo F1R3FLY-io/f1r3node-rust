@@ -48,7 +48,7 @@ Shell syntax, whitespace, protected-input hashes, and warning-level language-ser
 The retained evidence directory is:
 
 ```text
-/home/bf_spark/soak-evidence/f1r3node-rust/report-json-transport-p4EMyozg
+[EVIDENCE_HOST]/soak-evidence/f1r3node-rust/report-json-transport-p4EMyozg
 ```
 
 The principal records are:
@@ -92,7 +92,53 @@ Formatting changed the reporting source and fixture after the original verificat
 The additional evidence directory is:
 
 ```text
-/home/bf_spark/soak-evidence/f1r3node-rust/report-commit-review-VZSFj5pI
+[EVIDENCE_HOST]/soak-evidence/f1r3node-rust/report-commit-review-VZSFj5pI
 ```
 
 `reviewed-source.json` binds the node source used for the metric correction. `reporting-inputs.json` supplies the current reporting digests and supersedes the earlier digest handoff. `results.json` records the new report comparisons and summary-writer result. The shared inventory still requires the integration agent's update. These checks do not discharge claims or establish acceptance.
+
+## Production evidence and pull request preparation (2026-09-16, claude-session-c942697b)
+
+The scheduled soak run 34921498873 of 2026-09-15 hit this defect in production. The run targeted `ffefd6932` on `dev` under the master workflow at `adcc3fa74`. Its checkpoint aggregation failed twice with `jq: Argument list too long` at line 174 of the report script. Both `weekly-summary.json` files in its artifact are empty. The run's summary holds 164196 bytes and 51 iterations.
+
+The failure is Linux-specific. Linux caps one argument string at 128 KiB, and macOS does not. The report script passed the whole summary as one argument, so the same input passes on a developer Mac and fails on the runner.
+
+The integration session reproduced the failure and the repair on 2026-09-16 with the real artifact:
+
+| Check | Script | Result |
+| --- | --- | --- |
+| Regression suite on macOS, bash 5.3, jq 1.7 | `dev` at `4d8d9d79c` | Exit 1. Four cases fail with `Argument list too long`. |
+| Regression suite on macOS | Staging at `10a29853f` | Exit 0. All cases pass in under four seconds. |
+| Real artifact in the CI fixture image, Debian, jq 1.6 | `dev` at `4d8d9d79c` | Exit 126 at line 174 with `Argument list too long`. The output directory holds one empty `weekly-summary.json` and nothing else, the same as the production artifact. |
+| Real artifact in the CI fixture image | Staging at `10a29853f` | Exit 0. Six artifacts, verdict `regress` with one active failure. |
+| Real artifact on macOS | `dev` at `4d8d9d79c` | Exit 0, since macOS has no per-argument cap. This is why local checks did not catch the defect. |
+
+The script digests are `4205c691` for the report script and `ff010f3d` for its regression script, the same as the claim inventory bindings. The raw evidence is session-local and is not committed.
+
+### Pull request
+
+The repair goes to `dev` as its own pull request, independent of the disk-hygiene stack. The maintainer creates the branch and the pull request. The files are the two scripts and this work log:
+
+```text
+scripts/bench/aggregate-perf-report.sh
+scripts/bench/test-aggregate-perf-report.sh
+docs/work-logs/task-soak-report-json-2026-09-14T17-35Z.md
+```
+
+The F1 plan correction from the same staging commit stays out. That plan file does not exist on `dev`. The summary writer also stays out, since its staging changes belong to the driver track.
+
+Suggested branch and title:
+
+```text
+fix/soak-report-json-transport
+fix(soak): pass report JSON to jq through files, not arguments
+```
+
+Suggested description:
+
+> The soak report script passed complete JSON documents to `jq` as command arguments. Linux caps one argument at 128 KiB. The scheduled soak run 34921498873 of 2026-09-15 crossed that cap with a 164 KB summary after 51 iterations. Its checkpoint aggregation failed twice with `Argument list too long`, and its artifact holds two empty weekly summaries and no verdict.
+>
+> The script now reads document inputs with `jq --rawfile` and parses them with `fromjson`. Scalar metadata keeps the argument interface. Required inputs reject malformed or multiple documents, and empty optional inputs keep their no-data behavior. The script copies external inputs into a private temporary directory before it writes outputs that alias them. Schemas, failure counts, verdict rules, and metric calculations are unchanged.
+>
+> The regression script gains 21 malformed-input controls, three alias controls, and four large-input cases over one mebibyte. The four large cases fail against the current `dev` script and pass against this one. The CI step `Verify soak verdicts` runs the suite on this pull request. The real artifact of run 34921498873 fails against the `dev` script inside the CI fixture image and produces all six report artifacts with this script. The work log records the evidence.
+
