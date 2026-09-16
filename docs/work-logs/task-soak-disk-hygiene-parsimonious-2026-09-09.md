@@ -313,6 +313,10 @@ The deploy cap is derived, not assumed. `deploy_storage/DeployStorageBound` is a
 
 Gate: six positive configurations and 33 controls. `deploy_storage` joined `REGISTERED_CONTROL_AREAS`.
 
+## Baseline pass before the cut (2026-09-16)
+
+On the staging tip `002470543` the bounded gate passed with 13 positives clean and all 61 controls violating their expected invariants. The gate fixture test passed at 05:13 UTC. Both ran on an arm64 OpenJDK 26, because the macOS 27 upgrade broke every Intel JDK under `/usr/local`. A first gate run on the Intel JDK reported all 74 configurations failed in zero seconds without running TLC. The driver and host suite are byte-identical to the source and were last proven on the guarded runner on 2026-09-15.
+
 ## Decision: split after the source agent finishes (2026-09-10, revised 2026-09-11)
 
 The maintainer decided that PR #406 does not merge as one unit. It is a staging pull request, marked as a draft, and it closes unmerged after the cut. After the source agent's last cycle lands here, the branch is cut into four pull requests from dev. The legacy modules, wrappers, digest inventory, generated evidence packages, and every Ruby file are not carried:
