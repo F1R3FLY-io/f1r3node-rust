@@ -5,7 +5,7 @@ claimed_by: pi-casper-ratification-planning
 claimed_at: 2026-09-16T20:29:37Z
 handoff_status: paused
 next_steps:
-  - Run the requested CbC review against the scaffolded epic scope.
+  - Resolve the recorded EPIC-017 CbC implementation gaps.
   - Define harness/profile fixtures and interface bindings under TASK-017-2.
   - Resolve prerequisite integration under TASK-017-3 with separate Git consent.
 ---
@@ -39,6 +39,35 @@ Structural checks confirm eight harness/profile claims, seven artifacts per epic
 All pre-existing runtime attributes and ledger contents match the pre-scaffold baseline. The carrier-index node claim also matches that baseline exactly.
 
 The deterministic STE Check and `git diff --check` pass. These checks validate the reduced scaffold, not the harness implementation.
+
+## CbC check of the reduced scope
+
+The check used the working tree based on `40e2d2d7c409d9f644c04221286bd95a187d1434`, including the uncommitted scope reduction.
+
+The shared skill driver ran these read-only commands with the default mixed-ledger directory:
+
+```bash
+cbc.sh identify --scope epic EPIC-017 --json
+cbc.sh discharge --scope epic EPIC-017 --strict --json
+```
+
+Identification returned seven mandatory harness/formal artifacts and no node artifacts. Strict discharge returned exit 4, with all seven records pending.
+
+The planned model and eleven configurations are absent. No new executable model can run yet.
+
+All ten planned fixture identifiers are absent from the current fixture script. This check is an inventory check, not a behavioral result.
+
+All seven ledger records retain matching artifact and claim digests. Shell syntax checks pass for the driver, fixture script, summary script, and TLC gate.
+
+The TLC jar is present. Missing model and fixture implementations, not a runtime-proof requirement, prevent verification at this stage.
+
+No verifier adapter ran. A generic successful command cannot discharge a bundle that requires exact TLC control verdicts and executable fixture results.
+
+No claim was refuted, discharged, or waived. The gate remains blocked on pending evidence, not a discovered counterexample.
+
+Complete TASK-017-2 interface and fixture contracts and TASK-017-3 prerequisites before implementing TASK-017-4 models, controls, fixtures, and workflow checks.
+
+EPIC-018 remains a separate post-#216 phase. No post-merge campaign or node proof ran during this check.
 
 ## Historical record
 
@@ -177,6 +206,6 @@ The Casper documentation index describes directory ownership and the temporary c
 
 ## Next step
 
-Run the requested CbC review on the reduced scope next. Then define TASK-017-2 profile fixture expectations before implementing harness models and fixtures.
+Resolve the recorded CbC gaps in the reduced scope. Define TASK-017-2 profile fixture expectations before implementing harness models and fixtures.
 
 Keep deferred policies experimental. Retain both `phloLimit` and `phloPrice` in every protocol-7 acceptance contract.
