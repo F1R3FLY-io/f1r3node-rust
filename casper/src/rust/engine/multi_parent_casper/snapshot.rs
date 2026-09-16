@@ -471,10 +471,11 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
                 Vec<models::rust::block_metadata::BlockMetadata>,
                 CasperError,
             > {
-                proto_util::get_parent_metadatas_above_block_number(
+                proto_util::parent_metadatas_above_block_number(
                     block_metadata,
                     earliest_block_number,
                     &dag,
+                    proto_util::UnheldParent::SkipSettled,
                 )
             };
 

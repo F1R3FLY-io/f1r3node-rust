@@ -381,7 +381,7 @@ where
             // propose, not an error to retry. The constraint that would have
             // stopped this node lives inside the snapshot it cannot build, so
             // as an error every attempt re-runs the whole failing walk.
-            Err(CasperError::BlockNotHeld(missing)) => {
+            Err(CasperError::BlockNotHeld(missing, _)) => {
                 tracing::info!(
                     target: "f1r3fly.casper.proposer",
                     "Not proposing: snapshot needs {}, which this node does not hold.",

@@ -21,6 +21,7 @@ use models::rust::casper::protocol::casper_message::{
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::state::exporters::rspace_exporter_items::RSpaceExporterItems;
 use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporterInstance;
+use shared::rust::store::key_value_store::MissingBlockContext;
 use tokio::sync::mpsc;
 
 use crate::rust::casper::MultiParentCasper;
@@ -393,7 +394,12 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
             let frontier_number = dag
                 .lookup(&frontier_hash)?
                 .map(|meta| meta.block_number)
-                .ok_or_else(|| CasperError::BlockNotHeld(frontier_hash.clone()))?;
+                .ok_or_else(|| {
+                    CasperError::BlockNotHeld(
+                        frontier_hash.clone(),
+                        MissingBlockContext::new("floor-seed frontier lookup"),
+                    )
+                })?;
             Ok(Some(FinalizedFloorSeed {
                 floor_hash: floor.hash,
                 floor_number: floor.block_number,
