@@ -421,17 +421,49 @@ async fn estimator_on_flipping_forkchoice_dag_should_return_the_appropriate_scor
     .await
 }
 
-/// A silent validator's latest message sits far below a finalized band. Scored
-/// from a floor above it, fork choice picks the same head without walking the
-/// band beneath the floor.
+/// The dense regime: every height carries one block per validator, each citing
+/// all three of the height below, so the LCA walk's candidate set never
+/// collapses and descends to its bound. Bounded at genesis the scored band
+/// grows with chain length — the cost the colleague's shard measured climbing
+/// 192 -> 1107 ms over 2.5 days. Bounded at the fork-choice floor it is flat in
+/// chain length, and the head is the same either way.
 #[tokio::test]
-async fn estimator_scored_from_a_floor_keeps_the_head_and_skips_the_band_below() {
+async fn estimator_scored_from_a_floor_is_flat_in_chain_length_on_a_dense_dag() {
+    let short = dense_regime_scores(10).await;
+    let long = dense_regime_scores(30).await;
+
+    assert_eq!(short.head_from_floor, short.head_from_genesis);
+    assert_eq!(long.head_from_floor, long.head_from_genesis);
+    assert!(
+        long.scored_from_genesis > short.scored_from_genesis,
+        "genesis-bounded scoring grows with chain length: {} at N=10 vs {} at N=30",
+        short.scored_from_genesis,
+        long.scored_from_genesis
+    );
+    assert_eq!(
+        short.scored_from_floor, long.scored_from_floor,
+        "floor-bounded scoring is flat in chain length"
+    );
+}
+
+struct DenseRegimeScores {
+    scored_from_genesis: usize,
+    scored_from_floor: usize,
+    head_from_genesis: prost::bytes::Bytes,
+    head_from_floor: prost::bytes::Bytes,
+}
+
+/// `heights` heights of a fully merged 3-wide DAG; the floor is two heights
+/// below the top, where a live shard's finalized floor trails the frontier.
+async fn dense_regime_scores(heights: usize) -> DenseRegimeScores {
     with_storage(|mut block_store, mut block_dag_storage| async move {
-        let v1 = generate_validator(Some("Validator One"));
-        let v2 = generate_validator(Some("Validator Two"));
-        let silent_validator = generate_validator(Some("Validator Three"));
-        let bonds: Vec<Bond> = [&v1, &v2, &silent_validator]
-            .into_iter()
+        let validators = [
+            generate_validator(Some("Validator One")),
+            generate_validator(Some("Validator Two")),
+            generate_validator(Some("Validator Three")),
+        ];
+        let bonds: Vec<Bond> = validators
+            .iter()
             .map(|v| Bond {
                 validator: v.clone(),
                 stake: 10,
@@ -449,42 +481,56 @@ async fn estimator_scored_from_a_floor_keeps_the_head_and_skips_the_band_below()
             None,
             None,
         );
-        let silent = create_test_block(
+
+        let mut level: Vec<prost::bytes::Bytes> = vec![genesis.block_hash.clone()];
+        let mut latest: HashMap<_, _> = validators
+            .iter()
+            .map(|v| (v.clone(), genesis.block_hash.clone()))
+            .collect();
+        let mut floor = BlockMetadata::from_block(&genesis, false, None, None);
+
+        for height in 0..heights {
+            let parents = level.clone();
+            let mut next = Vec::with_capacity(validators.len());
+            for (index, validator) in validators.iter().enumerate() {
+                let block = create_test_block(
+                    &mut block_store,
+                    &mut block_dag_storage,
+                    &parents,
+                    &genesis,
+                    validator,
+                    &bonds,
+                    latest.clone(),
+                );
+                next.push(block.block_hash.clone());
+                // The main parent is parents[0], so the spine runs through the
+                // first validator's blocks; a floor off that spine is not a
+                // floor any node would derive.
+                if index == 0 && height + 2 == heights {
+                    floor = BlockMetadata::from_block(&block, false, None, None);
+                }
+            }
+            for (validator, hash) in validators.iter().zip(next.iter()) {
+                latest.insert(validator.clone(), hash.clone());
+            }
+            level = next;
+        }
+
+        // One block on top of the widest level. Three equal-stake validators on
+        // a fully merged level tie, and a tie is broken by hash, so without a
+        // single top block "same head" would assert on the tiebreak rather than
+        // on the bound under test.
+        let head = create_test_block(
             &mut block_store,
             &mut block_dag_storage,
-            std::slice::from_ref(&genesis.block_hash),
+            &level,
             &genesis,
-            &silent_validator,
+            &validators[0],
             &bonds,
-            justifications!(v1 => genesis.block_hash, v2 => genesis.block_hash, silent_validator => genesis.block_hash),
+            latest.clone(),
         );
-        let (mut tip, mut floor) = (silent.clone(), silent.clone());
-        let (mut v1_latest, mut v2_latest) = (genesis.block_hash.clone(), genesis.block_hash.clone());
-        for i in 0..30 {
-            let creator = if i % 2 == 0 { &v1 } else { &v2 };
-            tip = create_test_block(
-                &mut block_store,
-                &mut block_dag_storage,
-                std::slice::from_ref(&tip.block_hash),
-                &genesis,
-                creator,
-                &bonds,
-                justifications!(v1 => v1_latest, v2 => v2_latest, silent_validator => silent.block_hash),
-            );
-            if i % 2 == 0 {
-                v1_latest = tip.block_hash.clone();
-            } else {
-                v2_latest = tip.block_hash.clone();
-            }
-            if i == 25 {
-                floor = tip.clone();
-            }
-        }
-        let latest = HashMap::from([
-            (v1.clone(), v1_latest),
-            (v2.clone(), v2_latest),
-            (silent_validator.clone(), silent.block_hash.clone()),
-        ]);
+        latest.insert(validators[0].clone(), head.block_hash.clone());
+
         let mut dag = block_dag_storage.get_representation().expect("dag");
         let estimator = Estimator::apply();
         let from_genesis = estimator
@@ -497,24 +543,30 @@ async fn estimator_scored_from_a_floor_keeps_the_head_and_skips_the_band_below()
             )
             .await
             .expect("fork choice from genesis");
-        let floor_meta = BlockMetadata::from_block(&floor, false, None, None);
         let from_floor = estimator
-            .tips_with_latest_messages(&mut dag, &floor_meta, latest, i32::MAX, None)
+            .tips_with_latest_messages(&mut dag, &floor, latest, i32::MAX, None)
             .await
             .expect("fork choice from the floor");
 
-        assert_eq!(from_floor.tips.first(), from_genesis.tips.first());
-        let floor_parent = floor_meta.parents.first().expect("floor has a main parent");
+        let floor_parent = floor.parents.first().expect("floor has a main parent");
         for scored in from_floor.scores.keys() {
             assert!(
-                *scored == silent.block_hash
-                    || scored == floor_parent
-                    || dag.lookup_unsafe(scored).expect("scored block").block_number
-                        >= floor_meta.block_number,
-                "below the floor only the floor's main parent and the latest messages may be scored"
+                scored == floor_parent
+                    || dag
+                        .lookup_unsafe(scored)
+                        .expect("scored block")
+                        .block_number
+                        >= floor.block_number,
+                "nothing below the floor is scored except the floor's own main parent"
             );
         }
-        assert!(from_genesis.scores.len() > from_floor.scores.len());
+
+        DenseRegimeScores {
+            scored_from_genesis: from_genesis.scores.len(),
+            scored_from_floor: from_floor.scores.len(),
+            head_from_genesis: from_genesis.tips.first().expect("a head").clone(),
+            head_from_floor: from_floor.tips.first().expect("a head").clone(),
+        }
     })
     .await
 }
