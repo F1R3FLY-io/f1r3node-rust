@@ -37,7 +37,7 @@
 #   disk-band-range       SOAK_DISK_HYGIENE_BAND_MB above the 64-bit maximum -> configuration rejected, exit 2
 #   disk-sum-range        floor plus band above the 64-bit maximum           -> configuration rejected, exit 2
 #   disk-max-floor        floor exactly at the 64-bit maximum, band 0        -> accepted, then refused on the sample
-#   disk-max-band         band exactly at the 64-bit maximum, floor 0        -> accepted, then refused on the sample
+#   disk-max-band         band exactly at the 64-bit maximum, floor 0        -> accepted, the floor is 0 so the sample passes
 #   cleanup-active-session an unowned two-hour-old session with a live writer survives hygiene
 #   cleanup-error-list    docker ps fails during hygiene; the failure is kept -> refuse
 #   cleanup-error-remove  docker inspect fails during hygiene                -> refuse
