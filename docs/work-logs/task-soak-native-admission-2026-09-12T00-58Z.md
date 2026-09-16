@@ -731,3 +731,16 @@ The branch integration agent retains shared-file coordination.
 This note records the assignment only and does not start another agent or a diagnostic run.
 Storage cleanup is complete.
 D2, D3, and acceptance remain pending.
+
+## D2/B44 transfer update, 2026-09-16
+
+The user transferred D2/B44 back to this session, identified as `pi-session-disk-protection-01a050ce` on `spark-f718`.
+This transfer supersedes the September 14 assignment and the corresponding local-work restriction.
+The [continuation log](task-soak-disk-protection-2026-09-16T02-54Z.md) records the current source, work sequence, and diagnostic request.
+The branch integration owner retains shared gate registration, inventory, and publication coordination.
+
+No peer is visible, but the earlier assignee's remote activity remains unverified.
+No runner or acceptance soak has been launched for this transfer.
+Diagnostic execution requires approved disposable infrastructure and verified exclusivity.
+Storage cleanup remains complete.
+D2, D3, and acceptance remain pending.

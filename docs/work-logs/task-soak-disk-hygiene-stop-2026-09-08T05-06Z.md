@@ -1417,3 +1417,24 @@ A certified index watermark records absence when the ancestry is readable, so it
 The proposal splits C5 into uncertified equivalence and certified soundness, which keeps the equality where the paths share information.
 The [F1 finalization diagnostic methodology](../plans/soak-f1-finalization-diagnostic-2026-09-14.md) specifies the stage attribution and the input-size dimensions for the finalization bound.
 Both documents are maintainer-facing proposals, add no code change, and do not touch the soak driver or the gate lists.
+
+### D2/B44 transfer to this session, 2026-09-16
+
+The user transferred D2/B44 to `pi-session-disk-protection-01a050ce` on `spark-f718`.
+This transfer supersedes the September 14 other-machine assignment, including its prohibition on local implementation.
+The [continuation log](task-soak-disk-protection-2026-09-16T02-54Z.md) records the source, scope, diagnostic request, and remaining acceptance prerequisites.
+Shared gate registration, inventory, and publication coordination remain with the integration owner.
+
+No peer is visible, and the earlier assignee's remote activity remains unverified.
+This session has not launched privileged work or used the developer host's Docker daemon.
+A diagnostic launch still requires approved resources, verified exclusivity, expiry, and independent teardown.
+The public launcher remains native-only, and complete private Docker containment remains unimplemented.
+
+The D3 review corrects the current reserve and diagnostic documents.
+Their corrections supersede earlier claims here that the configured deadline proves T or reserves time for upload.
+Sampled maxima do not establish enforceable growth or burst bounds.
+The complete interval must include detection, creation closure, independent termination confirmation, and required evidence handling.
+Historical evidence and runtime behavior remain unchanged.
+
+The workload, three harness pins, protection controls, and 45-second finalization wait remain unchanged.
+D2, D3, and acceptance remain open.
