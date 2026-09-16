@@ -460,7 +460,15 @@ pub async fn fork_choice_floor<'a>(
                 highest = Some(floor)
             }
             Ok(_) | Err(CasperError::BlockNotHeld(..)) => {}
-            Err(error) => return Err(error),
+            // A latest message whose floor will not derive abstains like an
+            // unheld one. Failing here fails the whole snapshot — and with it
+            // every propose and validate — over one validator's history.
+            Err(error) => tracing::warn!(
+                target: "f1r3.trace.floor",
+                latest_message = %PrettyPrinter::build_string_bytes(hash),
+                %error,
+                "fork-choice floor: latest message abstains, its floor does not derive"
+            ),
         }
     }
     match highest {
@@ -2148,6 +2156,42 @@ mod frontier_determinism_tests {
             ),
             other => panic!("expected Err(IncompatibleFinalizedFork), got {other:?}"),
         }
+    }
+
+    /// A latest message whose floor fails to derive for a reason OTHER than
+    /// absence must abstain like an unheld one. Returning the error fails the
+    /// snapshot, and with it every propose and validate on this node, over one
+    /// validator's history.
+    #[tokio::test]
+    async fn fork_choice_floor_abstains_a_latest_message_whose_floor_errors() {
+        let v = h(50);
+        let w = h(51);
+        let (g_a, a1, g_b, b1, m) = (h(0), h(1), h(5), h(6), h(7));
+        let dag = build_dag(vec![
+            md_wm(g_a.clone(), vec![], 0, &v, vec![(v.clone(), 1)]),
+            md_wm(a1.clone(), vec![g_a.clone()], 1, &v, vec![(v.clone(), 1)]),
+            md_wm(g_b.clone(), vec![], 0, &w, vec![(w.clone(), 1)]),
+            md_wm(b1.clone(), vec![g_b.clone()], 1, &w, vec![(w.clone(), 1)]),
+            md_wm(m.clone(), vec![a1.clone(), b1.clone()], 2, &v, vec![
+                (v.clone(), 1),
+                (w.clone(), 1),
+            ]),
+        ]);
+        let store = mk_store();
+        let thr = FtThreshold::from_f32_lossy(0.1);
+
+        // The fixture itself: m inherits two incompatible floors, so its own
+        // derivation is the safety error, NOT an absence.
+        match floor_of_block(&dag, &store, &m, thr).await {
+            Err(CasperError::IncompatibleFinalizedFork(_)) => {}
+            other => panic!("fixture must produce a non-absence derivation error, got {other:?}"),
+        }
+
+        let approved = dag.lookup_unsafe(&g_a).unwrap();
+        let floor = fork_choice_floor(&dag, &store, [&m], approved.clone(), thr)
+            .await
+            .expect("a latest message whose floor errors abstains");
+        assert_eq!(floor.block_hash, approved.block_hash);
     }
 
     /// Two disconnected roots, each certified by its own single-validator
