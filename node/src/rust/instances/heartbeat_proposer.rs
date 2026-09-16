@@ -616,6 +616,11 @@ async fn check_lfb_and_propose(
             .map(|timestamp_ms| now.saturating_sub(timestamp_ms) >= stale_recovery_min_interval_ms)
             .unwrap_or(true),
         stale_recovery_interval_elapsed,
+        cone_has_user_work: cone_has_user_work(
+            &snapshot,
+            &casper,
+            config.advanced.empty_frontier_max_unfinalized_blocks.max(1) as usize,
+        ),
         idle_recovery_window_open,
         lag_recovery_leader,
         empty_frontier_backpressure,
@@ -925,6 +930,43 @@ fn inspect_parent_updates(
     update
 }
 
+/// Whether the unfinalized cone holds user work: a deploy awaiting
+/// finalization, or a rejection record whose deploy cannot retry until the
+/// floor reaches it. Neither is visible in `has_pending_deploys` (node-local,
+/// and a rejected deploy has left it) or `has_new_parent_with_user_deploys`
+/// (blocks arriving during a retry wait are empty).
+///
+/// `max_depth` is the empty-frontier width cap: past it the band is in
+/// backpressure and this lane is shut regardless.
+fn cone_has_user_work(
+    snapshot: &CasperSnapshot,
+    casper: &Arc<dyn MultiParentCasper + Send + Sync>,
+    max_depth: usize,
+) -> bool {
+    let mut seen: std::collections::HashSet<BlockHash> = std::collections::HashSet::new();
+    for (_, tip) in snapshot.dag.latest_message_hashes().iter() {
+        let mut cursor = Some(tip.clone());
+        for _ in 0..max_depth {
+            let Some(hash) = cursor else { break };
+            if snapshot.dag.is_finalized(&hash) || !seen.insert(hash.clone()) {
+                break;
+            }
+            if let Ok(Some(block)) = casper.block_store().get(&hash) {
+                let carries_deploy = block
+                    .body
+                    .deploys
+                    .iter()
+                    .any(|processed| !is_system_deploy_id(&processed.deploy.sig));
+                if carries_deploy || !block.body.rejected_deploys.is_empty() {
+                    return true;
+                }
+            }
+            cursor = snapshot.dag.main_parent(&hash);
+        }
+    }
+    false
+}
+
 /// The stale-LFB recovery pacing window: whether enough time has passed
 /// for this validator to attempt a recovery proposal.
 ///
@@ -959,6 +1001,9 @@ struct LaneInputs {
     /// `stale_recovery_window_is_open`: LFB age AND own-proposal age both
     /// reached `stale-recovery-min-interval`.
     stale_recovery_interval_elapsed: bool,
+    /// The unfinalized cone holds a deploy or a rejection record — work whose
+    /// completion needs the floor to move, so following is not churn.
+    cone_has_user_work: bool,
     idle_recovery_window_open: bool,
     lag_recovery_leader: bool,
     empty_frontier_backpressure: bool,
@@ -994,7 +1039,6 @@ struct LaneDecision {
 ///   is never gated on a leader or on height relations.
 /// - The convergence one-shot stays leader-only and once per finalized block.
 fn decide_lanes(i: &LaneInputs) -> LaneDecision {
-    let deploy_recovery_hint = i.has_pending_deploys || i.has_new_parent_with_user_deploys;
     let can_propose_pending_deploys_while_ahead = if i.deploy_grace_active {
         i.lfb_lag_blocks <= i.deploy_recovery_max_lag
     } else {
@@ -1020,8 +1064,12 @@ fn decide_lanes(i: &LaneInputs) -> LaneDecision {
         && !can_propose_pending_deploys_while_ahead
         && i.self_idle_for_recovery_interval
         && !i.self_proposed_too_recently;
-    let can_follow_frontier_without_pending_deploys =
-        deploy_recovery_hint || i.stale_recovery_interval_elapsed;
+    // Following keeps the frontier moving for work in flight; an idle shard's
+    // liveness is the stale-recovery lane's job, paced by its interval. The
+    // two were conflated when the interval became this lane's gate, which
+    // paced the committee through retry waits — exactly when the floor has to
+    // move for the work to complete.
+    let can_follow_frontier_without_pending_deploys = i.cone_has_user_work;
     // When a peer parent with user deploys is observed, allow one frontier-follow step
     // while ahead (bounded by pending-deploy lag threshold) to unblock synchrony progress.
     let allow_frontier_follow_while_ahead_for_deploy_parent = i.has_new_parent_with_user_deploys
@@ -2552,6 +2600,7 @@ mod tests {
                 self_proposed_too_recently: false,
                 self_idle_for_recovery_interval: true,
                 stale_recovery_interval_elapsed: false,
+                cone_has_user_work: false,
                 idle_recovery_window_open: false,
                 lag_recovery_leader: false,
                 empty_frontier_backpressure: false,
@@ -2559,6 +2608,39 @@ mod tests {
                 deploy_recovery_max_lag: 64,
                 effective_frontier_chase_cap: 20,
             }
+        }
+
+        /// A retry wait: the record sits above the floor and every arriving
+        /// block is empty, so only the floor's advance can open the gate.
+        #[test]
+        fn work_in_the_cone_releases_the_follow_lane() {
+            let waiting = LaneInputs {
+                has_new_parents: true,
+                cone_has_user_work: true,
+                ..baseline()
+            };
+            assert!(decide_lanes(&waiting).frontier_follow_due);
+            assert!(
+                !decide_lanes(&LaneInputs {
+                    cone_has_user_work: false,
+                    ..waiting
+                })
+                .frontier_follow_due,
+                "an idle cone does not follow: liveness there is the recovery lane's, paced"
+            );
+        }
+
+        /// The width cap gates this lane independently, so a stalled shard
+        /// carrying unretired records cannot follow past the cap.
+        #[test]
+        fn backpressure_holds_the_follow_lane_even_with_work_in_the_cone() {
+            let d = decide_lanes(&LaneInputs {
+                has_new_parents: true,
+                cone_has_user_work: true,
+                empty_frontier_backpressure: true,
+                ..baseline()
+            });
+            assert!(!d.frontier_follow_due && !d.should_propose);
         }
 
         #[test]
@@ -2605,7 +2687,7 @@ mod tests {
                 has_new_parents: true,
                 self_recently_proposed: true,
                 lfb_lag_blocks: 5,
-                stale_recovery_interval_elapsed: true,
+                cone_has_user_work: true,
                 ..baseline()
             });
             assert!(d.frontier_follow_due && d.should_propose);
