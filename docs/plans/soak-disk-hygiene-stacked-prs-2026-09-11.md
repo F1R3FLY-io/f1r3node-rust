@@ -1,6 +1,6 @@
 # Soak Disk Hygiene: Stacked Pull Request Plan
 
-**Status:** cut in progress since 2026-09-16. The maintainer started the cut with the source branch at `bb503deae`. Later source cycles follow the rule in section 6. The work is tracked as EPIC-017 in [docs/ToDos.md](../ToDos.md), one task per PR.
+**Status:** cut complete on 2026-09-16, PRs #430, #431, #432, and #433 open. Merge bottom-up. The maintainer started the cut with the source branch at `bb503deae`. Later source cycles follow the rule in section 6. The work is tracked as EPIC-017 in [docs/ToDos.md](../ToDos.md), one task per PR.
 
 **Baseline pass (2026-09-16):** on the staging tip after the six-model registration, the bounded gate passed with 13 positives and 61 controls on an arm64 JDK. The gate fixture test passed. The driver and host suite are byte-identical to the source and were last proven on a guarded runner on 2026-09-15. The STE check ran on every carried document. The remaining findings are table-row artifacts, legacy coordination bullets, and the work log that PR 4 removes.
 
@@ -196,6 +196,10 @@ The maintainer took these decisions on 2026-09-11:
 | Source cycles that land after the cut starts | Merge them into the staging branch as before, then port the delta to the affected PR branch by path. |
 | This plan file | PR 1 carries it, and PR 4 deletes it. |
 | The stigmergic artifacts the stack carries: this plan, the work log, and the three coordination bullets (maintainer, 2026-09-16) | PR 4 removes all three on the final merge. Git history keeps them. EPIC-017 is not carried and stays on the staging branch as the record of the cut. |
+| The glossary terms PR 2 carries (cut, 2026-09-16) | Eleven driver terms, not six. Five terms were added after this plan was written: Docker owner label, process descriptor, run domain, run-domain record, and creation fence. The driver evidence record uses them. The six telemetry and storage terms stay behind. |
+| The host fixtures PR 2 carries (cut, 2026-09-16) | 25 test fixtures, not 34. The count predates the source's consolidation of wrappers. The 22 legacy wrappers and the telemetry fixture stay behind. |
+| The legacy `MC_SoakDisk` pair and its `floor_only` control (cut, 2026-09-16) | Not carried. They extend the superseded `SoakDisk` module, and the registry does not name them. PR 3 removed them in a fix-up commit after the manifest matched their names. |
+| Links from carried records to files the stack leaves behind (cut, 2026-09-16) | Rewritten to permalinks at the staging tip `2388a8eed`. The targets are the formal-gate claim, one evidence package, the source's recurrence plan, and the work log. The PR 4 note and the claim link to the work log. |
 | The B44 launcher prototype: the containment launcher, its Python module, and its fixture | Carried in PR 2, flagged as a prototype the normal workflow does not use. The guardian model's `ManagedContainment` control then describes code that is in the tree. B44 stays open. |
 
 ## 7. Risks

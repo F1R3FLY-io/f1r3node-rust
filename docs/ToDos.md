@@ -1658,11 +1658,12 @@ prerequisites:
 tasks:
   - id: TASK-017-1
     title: "PR 1: deploy storage bound"
-    status: in_progress
+    status: review
     priority: p1
     claimed_by: claude-session-c942697b
     blocked_by: []
     notes:
+      - "Opened 2026-09-16 as PR #430 against dev at f0291acfb, ready for review. TLC: 237 states clean, control exit 12 on RetainedWithinPhlo."
       - "Branch formal/deploy-storage-bound from origin/dev. Plan section 2 lists the 6 files, about 130 lines, and the split rows in docs/formal-verification.md and the area README."
       - "PR 1 carries the plan file onto dev so reviewers of the stack can read it. PR 4 deletes it."
       - "Dev's TLA+ job runs on schedule only, so PR 1's CI does not run TLC. The local TLC run is the evidence until PR 3 lands."
@@ -1674,11 +1675,12 @@ tasks:
 
   - id: TASK-017-2
     title: "PR 2: soak driver disk protection"
-    status: blocked
+    status: review
     priority: p1
-    claimed_by: null
+    claimed_by: claude-session-c942697b
     blocked_by: [TASK-017-1]
     notes:
+      - "Opened 2026-09-16 as draft PR #431 against PR 1 at f1086b13e. Harness green on the PR tree, 42 scenarios. Carries 11 driver glossary terms and 25 fixtures, see the plan decisions."
       - "Branch fix/soak-driver-disk-protection from the PR 1 branch. Plan section 2 lists the 57 files, about 6,400 changed lines: the driver, the host suite, the Docker harness and its Dockerfile, the real-daemon checks, the B44 launcher prototype, and the driver evidence record."
       - "Split files: the ci.yml step 'Verify isolated disk admission and emergency scenarios' only, and the workflow env SOAK_EMERGENCY_DEADLINE_SECONDS: \"10\"."
       - "The evidence record's digest table binds manifests that PR 2 does not carry. Plan section 6 records that decision, and the record says where the packages live."
@@ -1691,11 +1693,12 @@ tasks:
 
   - id: TASK-017-3
     title: "PR 3: soak formal models and the gate registry"
-    status: blocked
+    status: review
     priority: p1
-    claimed_by: null
+    claimed_by: claude-session-c942697b
     blocked_by: [TASK-017-2]
     notes:
+      - "Opened 2026-09-16 as draft PR #432 against PR 2 at cfd929e1b. Gate on the PR tree: 13 positives clean, 61 controls violating as expected; fixture test passed. The legacy MC_SoakDisk pair was removed in a fix-up commit."
       - "Branch formal/soak-disk-models from the PR 2 branch. Plan section 2 lists the 157 files, about 4,400 lines: the two consolidated models, the six registered standalone metric and reserve models, the storage budget, the control registry with its bounded PR tier, the gate fixture test, the soak README, the claim, and the gate record."
       - "PR 3 also registers the deploy storage control from PR 1 and the two carrier index controls that dev keeps as manual controls."
       - "Split files: the ci.yml step 'Verify TLA+ gate classification and routing' only, and the soak row and gate text in docs/formal-verification.md."
@@ -1708,11 +1711,12 @@ tasks:
 
   - id: TASK-017-4
     title: "PR 4: consensus-neutral execution note"
-    status: blocked
+    status: review
     priority: p2
-    claimed_by: null
+    claimed_by: claude-session-c942697b
     blocked_by: [TASK-017-3]
     notes:
+      - "Opened 2026-09-16 as draft PR #433 against PR 3 at 862db6065. STE check passes on both new documents, every relative link resolves after the deletions."
       - "Branch docs/consensus-neutral-execution from the PR 3 branch. Plan section 2 lists the 3 files, about 650 lines: the architecture note, the verification tiers document, and the links from the docs index and the formal-verification guide."
       - "PR 4 deletes the plan file, the work log that PR 2 carried, and the three soak coordination bullets in docs/ToDos.md. Git history keeps them. Maintainer decision of 2026-09-16."
     acceptance:

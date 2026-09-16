@@ -313,6 +313,19 @@ The deploy cap is derived, not assumed. `deploy_storage/DeployStorageBound` is a
 
 Gate: six positive configurations and 33 controls. `deploy_storage` joined `REGISTERED_CONTROL_AREAS`.
 
+## The cut (2026-09-16)
+
+The maintainer created the four branches from dev `4d8d9d79c` in one chain, and the assembler built each tree from the staging tip `2388a8eed`. Whole files came verbatim, and the nine shared files were rebuilt from dev with only the hunks the plan assigns up to each PR. The whole-deliverable tree was verified first, then peeled down to PR 1. The commits were made bottom-up, with each upper branch moved onto the new tip.
+
+| PR | Branch | Tip | Verification on the PR tree |
+| --- | --- | --- | --- |
+| #430 | `formal/deploy-storage-bound` | `f0291acfb` | TLC 237 states clean, control exit 12 on `RetainedWithinPhlo` |
+| #431 | `fix/soak-driver-disk-protection` | `f1086b13e` | Docker harness green, 42 scenarios, plus syntax and workflow parse |
+| #432 | `formal/soak-disk-models` | `cfd929e1b` | Gate 13 positives clean and 61 controls violating as expected, fixture test passed |
+| #433 | `docs/consensus-neutral-execution` | `862db6065` | STE check on both documents, every relative link resolves |
+
+The bounded gate also passed on the whole-deliverable tree. One fixture run on that tree failed after the tree was peeled under it, since the routing scenario reads the slashing workflow live. The rerun on the untouched PR 3 tree passed. The plan decisions table records the four deviations from its 09-11 text. PR #406 now points at the stack and closes unmerged after #433 merges.
+
 ## Baseline pass before the cut (2026-09-16)
 
 On the staging tip `002470543` the bounded gate passed with 13 positives clean and all 61 controls violating their expected invariants. The gate fixture test passed at 05:13 UTC. Both ran on an arm64 OpenJDK 26, because the macOS 27 upgrade broke every Intel JDK under `/usr/local`. A first gate run on the Intel JDK reported all 74 configurations failed in zero seconds without running TLC. The driver and host suite are byte-identical to the source and were last proven on the guarded runner on 2026-09-15.
