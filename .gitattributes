@@ -84,3 +84,17 @@ rspace++/src/rspace/rspace/ops_install.rs cbc=mandatory cbc-weight=medium
 rspace++/src/rspace/rspace/setup.rs cbc=mandatory cbc-weight=medium
 rspace++/src/rspace/space_matcher.rs cbc=mandatory cbc-weight=high
 rspace++/src/rspace/match.rs cbc=mandatory cbc-weight=high
+casper/src/rust/estimator.rs cbc=mandatory cbc-weight=high
+casper/src/rust/util/dag_operations.rs cbc=mandatory cbc-weight=high
+casper/src/rust/engine/engine_cell.rs cbc=mandatory cbc-weight=high
+casper/src/rust/slashing_authorization.rs cbc=mandatory cbc-weight=high
+casper/src/rust/merging/rejected_slash.rs cbc=mandatory cbc-weight=high
+casper/src/rust/engine/genesis_ceremony_master.rs cbc=mandatory cbc-weight=high
+casper/src/rust/engine/genesis_validator.rs cbc=mandatory cbc-weight=high
+models/src/main/protobuf/RhoTypes.proto cbc=mandatory cbc-weight=high
+scripts/run-merge-recovery-soak.sh cbc=mandatory cbc-weight=high
+scripts/bench/test-run-merge-recovery-soak.sh cbc=mandatory cbc-weight=high
+scripts/bench/write-soak-summary.sh cbc=mandatory cbc-weight=high
+scripts/ci/check-tla-invariants.sh cbc=mandatory cbc-weight=high
+.github/workflows/merge-recovery-soak.yml cbc=mandatory cbc-weight=high
+formal/tlaplus/casper_soak/** cbc=mandatory cbc-weight=high

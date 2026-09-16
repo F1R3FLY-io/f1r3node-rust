@@ -89,6 +89,10 @@ branch: formal/soak-casper-consensus
 plan: docs/plans/casper-ratified-soak-2026-09-16.md
 related_epics: [EPIC-010, EPIC-012, EPIC-013, EPIC-015, EPIC-016, EPIC-018]
 phase: pre_pr216_merge
+scaffold_status: drafted
+claim_index: docs/claims/casper-soak-harness.md
+formal_plan: formal/tlaplus/casper_soak/verification-plan.jsonc
+cycle_plan: docs/tdd-plans/casper-soak-harness.md
 follow_on_epic: EPIC-018
 source_prs: [216, 390, 430, 431, 432, 433]
 execution_contract:
@@ -109,7 +113,23 @@ files:
   - block-storage/src/rust/dag/block_dag_key_value_storage.rs
   - node/src/rust/instances/heartbeat_proposer.rs
   - scripts/run-merge-recovery-soak.sh
+  - scripts/bench/test-run-merge-recovery-soak.sh
+  - scripts/bench/write-soak-summary.sh
   - scripts/ci/check-tla-invariants.sh
+  - .github/workflows/merge-recovery-soak.yml
+  - formal/tlaplus/casper_soak/README.md
+  - formal/tlaplus/casper_soak/verification-plan.jsonc
+  - casper/src/rust/engine/engine_cell.rs
+  - casper/src/rust/merging/conflict_set_merger.rs
+  - casper/src/rust/merging/dag_merger.rs
+  - casper/src/rust/merging/deploy_chain_index.rs
+  - casper/src/rust/util/rholang/interpreter_util.rs
+  - casper/src/rust/util/rholang/runtime_manager.rs
+  - casper/src/rust/slashing_authorization.rs
+  - casper/src/rust/merging/rejected_slash.rs
+  - casper/src/rust/engine/genesis_ceremony_master.rs
+  - casper/src/rust/engine/genesis_validator.rs
+  - models/src/main/protobuf/RhoTypes.proto
 tasks:
   - id: TASK-017-1
     title: "Reconcile ratifications, existing epics, and source dependencies"
@@ -124,6 +144,8 @@ tasks:
 
   - id: TASK-017-2
     title: "Define CbC claims, reference oracles, and source scope"
+    scaffold_status: drafted
+    claim_index: docs/claims/casper-soak-harness.md
     status: pending
     claimed_by: null
     blocked_by: [TASK-017-1]
@@ -153,6 +175,10 @@ tasks:
 
   - id: TASK-017-4
     title: "Bind experiment manifests and formal controls to workflow evidence"
+    claims: [CLAIM-CASPER-SOAK-001]
+    claim_spec: docs/claims/casper-soak-harness.md
+    formal_plan: formal/tlaplus/casper_soak/verification-plan.jsonc
+    cycle_plan: docs/tdd-plans/casper-soak-harness.md
     status: pending
     claimed_by: null
     blocked_by: [TASK-017-2, TASK-017-3]
@@ -164,9 +190,13 @@ tasks:
       - "Deterministic conformance and soak profiles remain separate."
       - "Deferred policies cannot become a production default or a node-local block-validity switch."
       - "Property tiers report their actual case counts, and claim-discharge scripts run in workflows."
+      - "Implement H01 through H10 with a clean TLC configuration, named negative controls, and real-driver fixtures."
+      - "Shell-driver construction is not applicable. Unbounded runtime claims retain their separate construction obligations."
 
   - id: TASK-017-5
     title: "Model authority and finality and bind current-dev reference paths"
+    claims: [CLAIM-CASPER-SOAK-002]
+    claim_spec: docs/claims/casper-soak-authority-finality.md
     status: pending
     claimed_by: null
     blocked_by: [TASK-017-4]
@@ -182,6 +212,8 @@ tasks:
 
   - id: TASK-017-6
     title: "Model publication atomicity and test baseline eviction authority"
+    claims: [CLAIM-CASPER-SOAK-003]
+    claim_spec: docs/claims/casper-soak-publication.md
     status: pending
     claimed_by: null
     blocked_by: [TASK-017-4]
@@ -195,6 +227,8 @@ tasks:
 
   - id: TASK-017-7
     title: "Prepare isolated heartbeat and retry experiments against the baseline"
+    claims: [CLAIM-CASPER-SOAK-004]
+    claim_spec: docs/claims/casper-soak-recovery.md
     status: pending
     claimed_by: null
     blocked_by: [TASK-017-4]
@@ -211,6 +245,8 @@ tasks:
 
   - id: TASK-017-8
     title: "Prepare additive merge models, oracles, and accounting controls"
+    claims: [CLAIM-CASPER-SOAK-005]
+    claim_spec: docs/claims/casper-soak-merge-accounting.md
     status: pending
     claimed_by: null
     blocked_by: [TASK-017-4]
@@ -228,6 +264,8 @@ tasks:
 
   - id: TASK-017-9
     title: "Build slash-authorization oracles and baseline comparisons"
+    claims: [CLAIM-CASPER-SOAK-006]
+    claim_spec: docs/claims/casper-soak-slashing.md
     status: pending
     claimed_by: null
     blocked_by: [TASK-017-4]
@@ -246,6 +284,7 @@ tasks:
     blocked_by: [TASK-017-4]
     decisions: [D-10]
     claims: [CLAIM-FINALITY-002]
+    claim_spec: docs/claims/repeat-deploy-carrier-index-equivalence.md
     acceptance:
       - "Forced index and reference paths agree across availability, fork, watermark, pruning, crash, and restart cases."
       - "The corpus includes valid, invalid, and approved carriers."
@@ -257,6 +296,8 @@ tasks:
 
   - id: TASK-017-11
     title: "Specify protocol-7 authority and test baseline Phlo retention"
+    claims: [CLAIM-CASPER-SOAK-007]
+    claim_spec: docs/claims/casper-soak-version-phlo.md
     status: pending
     claimed_by: null
     blocked_by: [TASK-017-4]
@@ -273,6 +314,8 @@ tasks:
 
   - id: TASK-017-12
     title: "Run the pre-merge baseline soak and package candidate experiments"
+    claims: [CLAIM-CASPER-SOAK-001, CLAIM-CASPER-SOAK-004]
+    claim_index: docs/claims/casper-soak-harness.md
     status: pending
     claimed_by: null
     blocked_by: [TASK-017-5, TASK-017-6, TASK-017-7, TASK-017-8, TASK-017-9, TASK-017-10, TASK-017-11]
@@ -287,6 +330,7 @@ tasks:
 
   - id: TASK-017-13
     title: "Close pre-merge CbC scope and hand off post-merge obligations"
+    claim_index: docs/claims/casper-soak-harness.md
     status: pending
     claimed_by: null
     blocked_by: [TASK-017-12]
@@ -294,6 +338,7 @@ tasks:
     acceptance:
       - "Every changed mandatory artifact has current pre-merge claim evidence or an explicitly approved waiver."
       - "Strict discharge passes for the actual pre-merge changed scope, not only for the planning documents."
+      - "Check every required claim ID, source digest, phase, and tier. One legacy artifact status cannot discharge the claim bundle."
       - "The scan benchmark and concurrency-gate obligations have baseline evidence and named post-merge rerun tasks."
       - "The handoff lists model and artifact digests, seeds, assumptions, pending bindings, and TASK-018 owners."
       - "The review distinguishes bounded results, unbounded proofs, production bindings, and soak observations."
@@ -301,9 +346,9 @@ tasks:
 ---
 ```
 
-**Current state:** TASK-017-1 has a planning draft for review. No runtime change, proof, harness run, or upstream integration is complete.
+**Current state:** The claim specifications, formal-area plan, cycle checklist, and pending evidence records are scaffolded. No runtime change, proof, harness run, or upstream integration is complete.
 
-**Next task:** After plan approval, TASK-017-2 defines the claims and reference oracles. TASK-017-3 handles reviewed prerequisites with separate Git consent.
+**Next task:** Run the requested CbC review against this scaffold. TASK-017-2 still requires oracle bindings and legacy-claim reconciliation. TASK-017-3 handles prerequisites with separate Git consent.
 
 **Scope:** This epic covers the pre-#216 PR only. The [branch plan](./plans/casper-ratified-soak-2026-09-16.md) records both phases and their evidence boundary.
 
@@ -324,6 +369,8 @@ updated_at: 2026-09-16
 claimed_by: null
 claimed_at: null
 phase: post_pr216_merge
+claim_index: docs/claims/casper-soak-harness.md
+formal_plan: formal/tlaplus/casper_soak/verification-plan.jsonc
 proposed_branch: formal/soak-casper-post-cost-accounting
 plan: docs/plans/casper-ratified-soak-2026-09-16.md
 related_epics: [EPIC-010, EPIC-013, EPIC-017]
@@ -339,9 +386,37 @@ execution_contract:
   branch_policy: "Create the follow-on branch from updated dev after the start gate passes. Record the actual merge and baseline SHAs."
   completion_policy: "Require new merged-runtime bindings, applicable proofs, completed soaks, strict CbC discharge, and maintainer review."
   authority: "Merge does not authorize deferred policies, waive ratification conditions, or replace FIPS activation approval."
+files:
+  - scripts/run-merge-recovery-soak.sh
+  - scripts/bench/test-run-merge-recovery-soak.sh
+  - scripts/bench/write-soak-summary.sh
+  - scripts/ci/check-tla-invariants.sh
+  - .github/workflows/merge-recovery-soak.yml
+  - formal/tlaplus/casper_soak/README.md
+  - formal/tlaplus/casper_soak/verification-plan.jsonc
+  - casper/src/rust/estimator.rs
+  - casper/src/rust/util/dag_operations.rs
+  - casper/src/rust/finality/floor.rs
+  - casper/src/rust/engine/engine_cell.rs
+  - casper/src/rust/blocks/proposer/block_creator.rs
+  - casper/src/rust/validate.rs
+  - block-storage/src/rust/dag/carrier_index.rs
+  - block-storage/src/rust/dag/block_dag_key_value_storage.rs
+  - node/src/rust/instances/heartbeat_proposer.rs
+  - casper/src/rust/merging/conflict_set_merger.rs
+  - casper/src/rust/merging/dag_merger.rs
+  - casper/src/rust/merging/deploy_chain_index.rs
+  - casper/src/rust/util/rholang/interpreter_util.rs
+  - casper/src/rust/util/rholang/runtime_manager.rs
+  - casper/src/rust/slashing_authorization.rs
+  - casper/src/rust/merging/rejected_slash.rs
+  - casper/src/rust/engine/genesis_ceremony_master.rs
+  - casper/src/rust/engine/genesis_validator.rs
+  - models/src/main/protobuf/RhoTypes.proto
 tasks:
   - id: TASK-018-1
     title: "Verify the merge gate and establish the post-merge baseline"
+    claims: [CLAIM-CASPER-SOAK-001]
     status: blocked
     claimed_by: null
     blocked_by: [TASK-017-13]
@@ -354,6 +429,7 @@ tasks:
 
   - id: TASK-018-2
     title: "Rebind formal claims and harness interfaces to the merged implementation"
+    claim_index: docs/claims/casper-soak-harness.md
     status: pending
     claimed_by: null
     blocked_by: [TASK-018-1]
@@ -367,6 +443,7 @@ tasks:
 
   - id: TASK-018-3
     title: "Verify merged Casper authority, finality, publication, recovery, and slashing"
+    claims: [CLAIM-CASPER-SOAK-002, CLAIM-CASPER-SOAK-003, CLAIM-CASPER-SOAK-004, CLAIM-CASPER-SOAK-006]
     status: pending
     claimed_by: null
     blocked_by: [TASK-018-2]
@@ -379,6 +456,7 @@ tasks:
 
   - id: TASK-018-4
     title: "Verify merged accounting, deploy identity, protocol authority, and Phlo retention"
+    claims: [CLAIM-CASPER-SOAK-005, CLAIM-CASPER-SOAK-007, CLAIM-FINALITY-002]
     status: pending
     claimed_by: null
     blocked_by: [TASK-018-2]
@@ -392,6 +470,7 @@ tasks:
 
   - id: TASK-018-5
     title: "Run the post-merge comparative soak campaign"
+    claims: [CLAIM-CASPER-SOAK-001, CLAIM-CASPER-SOAK-004]
     status: pending
     claimed_by: null
     blocked_by: [TASK-018-3, TASK-018-4]
@@ -405,6 +484,7 @@ tasks:
 
   - id: TASK-018-6
     title: "Discharge post-merge claims and submit the formal harness PR evidence"
+    claim_index: docs/claims/casper-soak-harness.md
     status: pending
     claimed_by: null
     blocked_by: [TASK-018-5]

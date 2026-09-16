@@ -19,10 +19,25 @@ replication.
 | Theory dossiers | [theory/](./theory/README.md) — fork choice, finalized floor, merge algebra, slashing |
 | Validation | [validation/](./validation/) — FV campaign gap analysis, merge-recovery validation plan, PR-280 FV review |
 | Design analyses | [Casper CbC repair plan](./design/cbc-repair-plan.md) · [LFS Block Requester analysis](./design/lfs-block-requester-analysis.md) |
-| CbC claims | [Repeat-deploy carrier-index equivalence](../claims/repeat-deploy-carrier-index-equivalence.md) · [Replay liveness bound](../claims/replay-liveness-bound.md) |
+| CbC claims | [Soak harness claim index](../claims/casper-soak-harness.md) · [Repeat-deploy carrier-index equivalence](../claims/repeat-deploy-carrier-index-equivalence.md) · [Replay liveness bound](../claims/replay-liveness-bound.md) |
+| CbC evidence | [Casper evidence records](./cbc-evidence/) |
 | Economic layer | `casper/src/main/resources/PoS.rhox` — the Rholang bond/slash/reward contract (see [Rholang macro docs](../rholang/16-rhox-macros.md)) |
 
 Related documentation that stays platform-owned: [formal-verification.md](../formal-verification.md) (umbrella for `formal/**` artifacts), [data-flows](../data-flows/README.md), [docs index](../README.md).
+
+## CbC evidence ownership
+
+Canonical Casper evidence lives in `docs/casper/cbc-evidence/`. It includes Casper runtime records, heartbeat proposal evidence, and the Casper soak formal-area records.
+
+Shared storage, execution, protobuf, and harness evidence remains in `docs/cbc-evidence/`. Claim specifications remain in `docs/claims/` for this migration.
+
+Relative symlinks at the old evidence paths preserve the shared CbC driver's flat lookup. They contain no duplicate evidence or independent status.
+
+Until the driver supports module routing, keep a root compatibility symlink for each new Casper record. Mixed epic checks still use the default evidence directory.
+
+For Casper-only operations, `CBC_EVIDENCE_DIR=docs/casper/cbc-evidence` selects the canonical directory. Do not use that override for an epic with shared artifacts.
+
+Migration changes neither claim status nor verification evidence. Pending claims remain pending, and legacy discharges retain their original scope limitations.
 
 ---
 

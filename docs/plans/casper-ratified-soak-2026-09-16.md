@@ -148,20 +148,26 @@ Certificate-removal integration tests remain prerequisites to removal. The phase
 
 FIPS approval and fresh genesis remain activation conditions. A successful post-merge soak does not approve a deferred policy.
 
-## CbC claim inventory to prepare
+## Scaffolded CbC claim inventory
 
-TASK-017-2 must create or refine claims before the related code changes. The following identifiers are proposed, not discharged.
+The [harness contract](../claims/casper-soak-harness.md) indexes seven pending claim specifications and the existing carrier-index claim.
+
+The [formal-area scaffold](../../formal/tlaplus/casper_soak/README.md) maps ten harness invariants to driver boundaries and proposed negative controls.
+
+The [cycle checklist](../tdd-plans/casper-soak-harness.md) records pending RED/GREEN cycles. No TLA+ module, configuration, or fixture has been implemented by this scaffold.
+
+TASK-017-2 still requires exact source bindings, oracle implementation, legacy-claim reconciliation, and review. Scaffolding does not complete the task.
 
 | Proposed claim group | Scope | Required evidence |
 | --- | --- | --- |
-| `CLAIM-CASPER-SOAK-001` | Evidence provenance and experiment isolation | Manifest validation, missing-artifact failures, baseline/candidate identity checks |
-| `CLAIM-CASPER-SOAK-002` | D-02 through D-04 authority, floor bounds, and preservation | Cross-view model, negative controls, exact-threshold tests, LCA oracle, production bridge |
-| `CLAIM-CASPER-SOAK-003` | D-05 publication and lifecycle eviction | Crash/restart model, stale-result control, interleaving tests, durable-state bridge |
-| `CLAIM-CASPER-SOAK-004` | D-06 and D-07 recovery experiments | Explicit scheduling assumptions, paused validators, custody controls, retry/expiry measurements |
-| `CLAIM-CASPER-SOAK-005` | D-08 execution and merge accounting | Multiplicity and causal-closure proofs, authenticated evidence tests, conservation bridge |
-| `CLAIM-CASPER-SOAK-006` | D-09 slashing equivalence | Objective-evidence oracle, rebond and forged-evidence controls, recovery coverage |
-| `CLAIM-CASPER-SOAK-007` | D-01 and D-12 version and Phlo requirements | Version lifecycle controls, retained-field tests, replay and funding-boundary tests |
-| Existing `CLAIM-FINALITY-002` | D-10 carrier index | Forced-path differential, watermark and crash controls, measured absence-path work bound |
+| [CLAIM-CASPER-SOAK-001](../claims/casper-soak-harness.md) | Evidence provenance and experiment isolation | Manifest validation, missing-artifact failures, baseline/candidate identity checks |
+| [CLAIM-CASPER-SOAK-002](../claims/casper-soak-authority-finality.md) | D-02 through D-04 authority, floor bounds, and preservation | Cross-view model, negative controls, exact-threshold tests, LCA oracle, production bridge |
+| [CLAIM-CASPER-SOAK-003](../claims/casper-soak-publication.md) | D-05 publication and lifecycle eviction | Crash/restart model, stale-result control, interleaving tests, durable-state bridge |
+| [CLAIM-CASPER-SOAK-004](../claims/casper-soak-recovery.md) | D-06 and D-07 recovery experiments | Explicit scheduling assumptions, paused validators, custody controls, retry/expiry measurements |
+| [CLAIM-CASPER-SOAK-005](../claims/casper-soak-merge-accounting.md) | D-08 execution and merge accounting | Multiplicity and causal-closure proofs, authenticated evidence tests, conservation bridge |
+| [CLAIM-CASPER-SOAK-006](../claims/casper-soak-slashing.md) | D-09 slashing equivalence | Objective-evidence oracle, rebond and forged-evidence controls, recovery coverage |
+| [CLAIM-CASPER-SOAK-007](../claims/casper-soak-version-phlo.md) | D-01 and D-12 version and Phlo requirements | Version lifecycle controls, retained-field tests, replay and funding-boundary tests |
+| Existing [CLAIM-FINALITY-002](../claims/repeat-deploy-carrier-index-equivalence.md) | D-10 carrier index | Forced-path differential, watermark and crash controls, measured absence-path work bound |
 
 Reuse existing claims when their statements match the ratified requirement. Do not discharge an old claim against a different property.
 
@@ -194,7 +200,17 @@ The `/cbc identify` baseline probe found mandatory attributes on these relevant 
 - `block-storage/src/rust/dag/block_dag_key_value_storage.rs`
 - `node/src/rust/instances/heartbeat_proposer.rs`
 
-The probe found no `cbc` attribute on `estimator.rs`, `dag_operations.rs`, the soak driver, or the TLA+ gate script. Review their scope before modifying them.
+The initial probe found no `cbc` attribute on `estimator.rs`, `dag_operations.rs`, the soak driver, or the TLA+ gate script.
+
+The scaffold now tags those files and the additional claim-owned boundaries. Both epics list the explicit artifact scope for the next CbC review.
+
+Twenty-one new ledger records are pending. Five existing records remain unchanged and require a property-specific audit before reuse.
+
+The generic artifact gate does not validate every claim in a bundle. TASK-017-13 must check claim IDs, digests, phase evidence, and tier applicability separately.
+
+Canonical Casper records live in [docs/casper/cbc-evidence](../casper/cbc-evidence/). Shared artifact records remain in `docs/cbc-evidence/`.
+
+Relative symlinks preserve the shared driver's default flat lookup. Mixed epic checks must not select only the Casper directory.
 
 Existing waivers and discharge records are not automatic evidence for new claims. The status command reports multiple entries for `interpreter_util.rs`, which needs a record audit.
 

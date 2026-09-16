@@ -1,0 +1,58 @@
+# Casper Soak Harness Verification Cycles
+
+**Status:** Scaffold. No RED, GREEN, proof, fixture, or soak result has been recorded.
+
+**Owner:** TASK-017-4. Post-merge rebinding belongs to TASK-018-2.
+
+The [claim](../claims/casper-soak-harness.md) defines the contract. The [formal plan](../../formal/tlaplus/casper_soak/verification-plan.jsonc) names the controls and bounds.
+
+## Behavior checklist
+
+| Cycle | Behavior | Formal property | State |
+| --- | --- | --- | --- |
+| H01 | Reject changed candidate identity on resume. | IdentityPinned | Pending |
+| H02 | Preserve iterations and failure history across segments. | ResumePreservesHistory | Pending |
+| H03 | Preserve product failures after resource termination. | ProductFailureMonotone | Pending |
+| H04 | Refuse passing reports with incomplete evidence. | PassRequiresEvidence | Pending |
+| H05 | Prevent workload launch after a terminal condition. | StopPreventsLaunch | Pending |
+| H06 | Capture durable evidence before cleanup. | EvidenceBeforeCleanup | Pending |
+| H07 | Keep deferred experiments outside baseline authority. | PolicyIsolation | Pending |
+| H08 | Keep missing measurements distinct from zero values. | MissingIsUnknown | Pending |
+| H09 | Require the actual merge for a post-#216 profile. | PostMergeGate | Pending |
+| H10 | Accept only the named negative-control violation. | ControlVerdictExact | Pending |
+
+## Per-cycle record template
+
+```yaml
+cycle: null
+claim: CLAIM-CASPER-SOAK-001
+status: pending
+phase: pre_pr216_merge
+source_revision: null
+model_digest: null
+fixture_digest: null
+red_exit: null
+formal_red_exit: null
+green_exit: null
+formal_green_exit: null
+construction: not-applicable
+construction_assumptions: null
+expected_violation: null
+observed_violation: null
+tool_versions: null
+artifact_digests: []
+```
+
+A null field is not a successful run. RED requires the expected defect, not an import error, timeout, or unrelated failure.
+
+Each implemented cycle retains both the clean configuration and its negative control. Fixture tests must invoke the production driver rather than a duplicate implementation.
+
+A passing fixture proves only the stated binding behavior. It does not prove an unbounded Casper semantic claim.
+
+## Runtime promotion checklist
+
+TASK-017-5 through TASK-017-11 own semantic models, independent oracles, and production regressions.
+
+For unbounded claims, record `construction: pending` until a named theorem passes kernel and assumption checks. Shell-driver exemption does not extend to Rust consensus code.
+
+For post-merge evidence, create new cycle records with the actual #216 merge and updated source digests. Keep the pre-merge records intact.

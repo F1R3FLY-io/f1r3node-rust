@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "status": "pending",
+  "executable": false,
+  "claim": "CLAIM-CASPER-SOAK-001",
+  "specification": "docs/claims/casper-soak-harness.md",
+  "owner_task": "TASK-017-4",
+  "post_merge_tasks": ["TASK-018-2", "TASK-018-5"],
+  "model": "formal/tlaplus/casper_soak/CasperSoakHarness.tla",
+  "model_status": "not-implemented",
+  "model_digest": null,
+  "construction": "not-applicable",
+  "construction_assumptions": null,
+  "proposed_bounds": {
+    "candidates": 2,
+    "segments": 2,
+    "iterations_per_segment": 2,
+    "children": 1,
+    "artifact_slots": 3,
+    "phases": ["pre_pr216_merge", "post_pr216_merge"],
+    "terminal_outcomes": ["pending", "passed", "product_failure", "infrastructure_failure", "timeout", "cancelled", "incomplete", "tool_error"]
+  },
+  "assumptions": {
+    "safety": ["Atomic durable artifact rename follows the documented filesystem contract.", "The manifest pins authenticated source and image identities."],
+    "termination": ["A child eventually exits or the supervisor enforces termination.", "Required artifact storage remains available.", "Enabled cleanup actions receive fair scheduling."]
+  },
+  "positive_control": {
+    "configuration": "MC_CasperSoakHarness.cfg",
+    "status": "not-implemented",
+    "expected_exit": 0,
+    "properties": ["IdentityPinned", "ResumePreservesHistory", "ProductFailureMonotone", "PassRequiresEvidence", "StopPreventsLaunch", "EvidenceBeforeCleanup", "PolicyIsolation", "MissingIsUnknown", "PostMergeGate", "ControlVerdictExact"],
+    "registration": "pending"
+  },
+  "negative_controls": [
+    {"configuration": "MC_CasperSoakHarness_identity_unsafe.cfg", "knob": "AllowIdentityDrift", "property": "IdentityPinned", "expected_exit": 12, "fixture": "resume_changed_identity"},
+    {"configuration": "MC_CasperSoakHarness_resume_unsafe.cfg", "knob": "AllowHistoryReset", "property": "ResumePreservesHistory", "expected_exit": 12, "fixture": "resume_overwrites_iteration"},
+    {"configuration": "MC_CasperSoakHarness_failure_unsafe.cfg", "knob": "AllowFailureErasure", "property": "ProductFailureMonotone", "expected_exit": 12, "fixture": "product_failure_then_resource_stop"},
+    {"configuration": "MC_CasperSoakHarness_evidence_unsafe.cfg", "knob": "AllowIncompletePass", "property": "PassRequiresEvidence", "expected_exit": 12, "fixture": "missing_artifact_cannot_pass"},
+    {"configuration": "MC_CasperSoakHarness_stop_unsafe.cfg", "knob": "AllowLaunchAfterStop", "property": "StopPreventsLaunch", "expected_exit": 12, "fixture": "terminal_marker_prevents_launch"},
+    {"configuration": "MC_CasperSoakHarness_cleanup_unsafe.cfg", "knob": "AllowEarlyCleanup", "property": "EvidenceBeforeCleanup", "expected_exit": 12, "fixture": "capture_before_cleanup"},
+    {"configuration": "MC_CasperSoakHarness_policy_unsafe.cfg", "knob": "AllowPolicyLeak", "property": "PolicyIsolation", "expected_exit": 12, "fixture": "experiment_cannot_change_baseline"},
+    {"configuration": "MC_CasperSoakHarness_samples_unsafe.cfg", "knob": "AllowMissingAsZero", "property": "MissingIsUnknown", "expected_exit": 12, "fixture": "missing_finalization_samples"},
+    {"configuration": "MC_CasperSoakHarness_merge_unsafe.cfg", "knob": "AllowUnmergedPostRun", "property": "PostMergeGate", "expected_exit": 12, "fixture": "open_candidate_is_not_merge"},
+    {"configuration": "MC_CasperSoakHarness_control_unsafe.cfg", "knob": "AllowWrongControlVerdict", "property": "ControlVerdictExact", "expected_exit": 12, "fixture": "timeout_is_not_counterexample"}
+  ],
+  "binding": {
+    "status": "pending",
+    "driver": "scripts/run-merge-recovery-soak.sh",
+    "fixtures": "scripts/bench/test-run-merge-recovery-soak.sh",
+    "summary": "scripts/bench/write-soak-summary.sh",
+    "workflow": ".github/workflows/merge-recovery-soak.yml",
+    "fixture_digest": null,
+    "external_harness_revision": null
+  },
+  "registration_policy": {
+    "status": "pending",
+    "positive_gate": "scripts/ci/check-tla-invariants.sh",
+    "expected_violation_registry": "separate-from-positive-list",
+    "negative_pass_rule": "TLC exit 12 and exact named property violation, with retained trace",
+    "unexpected_success": "failure",
+    "timeout": "failure",
+    "tool_error": "failure",
+    "missing_configuration": "failure",
+    "pr_budget_seconds": null,
+    "nightly_budget_seconds": null,
+    "budget_blocker": "Reconcile the PR #432 15-minute tier with the PR #433 two-minute tier before registration."
+  },
+  "prerequisites": [431, 432, 433],
+  "results": []
+}

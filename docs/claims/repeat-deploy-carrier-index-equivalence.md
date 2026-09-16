@@ -2,6 +2,10 @@
 
 ```yaml
 claim_id: CLAIM-FINALITY-002
+pre_merge_tasks: [TASK-017-10]
+post_merge_tasks: [TASK-018-4]
+construction: pending
+construction_assumptions: null
 artifacts:
   - casper/src/rust/validate.rs
   - block-storage/src/rust/dag/carrier_index.rs
@@ -15,6 +19,22 @@ references:
   - docs/casper/design/cbc-repair-plan.md
   - docs/casper/CONSENSUS_PHILOSOPHY.md
 ```
+
+## Ratified soak extension
+
+The [harness contract](./casper-soak-harness.md) reuses this claim under EPIC-017 and EPIC-018. Existing results below remain historical baseline evidence.
+
+TASK-017-10 must complete signature-domain differential tests and work-bound evidence. TASK-018-4 must rebind the claim to the actual merged runtime.
+
+Protocol-7 lookup identity requires a FIP-defined, domain-separated envelope commitment. Equal bytes from distinct domains must not share an identity.
+
+The baseline raw key is the user deploy signature, not a block or validator signature. Typed lookup identity does not replace deploy authentication.
+
+The identity must agree across carrier, occurrence, rejection, lifecycle, and prior-rejection counting. A decoded cache cannot become authority.
+
+Add a cross-domain collision control and a missing-history control. Both must fail for the named reason under their unsafe implementation.
+
+Arbitrary-history equivalence requires a construction-tier promotion decision and proof. A finite TLC run or passing soak cannot establish the unbounded claim.
 
 ## Context
 

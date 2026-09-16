@@ -5,8 +5,8 @@ claimed_by: pi-casper-ratification-planning
 claimed_at: 2026-09-16T20:29:37Z
 handoff_status: paused
 next_steps:
-  - Review the EPIC-017 pre-merge and EPIC-018 post-merge plan with the maintainer.
-  - Define claim-specific reference oracles under TASK-017-2.
+  - Run the requested CbC review against the scaffolded epic scope.
+  - Complete source bindings and claim reconciliation under TASK-017-2.
   - Resolve prerequisite integration under TASK-017-3 with separate Git consent.
 ---
 
@@ -83,6 +83,28 @@ The handoff records genuine pending production obligations without waiving them.
 
 No follow-on branch or PR was created. This amendment changes planning documents only.
 
+## Claim scaffolding amendment
+
+The maintainer clarified that this branch must build a formally verifiable soak harness, following PR #433.
+
+The generic scaffold command found no new default-scanner candidates. It did not create the claim-specific verification structure.
+
+This amendment adds seven pending claim specifications and extends the existing carrier-index claim with phase ownership and typed-identity obligations.
+
+The harness specification defines ten invariants, proposed finite bounds, negative controls, driver correspondences, and a RED/GREEN cycle checklist.
+
+The scaffold tags thirteen additional existing artifact paths and the new formal area. Both epics now list the twenty-six claim-owned artifact paths.
+
+Twenty-one new evidence records have pending status, source and claim digests, null verification timestamps, and explicit tier applicability.
+
+Five existing evidence records remain unchanged. Their statuses cannot discharge the new claims without a property, revision, and assumption audit.
+
+The harness uses TLC refutation and real-driver fixtures. Shell-driver construction is not applicable, as specified by PR #433.
+
+Unbounded runtime claims retain pending Rocq construction and production-binding obligations. The post-merge phase still requires the actual #216 merge and new evidence.
+
+No model, fixture, or workflow implementation was added. No prover, soak, or CbC discharge command was run for this amendment.
+
 ## Planning validation
 
 - YAML parsing reports thirteen TASK-017 entries and six TASK-018 entries.
@@ -93,8 +115,36 @@ No follow-on branch or PR was created. This amendment changes planning documents
 
 These checks validate planning artifacts only. The strict CbC scope check remains non-passing, as recorded above.
 
+## Scaffold validation
+
+- All eight claim specifications parse and retain pending status.
+- Both epic file lists cover the same twenty-six mandatory artifact paths.
+- All ten proposed negative controls have unique knobs and fixtures, named properties, and expected TLC exit 12.
+- All twenty-one new ledger records parse and retain pending status with null verification timestamps.
+- Source and claim digests match the scaffold inputs.
+- Five legacy evidence records remain byte-identical to the branch baseline.
+- Claim/task references and local document links resolve.
+- The deterministic STE Check passes for the new prose.
+- `git diff --check` passes.
+
+The JSONC plan also passes JSON parsing. Its language-server probe is inconclusive, so no clean LSP result is claimed.
+
+These checks do not execute the harness, model, or prover. The next CbC run must inspect the explicit epic scope and all pending claim obligations.
+
+## Modular evidence layout
+
+Twenty Casper-owned records now live in `docs/casper/cbc-evidence/`. This set includes Casper runtime evidence, heartbeat evidence, and Casper soak-area evidence.
+
+Shared storage, execution, protobuf, and harness records remain in `docs/cbc-evidence/`. Claim specifications remain in their existing directory.
+
+Relative symlinks preserve the old paths for the shared driver's flat lookup and writes. They do not create independent evidence records.
+
+The migration changes relative document links only. Artifact identities, embedded evidence, statuses, and verification timestamps remain unchanged.
+
+The Casper documentation index describes directory ownership and the temporary compatibility links. New Casper records need the same link until the driver supports module routing.
+
 ## Next step
 
-Review the two-phase plan before implementation. Then start TASK-017-2 with claim statements, negative controls, source bridges, phase ownership, and a precise artifact scope.
+Run the requested CbC review next. Then complete TASK-017-2 source bindings and legacy-claim reconciliation before implementing the TASK-017-4 model and fixtures.
 
 Keep deferred policies experimental. Retain both `phloLimit` and `phloPrice` in every protocol-7 acceptance contract.
