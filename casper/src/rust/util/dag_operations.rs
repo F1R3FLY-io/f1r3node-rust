@@ -44,7 +44,7 @@ impl DagOperations {
     /// Conceptually, the LUCA is the lowest point at which the histories of b1 and b2 diverge.
     /// We compute by finding the first block that is the "lowest" (has highest blocknum) block common
     /// for both blocks' ancestors.
-    /// `floor` is the fork-choice floor: under θ ≥ 0 the highest finalized
+    /// `floor` is the fork-choice floor: above θ = 0 the highest finalized
     /// floor among the latest messages, otherwise the approved block. A DAG
     /// restored from LFS is truncated below the approved block, so a walk that
     /// descends past it asks for parents that were never downloaded. Nothing

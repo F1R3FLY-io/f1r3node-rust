@@ -801,6 +801,26 @@ mod ft_decides_exact_tests {
         assert!(!ft_decides_exact(agreeing, s, s, 0, den, true));
     }
 
+    /// At θ = 0 the rule is `q ≥ S/2`, which two DISJOINT cliques can satisfy
+    /// at once — each certifying a different sibling from its own snapshot,
+    /// neither validator equivocating. The `agreeing > S/2` gate does not stop
+    /// it: agreeing is per-snapshot, the clique is the safety-relevant weight.
+    /// Any positive θ forces `q > S/2`, so the cliques must overlap.
+    #[test]
+    fn two_disjoint_half_cliques_both_certify_at_zero_but_not_above_it() {
+        let den = FT_PPM_DEN;
+        let s = 100i64;
+        // Three of four equal validators agree in each snapshot; the certifying
+        // cliques are {v1,v2} and {v3,v4}, disjoint, 50 each.
+        let (agreeing, q) = (75i64, 50i64);
+
+        assert!(ft_decides_exact(agreeing, q, s, 0, den, false));
+        assert!(
+            !ft_decides_exact(agreeing, q, s, 1, den, false),
+            "one ppm above zero already forces the cliques to overlap"
+        );
+    }
+
     /// i64::MAX-scale q and S must not overflow: `2·q·den ≈ 2^84` exceeds i64 but
     /// is exact in i128, and `2·agreeing` near i64::MAX also needs i128.
     #[test]
