@@ -22,13 +22,13 @@ The [RED log](https://github.com/F1R3FLY-io/f1r3node-rust/blob/2388a8eedf33d0701
 
 The existing `TLA+ invariant check` job now runs on every event configured for the workflow. Pull requests and pushes select `check-tla-invariants.sh --soak-pr`.
 
-This tier contains two baseline configurations and both carrier negative controls. It uses two workers, a fixed two-minute configuration limit, and a 15-minute job limit.
+At cycle G0/B2 this tier contained two baseline configurations and both carrier negative controls. It uses two workers, a fixed two-minute configuration limit, and a 15-minute job limit.
 
 The tier refuses exhaustive mode and requires a timeout command. Scheduled and manual runs retain the full default suite and the opt-in exhaustive configurations.
 
 The workflow uploads TLC logs on success or failure. The artifact name includes the run ID and attempt.
 
-The test reads the real workflow command and executes that command with verifier-process fixtures. It checks these six scenarios:
+The cycle's test read the real workflow command and executed that command with verifier-process fixtures. It checked these six scenarios:
 
 - A pull request selects exactly four bounded configurations.
 - A push selects the same bounded configurations.
@@ -38,6 +38,14 @@ The test reads the real workflow command and executes that command with verifier
 - A baseline invariant violation fails the pull-request command.
 
 The [GREEN log](https://github.com/F1R3FLY-io/f1r3node-rust/blob/2388a8eedf33d07018f0630bced51a6e054ba439/docs/cbc-evidence/soak-g0-b2-2026-09-08/green.log) records the passing result. The main CI workflow also runs this regression test.
+
+### Current tier
+
+The gate grew after cycle G0/B2. The pull-request tier now runs 13 positive configurations and all 61 registered negative controls. The scheduled and manual tiers run 28 positive configurations and the same controls.
+
+The regression test now reads the control registry from the gate. It checks classification for every control, routing for each workflow event, and registration of every pre-fix configuration in a registered area.
+
+The current tier ran on a development machine in 53 seconds. No configuration took more than two seconds.
 
 ## Actual bounded verification
 
