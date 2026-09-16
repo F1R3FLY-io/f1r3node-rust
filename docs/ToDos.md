@@ -1,7 +1,7 @@
 ---
 doc_type: todos
 version: "1.1"
-last_updated: 2026-08-19
+last_updated: 2026-09-16
 mr_status:
   ready: false
   target_branch: master
@@ -23,6 +23,8 @@ This document tracks implementation work through **epics** (logical groupings of
 ---
 
 ## Active Coordination
+
+- **Casper ratification follow-up (2026-09-16).** EPIC-017 prepares conformance and soak evidence on `formal/soak-casper-consensus`. The [meeting record](https://github.com/F1R3FLY-io/f1r3node-rust/pull/390#pullrequestreview-5227717933) controls the decisions. PRs #430 through #433 remain open prerequisites in stack order. The [branch plan](./plans/casper-ratified-soak-2026-09-16.md) maps all twelve decisions to tasks and evidence. No deferred policy is authorized by an experiment.
 
 <!-- Compact, current-state-only. This section replaces the free-form status
      entries that previously accumulated at the top of this file; the full
@@ -66,6 +68,230 @@ mr_status:
 ## Active Epics
 
 <!-- Epics are ordered by priority. Work on the highest priority epic first. -->
+
+---
+
+### EPIC-017: Ratified Casper Conformance and Soak Evidence
+
+```yaml
+---
+epic_id: EPIC-017
+title: "Ratified Casper Conformance and Soak Evidence"
+status: in_progress
+priority: p0
+user_story: null
+blocked_by: []
+created_at: 2026-09-16
+updated_at: 2026-09-16
+claimed_by: pi-casper-ratification-planning
+claimed_at: 2026-09-16T20:29:37Z
+branch: formal/soak-casper-consensus
+plan: docs/plans/casper-ratified-soak-2026-09-16.md
+related_epics: [EPIC-010, EPIC-012, EPIC-013, EPIC-015, EPIC-016]
+source_prs: [216, 390, 430, 431, 432, 433]
+execution_contract:
+  base_branch: dev
+  authority: "The 2026-09-16 ratification meeting controls the selected dispositions. Current dev remains the default Casper authority."
+  integration_order: "PR #430 -> #431 -> #432 -> #433. PR #390 records decisions. PR #216 remains a candidate implementation."
+  scope: "Prepare claims, deterministic conformance, and comparative soak evidence. Do not activate deferred policies."
+  git_policy: "Do not merge, commit, push, or create a PR without separate user authorization."
+  completion_policy: "Close only after required claims and production bridges pass, completed soaks supply evidence, and maintainers review the result."
+files:
+  - casper/src/rust/estimator.rs
+  - casper/src/rust/util/dag_operations.rs
+  - casper/src/rust/finality/floor.rs
+  - casper/src/rust/blocks/proposer/block_creator.rs
+  - casper/src/rust/validate.rs
+  - block-storage/src/rust/dag/carrier_index.rs
+  - block-storage/src/rust/dag/block_dag_key_value_storage.rs
+  - node/src/rust/instances/heartbeat_proposer.rs
+  - scripts/run-merge-recovery-soak.sh
+  - scripts/ci/check-tla-invariants.sh
+tasks:
+  - id: TASK-017-1
+    title: "Reconcile ratifications, existing epics, and source dependencies"
+    status: in_progress
+    claimed_by: pi-casper-ratification-planning
+    blocked_by: []
+    acceptance:
+      - "The branch plan maps D-01 through D-12 to tasks, activation conditions, and evidence."
+      - "The inventory separates current dev, local ratification records, and open PR revisions."
+      - "Existing epic overlaps, claims, parser limitations, and stale specification conflicts are recorded."
+      - "The maintainer reviews the plan before implementation starts."
+
+  - id: TASK-017-2
+    title: "Define CbC claims, reference oracles, and source scope"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-017-1]
+    decisions: [D-02, D-03, D-04, D-06, D-11]
+    acceptance:
+      - "Each claim names authenticated inputs, outputs, assumptions, bounds, negative controls, production functions, and evidence tiers."
+      - "The draft repair plan no longer requires rejected certificates or leader-only stale recovery."
+      - "The cross-view leader claim names its applicable lane without changing D-06."
+      - "Existing claims and waivers are audited for revision and property coverage before reuse."
+      - "Missing mandatory attributes are proposed for review before the related code changes."
+      - "Unavailable verifiers remain explicit gaps. No mock result discharges a production claim."
+
+  - id: TASK-017-3
+    title: "Integrate reviewed harness prerequisites and pin the candidate matrix"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-017-1]
+    external_prs: [390, 430, 431, 432, 433]
+    acceptance:
+      - "Approved prerequisite integration preserves the #430 -> #431 -> #432 -> #433 order."
+      - "Node, harness, model, image, and configuration revisions are recorded for every candidate."
+      - "PR #431 containment limitations and inherited evidence remain explicit."
+      - "The 15-minute and two-minute bounded-tier descriptions are reconciled against the implemented gate."
+      - "The system-integration fixture contract is reviewed before any coordinated harness edit or repin."
+
+  - id: TASK-017-4
+    title: "Bind experiment manifests and formal controls to workflow evidence"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-017-2, TASK-017-3]
+    decisions: [D-11]
+    acceptance:
+      - "The evidence contract includes revisions, seeds, run IDs, tool versions, bounds, assumptions, artifacts, and terminal outcomes."
+      - "Positive models must pass and registered negative controls must violate their named property."
+      - "Unexpected success, timeout, cancellation, missing evidence, and tool failure cannot become a passing control."
+      - "Deterministic conformance and soak profiles remain separate."
+      - "Deferred policies cannot become a production default or a node-local block-validity switch."
+      - "Property tiers report their actual case counts, and claim-discharge scripts run in workflows."
+
+  - id: TASK-017-5
+    title: "Verify upstream authority, floor-bounded fork choice, and finality"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-017-4]
+    decisions: [D-02, D-03, D-04]
+    related_tasks: [TASK-012-19, TASK-012-20, TASK-015-1]
+    acceptance:
+      - "Identical admissible DAGs produce identical valid heads under bounded and reference LCA traversal."
+      - "Tests preserve stake provenance, electorate, depth rules, truncation, and progress."
+      - "Finality tests cover inclusive equality, strict majority, cross-view state retention, and missing-history holds."
+      - "Replay, settlement, restart, missing dependencies, and finalization tests pass before coupled certificate code is removed."
+      - "The model and production bridge state a measured traversal work bound."
+
+  - id: TASK-017-6
+    title: "Verify publication atomicity and durable eviction authority"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-017-4]
+    decisions: [D-05]
+    acceptance:
+      - "Crash and restart controls never expose a torn block, root, and effect tuple."
+      - "Stale evaluations cannot publish and local finality markers cannot evict unresolved deploy work."
+      - "Direct-finalization FT remains distinguishable from later display projections."
+      - "Any parallel experiment preserves publication order and finalized results without replacing the single-flight default."
+
+  - id: TASK-017-7
+    title: "Compare deferred heartbeat and retry policies in isolated profiles"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-017-4]
+    decisions: [D-06, D-07]
+    related_tasks: [TASK-016-5, TASK-016-6, TASK-016-7]
+    acceptance:
+      - "Profiles compare frontier follow, rotating versus all-eligible recovery, and progress-clock variants."
+      - "Profiles compare one-parent versus collective coverage and current leadership versus leader-free custody."
+      - "Paused validators, delayed messages, split frontiers, and empty or deploy-bearing workloads are covered."
+      - "Reports include duplicates, custody consistency, retry completion, expiry, recovery time, cadence, latency, and resources."
+      - "Lease expiry never bypasses floor, custody, lifespan, replay, or validation requirements."
+      - "An experiment cannot grant authority to activate its policy."
+
+  - id: TASK-017-8
+    title: "Verify conditional additive merge and accounting conformance"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-017-4]
+    decisions: [D-08]
+    external_prs: [216]
+    related_tasks: [TASK-016-1, TASK-016-3, TASK-016-4]
+    acceptance:
+      - "The corpus distinguishes duplicate observations from independent identical effects and retains the required multiplicity."
+      - "Causal rejection preserves unrelated effects and rejects dependent effects transitively."
+      - "Tests cover local evidence authentication, admission alignment, failed settlement, overflow, pooling, and conservation."
+      - "Rocq construction evidence and production bindings cover unbounded claims."
+      - "Compatibility differences are classified rather than treated as unconditional equivalence failures."
+      - "Production activation remains blocked on the protocol-7 FIP, fresh genesis, and required evidence."
+
+  - id: TASK-017-9
+    title: "Compare upstream and supplementary slash authorization"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-017-4]
+    decisions: [D-09]
+    acceptance:
+      - "Conformance covers merge-lost slashes, arrival order, rebonding, stale epochs, missing evidence, forged deploys, duplicates, and restart."
+      - "The soak profile repeats concurrency, delayed dependencies, restart, and evidence-order variations."
+      - "Current recovery and Rust-to-Scala bisimilarity remain authoritative."
+      - "Reconstruction cannot replace upstream recovery without complete equivalence evidence."
+
+  - id: TASK-017-10
+    title: "Complete the carrier-index differential and work-bound evidence"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-017-4]
+    decisions: [D-10]
+    claims: [CLAIM-FINALITY-002]
+    acceptance:
+      - "Forced index and reference paths agree across availability, fork, watermark, pruning, crash, and restart cases."
+      - "The corpus includes valid, invalid, and approved carriers."
+      - "The absence path meets its distinct-signature probe bound and reads no ancestor body."
+      - "Typed identity controls cannot collide across domains or replace deploy authentication."
+      - "Typed identity activation waits for the FIP-defined commitment, while signature-domain baseline tests run independently."
+      - "The existing claim remains pending until its full differential and soak requirements pass."
+
+  - id: TASK-017-11
+    title: "Verify protocol authority and retention of both Phlo fields"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-017-4]
+    decisions: [D-01, D-12]
+    external_prs: [216, 430]
+    acceptance:
+      - "Ceremony, adoption, proposal, and reception use one approved protocol version and reject unsupported versions."
+      - "Accounting authority version 8 remains separate from Casper protocol 7."
+      - "Both signed phloLimit and phloPrice remain in wire, API, and validation contracts."
+      - "Tests preserve minimum price, prepayment, refund, exhaustion, replay, and the storage-bound relationship."
+      - "Token accounting cannot replace either field, and undefined multi-wallet funding cannot activate."
+      - "Protocol-7 activation requires FIPS approval and fresh genesis."
+
+  - id: TASK-017-12
+    title: "Run the bounded comparative soak campaign and retain evidence"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-017-5, TASK-017-6, TASK-017-7, TASK-017-8, TASK-017-9, TASK-017-10, TASK-017-11]
+    related_epics: [EPIC-010, EPIC-013]
+    acceptance:
+      - "The maintainer approves the resource budget, durations, repetitions, and candidate matrix before dispatch."
+      - "The disk-protected harness completes each required profile or reports an explicit non-passing outcome."
+      - "Every report retains exact revisions, seeds, run IDs, configuration, metrics, and artifact digests."
+      - "Infrastructure termination does not erase prior product failures."
+      - "Deferred policy findings return to the team for a separate decision."
+
+  - id: TASK-017-13
+    title: "Discharge CbC claims and prepare the evidence review"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-017-12]
+    decisions: [D-11]
+    acceptance:
+      - "Every mandatory artifact has current claim-specific evidence or an explicitly approved waiver."
+      - "Strict discharge passes for the actual changed scope, not only for the planning documents."
+      - "The scan benchmark and concurrency-gate obligations have evidence or remain explicit blockers."
+      - "The review distinguishes bounded results, unbounded proofs, production bindings, and soak observations."
+      - "No pending or refuted required claim is hidden by a task completion label."
+---
+```
+
+**Current state:** TASK-017-1 has a planning draft for review. No runtime change, proof, harness run, or upstream integration is complete.
+
+**Next task:** After plan approval, TASK-017-2 defines the claims and reference oracles. TASK-017-3 handles reviewed prerequisites with separate Git consent.
+
+**Scope:** The [branch plan](./plans/casper-ratified-soak-2026-09-16.md) records source revisions, all twelve decisions, existing epic overlaps, and evidence profiles.
 
 ---
 
@@ -1436,6 +1662,9 @@ tasks:
 ## Epic Dependency Graph
 
 ```text
+PR #390 meeting record + PR #216 candidate ─> EPIC-017 claim and conformance plan
+PR #430 ─> PR #431 ─> PR #432 ─> PR #433 ─> EPIC-017 harness prerequisites
+EPIC-010 / EPIC-012 / EPIC-015 / EPIC-016 ─> EPIC-017 shared evidence and fixtures
 EPIC-011 (TLA exhaustive baseline, complete) ─> EPIC-012 / TASK-012-22
 EPIC-012 (open-issue PR queue)              (all other lanes start independently)
 PR #299 ─> PR #312 ─> EPIC-016 (key-contention close-out) ─> PR #311 (formal, merges last)
