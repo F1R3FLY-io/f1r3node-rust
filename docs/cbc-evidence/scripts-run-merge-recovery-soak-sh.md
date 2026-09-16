@@ -8,6 +8,8 @@
 
 Each cycle ran the real driver inside a disposable container through `scripts/bench/test-soak-disk-admission.sh` (no host mounts, no network, no Docker socket, UID 65534, 256 MiB, one CPU). `df`, `docker`, and the workload command were fixtures. In every cycle the production regression failed on the pre-fix source, TLC reported the named invariant with exit 12 on the pre-fix configuration, and both passed after the correction.
 
+On 2026-09-15 every host fixture, real-daemon check, and native fixture below ran green on a guarded Linux runner at `89810c27a`. The parsimonious work log records the runner, the results, and the limits. A row's note that a check did not run on this host describes the merge cycle that folded the behavior.
+
 | Cycle | Behavior | Pre-fix source and result | Corrected result | Control (invariant) |
 | --- | --- | --- | --- | --- |
 | D1/B4 | Hygiene leaves 7000 MiB inside the band | `0f5d2b74` admitted 1 iteration, 0 failures | `ca85cfe3e`: 0 iterations, 1 failure, exit 1 | `floor_only` (`AdmissionRequiresBand`) |

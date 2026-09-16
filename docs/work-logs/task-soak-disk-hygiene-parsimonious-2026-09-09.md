@@ -237,9 +237,23 @@ The timeline therefore cannot coexist with the source's B48 fixture as written. 
 
 After the removal, the same checks ran again on the same daemon and image. The CI harness passed all 42 scenarios. The emergency suite passed every fixture, including the B48 fixture, and the three late fixtures passed. This host had moved to macOS 27 overnight, which stopped the Intel builds of GNU tar, coreutils, and jq. The arm64 builds from Homebrew, placed first on the path, ran the fixtures unchanged.
 
-### Guarded runner
+### Guarded runner (2026-09-15)
 
-No runner is live in the ci-runner compartment, and the OCI runner profile authenticates from this host. The second session's runners were a custom variant of the system-integration launcher. Each was an OCI VM from the baked image, not registered with GitHub, with SSH and Docker verification, a source archive, and a two-hour expiry. That variant is not in any local checkout. A launch from here is possible with the OCI CLI. It waits for the user's authorization, since the source's rule requires an approved runner before any privileged run.
+The user authorized one two-hour runner on 2026-09-15 and launched it. The runner was `ci-eph-f1r3node-rust-amd64-d2-20260915-200339-262f4e`, an OCI instance in the ci-runner compartment from the baked amd64 image, with 16 OCPUs and 48 GiB, not registered with GitHub. Its cloud-init installed a `d2-expire` systemd timer, which the native fixtures require. The timer's service terminates the instance through the instance principal after two hours.
+
+The runner ran Linux 6.8 with Docker 29.6.1. The source was the staging tip `89810c27a`, transferred as the scripts tree with 3956 file digests.
+
+Every check passed on the runner:
+
+- The Linux host suite, which cannot run on macOS.
+- The CI harness, all 42 scenarios, and the emergency suite, every fixture.
+- The three late fixtures for the emergency deadline, the durable record, and the publication bound.
+- The eight real-daemon checks against the runner's own Docker daemon, with a digest-pinned Debian image as the writer.
+- The three native fixtures, which run the launcher under the real service manager as root.
+
+The real-daemon and native fixtures require provisioning metadata that the second session's provisioner wrote. That is a record naming the runner and confirming no GitHub registration, a ready marker, and the instance id as an acknowledgment. The first pass lacked them. A second pass wrote them on the runner from its own instance identity and reran those groups.
+
+The native fixtures substitute the Docker commands and the external workload, so they verify the launcher's admission and refusal paths and not Docker containment. B44 therefore stays open, and the private Docker cases of the source's specification are not implemented on any branch. The retrieved evidence is session-local, digest `3a7171c1ac83e28150df1a236771b35411f522a4ad76074e6074a4c7cec190fb`, and is not committed. After the retrieval this session started the runner's own expiry service, and the instance reached the terminated state at 20:52:48 UTC.
 
 ## D3 evidence: the disk-usage timeline (2026-09-10, removed 2026-09-15)
 
