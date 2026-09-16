@@ -388,7 +388,7 @@ named constant with a single definition. Current values:
 | `heartbeat.check-interval` | 5s | How often the loop evaluates its decision tree |
 | `heartbeat.max-lfb-age` | 5s | LFB age threshold above which stale-LFB recovery may fire |
 | `heartbeat.self-propose-cooldown` | 3s | Min interval between self-proposals; gates every routine lane (never the stale-recovery lane, which paces on the interval below) |
-| `heartbeat.stale-recovery-min-interval` | 3s | Pacing for stale-LFB recovery and the pending-deploy backstop: both the LFB's age and the validator's own silence must exceed it — at most one recovery proposal per validator per interval |
+| `heartbeat.stale-recovery-min-interval` | derived: 1.5 × `check-interval` | Pacing for stale-LFB recovery and the pending-deploy backstop: both the LFB's age and the validator's own silence must exceed it — at most one recovery proposal per validator per interval. The derived value opens on the second tick after a validator's own block; an explicit value must exceed `check-interval` (startup fails otherwise) |
 | `heartbeat.deploy-finalization-grace` | 25s | Grace window opened when pending deploys land; widens lag caps only — never bypasses the cooldown |
 | `heartbeat.advanced.frontier-chase-max-lag` | 20 | EXPERIMENTAL. Max lag for frontier-chase proposals while ahead of LFB (0 stops validators contributing under load) |
 | `heartbeat.advanced.pending-deploy-max-lag` | 20 | EXPERIMENTAL. Lag threshold above which pending-deploy proposals throttle |

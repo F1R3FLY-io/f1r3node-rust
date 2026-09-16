@@ -278,7 +278,7 @@ async fn run_block_creator_create_memory_profile() {
                 rejected_deploy_buffer.clone(),
                 &runtime_manager,
                 &mut block_store,
-                false,
+                casper::rust::blocks::proposer::proposer::DeploySelection::Standard,
             ),
         )
         .await

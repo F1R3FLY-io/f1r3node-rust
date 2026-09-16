@@ -378,29 +378,15 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync + 'static>(
     };
 
     if !verdict.is_fresh() {
-        if verdict.purges_buffer() {
-            tracing::info!("Block {} is not of interest. Dropped.", block_str);
-            block_processor
-                .purge_from_buffer_and_ack(&block)
-                .await
-                .map_err(|err| {
-                    CasperError::RuntimeError(format!(
-                        "Block {} was not of interest, and purge+cleanup failed: {}",
-                        block_str, err
-                    ))
-                })?;
-        } else {
-            tracing::info!(
-                "Block {} is already processed or in recovery. Duplicate copy dropped.",
-                block_str
-            );
-            block_processor.ack_processed(&block).await.map_err(|err| {
+        block_processor
+            .dispose_not_of_interest(verdict, &block)
+            .await
+            .map_err(|err| {
                 CasperError::RuntimeError(format!(
-                    "Block {} duplicate drop cleanup failed: {}",
+                    "Block {} was not of interest, and cleanup failed: {}",
                     block_str, err
                 ))
             })?;
-        }
         return Ok(BlockProcessOutcome::NotOfInterest);
     }
 
