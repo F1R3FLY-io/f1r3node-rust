@@ -1493,6 +1493,7 @@ tasks:
       - "Branch formal/deploy-storage-bound from origin/dev. Plan section 2 lists the 6 files, about 130 lines, and the split rows in docs/formal-verification.md and the area README."
       - "PR 1 carries the plan file onto dev so reviewers of the stack can read it. PR 4 deletes it."
       - "Dev's TLA+ job runs on schedule only, so PR 1's CI does not run TLC. The local TLC run is the evidence until PR 3 lands."
+      - "Dry run of 2026-09-16 by claude-session-c942697b: dev 4d8d9d79c plus the PR 1 slice in a scratch tree gives a one-line registry diff, a one-line docs/formal-verification.md diff, 237 states for the positive, exit 12 on RetainedWithinPhlo for the control, and a clean STE check on the README and the plan."
     acceptance:
       - "TLC passes the positive configuration with 237 states and the control exits 12 on RetainedWithinPhlo"
       - "The STE check passes on the prose the PR adds"
