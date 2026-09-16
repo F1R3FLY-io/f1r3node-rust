@@ -1,66 +1,74 @@
-# Casper Slashing Soak Claim
+# Casper Slashing Profile Claim
 
 ```yaml
 claim_id: CLAIM-CASPER-SOAK-006
 status: pending
 adapter: embedded
+scope: harness-profile
+profile_implementation: not-implemented
 decisions: [D-09]
 pre_merge_tasks: [TASK-017-9]
-post_merge_tasks: [TASK-018-3]
+post_merge_tasks: [TASK-018-3, TASK-018-5]
 artifacts:
-  - casper/src/rust/slashing_authorization.rs
-  - casper/src/rust/merging/rejected_slash.rs
-  - casper/src/rust/validate.rs
+  - scripts/run-merge-recovery-soak.sh
+  - scripts/bench/test-run-merge-recovery-soak.sh
+  - scripts/bench/write-soak-summary.sh
+  - formal/tlaplus/casper_soak/verification-plan.jsonc
 refutation: pending
-construction: pending
+construction: not-applicable
 construction_assumptions: null
 binding: pending
 soak: pending
 ```
 
-## Contract
+## Scope
 
-Inputs are authenticated objective evidence, invalid block hashes, parent pre-state, offender identity, positive stake, and evidence, target, and current epochs.
+This claim verifies the profile generator, fault scheduling, collector, and verdict classifier. The Rust node is the system under test, not a proof artifact.
 
-Outputs are slash authorization, canonical offender sets, deterministic seeds, and recovery decisions for merge-rejected slashes.
+It does not prove the node's consensus, storage, cryptography, or accounting implementation. Product failures remain observations for separate node work.
 
-Authorization preserves the upstream truth table and parent-pre-state authority. It requires positive offender stake and matching applicable epochs.
+## Profile contract
 
-Same-key rebonding cannot make old evidence slash a new bond. Rejection records alone cannot authorize an economic slash.
+Inputs are the pinned scenario, expected fixture outcomes, candidate identities, deterministic seed, requested faults, and observed event transcript.
 
-Invalid-hash-bound seed generation and offender deduplication must be deterministic. Arrival order and restart cannot change the authorized result.
+Outputs are coverage acknowledgments, correlated measurements, scenario verdicts, and immutable evidence references.
 
-Economic neglect and objective-equivocation extensions remain inactive where upstream authority does not activate them. Neglect rejection cannot mint economic evidence.
+Pin the evidence scenario, offender identity, epoch, expected outcome, and candidate revision.
 
-## Model and oracle
+Record the actual delivery order, rebond event, restart, and observed authorization result.
 
-Audit existing TLA+ and Rocq slashing models against the actual Rust authorization and rejected-slash recovery paths.
+Report differences from reviewed fixture expectations without granting slash authority or changing node policy.
 
-The proposed finite instance uses three validators, two epochs, one rebond, and two competing evidence arrival orders.
+## Scenario coverage
 
-The oracle preserves the upstream truth table and Rust-to-Scala bisimilarity contract. Supplementary canonical reconstruction is a comparison target, not replacement authority.
+- Evidence arrival permutations and merge-lost slash scenarios.
+- Same-key rebond, stale epochs, duplicate evidence, and forged-deploy scenarios.
+- Missing dependencies and restart during evidence delivery.
 
-TASK-017-9 must record exact production functions, theorem names, and source digests before reusing evidence.
+Unavailable test interfaces produce a blocked scenario, not a passing result. Adding or repairing node interfaces is outside these epics.
 
-## Positive and negative controls
+## Formal controls and executable fixtures
 
-| Control | Required observation |
-| --- | --- |
-| Clean evidence permutations and restart | Preserve authorized offender sets and recovered slashes. |
-| Reuse evidence after rebond | Violate epoch authorization. |
-| Authorize from a rejection record alone | Violate objective-evidence authority. |
-| Omit a merge-lost slash | Diverge from upstream recovery. |
-| Accept a forged deploy or absent evidence | Violate authenticated authorization. |
-| Seed from arrival order | Violate deterministic seed agreement. |
+| Proposed property | Defect knob | Required fixture result |
+| --- | --- | --- |
+| EvidenceOrderRecorded | ReuseRequestedOrder | A requested delivery order cannot replace the observed delivery trace. |
+| EpochCorrelationRequired | DropEpochIdentity | Different epochs must not be combined into one passing comparison. |
+| AuthorizationMismatchReported | SuppressSlashMismatch | A planted authorization mismatch must be reported as a product failure. |
 
-## Tiers and phases
+A clean fixture uses a complete known transcript. Each negative control mutates profile handling, not the node, and must violate its named property.
 
-TLC checks the finite scenarios. Rocq must retain `main_bisimilarity_theorem` and `main_bisimilarity_strong` as proof anchors.
+TLC explores bounded scenario, event, and outcome states. Real harness fixtures must exercise the profile implementation with matching and mismatching transcripts.
 
-`main_slashing_algorithm_correct` remains supplementary. Kernel checks and closed assumptions remain required for the named unbounded claims.
+Construction is not applicable under PR #433's harness approach. No Rocq theorem or node-code discharge is required by this claim.
 
-Pre-merge bindings compare current upstream behavior and supplementary reconstruction. Post-merge bindings rerun those comparisons against the actual #216 implementation.
+The bound is two scenarios and three observations per scenario for the initial model. This is proposed coverage, not completed verification.
 
-Conformance runs cover the truth table. Soaks repeat concurrency, delayed dependencies, restarts, and evidence permutations without changing authorization policy.
+## Phase obligations
 
-The [harness contract](./casper-soak-harness.md) defines evidence and closure. All claim-specific evidence remains pending.
+Pre-merge work defines and verifies the profile against current supported interfaces and controlled transcripts.
+
+After PR #216 merges, adapt the profile interfaces and rerun its model controls, fixtures, and approved soak scenarios with new identities.
+
+A correct harness can report a failed product scenario. Passing harness verification does not convert that product failure into a passing soak.
+
+The [harness contract](./casper-soak-harness.md) defines provenance and outcome rules. Deferred policies still require separate approval before activation.

@@ -1,270 +1,161 @@
-# Ratified Casper Conformance and Soak Plan
+# Casper Soak Harness and Profile Verification Plan
 
-**Status.** Planning draft. No implementation or claim discharge is complete.
+**Status:** Scaffold. No model, fixture, or soak result is complete.
 
-**Branch.** `formal/soak-casper-consensus`
+**Branch:** `formal/soak-casper-consensus`
 
-**Pre-merge epic.** [EPIC-017](../ToDos.md#epic-017-ratified-casper-conformance-and-soak-evidence)
+**Pre-merge epic:** [EPIC-017](../ToDos.md#epic-017-ratified-casper-conformance-and-soak-evidence)
 
-**Post-merge epic.** [EPIC-018](../ToDos.md#epic-018-post-merge-casper-soak-formal-verification)
+**Post-merge epic:** [EPIC-018](../ToDos.md#epic-018-post-merge-casper-soak-formal-verification)
 
-**Follow-on branch.** Proposed: `formal/soak-casper-post-cost-accounting`. Create it only after PR #216 merges.
+**Proposed follow-on branch:** `formal/soak-casper-post-cost-accounting`, after PR #216 merges.
 
-**Baseline.** `a2fe60c7255bf4ba035d41fb65b6d6f1c0f02632`, the checked-out `dev` baseline on 2026-09-16.
+## Scope boundary
 
-## Authority and scope
+Both epics verify the soak harness and profiles only. The Rust node is the system under test, not a CbC proof artifact.
 
-The [16 September 2026 meeting record](https://github.com/F1R3FLY-io/f1r3node-rust/pull/390#pullrequestreview-5227717933) controls the selected dispositions.
+The scope includes workload generation, fault scheduling, observation collection, correlation, verdict classification, resource stops, restart handling, and evidence provenance.
 
-The PR #216 comments record the [integration decisions](https://github.com/F1R3FLY-io/f1r3node-rust/pull/216#issuecomment-5703891094) and [harness requirements](https://github.com/F1R3FLY-io/f1r3node-rust/pull/216#issuecomment-5703891358).
+The scope excludes node implementation changes, consensus proofs, accounting proofs, storage proofs, cryptographic proofs, and Rocq construction work.
 
-Current `dev` remains the default Casper authority. A branch proposal does not independently authorize protocol changes.
+Product defects found by a correct profile remain product failures. They belong to separate node work and must not become passing soak results.
 
-This branch prepares pre-merge formal claims, baseline conformance tests, and separate soak profiles. A follow-on formal-methods harness PR verifies the merged PR #216 implementation.
+Missing node test interfaces block their scenarios. These epics do not acquire runtime implementation obligations to unblock those scenarios.
 
-Neither phase activates deferred policies or approves a protocol release.
+## Authority and method
 
-Correct by Construction (CbC) work must distinguish a model result from production conformance. A passing soak does not discharge an unbounded theorem.
+The [ratification meeting](https://github.com/F1R3FLY-io/f1r3node-rust/pull/390#pullrequestreview-5227717933) supplies the reviewed expectations for profile scenarios.
+
+The [PR #216 decisions](https://github.com/F1R3FLY-io/f1r3node-rust/pull/216#issuecomment-5703891094) and [harness requirements](https://github.com/F1R3FLY-io/f1r3node-rust/pull/216#issuecomment-5703891358) remain references.
+
+Current `dev` is the baseline authority. Experiments do not activate deferred policies or approve protocol releases.
+
+Use [PR #433's harness method](https://github.com/F1R3FLY-io/f1r3node-rust/blob/65f7f6daa832c0acb6fddf2b462db1b9d5461729/docs/cbc-verification-tiers.md):
+
+- **Refutation:** TLC checks finite harness and profile state machines, with clean and named expected-violation controls.
+- **Binding:** Executable fixtures invoke the real harness or profile implementation with controlled transcripts, processes, and storage responses.
+- **Construction:** Not applicable to these infrastructure claims. Runtime proofs remain outside both epics.
+
+A model-only simulation cannot substitute for an executable fixture. A passing harness fixture cannot establish node correctness.
 
 ## Source inventory
 
-These revisions were observed on 2026-09-16. Every PR was open. None was merged into this branch during preparation.
+These revisions were observed on 2026-09-16. They identify reference material, not integrations performed by this branch.
 
 | Source | Observed revision | Role |
 | --- | --- | --- |
-| [PR #216](https://github.com/F1R3FLY-io/f1r3node-rust/pull/216) | `619beb4a4a7ad3f8967d4586daf0f5c552bd150e` | Candidate accounting and Casper implementation, subject to the ratified dispositions |
-| [PR #390](https://github.com/F1R3FLY-io/f1r3node-rust/pull/390) | `ce266ddcd8369107441dd9fc9b8e9ff6719146f1` | Historical comparison ledger and published meeting review |
-| Local ratification commit | `f26c975234752f516ea45be7c64005336b75d8c5` | Updated ledger on `chore/rectify-cost-accounting-casper-specs`, not yet at the observed remote PR head |
-| [PR #430](https://github.com/F1R3FLY-io/f1r3node-rust/pull/430) | `dedb3add172098efcbc63d72b2ebdc612f2fddcd` | Phlo-bound deploy storage model |
-| [PR #431](https://github.com/F1R3FLY-io/f1r3node-rust/pull/431) | `0e176e486a028d10704b96add6e5eb50525682cb` | Disk-protected soak driver and fixtures |
-| [PR #432](https://github.com/F1R3FLY-io/f1r3node-rust/pull/432) | `e0380392bcc66d9774e403edb8a08415798c1e0e` | Soak models, registered negative controls, and bounded CI tier |
-| [PR #433](https://github.com/F1R3FLY-io/f1r3node-rust/pull/433) | `65f7f6daa832c0acb6fddf2b462db1b9d5461729` | Machine/medium separation and CbC verification tiers |
+| Baseline dev | `a2fe60c7255bf4ba035d41fb65b6d6f1c0f02632` | Initial node under test |
+| PR #216 | `619beb4a4a7ad3f8967d4586daf0f5c552bd150e` | Candidate node, not blanket authority |
+| PR #390 | `ce266ddcd8369107441dd9fc9b8e9ff6719146f1` | Historical ledger and published meeting review |
+| Local ratification | `f26c975234752f516ea45be7c64005336b75d8c5` | Updated ledger, newer than the observed PR head |
+| PR #430 | `dedb3add172098efcbc63d72b2ebdc612f2fddcd` | Storage-bound model reference |
+| PR #431 | `0e176e486a028d10704b96add6e5eb50525682cb` | Disk-protected driver and fixtures |
+| PR #432 | `e0380392bcc66d9774e403edb8a08415798c1e0e` | Soak models and CI controls |
+| PR #433 | `65f7f6daa832c0acb6fddf2b462db1b9d5461729` | Verification tiers and architecture |
 
-The stack order is `#430 -> #431 -> #432 -> #433`. Preserve that order when integrating reviewed prerequisites.
+Approved prerequisite integration must preserve `#430 -> #431 -> #432 -> #433`. Git integration still needs separate authorization.
 
-PR #431 names B44 containment as open. A prototype containment launcher is not evidence that the normal soak workflow provides containment.
+PR #431's B44 containment limitation remains explicit. Reconcile the PR #432 15-minute and PR #433 two-minute tier descriptions before registering new gates.
 
-The source PRs report verification results. Those reports are inherited evidence, not test results from this branch.
+## Ratifications as profile inputs
 
-## Decisions and acceptance obligations
+These rows define scenario expectations, not node-proof obligations for this branch.
 
-The table names pre-merge preparation tasks. The phase handoff below assigns their merged-runtime verification to EPIC-018.
+| Decision | Profile requirement | Owner |
+| --- | --- | --- |
+| D-01 | Record Casper protocol and accounting authority separately. Keep unsupported-version scenarios and activation labels explicit. | TASK-017-11 |
+| D-02 | Exercise committee, justification, signature, replay, settlement, restart, and dependency scenarios through available interfaces. Do not remove certificate code. | TASK-017-5 |
+| D-03 | Pair bounded/reference observations on identical DAG inputs. Report head differences and traversal counters without claiming an unbounded equivalence proof. | TASK-017-5 |
+| D-04 | Cover inclusive finality thresholds, strict-majority expectations, missing-history holds, and retained effects. Missing observations cannot pass. | TASK-017-5 |
+| D-05 | Acknowledge crash injection and correlate publication/restart observations. Report torn tuples, stale results, and lost unresolved work. | TASK-017-6 |
+| D-06 | Distinguish all-eligible stale recovery from leader-only convergence. Label frontier, clock, and rotating-leader experiments separately. | TASK-017-7 |
+| D-07 | Retain exact occurrence identities, custody observations, retries, expiry, and coverage settings in profile data. | TASK-017-7 |
+| D-08 | Generate multiplicity, causal-chain, failed-settlement, overflow, and conservation-observation workloads. Separate legacy and conditional additive results. | TASK-017-8 |
+| D-09 | Record evidence order, epochs, rebond events, and observed authorization. Do not alter slashing authority or require node bisimilarity proofs. | TASK-017-9 |
+| D-10 | Match index/reference input identities and verify observed path engagement before interpreting counters. Keep unavailable typed-identity scenarios blocked. | TASK-017-10 |
+| D-11 | Retain exact control verdicts, truthful case counts, workflow evidence, and explicit incomplete outcomes. Do not remove existing gates. | TASK-017-2, TASK-017-4, TASK-017-13 |
+| D-12 | Preserve both phloLimit and phloPrice in requests and observations. Classify minimum-price, prepayment, refund, and exhaustion outcomes. | TASK-017-11 |
 
-| Decision | Required disposition | Evidence or activation condition | Pre-merge task |
+Protocol-7 activation still requires FIPS approval and fresh genesis. Conditional additive semantics and undefined multi-wallet policies remain outside harness activation authority.
+
+The independent node claim [CLAIM-FINALITY-002](../claims/repeat-deploy-carrier-index-equivalence.md) is neither owned nor discharged by these epics.
+
+## Pre-merge phase: EPIC-017
+
+1. Review harness claims, profile expectations, and finite model bounds.
+2. Integrate approved prerequisites and pin the external system-integration harness.
+3. Implement harness models, named negative controls, and executable fixtures.
+4. Implement profile generation, fault acknowledgments, collectors, and verdict classifiers.
+5. Run deterministic harness checks before approved baseline soak scenarios.
+6. Preserve every failed, timed-out, cancelled, blocked, or incomplete outcome.
+7. Review harness evidence and hand off profile interface requirements to EPIC-018.
+
+PR #216's merge is not a blocker for this phase. Optional candidate experiments remain separate from baseline evidence.
+
+## Post-merge phase: EPIC-018
+
+The start gate requires the accepted pre-merge handoff and the actual PR #216 merge within the selected updated `dev` history.
+
+1. Record the actual merge SHA and create a separate follow-on branch with approval.
+2. Identify changed node interfaces consumed by the harness and profiles.
+3. Adapt profile requests, fault controls, collectors, and metrics mappings.
+4. Rerun affected harness models and executable fixtures with current digests.
+5. Run approved post-merge soak scenarios with new run identities.
+6. Review and discharge only the harness and profile claims.
+
+This phase adapts the harness to the merged node. It does not prove or repair the merged node.
+
+## Claim and task map
+
+| Claim | Verified component | Pre-merge owner | Post-merge owner |
 | --- | --- | --- | --- |
-| D-01 | Use one Casper protocol-7 authority chain and fresh genesis. Keep reusable accounting authority version 8 separate. | FIPS approval, ceremony/adoption/reception agreement, unsupported-version refusal | TASK-017-11 |
-| D-02 | Preserve upstream committee and stake provenance, exact justifications, duplicate rejection, and validator signatures. Do not require certificate sidecars. | Integration tests must pass before removing coupled certificate code. Cover replay, settlement, restart, dependencies, and finalization. | TASK-017-5 |
-| D-03 | Preserve GHOST, electorate, stake provenance, depth rules, truncation, and progress. Bound LCA traversal at the finalized floor. | Compare bounded and reference traversals on identical admissible DAGs. A changed valid head fails the equivalence claim. | TASK-017-5 |
-| D-04 | Preserve containment, inclusive threshold, strict majority precondition, disagreement rules, budgets, and divergence telemetry. Reject the second state certificate. | Test missing-history holds, exact boundaries, state retention, and verified failed-body settlement. Do not authorize universal certified advancement. | TASK-017-5 |
-| D-05 | Require atomic publication, stale-result refusal, restart atomicity, durable terminal eviction authority, and distinguishable FT projections. Keep single-flight finalization. | Crash and concurrency tests must precede optional parallel evaluation. The complete ledger architecture remains optional. | TASK-017-6 |
-| D-06 | Preserve all-eligible stale recovery, leader-only convergence, readiness lanes, and frontier follow. Adopt intents, coalescing, and permit revalidation. | Test rotating stale leadership, frontier removal, and progress-clock replacement as deferred experiments only. | TASK-017-7 |
-| D-07 | Preserve exact occurrences, tombstones, reason joins, carrier custody, lifespan, causal closure, retry pacing, and one-parent coverage. | Compare collective coverage and leader-free custody separately. Lease expiry must not bypass the floor gate or validity rules. | TASK-017-7 |
-| D-08 | Select additive composition conditionally. Preserve exact independent multiplicity, causal closure, local evidence authentication, admission alignment, and checked arithmetic. | FIPS approval, fresh genesis, compatibility analysis, differential tests, and accounting conservation must precede activation. | TASK-017-8 |
-| D-09 | Preserve upstream slashing authorization, recovery, epoch protection, inactive economic neglect, and Rust-to-Scala bisimilarity. | Canonical reconstruction remains supplementary until differential tests prove complete coverage. | TASK-017-9 |
-| D-10 | Preserve the dedicated carrier store, watermark, fallback, retention, and narrow fast path. Select a protocol-7 typed lookup identity. | The FIP defines the envelope commitment. Keep CLAIM-FINALITY-002 pending until differential and soak gates pass. | TASK-017-10 |
-| D-11 | Preserve all five practice rules, gate replacement governance, negative controls, mandatory scope, and the slashing proof anchor. | Use truthful 2,000/10,000/100,000-or-more property tiers. Require claim scripts in workflows and the pending scan benchmark. | TASK-017-2, TASK-017-4, TASK-017-13 |
-| D-12 | Require both signed `phloLimit` and `phloPrice`. Preserve prepayment, refund, exhaustion, minimum-price validation, tags, and APIs. | Token accounting cannot replace either field. Multi-wallet funding needs a normative mapping before activation. | TASK-017-11 |
+| [001](../claims/casper-soak-harness.md) | Harness lifecycle, isolation, provenance, and outcome handling | TASK-017-4, TASK-017-12, TASK-017-13 | TASK-018-1, TASK-018-2, TASK-018-5, TASK-018-6 |
+| [002](../claims/casper-soak-authority-finality.md) | Authority/finality profile correlation and classification | TASK-017-5 | TASK-018-3 |
+| [003](../claims/casper-soak-publication.md) | Publication/restart fault acknowledgments and observations | TASK-017-6 | TASK-018-3 |
+| [004](../claims/casper-soak-recovery.md) | Recovery lane scheduling and occurrence measurements | TASK-017-7 | TASK-018-3, TASK-018-5 |
+| [005](../claims/casper-soak-merge-accounting.md) | Accounting workload generation and expected-value comparison | TASK-017-8 | TASK-018-4 |
+| [006](../claims/casper-soak-slashing.md) | Evidence-order scenarios and authorization-result classification | TASK-017-9 | TASK-018-3 |
+| [007](../claims/casper-soak-version-phlo.md) | Protocol labels, Phlo inputs, and settlement-result capture | TASK-017-11 | TASK-018-4 |
+| [008](../claims/casper-soak-carrier-index.md) | Carrier comparison inputs and telemetry classification | TASK-017-10 | TASK-018-4 |
 
-The selected D-12 disposition rejects field removal. Do not implement the earlier proposed replacement with a token-only client maximum.
+The [formal plan](../../formal/tlaplus/casper_soak/verification-plan.jsonc) records proposed controls. The [cycle checklist](../tdd-plans/casper-soak-harness.md) keeps unexecuted cycles pending.
 
-## Existing epic review
+New profile implementation files must enter the harness-only inventory when introduced. External harness changes need coordinated source and revision ownership before implementation.
 
-The review covered all twelve active epic blocks and the completed-epic index. Existing task states are historical records, not proof of current implementation status.
+## Scope and evidence storage
 
-| Existing work | Relationship | Disposition for this branch |
-| --- | --- | --- |
-| EPIC-010 | Soak metrics, reporting, runner lifecycle, and dashboard | Reuse the evidence infrastructure. Do not duplicate reporting or silently close its tasks. |
-| EPIC-012, TASK-012-19 through TASK-012-21 | Frontier instrumentation and bounded work | Share measured work counters and baseline fixtures. Do not infer a bottleneck from total latency. |
-| EPIC-012, TASK-012-22 and TASK-012-23 | Exhaustive formal profiles | Preserve timeout, violation, tool error, and success as distinct outcomes. |
-| EPIC-013 | Exact-candidate release evidence | Produce compatible evidence, but do not dispatch promotion or change release authority. |
-| EPIC-015 | Casper test-node congruence | Audit the available production-shaped fixture boundary before adding a second helper tree. |
-| EPIC-016 | Contention, retry coverage, protected cells, and concurrency | Reuse applicable regressions. Reconcile stale C1 and wire-policy assumptions against D-03, D-07, and D-08. |
-| EPIC-003 through EPIC-009 | Migration and external testbed work | Leave unrelated claims and states unchanged. |
-| EPIC-014 | Continuous test net | Do not make this branch depend on test-net provisioning for deterministic conformance. |
-| Completed EPIC-011 | Exhaustive TLA+ baseline | Retain its distinction between bounded completion and unresolved exhaustive coverage. |
+Both epics list seven current artifacts: the driver, fixture script, summary script, TLC gate, soak workflow, formal README, and verification plan.
 
-The shared parser rejects the repository's existing `review` task status in strict mode. Compatibility mode preserves those records during inspection.
+Seven pending ledger records cover these artifacts. No Rust or protobuf artifact belongs to either epic's CbC scope.
 
-Do not relabel those tasks merely to satisfy the parser. TASK-017-1 records this tooling mismatch for a separate resolution.
+The new runtime tags and pending runtime records from the earlier oversized scaffold are removed. Pre-existing runtime tags and evidence remain intact.
 
-No `docs/handoffs/` directory exists at this baseline. Relevant work logs include the issue-24 fast path and the 60-hour preflight handoff.
+Canonical Casper-area records remain under `docs/casper/cbc-evidence/`, with compatibility symlinks for the shared driver's flat lookup.
 
-## Pre- and post-merge sequence
+Shared harness records remain under `docs/cbc-evidence/`. Mixed epic checks use the default directory, not a Casper-only override.
 
-### Phase A: Before PR #216 merges
+The generic artifact gate cannot establish coverage of every profile claim. Closure must also check claim IDs, digests, fixtures, and phase evidence.
 
-EPIC-017 belongs to the current branch and PR. It does not depend on PR #216 merging.
+## Existing work and limits
 
-1. Review the authority map and pre/post task split.
-2. Define claims, reference oracles, negative controls, and exact evidence scopes.
-3. Integrate reviewed harness prerequisites in stack order with separate Git approval.
-4. Bind existing production behavior to current-dev models and tests.
-5. Prepare candidate-specific models and experimental profiles without claiming merged-runtime conformance.
-6. Run the required baseline soak and available isolated candidate experiments.
-7. Review pre-merge claim evidence and hand off post-merge obligations to EPIC-018.
+Reuse EPIC-010 reporting, EPIC-012 work counters, EPIC-015 test fixtures, and EPIC-016 scenario infrastructure where their interfaces fit.
 
-Unavailable candidate functionality remains a named post-merge obligation. It is not a passing result or a reason to weaken a pre-merge claim.
+Keep EPIC-013 release authority separate. Do not close unrelated tasks or inherit their runtime proof obligations.
 
-### Phase B: After PR #216 merges
+Legacy certificate and recovery specifications can conflict with the ratifications. Profile expectations must cite the meeting rather than copy those assumptions.
 
-EPIC-018 owns a separate formal-methods PR for the soak harness. Its start gate requires the accepted EPIC-017 handoff and PR #216 merged into `dev`.
+The historical epic review found unsupported `review` statuses in the strict parser. Preserve those unrelated records and use compatibility mode for inspection.
 
-1. Verify PR #216's merged state and the merge commit's ancestry in the selected updated `dev` baseline.
-2. Create the follow-on branch from that baseline with separate Git approval.
-3. Record the actual merge SHA and node, model, harness, image, and configuration identities.
-4. Reconcile changed implementation behavior with the pre-merge models and ratified decisions.
-5. Adapt the harness and rerun production bindings, negative controls, and applicable proofs.
-6. Run new merged-runtime conformance and comparative soak profiles.
-7. Discharge the post-merge scope and submit the follow-on PR evidence for review.
+## Completion gates
 
-An open PR #216 head cannot satisfy the merge gate. A merge does not itself establish conformance with the ratifications.
+Every evidence package retains revisions, configuration, seeds, run IDs, tool versions, bounds, assumptions, artifact digests, and terminal outcomes.
 
-### Phase handoff
+Positive models must pass. Negative controls require TLC exit 12 and the exact named property violation. Tool errors and timeouts cannot substitute for counterexamples.
 
-| Pre-merge output | Post-merge owner | Required post-merge work |
-| --- | --- | --- |
-| TASK-017-1, TASK-017-3, TASK-017-13: source inventory and accepted handoff | TASK-018-1 | Verify the merge gate and select an exact updated baseline. |
-| TASK-017-2, TASK-017-4: claims, controls, scope, and evidence contracts | TASK-018-2 | Audit changed assumptions, rebind artifacts, and adapt harness interfaces. |
-| TASK-017-5, TASK-017-6, TASK-017-9: authority, finality, publication, and slashing | TASK-018-3 | Run the actual merged-runtime bindings and regression tests. |
-| TASK-017-8, TASK-017-10, TASK-017-11: merge, accounting, identity, version, and Phlo | TASK-018-4 | Verify the merged implementation and rerun applicable construction proofs. |
-| TASK-017-7, TASK-017-12: recovery profiles and baseline results | TASK-018-3, TASK-018-5 | Bind recovery behavior and run new comparative soaks. |
-| TASK-017-13: pre-merge closure and pending obligations | TASK-018-6 | Discharge post-merge claims and link all new evidence. |
+Required profile fixtures must expose collector and classifier defects. Missing observations must remain unknown or incomplete, never fabricated passing values.
 
-The handoff retains revisions, claim statements, assumptions, model bounds, oracle versions, artifact digests, seeds, and pending production bindings.
+Harness verification and product verdicts are separate. A correct harness may report product failure, but that soak is still non-passing.
 
-Pre-merge proofs may remain reusable when their statements and inputs are unchanged. Changed production artifacts require new bindings and claim-specific evidence.
+Close each epic only after its required harness verification and campaign acceptance pass. Any unavailable required scenario remains an explicit blocker.
 
-Do not copy discharge statuses from the candidate branch onto the merged runtime. Pre-merge completion does not discharge post-merge obligations.
-
-### Conditions that apply to both phases
-
-PR #390 documentation publication and PR #216 implementation alignment remain separate concerns. Neither requires adopting PR #216 wholesale.
-
-Protocol-changing comparisons need separate fresh-genesis shards. Do not mix incompatible block formats or node-local validity switches within a shard.
-
-Missing functionality blocks the profile that requires it, rather than producing a skipped success. Ordinary `dev` baseline tests do not wait for protocol-7 activation.
-
-Certificate-removal integration tests remain prerequisites to removal. The phase split does not postpone those tests until after unsafe removal.
-
-FIPS approval and fresh genesis remain activation conditions. A successful post-merge soak does not approve a deferred policy.
-
-## Scaffolded CbC claim inventory
-
-The [harness contract](../claims/casper-soak-harness.md) indexes seven pending claim specifications and the existing carrier-index claim.
-
-The [formal-area scaffold](../../formal/tlaplus/casper_soak/README.md) maps ten harness invariants to driver boundaries and proposed negative controls.
-
-The [cycle checklist](../tdd-plans/casper-soak-harness.md) records pending RED/GREEN cycles. No TLA+ module, configuration, or fixture has been implemented by this scaffold.
-
-TASK-017-2 still requires exact source bindings, oracle implementation, legacy-claim reconciliation, and review. Scaffolding does not complete the task.
-
-| Proposed claim group | Scope | Required evidence |
-| --- | --- | --- |
-| [CLAIM-CASPER-SOAK-001](../claims/casper-soak-harness.md) | Evidence provenance and experiment isolation | Manifest validation, missing-artifact failures, baseline/candidate identity checks |
-| [CLAIM-CASPER-SOAK-002](../claims/casper-soak-authority-finality.md) | D-02 through D-04 authority, floor bounds, and preservation | Cross-view model, negative controls, exact-threshold tests, LCA oracle, production bridge |
-| [CLAIM-CASPER-SOAK-003](../claims/casper-soak-publication.md) | D-05 publication and lifecycle eviction | Crash/restart model, stale-result control, interleaving tests, durable-state bridge |
-| [CLAIM-CASPER-SOAK-004](../claims/casper-soak-recovery.md) | D-06 and D-07 recovery experiments | Explicit scheduling assumptions, paused validators, custody controls, retry/expiry measurements |
-| [CLAIM-CASPER-SOAK-005](../claims/casper-soak-merge-accounting.md) | D-08 execution and merge accounting | Multiplicity and causal-closure proofs, authenticated evidence tests, conservation bridge |
-| [CLAIM-CASPER-SOAK-006](../claims/casper-soak-slashing.md) | D-09 slashing equivalence | Objective-evidence oracle, rebond and forged-evidence controls, recovery coverage |
-| [CLAIM-CASPER-SOAK-007](../claims/casper-soak-version-phlo.md) | D-01 and D-12 version and Phlo requirements | Version lifecycle controls, retained-field tests, replay and funding-boundary tests |
-| Existing [CLAIM-FINALITY-002](../claims/repeat-deploy-carrier-index-equivalence.md) | D-10 carrier index | Forced-path differential, watermark and crash controls, measured absence-path work bound |
-
-Reuse existing claims when their statements match the ratified requirement. Do not discharge an old claim against a different property.
-
-Each claim must name authenticated inputs, outputs, assumptions, boundedness, negative controls, production functions, and required evidence tiers.
-
-Each claim must also state its pre-merge and post-merge obligations. TASK-018-2 revalidates the inventory against the actual merged implementation.
-
-### Verification tiers
-
-The [PR #433 tier proposal](https://github.com/F1R3FLY-io/f1r3node-rust/blob/65f7f6daa832c0acb6fddf2b462db1b9d5461729/docs/cbc-verification-tiers.md) separates three forms of evidence:
-
-- Refutation: TLA+ with TLC checks a stated finite model and expected counterexamples.
-- Construction: Rocq and kernel checks establish unbounded claims with an explicit assumption set.
-- Binding: production tests connect the actual implementation to the model or theorem.
-
-Soak infrastructure remains separate from Casper semantics. Shell-driver claims use model checks and fixtures, not an invented Rust construction theorem.
-
-The [PR #433 architecture note](https://github.com/F1R3FLY-io/f1r3node-rust/blob/65f7f6daa832c0acb6fddf2b462db1b9d5461729/docs/artifacts/f1r3fly-consensus-neutral-sm.md) separates execution, DAG substrate, Casper, and shared infrastructure.
-
-Preserve that separation in claim ownership. Do not add RGB, Casanova, or Cordial implementation to this branch.
-
-### Scope and tooling findings
-
-The `/cbc identify` baseline probe found mandatory attributes on these relevant artifacts:
-
-- `casper/src/rust/finality/floor.rs`
-- `casper/src/rust/blocks/proposer/block_creator.rs`
-- `casper/src/rust/validate.rs`
-- `block-storage/src/rust/dag/carrier_index.rs`
-- `block-storage/src/rust/dag/block_dag_key_value_storage.rs`
-- `node/src/rust/instances/heartbeat_proposer.rs`
-
-The initial probe found no `cbc` attribute on `estimator.rs`, `dag_operations.rs`, the soak driver, or the TLA+ gate script.
-
-The scaffold now tags those files and the additional claim-owned boundaries. Both epics list the explicit artifact scope for the next CbC review.
-
-Twenty-one new ledger records are pending. Five existing records remain unchanged and require a property-specific audit before reuse.
-
-The generic artifact gate does not validate every claim in a bundle. TASK-017-13 must check claim IDs, digests, phase evidence, and tier applicability separately.
-
-Canonical Casper records live in [docs/casper/cbc-evidence](../casper/cbc-evidence/). Shared artifact records remain in `docs/cbc-evidence/`.
-
-Relative symlinks preserve the shared driver's default flat lookup. Mixed epic checks must not select only the Casper directory.
-
-Existing waivers and discharge records are not automatic evidence for new claims. The status command reports multiple entries for `interpreter_util.rs`, which needs a record audit.
-
-The repository has no local `scripts/cbc.sh`. The shared CbC skill supplies the driver. Do not add a copied framework implementation to this repository.
-
-Java, the TLC jar, and Z3 are present. Rocq and Coq are not on the current PATH. Tool presence does not establish a verified run.
-
-### Known specification conflicts
-
-The draft [CbC repair plan](../casper/design/cbc-repair-plan.md) still requires a state-retention certificate and rotating recovery behavior.
-
-Those statements conflict with D-02, D-04, and D-06. TASK-017-2 must reconcile them before they become new claim assumptions.
-
-The [cross-view leader claim](../claims/consensus-cross-view-determinism.md) needs an explicit lane scope. It must not reintroduce leader-only stale recovery.
-
-D-11 keeps expected violations outside the positive configuration list. PR #432 adds a separate expected-violation registry, which is compatible with that distinction.
-
-The PR #432 description states a 15-minute bounded workflow tier. PR #433 describes a two-minute refutation tier. Reconcile these budgets before registering new checks.
-
-## Evidence profiles
-
-EPIC-017 establishes model controls, reference oracles, baseline bindings, and profile definitions. It records available candidate experiments separately.
-
-EPIC-018 adapts these profiles to the merged runtime and produces new conformance and soak evidence. Pre-merge run IDs cannot satisfy post-merge run requirements.
-
-| Profile | Scenarios and required observations |
-| --- | --- |
-| Authority and finality | Missing dependencies, replay, settlement, restart, committee provenance, inclusive threshold equality, strict majority, divergent local views, retained finalized effects |
-| Fork choice | Identical admissible DAGs, dense heartbeats, deep ancestry, bounded versus reference LCA, unchanged head, explicit traversal counters |
-| Publication | Crash before and after publication, stale evaluations, terminal verdict persistence, no torn block/root/effect tuple, distinguishable FT projections |
-| Recovery | Frontier follow on/off, all-eligible/rotating recovery, clock variants, paused/delayed validators, empty/deploy workloads, one-parent/collective coverage, leader-free custody |
-| Merge | Independent identical outputs, repeated observations of one identity, inconsistent identity evidence, causal rejection, failed execution, admission rejection, overflow, conservation |
-| Slashing | Merge-lost slash, both evidence orders, same-key rebond, stale epochs, missing dependencies, forged deploys, duplicates, restart |
-| Carrier index | Forced index/reference paths, domain collisions, watermark/pruning boundaries, read failures, missing bodies, forks, valid/invalid/approved carriers, publication crashes |
-| Version and Phlo | Ceremony/adoption/reception, unsupported versions, both signed cost fields, minimum price, prepayment/refund/exhaustion, replay, undefined multi-wallet policy refusal |
-
-The recovery report must include completion and expiry rates, duplicates, custody consistency, recovery time, blocks per height, latency, and resource use.
-
-Do not derive a causal explanation from latency alone. Record traversal work, index probes, ancestor reads, merge work, and replay work separately.
-
-## Completion gate
-
-Each result must include revisions, configuration, seed, run identifier, tool version, bounds, assumptions, artifact digests, and terminal outcome.
-
-Timeout, cancellation, missing evidence, and tool failure are not passing results. Infrastructure failure does not erase an earlier product failure.
-
-Use `/cbc identify`, `/cbc verify`, and `/cbc discharge --strict` for the applicable artifact scope. Record unavailable verifiers as gaps, not mock proof.
-
-A clean documentation diff does not discharge planned runtime claims. Each phase needs model results, construction evidence where applicable, production bridges, and its required soak evidence.
-
-EPIC-017 closes only when its pre-merge obligations pass and the EPIC-018 handoff is accepted. It need not wait for PR #216 to merge.
-
-EPIC-018 closes only after the merge gate, new production bindings, post-merge soaks, and strict claim discharge pass.
-
-Do not defer a required pre-merge claim merely to close EPIC-017. Keep genuine post-merge obligations pending under EPIC-018, not waived.
-
-Do not close related issues or claim complete protocol conformance while required post-merge claims remain pending or refuted.
+No runtime proof is required for closure. No harness discharge can waive a node claim or authorize a deferred policy.

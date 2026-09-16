@@ -1,1 +1,0 @@
-../casper/cbc-evidence/casper-src-rust-slashing-authorization-rs.md

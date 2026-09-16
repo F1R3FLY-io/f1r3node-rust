@@ -1,1 +1,0 @@
-../casper/cbc-evidence/casper-src-rust-engine-genesis-ceremony-master-rs.md

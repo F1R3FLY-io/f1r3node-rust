@@ -4,13 +4,13 @@
 
 - [CLAIM-CASPER-SOAK-001](../claims/casper-soak-harness.md)
 
-The source digest records scaffold inputs, not proof. Post-merge evidence requires the actual #216 merge and new bindings.
+These claims cover the harness and profiles only. The node is the system under test, not a proof artifact.
 
 ```json
 {
   "artifact": {
     "path": ".github/workflows/merge-recovery-soak.yml",
-    "commit": "7646b65ac230f9bb8421d08a9833ffcb1b4f82d1",
+    "commit": "40e2d2d7c409d9f644c04221286bd95a187d1434",
     "id": "github-workflows-merge-recovery-soak-yml",
     "sha256": "1eae728e3f73ff9086296225ce5b900efdb469a66b1a8b1af784f580cdaf1a76"
   },
@@ -19,7 +19,7 @@ The source digest records scaffold inputs, not proof. Post-merge evidence requir
     "CLAIM-CASPER-SOAK-001"
   ],
   "claim_digests": {
-    "docs/claims/casper-soak-harness.md": "3df463a1d696fa19dbd4e2cd2934fdda22a0a17b414e452fce5e4877b18a9271"
+    "docs/claims/casper-soak-harness.md": "a280729b02c810dda2a4386444581919eeae9046a365bbcc4a391c54bea6cd7b"
   },
   "adapter": "embedded",
   "status": "pending",
@@ -39,8 +39,9 @@ The source digest records scaffold inputs, not proof. Post-merge evidence requir
     "pre_pr216_merge": "pending",
     "post_pr216_merge": "blocked"
   },
-  "scaffold_base_commit": "7646b65ac230f9bb8421d08a9833ffcb1b4f82d1",
+  "scaffold_base_commit": "40e2d2d7c409d9f644c04221286bd95a187d1434",
   "waiver": null,
-  "verified_at": null
+  "verified_at": null,
+  "scope": "harness-and-profiles-only"
 }
 ```

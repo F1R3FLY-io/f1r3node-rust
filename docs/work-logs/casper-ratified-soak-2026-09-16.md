@@ -6,11 +6,43 @@ claimed_at: 2026-09-16T20:29:37Z
 handoff_status: paused
 next_steps:
   - Run the requested CbC review against the scaffolded epic scope.
-  - Complete source bindings and claim reconciliation under TASK-017-2.
+  - Define harness/profile fixtures and interface bindings under TASK-017-2.
   - Resolve prerequisite integration under TASK-017-3 with separate Git consent.
 ---
 
 # Ratified Casper Soak Preparation
+
+## Current scope correction
+
+The maintainer confirmed that both epics verify only the soak harness and profiles. The earlier scaffold incorrectly included node-correctness obligations.
+
+The node is now explicitly the system under test. Runtime repairs, Rust proofs, and Rocq construction are outside EPIC-017 and EPIC-018.
+
+Eight pending claims cover one harness lifecycle contract and seven profile contracts. Profile controls verify generation, fault acknowledgments, collection, correlation, and verdict classification.
+
+Both epics now list seven harness/formal artifacts. Seven pending ledger records cover those artifacts with updated scope and digests.
+
+The correction removes eight newly added runtime attribute lines and fourteen new runtime evidence placeholders. Their compatibility symlinks are removed too.
+
+Pre-existing runtime attributes and evidence remain intact, including the requested Casper evidence relocation. The carrier-index node claim returns to its pre-scaffold content.
+
+CLAIM-CASPER-SOAK-008 now covers carrier-profile correctness without owning CLAIM-FINALITY-002.
+
+Construction is not applicable to any claim in these two epics. TLC controls and executable harness/profile fixtures remain required.
+
+Post-merge work still requires PR #216's actual merge. It adapts and reverifies profiles rather than proving the merged node.
+
+No model, fixture, or soak has run for this correction. No claim is discharged, and no task is marked complete.
+
+Structural checks confirm eight harness/profile claims, seven artifacts per epic, and seven pending ledger records. Source digests, claim digests, links, and task dependencies pass.
+
+All pre-existing runtime attributes and ledger contents match the pre-scaffold baseline. The carrier-index node claim also matches that baseline exactly.
+
+The deterministic STE Check and `git diff --check` pass. These checks validate the reduced scaffold, not the harness implementation.
+
+## Historical record
+
+The sections below record earlier planning and scaffolding. Superseded artifact counts and runtime obligations do not define the current scope.
 
 ## Request
 
@@ -145,6 +177,6 @@ The Casper documentation index describes directory ownership and the temporary c
 
 ## Next step
 
-Run the requested CbC review next. Then complete TASK-017-2 source bindings and legacy-claim reconciliation before implementing the TASK-017-4 model and fixtures.
+Run the requested CbC review on the reduced scope next. Then define TASK-017-2 profile fixture expectations before implementing harness models and fixtures.
 
 Keep deferred policies experimental. Retain both `phloLimit` and `phloPrice` in every protocol-7 acceptance contract.

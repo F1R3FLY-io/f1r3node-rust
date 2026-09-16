@@ -1,78 +1,74 @@
-# Casper Merge and Accounting Soak Claim
+# Casper Merge and Accounting Profile Claim
 
 ```yaml
 claim_id: CLAIM-CASPER-SOAK-005
 status: pending
 adapter: embedded
+scope: harness-profile
+profile_implementation: not-implemented
 decisions: [D-08]
 pre_merge_tasks: [TASK-017-8]
-post_merge_tasks: [TASK-018-4]
+post_merge_tasks: [TASK-018-4, TASK-018-5]
 artifacts:
-  - casper/src/rust/merging/conflict_set_merger.rs
-  - casper/src/rust/merging/dag_merger.rs
-  - casper/src/rust/merging/deploy_chain_index.rs
-  - casper/src/rust/util/rholang/interpreter_util.rs
-  - casper/src/rust/util/rholang/runtime_manager.rs
+  - scripts/run-merge-recovery-soak.sh
+  - scripts/bench/test-run-merge-recovery-soak.sh
+  - scripts/bench/write-soak-summary.sh
+  - formal/tlaplus/casper_soak/verification-plan.jsonc
 refutation: pending
-construction: pending
+construction: not-applicable
 construction_assumptions: null
 binding: pending
 soak: pending
 ```
 
-## Contract
+## Scope
 
-Inputs are locally verified execution evidence, complete replay context, exact execution identities, effect multisets, admission results, and checked accounting values.
+This claim verifies the profile generator, fault scheduling, collector, and verdict classifier. The Rust node is the system under test, not a proof artifact.
 
-Outputs are accepted effects, the least causal rejection closure, execution positions, pooled transfers, and final balances.
+It does not prove the node's consensus, storage, cryptography, or accounting implementation. Product failures remain observations for separate node work.
 
-Repeated observations of one execution do not duplicate its effect. Independent executions with identical effects retain their multiplicity.
+## Profile contract
 
-For compatible evidence, additive composition aggregates the multiset before one normalization and pooling step. Permutation and regrouping must preserve the result.
+Inputs are the pinned scenario, expected fixture outcomes, candidate identities, deterministic seed, requested faults, and observed event transcript.
 
-An identity with inconsistent evidence is rejected. Cache entries require the complete execution context and cannot grant authority to unverified effects.
+Outputs are coverage acknowledgments, correlated measurements, scenario verdicts, and immutable evidence references.
 
-Terminal admission rejection consumes no execution index. Executed failures retain their position and verified settlement effects.
+Generate workloads that distinguish repeated observations from independent executions with identical effects.
 
-Rejection closes over dependent effects only. Checked arithmetic must reject overflow rather than wrap or silently truncate accounting values.
+Retain exact execution identities, admission outcomes, settlement observations, and token domains in the dataset.
 
-For each token domain, opening balances plus approved issuance must equal closing balances plus approved burns and explicit unsettled obligations.
+Calculate expected values from pinned fixture data and report measured differences without changing node accounting.
 
-## Model and oracle
+## Scenario coverage
 
-Audit `formal/tlaplus/deploy_recovery/EffectCausalClosure.tla` and `AdmissionEffectAlignment.tla` for the matching subclaims.
+- Independent identical effects and repeated observations of the same execution.
+- Causal chains, failed execution, admission rejection, and overflow boundary workloads.
+- Separate legacy and conditional additive profiles with explicit compatibility labels.
 
-The proposed finite instance uses three executions, two identical effect values, two token domains, and a three-element causal chain.
+Unavailable test interfaces produce a blocked scenario, not a passing result. Adding or repairing node interfaces is outside these epics.
 
-The reference oracle uses exact identities, a multiset, arbitrary-precision arithmetic, and explicit checked-range conversion. It must not reuse the production merge fold.
+## Formal controls and executable fixtures
 
-Bindings cover merge selection, chain indexes, interpretation, and accounting settlement. TASK-017-8 must trace each effect to its verified production source.
+| Proposed property | Defect knob | Required fixture result |
+| --- | --- | --- |
+| MultiplicityMeasured | DeduplicateByEffectValue | A fixture with two independent identical effects must retain both observations. |
+| SettlementCoverageRequired | TreatMissingSettlementAsZero | Missing settlement data must not produce balanced zero totals. |
+| CompatibilityLabeled | MixProtocolProfiles | Incompatible profile epochs must not be reported as one comparable run. |
 
-## Positive and negative controls
+A clean fixture uses a complete known transcript. Each negative control mutates profile handling, not the node, and must violate its named property.
 
-| Control | Required observation |
-| --- | --- |
-| Clean regrouping and reordering | Preserve multiplicity, balances, and rejection closure. |
-| Deduplicate effects by value | Lose an independent identical effect and violate multiplicity. |
-| Normalize each input before aggregation | Diverge from the one-normalization oracle. |
-| Reject direct dependents only | Retain a transitive dependent and violate causal closure. |
-| Index an admission rejection | Violate execution-position alignment. |
-| Wrap arithmetic or reuse an incomplete cache key | Violate checked accounting or evidence consistency. |
+TLC explores bounded scenario, event, and outcome states. Real harness fixtures must exercise the profile implementation with matching and mismatching transcripts.
 
-## Tiers and activation
+Construction is not applicable under PR #433's harness approach. No Rocq theorem or node-code discharge is required by this claim.
 
-TLC checks finite examples. Unbounded algebra and conservation require Rocq construction proofs and production bindings.
-
-The candidate projects are `formal/rocq/merge_algebra/` and `formal/rocq/finalized_floor/`. Existing set-based theorems cannot establish additive multiset semantics without a statement audit.
-
-Construction must export named theorems through `MainTheorem`, pass kernel checks, and record closed assumptions and source digests.
-
-Additive activation still requires the protocol-7 FIP, FIPS approval, compatibility analysis, and fresh genesis. Do not mix legacy and additive epochs.
+The bound is two scenarios and three observations per scenario for the initial model. This is proposed coverage, not completed verification.
 
 ## Phase obligations
 
-Pre-merge work establishes reference models and available baseline bindings. Classify intended semantic changes instead of asserting false legacy/additive equivalence.
+Pre-merge work defines and verifies the profile against current supported interfaces and controlled transcripts.
 
-Post-merge work binds the actual #216 accounting implementation and produces new conservation and soak evidence.
+After PR #216 merges, adapt the profile interfaces and rerun its model controls, fixtures, and approved soak scenarios with new identities.
 
-The [harness contract](./casper-soak-harness.md) defines evidence and closure. No construction proof or execution result is supplied by this scaffold.
+A correct harness can report a failed product scenario. Passing harness verification does not convert that product failure into a passing soak.
+
+The [harness contract](./casper-soak-harness.md) defines provenance and outcome rules. Deferred policies still require separate approval before activation.

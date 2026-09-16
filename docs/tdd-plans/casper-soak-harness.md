@@ -49,10 +49,14 @@ Each implemented cycle retains both the clean configuration and its negative con
 
 A passing fixture proves only the stated binding behavior. It does not prove an unbounded Casper semantic claim.
 
-## Runtime promotion checklist
+## Profile verification checklist
 
-TASK-017-5 through TASK-017-11 own semantic models, independent oracles, and production regressions.
+TASK-017-5 through TASK-017-11 own profile generation, fault acknowledgments, collectors, and classifiers. They do not own node-correctness proofs.
 
-For unbounded claims, record `construction: pending` until a named theorem passes kernel and assumption checks. Shell-driver exemption does not extend to Rust consensus code.
+- [ ] Bind each profile's clean transcript and three defect controls to its real harness implementation.
+- [ ] Check missing observations, mismatched identities, and planted product failures without modifying node behavior.
+- [ ] Keep fixture outcomes separate from real-node soak outcomes.
 
-For post-merge evidence, create new cycle records with the actual #216 merge and updated source digests. Keep the pre-merge records intact.
+Record `construction: not-applicable` for these infrastructure claims. No Rocq promotion belongs to either epic.
+
+For post-merge evidence, create new profile cycle records with the actual #216 merge and updated harness digests. Keep the pre-merge records intact.

@@ -99,19 +99,11 @@ execution_contract:
   base_branch: dev
   authority: "The 2026-09-16 ratification meeting controls the selected dispositions. Current dev remains the default Casper authority."
   integration_order: "PR #430 -> #431 -> #432 -> #433. PR #390 records decisions. PR #216 remains a candidate implementation."
-  scope: "Pre-#216 models, reference oracles, current-dev bindings, and baseline harness profiles. Candidate evidence is exploratory, not post-merge conformance."
+  scope: "Verify only the soak harness and profiles: generation, fault scheduling, collection, classification, and evidence handling. The node is the system under test."
   git_policy: "Do not merge, commit, push, or create a PR without separate user authorization."
   completion_policy: "Close after pre-merge scope claims pass, baseline evidence is reviewed, and the EPIC-018 handoff is accepted. PR #216 merge is not a blocker."
-  evidence_boundary: "Keep post-merge production claims pending under EPIC-018. Do not waive them or represent candidate results as merged-runtime evidence."
+  evidence_boundary: "Node correctness, runtime repairs, and Rocq proofs are outside both epics. Post-merge work adapts and reverifies harness profiles only."
 files:
-  - casper/src/rust/estimator.rs
-  - casper/src/rust/util/dag_operations.rs
-  - casper/src/rust/finality/floor.rs
-  - casper/src/rust/blocks/proposer/block_creator.rs
-  - casper/src/rust/validate.rs
-  - block-storage/src/rust/dag/carrier_index.rs
-  - block-storage/src/rust/dag/block_dag_key_value_storage.rs
-  - node/src/rust/instances/heartbeat_proposer.rs
   - scripts/run-merge-recovery-soak.sh
   - scripts/bench/test-run-merge-recovery-soak.sh
   - scripts/bench/write-soak-summary.sh
@@ -119,17 +111,6 @@ files:
   - .github/workflows/merge-recovery-soak.yml
   - formal/tlaplus/casper_soak/README.md
   - formal/tlaplus/casper_soak/verification-plan.jsonc
-  - casper/src/rust/engine/engine_cell.rs
-  - casper/src/rust/merging/conflict_set_merger.rs
-  - casper/src/rust/merging/dag_merger.rs
-  - casper/src/rust/merging/deploy_chain_index.rs
-  - casper/src/rust/util/rholang/interpreter_util.rs
-  - casper/src/rust/util/rholang/runtime_manager.rs
-  - casper/src/rust/slashing_authorization.rs
-  - casper/src/rust/merging/rejected_slash.rs
-  - casper/src/rust/engine/genesis_ceremony_master.rs
-  - casper/src/rust/engine/genesis_validator.rs
-  - models/src/main/protobuf/RhoTypes.proto
 tasks:
   - id: TASK-017-1
     title: "Reconcile ratifications, existing epics, and source dependencies"
@@ -143,7 +124,7 @@ tasks:
       - "The maintainer reviews the pre/post split and plan before implementation starts."
 
   - id: TASK-017-2
-    title: "Define CbC claims, reference oracles, and source scope"
+    title: "Define harness and profile claims, fixture expectations, and source scope"
     scaffold_status: drafted
     claim_index: docs/claims/casper-soak-harness.md
     status: pending
@@ -151,13 +132,12 @@ tasks:
     blocked_by: [TASK-017-1]
     decisions: [D-02, D-03, D-04, D-06, D-11]
     acceptance:
-      - "Each claim names authenticated inputs, outputs, assumptions, bounds, negative controls, production functions, and evidence tiers."
-      - "The draft repair plan no longer requires rejected certificates or leader-only stale recovery."
-      - "The cross-view leader claim names its applicable lane without changing D-06."
-      - "Existing claims and waivers are audited for revision and property coverage before reuse."
-      - "Missing mandatory attributes are proposed for review before the related code changes."
-      - "Unavailable verifiers remain explicit gaps. No mock result discharges a production claim."
-      - "Each claim identifies its pre-merge scope and any post-merge production obligation owned by EPIC-018."
+      - "Each claim names harness inputs, outputs, assumptions, finite bounds, negative controls, and executable fixtures."
+      - "Profile expectations follow the ratifications without importing conflicting legacy node claims."
+      - "Mandatory scope contains harness, workflow, model, and profile artifacts only."
+      - "Node source paths and node correctness claims are not discharge obligations for either epic."
+      - "Unavailable interfaces remain explicit scenario blockers. No mock result becomes product evidence."
+      - "Each profile identifies its post-merge interface adaptation under EPIC-018."
 
   - id: TASK-017-3
     title: "Integrate reviewed harness prerequisites and pin the candidate matrix"
@@ -191,10 +171,10 @@ tasks:
       - "Deferred policies cannot become a production default or a node-local block-validity switch."
       - "Property tiers report their actual case counts, and claim-discharge scripts run in workflows."
       - "Implement H01 through H10 with a clean TLC configuration, named negative controls, and real-driver fixtures."
-      - "Shell-driver construction is not applicable. Unbounded runtime claims retain their separate construction obligations."
+      - "Construction is not applicable to these harness and profile claims. Runtime proofs remain outside these epics."
 
   - id: TASK-017-5
-    title: "Model authority and finality and bind current-dev reference paths"
+    title: "Verify authority and finality profile generation and verdicts"
     claims: [CLAIM-CASPER-SOAK-002]
     claim_spec: docs/claims/casper-soak-authority-finality.md
     status: pending
@@ -203,15 +183,14 @@ tasks:
     decisions: [D-02, D-03, D-04]
     related_tasks: [TASK-012-19, TASK-012-20, TASK-015-1]
     acceptance:
-      - "Identical admissible DAGs produce identical valid heads under bounded and reference LCA traversal."
-      - "Tests preserve stake provenance, electorate, depth rules, truncation, and progress."
-      - "Finality tests cover inclusive equality, strict majority, cross-view state retention, and missing-history holds."
-      - "Certificate-removal integration tests are specified before removal. This task does not remove coupled PR #216 certificate code."
-      - "Candidate-specific replay, settlement, restart, dependency, and finalization bindings transfer to TASK-018-3."
-      - "The model and production bridge state a measured traversal work bound."
+      - "Paired comparisons use identical DAG fixtures, seeds, candidate identities, and declared electorate inputs."
+      - "Fixtures prove that head mismatches are reported and missing finality observations cannot pass."
+      - "Profile definitions cover ratified threshold boundaries, metadata holds, replay, restart, and dependencies."
+      - "The collector reports traversal counters without inferring a node work-bound proof."
+      - "Unsupported node test interfaces block the scenario rather than expand this epic into runtime implementation."
 
   - id: TASK-017-6
-    title: "Model publication atomicity and test baseline eviction authority"
+    title: "Verify publication and restart fault profiles and observations"
     claims: [CLAIM-CASPER-SOAK-003]
     claim_spec: docs/claims/casper-soak-publication.md
     status: pending
@@ -219,11 +198,11 @@ tasks:
     blocked_by: [TASK-017-4]
     decisions: [D-05]
     acceptance:
-      - "Crash and restart controls never expose a torn block, root, and effect tuple."
-      - "Stale evaluations cannot publish and local finality markers cannot evict unresolved deploy work."
-      - "Direct-finalization FT remains distinguishable from later display projections."
-      - "Any parallel experiment preserves publication order and finalized results without replacing the single-flight default."
-      - "Model and current-dev results are separate from merged-#216 publication bindings under TASK-018-3."
+      - "Fault coverage requires an observed crash acknowledgment, not only a requested injection."
+      - "The collector correlates publication tuples and restart observations by node and run identity."
+      - "Planted torn tuples, stale publications, and lost-work observations produce product failures."
+      - "Missing durable-state observations remain incomplete evidence."
+      - "Baseline and optional parallel profiles remain separate and cannot change production defaults."
 
   - id: TASK-017-7
     title: "Prepare isolated heartbeat and retry experiments against the baseline"
@@ -239,12 +218,12 @@ tasks:
       - "Profiles compare one-parent versus collective coverage and current leadership versus leader-free custody."
       - "Paused validators, delayed messages, split frontiers, and empty or deploy-bearing workloads are covered."
       - "Reports include duplicates, custody consistency, retry completion, expiry, recovery time, cadence, latency, and resources."
-      - "Lease expiry never bypasses floor, custody, lifespan, replay, or validation requirements."
+      - "The profile records lease and objective-height inputs and reports observed violations without changing retry authorization."
       - "An experiment cannot grant authority to activate its policy."
       - "Record baseline results and candidate availability. The merged-runtime comparison belongs to TASK-018-5."
 
   - id: TASK-017-8
-    title: "Prepare additive merge models, oracles, and accounting controls"
+    title: "Verify merge and accounting workload generation and measurement"
     claims: [CLAIM-CASPER-SOAK-005]
     claim_spec: docs/claims/casper-soak-merge-accounting.md
     status: pending
@@ -254,16 +233,14 @@ tasks:
     external_prs: [216]
     related_tasks: [TASK-016-1, TASK-016-3, TASK-016-4]
     acceptance:
-      - "The corpus distinguishes duplicate observations from independent identical effects and retains the required multiplicity."
-      - "Causal rejection preserves unrelated effects and rejects dependent effects transitively."
-      - "Tests cover local evidence authentication, admission alignment, failed settlement, overflow, pooling, and conservation."
-      - "Rocq construction evidence covers unbounded model claims. Available baseline bindings identify their exact implementation scope."
-      - "Merged accounting and additive-runtime bindings remain pending under TASK-018-4."
-      - "Compatibility differences are classified rather than treated as unconditional equivalence failures."
-      - "Production activation remains blocked on the protocol-7 FIP, fresh genesis, and required evidence."
+      - "Generated workloads distinguish repeated observations from independent executions with identical effects."
+      - "The collector retains execution identities, causal relationships, admission outcomes, settlement data, and token domains."
+      - "Controlled transcripts expose multiplicity loss, missing settlements, and mislabeled compatibility."
+      - "Accounting expectations use pinned fixture values. The profile does not implement or prove node accounting."
+      - "Conditional additive profiles remain isolated and do not authorize protocol activation."
 
   - id: TASK-017-9
-    title: "Build slash-authorization oracles and baseline comparisons"
+    title: "Verify slashing scenario scheduling and result classification"
     claims: [CLAIM-CASPER-SOAK-006]
     claim_spec: docs/claims/casper-soak-slashing.md
     status: pending
@@ -271,31 +248,28 @@ tasks:
     blocked_by: [TASK-017-4]
     decisions: [D-09]
     acceptance:
-      - "Conformance covers merge-lost slashes, arrival order, rebonding, stale epochs, missing evidence, forged deploys, duplicates, and restart."
-      - "The soak profile repeats concurrency, delayed dependencies, restart, and evidence-order variations."
-      - "Current recovery and Rust-to-Scala bisimilarity remain authoritative."
-      - "Reconstruction cannot replace upstream recovery without complete equivalence evidence."
-      - "TASK-018-3 reruns the authorization comparison against the actual merged PR #216 implementation."
+      - "The profile schedules merge-lost slash, rebond, stale-epoch, missing-evidence, forged-deploy, and restart scenarios."
+      - "Observed delivery order and epochs remain distinct from requested scheduling."
+      - "Fixtures prove that planted authorization mismatches are reported rather than suppressed."
+      - "Node slash authorization, reconstruction, and bisimilarity proofs remain outside this epic."
 
   - id: TASK-017-10
-    title: "Establish signature-domain carrier evidence and typed-key controls"
+    title: "Verify carrier-index comparison inputs and telemetry classification"
     status: pending
     claimed_by: null
     blocked_by: [TASK-017-4]
     decisions: [D-10]
-    claims: [CLAIM-FINALITY-002]
-    claim_spec: docs/claims/repeat-deploy-carrier-index-equivalence.md
+    claims: [CLAIM-CASPER-SOAK-008]
+    claim_spec: docs/claims/casper-soak-carrier-index.md
     acceptance:
-      - "Forced index and reference paths agree across availability, fork, watermark, pruning, crash, and restart cases."
-      - "The corpus includes valid, invalid, and approved carriers."
-      - "The absence path meets its distinct-signature probe bound and reads no ancestor body."
-      - "Typed identity controls cannot collide across domains or replace deploy authentication."
-      - "Typed identity activation waits for the FIP-defined commitment, while signature-domain baseline tests run independently."
-      - "The existing claim remains pending until its full differential and soak requirements pass for its stated revision and identity domain."
-      - "Merged protocol-7 identity bindings remain pending under TASK-018-4."
+      - "Paired index and reference runs use the same candidate, DAG, window, and availability fixture."
+      - "The profile records valid, invalid, and approved carrier cases and supported failure injections."
+      - "Fixtures reject unobserved path engagement, mismatched scan windows, and missing counters treated as zero."
+      - "Unsupported identity-domain interfaces block those scenarios without authorizing runtime changes."
+      - "CLAIM-FINALITY-002 remains an external node claim, not an obligation of this epic."
 
   - id: TASK-017-11
-    title: "Specify protocol-7 authority and test baseline Phlo retention"
+    title: "Verify protocol and Phlo profile inputs and captured outcomes"
     claims: [CLAIM-CASPER-SOAK-007]
     claim_spec: docs/claims/casper-soak-version-phlo.md
     status: pending
@@ -304,13 +278,11 @@ tasks:
     decisions: [D-01, D-12]
     external_prs: [216, 430]
     acceptance:
-      - "Ceremony, adoption, proposal, and reception use one approved protocol version and reject unsupported versions."
-      - "Accounting authority version 8 remains separate from Casper protocol 7."
-      - "Both signed phloLimit and phloPrice remain in wire, API, and validation contracts."
-      - "Tests preserve minimum price, prepayment, refund, exhaustion, replay, and the storage-bound relationship."
-      - "Token accounting cannot replace either field, and undefined multi-wallet funding cannot activate."
-      - "Protocol-7 activation requires FIPS approval and fresh genesis."
-      - "TASK-018-4 verifies the actual merged envelope, accounting boundary, and Phlo behavior. This task supplies models and baseline evidence."
+      - "The manifest distinguishes Casper protocol from accounting authority."
+      - "Generated requests and captured observations retain both phloLimit and phloPrice."
+      - "Fixtures expose omitted fields, conflated versions, and ignored settlement mismatches."
+      - "Profiles report version rejection, minimum-price, prepayment, refund, and exhaustion outcomes against reviewed fixture expectations."
+      - "The harness cannot authorize protocol activation or undefined funding policies."
 
   - id: TASK-017-12
     title: "Run the pre-merge baseline soak and package candidate experiments"
@@ -341,14 +313,14 @@ tasks:
       - "Check every required claim ID, source digest, phase, and tier. One legacy artifact status cannot discharge the claim bundle."
       - "The scan benchmark and concurrency-gate obligations have baseline evidence and named post-merge rerun tasks."
       - "The handoff lists model and artifact digests, seeds, assumptions, pending bindings, and TASK-018 owners."
-      - "The review distinguishes bounded results, unbounded proofs, production bindings, and soak observations."
+      - "The review separates bounded harness models, executable profile fixtures, and observed product outcomes. Node proofs are outside scope."
       - "No required pre-merge claim is deferred merely to close this epic. Post-merge obligations stay pending, not waived."
 ---
 ```
 
 **Current state:** The claim specifications, formal-area plan, cycle checklist, and pending evidence records are scaffolded. No runtime change, proof, harness run, or upstream integration is complete.
 
-**Next task:** Run the requested CbC review against this scaffold. TASK-017-2 still requires oracle bindings and legacy-claim reconciliation. TASK-017-3 handles prerequisites with separate Git consent.
+**Next task:** Review the harness-only scaffold with CbC. TASK-017-2 defines profile fixture expectations and interfaces. TASK-017-3 handles prerequisites with separate Git consent.
 
 **Scope:** This epic covers the pre-#216 PR only. The [branch plan](./plans/casper-ratified-soak-2026-09-16.md) records both phases and their evidence boundary.
 
@@ -384,7 +356,7 @@ execution_contract:
   scope: "A separate follow-on formal-methods PR for the soak harness after PR #216 merges."
   start_gate: "EPIC-017 handoff accepted and PR #216 merge verified in origin/dev. An open candidate head is insufficient."
   branch_policy: "Create the follow-on branch from updated dev after the start gate passes. Record the actual merge and baseline SHAs."
-  completion_policy: "Require new merged-runtime bindings, applicable proofs, completed soaks, strict CbC discharge, and maintainer review."
+  completion_policy: "Require updated harness models, profile fixtures, completed soaks, and harness-only CbC discharge. No node proof is required."
   authority: "Merge does not authorize deferred policies, waive ratification conditions, or replace FIPS activation approval."
 files:
   - scripts/run-merge-recovery-soak.sh
@@ -394,25 +366,6 @@ files:
   - .github/workflows/merge-recovery-soak.yml
   - formal/tlaplus/casper_soak/README.md
   - formal/tlaplus/casper_soak/verification-plan.jsonc
-  - casper/src/rust/estimator.rs
-  - casper/src/rust/util/dag_operations.rs
-  - casper/src/rust/finality/floor.rs
-  - casper/src/rust/engine/engine_cell.rs
-  - casper/src/rust/blocks/proposer/block_creator.rs
-  - casper/src/rust/validate.rs
-  - block-storage/src/rust/dag/carrier_index.rs
-  - block-storage/src/rust/dag/block_dag_key_value_storage.rs
-  - node/src/rust/instances/heartbeat_proposer.rs
-  - casper/src/rust/merging/conflict_set_merger.rs
-  - casper/src/rust/merging/dag_merger.rs
-  - casper/src/rust/merging/deploy_chain_index.rs
-  - casper/src/rust/util/rholang/interpreter_util.rs
-  - casper/src/rust/util/rholang/runtime_manager.rs
-  - casper/src/rust/slashing_authorization.rs
-  - casper/src/rust/merging/rejected_slash.rs
-  - casper/src/rust/engine/genesis_ceremony_master.rs
-  - casper/src/rust/engine/genesis_validator.rs
-  - models/src/main/protobuf/RhoTypes.proto
 tasks:
   - id: TASK-018-1
     title: "Verify the merge gate and establish the post-merge baseline"
@@ -428,45 +381,43 @@ tasks:
       - "Record the actual merge SHA, node revision, harness revision, image digest, configuration, and protocol version."
 
   - id: TASK-018-2
-    title: "Rebind formal claims and harness interfaces to the merged implementation"
+    title: "Adapt harness and profile interfaces after the merge"
     claim_index: docs/claims/casper-soak-harness.md
     status: pending
     claimed_by: null
     blocked_by: [TASK-018-1]
     decisions: [D-11]
     acceptance:
-      - "Compare the merged implementation with the pre-merge models, assumptions, and artifact digests."
-      - "Refine affected models and negative controls and update the actual mandatory artifact scope."
-      - "Adapt the soak harness to merged APIs, wire fields, metrics, storage, and lifecycle behavior."
-      - "Do not copy pre-merge discharge statuses onto changed production artifacts."
-      - "Any mismatch with the ratifications is a blocker or a separately ratified change, not a silent test relaxation."
+      - "Identify changed node interfaces consumed by the harness without claiming node correctness."
+      - "Adapt profiles, collectors, and fixtures to the merged APIs, wire fields, and metrics."
+      - "Rerun affected harness models and negative controls with current artifact digests."
+      - "Do not copy pre-merge discharge statuses onto changed harness or profile artifacts."
+      - "Report ratification mismatches as product findings. Do not silently relax profile expectations."
 
   - id: TASK-018-3
-    title: "Verify merged Casper authority, finality, publication, recovery, and slashing"
+    title: "Reverify consensus-observation profiles against merged interfaces"
     claims: [CLAIM-CASPER-SOAK-002, CLAIM-CASPER-SOAK-003, CLAIM-CASPER-SOAK-004, CLAIM-CASPER-SOAK-006]
     status: pending
     claimed_by: null
     blocked_by: [TASK-018-2]
     decisions: [D-02, D-03, D-04, D-05, D-06, D-07, D-09]
     acceptance:
-      - "Rerun the TASK-017-5, TASK-017-6, TASK-017-7, and TASK-017-9 production bindings against the merged node."
-      - "Cover certificate-removal regressions, bounded LCA equivalence, finality boundaries, crash publication, custody, and slash authorization."
-      - "Retain the inclusive threshold, upstream recovery rules, and Rust-to-Scala slashing anchor."
-      - "Missing merged functionality remains a blocker rather than a skipped success."
+      - "Rerun TASK-017-5, TASK-017-6, TASK-017-7, and TASK-017-9 profile models and executable fixtures."
+      - "Demonstrate correct fault acknowledgments, observation correlation, and mismatch classification through supported merged interfaces."
+      - "Missing interfaces block the affected scenario. Runtime fixes and node proofs belong to separate work."
 
   - id: TASK-018-4
-    title: "Verify merged accounting, deploy identity, protocol authority, and Phlo retention"
-    claims: [CLAIM-CASPER-SOAK-005, CLAIM-CASPER-SOAK-007, CLAIM-FINALITY-002]
+    title: "Reverify accounting, identity, and Phlo observation profiles"
+    claims: [CLAIM-CASPER-SOAK-005, CLAIM-CASPER-SOAK-007, CLAIM-CASPER-SOAK-008]
     status: pending
     claimed_by: null
     blocked_by: [TASK-018-2]
     decisions: [D-01, D-08, D-10, D-12]
     acceptance:
-      - "Bind TASK-017-8, TASK-017-10, and TASK-017-11 models to the actual merged implementation."
-      - "Verify multiplicity, causal closure, settlement, conservation, typed identity, and carrier-index equivalence."
-      - "Verify separate protocol and accounting authorities and retain both signed phloLimit and phloPrice."
-      - "Rerun applicable construction proofs and production bridges with current digests."
-      - "FIPS approval, fresh genesis, and normative multi-wallet rules remain activation conditions."
+      - "Adapt TASK-017-8, TASK-017-10, and TASK-017-11 generators and collectors to the merged test interfaces."
+      - "Rerun profile controls for identity correlation, missing measurements, expected values, and verdict classification."
+      - "Preserve both Phlo fields and separate authority labels in profile inputs and reports."
+      - "Node conservation, carrier equivalence, and protocol proofs remain outside scope."
 
   - id: TASK-018-5
     title: "Run the post-merge comparative soak campaign"
@@ -490,8 +441,8 @@ tasks:
     blocked_by: [TASK-018-5]
     decisions: [D-11]
     acceptance:
-      - "Strict CbC discharge covers the actual post-merge changed scope and all required claim bindings."
-      - "The report separates bounded model results, unbounded proofs, production bindings, and soak observations."
+      - "Strict CbC discharge covers only the changed harness and profile artifacts and their required fixture bindings."
+      - "The report separates harness model results, executable fixture results, and product observations. It makes no node-proof claim."
       - "No required pending or refuted claim is hidden by epic completion."
       - "The follow-on PR links the meeting, pre-merge handoff, actual #216 merge revision, and new evidence."
       - "Deferred-policy activation requires a separate team decision even when experimental evidence passes."

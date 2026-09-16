@@ -1,77 +1,74 @@
-# Casper Authority and Finality Soak Claim
+# Casper Authority and Finality Profile Claim
 
 ```yaml
 claim_id: CLAIM-CASPER-SOAK-002
 status: pending
 adapter: embedded
+scope: harness-profile
+profile_implementation: not-implemented
 decisions: [D-02, D-03, D-04]
 pre_merge_tasks: [TASK-017-5]
-post_merge_tasks: [TASK-018-3]
+post_merge_tasks: [TASK-018-3, TASK-018-5]
 artifacts:
-  - casper/src/rust/estimator.rs
-  - casper/src/rust/util/dag_operations.rs
-  - casper/src/rust/finality/floor.rs
-  - casper/src/rust/validate.rs
+  - scripts/run-merge-recovery-soak.sh
+  - scripts/bench/test-run-merge-recovery-soak.sh
+  - scripts/bench/write-soak-summary.sh
+  - formal/tlaplus/casper_soak/verification-plan.jsonc
 refutation: pending
-construction: pending
+construction: not-applicable
 construction_assumptions: null
 binding: pending
 soak: pending
 ```
 
-## Contract
+## Scope
 
-Inputs are authenticated blocks, exact justification sets, stake provenance, finalized floor, execution-effect identities, and explicit metadata availability.
+This claim verifies the profile generator, fault scheduling, collector, and verdict classifier. The Rust node is the system under test, not a proof artifact.
 
-Outputs are the selected head, finality decision, hold reason, and traversal work counters.
+It does not prove the node's consensus, storage, cryptography, or accounting implementation. Product failures remain observations for separate node work.
 
-For each admissible DAG, floor-bounded and reference LCA traversal must select the same valid GHOST head.
+## Profile contract
 
-Both paths must preserve electorate, main-parent-relative depth, latest-message filtering, truncation, and progress rules.
+Inputs are the pinned scenario, expected fixture outcomes, candidate identities, deterministic seed, requested faults, and observed event transcript.
 
-Finality requires the strict agreeing-majority precondition and inclusive clique threshold `2qd >= S(d+n)`.
+Outputs are coverage acknowledgments, correlated measurements, scenario verdicts, and immutable evidence references.
 
-Missing required metadata produces a hold, not a negative vote. Verified failed-body settlement counts as applied accounting effects.
+Generate paired runs from the same DAG fixture, seed, electorate, and candidate identities.
 
-Committee authority requires exact justification equality, duplicate rejection, upstream stake provenance, and validator block signatures. Required certificate sidecars and second state certificates are excluded.
+Compare reported heads and finality decisions only when both required observations are present.
 
-## Model and oracle
+Keep missing metadata, hold decisions, and missing telemetry distinct from disagreement and passing results.
 
-Audit existing `formal/tlaplus/fork_choice/` and `formal/tlaplus/finalized_floor/` models against the ratifications before reuse.
+## Scenario coverage
 
-The proposed finite instance uses three validators, six blocks, two forks, and explicit missing-metadata states. Record the actual constants for every run.
+- Committee provenance and duplicate-justification scenarios.
+- Inclusive finality boundaries, strict-majority preconditions, and missing dependencies.
+- Available bounded/reference traversal controls with measured work counters.
 
-The reference oracle must independently implement upstream head selection. Calling the optimized traversal from both paths is not a differential test.
+Unavailable test interfaces produce a blocked scenario, not a passing result. Adding or repairing node interfaces is outside these epics.
 
-The production bridge covers estimator, DAG traversal, floor evaluation, and validation. TASK-017-5 must record exact function names and source digests before verification.
+## Formal controls and executable fixtures
 
-## Positive and negative controls
+| Proposed property | Defect knob | Required fixture result |
+| --- | --- | --- |
+| MismatchedInputDetected | PairDifferentDags | Different DAG digests cannot produce a passing comparison. |
+| MissingFinalityDetected | AcceptMissingFinality | Absent finality observations must produce incomplete evidence. |
+| HeadMismatchReported | SuppressHeadMismatch | A planted head mismatch must appear as a product failure. |
 
-| Control | Required observation |
-| --- | --- |
-| Clean admissible DAGs | Identical valid heads and retained finalized effects. |
-| Traverse below finalized floor | Violate the declared floor work bound. |
-| Replace inclusive threshold with strict threshold | Reject a boundary case accepted by the reference oracle. |
-| Omit agreeing-majority precondition | Accept an invalid finality case and fail the oracle comparison. |
-| Treat missing metadata as disagreement | Violate the hold rule. |
-| Substitute committee provenance | Violate authenticated committee agreement. |
+A clean fixture uses a complete known transcript. Each negative control mutates profile handling, not the node, and must violate its named property.
 
-Each defect needs a named model property and a production regression. A model failure alone does not identify a production defect.
+TLC explores bounded scenario, event, and outcome states. Real harness fixtures must exercise the profile implementation with matching and mismatching transcripts.
 
-## Tiers and limits
+Construction is not applicable under PR #433's harness approach. No Rocq theorem or node-code discharge is required by this claim.
 
-TLC establishes only the stated finite result. Arbitrary-DAG and validator-set claims need Rocq construction evidence and production bindings.
-
-Candidate construction projects are `formal/rocq/fork_choice/` and `formal/rocq/finalized_floor/`. Existing theorem names and assumptions need audit before reuse.
-
-Construction requires a named theorem, source digest, kernel check, and closed assumption set. No `Axiom`, `Admitted`, or unaccounted `Parameter` can discharge this claim.
-
-Soaks measure completed finalization, retained effects, traversal work, and resource use. Low latency alone does not prove a traversal bound.
+The bound is two scenarios and three observations per scenario for the initial model. This is proposed coverage, not completed verification.
 
 ## Phase obligations
 
-Pre-merge work supplies audited models, reference oracles, and current-dev bindings. Missing candidate-specific bindings remain pending.
+Pre-merge work defines and verifies the profile against current supported interfaces and controlled transcripts.
 
-Post-merge work reruns the bindings against the actual #216 merge. Certificate-removal regressions must pass before coupled certificate code is removed.
+After PR #216 merges, adapt the profile interfaces and rerun its model controls, fixtures, and approved soak scenarios with new identities.
 
-The [harness contract](./casper-soak-harness.md) defines evidence fields, failure handling, and closure. No part of this scaffold is discharge evidence.
+A correct harness can report a failed product scenario. Passing harness verification does not convert that product failure into a passing soak.
+
+The [harness contract](./casper-soak-harness.md) defines provenance and outcome rules. Deferred policies still require separate approval before activation.

@@ -4,7 +4,7 @@
 
 The [harness claim](../../../docs/claims/casper-soak-harness.md) owns the specification. The [verification plan](./verification-plan.jsonc) lists proposed bounds and control names.
 
-This area follows [PR #433](https://github.com/F1R3FLY-io/f1r3node-rust/blob/65f7f6daa832c0acb6fddf2b462db1b9d5461729/docs/cbc-verification-tiers.md). Harness construction is not applicable. Runtime semantic claims retain their separate Rocq obligations.
+This area follows [PR #433](https://github.com/F1R3FLY-io/f1r3node-rust/blob/65f7f6daa832c0acb6fddf2b462db1b9d5461729/docs/cbc-verification-tiers.md). Construction is not applicable to these harness and profile claims. Node correctness and Rocq proofs are outside this area.
 
 ## Model correspondence
 
@@ -44,6 +44,14 @@ All names below are reserved design items, not runnable configurations. The mach
 The initial bounds are two candidates, two segments, two iterations per segment, one child, and three artifact slots.
 
 No clean control may omit a required property merely to fit a time budget. Any reduced bounds need resource evidence and explicit reporting.
+
+## Profile models
+
+The verification plan links seven profile claims, each with three proposed properties, defect knobs, and executable fixture expectations.
+
+These models cover profile generation, fault acknowledgments, observation correlation, and classification. They do not model or prove the Rust node's implementation.
+
+The initial profile bound is two scenarios and three observations per scenario. Each profile requires clean and negative controls after implementation.
 
 ## Completion checklist
 

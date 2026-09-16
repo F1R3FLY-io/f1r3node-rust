@@ -1,73 +1,74 @@
-# Casper Publication Soak Claim
+# Casper Publication and Restart Profile Claim
 
 ```yaml
 claim_id: CLAIM-CASPER-SOAK-003
 status: pending
 adapter: embedded
+scope: harness-profile
+profile_implementation: not-implemented
 decisions: [D-05]
 pre_merge_tasks: [TASK-017-6]
-post_merge_tasks: [TASK-018-3]
+post_merge_tasks: [TASK-018-3, TASK-018-5]
 artifacts:
-  - casper/src/rust/engine/engine_cell.rs
-  - casper/src/rust/finality/floor.rs
-  - casper/src/rust/blocks/proposer/block_creator.rs
-  - block-storage/src/rust/dag/block_dag_key_value_storage.rs
+  - scripts/run-merge-recovery-soak.sh
+  - scripts/bench/test-run-merge-recovery-soak.sh
+  - scripts/bench/write-soak-summary.sh
+  - formal/tlaplus/casper_soak/verification-plan.jsonc
 refutation: pending
-construction: pending
+construction: not-applicable
 construction_assumptions: null
 binding: pending
 soak: pending
 ```
 
-## Contract
+## Scope
 
-Inputs are versioned evaluation snapshots, candidate blocks, state roots, effect sets, durable terminal verdicts, and crash points.
+This claim verifies the profile generator, fault scheduling, collector, and verdict classifier. The Rust node is the system under test, not a proof artifact.
 
-Outputs are the published block/root/effect tuple, publication order, durable verdict, and remaining unresolved work.
+It does not prove the node's consensus, storage, cryptography, or accounting implementation. Product failures remain observations for separate node work.
 
-Each publication must expose one complete tuple from one accepted evaluation. Stale evaluations cannot publish after their source context changes.
+## Profile contract
 
-Restart must recover the same committed prefix. It must not expose a torn tuple or discard unresolved work without a durable terminal verdict.
+Inputs are the pinned scenario, expected fixture outcomes, candidate identities, deterministic seed, requested faults, and observed event transcript.
 
-Original direct-finalization fault-tolerance evidence remains distinct from later projections. A projection cannot replace the original evidence.
+Outputs are coverage acknowledgments, correlated measurements, scenario verdicts, and immutable evidence references.
 
-Single-flight evaluation remains the default. An optional parallel experiment must preserve publication order, peer-visible order, and finalized results.
+Record each requested crash point and the observed process termination before labeling a fault as injected.
 
-## Model and oracle
+Correlate pre-crash and recovered block/root/effect observations by candidate, node, and restart identity.
 
-Audit `formal/tlaplus/finalized_floor/ParallelValidatorConsensus.tla` for reusable publication actions without importing rejected certificate assumptions.
+Report torn tuples, stale publication observations, and unresolved-work loss without overwriting earlier failures.
 
-The proposed finite instance uses two evaluators, three candidate tuples, two context versions, and a crash at each durable-write boundary.
+## Scenario coverage
 
-The oracle is an append-only sequence of atomic accepted tuples. Restart reconstructs the committed prefix from durable state only.
+- Crash before and after observable publication boundaries.
+- Restart with unresolved deploy work and durable terminal verdicts.
+- Single-flight baseline and separately approved parallel experiments.
 
-The bridge covers engine coordination, floor publication, block creation, and DAG storage. TASK-017-6 must identify exact write boundaries and source functions.
+Unavailable test interfaces produce a blocked scenario, not a passing result. Adding or repairing node interfaces is outside these epics.
 
-## Positive and negative controls
+## Formal controls and executable fixtures
 
-| Control | Required observation |
-| --- | --- |
-| Clean publication and restart | Recover the same complete committed prefix. |
-| Publish an old context | Violate stale-result refusal. |
-| Persist root before corresponding effects become durable | Expose a torn tuple and violate atomic publication. |
-| Evict on a local finality marker | Lose unresolved work and violate durable-verdict authority. |
-| Replace original fault-tolerance evidence with a projection | Violate evidence provenance. |
-| Reorder parallel publication | Diverge from the single-flight reference sequence. |
+| Proposed property | Defect knob | Required fixture result |
+| --- | --- | --- |
+| FaultAcknowledged | AssumeCrashApplied | An unacknowledged crash request must not count as exercised coverage. |
+| RestartIdentityMatched | MixRestartObservations | Observations from different nodes or restarts must not form a passing tuple. |
+| TornTupleReported | HideTupleMismatch | A planted tuple mismatch must remain a product failure. |
 
-## Tiers and assumptions
+A clean fixture uses a complete known transcript. Each negative control mutates profile handling, not the node, and must violate its named property.
 
-TLC checks the finite interleavings. Unbounded publication histories require a Rocq theorem and production bindings.
+TLC explores bounded scenario, event, and outcome states. Real harness fixtures must exercise the profile implementation with matching and mismatching transcripts.
 
-The candidate construction project is `formal/rocq/finalized_floor/`. Audit its statements and assumptions before naming a matching theorem.
+Construction is not applicable under PR #433's harness approach. No Rocq theorem or node-code discharge is required by this claim.
 
-Crash tests assume the documented storage durability contract. They must distinguish process termination from loss of acknowledged durable writes.
-
-Fair scheduling is required only for progress claims. Atomic publication and stale-result refusal are safety properties.
+The bound is two scenarios and three observations per scenario for the initial model. This is proposed coverage, not completed verification.
 
 ## Phase obligations
 
-Pre-merge fixtures cover current publication paths and preserve baseline evidence. Post-merge fixtures cover the actual #216 publication and restart paths.
+Pre-merge work defines and verifies the profile against current supported interfaces and controlled transcripts.
 
-The complete publication-ledger architecture remains optional. This claim constrains observable behavior, not a mandatory internal design.
+After PR #216 merges, adapt the profile interfaces and rerun its model controls, fixtures, and approved soak scenarios with new identities.
 
-The [harness contract](./casper-soak-harness.md) defines evidence fields and phase closure. All new proof and binding obligations remain pending.
+A correct harness can report a failed product scenario. Passing harness verification does not convert that product failure into a passing soak.
+
+The [harness contract](./casper-soak-harness.md) defines provenance and outcome rules. Deferred policies still require separate approval before activation.

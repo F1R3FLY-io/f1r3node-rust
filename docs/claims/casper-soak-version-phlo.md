@@ -1,73 +1,74 @@
-# Casper Protocol and Phlo Soak Claim
+# Casper Protocol and Phlo Profile Claim
 
 ```yaml
 claim_id: CLAIM-CASPER-SOAK-007
 status: pending
 adapter: embedded
+scope: harness-profile
+profile_implementation: not-implemented
 decisions: [D-01, D-12]
 pre_merge_tasks: [TASK-017-11]
-post_merge_tasks: [TASK-018-4]
+post_merge_tasks: [TASK-018-4, TASK-018-5]
 artifacts:
-  - casper/src/rust/engine/genesis_ceremony_master.rs
-  - casper/src/rust/engine/genesis_validator.rs
-  - casper/src/rust/blocks/proposer/block_creator.rs
-  - casper/src/rust/validate.rs
-  - casper/src/rust/util/rholang/runtime_manager.rs
-  - models/src/main/protobuf/RhoTypes.proto
+  - scripts/run-merge-recovery-soak.sh
+  - scripts/bench/test-run-merge-recovery-soak.sh
+  - scripts/bench/write-soak-summary.sh
+  - formal/tlaplus/casper_soak/verification-plan.jsonc
 refutation: pending
-construction: pending
+construction: not-applicable
 construction_assumptions: null
 binding: pending
 soak: pending
 ```
 
-## Contract
+## Scope
 
-Inputs are the approved Casper version, genesis configuration, signed deploy envelope, shard minimum price, payer balances, and execution outcome.
+This claim verifies the profile generator, fault scheduling, collector, and verdict classifier. The Rust node is the system under test, not a proof artifact.
 
-Outputs are ceremony, adoption, proposal, and reception decisions, plus prepayment, settlement, refund, and exhaustion outcomes.
+It does not prove the node's consensus, storage, cryptography, or accounting implementation. Product failures remain observations for separate node work.
 
-All Casper authority paths must select the same approved protocol version. Unsupported versions must be rejected.
+## Profile contract
 
-Casper protocol 7 remains separate from reusable accounting authority version 8. Version 8 cannot silently become the Casper wire authority.
+Inputs are the pinned scenario, expected fixture outcomes, candidate identities, deterministic seed, requested faults, and observed event transcript.
 
-Both `phloLimit` and `phloPrice` remain signed and consensus-visible. Preserve protobuf tags, APIs, minimum-price validation, prepayment, refunds, and exhaustion behavior.
+Outputs are coverage acknowledgments, correlated measurements, scenario verdicts, and immutable evidence references.
 
-Protocol-7 envelope commitment must include both fields. Token accounting cannot replace either field or bypass execution bounds.
+Pin Casper protocol and accounting authority as separate manifest fields.
 
-Multi-wallet funding cannot activate without a normative mapping of both fields. Client-selected apportionment and delegation remain separate FIP matters.
+Preserve both phloLimit and phloPrice in generated requests and captured envelope observations.
 
-## Model and oracle
+Report observed acceptance, rejection, prepayment, refund, and exhaustion against reviewed fixture expectations.
 
-Audit `ProtocolVersionLifecycle.tla` and `ProtocolActivationCoherence.tla` under `formal/tlaplus/deploy_recovery/` before reuse.
+## Scenario coverage
 
-Reuse PR #430 storage-bound evidence only after checking the pinned model and its Phlo assumptions.
+- Approved and unsupported protocol versions.
+- Signed-field mutation, shard minimum-price boundaries, and exhausted deploys.
+- Separate protocol-7 candidate shards only when the required test build and configuration exist.
 
-The proposed finite instance uses an approved and unsupported version, two prices, two limits, two payers, and success, failure, and exhaustion outcomes.
+Unavailable test interfaces produce a blocked scenario, not a passing result. Adding or repairing node interfaces is outside these epics.
 
-The oracle independently computes version agreement, signed-envelope acceptance, prepayment, and refund bounds. Mutation of either signed field must invalidate authentication.
+## Formal controls and executable fixtures
 
-TASK-017-11 must trace ceremony, adoption, proposal, reception, and settlement to exact source functions and wire fields.
+| Proposed property | Defect knob | Required fixture result |
+| --- | --- | --- |
+| VersionLabelsSeparate | ConflateAuthorityVersions | Accounting version 8 cannot label a Casper protocol-7 run. |
+| BothPhloFieldsCaptured | OmitPhloPrice | Omitting either Phlo field must fail profile completeness checks. |
+| SettlementOutcomeClassified | IgnoreRefundMismatch | A planted refund mismatch must remain visible in the report. |
 
-## Positive and negative controls
+A clean fixture uses a complete known transcript. Each negative control mutates profile handling, not the node, and must violate its named property.
 
-| Control | Required observation |
-| --- | --- |
-| Clean version and Phlo combinations | Preserve wire fields and correct settlement. |
-| Substitute accounting version for Casper version | Violate authority separation. |
-| Change one authority path only | Violate ceremony/adoption/proposal/reception agreement. |
-| Omit either Phlo field from the commitment | Accept a signed-field mutation and fail authentication comparison. |
-| Bypass shard minimum price | Violate price validation. |
-| Refund more than the checked prepaid amount | Violate settlement conservation. |
+TLC explores bounded scenario, event, and outcome states. Real harness fixtures must exercise the profile implementation with matching and mismatching transcripts.
 
-## Tiers and phases
+Construction is not applicable under PR #433's harness approach. No Rocq theorem or node-code discharge is required by this claim.
 
-TLC checks finite version transitions and cost examples. Arbitrary execution-cost and settlement claims require Rocq construction evidence and production bindings.
+The bound is two scenarios and three observations per scenario for the initial model. This is proposed coverage, not completed verification.
 
-Audit candidate theorems under `formal/rocq/finalized_floor/` rather than treating their existence as discharge evidence.
+## Phase obligations
 
-Pre-merge work preserves baseline Phlo contracts and prepares protocol-7 controls. Post-merge work verifies actual #216 envelopes, accounting boundaries, and production settlement.
+Pre-merge work defines and verifies the profile against current supported interfaces and controlled transcripts.
 
-FIPS approval and fresh genesis remain activation conditions. A merged implementation or a passing soak does not satisfy those conditions by itself.
+After PR #216 merges, adapt the profile interfaces and rerun its model controls, fixtures, and approved soak scenarios with new identities.
 
-The [harness contract](./casper-soak-harness.md) defines evidence and closure. All new verification results remain pending.
+A correct harness can report a failed product scenario. Passing harness verification does not convert that product failure into a passing soak.
+
+The [harness contract](./casper-soak-harness.md) defines provenance and outcome rules. Deferred policies still require separate approval before activation.

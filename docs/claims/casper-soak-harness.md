@@ -26,9 +26,9 @@ This claim covers the harness, not the correctness of Casper consensus. It follo
 
 TLC checks the finite driver model. Shell and container fixtures bind the driver to that model. A Rocq theorem is not required for this shell-driver claim.
 
-The [branch plan](../plans/casper-ratified-soak-2026-09-16.md) controls phase ownership. The following claim documents define separate semantic obligations:
+The [branch plan](../plans/casper-ratified-soak-2026-09-16.md) controls phase ownership. The following claims verify profile generation, observation, and classification only:
 
-| Claim | Semantic boundary | Pre-merge task | Post-merge task |
+| Claim | Profile boundary | Pre-merge task | Post-merge task |
 | --- | --- | --- | --- |
 | [002](./casper-soak-authority-finality.md) | Committee, fork choice, finality | TASK-017-5 | TASK-018-3 |
 | [003](./casper-soak-publication.md) | Publication and terminal eviction | TASK-017-6 | TASK-018-3 |
@@ -36,9 +36,11 @@ The [branch plan](../plans/casper-ratified-soak-2026-09-16.md) controls phase ow
 | [005](./casper-soak-merge-accounting.md) | Merge and accounting | TASK-017-8 | TASK-018-4 |
 | [006](./casper-soak-slashing.md) | Slash authorization | TASK-017-9 | TASK-018-3 |
 | [007](./casper-soak-version-phlo.md) | Version and signed Phlo fields | TASK-017-11 | TASK-018-4 |
-| [FINALITY-002](./repeat-deploy-carrier-index-equivalence.md) | Carrier-index equivalence | TASK-017-10 | TASK-018-4 |
+| [008](./casper-soak-carrier-index.md) | Carrier comparison inputs and telemetry | TASK-017-10 | TASK-018-4 |
 
-Each semantic claim requires independent production bindings. A correct collector can faithfully report a consensus failure.
+Each profile needs executable fixtures against the actual generator, collector, and classifier. A correct collector can faithfully report a consensus failure.
+
+Node correctness, Rust changes, and Rocq proofs are outside both epics. Existing node claims, including CLAIM-FINALITY-002, remain external and unchanged.
 
 ## Inputs, state, and outputs
 
@@ -126,7 +128,7 @@ A failing product observation and an infrastructure termination remain separate 
 
 ## Current gaps
 
-No new model, fixture, or workflow check has been implemented by this scaffold. All verification tiers and soak observations remain pending.
+No new model, fixture, or workflow check has been implemented by this scaffold. Refutation, executable fixtures, and soak observations remain pending. Construction is not applicable.
 
 PRs #431 and #432 supply prerequisite containment and disk models. This claim must compose with them, not replace or duplicate them.
 

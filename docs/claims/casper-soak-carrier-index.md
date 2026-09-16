@@ -1,14 +1,14 @@
-# Casper Recovery and Custody Profile Claim
+# Casper Carrier Index Profile Claim
 
 ```yaml
-claim_id: CLAIM-CASPER-SOAK-004
+claim_id: CLAIM-CASPER-SOAK-008
 status: pending
 adapter: embedded
 scope: harness-profile
 profile_implementation: not-implemented
-decisions: [D-06, D-07]
-pre_merge_tasks: [TASK-017-7]
-post_merge_tasks: [TASK-018-3, TASK-018-5]
+decisions: [D-10]
+pre_merge_tasks: [TASK-017-10]
+post_merge_tasks: [TASK-018-4, TASK-018-5]
 artifacts:
   - scripts/run-merge-recovery-soak.sh
   - scripts/bench/test-run-merge-recovery-soak.sh
@@ -33,17 +33,17 @@ Inputs are the pinned scenario, expected fixture outcomes, candidate identities,
 
 Outputs are coverage acknowledgments, correlated measurements, scenario verdicts, and immutable evidence references.
 
-Pin the recovery lane and policy variant in the profile manifest before workload launch.
+Pair forced-index and reference-scan observations from the same candidate, DAG, window, and availability fixture.
 
-Record requested and observed pauses, delivery delays, frontiers, retries, and objective heights.
+Record watermark, pruning, crash, read-failure, and identity-domain settings before comparing results.
 
-Compute duplicates, custody disagreements, retry completion, and expiry from exact occurrence identities.
+Report verdict differences and probe/body-read counts only when the selected path and required counters are observed.
 
 ## Scenario coverage
 
-- All-eligible stale recovery and leader-only convergence as distinct baseline lanes.
-- Paused validators, delayed messages, split frontiers, and empty or deploy-bearing workloads.
-- Isolated frontier, leadership, clock, and coverage variants when supported by an approved test build.
+- Valid, invalid, and approved carriers with forks and missing history.
+- Watermark and pruning boundaries, read failures, and restart.
+- Cross-domain identity fixtures when the approved candidate exposes the required test interface.
 
 Unavailable test interfaces produce a blocked scenario, not a passing result. Adding or repairing node interfaces is outside these epics.
 
@@ -51,9 +51,9 @@ Unavailable test interfaces produce a blocked scenario, not a passing result. Ad
 
 | Proposed property | Defect knob | Required fixture result |
 | --- | --- | --- |
-| LaneLabelsPreserved | ConflateRecoveryLanes | A stale-recovery sample cannot be classified as a convergence sample. |
-| OccurrenceCountsPreserved | CollapseOccurrenceIdentity | Independent occurrences must remain separate in reported counts. |
-| PauseCoverageAcknowledged | AssumePauseApplied | An unconfirmed pause must produce incomplete scenario coverage. |
+| PathEngagementObserved | AssumeIndexEngaged | A requested index path without engagement evidence must not establish the work bound. |
+| CarrierInputsMatched | CompareDifferentWindows | Different scan windows cannot produce a passing differential result. |
+| MissingCountersUnknown | ZeroMissingCounters | Missing counters must not become zero ancestor reads. |
 
 A clean fixture uses a complete known transcript. Each negative control mutates profile handling, not the node, and must violate its named property.
 
@@ -72,3 +72,5 @@ After PR #216 merges, adapt the profile interfaces and rerun its model controls,
 A correct harness can report a failed product scenario. Passing harness verification does not convert that product failure into a passing soak.
 
 The [harness contract](./casper-soak-harness.md) defines provenance and outcome rules. Deferred policies still require separate approval before activation.
+
+[CLAIM-FINALITY-002](./repeat-deploy-carrier-index-equivalence.md) remains an external node-correctness claim. This profile neither owns nor discharges it.

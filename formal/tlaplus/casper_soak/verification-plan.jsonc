@@ -65,6 +65,27 @@
     "nightly_budget_seconds": null,
     "budget_blocker": "Reconcile the PR #432 15-minute tier with the PR #433 two-minute tier before registration."
   },
+  "scope": "harness-and-profiles-only",
+  "node_role": "system-under-test",
+  "profile_verification": {
+    "status": "pending",
+    "construction": "not-applicable",
+    "model_status": "not-implemented",
+    "binding_status": "pending",
+    "bounds": {"scenarios": 2, "observations_per_scenario": 3},
+    "positive_expected_exit": 0,
+    "negative_expected_exit": 12,
+    "control_contract": "Each claim specifies three named properties, defect knobs, and fixture verdicts. Register controls separately from the clean list after implementation.",
+    "claims": [
+      {"id": "CLAIM-CASPER-SOAK-002", "specification": "docs/claims/casper-soak-authority-finality.md"},
+      {"id": "CLAIM-CASPER-SOAK-003", "specification": "docs/claims/casper-soak-publication.md"},
+      {"id": "CLAIM-CASPER-SOAK-004", "specification": "docs/claims/casper-soak-recovery.md"},
+      {"id": "CLAIM-CASPER-SOAK-005", "specification": "docs/claims/casper-soak-merge-accounting.md"},
+      {"id": "CLAIM-CASPER-SOAK-006", "specification": "docs/claims/casper-soak-slashing.md"},
+      {"id": "CLAIM-CASPER-SOAK-007", "specification": "docs/claims/casper-soak-version-phlo.md"},
+      {"id": "CLAIM-CASPER-SOAK-008", "specification": "docs/claims/casper-soak-carrier-index.md"}
+    ]
+  },
   "prerequisites": [431, 432, 433],
   "results": []
 }
