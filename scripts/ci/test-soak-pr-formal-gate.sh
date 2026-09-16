@@ -92,6 +92,12 @@ case "$config" in
     MC_DurableRecord_in_place_pre_fix.cfg) invariant=VisibleImpliesComplete ;;
     MC_RecordProducer_unchecked_pre_fix.cfg) invariant=FailedProducerPreservesRecord ;;
     MC_BoundedPublication_blocking_pre_fix.cfg) invariant=ShutdownIndependentOfSync ;;
+    MC_ReserveBound_unbounded_pre_fix.cfg) invariant=OperatingReserveHeld ;;
+    MC_RetentionReserve_unskipped_pre_fix.cfg) invariant=ReserveHeld ;;
+    MC_MetricSummary_omitted_pre_fix.cfg) invariant=CollectedRequiredPublished ;;
+    MC_MetricBaseline_zero_pre_fix.cfg) invariant=MissingBaselineUnavailable ;;
+    MC_MetricMonotonicity_unchecked_pre_fix.cfg) invariant=DecreasingSamplesUnavailable ;;
+    MC_MetricSampleValidity_unchecked_pre_fix.cfg) invariant=InvalidSamplesRejected ;;
     *) printf 'Model checking completed. No error has been found.\n'; exit 0 ;;
 esac
 printf 'Error: Invariant %s is violated.\n' "$invariant"
@@ -202,6 +208,19 @@ pr_configs=(
     soak_disk/MC_RecordProducer_unchecked_pre_fix
     soak_disk/MC_BoundedPublication
     soak_disk/MC_BoundedPublication_blocking_pre_fix
+    soak_disk/MC_ReserveBound
+    soak_disk/MC_ReserveBound_unbounded_pre_fix
+    soak_disk/MC_RetentionReserve
+    soak_disk/MC_RetentionReserve_unskipped_pre_fix
+    soak_disk/MC_MetricSummary
+    soak_disk/MC_MetricSummary_omitted_pre_fix
+    soak_disk/MC_MetricBaseline
+    soak_disk/MC_MetricBaseline_available
+    soak_disk/MC_MetricBaseline_zero_pre_fix
+    soak_disk/MC_MetricMonotonicity
+    soak_disk/MC_MetricMonotonicity_unchecked_pre_fix
+    soak_disk/MC_MetricSampleValidity
+    soak_disk/MC_MetricSampleValidity_unchecked_pre_fix
     carrier_index/MC_CarrierIndex_dag_first_pre_fix
     carrier_index/MC_CarrierIndex_read_failure_pre_fix
 )

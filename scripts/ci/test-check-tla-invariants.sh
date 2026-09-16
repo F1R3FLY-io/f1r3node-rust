@@ -69,6 +69,12 @@ case "$config" in
     MC_DurableRecord_in_place_pre_fix.cfg) invariant=VisibleImpliesComplete ;;
     MC_RecordProducer_unchecked_pre_fix.cfg) invariant=FailedProducerPreservesRecord ;;
     MC_BoundedPublication_blocking_pre_fix.cfg) invariant=ShutdownIndependentOfSync ;;
+    MC_ReserveBound_unbounded_pre_fix.cfg) invariant=OperatingReserveHeld ;;
+    MC_RetentionReserve_unskipped_pre_fix.cfg) invariant=ReserveHeld ;;
+    MC_MetricSummary_omitted_pre_fix.cfg) invariant=CollectedRequiredPublished ;;
+    MC_MetricBaseline_zero_pre_fix.cfg) invariant=MissingBaselineUnavailable ;;
+    MC_MetricMonotonicity_unchecked_pre_fix.cfg) invariant=DecreasingSamplesUnavailable ;;
+    MC_MetricSampleValidity_unchecked_pre_fix.cfg) invariant=InvalidSamplesRejected ;;
     *) printf 'Model checking completed. No error has been found.\n'; exit 0 ;;
 esac
 if [[ "$config" == "$TEST_TLC_TARGET" ]]; then
@@ -136,7 +142,13 @@ for target in carrier_index/MC_CarrierIndex_dag_first_pre_fix \
     soak_disk/MC_NativeControlPath_parent_only_pre_fix \
     soak_disk/MC_DurableRecord_in_place_pre_fix \
     soak_disk/MC_RecordProducer_unchecked_pre_fix \
-    soak_disk/MC_BoundedPublication_blocking_pre_fix; do
+    soak_disk/MC_BoundedPublication_blocking_pre_fix \
+    soak_disk/MC_ReserveBound_unbounded_pre_fix \
+    soak_disk/MC_RetentionReserve_unskipped_pre_fix \
+    soak_disk/MC_MetricSummary_omitted_pre_fix \
+    soak_disk/MC_MetricBaseline_zero_pre_fix \
+    soak_disk/MC_MetricMonotonicity_unchecked_pre_fix \
+    soak_disk/MC_MetricSampleValidity_unchecked_pre_fix; do
     for result in clean wrong-invariant tool-error wrong-exit timeout missing expected; do
         config="$WORK/repo/formal/tlaplus/$target.cfg"
         if [[ "$result" == missing ]]; then

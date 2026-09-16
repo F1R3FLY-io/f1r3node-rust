@@ -152,6 +152,13 @@ POST_FIX_CONFIGS=(
     soak_disk/MC_DurableRecord
     soak_disk/MC_RecordProducer
     soak_disk/MC_BoundedPublication
+    soak_disk/MC_ReserveBound
+    soak_disk/MC_RetentionReserve
+    soak_disk/MC_MetricSummary
+    soak_disk/MC_MetricBaseline
+    soak_disk/MC_MetricBaseline_available
+    soak_disk/MC_MetricMonotonicity
+    soak_disk/MC_MetricSampleValidity
 )
 
 TLC_WORKERS=auto
@@ -209,6 +216,13 @@ if [[ "$SOAK_PR" == true ]]; then
         soak_disk/MC_DurableRecord
         soak_disk/MC_RecordProducer
         soak_disk/MC_BoundedPublication
+        soak_disk/MC_ReserveBound
+        soak_disk/MC_RetentionReserve
+        soak_disk/MC_MetricSummary
+        soak_disk/MC_MetricBaseline
+        soak_disk/MC_MetricBaseline_available
+        soak_disk/MC_MetricMonotonicity
+        soak_disk/MC_MetricSampleValidity
     )
     TLC_WORKERS=2
 fi
@@ -297,6 +311,12 @@ NEGATIVE_CONTROLS=(
     soak_disk/MC_DurableRecord_in_place_pre_fix:VisibleImpliesComplete
     soak_disk/MC_RecordProducer_unchecked_pre_fix:FailedProducerPreservesRecord
     soak_disk/MC_BoundedPublication_blocking_pre_fix:ShutdownIndependentOfSync
+    soak_disk/MC_ReserveBound_unbounded_pre_fix:OperatingReserveHeld
+    soak_disk/MC_RetentionReserve_unskipped_pre_fix:ReserveHeld
+    soak_disk/MC_MetricSummary_omitted_pre_fix:CollectedRequiredPublished
+    soak_disk/MC_MetricBaseline_zero_pre_fix:MissingBaselineUnavailable
+    soak_disk/MC_MetricMonotonicity_unchecked_pre_fix:DecreasingSamplesUnavailable
+    soak_disk/MC_MetricSampleValidity_unchecked_pre_fix:InvalidSamplesRejected
 )
 
 failed=0
