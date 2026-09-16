@@ -585,8 +585,9 @@ Do not delete active node state or required evidence. Do not replace attribution
 
 **Exit evidence:** The measured writer has a verified lifecycle bound. A controlled early stop alone does not satisfy this gate.
 
-The [reserve argument](soak-reserve-argument-2026-09-12.md) bounds the response-latency term T from the guardian sampling and the composed emergency deadline. It leaves the growth, burst, and reserve terms open for this diagnostic run to supply.
-The [diagnostic methodology](soak-d3-diagnostic-methodology-2026-09-14.md) specifies what the run measures, how it attributes growth to one writer, and how it derives those three terms.
+The [reserve argument](soak-reserve-argument-2026-09-12.md) records the source timing controls and keeps the complete interval, growth, burst, reserve, and margin open.
+The [diagnostic methodology](soak-d3-diagnostic-methodology-2026-09-14.md) separates observed allocation from enforceable bounds.
+Neither sampled maxima nor configured timeouts establish the complete production reserve.
 
 The [durable publication package](../cbc-evidence/soak-d2-durable-record-2026-09-12/README.md) records the B51 review corrections R1 and R3. R1 bounds record publication and keeps the writer stop independent of a stalled sync, with an explicit unconfirmed result. R3 proves the atomic rename and rejects in-place publication. The [bounded publication model](../../formal/tlaplus/soak_disk/BoundedPublication.md) and the [atomic record model](../../formal/tlaplus/soak_disk/DurableRecord.md) refute the respective baselines. Durable power-loss survival and hosted enforcement remain pending.
 

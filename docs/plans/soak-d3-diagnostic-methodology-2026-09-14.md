@@ -4,7 +4,8 @@
 
 This document specifies the diagnostic run for gate D3.
 The run identifies the growing filesystem and the writer that consumes it.
-It supplies the growth, burst, and reserve terms that the disk reserve argument leaves open.
+It supplies observations for the open growth, burst, and reserve terms.
+Measurements alone do not establish enforceable upper bounds.
 It is a measurement methodology, not a fix and not an acceptance soak.
 
 The run does not delete active node state or required evidence.
@@ -23,69 +24,100 @@ D3 closes only when the run names that writer and gives it an enforceable lifecy
 
 The run attributes disk growth to a specific owner across every writer class.
 A single free-space number is not attribution.
-The run records each class separately at every sample.
+The run records each class separately with its filesystem, owner, process epoch, and measurement interval.
+The run distinguishes logical file sizes from allocated blocks and avoids double-counting shared layers or hard links.
+The run records only approved inspection fields, not environment values, private keys, or complete Docker inspection responses.
 
 | Writer class | What to measure | Command family |
 | --- | --- | --- |
-| Docker images and layers | Per-image and per-layer bytes, shared versus unique | `docker system df -v`, image inspect |
-| Docker container writable layers | Per-container upper-directory bytes | `docker ps -s`, container inspect |
+| Docker images and layers | Per-image and per-layer allocated bytes, shared versus unique | Bounded private-engine accounting and selected image fields |
+| Docker container writable layers | Per-container allocated bytes and inode demand | Bounded private-engine accounting and selected container fields |
+| Containerd storage and helpers | Actual image-store, snapshot, state, and temporary allocations | Verified runtime paths and bounded filesystem accounting |
 | Docker build cache | Build-cache bytes and reclaimable bytes | `docker system df -v` build-cache rows |
 | Harness telemetry roots | Bytes and inode counts under the integration-tests roots | Bounded `du` and `find` with a deadline |
 | Runner logs | Journal and runner diagnostic bytes | Journal disk usage, log directory size |
-| Open-deleted files | Bytes held by unlinked but still-open files | `lsof +L1` for size and holder |
-| Evidence retention copies | Temporary bytes during the failure-evidence copy | The driver's bounded snapshot |
+| Open-deleted files | Allocated blocks, logical size, device, inode, and holder epoch | Bounded descriptor inspection with file identity checks |
+| Evidence retention copies | Copy, archive, metadata, and upload-staging allocation peaks | Bounded measurements before, during, and after retention |
+| Filesystem and runner overhead | Journal, metadata, reservation, and unattributed allocation | Filesystem identity, free-space observations, and reconciliation |
 
 ## The open-deleted hazard
 
 A file that a process unlinks but still holds open keeps its blocks until the process closes it.
-Such a file has no path, so a path-based `du` walk cannot see its bytes.
-The free-space drop with a near-empty `du` result is the signature of this hazard.
-The run must test this hypothesis first with `lsof +L1`, because it explains a silent, fast exhaustion.
+A path-based `du` walk cannot attribute an unlinked file that remains open.
+A difference between `df` and `du` does not identify this cause by itself.
+Metadata, reserved space, inaccessible paths, and measurement timing can also explain a difference.
+
+The run checks open-deleted files as one hypothesis, not as an established cause.
+A bounded `lsof +L1` result identifies candidate holders, not a complete allocated-block inventory.
+Logical size can differ from allocated space.
+Repeated descriptors for one device and inode must not multiply its allocation.
+Missing permissions, process exits, and incomplete scans remain explicit gaps.
 
 ## Sampling procedure
 
 The run captures a baseline before the workload starts.
-It then samples every writer class at a fixed interval through the run.
-It records free bytes, free inodes, and each class total at every sample.
-It separates byte exhaustion from inode exhaustion, because either one ends the runner.
+A configured sampling interval is a target, not proof of the actual interval.
+Each probe records monotonic start and finish times, its outcome, and its source identity.
+Sequential probes must not appear as one simultaneous sample.
+The run records free bytes and free inodes separately for every affected filesystem.
 
-The run computes the per-interval delta for each writer class.
-It attributes the dominant, monotonic growth to one owner.
-It records restart epochs and rejects a counter reset or a missing interval as growth.
-It keeps the raw samples, so a later reader can recompute every delta.
+The run computes valid deltas within each filesystem, owner, and process epoch.
+Filesystem usage is a gauge, so a decrease can represent reclamation rather than a counter reset.
+Cumulative allocation counters require separate reset handling.
+Missing data remains unavailable, not zero, and invalid intervals do not supply rates.
+The run retains raw observations and reconciles attributed growth against filesystem changes.
+
+An interval delta describes net change, not all allocations within that interval.
+Allocation followed by reclamation can leave a zero delta despite a high temporary peak.
+The run reports unresolved growth and measurement overlap rather than forcing every change onto one owner.
 
 ## Deriving the reserve terms
 
-The run supplies the three open terms of the reserve inequality `Reserve >= Required + Growth*Deadline + Burst + Margin`.
-Each term needs a recorded justification and a common unit.
-A sampled average is not a worst-case bound.
+The reference inequality is `F >= R + G*T + J + M`.
+`F` is a conservative free-space value at a defined start time, not an assumed sample equal to the configured floor.
+Each term needs consistent units, explicit assumptions, and a recorded justification.
+Neither a sampled average nor a sampled maximum establishes a worst-case bound.
 
-| Term | Definition | Derivation from the run |
+| Term | Required bound | Role of the diagnostic |
 | --- | --- | --- |
-| G, growth | The worst-case growth rate of every writer still active after the workload stop | The maximum per-interval delta of the surviving writers, not their average |
-| J, burst | The maximum single-interval jump above the sampled rate | The largest one-sample delta minus the modeled rate |
-| R, reserve | The space for runner operation, the minimal evidence, and the final upload | The measured minimal evidence bytes plus the retention-copy peak plus the upload size |
+| G, growth | Enforced aggregate allocation rate for every writer not charged to R | Identify writers and test their limits across the complete response interval. |
+| J, burst | Maximum allocation outside the rate envelope, including unresolved threshold overshoot | Measure candidate bursts and verify the mechanism that limits them. |
+| R, reserve | Bounded runner operation, required evidence, metadata, archive, and upload-staging demand | Measure footprints and test the declared retention and staging limits. |
+| T, interval | Complete detection, closure, confirmed termination, and required evidence interval | Record each stage and test its limits under the selected faults. |
+| M, margin | Explicit allowance for bounded uncertainty | Record the policy, units, assumptions, and justification. |
 
-The run reports these terms for the surviving writers during the emergency response window.
-The response window is the composed emergency deadline that the reserve argument bounds.
-These terms then close the reserve inequality against the disk floor.
+The maximum observed interval rate is evidence about that run only.
+Subtracting that rate from the largest observed delta does not establish an unsampled burst bound.
+A quota can bound total allocation but does not establish a rate limit by itself.
+A quota failure must also preserve required evidence and workload outcomes.
+
+The [reserve argument](soak-reserve-argument-2026-09-12.md) keeps the complete interval open.
+A stop request does not remove writers or accepted deferred work from the accounting.
+Copies, compression, and upload staging need simultaneous-allocation analysis, not just the final archive size.
+Byte and inode reserves require separate calculations for each filesystem.
+Unattributed writers or unenforced limits keep the reserve claim open.
 
 ## Output and exit
 
-The run produces one named growing writer with its worst-case growth rate.
-It produces the reserve terms with their justifications.
+The run identifies growing writers and reports their observed rates and allocation peaks.
+It distinguishes measured values, proposed limits, verified enforcement, and unresolved assumptions.
 It records byte growth and inode growth as separate results.
 It retains the raw per-interval samples and the open-deleted inventory.
 
-The named writer and its rate feed the D3 correction that follows.
-That correction writes one production retention or cleanup property for the owner.
-The property gets a matching resource-model counterexample, which extends the `ReserveBound` model with the measured writer.
-The exit is a verified lifecycle bound for the measured writer, because a controlled early stop alone does not satisfy D3.
+Each selected writer supplies a production retention or cleanup obligation for its owner.
+The correction requires a frozen public-production RED, a matching resource-model counterexample, and unchanged-fixture GREEN results.
+A measured rate must not enter the model as an enforced bound without separate justification.
+
+D3 requires a verified lifecycle correction and storage-demand validation across the full planned duration and failure-retention policy.
+Repeated failures, restarts, preparation, and required retained evidence belong in that demand.
+A controlled early stop alone does not satisfy D3.
 
 ## Safety controls
 
-Every disk-walk command carries a deadline, because an unbounded `du` on a full filesystem stalls.
-The run reuses the driver's bounded snapshot rather than a fresh recursive walk during the response.
+Every probe needs declared time, output, and resource limits with an explicit incomplete result.
+A command timeout alone does not prove helper termination or bound bytes written during that interval.
+The run must verify probe termination and collect independent observations before fixture cleanup.
+The existing driver snapshot does not establish a byte or inode limit.
 The run never deletes active node state or required evidence.
 The run never replaces attribution with a larger volume or a lower protection threshold.
 
