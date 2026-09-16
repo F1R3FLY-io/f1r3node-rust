@@ -1,7 +1,7 @@
-# Correctness by Construction: Refutation and Construction Tiers
+# Correct by Construction: Refutation and Construction Tiers
 
-This document states how TLA+ and Rocq divide the work of correctness by
-construction (CbC) in this repository. It refines the philosophy in
+This document states how TLA+ and Rocq divide the work of Correct by
+Construction (CbC) in this repository. It refines the philosophy in
 [Formal Verification](./formal-verification.md). That document keeps the tool
 stack, the tier ladder, and the conventions for a verified area. This document
 keeps the division of labor between the tools and the rule that moves a result
@@ -180,8 +180,8 @@ promotion decision per invariant, recorded in each area README.
 
 ## Terms
 
-These terms are proposed for [`Glossary.md`](./Glossary.md). Until they land
-there, this document defines them.
+This document defines these four terms. Their promotion to
+[`Glossary.md`](./Glossary.md) is a follow-up.
 
 - **Refutation tier.** The bounded model-checking tier. It finds and pins
   defects with TLC.
