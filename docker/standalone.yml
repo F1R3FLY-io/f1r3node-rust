@@ -40,6 +40,13 @@ services:
       - ./genesis/standalone-bonds.txt:/var/lib/rnode/genesis/bonds.txt
     environment:
       - OPENAI_ENABLED=${OPENAI_ENABLED:-false}
+      # Passed only when set, so logging.filter in the node config applies by default.
+      - RUST_LOG
+    logging:
+      driver: json-file
+      options:
+        max-size: 100m
+        max-file: "3"
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:40403/api/ready"]
       interval: 30s

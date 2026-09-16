@@ -20,6 +20,7 @@ use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::system_processes::BlockData;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::Either;
+use shared::rust::store::key_value_store::MissingBlockContext;
 
 use super::replay_failure::ReplayFailure;
 use super::runtime_manager::RuntimeManager;
@@ -183,7 +184,10 @@ pub(crate) fn canonical_dispositions(
         // disposition map silently misreads the retry gate and the
         // canonical-won filter. Absence keeps its name so callers defer.
         let Some(block) = block_store.get(&hash)? else {
-            return Err(CasperError::BlockNotHeld(hash));
+            return Err(CasperError::BlockNotHeld(
+                hash,
+                MissingBlockContext::new("parents-post-state body read"),
+            ));
         };
         let bn = block.body.state.block_number;
         if bn < earliest_block_number {
@@ -1757,10 +1761,12 @@ pub async fn compute_parents_post_state(
                     // a held-set gap, not the window edge: defer, never walk a
                     // shorter lineage. `main_parent` is `None` only for a block
                     // whose metadata is present and records no parent (genesis).
-                    let number = s
-                        .dag
-                        .block_number(&hash)
-                        .ok_or_else(|| CasperError::BlockNotHeld(hash.clone()))?;
+                    let number = s.dag.block_number(&hash).ok_or_else(|| {
+                        CasperError::BlockNotHeld(
+                            hash.clone(),
+                            MissingBlockContext::new("rejected-slash lineage walk"),
+                        )
+                    })?;
                     if number < settled_walk_bound {
                         break;
                     }
@@ -2794,7 +2800,7 @@ mod backstop_tests {
         let result = canonical_won_sigs(&block_store, &[missing.clone()], i64::MIN);
 
         assert!(
-            matches!(result, Err(crate::rust::errors::CasperError::BlockNotHeld(ref hash)) if *hash == missing),
+            matches!(result, Err(crate::rust::errors::CasperError::BlockNotHeld(ref hash, _)) if *hash == missing),
             "a walk over an unreadable chain must name the absent block, got {:?}",
             result
         );

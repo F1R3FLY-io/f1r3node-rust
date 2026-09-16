@@ -31,6 +31,7 @@ use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::Bond;
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
+use shared::rust::store::key_value_store::MissingBlockContext;
 
 use crate::rust::errors::CasperError;
 use crate::rust::safety::clique_oracle::{CliqueOracle, FtThreshold};
@@ -103,9 +104,9 @@ fn held_meta(
     dag: &KeyValueDagRepresentation,
     hash: &BlockHash,
 ) -> Result<models::rust::block_metadata::BlockMetadata, CasperError> {
-    dag.lookup(hash)
-        .map_err(CasperError::from)?
-        .ok_or_else(|| CasperError::BlockNotHeld(hash.clone()))
+    dag.lookup(hash).map_err(CasperError::from)?.ok_or_else(|| {
+        CasperError::BlockNotHeld(hash.clone(), MissingBlockContext::new("floor held_meta"))
+    })
 }
 
 /// The block number of a block a walk needs, or [`CasperError::BlockNotHeld`].
@@ -400,7 +401,9 @@ pub async fn floor_of_view(
     let live_snapshot: BTreeMap<Validator, BlockHash> = testimony.into_iter().collect();
     let derived = match finalized_floor(dag, block_store, &tips, &live_snapshot, ftt).await {
         Ok(derived) => derived,
-        Err(CasperError::BlockNotHeld(missing)) => return Ok(FloorOfView::AbsenceHold { missing }),
+        Err(CasperError::BlockNotHeld(missing, _)) => {
+            return Ok(FloorOfView::AbsenceHold { missing })
+        }
         // Under a negative threshold, incompatible majority-agreement
         // candidates are an expected transient — hold the cycle. Under
         // θ ≥ 0 the same error is a genuine safety alarm and stays loud.
@@ -425,7 +428,7 @@ pub async fn floor_of_view(
             );
             Ok(FloorOfView::ContainmentHold { derived })
         }
-        Err(CasperError::BlockNotHeld(missing)) => Ok(FloorOfView::AbsenceHold { missing }),
+        Err(CasperError::BlockNotHeld(missing, _)) => Ok(FloorOfView::AbsenceHold { missing }),
         Err(other) => Err(other),
     }
 }
@@ -1250,7 +1253,7 @@ mod frontier_determinism_tests {
             .await
             .expect_err("without a seed the derivation must run out of history");
         assert!(
-            matches!(unseeded, CasperError::BlockNotHeld(ref h) if *h == absent),
+            matches!(unseeded, CasperError::BlockNotHeld(ref h, _) if *h == absent),
             "the unseeded derivation must fail by naming the block below the window, \
              or this fixture is not truncated and proves nothing; got {unseeded}"
         );
@@ -2309,7 +2312,7 @@ mod frontier_determinism_tests {
         let err = state_lineage_meet(&dag, &a, &b)
             .expect_err("a lineage that leaves the held blocks cannot yield a verdict");
         assert!(
-            matches!(err, CasperError::BlockNotHeld(ref h) if *h == gone),
+            matches!(err, CasperError::BlockNotHeld(ref h, _) if *h == gone),
             "truncation must be a TYPED error naming the block this node does not hold, so \
              the caller can request it and retry instead of turning it into a verdict; got {err}"
         );
@@ -2336,7 +2339,7 @@ mod frontier_determinism_tests {
             .await
             .expect_err("a floor recursion that leaves the held blocks cannot yield a floor");
         assert!(
-            matches!(err, CasperError::BlockNotHeld(ref h) if *h == gone),
+            matches!(err, CasperError::BlockNotHeld(ref h, _) if *h == gone),
             "the floor recursion must name the block it does not hold; got {err}"
         );
     }
@@ -2373,7 +2376,7 @@ mod frontier_determinism_tests {
         .await
         .expect_err("a frontier walk that leaves the held blocks cannot yield a frontier");
         assert!(
-            matches!(err, CasperError::BlockNotHeld(ref h) if *h == gone),
+            matches!(err, CasperError::BlockNotHeld(ref h, _) if *h == gone),
             "the oracle must name the block it does not hold, so the caller can request \
              it and retry instead of recording a verdict against the proposer; got {err}"
         );
@@ -2400,6 +2403,225 @@ mod frontier_determinism_tests {
             matches!(meet, StateLineage::Disconnected),
             "two lineages that reach separate roots share no state history"
         );
+    }
+
+    // ---- finality-clipped certification: the sub-floor range is settled ----
+
+    /// Two-validator committee agreeing on a target above the floor, with the
+    /// supporting structure the certification walk reads: the target's main
+    /// parent carries the committee weight map, both latest messages sit on
+    /// the target's spine, and each justifies the other.
+    fn certification_fixture(
+        la_justifies_vb_at: Bytes,
+        self_justifications: Vec<(Bytes, Bytes)>,
+        extra_blocks: Vec<BlockMetadata>,
+    ) -> (KeyValueDagRepresentation, Bytes, BTreeMap<Bytes, Bytes>) {
+        use models::rust::casper::protocol::casper_message::Justification;
+
+        let va = Bytes::from(vec![0xAA; 65]);
+        let vb = Bytes::from(vec![0xBB; 65]);
+        let committee = vec![(va.clone(), 1i64), (vb.clone(), 1i64)];
+
+        let floor_block = h(9); // the finalized floor; also the target's main parent
+        let target = h(11);
+        let la = h(12);
+        let lb = h(13);
+
+        let mut la_meta = md_wm(la.clone(), vec![target.clone()], 11, &va, vec![]);
+        la_meta.justifications = vec![Justification {
+            validator: vb.clone(),
+            latest_block_hash: la_justifies_vb_at,
+        }];
+        let mut lb_meta = md_wm(lb.clone(), vec![target.clone()], 11, &vb, vec![]);
+        lb_meta.justifications = vec![Justification {
+            validator: va.clone(),
+            latest_block_hash: la.clone(),
+        }];
+
+        let mut blocks = vec![
+            md_wm(floor_block.clone(), vec![], 9, &vb, committee),
+            md_wm(target.clone(), vec![floor_block.clone()], 10, &va, vec![]),
+            la_meta,
+            lb_meta,
+        ];
+        blocks.extend(extra_blocks);
+        let mut dag = build_dag(blocks);
+
+        dag.self_justification_map.insert(la, target.clone());
+        for (block, prev) in self_justifications {
+            dag.self_justification_map.insert(block, prev);
+        }
+        dag.last_finalized_block_hash = floor_block.clone();
+        dag.finalized_blocks_set.insert(floor_block);
+
+        let mut latest_messages = BTreeMap::new();
+        latest_messages.insert(va, h(12));
+        latest_messages.insert(vb, h(13));
+        (dag, target, latest_messages)
+    }
+
+    /// A node restored at the floor must never decide an edge that a full node
+    /// decides: where its walk needs a block it does not hold, it names that
+    /// block instead, whether the block would have agreed or vetoed.
+    #[tokio::test]
+    async fn a_restored_node_defers_where_its_walk_crosses_the_anchor() {
+        use shared::rust::store::key_value_store::KvStoreError;
+
+        let va = Bytes::from(vec![0xAA; 65]);
+        let vb = Bytes::from(vec![0xBB; 65]);
+        let (spine, rival, stale, stopper) = (h(5), h(6), h(20), h(67));
+
+        // b's walk runs floor -> pre-anchor block -> stopper.
+        let walk_crossing = |pre_anchor: &Bytes, restored: bool| {
+            let mut extra = vec![md_wm(stale.clone(), vec![], 8, &vb, vec![])];
+            if !restored {
+                extra.push(md_wm(spine.clone(), vec![], 5, &vb, vec![]));
+                extra.push(md_wm(rival.clone(), vec![spine.clone()], 6, &vb, vec![]));
+            }
+            let (mut dag, target, latest_messages) = certification_fixture(
+                stale.clone(),
+                vec![
+                    (h(13), h(9)),
+                    (h(9), pre_anchor.clone()),
+                    (pre_anchor.clone(), stopper.clone()),
+                    (stale.clone(), stopper.clone()),
+                ],
+                extra,
+            );
+            dag.main_parent_map.insert(h(9), spine.clone());
+            (dag, target, latest_messages)
+        };
+        // a's view of b is a pre-anchor block; b holds a rival above the floor.
+        let unheld_stopper = |restored: bool| {
+            let mut extra = vec![
+                md_wm(h(22), vec![h(9)], 11, &va, vec![]),
+                md_wm(h(21), vec![h(22)], 12, &vb, vec![]),
+            ];
+            let mut self_justifications =
+                vec![(h(13), h(21)), (h(21), h(9)), (h(9), stale.clone())];
+            if !restored {
+                extra.push(md_wm(stale.clone(), vec![], 8, &vb, vec![]));
+                self_justifications.push((stale.clone(), stopper.clone()));
+            }
+            certification_fixture(stale.clone(), self_justifications, extra)
+        };
+        let decide = |(dag, target, latest_messages): (
+            KeyValueDagRepresentation,
+            Bytes,
+            BTreeMap<Bytes, Bytes>,
+        )| async move {
+            CliqueOracle::ft_witnessed_exact(
+                &target,
+                &dag,
+                &latest_messages,
+                FtThreshold::from_ppm(333_333),
+                false,
+            )
+            .await
+        };
+
+        for (case, full, restored, expected, missing) in [
+            (
+                "spine",
+                walk_crossing(&spine, false),
+                walk_crossing(&spine, true),
+                true,
+                &spine,
+            ),
+            (
+                "rival",
+                walk_crossing(&rival, false),
+                walk_crossing(&rival, true),
+                false,
+                &rival,
+            ),
+            (
+                "stopper",
+                unheld_stopper(false),
+                unheld_stopper(true),
+                false,
+                &stale,
+            ),
+        ] {
+            let full_verdict = decide(full)
+                .await
+                .expect("a full node holds every block the walk reads");
+            assert_eq!(full_verdict, expected, "{case}: full-node verdict");
+            let restored_result = decide(restored).await;
+            assert!(
+                matches!(&restored_result, Err(KvStoreError::MissingBlock { hash, .. }) if hash == missing),
+                "{case}: the restored node must name the block it lacks, not decide; \
+                 got {restored_result:?} where the full node decided {full_verdict}"
+            );
+        }
+    }
+
+    /// Heights are not validated monotone along a self-justification chain:
+    /// an above-floor rival can sit deeper than a sub-floor dip. The walk
+    /// must continue past the dip and find it.
+    #[tokio::test]
+    async fn a_sub_floor_dip_does_not_hide_an_above_floor_rival() {
+        let va = Bytes::from(vec![0xAA; 65]);
+        let vb = Bytes::from(vec![0xBB; 65]);
+
+        let dip = h(4); // held, on the target's spine, below the floor
+        let rival = h(21); // above the floor, on a parallel branch
+        let branch = h(22);
+        let j_old = h(20);
+
+        let (dag, target, latest_messages) = certification_fixture(
+            j_old.clone(),
+            vec![
+                (h(13), dip.clone()),         // lb's chain dips below the floor,
+                (dip.clone(), rival.clone()), // then names the above-floor rival
+                (j_old, h(67)),
+            ],
+            vec![
+                md_wm(dip.clone(), vec![], 4, &vb, vec![]),
+                md_wm(branch.clone(), vec![dip.clone()], 11, &va, vec![]),
+                md_wm(rival, vec![branch], 12, &vb, vec![]),
+                md_wm(h(20), vec![], 3, &vb, vec![]),
+            ],
+        );
+        // Splice the dip into the target's spine so visiting it alone vetoes
+        // nothing: floor <- dip is the settled prefix, rival is the divergence.
+        let mut dag = dag;
+        dag.main_parent_map.insert(h(9), dip);
+
+        let certified = CliqueOracle::ft_witnessed_exact(
+            &target,
+            &dag,
+            &latest_messages,
+            FtThreshold::from_ppm(333_333),
+            false,
+        )
+        .await
+        .expect("every block on this walk is held");
+        assert!(
+            !certified,
+            "the rival above the floor disagrees; the dip below it must not settle the edge"
+        );
+    }
+
+    /// A latest-message slot naming a block this node does not hold (a stale
+    /// slot below a restore horizon) abstains its validator: it can neither
+    /// agree nor witness, and the decision completes without error.
+    #[tokio::test]
+    async fn an_unheld_latest_message_abstains_the_validator_without_error() {
+        let vb = Bytes::from(vec![0xBB; 65]);
+        let (dag, target, mut latest_messages) = certification_fixture(h(13), vec![], vec![]);
+        latest_messages.insert(vb, h(77)); // never held
+
+        let certified = CliqueOracle::ft_witnessed_exact(
+            &target,
+            &dag,
+            &latest_messages,
+            FtThreshold::from_ppm(333_333),
+            false,
+        )
+        .await
+        .expect("an unheld latest message abstains; it must not error the decision");
+        assert!(!certified, "half the committee cannot witness anything");
     }
 
     // ---- Phase-4 T-DET maximality: derive_floor picks the HIGHEST sound candidate ----

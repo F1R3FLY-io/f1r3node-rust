@@ -6,6 +6,7 @@ use casper::rust::blocks::proposer::proposer::ProposerResult;
 use casper::rust::casper::{CasperSnapshot, MultiParentCasper};
 use casper::rust::casper_conf::HeartbeatConf;
 use casper::rust::engine::engine_cell::EngineCell;
+use casper::rust::errors::CasperError;
 use casper::rust::heartbeat_signal::{
     install_heartbeat_signal, HeartbeatSignal, HeartbeatSignalRef,
 };
@@ -265,7 +266,7 @@ impl HeartbeatProposer {
                     let deploy_grace_active = deploy_grace_until.is_some();
 
                     match do_heartbeat_check(
-                        casper,
+                        casper.clone(),
                         &*trigger,
                         &validator_identity,
                         &config,
@@ -313,6 +314,22 @@ impl HeartbeatProposer {
                                 delay,
                                 consecutive_failures
                             );
+                        }
+                        // Erroring every cycle fetches nothing; solicit the named
+                        // block and skip the cycle.
+                        Err(CasperError::BlockNotHeld(missing, site)) => {
+                            tracing::warn!(
+                                missing = %hex::encode(&missing[..8.min(missing.len())]),
+                                walk = site.accessor(),
+                                "Heartbeat: check needs a block this node does not \
+                                 hold; requesting it from peers and skipping this cycle"
+                            );
+                            if let Err(req_err) = casper.request_block_from_peers(missing).await {
+                                tracing::warn!(
+                                    error = %req_err,
+                                    "Heartbeat: block solicitation failed"
+                                );
+                            }
                         }
                         Err(err) => {
                             tracing::warn!(
@@ -416,7 +433,7 @@ async fn check_lfb_and_propose(
     let frontier_chase_max_lag = config.advanced.frontier_chase_max_lag;
     let pending_deploy_max_lag = config.advanced.pending_deploy_max_lag;
     let advanced_deploy_recovery_max_lag = config.advanced.deploy_recovery_max_lag;
-    let stale_recovery_min_interval_ms = config.stale_recovery_min_interval.as_millis();
+    let stale_recovery_min_interval_ms = config.resolved_stale_recovery_min_interval().as_millis();
 
     // Check if we have pending user deploys in storage (not yet included in blocks)
     let has_pending_deploys = casper
@@ -599,6 +616,11 @@ async fn check_lfb_and_propose(
             .map(|timestamp_ms| now.saturating_sub(timestamp_ms) >= stale_recovery_min_interval_ms)
             .unwrap_or(true),
         stale_recovery_interval_elapsed,
+        cone_has_user_work: cone_has_user_work(
+            &snapshot,
+            &casper,
+            config.advanced.empty_frontier_max_unfinalized_blocks.max(1) as usize,
+        ),
         idle_recovery_window_open,
         lag_recovery_leader,
         empty_frontier_backpressure,
@@ -908,6 +930,43 @@ fn inspect_parent_updates(
     update
 }
 
+/// Whether the unfinalized cone holds user work: a deploy awaiting
+/// finalization, or a rejection record whose deploy cannot retry until the
+/// floor reaches it. Neither is visible in `has_pending_deploys` (node-local,
+/// and a rejected deploy has left it) or `has_new_parent_with_user_deploys`
+/// (blocks arriving during a retry wait are empty).
+///
+/// `max_depth` is the empty-frontier width cap: past it the band is in
+/// backpressure and this lane is shut regardless.
+fn cone_has_user_work(
+    snapshot: &CasperSnapshot,
+    casper: &Arc<dyn MultiParentCasper + Send + Sync>,
+    max_depth: usize,
+) -> bool {
+    let mut seen: std::collections::HashSet<BlockHash> = std::collections::HashSet::new();
+    for (_, tip) in snapshot.dag.latest_message_hashes().iter() {
+        let mut cursor = Some(tip.clone());
+        for _ in 0..max_depth {
+            let Some(hash) = cursor else { break };
+            if snapshot.dag.is_finalized(&hash) || !seen.insert(hash.clone()) {
+                break;
+            }
+            if let Ok(Some(block)) = casper.block_store().get(&hash) {
+                let carries_deploy = block
+                    .body
+                    .deploys
+                    .iter()
+                    .any(|processed| !is_system_deploy_id(&processed.deploy.sig));
+                if carries_deploy || !block.body.rejected_deploys.is_empty() {
+                    return true;
+                }
+            }
+            cursor = snapshot.dag.main_parent(&hash);
+        }
+    }
+    false
+}
+
 /// The stale-LFB recovery pacing window: whether enough time has passed
 /// for this validator to attempt a recovery proposal.
 ///
@@ -942,6 +1001,9 @@ struct LaneInputs {
     /// `stale_recovery_window_is_open`: LFB age AND own-proposal age both
     /// reached `stale-recovery-min-interval`.
     stale_recovery_interval_elapsed: bool,
+    /// The unfinalized cone holds a deploy or a rejection record — work whose
+    /// completion needs the floor to move, so following is not churn.
+    cone_has_user_work: bool,
     idle_recovery_window_open: bool,
     lag_recovery_leader: bool,
     empty_frontier_backpressure: bool,
@@ -977,7 +1039,6 @@ struct LaneDecision {
 ///   is never gated on a leader or on height relations.
 /// - The convergence one-shot stays leader-only and once per finalized block.
 fn decide_lanes(i: &LaneInputs) -> LaneDecision {
-    let deploy_recovery_hint = i.has_pending_deploys || i.has_new_parent_with_user_deploys;
     let can_propose_pending_deploys_while_ahead = if i.deploy_grace_active {
         i.lfb_lag_blocks <= i.deploy_recovery_max_lag
     } else {
@@ -1003,8 +1064,12 @@ fn decide_lanes(i: &LaneInputs) -> LaneDecision {
         && !can_propose_pending_deploys_while_ahead
         && i.self_idle_for_recovery_interval
         && !i.self_proposed_too_recently;
-    let can_follow_frontier_without_pending_deploys =
-        deploy_recovery_hint || i.stale_recovery_interval_elapsed;
+    // Following keeps the frontier moving for work in flight; an idle shard's
+    // liveness is the stale-recovery lane's job, paced by its interval. The
+    // two were conflated when the interval became this lane's gate, which
+    // paced the committee through retry waits — exactly when the floor has to
+    // move for the work to complete.
+    let can_follow_frontier_without_pending_deploys = i.cone_has_user_work;
     // When a peer parent with user deploys is observed, allow one frontier-follow step
     // while ahead (bounded by pending-deploy lag threshold) to unblock synchrony progress.
     let allow_frontier_follow_while_ahead_for_deploy_parent = i.has_new_parent_with_user_deploys
@@ -1634,7 +1699,7 @@ mod tests {
                 check_interval: Duration::from_secs(1),
                 max_lfb_age: Duration::from_millis(1),
                 self_propose_cooldown: Duration::from_secs(15),
-                stale_recovery_min_interval: Duration::from_millis(0),
+                stale_recovery_min_interval: Some(Duration::from_millis(0)),
                 advanced: casper::rust::casper_conf::HeartbeatAdvancedConf {
                     frontier_chase_max_lag: 20,
                     pending_deploy_max_lag: 20,
@@ -2149,7 +2214,7 @@ mod tests {
             let casper: Arc<dyn MultiParentCasper + Send + Sync> = Arc::new(casper_impl);
             let (propose_count, propose_func) = create_counting_propose_function();
             let mut config = empty_frontier_backpressure_config();
-            config.stale_recovery_min_interval = Duration::from_secs(60);
+            config.stale_recovery_min_interval = Some(Duration::from_secs(60));
             let mut finality_progress = FinalityProgress::new(Instant::now());
 
             let result = do_heartbeat_check(
@@ -2168,6 +2233,79 @@ mod tests {
                 propose_count.load(Ordering::SeqCst),
                 0,
                 "Should not create empty frontier-follow proposals when unresolved DAG width exceeds cap"
+            );
+        }
+
+        /// Proposals from one backpressured heartbeat check at a 5s tick, for a
+        /// validator whose own latest block is `own_block_age_ms` old.
+        async fn capped_proposals_at(interval: Option<Duration>, own_block_age_ms: i64) -> usize {
+            let validator = create_test_validator_identity();
+            let validator_id = validator.public_key.bytes.clone();
+            let (snapshot, lfb) = wide_unfinalized_snapshot(validator_id);
+            let casper_impl =
+                casper::rust::casper::test_helpers::TestCasperWithSnapshot::new(snapshot, lfb);
+            let mut self_tip = models::rust::block_implicits::get_random_block_default();
+            self_tip.block_hash = test_hash(0x18);
+            let now_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as i64;
+            self_tip.header.timestamp = now_ms - own_block_age_ms;
+            casper_impl.insert_block(&self_tip);
+            let casper: Arc<dyn MultiParentCasper + Send + Sync> = Arc::new(casper_impl);
+            let (propose_count, propose_func) = create_counting_propose_function();
+            let mut config = empty_frontier_backpressure_config();
+            config.check_interval = Duration::from_secs(5);
+            config.stale_recovery_min_interval = interval;
+            let mut finality_progress = FinalityProgress::new(Instant::now());
+
+            do_heartbeat_check(
+                casper,
+                &*propose_func,
+                &validator,
+                &config,
+                false,
+                false,
+                &mut finality_progress,
+            )
+            .await
+            .expect("do_heartbeat_check");
+            propose_count.load(Ordering::SeqCst)
+        }
+
+        /// With the exemption interval below the tick, a validator that
+        /// minted one tick ago counts as idle-for-a-full-interval at every
+        /// tick — the width cap never binds and a stalled shard mints one
+        /// recovery block per validator per tick. Above the tick the same
+        /// validator is paced.
+        #[tokio::test]
+        async fn a_tick_old_mint_is_cap_exempt_below_the_tick_and_paced_above_it() {
+            let one_tick_ago_ms: i64 = 5_200;
+
+            assert_eq!(
+                capped_proposals_at(Some(Duration::from_secs(3)), one_tick_ago_ms).await,
+                1,
+                "interval below the tick: the exemption opens every tick and \
+                 the cap never binds (the box's one-mint-per-tick)"
+            );
+            assert_eq!(
+                capped_proposals_at(Some(Duration::from_secs(15)), one_tick_ago_ms).await,
+                0,
+                "interval above the tick: a tick-old mint is paced and the cap binds"
+            );
+        }
+
+        #[tokio::test]
+        async fn the_derived_interval_paces_one_tick_and_releases_on_the_second() {
+            assert_eq!(
+                capped_proposals_at(None, 5_200).await,
+                0,
+                "derived interval: a mint one tick old is still paced"
+            );
+            assert_eq!(
+                capped_proposals_at(None, 10_200).await,
+                1,
+                "derived interval: the exemption opens on the second tick"
             );
         }
 
@@ -2365,7 +2503,7 @@ mod tests {
             // recovery lane through its own pacing, so the 0 below asserts
             // the ROUTINE lanes' cooldown — the claim under test — rather
             // than a degenerate always-open recovery lane.
-            config.stale_recovery_min_interval = Duration::from_secs(15);
+            config.stale_recovery_min_interval = Some(Duration::from_secs(15));
             let mut finality_progress = FinalityProgress::new(Instant::now());
 
             let result = do_heartbeat_check(
@@ -2414,7 +2552,7 @@ mod tests {
 
             let (propose_count, propose_func) = create_counting_propose_function();
             let mut config = empty_frontier_backpressure_config();
-            config.stale_recovery_min_interval = Duration::from_secs(60);
+            config.stale_recovery_min_interval = Some(Duration::from_secs(60));
             let mut finality_progress = FinalityProgress::new(Instant::now());
 
             let result = do_heartbeat_check(
@@ -2462,6 +2600,7 @@ mod tests {
                 self_proposed_too_recently: false,
                 self_idle_for_recovery_interval: true,
                 stale_recovery_interval_elapsed: false,
+                cone_has_user_work: false,
                 idle_recovery_window_open: false,
                 lag_recovery_leader: false,
                 empty_frontier_backpressure: false,
@@ -2469,6 +2608,39 @@ mod tests {
                 deploy_recovery_max_lag: 64,
                 effective_frontier_chase_cap: 20,
             }
+        }
+
+        /// A retry wait: the record sits above the floor and every arriving
+        /// block is empty, so only the floor's advance can open the gate.
+        #[test]
+        fn work_in_the_cone_releases_the_follow_lane() {
+            let waiting = LaneInputs {
+                has_new_parents: true,
+                cone_has_user_work: true,
+                ..baseline()
+            };
+            assert!(decide_lanes(&waiting).frontier_follow_due);
+            assert!(
+                !decide_lanes(&LaneInputs {
+                    cone_has_user_work: false,
+                    ..waiting
+                })
+                .frontier_follow_due,
+                "an idle cone does not follow: liveness there is the recovery lane's, paced"
+            );
+        }
+
+        /// The width cap gates this lane independently, so a stalled shard
+        /// carrying unretired records cannot follow past the cap.
+        #[test]
+        fn backpressure_holds_the_follow_lane_even_with_work_in_the_cone() {
+            let d = decide_lanes(&LaneInputs {
+                has_new_parents: true,
+                cone_has_user_work: true,
+                empty_frontier_backpressure: true,
+                ..baseline()
+            });
+            assert!(!d.frontier_follow_due && !d.should_propose);
         }
 
         #[test]
@@ -2515,7 +2687,7 @@ mod tests {
                 has_new_parents: true,
                 self_recently_proposed: true,
                 lfb_lag_blocks: 5,
-                stale_recovery_interval_elapsed: true,
+                cone_has_user_work: true,
                 ..baseline()
             });
             assert!(d.frontier_follow_due && d.should_propose);
