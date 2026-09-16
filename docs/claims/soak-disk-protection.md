@@ -1,0 +1,58 @@
+# Claim: Soak Disk Protection
+
+```yaml
+claim_id: CLAIM-SOAK-001
+status: proposed-unratified
+artifacts:
+  - scripts/run-merge-recovery-soak.sh
+specifications:
+  - formal/tlaplus/soak_disk/SoakDiskAdmission.tla
+  - formal/tlaplus/soak_disk/SoakDiskGuardian.tla
+tests:
+  - scripts/bench/test-soak-disk-admission.sh
+  - scripts/bench/test-run-merge-recovery-soak.sh
+references:
+  - docs/plans/soak-recurrence-prevention-2026-09-08.md
+  - docs/tdd-plans/soak-gates-2026-09-08.md
+  - docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md
+```
+
+## Claim
+
+With disk protection enabled, the soak driver never starts an iteration from a free-space sample that is missing, malformed, or below floor plus band. It never starts one after its guardian process has died. During an iteration, the guardian records a breach before it stops the writers. A dead guardian or an unavailable sample stops the iteration. Every probe and attribution command runs under a deadline. A retained breach marker blocks the next segment.
+
+## Implementation surface
+
+| Behavior | Driver symbols |
+| --- | --- |
+| Sample validation | `disk_free_mb` |
+| Admission | The iteration-boundary hygiene block, `reclaim_disk_space`, `disk_usage_snapshot` |
+| Emergency | The guardian loop, `disk_diagnostics_bounded`, `disk_guardian_diagnostics`, `guardian_stamp_health_tag` |
+| Supervision | The iteration watcher loop over `HOST_GUARDIAN_PID` and `HOST_GUARDIAN_BREACH` |
+| Restart | The `HOST_GUARDIAN_BREACH` recovery before the first iteration |
+
+## Checks
+
+| Check | Command | Status |
+| --- | --- | --- |
+| Bounded models, six registered standalone models, and sixty-one controls | `scripts/ci/check-tla-invariants.sh --soak-pr` | Green locally and on the PR tier |
+| Consumer storage budget | `MC_SoakStorageBudget` invariant `WithinBudget`, with `deploy_storage/MC_DeployStorageBound` for the deploy cap | Proven in the model. Block, log, and history caps are assumptions until the node enforces them |
+| Conditional no-overrun theorem | `MC_SoakDiskGuardian` invariant `NoOverrun` under `FloorCoversReaction` and `BoundTermination` | Proven in the model. The rate premise awaits the timeline measurement, and the termination premise awaits D2 |
+| Container regressions, 42 scenarios | `scripts/bench/test-soak-disk-admission.sh` | Green locally and in CI |
+| Host driver regression, band scenario | `scripts/bench/test-run-merge-recovery-soak.sh` | Green locally and in CI |
+
+## Pending obligations
+
+The claim is not discharged. Gates from the prevention plan:
+
+| Gate | Scope | Status |
+| --- | --- | --- |
+| G0 | Evidence binding and required-check enforcement | Pending. `TLA+ invariant check` is not a required check on `dev`. |
+| D1 | Band admission | Local RED/GREEN complete. Maintainer review pending. |
+| D2 | Emergency response bounds | Partial. Stop commands are bounded (B13) and guardian death blocks admission (B14). Cleanup command bounds, confirmed termination, durable publication, and a composed deadline remain open. |
+| O1 | Observability before the diagnostic soak | Partial. The [work log](https://github.com/F1R3FLY-io/f1r3node-rust/blob/2388a8eedf33d07018f0630bced51a6e054ba439/docs/work-logs/task-soak-disk-hygiene-parsimonious-2026-09-09.md#gate-o1-observability-verification-2026-09-16) records the result of 2026-09-16. The raw CSV writer, the disk records, the artifact retrieval, and the checkpoint deadlines are verified. The carrier hit path and the ancestor counters were not exercised, and no free-inode record exists. |
+| D3 | Identify and remove the disk-growth cause | Open. The source's D3 diagnostic methodology specifies the run that names the growing writer. The cause is not yet identified. |
+| F1, F2, F3 | Finalization work bound and repair | Pending and separate from this claim. |
+| A1 | 60-hour acceptance soak on the exact candidate | Pending. |
+
+A green bounded model or container regression does not establish a disk reserve, an elapsed-time bound, or full-duration safety.
