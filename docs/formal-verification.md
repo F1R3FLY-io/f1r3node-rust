@@ -86,6 +86,7 @@ and reused by every verified area:
 | Replay liveness | [`formal/tlaplus/replay_liveness/`](../formal/tlaplus/replay_liveness) | Linear work for the persistent-contract empty-store replay path |
 | Carrier index | [`formal/tlaplus/carrier_index/`](../formal/tlaplus/carrier_index) | Index-first publication, absence soundness, read-failure refusal, and pruning safety |
 | Promotion convergence | [`formal/tlaplus/fork_choice/PromotionConvergence.tla`](../formal/tlaplus/fork_choice/PromotionConvergence.tla) | Novel-signature gating and eventual GHOST restoration |
+| Deploy storage | [`formal/tlaplus/deploy_storage/`](../formal/tlaplus/deploy_storage) | Retained bytes per deploy bounded by the phlo limit; consensus-side, isolated from host models |
 
 ## Worked example: byte-bounded block admission
 
