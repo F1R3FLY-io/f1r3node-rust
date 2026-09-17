@@ -288,7 +288,7 @@ phase-separated measurements and task 6444 remain open.
 
 ## Split-carrier header prefilter — 2026-09-17, tasks 6444 and 5834
 
-**FORMAL MODEL AND NATIVE SUCCESSOR QUALIFIED; RESOURCE COMPARISON OPEN.** Profiling the escaped
+**FORMAL MODEL, NATIVE SUCCESSOR AND TARGETED RESOURCE COMPARISON QUALIFIED.** Profiling the escaped
 nested-list fixture identified full expression decoding in `split_carrier_list` just to reject
 a non-list expression. The proposed prefilter reads the resident Expr endpoint's borrowed
 protobuf field header. Only canonical resident oneof bytes are eligible for this shortcut:
@@ -346,6 +346,12 @@ the original depth-4,096 cases remain. The EPM1 target takes 271.52 seconds unde
 zero-swap cap. Build/test overlap means this elapsed time is qualification evidence, not a
 benchmark. The log `target/verification/split-prefilter-single-visitor-native-r1.log` has SHA-256
 `3bfab381fc3abe3b3a185fdcd16fd0a6293aaa04208a5411cf502c956428eacc`.
+
+Experiment 345 artifact 681 adds the successor resource comparison: the non-list classification
+repair removes the targeted escaped outer-construction slope through depth 4,096. The genuine
+empty-list case retains an observed 15.48 ns overhead, while legacy reconstruction and map
+validation retain their independent slopes. See J-173 for scope and raw evidence; this focused
+qualification does not close tasks 6444/5834 or the campaign.
 
 ## Original workspace-regression completion gates
 

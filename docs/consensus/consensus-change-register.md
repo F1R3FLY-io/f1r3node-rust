@@ -5139,8 +5139,9 @@ mode/topology, protobuf/bincode encoding, hash inputs, charges, or persistence a
 The conditional Rocq equivalence model and independent kernel check precede implementation.
 Frozen-classifier and exact path/stability properties, all generated Expr headers, and the
 mechanical proof manifest pass for the final single-visitor implementation; all 25 EPM1
-snapshot/meter tests also pass with the original depth-4,096 cases retained. J-173 and SCP-01–08 retain the proof/native boundary and
-pending resource checks. This supporting refinement does not open a new consensus-change axis
+snapshot/meter tests also pass with the original depth-4,096 cases retained. J-173 and SCP-01–08
+retain the proof/native boundary, targeted resource results and still-open legacy/map validation
+costs. This supporting refinement does not open a new consensus-change axis
 or close the broader CBR-044/campaign obligations.
 
 **CBR-044 living implementation continuation (2026-08-25, descriptor-complete codec/admission

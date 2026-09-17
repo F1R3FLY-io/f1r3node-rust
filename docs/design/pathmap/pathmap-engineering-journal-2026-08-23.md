@@ -12673,7 +12673,7 @@ production sources changed in this measurement checkpoint.
 
 ### J-173 — 2026-09-17 Byte-native split-carrier discrimination
 
-**DERIVED; implementation qualification in progress.** The non-list allocation stack isolated in
+**DERIVED AND MEASURED; targeted repair qualified, broader decoder work open.** The non-list allocation stack isolated in
 J-172 enters `split_carrier_list`, which previously decoded the complete singleton Expr before
 learning that it was not an EList. The repair retains every outer-family/cardinality/metadata
 guard, then inspects the resident canonical Expr header through `CanonicalFieldCursor`.
@@ -12705,7 +12705,7 @@ resident header against its protobuf tag and covers absent/default oneofs. The m
 the model runner, kernel check, support-module inclusion and actual decode-counter location.
 The baseline and proof log hashes are retained in the catalog.
 
-**PERFORMANCE QUALIFICATION.** Experiment 345 will retain separate successor observations,
+**PRE-REGISTERED PERFORMANCE QUALIFICATION.** Experiment 345 retains separate successor observations,
 not overwrite its original 126 cells. The hypothesis is elimination of the unnecessary semantic
 decode and its suffix reconstruction during escaped outer-map construction, not elimination of
 the separately observed legacy decoder or map-key validation slopes. A paired probe alternates
@@ -12722,7 +12722,23 @@ retains depth 20,000 and EPM1 retains all depth-4,096 cases. The EPM1 target tak
 under a 6 GiB, zero-swap cap, with build/test overlap; this is not a timing comparison. The
 retained log `target/verification/split-prefilter-single-visitor-native-r1.log` has SHA-256
 `3bfab381fc3abe3b3a185fdcd16fd0a6293aaa04208a5411cf502c956428eacc`.
-Measurements remain pending. No end-to-end campaign or full workspace acceptance is claimed.
+**MEASURED SUCCESSOR.** Artifact 681 and 47 new metric groups retain 175 observations across
+11 phase cells and 14 paired classifier cells. Escaped outer construction at depth 256 changes
+from 1,035.101 to 4.717 ms and from 359,925,677 to 1,737,473 cumulative requested bytes.
+The seven-size successor ladder through 4,096 has time exponent 1.0043 and requested-byte
+exponent 1.0085. These are diagnostic fits and ratios, not a native PathMap lookup or whole
+application speedup claim. The paired empty-list observation adds 15.48 ns (about 3.7%);
+flat/deep list medians differ by roughly 0.1% or less. No statistical non-regression claim
+is made from seven samples.
+
+Legacy decoding still requests roughly four times the bytes per depth doubling, despite removal
+of one full decoding pass. Map-key decoding at depth 128 retains exactly the same allocation
+bytes/calls as its baseline. Those negative controls remain required work under 5834.
+The measurement service reports 55.397 seconds elapsed, 55.135 CPU seconds, 5.9 MiB peak
+memory and zero swap under a 2 GiB cap. CPU 3 was 93.25% idle immediately beforehand;
+no owned build/test overlapped. The [phase report](../stack-safety/measurements/final-root-fixture-phase-attribution-2026-09-17.md#qualified-split-carrier-repair-and-successor-measurements)
+preserves raw samples, hashes, exact boundaries and remaining obligations. No end-to-end
+campaign or full workspace acceptance is claimed.
 
 ## Upstream PathMap integration request register
 

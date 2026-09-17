@@ -195,3 +195,104 @@ The release executable SHA-256 is
 The initial launcher attempt failed before measurements because systemd expanded the
 shell phase variable. The accepted launcher explicitly uses `--expand-environment=no`;
 the failed attempt is retained as experiment artifact 676, not included in the samples.
+
+## Qualified split-carrier repair and successor measurements
+
+**Implementation:** `0f846b3fd`; **experiment:** 345, artifact 681. This checkpoint removes
+one diagnosed source of repeated suffix reconstruction. It does not change PathMap itself
+or measure an improvement to its point-lookup algorithm.
+
+The single-visitor classifier reads the resident Expr's canonical protobuf header. A proven
+non-list needs no semantic decode; a list or inconclusive header uses the same decoder and
+metadata checks as before. Native counters establish zero non-list decodes and one genuine-list
+decode. The conditional Rocq proof has 20 closed reports and independent kernel checking;
+the 35 canonical-path, 27 manifest, seven schema-cursor and 25 EPM1/meter tests pass with the
+original depth-20,000 and depth-4,096 gates. J-173 and SCP-01–08 specify the proof/native limits.
+
+### Successor method
+
+Immediately before measurement, a three-second `mpstat` observation showed CPU 3 at 93.25%
+idle and all cores at 73.73% idle; no Cargo or rustc process was found. All owned builds and tests
+were terminal. The service pins each measurement to CPU 3, uses `MemoryMax=2G`,
+`MemoryHigh=1536M`, `MemorySwapMax=0`, `CPUQuota=100%`, a 600-second overall watchdog and
+120 seconds per phase cell. It completes successfully in 55.397 seconds, consuming 55.135 CPU
+seconds, with reported peak memory 5.9 MiB and zero swap. No cell is censored.
+
+The same calibrated phase harness runs escaped outer construction and legacy decoding at
+64/128/256, outer construction additionally at 512/1024/2048/4096, and map-key decoding at 128
+as a negative control. Every cell has one pilot, three warmups and seven retained observations.
+These before/after phase runs are not contemporaneously paired. The classifier-only probe
+alternates frozen/successor order within each sample, balances the test-only decode counter,
+and excludes checking/dropping returned values from each timed call. It has seven cases and
+14 case/arm cells. Tiny cases batch 1,000 calls, list-64 batches three and the others one;
+the timer is read around each call, so tiny-case clock overhead is not amortized away.
+
+The [77 retained phase observations](split-prefilter-phases-r1-2026-09-17.tsv) and
+[98 retained paired observations](split-prefilter-paired-r1-2026-09-17.tsv) preserve batch totals.
+Artifact 681 also retains pilots and warmups. All 47 new metric groups were accepted by pgmcp
+under distinct successor/paired arm labels; none overwrites the original 126-cell baseline.
+
+### Outer construction: the targeted slope is removed
+
+| Depth | Earlier time (ms) | Successor time (ms) | Earlier requested bytes | Successor requested bytes |
+|---:|---:|---:|---:|---:|
+| 64 | 67.088 | 1.190 | 23,439,533 | 435,777 |
+| 128 | 264.489 | 2.374 | 91,187,245 | 869,633 |
+| 256 | 1,035.101 | 4.717 | 359,925,677 | 1,737,473 |
+| 512 | Not measured | 9.939 | Not measured | 3,473,089 |
+| 1,024 | Not measured | 18.499 | Not measured | 6,944,257 |
+| 2,048 | Not measured | 37.722 | Not measured | 14,200,910 |
+| 4,096 | Not measured | 79.159 | Not measured | 29,074,958 |
+
+**MEASURED:** at depth 256 this phase requests approximately 207 times fewer cumulative
+allocation bytes and takes approximately 219 times less instrumented time. These are scoped
+diagnostic before/after ratios, not confidence-qualified speedups for Rholang applications or
+native PathMap lookup. Seven-size log-log fits versus depth yield time exponent 1.0043 and
+requested-byte exponent 1.0085. The finite ladder supports the targeted linear-work hypothesis;
+it is not an asymptotic proof. Requested bytes are cumulative allocation traffic, not RSS.
+
+### Genuine-list overhead and remaining costs
+
+| Classifier case | Frozen median (ns/call) | Successor median (ns/call) |
+|---|---:|---:|
+| Empty list | 419.722 | 435.202 |
+| Four-element list | 43,588.818 | 43,634.008 |
+| Scalar | 237.169 | 99.695 |
+| Depth-64 list | 60,849,650.667 | 60,840,336.333 |
+| Depth-128 list | 246,227,748 | 245,983,344 |
+| Depth-64 escaped set | 63,786,420 | 3,517 |
+| Depth-128 escaped set | 251,709,774 | 6,953 |
+
+The empty-list case adds 15.48 ns, about 3.7%, in this instrumented run; that negative observation
+is retained. The flat/deep genuine-list medians differ by roughly 0.1% or less. Seven samples
+do not establish a general non-regression or statistical-significance verdict. The large
+non-list difference is consistent with the independently asserted removal of semantic decoding,
+not with a change to trie lookup.
+
+Legacy decoding remains superlinear: successor requested bytes are 23,916,928 / 92,120,832 /
+361,771,584 at depths 64/128/256, with medians 72.963 / 256.602 / 1,053.822 ms. Removing the
+classification decode approximately halves the earlier depth-256 allocation traffic, but
+leaves the generated decoder's resident-suffix construction intact. The map-key negative
+control remains exactly 1,041,415,537 requested bytes and 6,906,667 allocation calls at depth
+128; its 1,609.716 ms median is not evidence of a repair to map validation. These costs remain
+required work under 5834, not accepted residual debt or deferred obligations.
+
+### Successor artifact integrity
+
+All log paths are relative to `target/verification/`.
+
+| Artifact | SHA-256 |
+|---|---|
+| `split-prefilter-paired-r1.log` | `5d201809f68a64e45ac88c1985f9fe11b2ec53dd7943427d34bf6aaec39bf1f1` |
+| `split-prefilter-phases-r1.log` | `5e77a4454387840ec055d9bd3fc02e2974fdef1c2844bad97a6881e4b7a182cd` |
+| `split-prefilter-single-visitor-native-r1.log` | `3bfab381fc3abe3b3a185fdcd16fd0a6293aaa04208a5411cf502c956428eacc` |
+
+The paired unit executable has SHA-256
+`6d2065ebc4a7dfc4e336cd6626cb3a87b7e5f0bb0fc6f51286c778a1fd9149bc`;
+the successor phase executable has SHA-256
+`eb4e617ba6f8fb5a52bfc9ea253b7fab5e9f177770a756f39ce766672207117d`.
+The opt-in tests are `rust::canonical_path::split_prefilter_tests::split_prefilter_paired_measurement`
+and `fixture_phase_probe::fixture_phase_measurement`. The latter retains the original
+`FIXTURE_SHAPE/PHASE/DEPTH/BATCH/SAMPLES/WARMUPS` selectors. The paired probe uses
+`SPLIT_SAMPLES=7` by default. Invoke with `--exact <name> --ignored --nocapture`, CPU affinity
+and the resource caps above. No profiler or compilation overlaps this measurement service.

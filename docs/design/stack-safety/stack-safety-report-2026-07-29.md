@@ -8359,7 +8359,14 @@ genuine lists retain one, with no second zipper walk. The final single-visitor i
 passes 35 canonical-path tests, 27 proof-manifest checks and all seven schema-cursor tests,
 including the original depth-20,000 gate. Its full EPM1 suite passes all 25 tests, including
 four meter controls and the original depth-4,096 cases, under a 6 GiB zero-swap cap. Only the
-opt-in measurement probe is ignored. Resource comparisons remain pending at this checkpoint.
+opt-in measurement probe is ignored. The successor resource comparison now establishes the
+targeted improvement: depth-256 escaped outer construction requests 1,737,473 bytes instead
+of 359,925,677 and takes 4.717 ms instead of 1,035.101 ms. The seven-size ladder through 4,096
+has measured time/byte exponents 1.0043/1.0085. The paired empty-list control adds 15.48 ns
+(about 3.7%); flat/deep list medians differ by roughly 0.1% or less. These are instrumented
+diagnostic observations, not whole-application speedup or statistical non-regression verdicts.
+The capped measurement service peaks at a reported 5.9 MiB with zero swap; cumulative allocation
+requests are not RSS.
 The proof is conditional on the native header correspondence, not a Rust
 parser correctness proof. Legacy decoder reconstruction and map-value validation slopes remain
 separate open obligations; see J-173 and SCP-01–08.
