@@ -11901,6 +11901,89 @@ Blake2b or bincode correctness. The separate release library build remains pendi
 at this checkpoint and supplies no passing-test claim. These local logs live in
 an ignored build directory and are not a substitute for durable evidence records.
 
+### J-164 — 2026-09-17 Complete adjacency checks and source-bound catalog tests
+
+**Status: PROVED sorting/conditional uniqueness; MEASURED focused Rust regression
+results. Task 6589 is still in progress.** This follows the first proof checkpoint
+`e430bf1e2`; it does not claim whole-catalog lazy refinement or campaign completion.
+
+**Finding and repair.** Extending permutation preservation to sorting correctness
+exposed a defect in the old formal checks. In Rocq, the pattern
+`first :: (second :: _ as tail)` bound `tail` after the second element. Consequently
+`catalog_orderedb` and `catalog_unique_identityb` inspected pairs 1/2, 3/4, and so
+on, but skipped pairs 2/3, 4/5, and so on. The same pattern occurred in
+`entries_orderedb` and `channels_orderedb` in this module. Explicitly parenthesizing
+the aliased suffix fixes all four checks. Three-candidate and three-entry negative
+controls now reject a descending or duplicated second/third pair.
+
+This defect was in the formal model, not Rust's adjacent-window duplicate check.
+Earlier closed-context reports established the earlier definitions, not the
+intended complete adjacency property. The successful new universal proof is
+therefore materially stronger than a theorem merely asserting that a returned
+catalog passed its Boolean checks.
+
+**New universal obligations.** The comparator is proved equivalent to
+lexicographic order over `(digest, canonical identity)`. The existing insertion
+sort is strongly sorted for all candidate lists and always passes the corrected
+order check; J-163 already proves permutation preservation. For an ordered
+catalog whose digests are computed by one function of identity, passing the
+corrected duplicate check implies `NoDup` of all canonical identities. This
+requires deterministic digest coherence, **not collision-freedom**: different
+identities can have equal digests. The theorem does not assume equality of
+complete candidates merely because their order keys match.
+
+**Validation and resource observations.** All three modules compile and pass
+independent kernel checking: 58 preparation, 36 mutant and 4 trace closed-context
+reports; combined command 21.668 s, 469.2 MiB peak, 1 GiB hard limit, zero swap.
+The exact-count proof gate was updated accordingly.
+
+The original release library build completed in 27 min 49 s but ran **zero tests**
+because its short filter was paired with `--exact`. It is not passing-test evidence.
+Its 1.5 GiB soft limit caused 1,582,876 memory-high events and approximately 40%
+recent memory-stall time. Raising only the soft limit to 1.75 GiB retained the
+2 GiB hard cap and zero swap; that service recorded no OOM at the diagnostic check.
+This is a build-resource observation, not an application-performance measurement.
+
+Fresh Cargo invocations then bound these release results to the current source
+and lockfile rather than merely invoking old binaries:
+
+| Invocation (`cargo test --release --locked -p rspace_plus_plus`) | Tests | Result |
+|---|---:|---|
+| `--lib rspace::data_index:: -- --test-threads=4` | 66 | Passed, including both forced digest-collision replay tests, malformed-key refusal, channel isolation, source guards and deep traversal. |
+| `--test data_index_spec --test guarded_matching_tests --test rho_path_spec -- --test-threads=4` | 26 + 18 + 22 | All passed, including lazy decoding, codec re-encoding, replay and framing controls. |
+
+The library command took 52.716 s including compilation (test execution 0.83 s),
+with systemd-reported peak 1.7 GiB. The integration command took 35.032 s including
+compilation, peak 1 GiB. Both used a 2 GiB hard cap and zero swap. These are focused
+regression checks, not an end-to-end performance comparison or full-workspace gate.
+
+The source coordinate is `e430bf1e2` plus preserved pre-existing Rust/lockfile
+changes captured in `candidate-catalog-tested-source-delta-r2.patch`. This delta
+was captured after the runs; no Rust or lockfile edits were made by this session
+between compilation and capture. The lockfile SHA-256 is
+`f6f30a7f3b8df0f7f0891e643dd85332a3b6613315f342581cf9f864095fa0ce`.
+The final library binary SHA-256 is
+`899ff5ccb4e00d6a6b29cb206da5c1b2e1613a1235d11f460a356bb782200b4b`;
+the hash printed before recompilation in the command log names its predecessor.
+
+| Artifact under `target/verification/` | SHA-256 |
+|---|---|
+| `candidate-catalog-complete-adjacency-r6.log` | `04fb3d5ac12b456a38b4696c60e6a9f2984a1dbef24f167fa6449f76fdc23c91` |
+| `candidate-catalog-complete-adjacency-mutants-r3.log` | `fc446b26fbe56184e9f3f8d249de2aba2eae41ba67740f9025bd8d85b83c85b9` |
+| `candidate-catalog-complete-adjacency-coqchk-r3.log` | `36993f8cb94070145cdeda6594bb3c93397bb83ae107df9073a3a420052370f1` |
+| `candidate-catalog-source-bound-library-r2.log` | `f62b3153572eb34b02d2dbc9180f4dcd0fd0175f75711aefb14631a90fe1a6ba` |
+| `candidate-catalog-source-bound-integration-r2.log` | `de4cebfbf7ec4eaf22498f6d47395c1f9219343323dd034e80cd3769be64f763` |
+| `candidate-catalog-tested-source-delta-r2.patch` | `b68bcb8dc20d70bc0a691ca066b0e32e4dac9e673e033f03b1b3880a2e9a2342` |
+
+**Next boundary.** Complete the encoded whole-catalog/lazy semantic bridge,
+instantiate digest coherence from construction, and bind concrete hash/codec
+realization and query-position normalization. A second plan review identified
+an important index distinction: Rust preserves catalog ordinals before availability
+filtering, whereas `full_scan_projection` enumerates after filtering. A proof must
+explicitly account for this renumbering; equal candidate values do not establish
+equal integers across unavailable gaps. No production traversal redesign is
+implied. All observations remain recorded under task 6589, reachable from root 4131.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

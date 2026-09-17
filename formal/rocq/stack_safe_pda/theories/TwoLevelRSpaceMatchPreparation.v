@@ -459,6 +459,86 @@ Definition candidate_before_or_equalb
     (left right : MatchCandidate) : bool :=
   candidate_beforeb left right || candidate_order_key_eqb left right.
 
+Definition candidate_key_lt (left right : CandidateOrderKey) : Prop :=
+  path_lex_lt (fst left) (fst right) \/
+  (fst left = fst right /\ path_lex_lt (snd left) (snd right)).
+
+Definition candidate_key_le (left right : CandidateOrderKey) : Prop :=
+  candidate_key_lt left right \/ left = right.
+
+Lemma candidate_key_lt_irreflexive : forall key, ~ candidate_key_lt key key.
+Proof.
+  intros [digest identity] [Hlt|[_ Hlt]];
+    now apply (path_lex_lt_irreflexive _) in Hlt.
+Qed.
+
+Lemma candidate_key_lt_transitive : forall left middle right,
+  candidate_key_lt left middle -> candidate_key_lt middle right ->
+  candidate_key_lt left right.
+Proof.
+  intros [ld li] [md mi] [rd ri]. unfold candidate_key_lt; simpl.
+  intros [Hlm|[Hdm Him]] [Hmr|[Hdr Hir]]; subst;
+    intuition eauto using path_lex_lt_transitive.
+Qed.
+
+Lemma candidate_key_order_total : forall left right,
+  candidate_key_lt left right \/ left = right \/ candidate_key_lt right left.
+Proof.
+  intros [ld li] [rd ri].
+  destruct (path_lex_order_total ld rd) as [Hd|[Hlt|Hgt]].
+  - subst rd. destruct (path_lex_order_total li ri) as [Hi|[Hlt|Hgt]].
+    + subst ri. right. now left.
+    + left. right. now split.
+    + right. right. right. now split.
+  - left. now left.
+  - right. right. now left.
+Qed.
+
+Lemma candidate_key_le_transitive : forall left middle right,
+  candidate_key_le left middle -> candidate_key_le middle right ->
+  candidate_key_le left right.
+Proof.
+  intros left middle right [Hlm|Hlm] [Hmr|Hmr]; subst;
+    unfold candidate_key_le; eauto using candidate_key_lt_transitive.
+Qed.
+
+Lemma candidate_beforeb_spec : forall left right,
+  candidate_beforeb left right = true <->
+    candidate_key_lt (candidate_order_key left) (candidate_order_key right).
+Proof.
+  intros left right. unfold candidate_beforeb, candidate_key_lt,
+    candidate_order_key; simpl.
+  destruct (path_compare (candidate_digest left) (candidate_digest right))
+    eqn:Hcompare.
+  - apply path_compare_eq_iff in Hcompare. rewrite Hcompare.
+    rewrite path_ltb_spec.
+    split; [intro H; right; now split|].
+    intros [H|[_ H]]; [now apply path_lex_lt_irreflexive in H|exact H].
+  - apply path_compare_lt_iff in Hcompare. split; [intro; now left|reflexivity].
+  - apply path_compare_gt_iff in Hcompare. split; [discriminate|].
+    intros [H|[Heq _]].
+    + exfalso. apply (path_lex_lt_irreflexive (candidate_digest left)).
+      eapply path_lex_lt_transitive; eassumption.
+    + rewrite Heq in Hcompare. now apply path_lex_lt_irreflexive in Hcompare.
+Qed.
+
+Lemma candidate_order_key_eqb_spec : forall left right,
+  candidate_order_key_eqb left right = true <->
+  candidate_order_key left = candidate_order_key right.
+Proof.
+  intros left right. unfold candidate_order_key_eqb, candidate_order_key.
+  rewrite andb_true_iff, !path_eqb_spec.
+  split; [intros [Hd Hi]; now rewrite Hd, Hi|intro H; inversion H; auto].
+Qed.
+
+Lemma candidate_before_or_equalb_spec : forall left right,
+  candidate_before_or_equalb left right = true <->
+  candidate_key_le (candidate_order_key left) (candidate_order_key right).
+Proof.
+  intros left right. unfold candidate_before_or_equalb, candidate_key_le.
+  now rewrite orb_true_iff, candidate_beforeb_spec, candidate_order_key_eqb_spec.
+Qed.
+
 Fixpoint insert_candidate
     (candidate : MatchCandidate) (ordered : list MatchCandidate)
     : list MatchCandidate :=
@@ -502,14 +582,14 @@ Qed.
 Fixpoint catalog_orderedb (candidates : list MatchCandidate) : bool :=
   match candidates with
   | [] | [_] => true
-  | first :: (second :: _ as tail) =>
+  | first :: ((second :: _) as tail) =>
       candidate_before_or_equalb first second && catalog_orderedb tail
   end.
 
 Fixpoint catalog_unique_identityb (candidates : list MatchCandidate) : bool :=
   match candidates with
   | [] | [_] => true
-  | first :: (second :: _ as tail) =>
+  | first :: ((second :: _) as tail) =>
       negb (path_eqb (candidate_digest first) (candidate_digest second) &&
         path_eqb (candidate_canonical_identity first)
           (candidate_canonical_identity second)) &&
@@ -586,6 +666,132 @@ Lemma sort_candidates_preserves_forall : forall predicate candidates,
 Proof.
   intros predicate candidates Hforall. induction Hforall; simpl; [constructor|].
   now apply insert_candidate_preserves_forall.
+Qed.
+
+Definition candidate_le (left right : MatchCandidate) : Prop :=
+  candidate_key_le (candidate_order_key left) (candidate_order_key right).
+
+Lemma insert_candidate_is_sorted : forall candidate ordered,
+  StronglySorted candidate_le ordered ->
+  StronglySorted candidate_le (insert_candidate candidate ordered).
+Proof.
+  intros candidate ordered Hsorted.
+  induction Hsorted as [|head tail Htail IH Hhead]; simpl.
+  - constructor; constructor.
+  - destruct (candidate_beforeb candidate head) eqn:Hbefore.
+    + apply candidate_beforeb_spec in Hbefore.
+      assert (Hle : candidate_le candidate head) by (now left).
+      constructor.
+      * now constructor.
+      * constructor; [exact Hle|].
+        eapply Forall_impl; [|exact Hhead].
+        intros item Hitem. unfold candidate_le in *.
+        eapply candidate_key_le_transitive; eassumption.
+    + constructor; [exact IH|].
+      apply insert_candidate_preserves_forall; [|exact Hhead].
+      unfold candidate_le, candidate_key_le.
+      destruct (candidate_key_order_total
+        (candidate_order_key candidate) (candidate_order_key head))
+        as [Hlt|[Heq|Hgt]].
+      * apply candidate_beforeb_spec in Hlt. congruence.
+      * right. symmetry. exact Heq.
+      * now left.
+Qed.
+
+Theorem sort_candidates_is_strongly_sorted : forall candidates,
+  StronglySorted candidate_le (sort_candidates candidates).
+Proof.
+  intro candidates. induction candidates; simpl; [constructor|].
+  now apply insert_candidate_is_sorted.
+Qed.
+
+Lemma strongly_sorted_candidates_pass_order_check : forall candidates,
+  StronglySorted candidate_le candidates -> catalog_orderedb candidates = true.
+Proof.
+  intros candidates Hsorted.
+  induction Hsorted as [|head tail Htail IH Hhead]; [reflexivity|].
+  destruct tail as [|next rest]; [reflexivity|].
+  change (candidate_before_or_equalb head next &&
+    catalog_orderedb (next :: rest) = true).
+  rewrite IH, andb_true_r.
+  apply candidate_before_or_equalb_spec.
+  inversion Hhead. assumption.
+Qed.
+
+Theorem candidate_sort_always_passes_order_check : forall candidates,
+  catalog_orderedb (sort_candidates candidates) = true.
+Proof.
+  intro candidates. apply strongly_sorted_candidates_pass_order_check.
+  apply sort_candidates_is_strongly_sorted.
+Qed.
+
+Definition candidate_lt (left right : MatchCandidate) : Prop :=
+  candidate_key_lt (candidate_order_key left) (candidate_order_key right).
+
+Lemma ordered_unique_catalog_is_strictly_sorted : forall candidates,
+  catalog_orderedb candidates = true ->
+  catalog_unique_identityb candidates = true ->
+  StronglySorted candidate_lt candidates.
+Proof.
+  intro candidates. induction candidates as [|head tail IH];
+    intros Hordered Hunique; [constructor|].
+  destruct tail as [|next rest]; [constructor; constructor|].
+  change (candidate_before_or_equalb head next &&
+    catalog_orderedb (next :: rest) = true) in Hordered.
+  change (negb (candidate_order_key_eqb head next) &&
+    catalog_unique_identityb (next :: rest) = true) in Hunique.
+  apply andb_true_iff in Hordered as [Hbefore Hordered].
+  apply andb_true_iff in Hunique as [Hdifferent Hunique].
+  apply negb_true_iff in Hdifferent.
+  unfold candidate_before_or_equalb in Hbefore.
+  rewrite Hdifferent, orb_false_r in Hbefore.
+  apply candidate_beforeb_spec in Hbefore.
+  specialize (IH Hordered Hunique).
+  constructor; [exact IH|].
+  inversion IH as [|next' rest' Hrest Hnext]; subst.
+  constructor; [exact Hbefore|].
+  eapply Forall_impl; [|exact Hnext].
+  intros item Hitem. unfold candidate_lt in *.
+  eapply candidate_key_lt_transitive; eassumption.
+Qed.
+
+Definition catalog_digest_coherent
+    (digest : Path -> Path) (candidates : list MatchCandidate) : Prop :=
+  Forall (fun candidate => candidate_digest candidate =
+    digest (candidate_canonical_identity candidate)) candidates.
+
+Lemma strictly_sorted_coherent_catalog_has_unique_identities : forall
+    digest candidates,
+  StronglySorted candidate_lt candidates ->
+  catalog_digest_coherent digest candidates ->
+  NoDup (map candidate_canonical_identity candidates).
+Proof.
+  intros digest candidates Hsorted.
+  induction Hsorted as [|head tail Htail IH Hhead]; intros Hcoherent;
+    simpl; [constructor|].
+  inversion Hcoherent as [|head' tail' Hhd Htl]; subst.
+  constructor.
+  - intro Hin. apply in_map_iff in Hin as [item [Hidentity Hin]].
+    rewrite Forall_forall in Hhead.
+    pose proof (Hhead item Hin) as Hlt.
+    rewrite Forall_forall in Htl.
+    specialize (Htl item Hin).
+    unfold candidate_lt, candidate_order_key in Hlt.
+    rewrite Hhd, Htl, Hidentity in Hlt.
+    now apply candidate_key_lt_irreflexive in Hlt.
+  - apply IH. exact Htl.
+Qed.
+
+Theorem ordered_coherent_duplicate_check_implies_global_identity_uniqueness :
+  forall digest candidates,
+  catalog_orderedb candidates = true ->
+  catalog_unique_identityb candidates = true ->
+  catalog_digest_coherent digest candidates ->
+  NoDup (map candidate_canonical_identity candidates).
+Proof.
+  intros digest candidates Hordered Hunique Hcoherent.
+  eapply strictly_sorted_coherent_catalog_has_unique_identities;
+    [now apply ordered_unique_catalog_is_strictly_sorted|exact Hcoherent].
 Qed.
 
 Lemma built_unsorted_catalog_stays_under_requested_channel : forall
@@ -1693,7 +1899,7 @@ Fixpoint reserve_selected_stored
 Fixpoint entries_orderedb (entries : list Entry) : bool :=
   match entries with
   | [] | [_] => true
-  | (first, _) :: ((second, _) :: _ as tail) =>
+  | (first, _) :: (((second, _) :: _) as tail) =>
       path_ltb first second && entries_orderedb tail
   end.
 
@@ -1705,7 +1911,7 @@ Definition channel_entry_well_formedb (entry : ChannelEntry) : bool :=
 Fixpoint channels_orderedb (authority : TwoLevelAuthority) : bool :=
   match authority with
   | [] | [_] => true
-  | (first, _) :: ((second, _) :: _ as tail) =>
+  | (first, _) :: (((second, _) :: _) as tail) =>
       path_ltb first second && channels_orderedb tail
   end.
 
@@ -3834,6 +4040,9 @@ Print Assumptions constructed_candidate_is_codec_exact.
 Print Assumptions encoded_candidate_construction_is_decoder_independent.
 Print Assumptions admitted_lazy_candidate_interpretation_refines_eager.
 Print Assumptions sort_candidates_is_permutation.
+Print Assumptions sort_candidates_is_strongly_sorted.
+Print Assumptions candidate_sort_always_passes_order_check.
+Print Assumptions ordered_coherent_duplicate_check_implies_global_identity_uniqueness.
 Print Assumptions candidate_catalog_depends_only_on_requested_bag.
 Print Assumptions catalog_set_ignores_unrequested_authority.
 Print Assumptions flat_record_addition_preserves_normalization.

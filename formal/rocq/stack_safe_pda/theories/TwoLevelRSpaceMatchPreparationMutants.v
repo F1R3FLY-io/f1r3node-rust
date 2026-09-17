@@ -299,6 +299,26 @@ Example colliding_digest_sort_retains_both_identities_and_multiplicities :
      fixture_candidate marker_a false 3%N]) = false.
 Proof. vm_compute. auto. Qed.
 
+Example order_check_must_inspect_the_second_and_third_candidates :
+  catalog_orderedb [fixture_candidate marker_a false 1%N;
+    fixture_candidate marker_a true 1%N;
+    fixture_candidate marker_a false 2%N] = false.
+Proof. vm_compute. reflexivity. Qed.
+
+Example duplicate_check_must_inspect_the_second_and_third_candidates :
+  catalog_unique_identityb [fixture_candidate marker_a false 1%N;
+    fixture_candidate marker_a true 1%N;
+    fixture_candidate marker_a true 2%N] = false.
+Proof. vm_compute. reflexivity. Qed.
+
+Print Assumptions order_check_must_inspect_the_second_and_third_candidates.
+Example authority_checks_must_inspect_the_second_and_third_entries :
+  entries_orderedb [([1], 1%N); ([3], 1%N); ([2], 1%N)] = false /\
+  channels_orderedb [([1], []); ([3], []); ([2], [])] = false.
+Proof. vm_compute. auto. Qed.
+
+Print Assumptions authority_checks_must_inspect_the_second_and_third_entries.
+Print Assumptions duplicate_check_must_inspect_the_second_and_third_candidates.
 Print Assumptions eager_decoding_is_not_an_encoded_construction_step.
 Print Assumptions encoded_digest_width_and_byte_range_controls.
 Print Assumptions unrequested_malformed_bag_does_not_poison_catalog.
