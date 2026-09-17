@@ -15,7 +15,7 @@ async fn test_fetch_local_peer_node_with_defaults() {
     // Create a test node identifier (using a sample hex string)
     // In real usage, this would be derived from a TLS certificate
     let test_node_id = "de6eed5d00cf080fc587eeb412cb31a75fd10358";
-    let node_identifier = NodeIdentifier::new(test_node_id.to_string());
+    let node_identifier = NodeIdentifier::new(test_node_id).expect("valid test node ID");
 
     // Fetch the peer node
     let result = fetch_local_peer_node(
@@ -79,7 +79,7 @@ async fn test_fetch_local_peer_node_with_host() {
     let host: Option<String> = Some(host_value.clone());
 
     let test_node_id = "de6eed5d00cf080fc587eeb412cb31a75fd10358";
-    let node_identifier = NodeIdentifier::new(test_node_id.to_string());
+    let node_identifier = NodeIdentifier::new(test_node_id).expect("valid test node ID");
 
     let result = fetch_local_peer_node(
         host.clone(),
@@ -126,7 +126,7 @@ async fn test_fetch_local_peer_node_no_upnp() {
     let host: Option<String> = None;
 
     let test_node_id = "de6eed5d00cf080fc587eeb412cb31a75fd10358";
-    let node_identifier = NodeIdentifier::new(test_node_id.to_string());
+    let node_identifier = NodeIdentifier::new(test_node_id).expect("valid test node ID");
 
     let result = fetch_local_peer_node(
         host,

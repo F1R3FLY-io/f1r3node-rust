@@ -498,26 +498,6 @@ impl KeyValueDagRepresentation {
         Ok(invalid_block_hashes)
     }
 
-    pub fn self_justification_chain(
-        &self,
-        block_hash: BlockHash,
-    ) -> Result<Vec<BlockHash>, KvStoreError> {
-        let mut result = Vec::new();
-        let mut current_hash = block_hash;
-
-        loop {
-            match self.self_justification(&current_hash)? {
-                Some(next_hash) => {
-                    result.push(next_hash.clone());
-                    current_hash = next_hash;
-                }
-                None => break,
-            }
-        }
-
-        Ok(result)
-    }
-
     pub fn self_justification(
         &self,
         block_hash: &BlockHash,
@@ -1452,10 +1432,9 @@ impl BlockDagKeyValueStorage {
         &self,
         f: impl FnOnce(&EquivocationTrackerStore) -> Result<A, KvStoreError>,
     ) -> Result<A, KvStoreError> {
-        // P2-12: RMW path — acquire exclusive write lock. Bug #2 / T-9.2
-        // atomicity contract: the closure observes the equivocation index
-        // under exclusive access; no concurrent reader or writer may
-        // observe a partial mutation.
+        // Exclusive access only, not a transaction: no concurrent reader or
+        // writer interleaves with the closure, but writes it makes before
+        // returning `Err` persist.
         //
         // SAFETY/CONTRACT (P2-13): non-reentrant. The closure `f` MUST NOT
         // recursively call `access_equivocations_tracker`, nor any

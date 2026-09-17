@@ -29,6 +29,7 @@ use crate::rust::casper::CasperSnapshot;
 use crate::rust::equivocation_detector::EquivocationDetector;
 use crate::rust::errors::CasperError;
 use crate::rust::metrics_constants::{
+    BLOCK_ARRIVAL_DEPTH_METRIC, BLOCK_ARRIVED_UNCITABLE_METRIC,
     BLOCK_VALIDATION_STEP_BLOCK_SUMMARY_TIME_METRIC, BLOCK_VALIDATION_STEP_BONDS_CACHE_TIME_METRIC,
     BLOCK_VALIDATION_STEP_CHECKPOINT_TIME_METRIC,
     BLOCK_VALIDATION_STEP_NEGLECTED_EQUIVOCATION_TIME_METRIC,
@@ -355,10 +356,46 @@ pub(crate) async fn dispatch_validate<T: TransportLayer + Send + Sync>(
             status,
             elapsed
         );
+        record_arrival_depth(this, block);
         update_mergeable_cache_after_validation(this, block, "block").await;
     }
 
     Ok(val_result)
+}
+
+/// Measured against the live frontier after replay, not the pre-replay
+/// snapshot: a slow replay is what carries a block past the parent-depth limit.
+fn record_arrival_depth<T: TransportLayer + Send + Sync>(
+    this: &MultiParentCasperImpl<T>,
+    block: &BlockMessage,
+) {
+    let frontier = match this.block_dag_storage.get_representation() {
+        Ok(dag) => dag.latest_block_number(),
+        Err(error) => {
+            tracing::warn!(
+                target: "f1r3fly.casper.recovery",
+                %error,
+                "arrival depth not recorded: DAG representation unavailable"
+            );
+            return;
+        }
+    };
+    let depth = frontier - block.body.state.block_number;
+    metrics::histogram!(BLOCK_ARRIVAL_DEPTH_METRIC, "source" => CASPER_METRICS_SOURCE)
+        .record(depth as f64);
+    let max_parent_depth = this.casper_shard_conf.max_parent_depth;
+    if depth > i64::from(max_parent_depth) {
+        metrics::counter!(BLOCK_ARRIVED_UNCITABLE_METRIC, "source" => CASPER_METRICS_SOURCE)
+            .increment(1);
+        tracing::warn!(
+            target: "f1r3fly.casper.recovery",
+            block = %PrettyPrinter::build_string_bytes(&block.block_hash),
+            block_number = block.body.state.block_number,
+            depth,
+            max_parent_depth,
+            "block validated beyond the parent-depth horizon: this node can no longer cite it"
+        );
+    }
 }
 
 pub(crate) async fn dispatch_validate_self_created<T: TransportLayer + Send + Sync>(

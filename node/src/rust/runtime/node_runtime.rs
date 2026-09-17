@@ -131,17 +131,17 @@ impl NodeRuntime {
         // Create RP connections
         let rp_connections = comm::rust::rp::connect::ConnectionsCell::new();
 
-        // Determine initial peer for bootstrapping
-        let init_peer = if self.node_conf.standalone {
-            None
-        } else {
-            Some(
-                comm::rust::peer_node::PeerNode::from_address(
-                    &self.node_conf.protocol_client.bootstrap,
+        let init_peer =
+            if self.node_conf.standalone || self.node_conf.protocol_client.bootstrap.is_empty() {
+                None
+            } else {
+                Some(
+                    comm::rust::peer_node::PeerNode::from_address(
+                        &self.node_conf.protocol_client.bootstrap,
+                    )
+                    .map_err(|e| eyre::eyre!("Failed to parse bootstrap peer address: {}", e))?,
                 )
-                .map_err(|e| eyre::eyre!("Failed to parse bootstrap peer address: {}", e))?,
-            )
-        };
+            };
 
         // Create RPConf
         let rp_conf = comm::rust::rp::rp_conf::RPConf::new(
@@ -403,6 +403,8 @@ impl NodeRuntime {
         // Display node startup info
         if self.node_conf.standalone {
             info!("Starting stand-alone node.");
+        } else if self.node_conf.protocol_client.bootstrap.is_empty() {
+            info!("Starting node with no bootstrap peer.");
         } else {
             info!(
                 "Starting node that will bootstrap from {}",

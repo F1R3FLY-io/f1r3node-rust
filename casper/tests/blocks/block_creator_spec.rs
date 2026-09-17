@@ -207,8 +207,6 @@ fn create_snapshot(max_block_num: i64, validator_id: Bytes) -> CasperSnapshot {
     CasperSnapshot {
         dag,
         last_finalized_block: Bytes::new(),
-        lca: Bytes::new(),
-        tips: vec![],
         parents: vec![],
         justifications: HashSet::new(),
         invalid_blocks: HashMap::new(),

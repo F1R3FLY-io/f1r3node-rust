@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 use casper::rust::estimator::Estimator;
+use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::protocol::casper_message::Bond;
 
 use crate::helper::block_dag_storage_fixture::with_storage;
@@ -156,7 +157,13 @@ async fn estimator_on_empty_latest_messages_should_return_the_genesis_regardless
             .expect("dag representation");
         let estimator = Estimator::apply();
         let forkchoice = estimator
-            .tips_with_latest_messages(&mut dag, &genesis, HashMap::new(), i32::MAX, None)
+            .tips_with_latest_messages(
+                &mut dag,
+                &BlockMetadata::from_block(&genesis, false, None, None),
+                HashMap::new(),
+                i32::MAX,
+                None,
+            )
             .await
             .unwrap();
 
@@ -274,7 +281,13 @@ async fn estimator_on_simple_dag_should_return_the_appropriate_score_map_and_for
 
         let estimator = Estimator::apply();
         let forkchoice = estimator
-            .tips_with_latest_messages(&mut dag, &genesis, latest_blocks, i32::MAX, None)
+            .tips_with_latest_messages(
+                &mut dag,
+                &BlockMetadata::from_block(&genesis, false, None, None),
+                latest_blocks,
+                i32::MAX,
+                None,
+            )
             .await
             .unwrap();
 
@@ -398,12 +411,162 @@ async fn estimator_on_flipping_forkchoice_dag_should_return_the_appropriate_scor
 
         let estimator = Estimator::apply();
         let forkchoice = estimator
-            .tips_with_latest_messages(&mut dag, &genesis, latest_blocks, i32::MAX, None)
+            .tips_with_latest_messages(&mut dag, &BlockMetadata::from_block(&genesis, false, None, None), latest_blocks, i32::MAX, None)
             .await
             .unwrap();
 
         assert_eq!(forkchoice.tips[0], b8.block_hash);
         assert_eq!(forkchoice.tips[1], b7.block_hash);
+    })
+    .await
+}
+
+/// The dense regime: every height carries one block per validator, each citing
+/// all three of the height below, so the LCA walk's candidate set never
+/// collapses and descends to its bound. Bounded at genesis the scored band
+/// grows with chain length — the cost the colleague's shard measured climbing
+/// 192 -> 1107 ms over 2.5 days. Bounded at the fork-choice floor it is flat in
+/// chain length, and the head is the same either way.
+#[tokio::test]
+async fn estimator_scored_from_a_floor_is_flat_in_chain_length_on_a_dense_dag() {
+    let short = dense_regime_scores(10).await;
+    let long = dense_regime_scores(30).await;
+
+    assert_eq!(short.head_from_floor, short.head_from_genesis);
+    assert_eq!(long.head_from_floor, long.head_from_genesis);
+    assert!(
+        long.scored_from_genesis > short.scored_from_genesis,
+        "genesis-bounded scoring grows with chain length: {} at N=10 vs {} at N=30",
+        short.scored_from_genesis,
+        long.scored_from_genesis
+    );
+    assert_eq!(
+        short.scored_from_floor, long.scored_from_floor,
+        "floor-bounded scoring is flat in chain length"
+    );
+}
+
+struct DenseRegimeScores {
+    scored_from_genesis: usize,
+    scored_from_floor: usize,
+    head_from_genesis: prost::bytes::Bytes,
+    head_from_floor: prost::bytes::Bytes,
+}
+
+/// `heights` heights of a fully merged 3-wide DAG; the floor is two heights
+/// below the top, where a live shard's finalized floor trails the frontier.
+async fn dense_regime_scores(heights: usize) -> DenseRegimeScores {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let validators = [
+            generate_validator(Some("Validator One")),
+            generate_validator(Some("Validator Two")),
+            generate_validator(Some("Validator Three")),
+        ];
+        let bonds: Vec<Bond> = validators
+            .iter()
+            .map(|v| Bond {
+                validator: v.clone(),
+                stake: 10,
+            })
+            .collect();
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            Some(bonds.clone()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let mut level: Vec<prost::bytes::Bytes> = vec![genesis.block_hash.clone()];
+        let mut latest: HashMap<_, _> = validators
+            .iter()
+            .map(|v| (v.clone(), genesis.block_hash.clone()))
+            .collect();
+        let mut floor = BlockMetadata::from_block(&genesis, false, None, None);
+
+        for height in 0..heights {
+            let parents = level.clone();
+            let mut next = Vec::with_capacity(validators.len());
+            for (index, validator) in validators.iter().enumerate() {
+                let block = create_test_block(
+                    &mut block_store,
+                    &mut block_dag_storage,
+                    &parents,
+                    &genesis,
+                    validator,
+                    &bonds,
+                    latest.clone(),
+                );
+                next.push(block.block_hash.clone());
+                // The main parent is parents[0], so the spine runs through the
+                // first validator's blocks; a floor off that spine is not a
+                // floor any node would derive.
+                if index == 0 && height + 2 == heights {
+                    floor = BlockMetadata::from_block(&block, false, None, None);
+                }
+            }
+            for (validator, hash) in validators.iter().zip(next.iter()) {
+                latest.insert(validator.clone(), hash.clone());
+            }
+            level = next;
+        }
+
+        // One block on top of the widest level. Three equal-stake validators on
+        // a fully merged level tie, and a tie is broken by hash, so without a
+        // single top block "same head" would assert on the tiebreak rather than
+        // on the bound under test.
+        let head = create_test_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            &level,
+            &genesis,
+            &validators[0],
+            &bonds,
+            latest.clone(),
+        );
+        latest.insert(validators[0].clone(), head.block_hash.clone());
+
+        let mut dag = block_dag_storage.get_representation().expect("dag");
+        let estimator = Estimator::apply();
+        let from_genesis = estimator
+            .tips_with_latest_messages(
+                &mut dag,
+                &BlockMetadata::from_block(&genesis, false, None, None),
+                latest.clone(),
+                i32::MAX,
+                None,
+            )
+            .await
+            .expect("fork choice from genesis");
+        let from_floor = estimator
+            .tips_with_latest_messages(&mut dag, &floor, latest, i32::MAX, None)
+            .await
+            .expect("fork choice from the floor");
+
+        let floor_parent = floor.parents.first().expect("floor has a main parent");
+        for scored in from_floor.scores.keys() {
+            assert!(
+                scored == floor_parent
+                    || dag
+                        .lookup_unsafe(scored)
+                        .expect("scored block")
+                        .block_number
+                        >= floor.block_number,
+                "nothing below the floor is scored except the floor's own main parent"
+            );
+        }
+
+        DenseRegimeScores {
+            scored_from_genesis: from_genesis.scores.len(),
+            scored_from_floor: from_floor.scores.len(),
+            head_from_genesis: from_genesis.tips.first().expect("a head").clone(),
+            head_from_floor: from_floor.tips.first().expect("a head").clone(),
+        }
     })
     .await
 }

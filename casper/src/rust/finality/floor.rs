@@ -27,6 +27,7 @@ use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresenta
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
+use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::Bond;
 use models::rust::validator::Validator;
@@ -73,9 +74,7 @@ pub(crate) type IntroducedSigsMemo = HashMap<BlockHash, HashSet<Bytes>>;
 /// else the sole parent, else none at a root. A multi-parent block with no
 /// recorded base has an underivable state lineage — refused, never
 /// guessed.
-fn state_parent_of(
-    meta: &models::rust::block_metadata::BlockMetadata,
-) -> Result<Option<BlockHash>, CasperError> {
+fn state_parent_of(meta: &BlockMetadata) -> Result<Option<BlockHash>, CasperError> {
     if !meta.merge_base.is_empty() {
         return Ok(Some(meta.merge_base.clone()));
     }
@@ -103,7 +102,7 @@ fn state_parent_of(
 fn held_meta(
     dag: &KeyValueDagRepresentation,
     hash: &BlockHash,
-) -> Result<models::rust::block_metadata::BlockMetadata, CasperError> {
+) -> Result<BlockMetadata, CasperError> {
     dag.lookup(hash).map_err(CasperError::from)?.ok_or_else(|| {
         CasperError::BlockNotHeld(hash.clone(), MissingBlockContext::new("floor held_meta"))
     })
@@ -322,16 +321,17 @@ pub enum FloorOfView {
     /// missing, and the next run derives cleanly. Deeper walks keep
     /// R-DET's contract — absence still refuses to become a verdict.
     AbsenceHold { missing: BlockHash },
-    /// Under a NEGATIVE fault-tolerance threshold "finalized" is bare
-    /// majority agreement per snapshot, so incompatible same-height
-    /// certificates are an expected transient (concurrent siblings each
-    /// clearing >S/2 in different views; CI run 32775081650). The
+    /// At a NON-POSITIVE fault-tolerance threshold "finalized" needs only a
+    /// clique of half the stake, so incompatible same-height certificates are
+    /// an expected transient: two disjoint half-stake cliques certify siblings
+    /// in different views without equivocating (CI run 32775081650). The
     /// derivation still refuses to pick a base — that refusal is
     /// regime-independent — but the live clock holds the cycle quietly:
     /// the next merge spanning both branches restores compatibility.
-    /// Under θ ≥ 0 the same shape stays the loud
-    /// [`CasperError::IncompatibleFinalizedFork`] error, because there it
-    /// is impossible without a protocol breach.
+    /// Above zero a certificate needs MORE than half the stake, so the two
+    /// cliques must overlap and the shape is impossible without a protocol
+    /// breach — there it stays the loud
+    /// [`CasperError::IncompatibleFinalizedFork`] error.
     IncompatibilityHold { detail: String },
 }
 
@@ -404,10 +404,10 @@ pub async fn floor_of_view(
         Err(CasperError::BlockNotHeld(missing, _)) => {
             return Ok(FloorOfView::AbsenceHold { missing })
         }
-        // Under a negative threshold, incompatible majority-agreement
-        // candidates are an expected transient — hold the cycle. Under
-        // θ ≥ 0 the same error is a genuine safety alarm and stays loud.
-        Err(CasperError::IncompatibleFinalizedFork(detail)) if ftt.num < 0 => {
+        // At or below zero, incompatible majority-agreement candidates are an
+        // expected transient — hold the cycle. Above zero the same error is a
+        // genuine safety alarm and stays loud.
+        Err(CasperError::IncompatibleFinalizedFork(detail)) if ftt.num <= 0 => {
             return Ok(FloorOfView::IncompatibilityHold { detail })
         }
         Err(other) => return Err(other),
@@ -430,6 +430,53 @@ pub async fn floor_of_view(
         }
         Err(CasperError::BlockNotHeld(missing, _)) => Ok(FloorOfView::AbsenceHold { missing }),
         Err(other) => Err(other),
+    }
+}
+
+/// The block fork choice scores from: the highest floor among the latest
+/// messages. Above zero a certificate needs a clique over half the stake, so
+/// floors lie on one spine and a latest message below the floor supports no
+/// live fork. At or below zero two disjoint half-stake cliques can certify
+/// incompatible blocks without equivocating, so floors may diverge and the
+/// approved block stays the bound. A latest message whose floor this node
+/// cannot derive abstains, and the result never drops below the approved block.
+pub async fn fork_choice_floor<'a>(
+    dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
+    latest_messages: impl IntoIterator<Item = &'a BlockHash>,
+    approved: BlockMetadata,
+    ftt: FtThreshold,
+) -> Result<BlockMetadata, CasperError> {
+    if ftt.num <= 0 {
+        return Ok(approved);
+    }
+    let mut highest: Option<Floor> = None;
+    for hash in latest_messages {
+        match floor_of_block(dag, block_store, hash, ftt).await {
+            Ok(floor)
+                if highest
+                    .as_ref()
+                    .is_none_or(|h| floor.block_number > h.block_number) =>
+            {
+                highest = Some(floor)
+            }
+            Ok(_) | Err(CasperError::BlockNotHeld(..)) => {}
+            // A latest message whose floor will not derive abstains like an
+            // unheld one. Failing here fails the whole snapshot — and with it
+            // every propose and validate — over one validator's history.
+            Err(error) => tracing::warn!(
+                target: "f1r3.trace.floor",
+                latest_message = %PrettyPrinter::build_string_bytes(hash),
+                %error,
+                "fork-choice floor: latest message abstains, its floor does not derive"
+            ),
+        }
+    }
+    match highest {
+        Some(floor) if floor.block_number > approved.block_number => {
+            Ok(dag.lookup_unsafe(&floor.hash)?)
+        }
+        _ => Ok(approved),
     }
 }
 
@@ -1277,6 +1324,118 @@ mod frontier_determinism_tests {
         );
     }
 
+    #[tokio::test]
+    async fn fork_choice_floor_is_the_highest_latest_message_floor_under_positive_threshold() {
+        let (dag, _absent, held) = mk_truncated_dag();
+        dag.put_cached_floor(held[4].clone(), held[2].clone())
+            .unwrap();
+        dag.put_cached_floor(held[3].clone(), held[1].clone())
+            .unwrap();
+        let approved = dag.lookup_unsafe(&held[0]).unwrap();
+
+        let floor = fork_choice_floor(
+            &dag,
+            &mk_store(),
+            [&held[3], &held[4]],
+            approved.clone(),
+            FtThreshold::from_f32_lossy(0.1),
+        )
+        .await
+        .unwrap();
+        assert_eq!(floor.block_hash, held[2]);
+
+        // Zero belongs with the negative regime: there a certificate needs only
+        // half the stake, so two disjoint cliques can put the floors on
+        // different branches and the approved block stays the bound.
+        for num in [0, -100_000] {
+            let bounded = fork_choice_floor(
+                &dag,
+                &mk_store(),
+                [&held[3], &held[4]],
+                approved.clone(),
+                FtThreshold::from_ppm(num),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                bounded.block_hash, approved.block_hash,
+                "at θ = {num} ppm the approved block is the bound"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn fork_choice_floor_abstains_a_latest_message_whose_floor_is_not_derivable() {
+        let (dag, _absent, held) = mk_truncated_dag();
+        let approved = dag.lookup_unsafe(&held[0]).unwrap();
+
+        let floor = fork_choice_floor(
+            &dag,
+            &mk_store(),
+            [&held[4]],
+            approved.clone(),
+            FtThreshold::from_f32_lossy(0.1),
+        )
+        .await
+        .expect("an underivable floor abstains rather than failing the snapshot");
+        assert_eq!(floor.block_hash, approved.block_hash);
+    }
+
+    /// Two views of one DAG differing only in whether the latest messages'
+    /// floors derive at all: without the anchor seed both walks run off the
+    /// held history and abstain. Abstention must move the floor DOWN the same
+    /// spine — never up, and never off it — which is what makes the floor a
+    /// bound on the scored band rather than a choice of branch.
+    #[tokio::test]
+    async fn an_abstaining_latest_message_lowers_the_floor_along_the_spine() {
+        let ftt = FtThreshold::from_f32_lossy(0.1);
+
+        let (abstaining, _absent, held) = mk_truncated_dag();
+        let approved = abstaining.lookup_unsafe(&held[0]).unwrap();
+        let abstained_floor = fork_choice_floor(
+            &abstaining,
+            &mk_store(),
+            [&held[3], &held[4]],
+            approved.clone(),
+            ftt,
+        )
+        .await
+        .expect("an underivable floor abstains rather than failing the snapshot");
+
+        let (deriving, _absent, held) = mk_truncated_dag();
+        deriving
+            .put_cached_floor(held[3].clone(), held[1].clone())
+            .unwrap();
+        deriving
+            .put_cached_frontier(held[3].clone(), held[1].clone())
+            .unwrap();
+        let derived_floor = fork_choice_floor(
+            &deriving,
+            &mk_store(),
+            [&held[3], &held[4]],
+            approved.clone(),
+            ftt,
+        )
+        .await
+        .expect("a seeded anchor lets both latest messages derive");
+
+        assert_ne!(
+            abstained_floor.block_hash, derived_floor.block_hash,
+            "the two views must derive different floors, or this fixture proves nothing"
+        );
+        assert!(
+            abstained_floor.block_number < derived_floor.block_number,
+            "abstention must lower the floor, never raise it"
+        );
+        assert!(
+            deriving
+                .main_parent_chain(derived_floor.block_hash.clone(), approved.block_number)
+                .unwrap()
+                .contains(&abstained_floor.block_hash),
+            "the lower floor must sit on the higher one's main-parent spine"
+        );
+    }
+
     fn seed_number(dag: &KeyValueDagRepresentation, hash: &Bytes) -> i64 {
         dag.lookup(hash).unwrap().expect("held").block_number
     }
@@ -2061,6 +2220,42 @@ mod frontier_determinism_tests {
             ),
             other => panic!("expected Err(IncompatibleFinalizedFork), got {other:?}"),
         }
+    }
+
+    /// A latest message whose floor fails to derive for a reason OTHER than
+    /// absence must abstain like an unheld one. Returning the error fails the
+    /// snapshot, and with it every propose and validate on this node, over one
+    /// validator's history.
+    #[tokio::test]
+    async fn fork_choice_floor_abstains_a_latest_message_whose_floor_errors() {
+        let v = h(50);
+        let w = h(51);
+        let (g_a, a1, g_b, b1, m) = (h(0), h(1), h(5), h(6), h(7));
+        let dag = build_dag(vec![
+            md_wm(g_a.clone(), vec![], 0, &v, vec![(v.clone(), 1)]),
+            md_wm(a1.clone(), vec![g_a.clone()], 1, &v, vec![(v.clone(), 1)]),
+            md_wm(g_b.clone(), vec![], 0, &w, vec![(w.clone(), 1)]),
+            md_wm(b1.clone(), vec![g_b.clone()], 1, &w, vec![(w.clone(), 1)]),
+            md_wm(m.clone(), vec![a1.clone(), b1.clone()], 2, &v, vec![
+                (v.clone(), 1),
+                (w.clone(), 1),
+            ]),
+        ]);
+        let store = mk_store();
+        let thr = FtThreshold::from_f32_lossy(0.1);
+
+        // The fixture itself: m inherits two incompatible floors, so its own
+        // derivation is the safety error, NOT an absence.
+        match floor_of_block(&dag, &store, &m, thr).await {
+            Err(CasperError::IncompatibleFinalizedFork(_)) => {}
+            other => panic!("fixture must produce a non-absence derivation error, got {other:?}"),
+        }
+
+        let approved = dag.lookup_unsafe(&g_a).unwrap();
+        let floor = fork_choice_floor(&dag, &store, [&m], approved.clone(), thr)
+            .await
+            .expect("a latest message whose floor errors abstains");
+        assert_eq!(floor.block_hash, approved.block_hash);
     }
 
     /// Two disconnected roots, each certified by its own single-validator
