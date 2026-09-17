@@ -11793,9 +11793,11 @@ benchmark magnitude or corrected historical profiling result is claimed.
 
 ### J-162 — 2026-09-17 Candidate-catalog formal and executable reconciliation
 
-**Status: MEASURED implementation-boundary evidence; pgmcp trusted verification pending.**
-The existing candidate-catalog implementation at `e3abc29c5` was re-read against
-the formal contract rather than reimplemented. `RSpaceDataIndex::candidate_catalog`
+**Status: MEASURED partial evidence; completion claim withdrawn on review.**
+The candidate-catalog source at checkpoint `fc1cbbe20` was reviewed against
+the formal contract. The earlier attribution to `e3abc29c5` was incomplete:
+that commit predates the two-level authority selected at `d5b1ca6d6` and
+subsequent formal refinements. `RSpaceDataIndex::candidate_catalog`
 walks the requested channel-relative `Bag` by PathMap cursor, retains each canonical
 identity's raw bytes, computes the 32-byte Blake2b-256 digest, orders by
 `(digest, canonical identity)`, rejects duplicate identities, and builds an
@@ -11810,24 +11812,94 @@ passed 26/26 tests, including canonical insertion-independent ordering,
 multiplicity-preserving positions, empty/unloaded channel distinction, lazy
 decode, exact-path removal, catalog invalidation, sibling preservation and
 copy-on-write isolation. The release `guarded_matching_tests` binary passed
-18/18, including forced candidate-order stability, replay agreement, repeated
+18/18, including candidate-order stability, replay agreement, repeated
 occurrences, rollback, and the 20,000-bind stack-safe traversal.
 
-These checks establish the bounded implementation slice and preserve the
-formal distinction between authoritative trie storage and a deliberately
-materialized candidate-order view. They do not manufacture pgmcp-eligible
-machine evidence: the task's two manual evidence records remain advisory, and
-the catalog task is not claimed as `verified` until a configured producer or
-authorized review accepts the proof/test criteria. The separate baseline task
-continues to be blocked on missing historical experiment provenance and a
-complete captured replay archive.
+The Rust checks invoked pre-existing binaries directly; their correspondence
+to the current source and lockfile was not established. Neither list contains
+the library's forced digest-collision replay tests. These results therefore
+provide partial regression evidence and cannot establish completion of the
+catalog task. Manual evidence records 828/829 overstate criterion coverage
+and their historical commit attribution; subsequent pgmcp corrections supersede
+those interpretations. Task 6589 has returned to `in_progress`.
+
+The Rocq model quantifies over `CanonicalDatumCodec`, including supplied
+decode/re-encode and digest functions. Its closed assumption reports do not
+prove the concrete Rust codec or Blake2b implementation. The remaining audit
+must connect insertion/admission validity and lazy production decoding to the
+model's eager candidate validation, then bind each criterion to current-source
+tests. The separate baseline task remains blocked on historical experiment
+provenance; its recorded concurrent replay archive qualification is complete.
+
+**Process-status correction.** The subsequent library build in systemd unit
+`run-p56452-i41650864.service` remained active after its waiting client exited.
+Host systemd inspection established a live compiler under the 2 GiB hard cap.
+The earlier sandboxed process-list check did not establish termination. Its
+short test filter combined with `--exact` also requires a nonzero-test check
+before any successful process exit can count as test evidence.
 
 | Artifact | Result | SHA-256 |
 |---|---|---|
-| `target/verification/candidate-catalog-formal-r1.log` | Rocq compile succeeded; 1.5 GiB cap; 465.8 MiB peak | recorded in pgmcp evidence 828 |
-| `target/verification/candidate-catalog-coqchk-r1.log` | independent kernel check succeeded; 1.5 GiB cap; 294.6 MiB peak | recorded in pgmcp evidence 828 |
-| `target/verification/candidate-catalog-data-index-r1.log` | 26 passed, 0 failed | recorded in pgmcp evidence 829 |
-| `target/verification/candidate-catalog-guarded-r1.log` | 18 passed, 0 failed | recorded in pgmcp evidence 829 |
+| `target/verification/candidate-catalog-formal-r1.log` | Rocq compile succeeded; 1.5 GiB cap; 465.8 MiB peak | `6b7ad09c59daea75b269ef00fd34c169bc493df916857e935aabd67464c442ee` |
+| `target/verification/candidate-catalog-coqchk-r1.log` | independent kernel check succeeded; 1.5 GiB cap; 294.6 MiB peak | `f43f431fe2e5b69ad3b2b20bd2fa4ca00a5011d75170e0cb86a306c7cf9efd19` |
+| `target/verification/candidate-catalog-data-index-r1.log` | existing binary: 26 passed, 0 failed | `940b1705a279020e36d156d885518021fbe806e0c7757ff35f6f7def17cda700` |
+| `target/verification/candidate-catalog-guarded-r1.log` | existing binary: 18 passed, 0 failed | `5c3e115a7885d015a09ebd55a88b39beb941d254d63853706cb2ec23dd53eb4b` |
+
+### J-163 — 2026-09-17 Lazy candidate refinement: first checked slice
+
+**Status: PROVED conditional model properties; concrete runtime binding remains
+open under task 6589.** No production representation, persistence format,
+candidate order, or consensus behavior changes in this slice.
+
+**Question and method.** Does the eager semantic candidate constructor faithfully
+describe production catalog construction? Source review and the independent plan
+audit found that it does not on arbitrary malformed input: Rust parses and hashes
+identity bytes while retaining lazy decoding, whereas the semantic constructor
+decodes and checks canonicality first. Forcing eager decoding into Rust would
+change both cost and refusal behavior. The refinement therefore retains the
+semantic constructor and adds a separate encoded candidate constructor plus an
+on-demand semantic interpretation.
+
+The encoded view represents the parsed path, absolute address, raw identity digest,
+and multiplicity. Existing offset theorems connect parsed views to the underlying
+byte slices; this is a proof representation, not another runtime allocation.
+`canonical_candidate_admitted` explicitly requires a successful decode with exact
+re-encoding and matching structure. It is a premise, not a proven property of
+every publicly constructible `RSpaceDataIndex`.
+
+| Checked obligation | Theorem or counterexample | Meaning and limitation |
+|---|---|---|
+| Decoder independence | `encoded_candidate_construction_is_decoder_independent` | Changing the supplied decoder cannot affect encoded construction. |
+| Conditional semantic correspondence | `admitted_lazy_candidate_interpretation_refines_eager` | Interpreting a constructed encoded candidate equals eager construction on admitted inputs, including digest/multiplicity refusals. |
+| No sort omission or duplication | `sort_candidates_is_permutation` | Sorting preserves the entire candidate multiset. Sortedness and global identity uniqueness still need separate proofs. |
+| Full observation locality | `catalog_set_ignores_unrequested_authority` | Equal requested Bags imply equal complete semantic catalog results, including refusals; unrelated malformed Bags cannot interfere. |
+| Noncanonical negative control | `eager_decoding_is_not_an_encoded_construction_step` | Well-framed unknown identity bytes pass encoded construction but fail eager decoding; unrestricted eager/lazy refusal equivalence would be false. |
+| Digest and collision controls | `encoded_digest_width_and_byte_range_controls`; `colliding_digest_sort_retains_both_identities_and_multiplicities` | Reject 31-byte/non-byte digests; retain both different colliding identities and their counts; reject duplicate identities. These are model fixtures, not cryptographic verification. |
+
+**Validation.** Under systemd limits of 1 GiB memory, zero swap and one CPU,
+the preparation module produced 55 closed-context reports (5.145 s, 461 MiB
+peak), and the mutant module produced 33 (0.906 s, 393.1 MiB peak). The dependent
+flat-delta trace recompiled; independent `coqchk` accepted all three modules
+(combined trace compilation and kernel check: 15.725 s, 407.6 MiB peak).
+The proof gate now expects those exact counts. The first local permutation
+proof attempt failed at an underspecified intermediate list; the corrected
+proof names that list explicitly. No admission or proof placeholder was used.
+
+| Artifact under `target/verification/` | SHA-256 |
+|---|---|
+| `candidate-catalog-lazy-refinement-r3.log` | `9b68dee717d1ad96f96212a943d8cb11e4160869051a595708815da56178da6a` |
+| `candidate-catalog-lazy-mutants-r1.log` | `4646d3feaef17b8a0fa3edd893be82657b87ef3fee61c98a069b21b1365585be` |
+| `candidate-catalog-flat-trace-r2.log` | `f0532d0e8a885018e887fe9f2fc1415078fabe8f12825919a931ee3c625a3996` |
+| `candidate-catalog-lazy-coqchk-r1.log` | `0109545f29973bcb3827d493bf93cc8c8d4743fd1e17be16a402e21891b8ebd2` |
+
+**Remaining boundary.** Extend the encoded construction through the complete
+requested-channel catalog and lazy interpretation, establish sorting/uniqueness
+and position sort/dedup laws, and bind concrete Rust codec/hash behavior and the
+existing collision/lazy/isolation properties to source-bound executions. The
+current proof record still takes codec/hash functions as inputs; it does not prove
+Blake2b or bincode correctness. The separate release library build remains pending
+at this checkpoint and supplies no passing-test claim. These local logs live in
+an ignored build directory and are not a substitute for durable evidence records.
 
 ## Upstream PathMap integration request register
 

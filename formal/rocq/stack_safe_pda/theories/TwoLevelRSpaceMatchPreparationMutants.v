@@ -258,6 +258,51 @@ Example failed_guarded_record_preserves_guard_and_delta :
   atomic_guarded_addition before absolute_b 1%N = before.
 Proof. vm_compute. auto. Qed.
 
+Example eager_decoding_is_not_an_encoded_construction_step :
+  let absolute := marker_a ++ relative_datum_key [4; 0] [99] in
+  let codec := preparation_fixture_codec in
+  (match construct_encoded_candidate_at (codec_digest_raw_identity codec)
+      (StoredAddress absolute) absolute 1%N with
+   | BuildOk _ => true
+   | BuildRefused _ => false
+   end) = true /\
+  construct_stored_candidate codec absolute 1%N =
+    BuildRefused (RefuseNoncanonicalDatumIdentity [99]).
+Proof. vm_compute. auto. Qed.
+
+Example encoded_digest_width_and_byte_range_controls :
+  construct_encoded_candidate_at (fun _ => repeat 0 31)
+    (StoredAddress absolute_a) absolute_a 1%N =
+    BuildRefused (RefuseDigestWidth [5; 0] (repeat 0 31)) /\
+  construct_encoded_candidate_at (fun _ => repeat 256 32)
+    (StoredAddress absolute_a) absolute_a 1%N =
+    BuildRefused (RefuseDigestWidth [5; 0] (repeat 256 32)).
+Proof. vm_compute. auto. Qed.
+
+Example unrequested_malformed_bag_does_not_poison_catalog :
+  build_candidate_catalog_set preparation_fixture_codec
+    [(marker_a, [(relative_a, 2%N)]); (marker_b, [(malformed_path, 1%N)])]
+    [marker_a; marker_a] =
+  build_candidate_catalog_set preparation_fixture_codec
+    [(marker_a, [(relative_a, 2%N)])] [marker_a; marker_a] /\
+  build_candidate_catalog preparation_fixture_codec
+    [(marker_b, [(malformed_path, 1%N)])] marker_b =
+    BuildRefused (RefuseMalformedStoredPath (marker_b ++ malformed_path)).
+Proof. vm_compute. auto. Qed.
+
+Example colliding_digest_sort_retains_both_identities_and_multiplicities :
+  sort_candidates [fixture_candidate marker_a true 3%N;
+    fixture_candidate marker_a false 2%N] =
+    [fixture_candidate marker_a false 2%N; fixture_candidate marker_a true 3%N] /\
+  catalog_unique_identityb (sort_candidates
+    [fixture_candidate marker_a false 2%N;
+     fixture_candidate marker_a false 3%N]) = false.
+Proof. vm_compute. auto. Qed.
+
+Print Assumptions eager_decoding_is_not_an_encoded_construction_step.
+Print Assumptions encoded_digest_width_and_byte_range_controls.
+Print Assumptions unrequested_malformed_bag_does_not_poison_catalog.
+Print Assumptions colliding_digest_sort_retains_both_identities_and_multiplicities.
 Print Assumptions exact_partition_positive_control.
 Print Assumptions wrong_channel_partition_is_distinguished.
 Print Assumptions shifted_channel_boundary_is_distinguished.

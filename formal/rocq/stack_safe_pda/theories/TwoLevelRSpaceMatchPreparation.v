@@ -1,5 +1,5 @@
 From Stdlib Require Import
-  Bool List Arith Lia NArith Sorting.Sorted.
+  Bool List Arith Lia NArith Sorting.Sorted Sorting.Permutation.
 From StackSafePDA Require Import
   PathMapCanonicalStreamPublicationBase
   TwoLevelRSpaceAuthority
@@ -42,10 +42,9 @@ Record DecodedCanonicalDatum : Type := DecodedCanonicalDatumState {
     receives exactly the unframed canonical identity bytes; there is no
     domain separator. *)
 Record CanonicalDatumCodec : Type := CanonicalDatumCodecState {
-  (** This one executable boundary performs production decode followed by
-      production re-encode.  Returning the re-encoded bytes from the decoded
-      value prevents the formal interface from being satisfied by an
-      identity-only echo function masquerading as an encoder. *)
+  (** Semantic interpretation boundary. Concrete decoder, re-encoder and
+      digest correspondence require independent native binding evidence;
+      this record alone imposes no laws on its supplied functions. *)
   codec_decode_and_reencode_identity : Path -> option DecodedCanonicalDatum;
   codec_digest_raw_identity : Path -> Path
 }.
@@ -208,6 +207,97 @@ Definition construct_stored_candidate
     (multiplicity : Multiplicity) : BuildResult MatchCandidate :=
   construct_candidate_at codec (StoredAddress absolute_path)
     absolute_path multiplicity.
+
+Record EncodedMatchCandidate : Type := EncodedMatchCandidateState {
+  encoded_candidate_address : CandidateAddress;
+  encoded_candidate_view : DatumPathView;
+  encoded_candidate_digest : Path;
+  encoded_candidate_multiplicity : Multiplicity
+}.
+
+Definition construct_encoded_candidate_at
+    (digest_identity : Path -> Path) (address : CandidateAddress)
+    (absolute_path : Path) (multiplicity : Multiplicity)
+    : BuildResult EncodedMatchCandidate :=
+  match parse_absolute_datum absolute_path with
+  | None => BuildRefused (RefuseMalformedStoredPath absolute_path)
+  | Some view =>
+      let identity := datum_view_datum_identity view in
+      let digest := digest_identity identity in
+      if digest_width_is_exact digest then
+        if multiplicity_valid multiplicity then
+          BuildOk (EncodedMatchCandidateState address view digest multiplicity)
+        else BuildRefused (RefuseMultiplicity absolute_path)
+      else BuildRefused (RefuseDigestWidth identity digest)
+  end.
+
+Definition interpret_encoded_candidate
+    (codec : CanonicalDatumCodec) (encoded : EncodedMatchCandidate)
+    : BuildResult MatchCandidate :=
+  let view := encoded_candidate_view encoded in
+  let identity := datum_view_datum_identity view in
+  match codec_decode_and_reencode_identity codec identity with
+  | None => BuildRefused (RefuseNoncanonicalDatumIdentity identity)
+  | Some decoded =>
+      if path_eqb (decoded_datum_reencoded_identity decoded) identity then
+        if path_eqb (decoded_datum_structure decoded)
+            (datum_view_datum_structure view) then
+          BuildOk (MatchCandidateState (encoded_candidate_address encoded)
+            (decoded_view_marker view) (decoded_view_relative view)
+            (datum_view_datum_structure view) identity
+            (encoded_candidate_digest encoded)
+            (decoded_datum_persistent decoded)
+            (encoded_candidate_multiplicity encoded))
+        else BuildRefused (RefuseDatumStructureMismatch identity)
+      else BuildRefused (RefuseNoncanonicalDatumIdentity identity)
+  end.
+
+Definition canonical_candidate_admitted
+    (codec : CanonicalDatumCodec) (absolute : Path) : Prop :=
+  forall view, parse_absolute_datum absolute = Some view ->
+    exists decoded,
+      codec_decode_and_reencode_identity codec
+        (datum_view_datum_identity view) = Some decoded /\
+      decoded_datum_reencoded_identity decoded = datum_view_datum_identity view /\
+      decoded_datum_structure decoded = datum_view_datum_structure view.
+
+Theorem encoded_candidate_construction_is_decoder_independent : forall
+    digest decode_left decode_right address absolute multiplicity,
+  construct_encoded_candidate_at
+    (codec_digest_raw_identity (CanonicalDatumCodecState decode_left digest))
+    address absolute multiplicity =
+  construct_encoded_candidate_at
+    (codec_digest_raw_identity (CanonicalDatumCodecState decode_right digest))
+    address absolute multiplicity.
+Proof. reflexivity. Qed.
+
+Theorem admitted_lazy_candidate_interpretation_refines_eager : forall
+    codec address absolute multiplicity,
+  canonical_candidate_admitted codec absolute ->
+  (match construct_encoded_candidate_at (codec_digest_raw_identity codec)
+      address absolute multiplicity with
+   | BuildOk encoded => interpret_encoded_candidate codec encoded
+   | BuildRefused reason => BuildRefused reason
+   end) = construct_candidate_at codec address absolute multiplicity.
+Proof.
+  intros codec address absolute multiplicity Hadmitted.
+  unfold construct_encoded_candidate_at, construct_candidate_at.
+  destruct (parse_absolute_datum absolute) as [view|] eqn:Hparse;
+    [|reflexivity].
+  destruct (Hadmitted view Hparse) as [decoded [Hdecode [Hidentity Hstructure]]].
+  rewrite Hdecode, Hidentity, Hstructure.
+  assert (Hidentityb : path_eqb (datum_view_datum_identity view)
+      (datum_view_datum_identity view) = true) by (apply path_eqb_spec; reflexivity).
+  assert (Hstructureb : path_eqb (datum_view_datum_structure view)
+      (datum_view_datum_structure view) = true) by (apply path_eqb_spec; reflexivity).
+  rewrite Hidentityb, Hstructureb.
+  destruct (digest_width_is_exact
+    (codec_digest_raw_identity codec (datum_view_datum_identity view)));
+    [|reflexivity].
+  destruct (multiplicity_valid multiplicity); [|reflexivity].
+  unfold interpret_encoded_candidate; simpl.
+  rewrite Hdecode, Hidentity, Hstructure, Hidentityb, Hstructureb. reflexivity.
+Qed.
 
 Definition construct_fresh_candidate
     (codec : CanonicalDatumCodec) (absolute_path : Path)
@@ -387,6 +477,28 @@ Fixpoint sort_candidates (candidates : list MatchCandidate)
   | head :: tail => insert_candidate head (sort_candidates tail)
   end.
 
+Lemma insert_candidate_is_permutation : forall candidate ordered,
+  Permutation (candidate :: ordered) (insert_candidate candidate ordered).
+Proof.
+  intros candidate ordered. induction ordered as [|head tail IH]; simpl.
+  - apply Permutation_refl.
+  - destruct (candidate_beforeb candidate head).
+    + apply Permutation_refl.
+    + eapply Permutation_trans.
+      * apply perm_swap.
+      * now apply perm_skip.
+Qed.
+
+Theorem sort_candidates_is_permutation : forall candidates,
+  Permutation candidates (sort_candidates candidates).
+Proof.
+  intro candidates. induction candidates as [|head tail IH]; simpl.
+  - apply Permutation_refl.
+  - eapply Permutation_trans with (l' := head :: sort_candidates tail).
+    + apply perm_skip. exact IH.
+    + apply insert_candidate_is_permutation.
+Qed.
+
 Fixpoint catalog_orderedb (candidates : list MatchCandidate) : bool :=
   match candidates with
   | [] | [_] => true
@@ -532,6 +644,16 @@ Definition build_candidate_catalog
     end
   else BuildRefused (RefuseMalformedStoredPath channel).
 
+Theorem candidate_catalog_depends_only_on_requested_bag : forall
+    codec left right channel,
+  lookup_channel channel left = lookup_channel channel right ->
+  build_candidate_catalog codec left channel =
+    build_candidate_catalog codec right channel.
+Proof.
+  intros codec left right channel Hlookup.
+  unfold build_candidate_catalog. now rewrite Hlookup.
+Qed.
+
 Fixpoint path_memberb (path : Path) (paths : list Path) : bool :=
   match paths with
   | [] => false
@@ -552,6 +674,16 @@ Record CandidateCatalogSet : Type := CandidateCatalogSetState {
   candidate_catalog_unique_channels : list Path;
   candidate_catalogs : list CandidateCatalog
 }.
+
+Lemma deduplicated_requested_channel_was_requested : forall requested channel,
+  In channel (deduplicate_requested_channels requested) -> In channel requested.
+Proof.
+  intro requested. induction requested as [|head tail IH]; intros channel Hin;
+    simpl in *; [contradiction|].
+  destruct (path_memberb head (deduplicate_requested_channels tail)).
+  - right. now apply IH.
+  - destruct Hin as [Heq|Hin]; [now left|right; now apply IH].
+Qed.
 
 Fixpoint build_catalog_list
     (codec : CanonicalDatumCodec) (observed : TwoLevelAuthority)
@@ -577,6 +709,37 @@ Definition build_candidate_catalog_set
   | BuildRefused reason => BuildRefused reason
   | BuildOk catalogs => BuildOk (CandidateCatalogSetState requested unique catalogs)
   end.
+
+Lemma catalog_list_depends_only_on_requested_bags : forall
+    codec channels left right,
+  (forall channel, In channel channels ->
+    lookup_channel channel left = lookup_channel channel right) ->
+  build_catalog_list codec left channels = build_catalog_list codec right channels.
+Proof.
+  intros codec channels. induction channels as [|head tail IH];
+    intros left right Hagree; simpl; [reflexivity|].
+  rewrite (@candidate_catalog_depends_only_on_requested_bag
+    codec left right head (Hagree head (or_introl eq_refl))).
+  rewrite (IH left right).
+  - reflexivity.
+  - intros channel Hin. apply Hagree. now right.
+Qed.
+
+Theorem catalog_set_ignores_unrequested_authority : forall
+    codec requested left right,
+  (forall channel, In channel requested ->
+    lookup_channel channel left = lookup_channel channel right) ->
+  build_candidate_catalog_set codec left requested =
+    build_candidate_catalog_set codec right requested.
+Proof.
+  intros codec requested left right Hagree.
+  unfold build_candidate_catalog_set.
+  rewrite (@catalog_list_depends_only_on_requested_bags
+    codec (deduplicate_requested_channels requested) left right).
+  - reflexivity.
+  - intros channel Hin. apply Hagree.
+    now apply deduplicated_requested_channel_was_requested.
+Qed.
 
 Fixpoint lookup_candidate_catalog_list
     (channel : Path) (catalogs : list CandidateCatalog)
@@ -3668,6 +3831,11 @@ Proof. intros before path amount Hfailure. unfold atomic_guarded_addition. now r
 
 (** Closed capstones used by the proof gate. *)
 Print Assumptions constructed_candidate_is_codec_exact.
+Print Assumptions encoded_candidate_construction_is_decoder_independent.
+Print Assumptions admitted_lazy_candidate_interpretation_refines_eager.
+Print Assumptions sort_candidates_is_permutation.
+Print Assumptions candidate_catalog_depends_only_on_requested_bag.
+Print Assumptions catalog_set_ignores_unrequested_authority.
 Print Assumptions flat_record_addition_preserves_normalization.
 Print Assumptions flat_record_removal_preserves_normalization.
 Print Assumptions parsed_relative_offset_is_exact.

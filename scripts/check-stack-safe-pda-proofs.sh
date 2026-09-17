@@ -254,11 +254,11 @@ match_preparation_proof_clients() {
     theories/TwoLevelRSpaceMatchPreparation.v \
     theories/TwoLevelRSpaceFlatDeltaTrace.v \
     theories/TwoLevelRSpaceMatchPreparationMutants.v
-  rocq_compile_with_closed_count theories/TwoLevelRSpaceMatchPreparation.v 50 \
+  rocq_compile_with_closed_count theories/TwoLevelRSpaceMatchPreparation.v 55 \
     "constructive RSpace preparation and grouped delta refinement"
   rocq_compile_with_closed_count theories/TwoLevelRSpaceFlatDeltaTrace.v 4 \
     "finite flat-delta traces and separate normalized supports"
-  rocq_compile_with_closed_count theories/TwoLevelRSpaceMatchPreparationMutants.v 29 \
+  rocq_compile_with_closed_count theories/TwoLevelRSpaceMatchPreparationMutants.v 33 \
     "absolute-address and flat-delta mutation controls"
 }
 
