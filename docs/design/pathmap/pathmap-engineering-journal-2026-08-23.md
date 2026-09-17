@@ -12095,6 +12095,62 @@ The gate now requires 18 reports. Resume with its independent kernel recheck,
 the complete maintained gate and source-bound tracker evidence.
 No verified-completion or campaign-completion claim follows from this checkpoint.
 
+### J-166 — 2026-09-17 Combined candidate-catalog gate qualification
+
+**Status: MEASURED complete local gate pass; tracker-verified acceptance remains
+open.** Resumption used checkpoint `cc04292eb` on the existing branch. The
+preserved source-delta and lockfile hashes still match J-165; unrelated worktree
+edits were neither reverted nor included in this evidence commit.
+
+The unmodified maintained command
+`scripts/check-stack-safe-pda-proofs.sh --match-preparation` completed with exit
+0 in 147.087 s. It freshly compiled the framing and preparation dependencies,
+enforced 21 framing, 58 preparation, 18 encoded-catalog, 4 flat-delta-trace and
+41 mutation-control closed-context reports, and independently kernel-checked
+the four preparation/client modules and their dependencies. This closes the
+final indexed-retrieval kernel recheck left pending in J-165.
+
+All nine native invocations passed their exact nonignored counts:
+
+| Native group | Passing tests |
+|---|---:|
+| Complete `rspace::data_index::` library group | 69 |
+| Raw identity digest-preimage observation | 1 |
+| Accepted-match formal bindings | 12 |
+| Data-index integration | 28 |
+| Serializer byte goldens | 5 |
+| Bag transaction deltas | 2 |
+| Multiplicity overflow/zero refusal | 1 |
+| RhoPath framing | 22 |
+| Production-Par datum codec differential | 1 |
+| **Total** | **141** |
+
+The run set `PROPTEST_CASES=256` and `PROPTEST_RNG_SEED=41316588`. Proof subprocesses
+had 2 GiB systemd hard limits; RSpace Rust subprocesses had 6 GiB, and the models
+subprocess had 2 GiB. Swap was disabled in each scope. The outer logging service
+reported only its own 36.8 MiB peak and 0.789 s CPU: its independently scoped
+checker children are **not** included in those resource numbers. Consequently
+neither number is a peak-memory or CPU measurement of the complete gate. This
+run establishes correctness checks, not application throughput or allocation
+improvements, and does not replace the campaign's full-workspace release gate.
+
+The complete local log is
+`target/verification/candidate-catalog-combined-gate-r1.log`, SHA-256
+`73fd86584da2ddae39cb7ce3e72b4febe85c1899b7a1581f35166e47eaf76d2f`.
+Its exact invocation and result are recorded under task 6589. The result is
+locally observed agent evidence, not a pgmcp-managed execution receipt.
+
+**Remaining acceptance boundary.** The tracker currently has no approved local
+verification recipe bound to either task criterion. Its test URI names only
+`accepted_match_formal_bindings`, which does not describe the full catalog
+coverage above. Current pgmcp documentation requires explicit recipe-policy
+authorization and an acceptance binding before managed verification. Its Rocq
+adapter documents single-source compilation, not this multi-module `-Q` graph.
+No contract was weakened, no authorization was invented, and no pgmcp source,
+proof parser or dependency was added to bypass this distinction. The leaf's
+local implementation/checks can be claimed complete; verified tracker acceptance
+must remain open until a supported authorized evidence path is established.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
