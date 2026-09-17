@@ -177,5 +177,7 @@
   "formal/tlaplus/soak_disk/SoakStorageBudget.tla": "500988d95e331a6aea1ee3bd180d826e928567fe7f0f58f9250109bedf384ef8",
   "scripts/ci/check-formal-invariants.sh": "84e75616a60f671c1be36b85a4678f97c1c3ea1f8f08396e1281bcfa0e8f2876",
   "scripts/ci/check-tla-invariants.sh": "5ad5058f26280a0f90730f6b8c14c40c5326ca0d2fc0dcf9c7ba8018be0397c8",
-  "scripts/ci/test-check-tla-invariants.sh": "369fe3ed9899c28f1bf9d2a3f29cfc251e25dd41d92aa75b69120281b4c19c8c"
+  "scripts/ci/check_casper_soak_models.py": "d2ba76df6eb3b3a17d821d9e35d64b2a57e790546cff3243c0d66420bdfec7ca",
+  "scripts/ci/test-check-tla-invariants.sh": "369fe3ed9899c28f1bf9d2a3f29cfc251e25dd41d92aa75b69120281b4c19c8c",
+  "scripts/ci/tests/test_casper_soak_model_runner.py": "1d7050a908a06e632bd88dfeb1c32fc94e21418bbe47bb99ad44c0a5526c7fb4"
 }

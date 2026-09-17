@@ -19,7 +19,7 @@ The [claim](../claims/casper-soak-harness.md) defines the contract. The [formal 
 | H07 | Keep deferred experiments outside baseline authority. | PolicyIsolation | Pending |
 | H08 | Keep missing measurements distinct from zero values. | MissingIsUnknown | Pending |
 | H09 | Require the actual merge for a post-#216 profile. | PostMergeGate | Pending |
-| H10 | Accept only the named negative-control violation. | ControlVerdictExact | Pending |
+| H10 | Accept only the named negative-control violation. | ControlVerdictExact | Partial: trace and positive-search checks pass |
 
 ## First bounded model result
 
@@ -28,6 +28,22 @@ All H01 through H10 negative configurations produced their named invariant viola
 The local runner's twelve unit tests passed. They check the verifier runner, not the live driver behavior required by this checklist.
 
 No RED/GREEN driver cycle is marked complete. The [implementation log](../work-logs/task-017-4-harness-model-2026-09-16.md) links the retained results and limits.
+
+## H10 trace validation
+
+The shared gate now requires a first state after the counterexample header. The RED fixture reproduced acceptance of a truncated trace.
+
+The GREEN fixture passed 61 acceptance controls and 21 rejection cases across three registered areas. The bounded shared tier passed 13 positives and 61 negatives.
+
+The [cycle log](../work-logs/task-017-4-control-trace-2026-09-17.md) links the source digests and transcripts. This partial binding does not complete H10 or the harness claim.
+
+## H10 positive-search validation
+
+The shared gate now requires exit zero and the exact completed-search marker for positive configurations. RED reproduced acceptance of an incomplete positive search.
+
+GREEN rejected that result through the pull-request workflow command. The shared bounded tier passed all 13 positives and 61 negatives.
+
+The [cycle log](../work-logs/task-017-4-positive-search-2026-09-17.md) records the evidence. Contradictory markers and multiple invariant violations still require exact-result classification tests.
 
 ## Per-cycle record template
 

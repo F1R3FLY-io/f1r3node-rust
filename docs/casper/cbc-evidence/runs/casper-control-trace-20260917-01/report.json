@@ -8,10 +8,11 @@
   "base_revision": "6814682e4c7de98f883b8791d3227e98bc3f2c15",
   "construction": "not-applicable",
   "construction_assumptions": null,
+  "evidence_kind": "synthetic_fixture",
   "node_executed": false,
   "claim_discharged": false,
   "source_manifest": "source-manifest.json",
-  "source_manifest_sha256": "548c8841b935197a0050701f4bb491ac9b2a682aef5b3bf5a0f8fe42f5b75255",
+  "source_manifest_sha256": "3b2cfd1ffba3516f100865eb6517e5f60fae129b83f1e8bdd1da105efd8d5c1a",
   "implementation_patch": "implementation.patch.txt",
   "implementation_patch_sha256": "b4bac4e192e3ceeb0d15e8fd4afef6d66e78e38c1fe99b69c39f581fcb838a0a",
   "phases": {

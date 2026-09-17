@@ -1,0 +1,60 @@
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 63 and seed 2663208745830527502 with 2 workers on 2 cores with 341MB heap and 64MB offheap memory [pid: 2645] (Linux 6.12.76-linuxkit aarch64, Debian 17.0.20.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /case/work/formal/tlaplus/soak_disk/MC_ReserveBound_unbounded_pre_fix.tla
+Parsing file /case/work/formal/tlaplus/soak_disk/ReserveBound.tla
+Parsing file /tmp/Integers.tla
+Parsing file /tmp/Naturals.tla
+Semantic processing of module Naturals
+Semantic processing of module Integers
+Semantic processing of module ReserveBound
+Semantic processing of module MC_ReserveBound_unbounded_pre_fix
+Starting... (2026-09-17 05:28:23)
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-09-17 05:28:23.
+Error: Invariant OperatingReserveHeld is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ burstUsed = FALSE
+/\ step = 0
+/\ free = 8
+
+State 2: <ApplyBurst line 21, col 5 to line 25, col 21 of module ReserveBound>
+/\ burstUsed = TRUE
+/\ step = 0
+/\ free = 7
+
+State 3: <Grow line 14, col 5 to line 18, col 26 of module ReserveBound>
+/\ burstUsed = TRUE
+/\ step = 1
+/\ free = 6
+
+State 4: <Grow line 14, col 5 to line 18, col 26 of module ReserveBound>
+/\ burstUsed = TRUE
+/\ step = 2
+/\ free = 5
+
+State 5: <Grow line 14, col 5 to line 18, col 26 of module ReserveBound>
+/\ burstUsed = TRUE
+/\ step = 3
+/\ free = 4
+
+State 6: <Grow line 14, col 5 to line 18, col 26 of module ReserveBound>
+/\ burstUsed = TRUE
+/\ step = 4
+/\ free = 3
+
+State 7: <Grow line 14, col 5 to line 18, col 26 of module ReserveBound>
+/\ burstUsed = TRUE
+/\ step = 5
+/\ free = 2
+
+State 8: <Grow line 14, col 5 to line 18, col 26 of module ReserveBound>
+/\ burstUsed = TRUE
+/\ step = 6
+/\ free = 1
+
+20 states generated, 15 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 8.
+The average outdegree of the complete state graph is 1 (minimum is 1, the maximum 2 and the 95th percentile is 2).
+Finished in 00s at (2026-09-17 05:28:23)

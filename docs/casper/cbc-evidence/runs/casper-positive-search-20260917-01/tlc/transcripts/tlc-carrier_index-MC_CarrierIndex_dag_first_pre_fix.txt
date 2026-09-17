@@ -1,0 +1,33 @@
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 127 and seed -6606991869016389607 with 2 workers on 2 cores with 341MB heap and 64MB offheap memory [pid: 673] (Linux 6.12.76-linuxkit aarch64, Debian 17.0.20.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /case/work/formal/tlaplus/carrier_index/MC_CarrierIndex_dag_first_pre_fix.tla
+Parsing file /case/work/formal/tlaplus/carrier_index/CarrierIndex.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/FiniteSets.tla
+Parsing file /tmp/Sequences.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module CarrierIndex
+Semantic processing of module MC_CarrierIndex_dag_first_pre_fix
+Starting... (2026-09-17 05:27:30)
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-09-17 05:27:30.
+Error: Invariant IndexCompleteForWindow is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ readable = TRUE
+/\ indexed = {}
+/\ visible = {}
+/\ scanStart = 0
+
+State 2: <PublishBlock line 40, col 3 to line 44, col 47 of module CarrierIndex>
+/\ readable = TRUE
+/\ indexed = {}
+/\ visible = {b0}
+/\ scanStart = 0
+
+11 states generated, 9 distinct states found, 5 states left on queue.
+The depth of the complete state graph search is 3.
+Finished in 00s at (2026-09-17 05:27:30)
