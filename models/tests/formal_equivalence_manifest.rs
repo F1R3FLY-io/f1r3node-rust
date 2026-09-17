@@ -38,6 +38,59 @@ fn read_repository_file(relative: &str) -> String {
         .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()))
 }
 
+fn has_runner_command(runner: &str, expected: &[&str]) -> bool {
+    runner.replace("\\\n", " ").lines().any(|line| {
+        line.split_whitespace()
+            .take(expected.len())
+            .eq(expected.iter().copied())
+    })
+}
+
+fn has_runner_kernel_check(runner: &str, modules: &[&str]) -> bool {
+    runner.replace("\\\n", " ").lines().any(|line| {
+        let tokens: Vec<_> = line.split_whitespace().collect();
+        tokens.first() == Some(&"rocq_check_modules") && tokens.ends_with(modules)
+    })
+}
+
+#[test]
+fn proof_runner_binding_checks_commands_not_descriptions_or_comments() {
+    let command = ["rocq_compile_with_closed_count", "theories/Example.v", "32"];
+    assert!(has_runner_command(
+        "  rocq_compile_with_closed_count \\\n  theories/Example.v 32 \\\n  \"a changed description\"\n",
+        &command,
+    ));
+    for invalid in [
+        "# rocq_compile_with_closed_count theories/Example.v 32",
+        "echo rocq_compile_with_closed_count theories/Example.v 32",
+        "rocq_compile_with_closed_count theories/Example.v 320",
+        "rocq_compile_with_closed_count theories/Example.v 31",
+        "rocq_compile_with_closed_count theories/Other.v 32",
+        "rocq_compile_with_closed_count\ntheories/Example.v 32",
+    ] {
+        assert!(
+            !has_runner_command(invalid, &command),
+            "accepted {invalid:?}"
+        );
+    }
+    let modules = ["StackSafePDA.Main", "StackSafePDA.Mutants"];
+    assert!(has_runner_kernel_check(
+        "rocq_check_modules \"an arbitrary description\" StackSafePDA.Main StackSafePDA.Mutants",
+        &modules,
+    ));
+    for invalid in [
+        "# rocq_check_modules \"description\" StackSafePDA.Main StackSafePDA.Mutants",
+        "echo rocq_check_modules \"description\" StackSafePDA.Main StackSafePDA.Mutants",
+        "rocq_check_modules \"description\" StackSafePDA.Main",
+        "rocq_check_modules \"description\" StackSafePDA.Main StackSafePDA.Other",
+    ] {
+        assert!(
+            !has_runner_kernel_check(invalid, &modules),
+            "accepted {invalid:?}"
+        );
+    }
+}
+
 #[derive(Clone, Copy)]
 struct Actree03Correspondence {
     id: &'static str,
@@ -772,14 +825,27 @@ fn pathmap_reverse_prune_formal_first_artifacts_are_manifested() {
         "DeadAnchorRequiresExactlyOnePda",
         "OneRawHeaderPerActiveAnchor",
         "HeaderAndRootRegistrationAgree",
-        "the exact 25-primary/10-quarantine PathMap teardown authority and scoped production policies",
-        "the exact 27-teardown/13-quarantine PathMap teardown controls",
+        "StackSafePDA.PathMapReversePruneTeardown",
+        "StackSafePDA.PathMapReversePruneTeardownMutants",
     ] {
         assert!(
             runner.contains(marker),
             "PathMap teardown formal runner is missing `{marker}`"
         );
     }
+    for (theory, count) in [
+        ("theories/PathMapReversePruneTeardown.v", "32"),
+        ("theories/PathMapReversePruneTeardownMutants.v", "13"),
+    ] {
+        assert!(
+            has_runner_command(&runner, &["rocq_compile_with_closed_count", theory, count]),
+            "PathMap teardown runner must compile {theory} with {count} closed reports",
+        );
+    }
+    assert!(has_runner_kernel_check(&runner, &[
+        "StackSafePDA.PathMapReversePruneTeardown",
+        "StackSafePDA.PathMapReversePruneTeardownMutants",
+    ],));
 }
 
 #[test]
@@ -1727,8 +1793,7 @@ fn rspace_atomic_checkpoint_authority_and_negative_controls_are_manifested() {
 
 #[test]
 fn rho_path_v2_lifecycle_formal_artifacts_are_manifested() {
-    let model =
-        read_repository_file("formal/tlaplus/stack_safe_pda/RhoPathV2Lifecycle.tla");
+    let model = read_repository_file("formal/tlaplus/stack_safe_pda/RhoPathV2Lifecycle.tla");
     for marker in [
         "Produce(nextLane) ==",
         "Install ==",
@@ -1751,8 +1816,7 @@ fn rho_path_v2_lifecycle_formal_artifacts_are_manifested() {
         );
     }
 
-    let config =
-        read_repository_file("formal/tlaplus/stack_safe_pda/RhoPathV2Lifecycle.cfg");
+    let config = read_repository_file("formal/tlaplus/stack_safe_pda/RhoPathV2Lifecycle.cfg");
     for invariant in [
         "INVARIANT TypeInvariant",
         "INVARIANT FullImageCollisionSafety",
@@ -1825,7 +1889,10 @@ fn rpb3_admission_formal_artifacts_are_manifested() {
         "rpb3_pda_terminates_without_call_stack_recursion",
         "Print Assumptions rpb3_pda_equivalent_to_recursive_validation",
     ] {
-        assert!(rocq.contains(marker), "RPB3 Rocq theory is missing `{marker}`");
+        assert!(
+            rocq.contains(marker),
+            "RPB3 Rocq theory is missing `{marker}`"
+        );
     }
 
     let mutants =
@@ -1835,7 +1902,10 @@ fn rpb3_admission_formal_artifacts_are_manifested() {
         "mutant_trailing_acceptance_is_refuted",
         "Print Assumptions mutant_omit_locality_is_refuted",
     ] {
-        assert!(mutants.contains(marker), "RPB3 mutant theory is missing `{marker}`");
+        assert!(
+            mutants.contains(marker),
+            "RPB3 mutant theory is missing `{marker}`"
+        );
     }
 
     let verus = read_repository_file("formal/verus/rpb3_admission_cursor.rs");
@@ -1847,7 +1917,10 @@ fn rpb3_admission_formal_artifacts_are_manifested() {
         "rejects_unbalanced_root",
         "rejects_duplicate_slot",
     ] {
-        assert!(verus.contains(marker), "RPB3 Verus refinement is missing `{marker}`");
+        assert!(
+            verus.contains(marker),
+            "RPB3 Verus refinement is missing `{marker}`"
+        );
     }
 
     let coq_project = read_repository_file("formal/rocq/stack_safe_pda/_CoqProject");
@@ -1858,7 +1931,6 @@ fn rpb3_admission_formal_artifacts_are_manifested() {
     for marker in [
         "theories/RPB3Admission.v",
         "theories/RPB3AdmissionMutants.v",
-        "rpb3_admission_closed_capstones",
         "rpb3_admission_mutants_closed_capstones",
         "formal/verus/rpb3_admission_cursor.rs",
         "StackSafePDA.RPB3AdmissionMutants",
@@ -1871,17 +1943,40 @@ fn rpb3_admission_formal_artifacts_are_manifested() {
             "RPB3 formal runner is missing `{marker}`"
         );
     }
+    assert!(has_runner_command(&runner, &[
+        "rocq_compile_with_closed_count",
+        "theories/RPB3Admission.v",
+        "357"
+    ],));
+    assert!(
+        runner
+            .lines()
+            .any(|line| line == "canonical_key_protocol_proofs"),
+        "the default full proof gate must invoke canonical_key_protocol_proofs",
+    );
+    assert!(has_runner_kernel_check(&runner, &[
+        "StackSafePDA.RPB3Admission",
+        "StackSafePDA.RPB3AdmissionMutants",
+    ],));
 }
 
 #[test]
 fn generated_rpb3_registry_is_contiguous_and_descriptor_aligned() {
-    use models::rust::rholang::match_schema_tables::{PAR_PROTOBUF_REGION_PROGRAM, RHO_MATCH_REGISTRY};
+    use models::rust::rholang::match_schema_tables::{
+        PAR_PROTOBUF_REGION_PROGRAM, RHO_MATCH_REGISTRY,
+    };
 
-    assert!(!RHO_MATCH_REGISTRY.is_empty(), "generated RPB3 registry is empty");
+    assert!(
+        !RHO_MATCH_REGISTRY.is_empty(),
+        "generated RPB3 registry is empty"
+    );
     for (index, (name, program)) in RHO_MATCH_REGISTRY.iter().enumerate() {
         let expected_type_id = u16::try_from(index + 1)
             .expect("generated RPB3 registry exceeds the u16 type-id domain");
-        assert_eq!(program.type_id, expected_type_id, "{name}: registry type id drifted");
+        assert_eq!(
+            program.type_id, expected_type_id,
+            "{name}: registry type id drifted"
+        );
         assert_eq!(program.type_name, *name, "{name}: registry name drifted");
         if *name == "Par" {
             assert_eq!(
@@ -1896,11 +1991,13 @@ fn generated_rpb3_registry_is_contiguous_and_descriptor_aligned() {
                 "{name}: generated semantic and protobuf descriptors disagree"
             );
         }
-        assert!(program.type_id != 0, "{name}: zero is reserved for invalid type ids");
+        assert!(
+            program.type_id != 0,
+            "{name}: zero is reserved for invalid type ids"
+        );
     }
     assert_eq!(
-        PAR_PROTOBUF_REGION_PROGRAM.type_name,
-        "Par",
+        PAR_PROTOBUF_REGION_PROGRAM.type_name, "Par",
         "the separate raw protobuf Par program must retain the Par descriptor identity"
     );
 }

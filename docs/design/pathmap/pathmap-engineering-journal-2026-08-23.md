@@ -652,15 +652,15 @@ Question: Is every non-root ACT semantic node without a value, child, or compres
 redundant empty branch?
 
 Status: DERIVED, MEASURED, and DECISION for the repository validator rule. The focused repair is
-accepted at its test checkpoint. The implementation coordinate remains an uncommitted successor to
+accepted at its original test checkpoint. At that checkpoint the implementation was an uncommitted successor to
 `f1r3node-rust-mettail@a6b3ad09032c22bb10fafd6f7a890d7871b36609`, so immutable-coordinate and
-broader campaign acceptance remain open until a stable commit and the EPM1 malformed-input,
-protobuf/bincode, replay, and full-release gates pass. This distinction preserves the successful
-focused evidence without presenting an uncommitted tree as a release result.
+broader campaign acceptance remained open pending a stable commit and the EPM1 malformed-input,
+protobuf/bincode, replay, and full-release gates. The September 17 reconciliation below supplies
+the committed repair and distinguishes current qualification from historical release evidence.
 
 Tracking coordinate: pgmcp bug 5981,
 `admit-canonical-pathmap-writer-images-with-explicit-value-free-epathmap-endpoints-e060a6`.
-Implementation coordinates in the uncommitted successor are
+Implementation coordinates in the original uncommitted successor were
 [`semantic_act_node`](../../../rspace++/src/rspace/pathmap_codec.rs), the writer-image corpus in
 [`epathmap_trie_codec.rs`](../../../models/src/rust/epathmap_trie_codec.rs), and the public EPM1
 round-trip gate in
@@ -700,7 +700,7 @@ The repair removes only the obsolete rejection in step 5. Its invariants are:
    even when the node has no value.
 2. Set/map values remain distinct from value-free endpoints. EPM1 value ordinals are still
    validated before topology events become observable.
-3. For every pinned-writer image `$`B`$`, decoding and re-encoding must satisfy:
+3. For every pinned-writer image $`B`$, decoding and re-encoding must satisfy:
 
 ```math
 \operatorname{encode}(\operatorname{decode}(B)) = B.
@@ -712,10 +712,15 @@ The repair removes only the obsolete rejection in step 5. Its invariants are:
 
 Negative classes remain negative. In particular, the validator still refuses value-free unary
 branches; branch bytes that are not strictly increasing; inconsistent sparse/dense child metadata;
-shared child references; overflowing or out-of-arena offsets; reserved line header bits; empty or
+duplicate physical ACT node or wrapper references; overflowing or out-of-arena offsets; reserved line header bits; empty or
 overlapping line data; a line node with both value and child; a non-branch line child; and a branch
 wrapper without children. Admitting one canonical endpoint shape therefore does not admit arbitrary
 empty subgraphs or alternate encodings.
+
+Physical node aliasing is distinct from permitted reuse of equal compressed-line data ranges and
+live copy-on-write sharing. The current `register_direct_semantic_node` rejects duplicate physical
+node/wrapper offsets; V5's `semantic_certificate_preorder_physical_ids_nodup` and the
+`kill_equal_child_reentry` / `kill_duplicate_parent_alias` negative controls retain that boundary.
 
 Focused evidence, all from the same uncommitted successor:
 
@@ -738,6 +743,67 @@ Decision: Repository ACT validators recognize the logical PathMap endpoint repre
 canonical writer's value-free childless branch. Preserve all other canonicality and malformed-input
 checks. Amend this entry with the stable commit and broader gates rather than rewriting the focused
 checkpoint.
+
+**Committed repair and successor reconciliation (2026-09-17; task 5981).** The endpoint-admission
+repair is committed in `253d1754535ea73fd734f51bc872076e144b5348`: its collected semantic validator
+removes precisely the obsolete childless-node rejection, retaining the unary and empty-wrapper
+checks. The later single-admission architecture at `bdaf93a5f` retains the same rule in the direct
+semantic validator; the collected parser remains an independent test oracle. This is existing work,
+not a second implementation or an upstream PathMap modification.
+
+The maintained formal owners are
+[`Epm1ActConcreteV5.v`](../../../formal/rocq/actree03_completeness/theories/Epm1ActConcreteV5.v),
+`validate_accepts_every_canonical_writer_output`, and
+[`Epm1CursorAuthorityV2.v`](../../../formal/rocq/actree03_completeness/theories/Epm1CursorAuthorityV2.v),
+`replay_topology_preserves_value_free_endpoint`. The former proves completeness for the modeled
+canonical writer, not extraction of the Rust parser. Native writer-image, mutation, topology and
+codec witnesses supply the separate executable correspondence. J-047 and J-155 retain the
+successor proof/test history. The later positional V6 association replaces the original map-ordinal
+rule: all EPM1 ACT value markers are zero; map bodies associate in logical value-bearing endpoint
+order. Value-free endpoints consume no body; they are not erased or given invented values.
+
+The isolated validator correction leaves writer bytes unchanged for a fixed topology, but broadens
+acceptance relative to the pre-fix decoder. It must not be called globally consensus-neutral.
+See the task-5981 continuation under
+[CBR-044](../../consensus/consensus-change-register.md#cbr-044) for the mixed-version boundary.
+
+**Current qualification checkpoint (2026-09-17; tasks 5981 and 8506).** Current production source
+was `f6fb5a69476d57444dca433ba2fd8eb86837049a`; the only Rust change in this checkpoint repairs
+test-only proof-runner bindings. The fresh release observations are:
+
+| Gate | Observation and limit |
+|---|---|
+| `epathmap_epm1_snapshot`, complete binary attempted | 16 of 17 tests emitted success before the 900-second service deadline. Endpoint/protobuf/bincode, depth-4,096 snapshot, nested-map streaming and legacy-tag decoding passed; nested-map term operations did not finish. This is an incomplete suite, not a passing result or an established runtime defect. |
+| `epathmap_pathmap_native_zipper` | 23 passed, zero failed or ignored; includes both serialization surfaces with value-free topology. |
+| `formal_equivalence_manifest`, before repair | 21 passed, two failed: teardown description and removed RPB3 local-variable name were stale. |
+| `formal_equivalence_manifest`, after task-8506 repair | 24 passed, zero failed or ignored, including the new command-binding negative controls. This checks artifact bindings; it is not a fresh kernel proof run. |
+
+The manifest failures arose after `46324dcb5` expanded teardown obligations and `bb0f9d58a`
+moved RPB3 compilation into the maintained helper. The actual compiler/count/kernel gates remain
+present. The repair binds compiler commands and counts (teardown 32/13; RPB3 357, with the existing
+two mutant reports), kernel module arguments, and the default helper invocation instead of
+descriptive prose or a retired variable. Negative controls reject comments, echoed commands, wrong
+counts, wrong theories, missing continuations and missing/wrong kernel modules. No proof theory,
+production codec, runner obligation, test depth or assertion was weakened.
+
+The first suite ran with `MemoryMax=6G`, `MemoryHigh=4G`, swap disabled and a four-CPU quota;
+its peak was 1,607,090,176 bytes and it timed out after 900 seconds. The manifest repair qualification
+used a 4 GiB cap, a 3 GiB high watermark and zero swap: 1.956 seconds wall, 2.412 seconds CPU,
+466.4 MiB process peak. These are validation resource observations, not performance comparisons.
+
+Retained local logs and SHA-256 digests:
+
+| Log under `target/verification/` | SHA-256 |
+|---|---|
+| `epm1-endpoint-5981-native-r1.log` — incomplete full EPM1 attempt | `66ba8ef2562691221735a04088f3f70bf79c03ddede465f11a05388e204ea81e` |
+| `epm1-endpoint-5981-native-r2.log` — zipper pass and manifest failures | `570f5b1960b6e68d03a3b2e1749cd3017a28f3a9d7f64dd5dcb24cd64179491c` |
+| `epm1-manifest-8506-r1.log` — repaired manifest pass | `17fcd31c4e542dca1665e41e73768427a7f0e22bd7c10c7ebcf24e4d4c42000d` |
+
+Task 5981 remains open at this checkpoint: the separate remaining-suite run is unfinished, no fresh
+full-workspace release result is claimed, and no endpoint-specific consensus replay receipt is
+inferred from the codec witness. These logs are local evidence, not pgmcp-managed verification
+receipts. Historical J-047/J-155 and parent release evidence remain historical rather than being
+relabeled as today's complete acceptance.
 
 ### J-009 — 2026-08-23: cache only the versioned RMP2 digest across a CoW clone family
 

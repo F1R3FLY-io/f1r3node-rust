@@ -2243,6 +2243,35 @@ The 2026-08-04 proof refinement separately passed Rocq/Z3/TLC, the formal manife
 15/15, and codec 7/7 in zero-swap cgroups. It changes no byte, value, verdict, accepted input,
 post-state, or metering rule and therefore does not create another register entry.
 
+**CBR-044 admission-language correction (reconciled 2026-09-17; pgmcp #5981).** The isolated
+endpoint-admission repair in `253d1754535ea73fd734f51bc872076e144b5348` admits a reached,
+childless, value-free ACT semantic node emitted by the pinned canonical writer. The previous
+validator incorrectly rejected it as an empty non-root branch. This attribution concerns that
+validator correction, not every RMP2/matcher change in the same commit.
+
+| Axis of the isolated correction | Classification and evidence boundary |
+|---|---|
+| Writer bytes, protobuf and bincode | Unchanged for the same topology; no writer or envelope change is required by this correction. |
+| Acceptance | **MOVES, corrective and witnessed**: the public root-divergent endpoint round-trip test supplies a writer image rejected by the former predicate and admitted by the corrected validator. |
+| Values and topology | Preserve the explicit endpoint without manufacturing a set member or map value. Unary value-free branches and empty line wrappers remain rejected. |
+| Verdict and post-state | Newly admitted inputs can reach evaluation or persistence instead of failing admission. Downstream differences are conditional; the endpoint codec witness is not an end-to-end consensus replay comparison. |
+| Metering | No accounting formula is changed here. No equality of charges is claimed for executions that the old node could not admit. |
+
+This is an acceptance correction within the existing CBR-044 transition, not a new claim of global
+neutrality under CBR-053. A pre-fix node can still reject the newly admitted images: existing EPM1
+activation/version coordination remains necessary and this reconciliation does not authorize a
+mixed-version rollout. For images accepted by both immediately pre-fix and post-fix validators,
+this isolated correction leaves decoded values and topology unchanged; this does not characterize
+other intervening format changes. Duplicate physical node/wrapper references remain invalid; equal compressed-line data
+reuse and live copy-on-write sharing are separate, permitted mechanisms.
+
+The current direct validator retains the repaired rule. V5's
+`validate_accepts_every_canonical_writer_output` establishes modeled writer completeness, while
+V2's `replay_topology_preserves_value_free_endpoint` preserves logical endpoints. Native bindings
+and the distinction between fresh focused checks and historical broader gates are recorded in
+[J-008](../design/pathmap/pathmap-engineering-journal-2026-08-23.md#j-008--2026-08-23-admit-canonical-explicit-value-free-endpoints).
+This documentation reconciliation changes no runtime behavior or activation policy.
+
 **CBR-044 normalized blessed-term pin closure (2026-08-11; pgmcp #5304).** Raw blessed-source
 pins and normalized protobuf-term pins are independent controls. The pin table had retained ten
 pre-transition normalized coordinates after CBR-041 (`1b576c90`) replaced non-ground EPathMap entry

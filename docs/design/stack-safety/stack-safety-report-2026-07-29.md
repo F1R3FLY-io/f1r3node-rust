@@ -12408,11 +12408,20 @@ edges, and line bytes. The contiguous and indexed/fragmented cursors therefore s
 accepted language and event order while the indexed cursor maps a logical offset back to exact
 physical provenance.
 
-Ordinal facts are folded during the same physical DFS. Set mode requires every value ordinal to be
-zero and declares no external value table. Map mode requires preorder ordinals $`0,1,\ldots,n-1`$
-and exact agreement with the EPM1 value count. A malformed ordinal or count now fails at cursor
-construction rather than after an event prefix has escaped. The error text and physical location
-remain differential-tested against the contiguous boundary.
+At this historical checkpoint, ordinal facts were folded during the same physical DFS: set mode
+required zero markers and no external value table; map mode required sequential preorder ordinals
+and agreement with the EPM1 value count. The later positional V6 association supersedes that map
+rule: every EPM1 ACT value marker is zero and map bodies associate in logical value-bearing
+endpoint order, independently of allocation addresses. Value-free endpoints consume no body.
+Marker/count admission still precedes observable topology. J-155 and the
+ACTree03 invariant catalog retain the successor authority; the old ordinal scheme is not the
+current format.
+
+Task 5981's September 17 reconciliation confirms that the single-admission successor preserves
+explicit value-free childless endpoints while rejecting redundant unary branches and empty line
+wrappers. This is an admission-language correction, not a traversal optimization or a new measured
+stack/heap reduction. [J-008](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-008--2026-08-23-admit-canonical-explicit-value-free-endpoints)
+records the fixing commit and executable witnesses; CBR-044 records the compatibility consequence.
 
 #### 5.42.2 Space and traversal result
 
