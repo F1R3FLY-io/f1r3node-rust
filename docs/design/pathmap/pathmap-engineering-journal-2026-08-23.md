@@ -11773,13 +11773,13 @@ That same test passed alone. Inspection found process-global counters shared
 with the concurrently running semantic audit; it does not establish an added
 commit lock or a new runtime performance regression.
 
-The reviewed next step is measurement-thread-local
+The reviewed measurement repair is now implemented as thread-local
 `Cell<Option<TransitionInstrumentation>>` sessions, preserving same-thread
 nonreentrancy and exact counter assertions. All current measurement callers
 execute synchronously, with non-Send write guards dropped before session end.
-Deterministic cross-thread audit and concurrent-session controls must precede
-adoption. This repair is not implemented at the owner's requested pause;
-task 8498 remains in progress rather than being declared complete. No new
+Deterministic controls prove that an unmeasured audit thread cannot contaminate
+an active session and that concurrent measured sessions retain independent
+counts. Task 8498 remains in progress until its evidence is accepted; no new
 benchmark magnitude or corrected historical profiling result is claimed.
 
 | Final checkpoint artifact under `target/verification/` | Result | SHA-256 |
@@ -11787,7 +11787,8 @@ benchmark magnitude or corrected historical profiling result is claimed.
 | `cancellation-guard-nextest-r1.log` | 740 passed, one existing skip | `b86b817f8aeae4eeffa7a8fa5a4d695cc106f26577f444629a02f1448e6e78d6` |
 | `cancellation-guard-maintained-gate-r1.log` | 94 test executions and formal gate passed | `2c59aa765c904ec94de7580d8af83857a47946b6553ce7593e1194bc95e620ee` |
 | `cancellation-guard-dependent-kernel.log` | five dependent modules checked | `6461687abeda2e5d68636592392f0b2c9f9ef1bd52869ad03b8977d7fd679588` |
-| `cancellation-guard-experiment-feature-r1.log` | semantic audit passed; instrumentation failed | `32c304c88bec66e83b5cda0cff40861271b39858f929056310c358e2eca8daf8` |
+| `cancellation-guard-experiment-feature-r1.log` | semantic audit passed; instrumentation failed before thread-local repair | `32c304c88bec66e83b5cda0cff40861271b39858f929056310c358e2eca8daf8` |
+| `cancellation-guard-experiment-feature-r2.log` | four feature tests passed, including concurrent-session controls | `35c1d2a2205dce6aff395693ca2d96674c799ac9d44584b64896591fde6b15a6` |
 
 ## Upstream PathMap integration request register
 

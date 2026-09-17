@@ -14984,12 +14984,13 @@ Formal checks preceded runtime implementation. Rust validation uses
 `MemoryHigh=4G`, `MemoryMax=6G`, four CPU equivalents and zero swap; the formal
 proof runs use a 2 GiB cap. Journal [J-161](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-161--2026-09-14-cancellation-must-preserve-selected-datum-liveness)
 records the proof/property mapping, failing control and artifact hashes.
-At the requested pause, the broader release run passed 740 tests with one
-existing skip and the maintained gate passed 94 executions. The experiment
-feature's semantic audit passed, but its concurrent instrumentation assertion
-exposed shared process-global counters; the isolated assertion passed.
-The reviewed measurement-session repair is recorded in J-161 and remains
-unimplemented. Task acceptance and persistence qualification remain open.
+After the requested pause, the broader release run remains 740 tests with one
+existing skip and the maintained gate remains 94 executions. The feature
+qualification now passes all four semantic and instrumentation tests. Its
+measurement session is thread-local, and deterministic controls cover an
+unmeasured audit thread plus concurrent measured fixtures without changing
+production locking or stack behavior. Task acceptance and persistence
+qualification remain open.
 
 ## Appendix G — the maintenance contract
 

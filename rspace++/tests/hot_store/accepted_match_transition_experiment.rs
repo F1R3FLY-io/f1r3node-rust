@@ -480,56 +480,63 @@ pub struct TransitionInstrumentation {
 
 #[cfg(feature = "accepted-match-transition-instrumentation")]
 mod instrumentation {
-    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::cell::Cell;
     use std::time::Duration;
 
     use super::TransitionInstrumentation;
 
-    static ACTIVE: AtomicBool = AtomicBool::new(false);
-    static WRITE_LOCKS: AtomicU64 = AtomicU64::new(0);
-    static WRITE_WAIT_NS: AtomicU64 = AtomicU64::new(0);
-    static WRITE_HOLD_NS: AtomicU64 = AtomicU64::new(0);
-    static ROOT_PUBLICATIONS: AtomicU64 = AtomicU64::new(0);
+    thread_local! {
+        static SESSION: Cell<Option<TransitionInstrumentation>> = const { Cell::new(None) };
+    }
 
     fn duration_ns(duration: Duration) -> u64 {
         u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
     }
 
     pub fn begin() {
-        assert!(!ACTIVE.swap(true, Ordering::SeqCst), "instrumentation is not reentrant");
-        WRITE_LOCKS.store(0, Ordering::Relaxed);
-        WRITE_WAIT_NS.store(0, Ordering::Relaxed);
-        WRITE_HOLD_NS.store(0, Ordering::Relaxed);
-        ROOT_PUBLICATIONS.store(0, Ordering::Relaxed);
+        SESSION.with(|session| {
+            assert!(
+                session
+                    .replace(Some(TransitionInstrumentation::default()))
+                    .is_none(),
+                "instrumentation is not reentrant"
+            );
+        });
     }
 
     pub fn end() -> TransitionInstrumentation {
-        assert!(ACTIVE.swap(false, Ordering::SeqCst), "instrumentation was not active");
-        TransitionInstrumentation {
-            write_locks: WRITE_LOCKS.load(Ordering::Relaxed),
-            write_wait_ns: WRITE_WAIT_NS.load(Ordering::Relaxed),
-            write_hold_ns: WRITE_HOLD_NS.load(Ordering::Relaxed),
-            pathmap_root_publications: ROOT_PUBLICATIONS.load(Ordering::Relaxed),
-        }
+        SESSION.with(|session| session.take().expect("instrumentation was not active"))
     }
 
     pub fn record_acquisition(wait: Duration) -> bool {
-        if !ACTIVE.load(Ordering::Relaxed) {
-            return false;
-        }
-        WRITE_LOCKS.fetch_add(1, Ordering::Relaxed);
-        WRITE_WAIT_NS.fetch_add(duration_ns(wait), Ordering::Relaxed);
-        true
+        SESSION.with(|session| {
+            let Some(mut metrics) = session.get() else {
+                return false;
+            };
+            metrics.write_locks = metrics.write_locks.saturating_add(1);
+            metrics.write_wait_ns = metrics.write_wait_ns.saturating_add(duration_ns(wait));
+            session.set(Some(metrics));
+            true
+        })
     }
 
     pub fn record_hold(hold: Duration) {
-        WRITE_HOLD_NS.fetch_add(duration_ns(hold), Ordering::Relaxed);
+        SESSION.with(|session| {
+            if let Some(mut metrics) = session.get() {
+                metrics.write_hold_ns = metrics.write_hold_ns.saturating_add(duration_ns(hold));
+                session.set(Some(metrics));
+            }
+        });
     }
 
     pub fn record_root_publication() {
-        if ACTIVE.load(Ordering::Relaxed) {
-            ROOT_PUBLICATIONS.fetch_add(1, Ordering::Relaxed);
-        }
+        SESSION.with(|session| {
+            if let Some(mut metrics) = session.get() {
+                metrics.pathmap_root_publications =
+                    metrics.pathmap_root_publications.saturating_add(1);
+                session.set(Some(metrics));
+            }
+        });
     }
 }
 
