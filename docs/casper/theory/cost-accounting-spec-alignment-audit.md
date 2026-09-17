@@ -1,5 +1,11 @@
 # Cost-Accounting Specification Alignment Audit
 
+The [three-paper claim audit](cost-accounting-three-paper-traceability.md) records current proof boundaries.
+It distinguishes algebraic identities from operational refinement and cryptographic assumptions.
+
+The [multi-wallet path audit](multi-wallet-funding-path-audit.md) distinguishes structural helper limitations from current state-bound allocation.
+It records the remaining separation between authority conservation and monetary cost sharing.
+
 > **Implementation-status correction.** This historical audit often classified
 > an obligation as covered when an abstract theorem or surface recognizer
 > existed. That is insufficient for consensus implementation conformance.
@@ -79,9 +85,7 @@ decision record / the register · **C** = still-open scope-boundary.
 > source, assertion modality, covering artifact, and COVERED/PARTIAL/GAP/DEFERRED/SCOPE-BOUNDARY/
 > EXCEEDS status — lives in
 > [`cost-accounting-conformance-properties.md`](./cost-accounting-conformance-properties.md)
-> (also mirrored as a pgmcp work-item tree, *"Cost-Accounting Conformance Property Catalog v1"*,
-> linked to register root 87). Use it to assert an implementation against the *entire*
-> specification.
+> Use this catalog to assess an implementation against the entire specification.
 
 ### 2.1 The concrete calculus — `cost-accounted-rho.tex`
 
@@ -102,7 +106,7 @@ decision record / the register · **C** = still-open scope-boundary.
 | §4.8.4 (`tex:1149`) | Reverse-currying (Join/Split) regrouping | `Split`/`Join` mediators; `CAJoinConservation.reverse_curry_iso` (landed) | TLA+ token-conservation | A |
 | §4.8.5 (`tex:1175`) | No-weakening of composite tokens | `LinearLogicResources.ll_linear_no_weakening`; `CAJoinConservation.join_no_weakening` (landed) | — | A |
 | §4.6 (`tex:1251/1273`) | Uniform-signing + linear-transfer `⊸` sugar | `SyntacticSugar.uniform_sugar_translation_equiv`, `lollipop_sugar_translation_equiv` | — | A |
-| §4.6 Rmk (`tex:1208`) | `⊸` is `∘`'s right adjoint (tensor–hom) — *"left to the sequel"* | **`LLIdentities.lolly_curry_isomorphism`** | — | A (exceeds) |
+| §4.6 Rmk (`tex:1208`) | Tensor–hom adjunction, with its full development left to a sequel | `LLIdentities.lolly_curry_isomorphism` proves list regrouping under permutation. | No full adjunction follows from this theorem. | Partial algebraic evidence |
 | Def 4–6 (`tex:2002`) | Token demand Δ, supply Σ, funding obligation Σ≥Δ | `LinearLogicResources.{delta_s,sigma_s,funding_check_balance_sound}` | Sage `budget_admission_model` | A |
 | §4.6/§4.7 | **Per-actor authority keyed by the signer's public key** — the payer is stable across deploys and never keyed by the wire signature | `WalletNaming.system_vault_name_injective` | Rust `accounting::funding_sig`, `vault_payer`, and state-bound admission | A |
 | Thm 1 (`tex:2060`) | Funding check decidable (linear-time) | `LinearLogicResources.funding_decidable` (decidability; linear-time is an impl property) | Rust `admit_by_funding` | A |
@@ -146,7 +150,7 @@ decision record / the register · **C** = still-open scope-boundary.
 | Spec ambiguity/gap | How it is filled |
 |---|---|
 | Thm 7.2 graded adequacy stated **"schematically"** (completeness direction, constructivity unspecified) | Made fully constructive: `graded_finitary_adequacy` (depth-stratified) + `graded_limit_adequacy` (non-stratified) + `graded_coinductive_completeness_modulo` (gfp modulo the **named** principle `image_finite_stabilization`), all axiom-free — no Classical/funext/Choice. |
-| `⊸` tensor–hom adjunction **"left to the sequel"** (`tex:1208`) | Proven: `LLIdentities.lolly_curry_isomorphism`. |
+| Tensor–hom adjunction, with its full development left to a sequel (`tex:1208`) | `LLIdentities.lolly_curry_isomorphism` proves channel-list regrouping, not the full adjunction. |
 | μ stack-concatenation **order** underspecified (`tex:1051`) | Pinned by `CostMonad.cost_mu` (token-stack concat order is fixed and the laws hold up to `cost_equiv`). |
 | Collision-resistance of `hashf` (empirical/cryptographic, unspecified) | Abstracted as Rocq Section hypotheses (`hash_process_injective`, `ground_hash_disjoint`) — every translation theorem is parametric over any collision-resistant encoder. |
 | "Section `cf` computable" (computability sense unspecified) | Abstracted to the encoder Section hypotheses; the canonical form is the implementation's `cf` (DR-2/16). |
@@ -157,8 +161,8 @@ decision record / the register · **C** = still-open scope-boundary.
 
 ### 3.2 (B) Resolved via a decision record or the ambiguity register
 
-The 33 decision records (`docs/casper/theory/cost-accounting-decision-records.md`, DR-1…DR-33) and the pgmcp ambiguity register (root id 87) record the
-judgement calls. Load-bearing examples:
+The 33 decision records (`docs/casper/theory/cost-accounting-decision-records.md`, DR-1…DR-33) record the design choices.
+Important examples follow:
 
 - **DR-5** — runtime precharge/refund messages are removed. Admission reserves a certified finite
   upper bound without mutating supply; close-block settlement debits replay-checked realized cost.
@@ -202,8 +206,8 @@ judgement calls. Load-bearing examples:
    "schematically": both directions, image-finite, no Classical/funext/Choice
    (`graded_finitary_adequacy`, `graded_limit_adequacy`), with the lone non-constructive step
    isolated as a named, assumed-nowhere principle.
-2. **The `⊸` tensor–hom adjunction**, which the rho paper explicitly leaves "to the sequel",
-   is proven (`lolly_curry_isomorphism`).
+2. **Channel-list currying** is proved by `lolly_curry_isomorphism`.
+   This theorem does not establish the full tensor–hom adjunction discussed in the rho paper.
 3. **Strong normalization, confluence, and cost determinism** are mechanized on the funded
    fragment, none of which the rho paper even *claims* (`ca_SN_funded`, `ca_local_confluence`,
    `ca_cost_deterministic_funded`), with the off-fragment counterexample also recorded
@@ -227,8 +231,9 @@ prover the document's own foundations do not fix:
    with no proof and no per-rule operational treatment — the source of the one genuine gap
    (§6). The native mechanization (Component 2) supplies the missing reduction rules and the
    conservation proof.
-2. **The `⊸` tensor–hom adjunction and the §4.8.4 currying iso are stated as "to the sequel"**
-   in the rho paper — closed here by `lolly_curry_isomorphism` / `reverse_curry_iso`.
+2. **The full tensor–hom adjunction remains unestablished by the cited currying theorem.**
+   `lolly_curry_isomorphism` proves channel-list regrouping.
+   A separate operational and categorical correspondence is required before this audit can claim the full adjunction.
 3. **Adjunction II's full bicategorical coherence** (counit + both triangle identities as
    2-cells) is asserted "up to the 2-cells witnessing these weak bisimulations" without a
    proof — completed classically in Lean/Mathlib + Isabelle/AFP (§Component 5); Rocq's

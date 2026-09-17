@@ -58,8 +58,8 @@ for document in "${documentation[@]}"; do
 done
 
 if [[ "$failures" -ne 0 ]]; then
-  printf 'error: pgmcp documentation syntax failed for %s file(s)\n' "$failures" >&2
+  printf 'error: documentation syntax failed for %s file(s)\n' "$failures" >&2
   exit 1
 fi
 
-printf 'pgmcp documentation syntax passed for %s files.\n' "${#documentation[@]}"
+printf 'Documentation syntax passed for %s files.\n' "${#documentation[@]}"

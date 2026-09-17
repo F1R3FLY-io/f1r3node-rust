@@ -43,7 +43,7 @@ for document in "${documentation[@]}"; do
 done
 
 if [[ "$failures" -ne 0 ]]; then
-  printf 'error: pgmcp uptime documentation syntax failed for %s file(s)\n' "$failures" >&2
+  printf 'error: uptime documentation syntax failed for %s file(s)\n' "$failures" >&2
   exit 1
 fi
 
@@ -99,4 +99,4 @@ for diagram in docs/casper/theory/uptime/diagrams/*.puml; do
   fi
 done
 
-printf 'pgmcp uptime documentation passed for %s files.\n' "${#documentation[@]}"
+printf 'Uptime documentation passed for %s files.\n' "${#documentation[@]}"

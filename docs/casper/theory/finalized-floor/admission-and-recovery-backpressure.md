@@ -2,7 +2,7 @@
 
 ## Status and scope
 
-This document records the repair plan for pgmcp task `pr216-admission-backpressure`.
+This document specifies bounded admission and recovery behavior.
 The source inspection date is September 6, 2026.
 The actor-service and compact-result repairs passed focused native checks.
 Actor symbolic reachability through length eight and the separate induction check passed.

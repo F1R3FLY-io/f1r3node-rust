@@ -15,8 +15,7 @@ Several proposed resolutions need correction before ratification.
 This record does not authorize a protocol choice or modify PR 390.
 
 The [status ledger](cost-accounting-ratification-status.md) records approval boundaries for all 12 decisions.
-The [comparison work log](../../work-logs/task-casper-current-dev-classification-2026-09-08.md) links the full architecture comparison and source inventory.
-These records complement this critique rather than replace upstream authority.
+The status ledger complements this critique but does not replace upstream authority.
 
 ## Pinned evidence
 

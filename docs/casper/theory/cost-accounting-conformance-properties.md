@@ -814,13 +814,10 @@ GR/QFT correspondences (Conclusion) are explicitly curiosities (RHO/MON open pro
 - **Monad correspondence:** `cost-accounting-as-monad-correspondence.md`.
 - **Impl designs:** `cost-accounting-impl/{w1-*,w2-*,d2-9-*,d3-*,f-a-*,funding-slots-*,
   stageb-*,staged-fee-exchange,supply-realization-*,wd-d2-*,workstream-*}.md`.
-- **Ambiguity register (pgmcp):** root id 87 (8 epics, 40 entries).
-- **pgmcp mirror of this catalog:** *"Cost-Accounting Conformance Property Catalog v1"*
-  (epic-per-category; each `CA-P-###` a work item; linked to register root 87).
 - **Verification gates (local-only, never CI):** `scripts/check-cost-accounted-rho-*.sh`.
 
 ---
 
 *Catalog version 22 — generated from a full review of the governing `.tex` specifications and the
 existing multi-prover artifact set. To extend: add the property row, update the §0.4 summary, the
-§28/§29 indices, and the §30 ledger together; mirror the new `CA-P-###` into the pgmcp tree.*
+§28/§29 indices, and the §30 ledger together.*

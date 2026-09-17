@@ -176,5 +176,4 @@ systemd-run --user --scope -p MemoryMax=5G -p MemorySwapMax=0 \
 ```
 
 Both gates record input hashes and use `target/verification/recovery-pump/` for temporary state.
-The [task work log](../../../work-logs/task-pr216-admission-backpressure-2026-09-06.md) records results and failed attempts.
 The complete startup driver still needs phase, ticket, error-policy, and capacity integration tests.

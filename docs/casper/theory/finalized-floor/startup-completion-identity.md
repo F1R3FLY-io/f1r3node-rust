@@ -185,7 +185,6 @@ The wrapper must report that observation only after the actual callback future r
 The wrapper now records that observation only after its actual callback future returns successfully.
 The kernel's standalone guarantee still depends on that caller behavior.
 
-The evidence directories and source hashes are recorded in the [work log](../../../work-logs/task-pr216-admission-backpressure-2026-09-06.md).
 ## Runtime ownership and publication
 
 The runtime owner holds one request record, one pending work item, and one active identity.

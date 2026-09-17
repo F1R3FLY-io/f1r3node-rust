@@ -1121,7 +1121,7 @@ compile-time discipline in the plan; `feedback_formal_verification_is_local_only
 **Status.** Original clean-slate findings 2026-06-15. **Token-source verdict SUPERSEDED the same day by Greg's
 authoritative answers** (REV is a NAME for the one system token, `wallets.txt` IS the genesis root — see the
 CORRECTED paragraph below). **F-A / F-B / F-C-F-D + the F-1 red-team finding are LANDED + adversarially red-teamed**
-(commits e329aed3, c94e980f, a5a26f5c, e55769dd, e011e0e7, 59c59b1e, 87c012f2). pgmcp #481.
+(commits e329aed3, c94e980f, a5a26f5c, e55769dd, e011e0e7, 59c59b1e, 87c012f2).
 
 **Decision (token sources).** A clean-slate re-reading of the `publications/*.tex` establishes the intended model:
 **ONE species — phlogiston as signature-indexed first-class token stacks `s:S`** (the old homogeneous phlo is the
@@ -1147,7 +1147,7 @@ cost-purse representations until a paired, replay-authenticated reallocation joi
 native cost purses unforgeable. A transfer between SystemVault and `Σ` must debit one representation exactly when
 it credits the other; neither genesis configuration nor lollipop syntax is such a transfer.
 
-**Implementation divergences vs the calculus papers (cross-check 2026-06-15; tracked in pgmcp #481), with decided remediations:**
+**Implementation divergences from the calculus papers (cross-check 2026-06-15), with selected corrections:**
 - **F-A (CONSENSUS, EXTRA):** 6 LL signature connectives (`Threshold/Plus/With/Bang/WhyNot/Lolly`) ride the
   consensus wire (`CasperMessage.proto` `sig_algebra` field 17; `accounting/mod.rs`) but are in NEITHER calculus
   paper (signature grammar = `g | #P | s∘s`; ⊕/&/!/?/⊸ are the VALUE type-logic in `typed_value.tex`, not
@@ -1194,7 +1194,7 @@ legacy (DR-9 removed it); rebase rent funding to a located-`Σ`-purse debit (hea
 
 **Cross-refs.** DR-9 (per-COMM cost; escrow removed), DR-13 (system-only minting — monopoly half superseded, the
 unforgeability half retained), DR-24 (generic GSLT/OSLF boundary), DR-25; the plan's W3 (token-source + minting)
-and W4 (rent/economics) workstreams; pgmcp work item #481.
+and W4 (rent/economics) workstreams.
 
 ## DR-28 — Cross-group cumulative-demand bound (live residual ledger) + the §D2.9-R2 no-weakening closure correction
 
@@ -1532,8 +1532,7 @@ Property tests cover the exact cost-plus-fee boundary.
 Registry, vault, bridge, replay, slashing, merge, and full Casper integration
 tests exercise the concrete path. Repository CI runs workspace tests,
 all-target Clippy with warnings denied, formatting, and configured TLA+ and
-Rocq checks. Sage enumeration and `pgmcp bug-gate` are separate local
-verification steps.
+Rocq checks. Sage enumeration is a separate local verification step.
 
 **Cross-refs.** Cost-Accounted Rho §§8.6–8.9; Continued Interactive GSLTs and
 the Cost Monad §Data-dependent interaction; DR-5, DR-9, DR-11, DR-13, DR-28,

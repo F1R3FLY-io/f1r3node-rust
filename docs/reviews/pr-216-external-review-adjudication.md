@@ -196,9 +196,7 @@ Success and idempotence dominated existing tests. They omitted adversarial cross
 
 ## Repair order
 
-The pgmcp epic `pr216-principled-repair-closeout` controls execution. Scheduler revision 37 uses the critical-path policy.
-
-The scheduler orders work as follows:
+The repair dependencies require the following order:
 
 1. Complete review adjudication and freeze the branch-to-`dev` impact baseline.
 2. Merge current remote `dev` and adjudicate every semantic overlap.

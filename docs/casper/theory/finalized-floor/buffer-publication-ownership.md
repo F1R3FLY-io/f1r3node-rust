@@ -15,7 +15,6 @@ Those reproductions preceded the production repair.
 The earlier local handoff implementation lost pending provenance.
 Actual-worker regressions reproduced lost old-block eligibility after durable publication.
 The diagnostic model also rejects retention alone as a complete repair.
-The [execution record](../../../work-logs/task-pr216-buffer-publication-2026-09-08.md) identifies the exact artifacts and remaining verification requirements.
 
 ### September 9 integration status
 
@@ -900,7 +899,6 @@ It does not claim that retry counters survive process restart.
 
 The final combined gate also repeated the earlier publication-model and Rocq checks successfully.
 The evidence directory is `target/verification/buffer-publication/run.utZSIT`.
-The [work log](../../../work-logs/task-pr216-buffer-publication-2026-09-08.md) records native results and exact execution scope.
 
 ## Complete-row and maintenance boundaries
 
@@ -1337,7 +1335,6 @@ The model does not establish network retransmission fairness or service latency.
 
 The cache bound counts entries rather than allocated bytes.
 It does not bound dependency-row size, captured scans, backend transaction resources, or process resident memory.
-The [upstream refresh record](../../../work-logs/task-pr216-pruning-upstream-refresh-2026-09-08.md) identifies those remaining limits.
 
 Individual dependency writes do not satisfy the complete-publication contract.
 The repaired processor submits the whole missing set to the atomic union operation.

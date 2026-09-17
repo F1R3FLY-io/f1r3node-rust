@@ -2,7 +2,7 @@
 
 ## Status and scope
 
-This repair belongs to pgmcp task `pr216-admission-backpressure`.
+This document specifies durable buffer membership during admission and recovery.
 The formal specification preceded the storage correction.
 Focused production qualification passed.
 That qualification did not establish safe age or pressure eviction.
@@ -108,7 +108,6 @@ Native fault injection and the backend's separate transaction tests must establi
 The initial TLC run checked 4,008 distinct states with two block keys, one certificate key, and two clients.
 All five unsafe controls failed the required durability or publication invariant.
 Independent Rocq kernel checking passed all 15 closed theorems.
-The [task log](../../../work-logs/task-pr216-admission-backpressure-2026-09-06.md) records evidence paths and resource limits.
 
 Twenty native buffer tests, twelve atomic-transition tests, and two production-publication Loom tests passed.
 Strict Clippy passed for the storage tests and the Loom target.

@@ -2,7 +2,7 @@
 
 ## Status and purpose
 
-This document specifies the ownership integration for `pr216-admission-backpressure`.
+This document specifies ownership integration for admission and recovery backpressure.
 It supplements the [recovery control contract](recovery-pump-control.md) and the [admission plan](admission-and-recovery-backpressure.md).
 The plan-agent review completed on September 7, 2026.
 This specification is not evidence that the dispatcher migration is complete.

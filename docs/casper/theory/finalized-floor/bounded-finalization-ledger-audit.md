@@ -2,7 +2,7 @@
 
 ## Status and scope
 
-This document specifies the `pr216-ledger-startup` repair.
+This document specifies bounded finalization-ledger startup and audit behavior.
 The relevant Rocq proofs and model counterexamples preceded the production repairs.
 The local repair now has passing proof, native, concurrency, crash, and resource evidence, as recorded below.
 
@@ -753,8 +753,7 @@ Loom scheduling evidence does not replace persistence fault injection.
 
 ### Evidence checkpoint
 
-The [work log](../../../work-logs/task-pr216-ledger-startup-2026-09-06.md) records completed commands, intermediate failures, and source hashes.
-The matrix below connects those results to the production boundaries.
+The matrix below connects verification results to the production boundaries.
 The preceding invariant table identifies the individual required tests within each group.
 `resource-checkpoint.SgZL22` subsequently passed all 77 ledger tests and eight projection tests against the final formatted source snapshot in release mode.
 Its source hashes remained unchanged during the run.

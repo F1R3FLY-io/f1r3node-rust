@@ -2,7 +2,7 @@
 
 ## Status and scope
 
-This repair belongs to `pr216-admission-backpressure`.
+This repair concerns buffer pruning during admission and recovery.
 The source audit, plan review, model counterexamples, and three production reproductions are complete.
 Production pruning still has the defects described below.
 The complete storage migration is not implemented or qualified.
@@ -30,9 +30,8 @@ First compare the smallest local repair with these alternatives.
 Document each necessary difference, its evidence, its concurrency effects, and its migration requirements.
 Do not infer architecture approval from the earlier bug-fix approval.
 
-The pgmcp plan is `pr216-buffer-pruning-upstream-repair`.
-Its nine tasks cover reproduction, provenance, design, upstream disposition, formal verification, implementation, regression testing, concurrency testing, and handoff.
-Verified dependencies place reproduction before production changes.
+The repair requires reproduction, source attribution, design, upstream review, formal verification, implementation, regression tests, concurrency tests, and release evidence.
+Reproduction must precede production changes.
 The upstream disposition task is a required decision gate.
 The containing admission task retains its other repair and verification obligations.
 

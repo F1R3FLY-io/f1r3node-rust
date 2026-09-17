@@ -150,7 +150,7 @@ Its documentation explicitly states that current Rust network import does not sa
 The new regressions demonstrate the excluded boundary.
 They do not establish that the earlier model verified network import.
 
-Task `pr216-state-import-formal` must model independent transfers, readers, checkpoints, partial writes, cancellation, shared nodes, and retries.
+The formal model must include independent transfers, readers, checkpoints, partial writes, cancellation, shared nodes, and retries.
 The model must derive closure from reachable stored data rather than assume that a marker means usable state.
 
 | Required invariant | Implementation consequence |
@@ -173,8 +173,8 @@ The repair cannot rely only on calling the existing state validator.
 That validator checks content and traversal membership, but its interface does not accept the response cursor.
 The implementation must expose or validate the canonical traversal result before it advances the cursor.
 
-Task `pr216-state-import-repair` follows formal review.
-Task `pr216-state-import-conformance` requires the complete invariant-to-test correspondence before release acceptance.
+Implementation must follow formal review.
+Release acceptance requires complete invariant-to-test correspondence.
 The [ownership inventory](../cost-accounting-impl/runtime-ownership-inventory.md) records the wider runtime and storage obligations.
 
 ## Concurrent refinement design
@@ -1183,7 +1183,6 @@ Production repair, native correspondence, page-overlay validation, cold-value cl
 
 The temporary `running.rs` freeze came from the dispatcher check's unchanged-input boundary.
 Its [input manifest](../../../../target/verification/recovery-dispatcher/run.f87Z9D/inputs.sha256) includes that file.
-The [work log](../../../work-logs/task-pr216-admission-backpressure-2026-09-06.md) ties the boundary to the formerly active dispatcher check.
 The plan agent found no direct user restriction specific to that file in the inspected records.
 The task record must distinguish this evidence freeze from permanent scope restrictions before implementation.
 

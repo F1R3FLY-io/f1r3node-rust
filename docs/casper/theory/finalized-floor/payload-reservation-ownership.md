@@ -98,5 +98,3 @@ The metric callback does not participate in the ownership contract.
 These tests do not establish stale duplicate-marker safety.
 They also do not replace full worker-lifecycle tests for cancellation during replay, result backpressure, and dependency recovery.
 Those obligations remain explicit in the task plan.
-
-The [work log](../../../work-logs/task-pr216-admission-backpressure-2026-09-06.md) records source hashes, commands, limits, and current qualification status.

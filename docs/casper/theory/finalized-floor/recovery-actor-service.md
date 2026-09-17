@@ -117,7 +117,6 @@ Generated tests exercise 1, 2, 3, 17, and 64 lanes with histories of up to 999 r
 The complete three-lane test covers every four-event readiness sequence from each initial cursor position.
 These finite tests check production correspondence but do not replace the parameterized proof.
 
-The [task work log](../../../work-logs/task-pr216-admission-backpressure-2026-09-06.md) records commands, input hashes, results, and memory limits.
 
 ## Reproduce the checks
 

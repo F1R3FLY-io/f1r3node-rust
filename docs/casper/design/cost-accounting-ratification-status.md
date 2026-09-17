@@ -38,14 +38,12 @@ A proof can support a stated model without proving that maintainers approved its
 | Local feature HEAD | `559eb07fac98da2e6392e3a84c93bac41558c86c` |
 | Public PR 216 head | `3980ed402b4b3248f065d1f07daedbd3dc8b4493` |
 | PR 390 documentation head | `1d9ae249d75a39d8c0851bf71264307047c532e7` |
-| Current implementation classification | [September 8 work log](../../work-logs/task-casper-current-dev-classification-2026-09-08.md) |
 | Historical feature decisions | [Cost-accounting decision records](../theory/cost-accounting-decision-records.md) |
 | Automated review | [PR discussion, September 5][review-comment] |
 | Author's response | [PR discussion, September 5][response-comment] |
 
 The feature candidate includes uncommitted and untracked source.
 Its committed HEAD does not identify the complete candidate.
-The comparison work log links the requested report and its principal source hashes.
 
 The governing papers are the cost-accounted calculus, continued GSLT cost model, and applicable knotted-topoi construction.
 Their workspace paths are `../publications/cost-accounting/cost-accounted-rho.tex`, `../publications/cost-accounting-as-monad/continued-gslt-cost-v2.tex`, and `../publications/knotted-topoi/knotted-topoi.tex`.
@@ -336,14 +334,13 @@ Every sub-decision remains Proposed.
 The user's separate regressor remains excluded from required CI until the user restores it.
 
 **Required approval.** Upstream review must approve claim supersession and qualification changes.
-User acceptance and machine verification must retain their distinct pgmcp provenance.
+Approval records and machine verification results must remain distinct.
 Reference: [D-11][d11].
 
 ## D-12: Phlo controls and arbitrary funding
 
 **Observed state.** The current protobuf schema reserves the retired phlo tags.
 The approved M1 scope requires restoration of signed phlo controls and arbitrary-payer funding before PR amendment.
-The pgmcp policy task remains pending.
 
 **Source and motivation.** Early DR-5 and DR-9 moved enforcement into the token model.
 Later records replaced historical supply mirrors with native custody and reservation.

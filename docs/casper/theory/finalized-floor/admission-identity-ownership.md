@@ -2,7 +2,7 @@
 
 ## Scope and status
 
-This document defines the queued and active identity repair for `pr216-admission-backpressure`.
+This document defines queued and active identity ownership during admission and recovery.
 The production migration followed formal verification of the ownership contract.
 The combined formal and native gate passed.
 Focused lifecycle and producer regressions also passed after a deterministic fixture correction.

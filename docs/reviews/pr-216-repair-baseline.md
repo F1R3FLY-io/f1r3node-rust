@@ -94,7 +94,7 @@ Those defects include restore retry ownership, quarantine lifetime, ticket atomi
 
 The adjudication also records mint atomicity, epoch retention, work bounds, and verification-gate gaps.
 
-These defects can survive after the compilation failure is fixed. Each defect has a separate pgmcp task.
+These defects can remain after the compilation failure is fixed.
 
 ## Changed protocol surfaces
 
@@ -111,9 +111,7 @@ These defects can survive after the compilation failure is fixed. Each defect ha
 
 ## Merge impact
 
-The current remote `dev` integration is now an explicit pgmcp task.
-
-The task follows this baseline and precedes every remaining implementation task.
+Integration with `dev` follows this baseline and precedes the remaining implementation work.
 
 Current `dev` changes two files after the merge base. Only `rholang/tests/reduce_spec.rs` has a textual conflict.
 

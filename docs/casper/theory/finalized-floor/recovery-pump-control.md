@@ -2,7 +2,7 @@
 
 ## Scope and status
 
-This document defines the retry control for `pr216-admission-backpressure`.
+This document defines retry control for admission and recovery backpressure.
 It refines the [admission and recovery plan](admission-and-recovery-backpressure.md).
 The control models passed before production implementation.
 The production wake and pass modules now have focused Loom and property-test results.
