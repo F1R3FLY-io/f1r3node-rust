@@ -1,6 +1,10 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+/// A /status response slower than this is logged as a warning, in both the
+/// handler and the underlying API.
+pub(crate) const STATUS_SLOW_THRESHOLD: Duration = Duration::from_millis(500);
+
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{FromRequest, FromRequestParts, Path, Query, Request, State};
 use axum::http::request::Parts;
@@ -332,7 +336,7 @@ fn classify_casper_error(err: &CasperError) -> (StatusCode, &'static str, String
         // a node restored from a sync anchor is still filling in below it, and
         // the same request may succeed once it has. 503 tells the caller to
         // retry; the 500 class would say the node is broken.
-        BlockNotHeld(_) => (S::SERVICE_UNAVAILABLE, "block_not_held", err.to_string()),
+        BlockNotHeld(..) => (S::SERVICE_UNAVAILABLE, "block_not_held", err.to_string()),
 
         SigningError(_) => internal("signing_error"),
         KvStoreError(_) => internal("kv_store_error"),
@@ -342,6 +346,7 @@ fn classify_casper_error(err: &CasperError) -> (StatusCode, &'static str, String
         ReplayFailure(_) => internal("replay_failure"),
         StreamError(_) => internal("stream_error"),
         LockError(_) => internal("lock_error"),
+        IncompatibleFinalizedFork(_) => internal("incompatible_finalized_fork"),
         Other(_) => internal("other_error"),
     }
 }
@@ -440,13 +445,12 @@ fn classify_interpreter_error(ie: &InterpreterError) -> (StatusCode, &'static st
     tag = "Status"
 )]
 pub async fn status_handler(State(app_state): State<AppState>) -> Response {
-    const STATUS_HANDLER_SLOW_THRESHOLD: Duration = Duration::from_millis(500);
     let started = Instant::now();
     let web_api = app_state.web_api.clone();
     match offload(move || async move { web_api.status().await }).await {
         Ok(response) => {
             let elapsed = started.elapsed();
-            if elapsed >= STATUS_HANDLER_SLOW_THRESHOLD {
+            if elapsed >= STATUS_SLOW_THRESHOLD {
                 warn!(?elapsed, "HTTP /status handler responded slowly");
             }
             Json(response).into_response()
@@ -686,5 +690,397 @@ mod tests {
 
         assert_eq!(status, StatusCode::GATEWAY_TIMEOUT);
         assert_eq!(kind, "exploratory_timeout");
+    }
+
+    mod classification {
+        use axum::http::StatusCode;
+        use casper::rust::api::block_api::{
+            BlockNotFoundError, DeployNotFoundError, DeployValidationError,
+            ExploratoryDeployReadOnlyError, InvalidHashError, InvalidPublicKeyError,
+            LatestBlockMessageError, NoNewDeploysError, ProposeReadOnlyError,
+        };
+        use casper::rust::casper::DeployError;
+        use casper::rust::errors::CasperError;
+        use rholang::rust::interpreter::errors::InterpreterError;
+
+        use super::super::classify_error;
+
+        fn classify(err: impl std::error::Error + Send + Sync + 'static) -> (StatusCode, String) {
+            let (status, kind, _message) = classify_error(&eyre::Report::new(err));
+            (status, kind.to_string())
+        }
+
+        #[test]
+        fn typed_block_api_errors_map_to_stable_kinds() {
+            assert_eq!(
+                classify(DeployNotFoundError {
+                    deploy_id: "aa".to_string(),
+                }),
+                (StatusCode::NOT_FOUND, "deploy_not_found".to_string())
+            );
+            assert_eq!(
+                classify(BlockNotFoundError {
+                    hash: "bb".to_string(),
+                }),
+                (StatusCode::NOT_FOUND, "block_not_found".to_string())
+            );
+            assert_eq!(
+                classify(InvalidHashError("bad hash".to_string())),
+                (StatusCode::BAD_REQUEST, "invalid_hash".to_string())
+            );
+            assert_eq!(
+                classify(ExploratoryDeployReadOnlyError),
+                (
+                    StatusCode::BAD_REQUEST,
+                    "readonly_node_required".to_string()
+                )
+            );
+            assert_eq!(
+                classify(InvalidPublicKeyError("bad key".to_string())),
+                (StatusCode::BAD_REQUEST, "illegal_argument".to_string())
+            );
+            assert_eq!(
+                classify(DeployValidationError {
+                    message: "bad deploy".to_string(),
+                }),
+                (StatusCode::BAD_REQUEST, "illegal_argument".to_string())
+            );
+            assert_eq!(
+                classify(ProposeReadOnlyError),
+                (
+                    StatusCode::BAD_REQUEST,
+                    "readonly_node_required".to_string()
+                )
+            );
+            assert_eq!(
+                classify(NoNewDeploysError),
+                (StatusCode::CONFLICT, "no_new_deploys".to_string())
+            );
+        }
+
+        #[test]
+        fn latest_block_message_errors_split_by_variant() {
+            assert_eq!(
+                classify(LatestBlockMessageError::NodeReadOnlyError),
+                (
+                    StatusCode::BAD_REQUEST,
+                    "validator_node_required".to_string()
+                )
+            );
+            assert_eq!(
+                classify(LatestBlockMessageError::NoBlockMessageError),
+                (StatusCode::NOT_FOUND, "block_not_found".to_string())
+            );
+        }
+
+        #[test]
+        fn duplicate_deploy_is_conflict() {
+            let err = DeployError::duplicate_deploy(vec![1u8, 2].into());
+            assert_eq!(
+                classify(err),
+                (StatusCode::CONFLICT, "duplicate_deploy".to_string())
+            );
+        }
+
+        #[test]
+        fn unknown_error_falls_back_to_internal_server_error() {
+            let (status, kind, _) = classify_error(&eyre::eyre!("something odd"));
+            assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+            assert_eq!(kind, "unknown_error");
+        }
+
+        #[test]
+        fn casper_errors_map_to_stable_kinds() {
+            let cases = vec![
+                (
+                    CasperError::CommError(comm::rust::errors::CommError::UnknownCommError(
+                        "peer gone".to_string(),
+                    )),
+                    StatusCode::BAD_GATEWAY,
+                    "comm_error",
+                ),
+                (
+                    CasperError::SigningError("sig".to_string()),
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "signing_error",
+                ),
+                (
+                    CasperError::RuntimeError("rt".to_string()),
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "runtime_error",
+                ),
+                (
+                    CasperError::StreamError("st".to_string()),
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "stream_error",
+                ),
+                (
+                    CasperError::LockError("lk".to_string()),
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "lock_error",
+                ),
+                (
+                    CasperError::IncompatibleFinalizedFork("fork".to_string()),
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "incompatible_finalized_fork",
+                ),
+                (
+                    CasperError::Other("misc".to_string()),
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "other_error",
+                ),
+                (
+                    CasperError::BlockNotHeld(
+                        vec![0xab].into(),
+                        shared::rust::store::key_value_store::MissingBlockContext::new(""),
+                    ),
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "block_not_held",
+                ),
+            ];
+
+            for (err, expected_status, expected_kind) in cases {
+                let (status, kind) = classify(err);
+                assert_eq!(status, expected_status, "kind {expected_kind}");
+                assert_eq!(kind, expected_kind);
+            }
+        }
+
+        #[test]
+        fn interpreter_bad_term_errors_are_bad_request() {
+            for err in [
+                InterpreterError::SyntaxError("boom".to_string()),
+                InterpreterError::LexerError("boom".to_string()),
+                InterpreterError::ParserError("boom".to_string()),
+                InterpreterError::PatternReceiveError("boom".to_string()),
+            ] {
+                let (status, kind) = classify(CasperError::InterpreterError(err));
+                assert_eq!(status, StatusCode::BAD_REQUEST);
+                assert_eq!(kind, "rholang_bad_term");
+            }
+        }
+
+        #[test]
+        fn interpreter_illegal_argument_is_bad_request() {
+            let (status, kind) = classify(CasperError::InterpreterError(
+                InterpreterError::IllegalArgumentError("bad arg".to_string()),
+            ));
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert_eq!(kind, "illegal_argument");
+        }
+
+        #[test]
+        fn interpreter_execution_failures_are_unprocessable() {
+            assert_eq!(
+                classify(CasperError::InterpreterError(
+                    InterpreterError::OutOfPhlogistonsError
+                )),
+                (
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "out_of_phlogistons".to_string()
+                )
+            );
+            assert_eq!(
+                classify(CasperError::InterpreterError(
+                    InterpreterError::UserAbortError
+                )),
+                (StatusCode::UNPROCESSABLE_ENTITY, "user_abort".to_string())
+            );
+            for err in [
+                InterpreterError::ReduceError("boom".to_string()),
+                InterpreterError::MethodNotDefined {
+                    method: "nth".to_string(),
+                    other_type: "Int".to_string(),
+                },
+                InterpreterError::SubstituteError("boom".to_string()),
+            ] {
+                let (status, kind) = classify(CasperError::InterpreterError(err));
+                assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+                assert_eq!(kind, "rholang_execution_error");
+            }
+        }
+
+        #[test]
+        fn interpreter_internal_errors_are_internal_server_error() {
+            for err in [
+                InterpreterError::BugFoundError("boom".to_string()),
+                InterpreterError::SetupError("boom".to_string()),
+            ] {
+                let (status, kind) = classify(CasperError::InterpreterError(err));
+                assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+                assert_eq!(kind, "interpreter_internal_error");
+            }
+        }
+
+        #[test]
+        fn interpreter_external_service_errors_are_bad_gateway() {
+            for err in [
+                InterpreterError::OpenAIError("api down".to_string()),
+                InterpreterError::OllamaError("api down".to_string()),
+            ] {
+                let (status, kind) = classify(CasperError::InterpreterError(err));
+                assert_eq!(status, StatusCode::BAD_GATEWAY);
+                assert_eq!(kind, "external_service_error");
+            }
+        }
+
+        #[test]
+        fn interpreter_aggregate_error_joins_messages() {
+            let err = CasperError::InterpreterError(InterpreterError::AggregateError {
+                interpreter_errors: vec![
+                    InterpreterError::ReduceError("first".to_string()),
+                    InterpreterError::ReduceError("second".to_string()),
+                ],
+            });
+            let (status, kind, message) = classify_error(&eyre::Report::new(err));
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+            assert_eq!(kind, "aggregate_error");
+            assert!(
+                message.contains("first") && message.contains("second"),
+                "{message}"
+            );
+        }
+    }
+
+    mod extractors {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use axum::response::IntoResponse;
+        use axum::routing::{get, post};
+        use axum::Router;
+        use tower::ServiceExt;
+
+        use super::super::{offload, AppJson, AppPath, AppQuery};
+
+        #[derive(serde::Deserialize)]
+        struct TypedBody {
+            #[allow(dead_code)]
+            value: i64,
+        }
+
+        #[derive(serde::Deserialize)]
+        struct TypedQuery {
+            #[allow(dead_code)]
+            count: i64,
+        }
+
+        fn router() -> Router {
+            Router::new()
+                .route(
+                    "/json",
+                    post(|AppJson(_body): AppJson<TypedBody>| async { "ok".into_response() }),
+                )
+                .route(
+                    "/path/{id}",
+                    get(|AppPath(_id): AppPath<i64>| async { "ok".into_response() }),
+                )
+                .route(
+                    "/query",
+                    get(|AppQuery(_q): AppQuery<TypedQuery>| async { "ok".into_response() }),
+                )
+        }
+
+        async fn body_json(response: axum::response::Response) -> serde_json::Value {
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            serde_json::from_slice(&bytes).unwrap()
+        }
+
+        #[tokio::test]
+        async fn app_json_accepts_valid_body_and_rejects_malformed_body_as_json() {
+            let ok = router()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/json")
+                        .header("content-type", "application/json")
+                        .body(Body::from(r#"{"value": 3}"#))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(ok.status(), StatusCode::OK);
+
+            let bad = router()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/json")
+                        .header("content-type", "application/json")
+                        .body(Body::from(r#"{"value": "not a number"}"#))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert!(bad.status().is_client_error());
+            let json = body_json(bad).await;
+            assert_eq!(json["error"], "invalid_request_body");
+            assert!(json["message"].as_str().is_some());
+        }
+
+        #[tokio::test]
+        async fn app_path_rejects_non_integer_segment_as_json() {
+            let ok = router()
+                .oneshot(
+                    Request::builder()
+                        .uri("/path/42")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(ok.status(), StatusCode::OK);
+
+            let bad = router()
+                .oneshot(
+                    Request::builder()
+                        .uri("/path/not-a-number")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
+            let json = body_json(bad).await;
+            assert_eq!(json["error"], "invalid_path_parameter");
+        }
+
+        #[tokio::test]
+        async fn app_query_rejects_unparsable_query_as_json() {
+            let ok = router()
+                .oneshot(
+                    Request::builder()
+                        .uri("/query?count=5")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(ok.status(), StatusCode::OK);
+
+            let bad = router()
+                .oneshot(
+                    Request::builder()
+                        .uri("/query?count=many")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
+            let json = body_json(bad).await;
+            assert_eq!(json["error"], "invalid_query_parameter");
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn offload_propagates_ok_and_err_results() {
+            let ok: Result<i32, eyre::Error> = offload(|| async { Ok(5) }).await;
+            assert_eq!(ok.unwrap(), 5);
+
+            let err: Result<i32, eyre::Error> =
+                offload(|| async { Err(eyre::eyre!("expected failure")) }).await;
+            assert!(err.unwrap_err().to_string().contains("expected failure"));
+        }
     }
 }

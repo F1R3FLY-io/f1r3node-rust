@@ -70,6 +70,25 @@ on:
         required: false
         default: "0"
         type: string
+      restart_of_run_id:
+        description: >-
+          Candidate restart mode only: run id of the original candidate soak
+          this run continues. The schedule gate verifies that run's
+          soak-window artifact (same candidate_tag, retry_attempt 0, and
+          end_epoch equal to window_end_epoch) before it accepts the restart.
+        required: false
+        default: ""
+        type: string
+      candidate_tag:
+        description: >-
+          Exact-candidate mode (release-process section 10): soak the
+          published candidate image by digest from OCIR and publish the
+          stability-soak gate document on the candidate prerelease. Requires
+          duration weekend-60h and the integration preflight. The target is
+          the candidate source SHA; target_ref is ignored.
+        required: false
+        default: ""
+        type: string
       canary:
         description: Run a 30-minute non-publishing OCI protection canary
         required: false
@@ -120,7 +139,130 @@ env:
   # iterations) and the orchestrator host guardian (every iteration) use it.
   SOAK_HOST_FREE_FLOOR_MB: "8192"
   # Third pin site; keep identical to the other two — bump via scripts/repin-system-integration.sh.
-  SYSTEM_INTEGRATION_REF: 56884ab896a8d37d7fa7cba8eed2a0ffef9c1b6a
+  #
+  # What this literal binds: the trusted runner launcher (a job that holds OCI
+  # secrets and runs before any target checkout) and the CI pin-drift check.
+  # It does NOT bind the integration test suite the soak runs. The workflow
+  # file always executes from the default branch, but the target is usually
+  # dev, so the suite follows the pin in the TARGET tree's
+  # .github/oci-validation.env (the same file the release evidence reads).
+  # Until 2026-09-10 the suite used this literal, and every nightly after a
+  # dev-only repin (2026-09-08) failed the observer-overload preflight until
+  # dev was promoted. Runs 34303543830 and 34450109213.
+  # Pin history:
+  # 2026-08-20: 56884ab -> 3757cab (system-integration PR #124 branch, NOT yet
+  # main): validator-lifecycle payout bounds made race-proof (pre-withdraw
+  # baselines, fee-aware phase-8 owed). Verified by three consecutive local
+  # full passes (lifecycle runs 19/21/22) and a green local mirror of the
+  # arm64-subprocess integration leg (92 passed).
+  # 2026-08-21: 3757cab -> 147da81 (system-integration PR #126 branch, NOT yet
+  # main): finality-stall-recovery cadence spec, two forbidden-log patterns,
+  # seven deselect audits with fixes, docs current. Verified by a combined
+  # local mirror — full suite + bonding + lifecycle + ucc in one invocation,
+  # 118 passed / 0 failed / 1h48m on the folded node branch. Re-pin to the
+  # merged main SHA once #126 lands.
+  # 2026-08-23 (dev): 56884ab -> 3e5b5eb (system-integration main, PR #128).
+  #   Carries SI PR #127: _deploy_and_wait in test_web_api.py deploys onto a
+  #   fresh string channel per call. Closes the shared-shard finalization
+  #   timeouts (rejection_count 15-24) caused by a second bare-integer
+  #   produce onto a reused @2000-@2002 cell; see docs/work-logs/shared-
+  #   shard-single-number-cell-starvation-2026-08-22.md. Also carries SI PR
+  #   #129 shard-port reservation. Verified: SI PR #127 CI green;
+  #   f1r3node-rust run 32615164762 attempt 1 reproduced the timeout on the
+  #   old pin.
+  # 2026-09-07: 3e5b5eb -> 5909b17 (system-integration PR #136 branch, NOT
+  #   yet main): test_observer_overload pins its own exploratory cap
+  #   (--api-exploratory-deploy-max-concurrent=1) instead of relying on the
+  #   shipped default, which node PR #384 makes core-derived. Verified by a
+  #   local docker-provider run of the test against the #384 image (1 passed,
+  #   63s). Re-pin to the merged main SHA once #136 lands.
+  # 2026-08-24: 147da81 -> 5943837 (PR #126 branch, NOT yet main; supersedes
+  # dev's 3e5b5eb on this branch until #126 folds main in):
+  # per-shard docker isolation (the CI run 32588262605 pollution root),
+  # joiner-boundary bonds guard polls out the header-lag window, ucc scalar
+  # rounds batched under the 1200s budget. Verified by two full CI
+  # simulations on CI-shaped OCI VMs against the node fix branch: main leg
+  # 107/107 + ucc 11/11 on both, plus a failure-free near-complete second
+  # iteration each. Re-pin to the merged main SHA once #126 lands.
+  # 2026-08-24: 5943837 -> d94fffd (PR #126 branch with system-integration
+  # main merged in): folds SI PR #127 (fresh web-api deploy channels — the
+  # single-value-cell starvation fix dev pinned as 3e5b5eb) and SI PR #129
+  # (CI shard-port reservation + monitoring readiness). Verified: clean
+  # auto-merge, 229 unit tests + ruff green. Re-pin to the merged main SHA
+  # once #126 lands.
+  # 2026-08-24: d94fffd -> 8b4da0f (system-integration MAIN — the #126 merge
+  # commit; the branch pin's content, now immutable on main). Verified: CI
+  # full green x3 on the d94fffd content (run 32691266446 attempts 1+2, run
+  # 32759382579), and 8b4da0f is d94fffd merged to main with no further
+  # changes.
+  # 2026-08-28: 8b4da0f -> b5cbb63 (SI branch chore/soak-preflight-20260828):
+  # soak runner hardening — runner oom_score_adj -1000 shield, durable
+  # post_mortem via freeform tags, launch-parameterized idle timeout
+  # (RUNNER_IDLE_TIMEOUT_SECS; the pipeline's arm64 launches now pass 7200
+  # so the sequential subprocess leg's runner survives — run 33208755550
+  # hang), and the parents-post-state metrics.py refresh incl. the
+  # COUNTERS_TO_SCRAPE path for counter-rendered metrics. Cross-repo
+  # request/result: SI docs/discoveries/2026-08-28-soak-runner-hardening-*.
+  # Verified: 265 SI unit tests + ruff green on the pushed tree; cloud-init
+  # dry render clean. Incidents: f1r3node-rust#365, run 33136185540.
+  # Re-pin to the merged main SHA once the SI PR lands.
+  # 2026-08-29: b5cbb63 -> 8b4da0f (ROLLBACK). b5cbb63's branch forked from
+  # SI dev at ffcf4c1d — 21 commits BEHIND SI main — so the pin silently
+  # rolled back three weeks of integration-harness fixes and all six
+  # integration legs failed deterministically (run 33222681493:
+  # finality_stall_recovery, joiner_self_proposes_at_epoch_boundary,
+  # observer_lfs_sync — old test expectations vs current node). Lesson for
+  # every future bump: verify the candidate DESCENDS from the current pin
+  # (git merge-base --is-ancestor) before repinning. Re-bump once SI
+  # rebases the hardening commit onto main and pushes a descendant SHA.
+  # 2026-08-29: 8b4da0f -> 5858f2a (system-integration MAIN — the #131
+  # dev->main merge). Carries both hardening commits (b5cbb63 + 56ebc9e
+  # review remediations) WITH the dev-merge that cured the stale base, on
+  # top of main's current harness. Verified: descends from 8b4da0f
+  # (merge-base --is-ancestor), per the rule above.
+  # 2026-08-31: 5858f2a -> ce5a825 (SI PR #132 branch, cut from main
+  # 5858f2a — descends per the rule above): retires ftt=-1 from the
+  # joiner-boundary/trim_state/synchrony shards (a negative FTT legally
+  # permits divergent floors that the suite's forbidden-log check treats as
+  # fatal — run 33220782199's arm64-docker failure), makes the joiner test
+  # round-driven, and routes hardcoded timeouts through the hierarchy.
+  # Verified: the three migrated tests green locally at the production FTT;
+  # SI CI full green on ce5a825. Re-pin to the merged main SHA once #132
+  # lands.
+  # 2026-08-31: ce5a825 -> e4a26eb (system-integration MAIN — the #132 merge
+  # commit; the branch pin's content, now immutable on main). Verified:
+  # descends from ce5a825 (merge-base --is-ancestor), and full node CI green
+  # on the ce5a825 content (this PR's heavy pipeline, all six legs).
+  # 2026-09-02: e4a26eb -> af0ab83 (SI PR #134 branch, cut from main —
+  # descends per the rule above): the bridge-lock test gates starvation
+  # exactly and tolerates bounded merge contention (floor 10 of 12,
+  # accounting reconciled to the locks that landed) — run 33548073107's
+  # 1-of-12 contention expiry, budget exonerated. Verified: SI CI green
+  # on af0ab83; test green locally on this branch's image. Re-pin to the
+  # merged main SHA once #134 lands.
+  # 2026-09-02: af0ab83 -> 0fb6337 (system-integration MAIN — the #134 merge
+  # commit; the branch pin's content, now immutable on main). Verified:
+  # descends from af0ab83 (merge-base --is-ancestor), and this PR's CI ran
+  # full green on the af0ab83 content.
+  # 2026-09-08: 5909b17 -> 962effd (system-integration MAIN — #136 landed;
+  #   the owed re-pin from 2026-09-07. Also carries #139 finalization-
+  #   evidence fail-closed test fixes). Verified: descends from 5909b17
+  #   (merge-base --is-ancestor).
+  # 2026-09-10: 962effd -> cffb055 (SI PR #142 branch, cut from main):
+  #   stale-recovery-min-interval 3s -> 6s in conf/rust.conf and
+  #   test_load.py — this branch makes the at-or-below-tick geometry a
+  #   hard config error, so the old conf refuses to boot (run
+  #   34494283638, every leg). Re-pin to the merged main SHA once #142
+  #   lands.
+  # 2026-09-13: cffb055 -> 7018213 (SI PR #142 branch head): the harness
+  #   and test_load drop their stale-recovery-min-interval overrides and
+  #   inherit the node's derived interval (1.5 x check-interval); the
+  #   epoch_transition budget is 90s. Verified: descends from cffb055
+  #   (merge-base --is-ancestor).
+  # 2026-09-15: 7018213 -> b3d14b2 (system-integration MAIN — the #142 merge
+  #   commit; the branch pin's content, now immutable on main). Verified:
+  #   descends from 7018213 (merge-base --is-ancestor).
+  SYSTEM_INTEGRATION_REF: b3d14b27e3c6276b1eb4ab9ccef04e02b0c4e283
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
@@ -175,10 +317,14 @@ jobs:
       checkpoint_3: ${{ steps.resolve.outputs.checkpoint_3 }}
       checkpoint_4: ${{ steps.resolve.outputs.checkpoint_4 }}
       checkpoint_5: ${{ steps.resolve.outputs.checkpoint_5 }}
+      candidate_tag: ${{ steps.resolve.outputs.candidate_tag }}
+      restart_verified: ${{ steps.resolve.outputs.restart_verified }}
     steps:
       - name: Resolve schedule
         id: resolve
         env:
+          INPUT_CANDIDATE_TAG: ${{ inputs.candidate_tag }}
+          INPUT_RESTART_OF_RUN_ID: ${{ inputs.restart_of_run_id }}
           EVENT_NAME: ${{ github.event_name }}
           EVENT_SCHEDULE: ${{ github.event.schedule }}
           INPUT_SCHEDULED_SLOT: ${{ inputs.scheduled_slot_epoch }}
@@ -294,6 +440,67 @@ jobs:
               duration_seconds=79200
             fi
             target_ref="$INPUT_TARGET_REF"
+            if [ -n "${INPUT_CANDIDATE_TAG:-}" ]; then
+              # Exact-candidate mode: the soak target is the candidate tag,
+              # which the canary publisher created on the source SHA. The
+              # soak job verifies the tag against the candidate evidence
+              # before it pulls the image by digest.
+              if ! [[ "$INPUT_CANDIDATE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-canary\.[1-9][0-9]*$ ]]; then
+                echo "::error::candidate_tag must be a standard canary tag"
+                exit 1
+              fi
+              if [ "${INPUT_CANARY:-false}" = "true" ] || [ "${INPUT_PREFLIGHT_ONLY:-false}" = "true" ] || [ "${INPUT_SKIP_PREFLIGHT:-false}" = "true" ] || [ "${INPUT_INJECT_PROTECTION_BREACH:-false}" = "true" ]; then
+                echo "::error::candidate_tag cannot be combined with canary, preflight_only, skip_integration_preflight, or injection inputs"
+                exit 1
+              fi
+              if [ -z "$INPUT_WINDOW_END" ] && [ "$INPUT_DURATION" != "weekend-60h" ]; then
+                echo "::error::candidate_tag requires duration weekend-60h (the 60h stability soak is the release gate)"
+                exit 1
+              fi
+              if [ -n "$INPUT_WINDOW_END" ] && [ "$INPUT_SERIES" != "weekend" ]; then
+                echo "::error::a candidate restart must belong to the weekend series"
+                exit 1
+              fi
+              restart_verified=false
+              if [ -n "$INPUT_WINDOW_END" ]; then
+                # A candidate restart is accepted only as the continuation of
+                # one specific original run. That run's soak-window artifact
+                # (written by its own schedule gate, so only that run could
+                # have produced it) must name this candidate, be the first
+                # attempt, and carry the exact window end this restart soaks
+                # to. Without that, a caller could dispatch a short "restart"
+                # and publish it as preserved 60-hour coverage.
+                if ! [[ "$INPUT_RESTART_OF_RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
+                  echo "::error::a candidate restart requires restart_of_run_id"
+                  exit 1
+                fi
+                prior="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${INPUT_RESTART_OF_RUN_ID}")"
+                jq -e --arg repository "$GITHUB_REPOSITORY" '
+                  .path == ".github/workflows/merge-recovery-soak.yml"
+                  and .repository.full_name == $repository
+                  and .event == "workflow_dispatch"
+                  and .status == "completed"
+                  and .conclusion != "success"' <<<"$prior" >/dev/null || {
+                  echo "::error::restart_of_run_id ${INPUT_RESTART_OF_RUN_ID} is not a completed, unsuccessful dispatch of this workflow"
+                  exit 1
+                }
+                artifact_id="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${INPUT_RESTART_OF_RUN_ID}/artifacts?per_page=100" \
+                  --jq '[.artifacts[] | select(.name == "soak-window" and .expired == false)] | first | .id // empty')"
+                [ -n "$artifact_id" ] || { echo "::error::the original run carries no soak-window artifact"; exit 1; }
+                gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" > "$RUNNER_TEMP/soak-window.zip"
+                unzip -q -o "$RUNNER_TEMP/soak-window.zip" -d "$RUNNER_TEMP/soak-window"
+                jq -e --arg tag "$INPUT_CANDIDATE_TAG" --argjson end "$INPUT_WINDOW_END" '
+                  .candidate_tag == $tag
+                  and .retry_attempt == 0
+                  and .soak_kind == "weekend"
+                  and .end_epoch == $end' "$RUNNER_TEMP/soak-window/soak-window.json" >/dev/null || {
+                  echo "::error::the original run's soak window does not match this restart (candidate, attempt, kind, or end epoch)"
+                  exit 1
+                }
+                restart_verified=true
+              fi
+              target_ref="$INPUT_CANDIDATE_TAG"
+            fi
             should_run=true
             trigger_source=manual
             slot_delay_seconds=0
@@ -376,6 +583,7 @@ jobs:
             target_ref=dev
             should_run=false
             idle_skip=false
+            preflight_verdict_skip=false
             duration_seconds=79200
             if [ "$pacific_hm" = "1930" ] && [ "$pacific_weekday" -ge 1 ] && [ "$pacific_weekday" -le 4 ]; then
               # 22h, not 24h. The soak job shares a concurrency group with
@@ -476,6 +684,46 @@ jobs:
                 duplicate_skip=true
                 echo "slot already claimed by OCI-dispatched run $canonical_run; cron fallback yields"
               fi
+              # A dispatch that died before producing a verdict (runner never
+              # launched, VM lost, cancelled) is exactly what this fallback
+              # retries. A dispatch whose integration preflight RAN and failed
+              # is not: the failure is a property of the target commit, and a
+              # second VM only reproduces it — 2026-09-09 cost two ~2.5h
+              # sessions this way. The verdict is read from the "Soak
+              # Integration Preflight" commit status the finalize job below
+              # publishes; its description text is the contract, so the two
+              # must stay in step. The status is read by ref name: if the
+              # target moved since the dispatch, no status exists on the new
+              # tip and the fallback soaks the new code. Fails OPEN like the
+              # claim query.
+              if [ "$should_run" = "true" ] && [ -n "$claim_runs" ]; then
+                failed_claims="$(jq -r --arg title "$expected_title" \
+                  '[.workflow_runs[]
+                    | select(.display_title == $title)
+                    | select(.status == "completed" and .conclusion == "failure")
+                    | .id] | @tsv' <<<"$claim_runs" 2>/dev/null || printf '')"
+                if [ -n "$failed_claims" ]; then
+                  encoded_ref="$(jq -rn --arg ref "$target_ref" '$ref | @uri')"
+                  verdict="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${encoded_ref}/status" \
+                    --jq '[.statuses[] | select(.context == "Soak Integration Preflight")][0] // {}
+                      | [(.state // ""), (.description // ""), (.target_url // "")] | @tsv' 2>/dev/null)" \
+                    || { echo "::warning::preflight-verdict query failed; failing open and soaking anyway"; verdict=""; }
+                  IFS=$'\t' read -r verdict_state verdict_description verdict_url <<<"$verdict"
+                  verdict_run=""
+                  if [[ "$verdict_url" =~ /actions/runs/([0-9]+) ]]; then
+                    verdict_run="${BASH_REMATCH[1]}"
+                  fi
+                  if [ "$verdict_state" = "failure" ] \
+                    && [ "$verdict_description" = "Full integration preflight completed with test failures" ] \
+                    && [ -n "$verdict_run" ] \
+                    && grep -qx "$verdict_run" <<<"$(tr '\t' '\n' <<<"$failed_claims")"; then
+                    should_run=false
+                    preflight_verdict_skip=true
+                    canonical_run="$verdict_run"
+                    echo "OCI-dispatched run $verdict_run already ran the integration preflight for slot $slot_epoch and it failed on $target_ref; cron fallback yields"
+                  fi
+                fi
+              fi
             fi
           fi
           kind=daily
@@ -566,6 +814,16 @@ jobs:
               echo "Run \`$canonical_run\` already owns scheduled slot \`$slot_epoch\`."
               echo "**No soak was attempted** — a green check on this run is not a soak result."
             } >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$should_run" != "true" ] && [ "${preflight_verdict_skip:-false}" = "true" ]; then
+            echo "::notice::Schedule gate skip: run $canonical_run already ran the integration preflight for this OCI slot and it failed on $target_ref. No soak was attempted; this run's success is not a soak result."
+            {
+              echo "## Schedule gate: skipped (preflight already failed for this slot)"
+              echo ""
+              echo "Run \`$canonical_run\` claimed scheduled slot \`$slot_epoch\` and its full integration"
+              echo "preflight completed with test failures on \`$target_ref\`. A retry would only"
+              echo "reproduce that verdict on the same commit."
+              echo "**No soak was attempted** — a green check on this run is not a soak result."
+            } >> "$GITHUB_STEP_SUMMARY"
           elif [ "$should_run" != "true" ] && [ "${idle_skip:-false}" = "true" ]; then
             echo "::notice::Schedule gate skip: nothing landed on $target_ref since the previous window, so tonight's soak would re-test already-soaked code. No soak was attempted; this run's success is not a soak result."
             {
@@ -629,7 +887,25 @@ jobs:
             echo "checkpoint_3=$cp3"
             echo "checkpoint_4=$cp4"
             echo "checkpoint_5=$cp5"
+            echo "candidate_tag=${INPUT_CANDIDATE_TAG:-}"
+            echo "restart_verified=${restart_verified:-false}"
           } >> "$GITHUB_OUTPUT"
+          if [ -n "${INPUT_CANDIDATE_TAG:-}" ]; then
+            mkdir -p "$RUNNER_TEMP/soak-window"
+            jq -n --arg tag "$INPUT_CANDIDATE_TAG" --arg kind "$kind" --argjson retry "$retry_attempt" \
+              --argjson end "${end_epoch:-0}" --argjson duration "$duration_seconds" '{
+              candidate_tag: $tag, soak_kind: $kind, retry_attempt: $retry,
+              end_epoch: $end, duration_seconds: $duration}' > "$RUNNER_TEMP/soak-window/soak-window.json"
+          fi
+
+      - name: Record the candidate soak window
+        if: inputs.candidate_tag != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: soak-window
+          path: ${{ runner.temp }}/soak-window/soak-window.json
+          retention-days: 30
+          if-no-files-found: error
 
   # Advisory docs link sweep for the 60h stability soak. Checks the
   # external URLs that the blocking CI Link Checker no longer covers
@@ -652,14 +928,14 @@ jobs:
       contents: read
     steps:
       - name: Checkout soak target
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ needs.schedule_gate.outputs.target_sha }}
           persist-credentials: false
 
       - name: Sweep external documentation links
         id: sweep
-        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
         with:
           args: >-
             --no-progress
@@ -697,7 +973,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload sweep artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: docs-link-sweep
           path: |
@@ -805,12 +1081,15 @@ jobs:
     concurrency:
       # Grouped by series (not raw duration — a restart's remainder is
       # arbitrary) so the next night's launch still cancels a lingering
-      # previous run of the same series, restarts included.
-      group: merge-recovery-soak-${{ needs.schedule_gate.outputs.kind }}
+      # previous run of the same series, restarts included. A preflight-only
+      # run is NOT a series run: it gets a per-run group so the nightly slot
+      # cannot cancel it (run 33130708285 lost 1h45m of preflight to the
+      # 02:31Z daily launch this way) and it cannot cancel the nightly.
+      group: merge-recovery-soak-${{ needs.schedule_gate.outputs.preflight_only == 'true' && format('preflight-only-{0}', github.run_id) || needs.schedule_gate.outputs.kind }}
       cancel-in-progress: true
     steps:
       - name: Clone trusted runner launcher
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           repository: F1R3FLY-io/system-integration
           ref: ${{ env.SYSTEM_INTEGRATION_REF }}
@@ -852,7 +1131,7 @@ jobs:
 
       - name: Create runner-management token
         id: app-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           app-id: ${{ vars.CI_GITHUB_APP_ID }}
           private-key: ${{ secrets.CI_GITHUB_APP_PRIVATE_KEY }}
@@ -1145,6 +1424,7 @@ jobs:
           KIND: ${{ needs.schedule_gate.outputs.kind }}
           TARGET_REF: ${{ needs.schedule_gate.outputs.target_ref }}
           SKIP_PREFLIGHT: ${{ needs.schedule_gate.outputs.skip_integration_preflight }}
+          CANDIDATE_TAG: ${{ needs.schedule_gate.outputs.candidate_tag }}
           WORKFLOW_REF: ${{ github.ref_name }}
         shell: bash -euo pipefail {0}
         run: |
@@ -1170,6 +1450,8 @@ jobs:
             -f window_end_epoch="$END_EPOCH" \
             -f series="$KIND" \
             -f skip_integration_preflight="${SKIP_PREFLIGHT:-false}" \
+            -f candidate_tag="${CANDIDATE_TAG:-}" \
+            -f restart_of_run_id="$GITHUB_RUN_ID" \
             -f retry_attempt=1
           echo "::notice::restarted $KIND soak for the remaining $((remaining / 3600))h of the window (ends $(date -u -d "@${END_EPOCH}" +%FT%TZ))"
 
@@ -1213,7 +1495,10 @@ jobs:
     # restarted weekend with >24h left must still get the weekend ceiling.
     timeout-minutes: ${{ needs.schedule_gate.outputs.preflight_only == 'true' && 190 || (needs.schedule_gate.outputs.kind == 'weekend' && 3840 || 1440) }}
     concurrency:
-      group: merge-recovery-soak-${{ needs.schedule_gate.outputs.kind }}
+      # Same preflight-only carve-out as the launch job: a per-run group so
+      # a diagnostic preflight and the scheduled series never cancel each
+      # other.
+      group: merge-recovery-soak-${{ needs.schedule_gate.outputs.preflight_only == 'true' && format('preflight-only-{0}', github.run_id) || needs.schedule_gate.outputs.kind }}
       cancel-in-progress: true
     steps:
       - name: Record soak job start
@@ -1221,7 +1506,7 @@ jobs:
         run: echo "SOAK_JOB_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
 
       - name: Checkout CI control files
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ github.workflow_sha }}
           path: ci-control
@@ -1330,7 +1615,7 @@ jobs:
           echo "tagged $iid — reapable after $(date -u -d "@${deadline}" +%FT%TZ)"
 
       - name: Checkout code under test
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ needs.schedule_gate.outputs.target_sha }}
           path: node-under-test
@@ -1348,15 +1633,59 @@ jobs:
           test "$actual_sha" = "$EXPECTED_SHA"
           echo "sha=$actual_sha" >> "$GITHUB_OUTPUT"
 
+      # The integration suite must match the node it tests, and the node comes
+      # from the target ref, not from the branch this workflow file runs on.
+      # Read the pin from the target tree's env file (the release evidence
+      # reads the same file) and fail closed on anything but a SHA or tag ref.
+      - name: Read the target's system-integration pin
+        id: pin
+        working-directory: node-under-test
+        env:
+          WORKFLOW_PIN: ${{ env.SYSTEM_INTEGRATION_REF }}
+        shell: bash -euo pipefail {0}
+        run: |
+          env_file=.github/oci-validation.env
+          if [ ! -f "$env_file" ]; then
+            echo "::error::$env_file is missing from the target tree; cannot pin the integration suite"
+            exit 1
+          fi
+          # Count declaration lines, not values: an empty duplicate line
+          # (SYSTEM_INTEGRATION_REF=) is a second declaration. `|| true`
+          # keeps a missing key from killing the step under pipefail before
+          # the ::error:: below can name it.
+          declaration_count="$(grep -cE '^SYSTEM_INTEGRATION_REF=' "$env_file" || true)"
+          declarations="$( (grep -E '^SYSTEM_INTEGRATION_REF=' "$env_file" || true) | cut -d= -f2- | sed -E 's/[[:space:]]*$//')"
+          if [ "$declaration_count" -ne 1 ]; then
+            echo "::error::$env_file must declare SYSTEM_INTEGRATION_REF exactly once; found $declaration_count declarations"
+            exit 1
+          fi
+          target_pin="$declarations"
+          # Same shape scripts/repin-system-integration.sh enforces: lowercase
+          # 40-hex SHA, or refs/tags/<tag> for the emergency path.
+          if [[ ! "$target_pin" =~ ^[0-9a-f]{40}$ && ! "$target_pin" =~ ^refs/tags/[A-Za-z0-9._/-]+$ ]]; then
+            echo "::error::SYSTEM_INTEGRATION_REF in the target tree must be a lowercase 40-character commit SHA or refs/tags/<tag>; got '$target_pin'"
+            exit 1
+          fi
+          if [ "$target_pin" != "$WORKFLOW_PIN" ]; then
+            echo "::notice::integration suite follows the target tree's pin $target_pin; this workflow file's own pin is $WORKFLOW_PIN"
+          fi
+          echo "system_integration_ref=$target_pin" >> "$GITHUB_OUTPUT"
+          echo "integration suite pin: $target_pin"
+
       - name: Clone trusted integration harness
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           repository: F1R3FLY-io/system-integration
-          ref: ${{ env.SYSTEM_INTEGRATION_REF }}
+          ref: ${{ steps.pin.outputs.system_integration_ref }}
           path: system-integration
           persist-credentials: false
 
+      - name: Extend issue 24 soak metrics
+        shell: bash -euo pipefail {0}
+        run: bash node-under-test/scripts/bench/extend-issue24-metrics.sh system-integration/integration-tests/test/infra/metrics.py
+
       - name: Build node image
+        if: needs.schedule_gate.outputs.candidate_tag == ''
         working-directory: node-under-test
         shell: bash -euo pipefail {0}
         run: |
@@ -1368,6 +1697,52 @@ jobs:
             --tag "$DOCKER_IMAGE_NAME:latest" \
             --load \
             .
+
+      - name: Resolve candidate image by digest
+        if: needs.schedule_gate.outputs.candidate_tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_TAG: ${{ needs.schedule_gate.outputs.candidate_tag }}
+          TARGET_SHA: ${{ needs.schedule_gate.outputs.target_sha }}
+          OCIR_REGISTRY: ${{ secrets.OCIR_REGISTRY }}
+          OCIR_USERNAME: ${{ secrets.OCIR_USERNAME }}
+          OCIR_AUTH_TOKEN: ${{ secrets.OCIR_AUTH_TOKEN }}
+          OCIR_BASE: ${{ secrets.OCIR_REGISTRY }}/${{ secrets.OCIR_NAMESPACE }}/${{ secrets.OCIR_REPO }}
+        shell: bash -euo pipefail {0}
+        run: |
+          # Candidate artifact mode (docs/release-process.md section 10): the
+          # soak runs the published candidate image, pulled by its linux/amd64
+          # manifest digest from OCIR, the canonical gate registry. Nothing is
+          # rebuilt; the subprocess binary is extracted from this image by the
+          # next step. The OCIR reference is secret material and is not printed.
+          work="$RUNNER_TEMP/candidate"
+          mkdir -p "$work"
+          gh release download "$CANDIDATE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern release-evidence.json --pattern release-evidence.json.sha256 --dir "$work"
+          (cd "$work" && awk '{print $1 "  release-evidence.json"}' release-evidence.json.sha256 | sha256sum -c -)
+          evidence="$work/release-evidence.json"
+          ci-control/.github/scripts/release-evidence.sh validate "$evidence"
+          [ "$(jq -r '.publication_mode' "$evidence")" = canary ] || { echo "::error::candidate has no published images"; exit 1; }
+          [ "$(jq -r '.candidate_tag' "$evidence")" = "$CANDIDATE_TAG" ] || { echo "::error::evidence candidate tag differs from the requested tag"; exit 1; }
+          [ "$(jq -r '.source_sha' "$evidence")" = "$TARGET_SHA" ] || { echo "::error::candidate source $(jq -r '.source_sha' "$evidence") differs from the resolved target ${TARGET_SHA}"; exit 1; }
+          amd64_digest="$(jq -r '.images.linux_amd64_digest' "$evidence")"
+          docker context use default
+          printf '%s' "$OCIR_AUTH_TOKEN" | docker login "$OCIR_REGISTRY" --username "$OCIR_USERNAME" --password-stdin
+          docker pull --platform linux/amd64 "${OCIR_BASE}@${amd64_digest}" >/dev/null
+          docker logout "$OCIR_REGISTRY" || true
+          pulled="$(docker inspect --format '{{join .RepoDigests "\n"}}' "${OCIR_BASE}@${amd64_digest}" | sed -n "s|^${OCIR_BASE}@||p" | head -1)"
+          [ "$pulled" = "$amd64_digest" ] || { echo "::error::pulled image digest does not match the candidate amd64 digest"; exit 1; }
+          docker tag "${OCIR_BASE}@${amd64_digest}" "$DOCKER_IMAGE_NAME:latest"
+          echo "Candidate ${CANDIDATE_TAG} amd64 image ${amd64_digest} loaded for the soak."
+
+      - name: Keep the verified candidate evidence for this run
+        if: needs.schedule_gate.outputs.candidate_tag != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: candidate-evidence
+          path: ${{ runner.temp }}/candidate/release-evidence.json
+          retention-days: 30
+          if-no-files-found: error
 
       - name: Extract subprocess binary
         shell: bash -euo pipefail {0}
@@ -1449,6 +1824,16 @@ jobs:
 
       - name: Dispatch integration preflight success status
         if: always() && needs.schedule_gate.outputs.canary != 'true' && steps.integration_preflight.outputs.result == 'passed'
+        # continue-on-error: the early status publication is a convenience —
+        # `preflight_finalize` publishes the terminal status from
+        # `outputs.preflight` at run end regardless — and a publication
+        # hiccup must never fail a soak whose preflight just PASSED. Run
+        # 33136185540 (the first green preflight on an OCI runner) failed
+        # here with `gh: command not found`: the ephemeral VM image does not
+        # carry the gh CLI that GitHub-hosted runners preinstall, so the
+        # dispatch uses curl against the REST endpoint instead — the runner
+        # cannot function without curl-compatible HTTP.
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           TARGET_SHA: ${{ needs.schedule_gate.outputs.target_sha }}
@@ -1456,10 +1841,27 @@ jobs:
           WORKFLOW_REF: ${{ github.ref_name }}
         shell: bash -euo pipefail {0}
         run: |
-          gh workflow run soak-preflight-status.yml \
-            --ref "$WORKFLOW_REF" \
-            -f target_sha="$TARGET_SHA" \
-            -f source_run_url="$RUN_URL"
+          # JSON built by a real serializer, never printf: ref_name is a
+          # branch name and must arrive escaped, whatever it contains.
+          payload="$(python3 -c 'import json, os; print(json.dumps({"ref": os.environ["WORKFLOW_REF"], "inputs": {"target_sha": os.environ["TARGET_SHA"], "source_run_url": os.environ["RUN_URL"]}}))')"
+          # -sS with a captured status, not -sf: this step is
+          # continue-on-error, so a swallowed error body would make a failed
+          # dispatch invisible. The response and HTTP code go to the log and
+          # the step still concludes failure (visibly, without failing the
+          # job) when the dispatch was rejected.
+          response="$(mktemp)"
+          http_code="$(curl -sS -o "$response" -w '%{http_code}' \
+            --retry 4 --retry-connrefused -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/actions/workflows/soak-preflight-status.yml/dispatches" \
+            -d "$payload")" || http_code="000"
+          if [ "$http_code" != "204" ]; then
+            echo "::warning::preflight success-status dispatch failed (HTTP ${http_code}); preflight_finalize will publish the terminal status at run end"
+            cat "$response" || true
+            exit 1
+          fi
+          echo "dispatched soak-preflight-status for ${TARGET_SHA}"
 
       - name: Reset integration telemetry after preflight
         id: reset_telemetry
@@ -1718,7 +2120,7 @@ jobs:
       - name: Fetch docs link sweep result (advisory)
         if: always() && needs.schedule_gate.outputs.kind == 'weekend'
         continue-on-error: true
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: docs-link-sweep
           path: /tmp/merge-recovery-soak/link-sweep
@@ -1774,7 +2176,7 @@ jobs:
 
       - name: Upload soak results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: merge-recovery-soak-${{ needs.schedule_gate.outputs.duration_seconds }}s-${{ github.run_id }}-${{ github.run_attempt }}
           path: /tmp/merge-recovery-soak
@@ -1791,6 +2193,109 @@ jobs:
         # real result, even a red one, and a restart would only spend a
         # second VM reproducing it.
         run: echo "completed=true" >> "$GITHUB_OUTPUT"
+
+  # Exact-candidate mode only: publish the section 8.1 stability-soak
+  # document and the regression verdict on the candidate prerelease, and
+  # upload the release-candidate marker that lets release.yml resume. Runs
+  # whenever the soak ran its course, including a red verdict: a regress
+  # verdict is evidence too, and the promotion controller holds on it until
+  # maintainer review. The ONS verdict email above already alerts the
+  # soak-report list for every weekend verdict, pass or regress.
+  publish_candidate_evidence:
+    name: Publish Candidate Gate Evidence
+    needs: [schedule_gate, soak]
+    if: >-
+      always() &&
+      needs.schedule_gate.outputs.candidate_tag != '' &&
+      needs.schedule_gate.outputs.kind == 'weekend' &&
+      needs.soak.outputs.completed == 'true' &&
+      needs.soak.outputs.preflight == 'passed'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: write
+    environment: release-credentials
+    steps:
+      - name: Checkout trusted release controls
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: ci-control
+          persist-credentials: false
+
+      - name: Download soak results
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: merge-recovery-soak-${{ needs.schedule_gate.outputs.duration_seconds }}s-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/soak-results
+
+      - name: Download the evidence this run soaked
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: candidate-evidence
+          path: ${{ runner.temp }}/gate
+
+      - name: Write and publish the stability-soak gate documents
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CANDIDATE_TAG: ${{ needs.schedule_gate.outputs.candidate_tag }}
+          TARGET_SHA: ${{ needs.schedule_gate.outputs.target_sha }}
+          RETRY_ATTEMPT: ${{ needs.schedule_gate.outputs.retry_attempt }}
+          RESTART_VERIFIED: ${{ needs.schedule_gate.outputs.restart_verified }}
+        shell: bash -euo pipefail {0}
+        run: |
+          # The evidence comes from this run's own artifact, written by the
+          # soak job before the soak started, so the document binds to the
+          # image that was actually soaked.
+          work="$RUNNER_TEMP/gate"
+          ci-control/.github/scripts/release-evidence.sh validate "$work/release-evidence.json"
+          [ "$(jq -r '.source_sha' "$work/release-evidence.json")" = "$TARGET_SHA" ] || {
+            echo "::error::carried evidence names a different source than the soaked target"
+            exit 1
+          }
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" > "$work/run.json"
+          verdict_file="$RUNNER_TEMP/soak-results/report/verdict.json"
+          [ -f "$verdict_file" ] || { echo "::error::soak results carry no report/verdict.json"; exit 1; }
+          verdict="$(jq -r '.verdict' "$verdict_file")"
+          # One restart is permitted when it soaks the remainder of the
+          # original window (section 10 condition 8). Coverage counts as
+          # preserved only when the schedule gate verified this run as the
+          # continuation of a specific original candidate run through that
+          # run's soak-window artifact. An unverified restart is published
+          # truthfully as coverage_preserved false, which fails the gate.
+          coverage=true
+          if [ "${RETRY_ATTEMPT:-0}" != "0" ] && [ "${RESTART_VERIFIED:-false}" != "true" ]; then coverage=false; fi
+          jq -n --argjson retry "${RETRY_ATTEMPT:-0}" --argjson coverage "$coverage" '{
+            soak_kind: "weekend",
+            requested_duration_seconds: 216000,
+            completed: true,
+            artifact_mode: "candidate",
+            retry_attempt: $retry,
+            coverage_preserved: $coverage,
+            preflight: {status: "success"}
+          }' > "$work/soak-result.json"
+          ci-control/.github/scripts/release-gate-evidence.sh stability-soak \
+            "$work/release-evidence.json" "$work/run.json" "$work/soak-result.json" "$work/soak-evidence.json"
+          ci-control/.github/scripts/release-gate-evidence.sh verdict \
+            "$work/release-evidence.json" "$verdict" "$work/verdict.json"
+          ci-control/.github/scripts/release-gate-evidence.sh candidate-marker \
+            "$work/release-evidence.json" "$work/release-candidate.json"
+          # --clobber: a rerun of the same candidate replaces its own documents.
+          gh release upload "$CANDIDATE_TAG" --repo "$GITHUB_REPOSITORY" --clobber \
+            "$work/soak-evidence.json" "$work/verdict.json"
+          echo "Published soak-evidence.json and verdict.json (${verdict}) on ${CANDIDATE_TAG}."
+          if [ "$verdict" = regress ]; then
+            echo "::warning::regress verdict for ${CANDIDATE_TAG}; promotion holds until a maintainer uploads maintainer-review.json (docs/release-process.md section 8)"
+          fi
+
+      - name: Upload candidate marker
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-candidate
+          path: ${{ runner.temp }}/gate/release-candidate.json
+          retention-days: 30
+          if-no-files-found: error
 
   preflight_finalize:
     name: Finalize Integration Preflight Status
@@ -1885,6 +2390,11 @@ jobs:
           if [ "$PREFLIGHT_RESULT" = "passed" ]; then
             state=success
             description="Full integration preflight passed"
+          elif [ "$PREFLIGHT_RESULT" = "failed" ]; then
+            # Contract with the schedule gate's cron fallback: it yields to a
+            # failed dispatch only when the status carries exactly this text,
+            # so a runner death or cancel (the branches below) still retries.
+            description="Full integration preflight completed with test failures"
           elif [ "$PENDING_RESULT" != "success" ]; then
             description="Preflight status initialization failed"
           elif [ "$LAUNCH_RESULT" != "success" ]; then
@@ -1928,7 +2438,7 @@ jobs:
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - name: Checkout CI control files
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ github.workflow_sha }}
           path: ci-control
@@ -1943,7 +2453,7 @@ jobs:
       - name: Download soak results
         id: results
         continue-on-error: true
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: merge-recovery-soak-${{ needs.schedule_gate.outputs.duration_seconds }}s-${{ github.run_id }}-${{ github.run_attempt }}
           path: soak-results
@@ -2206,13 +2716,13 @@ jobs:
           render "-daily" daily
 
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
         with:
           path: site
 
       - name: Deploy to GitHub Pages
         id: deploy
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5
 
       - name: Gate on regression verdict
         shell: bash -euo pipefail {0}
@@ -2545,7 +3055,7 @@ jobs:
 
       - name: Upload post-mortem
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: soak-postmortem-${{ github.run_id }}-${{ github.run_attempt }}
           path: /tmp/postmortem

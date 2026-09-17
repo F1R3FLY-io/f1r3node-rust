@@ -26,6 +26,7 @@ use prost::Message;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider;
 use rspace_plus_plus::rspace::history::Either;
 use rspace_plus_plus::rspace::trace::event::{Event as RspaceEvent, IOEvent};
+use shared::rust::store::key_value_store::KvStoreError;
 use shared::rust::ByteString;
 
 use crate::rust::blocks::proposer::propose_result::{
@@ -37,7 +38,7 @@ use crate::rust::engine::engine_cell::EngineCell;
 use crate::rust::errors::CasperError;
 use crate::rust::genesis::contracts::standard_deploys;
 use crate::rust::reporting_proto_transformer::ReportingProtoTransformer;
-use crate::rust::safety_oracle::{CliqueOracleImpl, SafetyOracle};
+use crate::rust::safety_oracle::{CliqueOracleImpl, SafetyOracle, MIN_FAULT_TOLERANCE};
 use crate::rust::state::instances::proposer_state::ProposerState;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::util::rholang::tools::Tools;
@@ -462,8 +463,14 @@ impl BlockAPI {
                         return Ok(Some(light_block_info));
                     }
                     Ok(false) => {}
+                    // A block the scan window names but this node does not
+                    // hold (an LFS restore horizon) is skipped, not an error.
                     Err(err) => {
-                        return Err(err);
+                        tracing::debug!(
+                            "fallback deploy scan skipping unreadable block {}: {}",
+                            PrettyPrinter::build_string_bytes(&hash),
+                            err
+                        );
                     }
                 }
             }
@@ -477,7 +484,6 @@ impl BlockAPI {
         engine_cell: &EngineCell,
         d: Signed<DeployData>,
         trigger_propose: &Option<Arc<ProposeFunction>>,
-        min_phlo_price: i64,
         is_node_read_only: bool,
         shard_id: &str,
     ) -> ApiErr<String> {
@@ -612,18 +618,6 @@ impl BlockAPI {
                 }
             })
             .and_then(|_| {
-                if d.data.phlo_price < min_phlo_price {
-                    Err(DeployValidationError {
-                        message: format!(
-                            "Phlo price {} is less than minimum price {}.",
-                            d.data.phlo_price, min_phlo_price
-                        ),
-                    })
-                } else {
-                    Ok(())
-                }
-            })
-            .and_then(|_| {
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_millis() as i64)
@@ -655,6 +649,17 @@ impl BlockAPI {
         };
 
         if let Some(casper) = eng.with_casper() {
+            // The floor check reads the SAME value the validity rule reads
+            // (the shard conf), never a second node-conf copy.
+            let min_phlo_price = casper.casper_shard_conf().min_phlo_price;
+            if d.data.phlo_price < min_phlo_price {
+                return Err(eyre::Report::new(DeployValidationError {
+                    message: format!(
+                        "Phlo price {} is less than minimum price {}.",
+                        d.data.phlo_price, min_phlo_price
+                    ),
+                }));
+            }
             let dag = casper.block_dag().await?;
             // A deploy admitted now can only ever land in a block that doesn't
             // exist yet — the next one, at `latest_block_number + 1` — never
@@ -1148,10 +1153,19 @@ impl BlockAPI {
 
             let mut block_infos_at_height_acc = Vec::new();
             for block_hashes_at_height in topo_sort_dag {
-                let blocks_at_height: Vec<_> = block_hashes_at_height
-                    .iter()
-                    .map(|block_hash| casper.block_store().get_unsafe(block_hash))
-                    .collect();
+                // A height window can name blocks this node does not hold
+                // (an LFS restore horizon); serve the held ones.
+                let mut blocks_at_height: Vec<BlockMessage> =
+                    Vec::with_capacity(block_hashes_at_height.len());
+                for block_hash in block_hashes_at_height.iter() {
+                    match casper.block_store().get(block_hash)? {
+                        Some(block) => blocks_at_height.push(block),
+                        None => tracing::debug!(
+                            "get-blocks-by-heights skipping unheld block {}",
+                            PrettyPrinter::build_string_bytes(block_hash)
+                        ),
+                    }
+                }
 
                 for block in blocks_at_height {
                     let block_info =
@@ -1250,9 +1264,12 @@ impl BlockAPI {
     ) -> ApiErr<String> {
         let do_it = |(_casper, topo_sort): (&dyn MultiParentCasper, Vec<Vec<BlockHash>>)| -> ApiErr<String> {
             // case (_, topoSort) => ...
+            // An unheld block (an LFS restore horizon) renders without edges.
             let fetch_parents = |block_hash: &BlockHash| -> Vec<BlockHash> {
-                let block = _casper.block_store().get_unsafe(block_hash);
-                block.header.parents_hash_list.clone()
+                match _casper.block_store().get(block_hash) {
+                    Ok(Some(block)) => block.header.parents_hash_list.clone(),
+                    _ => Vec::new(),
+                }
             };
 
             //string will be converted to an ApiErr<String>
@@ -1295,7 +1312,15 @@ impl BlockAPI {
         let mut block_infos_acc = Vec::new();
         for block_hashes_at_height in topo_sort {
             for block_hash in block_hashes_at_height {
-                let block = casper.block_store().get_unsafe(&block_hash);
+                // A height window can name blocks this node does not hold
+                // (an LFS restore horizon); serve the held ones.
+                let Some(block) = casper.block_store().get(&block_hash)? else {
+                    tracing::debug!(
+                        "get-blocks skipping unheld block {}",
+                        PrettyPrinter::build_string_bytes(&block_hash)
+                    );
+                    continue;
+                };
                 let block_info = BlockAPI::get_block_info_with_dag(
                     casper.as_ref(),
                     &dag,
@@ -1333,7 +1358,15 @@ impl BlockAPI {
         let mut block_infos_acc = Vec::new();
         for block_hashes_at_height in topo_sort {
             for block_hash in block_hashes_at_height {
-                let block = casper.block_store().get_unsafe(&block_hash);
+                // A height window can name blocks this node does not hold
+                // (an LFS restore horizon); serve the held ones.
+                let Some(block) = casper.block_store().get(&block_hash)? else {
+                    tracing::debug!(
+                        "get-blocks-full skipping unheld block {}",
+                        PrettyPrinter::build_string_bytes(&block_hash)
+                    );
+                    continue;
+                };
                 let block_info = BlockAPI::get_block_info_with_dag(
                     casper.as_ref(),
                     &dag,
@@ -1425,9 +1458,12 @@ impl BlockAPI {
             // of node-local insertion order.
             let maybe_block_hash = dag.deploy_canonical_appearance(deploy_id)?;
 
-            match maybe_block_hash {
-                Some(block_hash) => {
-                    let block = casper.block_store().get_unsafe(&block_hash);
+            // The canonical carrier can sit below an LFS restore horizon;
+            // fall through to the recent-blocks scan instead of erroring.
+            match maybe_block_hash
+                .and_then(|block_hash| casper.block_store().get(&block_hash).ok().flatten())
+            {
+                Some(block) => {
                     let light_block_info =
                         BlockAPI::get_light_block_info(casper.as_ref(), &block).await?;
                     Ok(light_block_info)
@@ -1539,16 +1575,10 @@ impl BlockAPI {
             if let Ok(Some(meta)) = dag.lookup(&block.block_hash) {
                 meta.fault_tolerance_value
             } else {
-                let safety_oracle = CliqueOracleImpl;
-                safety_oracle
-                    .normalized_fault_tolerance(dag, &block.block_hash)
-                    .await?
+                Self::fault_tolerance_or_unknown(dag, &block.block_hash).await?
             }
         } else {
-            let safety_oracle = CliqueOracleImpl;
-            safety_oracle
-                .normalized_fault_tolerance(dag, &block.block_hash)
-                .await?
+            Self::fault_tolerance_or_unknown(dag, &block.block_hash).await?
         };
 
         let weights_map = proto_util::weight_map(block);
@@ -1562,6 +1592,32 @@ impl BlockAPI {
 
         let block_info = constructor(block, fault_tolerance, is_finalized);
         Ok(block_info)
+    }
+
+    /// An oracle walk that reaches history this node does not hold (an LFS
+    /// restore horizon) reads as unknown fault tolerance, never as an API
+    /// failure.
+    async fn fault_tolerance_or_unknown(
+        dag: &KeyValueDagRepresentation,
+        block_hash: &BlockHash,
+    ) -> ApiErr<f32> {
+        let safety_oracle = CliqueOracleImpl;
+        match safety_oracle
+            .normalized_fault_tolerance(dag, block_hash)
+            .await
+        {
+            Ok(ft) => Ok(ft),
+            Err(KvStoreError::MissingBlock { hash, .. }) => {
+                tracing::debug!(
+                    "fault tolerance unknown for {}: history below the restore \
+                     horizon ({})",
+                    PrettyPrinter::build_string_bytes(block_hash),
+                    PrettyPrinter::build_string_bytes(&hash)
+                );
+                Ok(MIN_FAULT_TOLERANCE)
+            }
+            Err(err) => Err(err.into()),
+        }
     }
 
     async fn get_block_info<M: MultiParentCasper + ?Sized, A: Sized + Send>(
@@ -1782,6 +1838,66 @@ impl BlockAPI {
                 }
             }
         }
+    }
+
+    /// Bulk snapshot of pending deploys from both `deploy_storage` (fresh,
+    /// not yet proposed) and `rejected_deploy_buffer` (recovering after a
+    /// merge conflict). Each entry is paired with an `is_rejected` flag.
+    ///
+    /// When `deployer` is `Some`, only deploys signed by that public key
+    /// are returned. The result is capped at
+    /// [`pending_deploys::PENDING_DEPLOYS_MAX_RESULTS`] entries; the
+    /// `total_available` field reports the count that matched before
+    /// truncation, so callers can detect truncation by comparing
+    /// `deploys.len() < total_available`.
+    ///
+    /// The queue is **node-local**: deploys never gossip, so an observer
+    /// node always answers empty (it rejects `doDeploy`). For cross-node
+    /// deploy status, use `deployFinalizationStatus` — it is DAG-derived
+    /// and consistent across nodes. This API is for validator-side
+    /// introspection of the local proposer pool.
+    ///
+    /// Returns an error on bootstrapping nodes where Casper is not yet
+    /// initialised (`with_casper()` returns `None`).
+    pub async fn list_pending_deploys(
+        engine_cell: &EngineCell,
+        deployer: Option<&[u8]>,
+    ) -> ApiErr<crate::rust::api::pending_deploys::PendingDeploysSnapshot> {
+        use crate::rust::api::pending_deploys::{
+            PendingDeploysSnapshot, PENDING_DEPLOYS_MAX_RESULTS,
+        };
+
+        let error_message =
+            "Could not list pending deploys, casper instance was not available yet.";
+        let eng = engine_cell.get().await;
+        let Some(casper) = eng.with_casper() else {
+            tracing::warn!("{}", error_message);
+            return Err(eyre::eyre!("Error: {}", error_message));
+        };
+
+        let mut deploys = casper.list_pending_deploys().await?;
+
+        if let Some(pk) = deployer {
+            deploys.retain(|(d, _)| d.pk.bytes.as_ref() == pk);
+        }
+
+        // Deterministic ordering before cap truncation: by timestamp, then
+        // by signature bytes. Makes the truncation result reproducible
+        // across calls for the same queue state.
+        deploys.sort_by(|(a, _), (b, _)| {
+            a.data
+                .time_stamp
+                .cmp(&b.data.time_stamp)
+                .then_with(|| a.sig.as_ref().cmp(b.sig.as_ref()))
+        });
+
+        let total_available = deploys.len() as u32;
+        deploys.truncate(PENDING_DEPLOYS_MAX_RESULTS);
+
+        Ok(PendingDeploysSnapshot {
+            deploys,
+            total_available,
+        })
     }
 
     pub async fn bond_status(engine_cell: &EngineCell, public_key: &ByteString) -> ApiErr<bool> {

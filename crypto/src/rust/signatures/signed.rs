@@ -145,3 +145,170 @@ impl<A: std::hash::Hash> std::hash::Hash for Signed<A> {
         self.sig_algorithm.name().hash(state);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+
+    use super::*;
+    use crate::rust::signatures::secp256k1::Secp256k1;
+    use crate::rust::signatures::signatures_alg::SignaturesAlg;
+
+    #[derive(Clone, PartialEq, Eq, Hash, serde::Serialize, prost::Message)]
+    struct TestData {
+        #[prost(bytes = "vec", tag = "1")]
+        value: Vec<u8>,
+    }
+
+    impl ToMessage for TestData {
+        type Type = TestData;
+        fn to_message(&self) -> Self::Type { self.clone() }
+    }
+
+    fn test_data(value: &[u8]) -> TestData {
+        TestData {
+            value: value.to_vec(),
+        }
+    }
+
+    fn alg() -> Box<dyn SignaturesAlg> { Box::new(Secp256k1) }
+
+    #[test]
+    fn create_derives_pk_from_signing_key_and_verifies() {
+        let (sk, pk) = Secp256k1.new_key_pair();
+        let signed = Signed::create(test_data(b"hello"), alg(), sk).unwrap();
+
+        assert_eq!(signed.pk, pk);
+        assert!(!signed.sig.is_empty());
+
+        let verified = Signed::from_signed_data(
+            test_data(b"hello"),
+            signed.pk.clone(),
+            signed.sig.clone(),
+            alg(),
+        )
+        .unwrap();
+        assert_eq!(verified, Some(signed));
+    }
+
+    #[test]
+    fn from_signed_data_rejects_tampered_signature_and_data() {
+        let (sk, _) = Secp256k1.new_key_pair();
+        let signed = Signed::create(test_data(b"hello"), alg(), sk).unwrap();
+
+        let mut tampered_sig = signed.sig.to_vec();
+        tampered_sig[10] ^= 0xFF;
+        let result = Signed::from_signed_data(
+            test_data(b"hello"),
+            signed.pk.clone(),
+            prost::bytes::Bytes::from(tampered_sig),
+            alg(),
+        )
+        .unwrap();
+        assert_eq!(result, None);
+
+        let result = Signed::from_signed_data(
+            test_data(b"tampered"),
+            signed.pk.clone(),
+            signed.sig.clone(),
+            alg(),
+        )
+        .unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn create_unbound_carries_foreign_pk_and_fails_standard_verification() {
+        let (signing_sk, _) = Secp256k1.new_key_pair();
+        let (_, foreign_pk) = Secp256k1.new_key_pair();
+
+        let unbound = Signed::create_unbound(
+            test_data(b"exploratory"),
+            foreign_pk.clone(),
+            signing_sk,
+            alg(),
+        )
+        .unwrap();
+
+        assert_eq!(unbound.pk, foreign_pk);
+        assert!(!unbound.sig.is_empty());
+
+        let verified = Signed::from_signed_data(
+            test_data(b"exploratory"),
+            unbound.pk.clone(),
+            unbound.sig.clone(),
+            alg(),
+        )
+        .unwrap();
+        assert_eq!(verified, None);
+    }
+
+    #[test]
+    fn create_unbound_gives_distinct_signatures_for_distinct_pks() {
+        let (signing_sk, _) = Secp256k1.new_key_pair();
+        let (_, pk_a) = Secp256k1.new_key_pair();
+        let (_, pk_b) = Secp256k1.new_key_pair();
+
+        let sig_a = Signed::create_unbound(
+            test_data(b"same data"),
+            pk_a.clone(),
+            signing_sk.clone(),
+            alg(),
+        )
+        .unwrap()
+        .sig;
+        let sig_a_again =
+            Signed::create_unbound(test_data(b"same data"), pk_a, signing_sk.clone(), alg())
+                .unwrap()
+                .sig;
+        let sig_b = Signed::create_unbound(test_data(b"same data"), pk_b, signing_sk, alg())
+            .unwrap()
+            .sig;
+
+        assert_eq!(sig_a, sig_a_again);
+        assert_ne!(sig_a, sig_b);
+    }
+
+    #[test]
+    fn signature_hash_uses_blake2b256_by_default() {
+        let data = b"some serialized data".to_vec();
+        let hash = Signed::<TestData>::signature_hash("secp256k1", data.clone());
+        assert_eq!(hash, crate::rust::hash::blake2b256::Blake2b256::hash(data));
+    }
+
+    #[test]
+    fn signature_hash_uses_eth_prefixed_keccak_for_eth_alg() {
+        let data = b"eth data".to_vec();
+        let hash = Signed::<TestData>::signature_hash(&super::Secp256k1Eth::name(), data.clone());
+
+        let mut prefixed = format!("\u{0019}Ethereum Signed Message:\n{}", data.len())
+            .as_bytes()
+            .to_vec();
+        prefixed.extend(data);
+        assert_eq!(
+            hash,
+            crate::rust::hash::keccak256::Keccak256::hash(prefixed)
+        );
+    }
+
+    #[test]
+    fn equal_signed_values_have_equal_hashes() {
+        let (sk, _) = Secp256k1.new_key_pair();
+        let a = Signed::create(test_data(b"hash me"), alg(), sk.clone()).unwrap();
+        let b = Signed::create(test_data(b"hash me"), alg(), sk.clone()).unwrap();
+        let c = Signed::create(test_data(b"different"), alg(), sk).unwrap();
+
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+
+        fn hash_of(signed: &Signed<TestData>) -> u64 {
+            let mut hasher = DefaultHasher::new();
+            signed.hash(&mut hasher);
+            hasher.finish()
+        }
+        assert_eq!(hash_of(&a), hash_of(&b));
+
+        let cloned = a.clone();
+        assert_eq!(a, cloned);
+    }
+}

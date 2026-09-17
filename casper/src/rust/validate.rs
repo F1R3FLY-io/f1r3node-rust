@@ -1,6 +1,6 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // See casper/src/main/scala/coop/rchain/casper/Validate.scala
@@ -60,6 +60,14 @@ use shared::rust::store::key_value_store::KvStoreError;
 use crate::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
 use crate::rust::casper::CasperSnapshot;
 use crate::rust::errors::CasperError;
+use crate::rust::metrics_constants::{
+    CASPER_METRICS_SOURCE, REPEAT_DEPLOY_ANCESTOR_BODY_READS_METRIC,
+    REPEAT_DEPLOY_ANCESTOR_METADATA_VISITS_METRIC, REPEAT_DEPLOY_CARRIER_FALLBACK_SCAN_METRIC,
+    REPEAT_DEPLOY_CARRIER_INDEX_ABSENCE_METRIC, REPEAT_DEPLOY_CARRIER_INDEX_HIT_METRIC,
+    REPEAT_DEPLOY_CARRIER_INDEX_READ_FAILURE_METRIC, REPEAT_DEPLOY_CARRIER_ROW_READS_METRIC,
+    REPEAT_DEPLOY_CARRIER_WATERMARK_ENGAGED_METRIC,
+    REPEAT_DEPLOY_CARRIER_WATERMARK_NOT_READY_METRIC,
+};
 use crate::rust::slashing_authorization::{
     epoch_for_block_number, received_slash_deploy_authorized, slash_target_key,
     validate_received_slash_deploys, SlashAuthError,
@@ -73,6 +81,8 @@ pub type PublicKey = Vec<u8>;
 pub type Data = Vec<u8>;
 pub type Signature = Vec<u8>;
 
+/// Wall-clock tolerance of the timestamp validity rule; consensus-bearing,
+/// so compiled.
 const DRIFT: i64 = 15000; // 15 seconds
 
 /// Namespace for the block-validation functions. P4-6 (slashing audit)
@@ -291,7 +301,7 @@ impl Validate {
 
     // Validator ordering inside `block_summary` is consensus-critical and
     // has been audited as of `feature/slashing`. The order encoded below
-    // matches the spec in docs/theory/slashing/slashing-specification.md
+    // matches the spec in docs/casper/theory/slashing/slashing-specification.md
     // and is the same ordering proven correct in the corresponding Rocq
     // theorems for the `T-9.x` family.
     pub async fn block_summary(
@@ -689,20 +699,118 @@ impl Validate {
             return Either::Right(ValidBlock::Valid);
         }
 
+        // Repeat-deploy carrier-index fast path (CONSENSUS_PHILOSOPHY
+        // §4.4). The index records every carrier from the watermark W
+        // onward, so it engages only when the scan window starts at or
+        // above W (`w <= max(earliest, 0)` — heights below zero do not
+        // exist, so W = 0 means complete over every existing block).
+        // Behind that gate, an index absence proves the sig has no
+        // in-window carrier, so it cannot be a repeat and skips the scan.
+        // An index hit is NOT a verdict — the sig stays in the exact scan,
+        // which is the window and parent-scope verification (a fork-only
+        // carrier must not poison this block). Any read failure keeps the
+        // sig in the scan: unreadable index state is no information, never
+        // an absence proof.
+        let index_read_failures = metrics::counter!(
+            REPEAT_DEPLOY_CARRIER_INDEX_READ_FAILURE_METRIC,
+            "source" => CASPER_METRICS_SOURCE
+        );
+        let deploy_key_set: HashSet<Vec<u8>> = match s.dag.carrier_index_watermark() {
+            Ok(Some(w)) if w <= earliest_block_number.max(0) => {
+                metrics::counter!(REPEAT_DEPLOY_CARRIER_WATERMARK_ENGAGED_METRIC, "source" => CASPER_METRICS_SOURCE)
+                    .increment(1);
+                let row_reads = metrics::counter!(
+                    REPEAT_DEPLOY_CARRIER_ROW_READS_METRIC,
+                    "source" => CASPER_METRICS_SOURCE
+                );
+                let index_absences = metrics::counter!(
+                    REPEAT_DEPLOY_CARRIER_INDEX_ABSENCE_METRIC,
+                    "source" => CASPER_METRICS_SOURCE
+                );
+                let index_hits = metrics::counter!(
+                    REPEAT_DEPLOY_CARRIER_INDEX_HIT_METRIC,
+                    "source" => CASPER_METRICS_SOURCE
+                );
+                let mut probe_failed = false;
+                let scan_set: HashSet<Vec<u8>> = deploy_key_set
+                    .into_iter()
+                    .filter(|sig| {
+                        if probe_failed {
+                            return true;
+                        }
+                        row_reads.increment(1);
+                        match s.dag.carrier_index_proves_absence(sig) {
+                            Ok(true) => {
+                                index_absences.increment(1);
+                                false
+                            }
+                            Ok(false) => {
+                                index_hits.increment(1);
+                                true
+                            }
+                            Err(e) => {
+                                index_read_failures.increment(1);
+                                tracing::warn!(
+                                    "repeat-deploy carrier-index probe failed for block {}; \
+                                     falling back to the ancestor scan: {}",
+                                    PrettyPrinter::build_string_bytes(&block.block_hash),
+                                    e,
+                                );
+                                probe_failed = true;
+                                true
+                            }
+                        }
+                    })
+                    .collect();
+                scan_set
+            }
+            Ok(_) => {
+                metrics::counter!(REPEAT_DEPLOY_CARRIER_WATERMARK_NOT_READY_METRIC, "source" => CASPER_METRICS_SOURCE)
+                    .increment(1);
+                deploy_key_set
+            }
+            Err(e) => {
+                index_read_failures.increment(1);
+                tracing::warn!(
+                    "repeat-deploy carrier-index watermark read failed for block {}; \
+                     falling back to the ancestor scan: {}",
+                    PrettyPrinter::build_string_bytes(&block.block_hash),
+                    e,
+                );
+                deploy_key_set
+            }
+        };
+        if deploy_key_set.is_empty() {
+            return Either::Right(ValidBlock::Valid);
+        }
+        metrics::counter!(REPEAT_DEPLOY_CARRIER_FALLBACK_SCAN_METRIC, "source" => CASPER_METRICS_SOURCE)
+            .increment(1);
+
         tracing::debug!(target: "f1r3fly.casper", "before-repeat-deploy-duplicate-block");
         // A failed expansion is not an empty one: swallowing it ends the scan
         // early, and "found no duplicate" is then a statement about what could
         // be read, not about the chain. That verdict admits the repeat.
+        let ancestor_metadata_visits = metrics::counter!(
+            REPEAT_DEPLOY_ANCESTOR_METADATA_VISITS_METRIC,
+            "source" => CASPER_METRICS_SOURCE
+        );
+        let ancestor_body_reads = metrics::counter!(
+            REPEAT_DEPLOY_ANCESTOR_BODY_READS_METRIC,
+            "source" => CASPER_METRICS_SOURCE
+        );
         let maybe_duplicated_block_metadata = match dag_ops::try_bf_traverse_find(
             init_parents,
             |block_metadata| {
-                proto_util::get_parent_metadatas_above_block_number(
+                ancestor_metadata_visits.increment(1);
+                proto_util::parent_metadatas_above_block_number(
                     block_metadata,
                     earliest_block_number,
                     &s.dag,
+                    proto_util::UnheldParent::Surface,
                 )
             },
             |block_metadata| {
+                ancestor_body_reads.increment(1);
                 block_store
                     .has_any_deploy_sig_strict(&block_metadata.block_hash, &deploy_key_set)
                     .map_err(CasperError::from)
@@ -1397,7 +1505,7 @@ impl Validate {
     ///   author's behavior. Propagate as `BlockError::from_validation_error(e)`;
     ///   do NOT slash the block sender for a fault attributable to local
     ///   infrastructure. Bug-fix rationale: see
-    ///   docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.14.
+    ///   docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.14.
     pub fn slash_deploy_authorization(
         block: &BlockMessage,
         s: &CasperSnapshot,
@@ -1411,7 +1519,7 @@ impl Validate {
     /// errors — can be unit-tested from integration tests.
     ///
     /// See `slash_deploy_authorization` for the full rationale and
-    /// docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.14
+    /// docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.14
     /// ("Error routing") for the design contract this helper enforces.
     pub fn route_slash_validation_outcome(
         block: &BlockMessage,
@@ -1460,7 +1568,7 @@ impl Validate {
     /// Proven sound by `t_9_6_self_regression_detected`,
     /// `t_9_6_self_regression_complete`, and `t_9_6_self_regression_in_dag` in
     /// `formal/rocq/slashing/theories/BugFixSelfRegression.v`. See also
-    /// `docs/theory/slashing/design/09-bug-fixes-and-rationale.md` §9.6.
+    /// `docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md` §9.6.
     pub fn justification_regressions(
         b: &BlockMessage,
         s: &mut CasperSnapshot,
@@ -1484,7 +1592,7 @@ impl Validate {
                 // Self-regression is checked here too: include the sender's
                 // self-justification so a block that points back to its own
                 // earlier sequence number is detected as JustificationRegression.
-                // See docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.6.
+                // See docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.6.
 
                 let log_warn =
                     |current_hash: &BlockHash, regressive_hash: &BlockHash, sender: &Validator| {

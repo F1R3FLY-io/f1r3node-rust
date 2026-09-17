@@ -14,7 +14,7 @@
 //! ∧ matching evidence epoch ∧ positive bond ∧ block flagged invalid) is the
 //! precondition proven sufficient by Theorem T-9.13 (see
 //! `formal/rocq/slashing/theories/BugFixSlashAuthorization.v` and
-//! `docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.14`).
+//! `docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.14`).
 //!
 //! Boundary helpers (`checked_base_seq`, `checked_next_seq`,
 //! `epoch_for_block_number`) live here because their failure modes feed back
@@ -23,7 +23,7 @@
 
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 use std::collections::btree_map::Entry;
@@ -277,6 +277,30 @@ pub fn authorized_slash_candidates(
     let current_epoch =
         epoch_for_block_number(proposed_block_num, epoch_length).map_err(SlashAuthError::from)?;
 
+    // A proposal view that trails this node's OWN finalized frontier is a
+    // catch-up view: the finalizer walks the whole DAG while the snapshot's
+    // epoch derives from justification-fed latest messages, and on a restored
+    // joiner the two clocks separate by whole epochs. Slashes issued from
+    // such a view match its stale epoch and are DOA at every live peer
+    // (receive rule 2), minting UnauthorizedSlashDeploy verdicts on the
+    // carriers instead of punishing anyone. Issuance waits until the view
+    // catches its own frontier; peers with current views lose nothing. An
+    // LFB without local metadata proves no lag, so issuance proceeds.
+    if let Some(lfb_metadata) = snapshot.dag.lookup(&snapshot.last_finalized_block)? {
+        let lfb_epoch = epoch_for_block_number(lfb_metadata.block_number, epoch_length)
+            .map_err(SlashAuthError::from)?;
+        if lfb_epoch > current_epoch {
+            tracing::debug!(
+                lfb_number = lfb_metadata.block_number,
+                lfb_epoch = lfb_epoch.get(),
+                current_epoch = current_epoch.get(),
+                "slash issuance suppressed: proposal view trails this node's \
+                 finalized frontier (mid-catch-up)"
+            );
+            return Ok(Vec::new());
+        }
+    }
+
     // BTreeMap (not HashMap) gives deterministic iteration order across nodes;
     // the resulting Vec is what feeds the block body.
     let mut by_offender: BTreeMap<Validator, AuthorizedSlashCandidate> = BTreeMap::new();
@@ -353,7 +377,7 @@ pub fn authorized_slash_candidates(
 /// 6. The offender must currently carry a positive bond.
 /// 7. No two slashes in the same block may share `(offender, target_epoch)`.
 ///
-/// See `docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.14` and
+/// See `docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.14` and
 /// the Rocq proof in `formal/rocq/slashing/theories/BugFixSlashAuthorization.v`.
 pub fn validate_received_slash_deploys(
     block: &BlockMessage,

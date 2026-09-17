@@ -1,8 +1,8 @@
 // Same validator equivocates twice => two distinct EquivocationRecords.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §14, T-4
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §14, T-4
 // (record uniqueness).
-// Reference: docs/theory/slashing/design/05-storage-and-records.md.
+// Reference: docs/casper/theory/slashing/design/05-storage-and-records.md.
 //
 // Scenario: validator v0 equivocates at seq=5, then again at seq=10. The
 // record store must hold *both* records, keyed by `(equivocator,

@@ -1,5 +1,6 @@
 # Build output
 target/
+__pycache__/
 /build
 
 # OS generated files
@@ -21,12 +22,10 @@ Thumbs.db
 # Rust
 *.rs.bk
 
-# Per-crate Cargo.lock (cargo build artifacts when invoked in subdirs)
-# Only the workspace-root Cargo.lock is tracked, plus the standalone
-# soak-charts publisher crate's lock — its supply-chain pin (see its Cargo.toml).
 Cargo.lock
 !/Cargo.lock
 !/scripts/soak-charts/Cargo.lock
+!/fuzz/Cargo.lock
 
 # BNFC generated
 rholang/bnfc/
@@ -98,6 +97,9 @@ Makefile.coq.conf
 Makefile.coq.local
 Makefile.verify.*
 .Makefile.verify.*.d
+formal/rocq/*/Makefile.local
+formal/rocq/*/Makefile.local.conf
+formal/rocq/*/.Makefile.local.d
 
 # TLA+ / TLC
 ##############
@@ -126,5 +128,6 @@ MC_TE.out
 *~
 docs/discoveries/*.md
 .tmp/
-docs/work-logs/*.md
 .pi/
+graphify-out/
+/graphify-out

@@ -21,8 +21,10 @@
 //! - **Failed** ⟺ beyond the contestability bound, not in the state, and
 //!   a floor-covered `is_failed` execution exists (it ran and failed; the
 //!   charge landed).
-//! - **Expired** ⟺ beyond the bound, not in the state otherwise: the
-//!   window is closed and nothing can ever apply it.
+//! - **Expired** ⟺ beyond the bound, not in the state, and the whole
+//!   lineage segment down to the bound was READABLE: on a truncated node a
+//!   sig whose walk crosses the restore horizon is unknowable, and the
+//!   register abstains (Pending) rather than invent a terminal verdict.
 //!
 //! The CONTESTABILITY BOUND is `max(window_end, last inclusion) +
 //! citability horizon`, past which no admissible block can adjudicate,
@@ -47,8 +49,9 @@ use block_storage::rust::dag::deploy_lifecycle_types::{
 };
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use models::rust::block_hash::BlockHash;
-use models::rust::casper::protocol::casper_message::BlockMessage;
+use models::rust::casper::protocol::casper_message::{BlockMessage, RejectedDeploy};
 use prost::bytes::Bytes;
+use shared::rust::store::key_value_store::MissingBlockContext;
 
 use super::floor::{in_floor_closure, Floor};
 use crate::rust::errors::CasperError;
@@ -98,13 +101,15 @@ fn effect_in_state_of_above(
         if checked_below == Some(&cur) {
             return Ok(false);
         }
+        // Absence is a statement about THIS node's history (a truncated
+        // node lacks bodies below its restore horizon), never a judgement:
+        // typed so every availability classifier downstream can defer,
+        // fetch, or abstain instead of laundering it into a verdict.
         let Some(block) = block_store.get(&cur)? else {
-            return Err(CasperError::Other(format!(
-                "effect_in_state_of: block {} on the base lineage is absent \
-                 from the store — refusing to judge membership from an \
-                 incomplete lineage",
-                hex::encode(&cur[..8.min(cur.len())]),
-            )));
+            return Err(CasperError::BlockNotHeld(
+                cur,
+                MissingBlockContext::new("membership carrier-body read"),
+            ));
         };
         if block.body.state.block_number < min_height {
             return Ok(false);
@@ -148,6 +153,252 @@ fn effect_in_state_of_above(
     }
 }
 
+/// Where a lineage step leads.
+enum LineageNext {
+    /// Next block on the state lineage.
+    Base(BlockHash),
+    /// Genesis: the lineage is exhausted.
+    Genesis,
+    /// Multi-parent block without a recorded `merge_base`: malformed. The
+    /// walk refuses when it must STEP through such a block; readers of the
+    /// block's own facts (its rejection records) are unaffected, exactly
+    /// like the reference loaders.
+    MalformedMultiParent,
+}
+
+/// One cached lineage step: everything the batched walk (and the
+/// rejection-record loader) needs from a block without re-reading its
+/// body. Content-addressed by block hash, so an entry can never go stale.
+struct LineageStep {
+    block_number: i64,
+    next: LineageNext,
+    /// The block's applied-sig facts: sigs of its non-failed `deploys`
+    /// entries plus its `applied_from_scope` list.
+    sigs: std::sync::Arc<HashSet<Bytes>>,
+    /// The block's kept rejection records, verbatim from
+    /// `body.rejected_deploys` — the per-block input to
+    /// `scope_prior_rejection_counts`.
+    rejected: std::sync::Arc<Vec<RejectedDeploy>>,
+}
+
+/// Byte budget for the per-block lineage-step cache, tracked from each
+/// entry's measured sig bytes (an entry-count cap understates fat blocks:
+/// 128 sigs × ~70B is ~9KB for one entry). On overflow the cache is
+/// cleared rather than evicted piecewise — entries are pure functions of
+/// immutable bodies, so losing them costs only a re-read. Repeated
+/// clear-rebuild thrash would need one walk's entries to approach the
+/// budget, and walk depth is bounded far below it by the deterministic
+/// floor-distance merge backstop (`merge_scope_backstop_exceeded`).
+const LINEAGE_STEP_CACHE_MAX_BYTES: usize = 32 * 1024 * 1024;
+
+/// Per-entry overhead estimate added to the measured sig bytes: map slot,
+/// `Arc` headers, hash key.
+const LINEAGE_STEP_ENTRY_OVERHEAD_BYTES: usize = 128;
+
+#[derive(Default)]
+struct LineageStepCache {
+    map: HashMap<BlockHash, std::sync::Arc<LineageStep>>,
+    approx_bytes: usize,
+}
+
+impl LineageStepCache {
+    fn insert(&mut self, hash: BlockHash, step: std::sync::Arc<LineageStep>) {
+        let entry_bytes = LINEAGE_STEP_ENTRY_OVERHEAD_BYTES
+            + step.sigs.iter().map(Bytes::len).sum::<usize>()
+            + step
+                .rejected
+                .iter()
+                .map(|r| r.sig.len() + r.carrier.len() + 16)
+                .sum::<usize>();
+        if self.approx_bytes + entry_bytes > LINEAGE_STEP_CACHE_MAX_BYTES {
+            self.map.clear();
+            self.approx_bytes = 0;
+        }
+        self.approx_bytes += entry_bytes;
+        self.map.insert(hash, step);
+    }
+}
+
+fn lineage_step_cache() -> &'static parking_lot::Mutex<LineageStepCache> {
+    static CACHE: std::sync::OnceLock<parking_lot::Mutex<LineageStepCache>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| parking_lot::Mutex::new(LineageStepCache::default()))
+}
+
+#[cfg(test)]
+fn lineage_step_cache_bytes() -> usize { lineage_step_cache().lock().approx_bytes }
+
+/// The cached lineage step for one block, revalidated against the
+/// SUPPLIED store. The cache is process-global and keyed by hash alone,
+/// while every caller's answer must be a function of its own store: a hit
+/// is revalidated with a raw key-existence check (no decompression, no
+/// decode), so a block this store does not hold is `BlockNotHeld` exactly
+/// as on the cold path — availability semantics survive the cache, and
+/// one process serving several stores (tests) cannot cross-answer.
+fn lineage_step_of(
+    block_store: &KeyValueBlockStore,
+    block_hash: &BlockHash,
+) -> Result<std::sync::Arc<LineageStep>, CasperError> {
+    let cached = lineage_step_cache().lock().map.get(block_hash).cloned();
+    if let Some(step) = cached {
+        if block_store.contains_key(block_hash)? {
+            return Ok(step);
+        }
+        return Err(CasperError::BlockNotHeld(
+            block_hash.clone(),
+            MissingBlockContext::new("lineage-step cache revalidation"),
+        ));
+    }
+    // Miss path: two short lock acquisitions (lookup above, insert below)
+    // are deliberate — the store read between them is I/O and must not run
+    // under the lock.
+    let Some(block) = block_store.get(block_hash)? else {
+        return Err(CasperError::BlockNotHeld(
+            block_hash.clone(),
+            MissingBlockContext::new("lineage-step body read"),
+        ));
+    };
+    let next = if !block.body.merge_base.is_empty() {
+        LineageNext::Base(block.body.merge_base.clone())
+    } else {
+        match block.header.parents_hash_list.as_slice() {
+            [] => LineageNext::Genesis,
+            [parent] => LineageNext::Base(parent.clone()),
+            _ => LineageNext::MalformedMultiParent,
+        }
+    };
+    let mut sigs: HashSet<Bytes> = block
+        .body
+        .deploys
+        .iter()
+        .filter(|pd| !pd.is_failed)
+        .map(|pd| pd.deploy.sig.clone())
+        .collect();
+    sigs.extend(block.body.applied_from_scope.iter().cloned());
+    let step = std::sync::Arc::new(LineageStep {
+        block_number: block.body.state.block_number,
+        next,
+        sigs: std::sync::Arc::new(sigs),
+        rejected: std::sync::Arc::new(block.body.rejected_deploys),
+    });
+    lineage_step_cache()
+        .lock()
+        .insert(block_hash.clone(), step.clone());
+    Ok(step)
+}
+
+/// The block's kept rejection records (`body.rejected_deploys`) through
+/// the lineage-step cache: the batched form of the per-merge
+/// `records_of` loader that previously decoded the full body per visible
+/// block per merge. Absence is `BlockNotHeld`, exactly like the reference
+/// loader; a malformed multi-parent block still serves its own records —
+/// only STEPPING through it is refused, and this reader does not step.
+pub(crate) fn rejected_records_of(
+    block_store: &KeyValueBlockStore,
+    block_hash: &BlockHash,
+) -> Result<std::sync::Arc<Vec<RejectedDeploy>>, CasperError> {
+    Ok(lineage_step_of(block_store, block_hash)?.rejected.clone())
+}
+
+/// One walk, every sig: the applied-sig union of `block_hash`'s state
+/// lineage down to `min_height` — the batched form of
+/// [`effect_in_state_of`] (CLAIM-FINALITY-001, C2:
+/// `docs/claims/settled-effect-probe-equivalence.md`). A caller holding
+/// the returned set answers any per-sig probe by membership, turning the
+/// merge's ~30 per-sig lineage walks into one walk plus O(1) lookups.
+/// Also returns the number of blocks walked, for the caller's metrics.
+///
+/// Stepping, bounds, and the non-failed/`applied_from_scope` fact kinds
+/// are exactly the reference walk's. One deliberate strengthening: this
+/// walk always covers the FULL segment, so an absent body (or a malformed
+/// multi-parent block without a recorded base) anywhere above the bound
+/// refuses the whole answer — even when a probed sig is applied above the
+/// gap and the per-sig reference walk would have answered TRUE without
+/// reaching it. Availability must not shape verdicts (the claim's
+/// availability-deferral seam premise); a deferral where the reference
+/// sometimes answered is the fail-closed direction.
+pub(crate) fn settled_sigs_of_lineage(
+    block_store: &KeyValueBlockStore,
+    block_hash: &BlockHash,
+    min_height: i64,
+) -> Result<(HashSet<Bytes>, usize), CasperError> {
+    let mut settled: HashSet<Bytes> = HashSet::new();
+    let mut walked = 0usize;
+    let mut cur = block_hash.clone();
+    loop {
+        let step = lineage_step_of(block_store, &cur)?;
+        if step.block_number < min_height {
+            return Ok((settled, walked));
+        }
+        walked += 1;
+        settled.extend(step.sigs.iter().cloned());
+        match &step.next {
+            LineageNext::Base(base) => cur = base.clone(),
+            LineageNext::Genesis => return Ok((settled, walked)),
+            LineageNext::MalformedMultiParent => {
+                return Err(CasperError::Other(format!(
+                    "settled_sigs_of_lineage: multi-parent block {} carries \
+                     no recorded merge_base — refusing to guess its state \
+                     lineage",
+                    hex::encode(&cur[..8.min(cur.len())]),
+                )))
+            }
+        }
+    }
+}
+
+/// Batched multi-floor settled probe with the reference loop's per-floor
+/// short-circuit. The reference form checks floors IN ORDER and returns
+/// TRUE at the first floor whose lineage holds the sig; floors after the
+/// answering one are never read. This probe builds each floor's applied-sig
+/// set lazily via [`settled_sigs_of_lineage`] the first time the in-order
+/// scan reaches that floor, so an unavailable LATER floor cannot poison a
+/// probe an earlier floor answers — the error surface matches the
+/// reference at floor granularity (within one floor's segment the
+/// fail-closed strengthening of the batched walk applies).
+pub(crate) struct FloorSettledProbe {
+    /// `(floor hash, min_height)` in the reference scan order.
+    floors: Vec<(BlockHash, i64)>,
+    /// Lazily built per-floor applied-sig sets, index-aligned with
+    /// `floors`.
+    sets: Vec<Option<HashSet<Bytes>>>,
+    /// Blocks walked across every set built so far, for the caller's
+    /// metrics.
+    pub(crate) total_walked: usize,
+}
+
+impl FloorSettledProbe {
+    pub(crate) fn new(floors: Vec<(BlockHash, i64)>) -> Self {
+        let sets = floors.iter().map(|_| None).collect();
+        Self {
+            floors,
+            sets,
+            total_walked: 0,
+        }
+    }
+
+    /// TRUE iff some floor's lineage (down to that floor's bound) holds
+    /// the sig, scanning floors in order and stopping at the first hit.
+    pub(crate) fn settled(
+        &mut self,
+        block_store: &KeyValueBlockStore,
+        sig: &Bytes,
+    ) -> Result<bool, CasperError> {
+        for i in 0..self.floors.len() {
+            if self.sets[i].is_none() {
+                let (hash, min_height) = &self.floors[i];
+                let (sigs, walked) = settled_sigs_of_lineage(block_store, hash, *min_height)?;
+                self.total_walked += walked;
+                self.sets[i] = Some(sigs);
+            }
+            if self.sets[i].as_ref().expect("just built").contains(sig) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+}
+
 #[derive(Default)]
 struct Schedule {
     /// Sigs to re-evaluate once the max frozen lm-floor height reaches the
@@ -161,6 +412,12 @@ struct Schedule {
     /// membership check already answered FALSE for. The next check walks
     /// only the new segment above it.
     checked: HashMap<Bytes, BlockHash>,
+    /// Sigs whose membership walk crossed the restore horizon: the segment
+    /// below is unreadable on this node, so "not in the state" — the
+    /// premise of Expired and Failed — is unknowable for them. They stay
+    /// Pending; only a readable re-application above the horizon (found by
+    /// the ongoing coverage re-checks) can still settle them Finalized.
+    horizon_blocked: HashSet<Bytes>,
     /// Set once `rebuild_schedule` has armed the persisted open rows.
     rebuilt: bool,
 }
@@ -239,6 +496,15 @@ impl DeployLifecycle {
                 hash: adopted_hash,
                 block_number: adopted_number,
             });
+            // Carrier-index retention: entries below the adopted floor
+            // minus the lifespan sit below every future scan window
+            // (earliest = maxParent + 1 − lifespan, and parents sit above
+            // the floor). The prune is strided inside the index, so most
+            // advances no-op. A failure must not affect the verdict path —
+            // retention is an optimization, never consensus input.
+            if let Err(e) = dag.prune_carriers_below(adopted_number - deploy_lifespan) {
+                tracing::warn!("carrier-index prune failed (retention only): {}", e);
+            }
         }
 
         // Due: crossed thresholds plus the block's own touched sigs.
@@ -314,19 +580,59 @@ fn evaluate(
     // true answer is the verdict. The memo bounds the walk to the lineage
     // segment above the last floor already answered false.
     let checked_below = schedule.checked.get(sig).cloned();
-    let member = effect_in_state_of_above(
+    let member = match effect_in_state_of_above(
         block_store,
         &max_floor.hash,
         sig,
         valid_after,
         checked_below.as_ref(),
-    )?;
+    ) {
+        Ok(member) => member,
+        // The walk crossed the restore horizon: the sig's verdict is
+        // unknowable on this node, and that is a fact about the node,
+        // never a failure of the block whose admission ran this
+        // evaluation. Abstain: flag the sig, memoize the boundary (the
+        // absent hash is on the lineage, so the early stop ends every
+        // later walk there without re-reading), and re-arm — a readable
+        // re-application above the horizon can still finalize it.
+        Err(CasperError::BlockNotHeld(missing, _)) => {
+            tracing::warn!(
+                target: "f1r3fly.casper.lifecycle",
+                sig = %hex::encode(&sig[..8.min(sig.len())]),
+                missing = %hex::encode(&missing[..8.min(missing.len())]),
+                "membership walk crossed the restore horizon: verdict \
+                 unknowable on this node, sig stays Pending"
+            );
+            schedule.horizon_blocked.insert(sig.clone());
+            schedule.checked.insert(sig.clone(), missing);
+            schedule
+                .floor_thresholds
+                .entry(floor_height + 1)
+                .or_default()
+                .insert(sig.clone());
+            return Ok(());
+        }
+        Err(other) => return Err(other),
+    };
     if member {
         write_terminal(dag, sig, TerminalState::Finalized, &row, terminalized)?;
         schedule.checked.remove(sig);
+        schedule.horizon_blocked.remove(sig);
         return Ok(());
     }
     schedule.checked.insert(sig.clone(), max_floor.hash.clone());
+
+    // "Not in the state" over an unreadable segment is not established —
+    // it is unknowable. Expired/Failed for a horizon-blocked sig would be
+    // an invented terminal verdict; keep re-checking coverage instead.
+    if schedule.horizon_blocked.contains(sig) {
+        schedule
+            .floor_thresholds
+            .entry(floor_height + 1)
+            .or_default()
+            .insert(sig.clone());
+        return Ok(());
+    }
 
     // EXPIRED / FAILED — only beyond the contestability bound, past which
     // no admissible block can adjudicate, re-apply, or re-include the sig,
@@ -385,11 +691,18 @@ fn evaluate(
 /// Display fields for a terminal record, frozen from the event row it
 /// prunes: every record event counts toward `rejection_count` (duplicates
 /// included — the count is observability, not the causal ordering), and
-/// the latest INCLUSION event names the sig's most recent canonical
-/// appearance. A rejection record's block does not carry the deploy — a
+/// the latest DAG-VISIBLE inclusion event names the sig's most recent
+/// canonical appearance. The visibility filter matters here because the
+/// terminal record outlives the row: an orphan event from a crash inside
+/// the ingest-first insert window must not freeze into a write-once
+/// record that `canonical_appearance` then returns unfiltered forever.
+/// A rejection record's block does not carry the deploy — a
 /// record-carrier here sends every consumer that fetches the named block
 /// looking for a deploy that is not in it.
-fn frozen_display(row: &LifecycleEvents) -> (u32, i64, Vec<u8>) {
+fn frozen_display(
+    row: &LifecycleEvents,
+    is_visible: &dyn Fn(&[u8]) -> bool,
+) -> (u32, i64, Vec<u8>) {
     let rejection_count = row
         .events
         .iter()
@@ -399,6 +712,7 @@ fn frozen_display(row: &LifecycleEvents) -> (u32, i64, Vec<u8>) {
         .events
         .iter()
         .filter(|e| matches!(e.kind, LifecycleEventKind::Included { .. }))
+        .filter(|e| is_visible(&e.block_hash))
         .max_by(|a, b| {
             a.height
                 .cmp(&b.height)
@@ -416,7 +730,9 @@ fn write_terminal(
     row: &LifecycleEvents,
     terminalized: &mut Vec<Bytes>,
 ) -> Result<(), CasperError> {
-    let (rejection_count, latest_height, latest_block_hash) = frozen_display(row);
+    let (rejection_count, latest_height, latest_block_hash) = frozen_display(row, &|h| {
+        dag.contains(&prost::bytes::Bytes::copy_from_slice(h))
+    });
     let written = dag
         .put_deploy_terminal_if_absent(sig, TerminalRecord {
             state,
@@ -741,7 +1057,15 @@ mod tests {
             ],
         };
 
-        let (rejection_count, latest_height, latest_block_hash) = frozen_display(&row);
+        let (rejection_count, latest_height, latest_block_hash) = frozen_display(&row, &|_| true);
+        assert_eq!(rejection_count, 1);
+
+        let (_, orphan_height, orphan_hash) = frozen_display(&row, &|_| false);
+        assert_eq!(
+            (orphan_height, orphan_hash),
+            (0, Vec::new()),
+            "a never-DAG-visible inclusion must not freeze into the display"
+        );
         assert_eq!(rejection_count, 1);
         assert_eq!(
             (latest_height, latest_block_hash),
@@ -820,5 +1144,455 @@ mod tests {
         }
         let sig = Bytes::from_static(b"sig_x");
         assert!(effect_in_state_of(&store, &m.block_hash, &sig, 0).is_err());
+    }
+
+    /// An absent lineage block is a statement about THIS node's history —
+    /// a truncated node legitimately lacks bodies below its restore
+    /// horizon — so the refusal must be the typed [`CasperError::BlockNotHeld`]
+    /// naming the block, never a stringified `Other` that bypasses every
+    /// availability classifier downstream.
+    #[tokio::test]
+    async fn an_absent_lineage_block_is_a_typed_block_not_held() {
+        let store = store().await;
+        let absent = block_at(1, vec![], 1);
+        let b = block_at(2, vec![absent.block_hash.clone()], 2);
+        store.put_block_message(&b).expect("store block");
+
+        let sig = Bytes::from_static(b"sig_x");
+        let err = effect_in_state_of(&store, &b.block_hash, &sig, 0)
+            .expect_err("an unreadable lineage segment must refuse, not answer");
+        assert!(
+            matches!(err, CasperError::BlockNotHeld(ref h, _) if *h == absent.block_hash),
+            "absence must carry the missing block's name typed; got: {}",
+            err
+        );
+    }
+
+    /// A truncated node whose membership walk crosses the restore horizon
+    /// must ABSORB the refusal, not error block admission: the blocked sig
+    /// stays Pending (no invented Expired past the contestability bound —
+    /// "not in the state" is unknowable over an unreadable segment), sibling
+    /// sigs still evaluate, later observations do not re-error, and a
+    /// readable re-application above the horizon still lands Finalized.
+    #[tokio::test]
+    async fn the_register_absorbs_the_horizon_instead_of_erroring_admission() {
+        use block_storage::rust::dag::block_dag_key_value_storage::{
+            BlockDagKeyValueStorage, InsertMode,
+        };
+        use models::rust::block_implicits::get_random_block;
+
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
+            .await
+            .expect("dag storage");
+
+        // Bonds are EMPTY: a truncated DAG holds no height-0 block, so a
+        // bonded-validator insert would (correctly) demand the genesis
+        // sentinel this test does not need.
+        let mk = |number: i64,
+                  seq: i32,
+                  parents: Vec<BlockHash>,
+                  deploys: Vec<models::rust::casper::protocol::casper_message::ProcessedDeploy>| {
+            get_random_block(
+                Some(number),
+                Some(seq),
+                None,
+                None,
+                None,
+                None,
+                Some(number),
+                Some(parents),
+                Some(Vec::new()),
+                Some(deploys),
+                Some(Vec::new()),
+                Some(Vec::new()),
+                Some("test".to_string()),
+                None,
+            )
+        };
+
+        // The horizon: block #5 exists only as a hash pointer — its body
+        // was never restored. The window: w1(#6, anchor) <- w2(#7).
+        let absent = mk(5, 5, Vec::new(), Vec::new());
+
+        let blocked_deploy = crate::rust::util::construct_deploy::basic_deploy_data(
+            1,
+            None,
+            Some("test".to_string()),
+        )
+        .expect("deploy data");
+        let sig_blocked = blocked_deploy.sig.clone();
+        let mut blocked_pd =
+            models::rust::casper::protocol::casper_message::ProcessedDeploy::empty(blocked_deploy);
+        blocked_pd.is_failed = true;
+
+        let live_deploy = crate::rust::util::construct_deploy::basic_deploy_data(
+            2,
+            None,
+            Some("test".to_string()),
+        )
+        .expect("deploy data");
+        let sig_live = live_deploy.sig.clone();
+        let live_pd =
+            models::rust::casper::protocol::casper_message::ProcessedDeploy::empty(live_deploy);
+
+        // w1 carries a FAILED execution of the blocked sig: the row exists
+        // (valid_after 0) but membership must keep walking — straight into
+        // the absent block.
+        let w1 = mk(6, 6, vec![absent.block_hash.clone()], vec![blocked_pd]);
+        let w2 = mk(7, 7, vec![w1.block_hash.clone()], vec![live_pd]);
+
+        for block in [&w1, &w2] {
+            block_store.put_block_message(block).expect("store block");
+        }
+        dag_storage
+            .insert(&w1, InsertMode::Approved)
+            .expect("insert anchor");
+        dag_storage
+            .insert(&w2, InsertMode::Normal)
+            .expect("insert w2");
+        dag_storage
+            .record_directly_finalized(w2.block_hash.clone(), 0.5, |_| async { Ok(()) })
+            .await
+            .expect("adopt w2");
+
+        let dag = dag_storage.get_representation().expect("dag");
+        let register = DeployLifecycle::default();
+        let terminalized = register
+            .observe_block(&dag, &block_store, &w2, 1, Some(1))
+            .await
+            .expect("a horizon crossing must not error block admission");
+        assert_eq!(
+            terminalized,
+            vec![sig_live.clone()],
+            "the sibling sig must still reach its verdict"
+        );
+        assert!(
+            dag.deploy_terminal(&sig_blocked)
+                .expect("terminal lookup")
+                .is_none(),
+            "no verdict may be invented for a sig whose lineage is unreadable"
+        );
+
+        // Past the contestability bound (decide_at = max(0+1, 6) + 1 = 7 <
+        // floor 8): the Expired arm is live, and must stay suppressed for
+        // the horizon-blocked sig. The observation must not re-error either.
+        let w3 = mk(8, 8, vec![w2.block_hash.clone()], Vec::new());
+        block_store.put_block_message(&w3).expect("store w3");
+        dag_storage
+            .insert(&w3, InsertMode::Normal)
+            .expect("insert w3");
+        dag_storage
+            .record_directly_finalized(w3.block_hash.clone(), 0.5, |_| async { Ok(()) })
+            .await
+            .expect("adopt w3");
+        let dag = dag_storage.get_representation().expect("dag");
+        let terminalized = register
+            .observe_block(&dag, &block_store, &w3, 1, Some(1))
+            .await
+            .expect("later observations must not re-error");
+        assert!(terminalized.is_empty());
+        assert!(
+            dag.deploy_terminal(&sig_blocked)
+                .expect("terminal lookup")
+                .is_none(),
+            "Expired past the bound would be an invented verdict: membership \
+             below the horizon is unknowable"
+        );
+
+        // A readable re-application above the horizon answers the question
+        // the unreadable segment could not: Finalized still lands.
+        let mut w4 = mk(9, 9, vec![w3.block_hash.clone()], Vec::new());
+        w4.body.applied_from_scope = vec![sig_blocked.clone()];
+        block_store.put_block_message(&w4).expect("store w4");
+        dag_storage
+            .insert(&w4, InsertMode::Normal)
+            .expect("insert w4");
+        dag_storage
+            .record_directly_finalized(w4.block_hash.clone(), 0.5, |_| async { Ok(()) })
+            .await
+            .expect("adopt w4");
+        let dag = dag_storage.get_representation().expect("dag");
+        let terminalized = register
+            .observe_block(&dag, &block_store, &w4, 1, Some(1))
+            .await
+            .expect("observe w4");
+        assert_eq!(terminalized, vec![sig_blocked.clone()]);
+        let record = dag
+            .deploy_terminal(&sig_blocked)
+            .expect("terminal lookup")
+            .expect("terminal record written");
+        assert_eq!(
+            record.state,
+            TerminalState::Finalized,
+            "a readable re-application must still finalize a horizon-blocked sig"
+        );
+    }
+
+    /// CLAIM-FINALITY-001 C2 bridge (discharge plan item 2): on generated
+    /// lineages the batched walk answers exactly as the per-sig reference
+    /// walk — for every fresh sig (failed and non-failed), every
+    /// `applied_from_scope` sig, decoy sigs living only on a non-base
+    /// parent, and absent sigs, across low/mid/above-tip bounds. Each
+    /// (lineage, bound) runs twice so the second pass exercises the
+    /// lineage-step cache-hit path against the same oracle.
+    #[tokio::test]
+    async fn batched_walk_matches_the_reference_walk_on_generated_lineages() {
+        let store = store().await;
+        let mut lcg: u64 = 0x5eed_cafe_0000_0001;
+        let mut rand = move |modulo: u32| -> u32 {
+            lcg = lcg
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((lcg >> 33) as u32) % modulo
+        };
+        let mut deploy_n: i32 = 100;
+        let mut seq: i32 = 1000;
+        let mut applied_n: u32 = 0;
+
+        for _config in 0..12 {
+            let len: i64 = 4 + i64::from(rand(6));
+            let mut probe_sigs: Vec<Bytes> = Vec::new();
+            let genesis = {
+                seq += 1;
+                block_at(0, vec![], seq)
+            };
+            store.put_block_message(&genesis).expect("store genesis");
+            let mut prev = genesis;
+            for h in 1..=len {
+                seq += 1;
+                let mut b = if h >= 2 && rand(3) == 0 {
+                    // A merged block: the side parent is stored but NOT on
+                    // the state lineage; its decoy applied sig must stay
+                    // invisible to both walks.
+                    seq += 1;
+                    let mut side = block_at(h, vec![prev.block_hash.clone()], seq);
+                    applied_n += 1;
+                    let decoy = Bytes::from(format!("decoy-{}", applied_n).into_bytes());
+                    side.body.applied_from_scope = vec![decoy.clone()];
+                    store.put_block_message(&side).expect("store side");
+                    probe_sigs.push(decoy);
+                    seq += 1;
+                    let mut m = block_at(
+                        h,
+                        vec![prev.block_hash.clone(), side.block_hash.clone()],
+                        seq,
+                    );
+                    m.body.merge_base = prev.block_hash.clone();
+                    m
+                } else {
+                    block_at(h, vec![prev.block_hash.clone()], seq)
+                };
+                for _ in 0..rand(3) {
+                    deploy_n += 1;
+                    let failed = rand(4) == 0;
+                    let (sig, pd) = processed(deploy_n, failed);
+                    b.body.deploys.push(pd);
+                    probe_sigs.push(sig);
+                }
+                for _ in 0..rand(3) {
+                    applied_n += 1;
+                    let sig = Bytes::from(format!("applied-{}", applied_n).into_bytes());
+                    b.body.applied_from_scope.push(sig.clone());
+                    probe_sigs.push(sig);
+                }
+                store.put_block_message(&b).expect("store block");
+                prev = b;
+            }
+            probe_sigs.push(Bytes::from_static(b"never-seen-anywhere"));
+
+            let tip = prev.block_hash.clone();
+            for bound in [0, len / 2, len + 1] {
+                for _pass in 0..2 {
+                    let (set, _walked) = settled_sigs_of_lineage(&store, &tip, bound)
+                        .expect("batched walk on a complete segment");
+                    for sig in &probe_sigs {
+                        let reference = effect_in_state_of(&store, &tip, sig, bound)
+                            .expect("reference walk on a complete segment");
+                        assert_eq!(
+                            reference,
+                            set.contains(sig),
+                            "batched membership diverged from the reference walk \
+                             (bound {}, sig {})",
+                            bound,
+                            hex::encode(&sig[..8.min(sig.len())]),
+                        );
+                    }
+                }
+            }
+        }
+        assert!(
+            lineage_step_cache_bytes() <= LINEAGE_STEP_CACHE_MAX_BYTES,
+            "lineage-step cache must respect its byte budget"
+        );
+    }
+
+    /// The multi-floor probe answers exactly as the reference per-floor
+    /// loop (first floor whose lineage holds the sig wins), across sigs
+    /// held by the first floor, only a later floor, or none.
+    #[tokio::test]
+    async fn floor_probe_matches_the_reference_floor_loop() {
+        let store = store().await;
+        let genesis = block_at(0, vec![], 300);
+        let (sig_a, pd_a) = processed(301, false);
+        let mut floor1 = block_at(1, vec![genesis.block_hash.clone()], 301);
+        floor1.body.deploys = vec![pd_a];
+        let (sig_b, pd_b) = processed(302, false);
+        let mut mid = block_at(1, vec![genesis.block_hash.clone()], 302);
+        mid.body.deploys = vec![pd_b];
+        let floor2 = block_at(2, vec![mid.block_hash.clone()], 303);
+        for b in [&genesis, &floor1, &mid, &floor2] {
+            store.put_block_message(b).expect("store block");
+        }
+        let floors = vec![
+            (floor1.block_hash.clone(), 0),
+            (floor2.block_hash.clone(), 0),
+        ];
+        let sig_absent = Bytes::from_static(b"absent-floor-sig");
+        let mut probe = FloorSettledProbe::new(floors.clone());
+        for sig in [&sig_a, &sig_b, &sig_absent] {
+            let reference = floors
+                .iter()
+                .map(|(hash, bound)| effect_in_state_of(&store, hash, sig, *bound))
+                .try_fold(false, |acc, r| r.map(|hit| acc || hit))
+                .expect("reference loop");
+            assert_eq!(
+                reference,
+                probe.settled(&store, sig).expect("probe"),
+                "floor probe diverged from the reference loop for sig {}",
+                hex::encode(&sig[..8.min(sig.len())]),
+            );
+        }
+    }
+
+    /// The probe keeps the reference loop's short-circuit: a sig the FIRST
+    /// floor holds answers TRUE without reading the second floor at all,
+    /// so a gap in the later floor's lineage cannot poison that probe. A
+    /// sig no floor holds must still reach the gap and refuse, exactly as
+    /// the reference loop does.
+    #[tokio::test]
+    async fn floor_probe_short_circuit_skips_unavailable_later_floors() {
+        let store = store().await;
+        let genesis = block_at(0, vec![], 310);
+        let (sig_a, pd_a) = processed(311, false);
+        let mut floor1 = block_at(1, vec![genesis.block_hash.clone()], 311);
+        floor1.body.deploys = vec![pd_a];
+        let absent = block_at(1, vec![], 312);
+        let floor2 = block_at(2, vec![absent.block_hash.clone()], 313);
+        for b in [&genesis, &floor1, &floor2] {
+            store.put_block_message(b).expect("store block");
+        }
+        let floors = vec![
+            (floor1.block_hash.clone(), 0),
+            (floor2.block_hash.clone(), 0),
+        ];
+
+        let mut probe = FloorSettledProbe::new(floors.clone());
+        assert!(
+            probe.settled(&store, &sig_a).expect("first floor answers"),
+            "a first-floor hit must not read the gapped later floor"
+        );
+
+        let sig_unknown = Bytes::from_static(b"unknown-floor-sig");
+        let err = probe
+            .settled(&store, &sig_unknown)
+            .expect_err("an unanswered probe must reach the gap and refuse");
+        assert!(
+            matches!(err, CasperError::BlockNotHeld(ref h, _) if *h == absent.block_hash),
+            "the refusal must name the missing block typed; got: {}",
+            err
+        );
+    }
+
+    /// The cached rejection-record loader serves `body.rejected_deploys`
+    /// verbatim, refuses an absent block typed, still serves the records
+    /// of a malformed multi-parent block (only STEPPING is refused — the
+    /// reference loader never read the lineage structure), and stays a
+    /// function of the supplied store across the cache: a second store
+    /// that does not hold a cached block gets `BlockNotHeld`, not the
+    /// other store's cached answer.
+    #[tokio::test]
+    async fn rejected_records_load_through_the_cache_per_store() {
+        let store = store().await;
+        let genesis = block_at(0, vec![], 320);
+        let record = RejectedDeploy {
+            sig: Bytes::from_static(b"rejected-sig"),
+            carrier: Bytes::from_static(b"carrier-hash-000000000000000000"),
+            duplicate: false,
+        };
+        let mut a = block_at(1, vec![genesis.block_hash.clone()], 321);
+        a.body.rejected_deploys = vec![record.clone()];
+        // Malformed: two parents, no recorded merge_base.
+        let mut m = block_at(
+            2,
+            vec![a.block_hash.clone(), genesis.block_hash.clone()],
+            322,
+        );
+        m.body.rejected_deploys = vec![record.clone()];
+        for b in [&genesis, &a, &m] {
+            store.put_block_message(b).expect("store block");
+        }
+
+        let records = rejected_records_of(&store, &a.block_hash).expect("load records");
+        assert_eq!(records.as_ref(), &vec![record.clone()]);
+        let cached = rejected_records_of(&store, &a.block_hash).expect("cache hit");
+        assert_eq!(cached.as_ref(), &vec![record.clone()]);
+
+        let malformed = rejected_records_of(&store, &m.block_hash)
+            .expect("a malformed block still serves its own records");
+        assert_eq!(malformed.as_ref(), &vec![record.clone()]);
+        assert!(
+            settled_sigs_of_lineage(&store, &m.block_hash, 0).is_err(),
+            "stepping through the malformed block must still refuse"
+        );
+
+        let absent = block_at(3, vec![], 323);
+        let err =
+            rejected_records_of(&store, &absent.block_hash).expect_err("absence must refuse typed");
+        assert!(matches!(err, CasperError::BlockNotHeld(ref h, _) if *h == absent.block_hash));
+
+        let other_store = store_fn_second().await;
+        let err = rejected_records_of(&other_store, &a.block_hash)
+            .expect_err("a store that does not hold the block must refuse despite the cache");
+        assert!(matches!(err, CasperError::BlockNotHeld(ref h, _) if *h == a.block_hash));
+    }
+
+    async fn store_fn_second() -> KeyValueBlockStore {
+        let mut kvm = InMemoryStoreManager::new();
+        KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("second block store")
+    }
+
+    /// The batched walk's documented strengthening: it covers the FULL
+    /// segment, so a gap below an applied sig refuses the whole answer
+    /// (typed `BlockNotHeld`), where the per-sig reference walk answers
+    /// TRUE for that sig without ever reaching the gap. Fail-closed is the
+    /// safe direction — availability must not shape verdicts.
+    #[tokio::test]
+    async fn batched_walk_is_fail_closed_on_a_gapped_segment() {
+        let store = store().await;
+        let absent = block_at(1, vec![], 1);
+        let (sig_top, pd) = processed(90, false);
+        let mut b = block_at(2, vec![absent.block_hash.clone()], 2);
+        b.body.deploys = vec![pd];
+        store.put_block_message(&b).expect("store block");
+
+        assert!(
+            effect_in_state_of(&store, &b.block_hash, &sig_top, 0)
+                .expect("the reference walk answers above the gap"),
+            "reference: the sig applied above the gap is TRUE without \
+             reading the gap"
+        );
+        let err = settled_sigs_of_lineage(&store, &b.block_hash, 0)
+            .expect_err("the batched walk must refuse a gapped segment");
+        assert!(
+            matches!(err, CasperError::BlockNotHeld(ref h, _) if *h == absent.block_hash),
+            "the refusal must carry the missing block typed; got: {}",
+            err
+        );
     }
 }

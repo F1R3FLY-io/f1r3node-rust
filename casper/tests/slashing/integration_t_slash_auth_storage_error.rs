@@ -1,6 +1,6 @@
 // Regression test for slash-deploy authorization error routing.
 //
-// Maps to: docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.14
+// Maps to: docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.14
 // (subsection "Error routing").
 //
 // What this pins:

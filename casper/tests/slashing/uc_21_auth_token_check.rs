@@ -1,6 +1,6 @@
 // UC-21 — System auth-token guard rejects spoofed slashes.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-21.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-21.
 // Theorem: T-AuthCheck (system auth-token guard at PoS.rhox:437-439).
 //
 // Example trace mirroring the property-test version in

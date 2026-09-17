@@ -314,9 +314,10 @@ async fn a_stale_based_merge_keeps_its_main_parents_settled_content() {
         tip = next;
         for (i, node) in nodes.iter().enumerate() {
             let dag = node.casper.block_dag().await.expect("dag");
-            if let Some(advanced) = floor_of_view(&dag, &node.block_store, &floors[i], thr)
-                .await
-                .expect("floor_of_view must not error")
+            if let casper::rust::finality::floor::FloorOfView::Advance(advanced) =
+                floor_of_view(&dag, &node.block_store, &floors[i], thr)
+                    .await
+                    .expect("floor_of_view must not error")
             {
                 floors[i] = advanced;
             }

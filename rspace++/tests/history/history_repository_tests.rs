@@ -7,7 +7,9 @@ use std::sync::{Arc, Mutex};
 use rand::prelude::SliceRandom;
 use rspace_plus_plus::rspace::errors::{HistoryError, RootError};
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::hashing::stable_hash_provider::{hash, hash_from_vec};
 use rspace_plus_plus::rspace::history::history::HistoryInstances;
+use rspace_plus_plus::rspace::history::history_reader::HistoryReader;
 use rspace_plus_plus::rspace::history::history_repository::HistoryRepository;
 use rspace_plus_plus::rspace::history::history_repository_impl::HistoryRepositoryImpl;
 use rspace_plus_plus::rspace::history::instances::radix_history::RadixHistory;
@@ -16,6 +18,10 @@ use rspace_plus_plus::rspace::history::roots_store::RootsStore;
 use rspace_plus_plus::rspace::hot_store_action::{
     DeleteAction, DeleteContinuations, DeleteData, DeleteJoins, HotStoreAction, InsertAction,
     InsertContinuations, InsertData, InsertJoins,
+};
+use rspace_plus_plus::rspace::hot_store_trie_action::{
+    HotStoreTrieAction, TrieDeleteAction, TrieDeleteConsume, TrieDeleteJoins, TrieDeleteProduce,
+    TrieInsertAction, TrieInsertBinaryConsume, TrieInsertBinaryJoins, TrieInsertBinaryProduce,
 };
 use rspace_plus_plus::rspace::internal::{Datum, WaitingContinuation};
 use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
@@ -305,6 +311,175 @@ async fn history_repository_should_record_next_root_as_valid() {
     let _ = repo.reset(&next_repo_history.root());
 }
 
+#[tokio::test]
+async fn checkpoint_with_no_actions_returns_repository_at_same_root() {
+    let repo = create_empty_repository();
+    let root_before = repo.root();
+    let next = repo.checkpoint(vec![]);
+    assert_eq!(next.root(), root_before);
+
+    let next_after_empty_trie_actions = repo.do_checkpoint(vec![]);
+    assert_eq!(next_after_empty_trie_actions.root(), root_before);
+}
+
+#[tokio::test]
+async fn do_checkpoint_binary_trie_actions_roundtrip_and_delete() {
+    let repo = create_empty_repository();
+    let data_key = random_blake();
+    let cont_key = random_blake();
+    let joins_key = random_blake();
+    let data_values = vec![vec![1u8; 8], vec![2u8; 8]];
+    let cont_values = vec![vec![3u8; 8]];
+    let join_values = vec![vec![4u8; 8]];
+
+    let next = repo.do_checkpoint(vec![
+        HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertBinaryProduce(
+            TrieInsertBinaryProduce {
+                hash: data_key.clone(),
+                data: data_values.clone(),
+            },
+        )),
+        HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertBinaryConsume(
+            TrieInsertBinaryConsume {
+                hash: cont_key.clone(),
+                continuations: cont_values.clone(),
+            },
+        )),
+        HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertBinaryJoins(
+            TrieInsertBinaryJoins {
+                hash: joins_key.clone(),
+                joins: join_values.clone(),
+            },
+        )),
+    ]);
+
+    let reader = next.get_history_reader(&next.root()).unwrap();
+    assert_eq!(reader.get_data_proj_binary(&data_key).unwrap(), data_values);
+    assert_eq!(reader.get_continuations_proj_binary(&cont_key).unwrap(), cont_values);
+    assert_eq!(reader.get_joins_proj_binary(&joins_key).unwrap(), join_values);
+    assert_eq!(reader.root(), next.root());
+
+    let deleted = next.do_checkpoint(vec![
+        HotStoreTrieAction::TrieDeleteAction(TrieDeleteAction::TrieDeleteProduce(
+            TrieDeleteProduce {
+                hash: data_key.clone(),
+            },
+        )),
+        HotStoreTrieAction::TrieDeleteAction(TrieDeleteAction::TrieDeleteConsume(
+            TrieDeleteConsume {
+                hash: cont_key.clone(),
+            },
+        )),
+        HotStoreTrieAction::TrieDeleteAction(TrieDeleteAction::TrieDeleteJoins(TrieDeleteJoins {
+            hash: joins_key.clone(),
+        })),
+    ]);
+
+    let deleted_reader = deleted.get_history_reader(&deleted.root()).unwrap();
+    assert!(
+        deleted_reader
+            .get_data_proj_binary(&data_key)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        deleted_reader
+            .get_continuations_proj_binary(&cont_key)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        deleted_reader
+            .get_joins_proj_binary(&joins_key)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn record_root_makes_root_visible_to_contains_root() {
+    let repo = create_empty_repository();
+    let new_root = random_blake();
+    assert!(!repo.contains_root(&new_root).unwrap());
+
+    repo.record_root(&new_root).unwrap();
+    assert!(repo.contains_root(&new_root).unwrap());
+    assert!(
+        repo.contains_root(&RadixHistory::empty_root_node_hash())
+            .unwrap()
+    );
+}
+
+#[tokio::test]
+async fn history_reader_generic_getters_return_inserted_values() {
+    let repo = create_empty_repository();
+    let channel = "generic-channel".to_string();
+    let test_datum = datum(7);
+    let test_continuation = continuation(7);
+    let test_joins = vec![vec![channel.clone()]];
+
+    let next = repo.checkpoint(vec![
+        HotStoreAction::Insert(InsertAction::InsertData(InsertData {
+            channel: channel.clone(),
+            data: vec![test_datum.clone()],
+        })),
+        HotStoreAction::Insert(InsertAction::InsertContinuations(InsertContinuations {
+            channels: vec![channel.clone()],
+            continuations: vec![test_continuation.clone()],
+        })),
+        HotStoreAction::Insert(InsertAction::InsertJoins(InsertJoins {
+            channel: channel.clone(),
+            joins: test_joins.clone(),
+        })),
+    ]);
+
+    let reader = next.get_history_reader_struct(&next.root()).unwrap();
+
+    assert_eq!(reader.get_data_proj_generic(&channel), vec![test_datum.clone()]);
+    assert_eq!(reader.get_continuations_proj_generic(&vec![channel.clone()]), vec![
+        test_continuation.clone()
+    ]);
+    assert_eq!(reader.get_joins_proj_generic(&channel), test_joins);
+
+    let data_key = hash(&channel);
+    let cont_key = hash_from_vec(&vec![channel.clone()]);
+    assert_eq!(reader.get_data_proj(&data_key).unwrap(), vec![test_datum]);
+    assert_eq!(reader.get_continuations_proj(&cont_key).unwrap(), vec![test_continuation]);
+    assert_eq!(reader.get_joins_proj(&data_key).unwrap(), test_joins);
+    assert!(!reader.get_data_proj_binary(&data_key).unwrap().is_empty());
+    assert!(
+        !reader
+            .get_continuations_proj_binary(&cont_key)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(!reader.get_joins_proj_binary(&data_key).unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn checkpoint_handles_large_action_batches() {
+    let repo = create_empty_repository();
+    let datums: Vec<Datum<String>> = (0..300).map(datum).collect();
+    let actions: Vec<HotStoreAction<String, String, String, String>> = datums
+        .iter()
+        .enumerate()
+        .map(|(i, d)| {
+            HotStoreAction::Insert(InsertAction::InsertData(InsertData {
+                channel: format!("bulk-channel-{}", i),
+                data: vec![d.clone()],
+            }))
+        })
+        .collect();
+
+    let next = repo.checkpoint(actions);
+    let reader = next.get_history_reader(&next.root()).unwrap().base();
+
+    for i in [0usize, 137, 299] {
+        let fetched = reader.get_data(&format!("bulk-channel-{}", i));
+        assert_eq!(fetched, vec![datums[i].clone()]);
+    }
+}
+
 fn test_channel_data_prefix() -> String { "channel-data".to_string() }
 
 fn test_channel_joins_prefix() -> String { "channel-joins".to_string() }
@@ -350,7 +525,7 @@ fn join(s: i32) -> Vec<Vec<String>> {
     ]]
 }
 
-fn continuation(s: i32) -> WaitingContinuation<String, String> {
+pub fn continuation(s: i32) -> WaitingContinuation<String, String> {
     WaitingContinuation {
         patterns: vec![format!("pattern-{}", s)],
         continuation: format!("cont-{}", s),
@@ -364,7 +539,7 @@ fn continuation(s: i32) -> WaitingContinuation<String, String> {
     }
 }
 
-fn datum(s: i32) -> Datum<String> {
+pub fn datum(s: i32) -> Datum<String> {
     Datum {
         a: format!("data-{}", s),
         persist: false,
@@ -379,7 +554,7 @@ fn datum(s: i32) -> Datum<String> {
     }
 }
 
-fn create_empty_repository() -> HistoryRepositoryImpl<String, String, String, String> {
+pub fn create_empty_repository() -> HistoryRepositoryImpl<String, String, String, String> {
     let past_roots = root_repository();
     let empty_history = HistoryInstances::create(
         RadixHistory::empty_root_node_hash(),

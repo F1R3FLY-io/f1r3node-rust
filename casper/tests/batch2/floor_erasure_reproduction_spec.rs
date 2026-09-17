@@ -127,6 +127,7 @@ async fn probe_floor_state(
     )
     .await
     .expect("floor_of_view")
+    .advanced()
     .unwrap_or_else(|| current.clone());
     tracing::info!(
         target: "repro",
@@ -246,7 +247,7 @@ async fn a_stale_based_rejecting_merge_never_becomes_the_floor_over_the_settled_
             rejected_buffer,
             &runtime_manager,
             &mut nodes[2].block_store,
-            true,
+            casper::rust::blocks::proposer::proposer::DeploySelection::StandardAllowEmpty,
         )
         .await
         .expect("create sibling contender branch");

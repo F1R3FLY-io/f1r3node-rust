@@ -10,7 +10,7 @@ use comm::rust::rp::rp_conf::RPConf;
 use comm::rust::transport::transport_layer::TransportLayer;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::rust::errors::CasperError;
 use crate::rust::metrics_constants::{
@@ -79,7 +79,38 @@ enum AckReceiveResult {
  * Scala: BlockRetriever.of[F[_]: Monad: RequestedBlocks: ...]
  * In Scala, RequestedBlocks is passed as an implicit parameter (type class constraint).
  * In Rust, we explicitly pass it as a constructor parameter.
- */
+ * */
+/// Re-request clock for UNRESOLVED entries; `requested-blocks-timeout` only
+/// evicts received ones. A view frozen on one missing block must recover
+/// well inside the citability window (max-parent-depth heights of cadence)
+/// or a lost delivery becomes a finality stall — startup validation asserts
+/// that relation.
+pub const UNRESOLVED_REREQUEST_ANCHOR_MS: u64 = 500;
+
+/// Retry budget per unresolved hash: attempts past this evict the entry into
+/// the retry-budget quarantine.
+pub const MAX_RETRIES_PER_HASH: u32 = 32;
+
+/// Per-attempt re-request interval: the base for the first attempts, then an
+/// adaptive multiplier so repeatedly unresolved hashes retry less aggressively.
+pub fn unresolved_rerequest_interval_ms(attempts: u32, base_interval_ms: u64) -> u64 {
+    if attempts <= 4 {
+        return base_interval_ms;
+    }
+    let multiplier = 1 + std::cmp::min(((attempts - 4) / 4) as u64, 7);
+    base_interval_ms.saturating_mul(multiplier)
+}
+
+/// Full wall-clock span of the unresolved-re-request ladder: the sum of every
+/// per-attempt interval until the retry budget exhausts. This — not the
+/// anchor — is what a citability window must fit for a lost delivery to
+/// recover before its blocks fall below the parent-depth horizon.
+pub fn total_unresolved_rerequest_span_ms() -> u64 {
+    (0..MAX_RETRIES_PER_HASH)
+        .map(|attempts| unresolved_rerequest_interval_ms(attempts, UNRESOLVED_REREQUEST_ANCHOR_MS))
+        .sum()
+}
+
 #[derive(Debug, Clone)]
 pub struct BlockRetriever<T: TransportLayer + Send + Sync> {
     requested_blocks: RequestedBlocks,
@@ -88,6 +119,7 @@ pub struct BlockRetriever<T: TransportLayer + Send + Sync> {
     peer_requery_last_request: Arc<Mutex<HashMap<BlockHash, u64>>>,
     peer_requery_attempts_by_hash: Arc<Mutex<HashMap<BlockHash, u32>>>,
     retry_attempts_by_hash: Arc<Mutex<HashMap<BlockHash, u32>>>,
+    local_backpressure_credits: Arc<Mutex<HashSet<BlockHash>>>,
     retry_budget_quarantine_until: Arc<Mutex<HashMap<BlockHash, u64>>>,
     transport: Arc<T>,
     connections_cell: ConnectionsCell,
@@ -99,8 +131,7 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
     const MAX_WAITING_LIST_PER_HASH: usize = 64;
     const PEER_REQUERY_COOLDOWN_MS: u64 = 500;
     const BROADCAST_ONLY_COOLDOWN_MS: u64 = 500;
-    const MIN_REREQUEST_INTERVAL_MS: u64 = 500;
-    const MAX_RETRIES_PER_HASH: u32 = 32;
+    const MIN_REREQUEST_INTERVAL_MS: u64 = UNRESOLVED_REREQUEST_ANCHOR_MS;
     const DEPENDENCY_RECOVERY_COOLDOWN_MS: u64 = 500;
     const STALE_REQUEST_LIFETIME_MULTIPLIER: u64 = 6;
     const KNOWN_PEER_REQUERY_SOFT_LIMIT: u32 = 8;
@@ -200,7 +231,13 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
         Ok(())
     }
 
-    fn cleanup_aux_tracking_for_hash(&self, hash: &BlockHash) -> Result<(), CasperError> {
+    /// Clear the request cursors a live entry accumulates, but NOT the
+    /// retry-attempt count or the retry-budget quarantine: a budget eviction
+    /// marks the quarantine an instant before calling this, and erasing it
+    /// here re-admits a just-proved-unfetchable hash immediately with the
+    /// backoff ladder reset — re-requesting forever at full aggression.
+    /// The quarantine expiry sweep owns their removal.
+    fn cleanup_request_cursors_for_hash(&self, hash: &BlockHash) -> Result<(), CasperError> {
         {
             let mut last_requests = self.dependency_recovery_last_request.lock().map_err(|_| {
                 CasperError::RuntimeError(
@@ -226,6 +263,20 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
             peer_requery_last.remove(hash);
         }
         {
+            let mut peer_requery_attempts =
+                self.peer_requery_attempts_by_hash.lock().map_err(|_| {
+                    CasperError::RuntimeError(
+                        "Failed to acquire peer_requery_attempts_by_hash lock".to_string(),
+                    )
+                })?;
+            peer_requery_attempts.remove(hash);
+        }
+        Ok(())
+    }
+
+    fn cleanup_aux_tracking_for_hash(&self, hash: &BlockHash) -> Result<(), CasperError> {
+        self.cleanup_request_cursors_for_hash(hash)?;
+        {
             let mut retry_attempts = self.retry_attempts_by_hash.lock().map_err(|_| {
                 CasperError::RuntimeError(
                     "Failed to acquire retry_attempts_by_hash lock".to_string(),
@@ -234,13 +285,12 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
             retry_attempts.remove(hash);
         }
         {
-            let mut peer_requery_attempts =
-                self.peer_requery_attempts_by_hash.lock().map_err(|_| {
-                    CasperError::RuntimeError(
-                        "Failed to acquire peer_requery_attempts_by_hash lock".to_string(),
-                    )
-                })?;
-            peer_requery_attempts.remove(hash);
+            let mut credits = self.local_backpressure_credits.lock().map_err(|_| {
+                CasperError::RuntimeError(
+                    "Failed to acquire local_backpressure_credits lock".to_string(),
+                )
+            })?;
+            credits.remove(hash);
         }
         {
             let mut quarantine = self.retry_budget_quarantine_until.lock().map_err(|_| {
@@ -297,13 +347,27 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
             })?;
             peer_requery_last.retain(|hash, _| active_hashes.contains(hash));
         }
+        // Quarantine entries outlive their evicted request on purpose — the
+        // expiry sweep below owns their removal — and a quarantined hash
+        // keeps its attempt count so the eviction's spent budget is not
+        // erased between mark and expiry.
+        let quarantined_hashes: HashSet<BlockHash> = {
+            let quarantine = self.retry_budget_quarantine_until.lock().map_err(|_| {
+                CasperError::RuntimeError(
+                    "Failed to acquire retry_budget_quarantine_until lock".to_string(),
+                )
+            })?;
+            quarantine.keys().cloned().collect()
+        };
         {
             let mut retry_attempts = self.retry_attempts_by_hash.lock().map_err(|_| {
                 CasperError::RuntimeError(
                     "Failed to acquire retry_attempts_by_hash lock".to_string(),
                 )
             })?;
-            retry_attempts.retain(|hash, _| active_hashes.contains(hash));
+            retry_attempts.retain(|hash, _| {
+                active_hashes.contains(hash) || quarantined_hashes.contains(hash)
+            });
         }
         {
             let mut peer_requery_attempts =
@@ -315,24 +379,46 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
             peer_requery_attempts.retain(|hash, _| active_hashes.contains(hash));
         }
         {
-            let mut quarantine = self.retry_budget_quarantine_until.lock().map_err(|_| {
+            let mut credits = self.local_backpressure_credits.lock().map_err(|_| {
                 CasperError::RuntimeError(
-                    "Failed to acquire retry_budget_quarantine_until lock".to_string(),
+                    "Failed to acquire local_backpressure_credits lock".to_string(),
                 )
             })?;
-            quarantine.retain(|hash, _| active_hashes.contains(hash));
+            credits.retain(|hash| active_hashes.contains(hash));
         }
 
         Ok(())
     }
 
+    /// Remove lapsed quarantine entries, and their attempt counts with them:
+    /// the cool-off is what earns a re-cited hash a fresh retry budget.
     fn sweep_expired_retry_budget_quarantine(&self, now: u64) -> Result<(), CasperError> {
-        let mut quarantine = self.retry_budget_quarantine_until.lock().map_err(|_| {
-            CasperError::RuntimeError(
-                "Failed to acquire retry_budget_quarantine_until lock".to_string(),
-            )
-        })?;
-        quarantine.retain(|_, until| *until > now);
+        let expired: Vec<BlockHash> = {
+            let mut quarantine = self.retry_budget_quarantine_until.lock().map_err(|_| {
+                CasperError::RuntimeError(
+                    "Failed to acquire retry_budget_quarantine_until lock".to_string(),
+                )
+            })?;
+            let expired = quarantine
+                .iter()
+                .filter(|(_, until)| **until <= now)
+                .map(|(hash, _)| hash.clone())
+                .collect::<Vec<_>>();
+            for hash in &expired {
+                quarantine.remove(hash);
+            }
+            expired
+        };
+        if !expired.is_empty() {
+            let mut retry_attempts = self.retry_attempts_by_hash.lock().map_err(|_| {
+                CasperError::RuntimeError(
+                    "Failed to acquire retry_attempts_by_hash lock".to_string(),
+                )
+            })?;
+            for hash in &expired {
+                retry_attempts.remove(hash);
+            }
+        }
         Ok(())
     }
 
@@ -423,6 +509,7 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
             peer_requery_last_request: Arc::new(Mutex::new(HashMap::new())),
             peer_requery_attempts_by_hash: Arc::new(Mutex::new(HashMap::new())),
             retry_attempts_by_hash: Arc::new(Mutex::new(HashMap::new())),
+            local_backpressure_credits: Arc::new(Mutex::new(HashSet::new())),
             retry_budget_quarantine_until: Arc::new(Mutex::new(HashMap::new())),
             transport,
             connections_cell,
@@ -439,7 +526,7 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
             })?;
             retry_attempts.get(hash).copied().unwrap_or(0)
         };
-        Ok(attempts >= Self::MAX_RETRIES_PER_HASH)
+        Ok(attempts >= MAX_RETRIES_PER_HASH)
     }
 
     fn retry_attempt_count(&self, hash: &BlockHash) -> Result<u32, CasperError> {
@@ -480,21 +567,42 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
     ) -> Result<u64, CasperError> {
         // Apply adaptive backoff so repeatedly unresolved hashes are retried less aggressively.
         let attempts = self.retry_attempt_count(hash)?;
-        if attempts <= 4 {
-            return Ok(base_interval_ms);
-        }
-
-        let multiplier = 1 + std::cmp::min(((attempts - 4) / 4) as u64, 7);
-        Ok(base_interval_ms.saturating_mul(multiplier))
+        Ok(unresolved_rerequest_interval_ms(attempts, base_interval_ms))
     }
 
     fn register_retry_attempt(&self, hash: &BlockHash) -> Result<(), CasperError> {
+        // A re-request caused by this node's own in-flight cap is not the
+        // peer's failure to deliver: the drop deposited a credit, and the
+        // credited attempt does not spend the retry budget.
+        {
+            let mut credits = self.local_backpressure_credits.lock().map_err(|_| {
+                CasperError::RuntimeError(
+                    "Failed to acquire local_backpressure_credits lock".to_string(),
+                )
+            })?;
+            if credits.remove(hash) {
+                return Ok(());
+            }
+        }
         let mut retry_attempts = self.retry_attempts_by_hash.lock().map_err(|_| {
             CasperError::RuntimeError("Failed to acquire retry_attempts_by_hash lock".to_string())
         })?;
         let counter = retry_attempts.entry(hash.clone()).or_insert(0);
         *counter = counter.saturating_add(1);
         Ok(())
+    }
+
+    /// Record that this node dropped `hash` at its own in-flight cap. The
+    /// next retry attempt for the hash is free, and the drop is metered.
+    pub fn note_local_backpressure_drop(&self, hash: &BlockHash, site: &'static str) {
+        metrics::counter!(
+            crate::rust::metrics_constants::BLOCK_INFLIGHT_CAP_DROP_METRIC,
+            "site" => site
+        )
+        .increment(1);
+        if let Ok(mut credits) = self.local_backpressure_credits.lock() {
+            credits.insert(hash.clone());
+        }
     }
 
     fn register_peer_requery_attempt(&self, hash: &BlockHash) -> Result<(), CasperError> {
@@ -848,27 +956,48 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
             }
         }
 
-        // Handle broadcasting and requesting
+        // Handle broadcasting and requesting. A failed ask is gossip lost,
+        // not an error: the entry is tracked, so the re-request clock owns
+        // the retry — propagating would abort the caller's block validation.
         if result.broadcast_request {
-            self.transport
+            if let Err(err) = self
+                .transport
                 .broadcast_has_block_request(&self.connections_cell, &self.conf, &hash)
-                .await?;
-            debug!(
-                "Broadcasted HasBlockRequest for {}",
-                PrettyPrinter::build_string_bytes(&hash)
-            );
+                .await
+            {
+                warn!(
+                    "HasBlockRequest broadcast failed for {}: {}",
+                    PrettyPrinter::build_string_bytes(&hash),
+                    err
+                );
+            } else {
+                debug!(
+                    "Broadcasted HasBlockRequest for {}",
+                    PrettyPrinter::build_string_bytes(&hash)
+                );
+            }
         }
 
         if result.request_block {
             if let Some(peer_node) = request_from_peer {
-                self.transport
+                if let Err(err) = self
+                    .transport
                     .request_for_block(&self.conf, &peer_node, hash.clone())
-                    .await?;
-                debug!(
-                    "Requested block {} from {}",
-                    PrettyPrinter::build_string_bytes(&hash),
-                    peer_node.endpoint.host
-                );
+                    .await
+                {
+                    warn!(
+                        "Block request to {} failed for {}: {}",
+                        peer_node.endpoint.host,
+                        PrettyPrinter::build_string_bytes(&hash),
+                        err
+                    );
+                } else {
+                    debug!(
+                        "Requested block {} from {}",
+                        PrettyPrinter::build_string_bytes(&hash),
+                        peer_node.endpoint.host
+                    );
+                }
             }
         }
 
@@ -914,10 +1043,14 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
                 })?;
 
                 if let Some(requested) = state.get(&hash) {
-                    let rerequest_interval_ms =
+                    let age_ms = current_time.saturating_sub(requested.timestamp);
+                    // Unresolved entries re-request on the anchor; received
+                    // entries only age toward eviction on the conf threshold.
+                    let rerequest_interval_ms = self
+                        .rerequest_interval_ms_for_hash(&hash, Self::MIN_REREQUEST_INTERVAL_MS)?;
+                    let eviction_interval_ms =
                         self.rerequest_interval_ms_for_hash(&hash, effective_age_threshold_ms)?;
-                    let expired =
-                        current_time.saturating_sub(requested.timestamp) > rerequest_interval_ms;
+                    let expired = age_ms > eviction_interval_ms;
                     let received = requested.received;
                     let sent_to_casper = requested.in_casper_buffer;
                     let stale_lifetime = current_time.saturating_sub(requested.initial_timestamp);
@@ -939,7 +1072,7 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
                         expired,
                         received,
                         sent_to_casper,
-                        !received && expired,
+                        !received && age_ms > rerequest_interval_ms,
                         should_evict_stale,
                         rerequest_interval_ms,
                     )
@@ -960,12 +1093,12 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
                         let now = Self::current_millis();
                         drop(state);
                         self.mark_retry_budget_quarantine(&hash, now)?;
-                        self.cleanup_aux_tracking_for_hash(&hash)?;
+                        self.cleanup_request_cursors_for_hash(&hash)?;
                         metrics::counter!(BLOCK_REQUESTS_STALE_EVICTIONS_METRIC, "source" => BLOCK_RETRIEVER_METRICS_SOURCE, "reason" => "retry_budget").increment(1);
                         debug!(
                             "Evicting unresolved block request {} after reaching retry budget {}. Quarantine for {}ms.",
                             PrettyPrinter::build_string_bytes(&hash),
-                            Self::MAX_RETRIES_PER_HASH,
+                            MAX_RETRIES_PER_HASH,
                             Self::RETRY_BUDGET_QUARANTINE_MS
                         );
                     }
@@ -1034,7 +1167,7 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
             if state.remove(&hash).is_some() {
                 drop(state);
                 self.mark_retry_budget_quarantine(&hash, now)?;
-                self.cleanup_aux_tracking_for_hash(&hash)?;
+                self.cleanup_request_cursors_for_hash(&hash)?;
                 metrics::counter!(
                     BLOCK_REQUESTS_STALE_EVICTIONS_METRIC,
                     "source" => BLOCK_RETRIEVER_METRICS_SOURCE,
@@ -1093,9 +1226,17 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
             )
             .await?;
         if matches!(admit_result.status, AdmitHashStatus::Ignore) {
-            self.transport
+            if let Err(err) = self
+                .transport
                 .broadcast_has_block_request(&self.connections_cell, &self.conf, &hash)
-                .await?;
+                .await
+            {
+                warn!(
+                    "Recovery HasBlockRequest broadcast failed for {}: {}",
+                    PrettyPrinter::build_string_bytes(&hash),
+                    err
+                );
+            }
         }
 
         self.register_retry_attempt(&hash)?;
@@ -1178,10 +1319,21 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
                         .join(", ")
                 );
 
-                // Request block from the peer
-                self.transport
+                // Request block from the peer; a failed send must not abort
+                // the sweep, and still counts as an attempt (cooldowns and
+                // cursors advance) — the entry's clock owns the retry.
+                if let Err(err) = self
+                    .transport
                     .request_for_block(&self.conf, &next_peer, hash.clone())
-                    .await?;
+                    .await
+                {
+                    warn!(
+                        "Block re-request to {} failed for {}: {}",
+                        next_peer.endpoint.host,
+                        PrettyPrinter::build_string_bytes(hash),
+                        err
+                    );
+                }
 
                 // If this was the last peer in the waiting list, also broadcast HasBlockRequest.
                 if remaining_waiting.is_empty() {
@@ -1190,9 +1342,17 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
                         PrettyPrinter::build_string_bytes(hash)
                     );
 
-                    self.transport
+                    if let Err(err) = self
+                        .transport
                         .broadcast_has_block_request(&self.connections_cell, &self.conf, hash)
-                        .await?;
+                        .await
+                    {
+                        warn!(
+                            "HasBlockRequest broadcast failed for {}: {}",
+                            PrettyPrinter::build_string_bytes(hash),
+                            err
+                        );
+                    }
                 }
                 Ok(true)
             }
@@ -1233,9 +1393,17 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
                     "No peers in waiting list for block {}. Broadcasting HasBlockRequest.",
                     PrettyPrinter::build_string_bytes(hash)
                 );
-                self.transport
+                if let Err(err) = self
+                    .transport
                     .broadcast_has_block_request(&self.connections_cell, &self.conf, hash)
-                    .await?;
+                    .await
+                {
+                    warn!(
+                        "HasBlockRequest broadcast failed for {}: {}",
+                        PrettyPrinter::build_string_bytes(hash),
+                        err
+                    );
+                }
                 Ok(true)
             }
             RerequestAction::RequestKnownPeer(known_peer, now) => {
@@ -1276,9 +1444,18 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
                     known_peer.endpoint.host,
                     PrettyPrinter::build_string_bytes(hash)
                 );
-                self.transport
+                if let Err(err) = self
+                    .transport
                     .request_for_block(&self.conf, &known_peer, hash.clone())
-                    .await?;
+                    .await
+                {
+                    warn!(
+                        "Peer requery to {} failed for {}: {}",
+                        known_peer.endpoint.host,
+                        PrettyPrinter::build_string_bytes(hash),
+                        err
+                    );
+                }
                 self.register_peer_requery_attempt(hash)?;
                 Ok(true)
             }
@@ -1399,6 +1576,44 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
     }
 
     /// Test-only helper methods for setting up specific test scenarios
+    /// Test-only: read a hash's retry-attempt count.
+    pub fn retry_attempts_for_test(&self, hash: &BlockHash) -> Result<u32, CasperError> {
+        let retry_attempts = self.retry_attempts_by_hash.lock().map_err(|_| {
+            CasperError::RuntimeError("Failed to acquire retry_attempts_by_hash lock".to_string())
+        })?;
+        Ok(retry_attempts.get(hash).copied().unwrap_or(0))
+    }
+
+    /// Test-only: set a hash's retry-attempt count (e.g. to the budget).
+    pub fn set_retry_attempts_for_test(
+        &self,
+        hash: &BlockHash,
+        attempts: u32,
+    ) -> Result<(), CasperError> {
+        let mut retry_attempts = self.retry_attempts_by_hash.lock().map_err(|_| {
+            CasperError::RuntimeError("Failed to acquire retry_attempts_by_hash lock".to_string())
+        })?;
+        retry_attempts.insert(hash.clone(), attempts);
+        Ok(())
+    }
+
+    /// Test-only: whether the hash sits in retry-budget quarantine at `now`.
+    pub fn retry_budget_quarantined_for_test(
+        &self,
+        hash: &BlockHash,
+        now: u64,
+    ) -> Result<bool, CasperError> {
+        self.is_retry_budget_quarantined(hash, now)
+    }
+
+    /// Test-only: run the quarantine-expiry sweep at a synthetic `now`.
+    pub fn sweep_expired_retry_budget_quarantine_for_test(
+        &self,
+        now: u64,
+    ) -> Result<(), CasperError> {
+        self.sweep_expired_retry_budget_quarantine(now)
+    }
+
     pub async fn set_request_state_for_test(
         &self,
         hash: BlockHash,
@@ -1451,6 +1666,51 @@ mod tests {
                 udp_port: port as u32,
             },
         }
+    }
+
+    /// The startup citability-window guard compares against this exact span,
+    /// so the pin here is what keeps the guard's inequality meaning what its
+    /// message says when the ladder constants move.
+    #[test]
+    fn the_full_rerequest_span_matches_the_ladder() {
+        assert_eq!(super::total_unresolved_rerequest_span_ms(), 58_000);
+    }
+
+    /// A drop at this node's own in-flight cap must not spend the per-hash
+    /// retry budget: the credited re-request is free, later ones count again.
+    #[test]
+    fn a_local_backpressure_drop_credits_one_retry_attempt() {
+        let local = peer_node("local", 40400);
+        let rp_conf = create_rp_conf_ask(local.clone(), None, None);
+        let connections = Connections::from_vec(vec![local]);
+        let connections_cell = ConnectionsCell {
+            peers: Arc::new(Mutex::new(connections)),
+        };
+        let requested_blocks: RequestedBlocks = Arc::new(Mutex::new(HashMap::new()));
+        let transport = Arc::new(TransportLayerStub::new());
+        let block_retriever =
+            BlockRetriever::new(requested_blocks, transport, connections_cell, rp_conf);
+
+        let hash: BlockHash = Bytes::from_static(b"backpressured-hash");
+        block_retriever
+            .register_retry_attempt(&hash)
+            .expect("count");
+        assert_eq!(block_retriever.retry_attempt_count(&hash).expect("read"), 1);
+
+        block_retriever.note_local_backpressure_drop(&hash, "test");
+        block_retriever
+            .register_retry_attempt(&hash)
+            .expect("credited");
+        assert_eq!(
+            block_retriever.retry_attempt_count(&hash).expect("read"),
+            1,
+            "the attempt caused by our own cap drop must be free"
+        );
+
+        block_retriever
+            .register_retry_attempt(&hash)
+            .expect("count");
+        assert_eq!(block_retriever.retry_attempt_count(&hash).expect("read"), 2);
     }
 
     #[tokio::test]
@@ -1540,6 +1800,57 @@ mod tests {
             transport.request_count(),
             1,
             "recover_dependency should issue a direct request when a connected peer exists"
+        );
+    }
+
+    /// A lost first request leaves an unresolved entry whose known holder is
+    /// never re-asked; maintenance must retry within seconds, not the
+    /// eviction lifetime.
+    #[tokio::test]
+    async fn an_unresolved_dependency_is_rerequested_within_seconds() {
+        let local = peer_node("local", 40400);
+        let remote = peer_node("remote", 40401);
+        let rp_conf = create_rp_conf_ask(local, None, None);
+        let connections = Connections::from_vec(vec![remote.clone()]);
+        let connections_cell = ConnectionsCell {
+            peers: Arc::new(Mutex::new(connections)),
+        };
+        let requested_blocks: RequestedBlocks = Arc::new(Mutex::new(HashMap::new()));
+        let transport = Arc::new(TransportLayerStub::new());
+        let block_retriever = BlockRetriever::new(
+            requested_blocks.clone(),
+            transport.clone(),
+            connections_cell,
+            rp_conf,
+        );
+
+        let hash: BlockHash = Bytes::from_static(b"lost-first-request-hash");
+        let now = BlockRetriever::<TransportLayerStub>::current_millis();
+        let aged = now.saturating_sub(10_000);
+        block_retriever
+            .set_request_state_for_test(hash.clone(), RequestState {
+                timestamp: aged,
+                initial_timestamp: aged,
+                peers: HashSet::new(),
+                received: false,
+                in_casper_buffer: false,
+                waiting_list: vec![remote],
+                peer_requery_cursor: 0,
+                requested_as_dependency: true,
+            })
+            .await
+            .expect("should seed request state");
+
+        block_retriever
+            .request_all(Duration::from_secs(240))
+            .await
+            .expect("maintenance should complete");
+
+        assert!(
+            transport.request_count() >= 1,
+            "a 10s-old unresolved dependency must be re-requested by maintenance; \
+             pacing retries on the eviction lifetime leaves the view frozen past \
+             every consensus deadline"
         );
     }
 
@@ -1741,5 +2052,400 @@ mod tests {
             .expect("packet should decode");
         crate::rust::protocol::verify_block_request(&packet, &hash)
             .expect("known-peer requery should be a direct BlockRequest");
+    }
+
+    fn retriever(
+        connected: Vec<PeerNode>,
+    ) -> (BlockRetriever<TransportLayerStub>, Arc<TransportLayerStub>) {
+        let local = peer_node("local", 40400);
+        let rp_conf = create_rp_conf_ask(local, None, None);
+        let connections_cell = ConnectionsCell {
+            peers: Arc::new(Mutex::new(Connections::from_vec(connected))),
+        };
+        let transport = Arc::new(TransportLayerStub::new());
+        let block_retriever = BlockRetriever::new(
+            Arc::new(Mutex::new(HashMap::new())),
+            transport.clone(),
+            connections_cell,
+            rp_conf,
+        );
+        (block_retriever, transport)
+    }
+
+    fn fresh_state(now: u64) -> RequestState {
+        RequestState {
+            timestamp: now,
+            initial_timestamp: now,
+            peers: HashSet::new(),
+            received: false,
+            in_casper_buffer: false,
+            waiting_list: Vec::new(),
+            peer_requery_cursor: 0,
+            requested_as_dependency: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn admit_hash_with_a_peer_adds_a_request_and_asks_that_peer() {
+        let (block_retriever, transport) = retriever(vec![]);
+        let source = peer_node("source", 40401);
+        let hash: BlockHash = Bytes::from_static(b"admit-new-hash-with-peer");
+
+        let result = block_retriever
+            .admit_hash(
+                hash.clone(),
+                Some(source.clone()),
+                AdmitHashReason::HashBroadcastReceived,
+            )
+            .await
+            .expect("admit should succeed");
+
+        assert_eq!(result.status, AdmitHashStatus::NewRequestAdded);
+        assert!(result.request_block);
+        assert!(!result.broadcast_request);
+        assert_eq!(transport.request_count(), 1);
+
+        let state = block_retriever
+            .get_request_state_for_test(&hash)
+            .await
+            .unwrap()
+            .expect("request state should exist");
+        assert_eq!(state.waiting_list, vec![source]);
+        assert!(!state.requested_as_dependency);
+        assert!(
+            !block_retriever.was_requested_as_dependency(&hash).unwrap(),
+            "a gossip announcement is not a solicited dependency"
+        );
+    }
+
+    #[tokio::test]
+    async fn admit_hash_without_a_peer_broadcasts_a_has_block_request() {
+        let (block_retriever, _transport) = retriever(vec![]);
+        let hash: BlockHash = Bytes::from_static(b"admit-new-hash-no-peer");
+
+        let result = block_retriever
+            .admit_hash(hash.clone(), None, AdmitHashReason::HashBroadcastReceived)
+            .await
+            .expect("admit should succeed");
+
+        assert_eq!(result.status, AdmitHashStatus::NewRequestAdded);
+        assert!(result.broadcast_request);
+        assert!(!result.request_block);
+        assert_eq!(
+            block_retriever.get_requested_blocks_count().await.unwrap(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn admit_hash_for_a_missing_dependency_seeds_connected_peers_and_marks_it() {
+        let remote = peer_node("remote", 40401);
+        let (block_retriever, transport) = retriever(vec![remote.clone()]);
+        let hash: BlockHash = Bytes::from_static(b"admit-missing-dependency");
+
+        let result = block_retriever
+            .admit_hash(
+                hash.clone(),
+                None,
+                AdmitHashReason::MissingDependencyRequested,
+            )
+            .await
+            .expect("admit should succeed");
+
+        assert_eq!(result.status, AdmitHashStatus::NewRequestAdded);
+        assert!(
+            result.request_block,
+            "a connected peer stands in for the missing source peer"
+        );
+        assert_eq!(transport.request_count(), 1);
+        assert!(block_retriever.was_requested_as_dependency(&hash).unwrap());
+
+        let state = block_retriever
+            .get_request_state_for_test(&hash)
+            .await
+            .unwrap()
+            .expect("request state should exist");
+        assert_eq!(state.waiting_list, vec![remote]);
+    }
+
+    #[tokio::test]
+    async fn admit_hash_adds_each_new_peer_once_and_ignores_repeats() {
+        let (block_retriever, transport) = retriever(vec![]);
+        let first = peer_node("first", 40401);
+        let second = peer_node("second", 40402);
+        let hash: BlockHash = Bytes::from_static(b"admit-peer-dedup");
+
+        block_retriever
+            .admit_hash(
+                hash.clone(),
+                Some(first.clone()),
+                AdmitHashReason::HasBlockMessageReceived,
+            )
+            .await
+            .unwrap();
+
+        let added = block_retriever
+            .admit_hash(
+                hash.clone(),
+                Some(second.clone()),
+                AdmitHashReason::HasBlockMessageReceived,
+            )
+            .await
+            .unwrap();
+        assert_eq!(added.status, AdmitHashStatus::NewSourcePeerAddedToRequest);
+        assert!(
+            !added.request_block,
+            "the waiting list already had a peer, so no immediate request"
+        );
+
+        let repeated = block_retriever
+            .admit_hash(
+                hash.clone(),
+                Some(second),
+                AdmitHashReason::HasBlockMessageReceived,
+            )
+            .await
+            .unwrap();
+        assert_eq!(repeated.status, AdmitHashStatus::Ignore);
+
+        assert_eq!(
+            block_retriever.get_waiting_list_size(&hash).await.unwrap(),
+            2
+        );
+        assert_eq!(
+            transport.request_count(),
+            1,
+            "only the initial admit issues a network request"
+        );
+    }
+
+    #[tokio::test]
+    async fn admit_hash_ignores_new_peers_once_the_block_is_received() {
+        let (block_retriever, _transport) = retriever(vec![]);
+        let hash: BlockHash = Bytes::from_static(b"admit-after-received");
+        let now = BlockRetriever::<TransportLayerStub>::current_millis();
+        let mut state = fresh_state(now);
+        state.received = true;
+        block_retriever
+            .set_request_state_for_test(hash.clone(), state)
+            .await
+            .unwrap();
+
+        let result = block_retriever
+            .admit_hash(
+                hash.clone(),
+                Some(peer_node("late", 40401)),
+                AdmitHashReason::HasBlockMessageReceived,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.status, AdmitHashStatus::Ignore);
+        assert!(!result.request_block);
+    }
+
+    #[tokio::test]
+    async fn admit_hash_ignores_a_known_hash_with_no_peer_and_no_dependency_reason() {
+        let (block_retriever, _transport) = retriever(vec![]);
+        let hash: BlockHash = Bytes::from_static(b"admit-known-no-peer");
+        let now = BlockRetriever::<TransportLayerStub>::current_millis();
+        block_retriever
+            .set_request_state_for_test(hash.clone(), fresh_state(now))
+            .await
+            .unwrap();
+
+        let result = block_retriever
+            .admit_hash(hash, None, AdmitHashReason::BlockReceived)
+            .await
+            .unwrap();
+        assert_eq!(result.status, AdmitHashStatus::Ignore);
+    }
+
+    #[tokio::test]
+    async fn admit_hash_caps_the_waiting_list() {
+        let (block_retriever, _transport) = retriever(vec![]);
+        let hash: BlockHash = Bytes::from_static(b"admit-waiting-list-cap");
+        let now = BlockRetriever::<TransportLayerStub>::current_millis();
+        let mut state = fresh_state(now);
+        state.waiting_list = (0..64).map(|i| peer_node("filler", 41000 + i)).collect();
+        block_retriever
+            .set_request_state_for_test(hash.clone(), state)
+            .await
+            .unwrap();
+
+        let result = block_retriever
+            .admit_hash(
+                hash.clone(),
+                Some(peer_node("overflow", 42000)),
+                AdmitHashReason::HasBlockMessageReceived,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.status, AdmitHashStatus::Ignore);
+        assert_eq!(
+            block_retriever.get_waiting_list_size(&hash).await.unwrap(),
+            64
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_dependency_readmission_appends_unseen_connected_peers_once() {
+        let remote = peer_node("remote", 40401);
+        let (block_retriever, _transport) = retriever(vec![remote.clone()]);
+        let hash: BlockHash = Bytes::from_static(b"missing-dependency-readmission");
+        let now = BlockRetriever::<TransportLayerStub>::current_millis();
+        block_retriever
+            .set_request_state_for_test(hash.clone(), fresh_state(now))
+            .await
+            .unwrap();
+
+        let first = block_retriever
+            .admit_hash(
+                hash.clone(),
+                None,
+                AdmitHashReason::MissingDependencyRequested,
+            )
+            .await
+            .unwrap();
+        assert_eq!(first.status, AdmitHashStatus::NewSourcePeerAddedToRequest);
+        assert!(
+            first.request_block,
+            "the waiting list was empty before the connected peers were appended"
+        );
+        assert_eq!(
+            block_retriever.get_waiting_list_size(&hash).await.unwrap(),
+            1
+        );
+
+        let second = block_retriever
+            .admit_hash(
+                hash.clone(),
+                None,
+                AdmitHashReason::MissingDependencyRequested,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            second.status,
+            AdmitHashStatus::Ignore,
+            "every connected peer is already queued"
+        );
+    }
+
+    #[tokio::test]
+    async fn ack_receive_marks_known_hashes_and_registers_unknown_ones() {
+        let (block_retriever, _transport) = retriever(vec![]);
+        let known: BlockHash = Bytes::from_static(b"ack-receive-known");
+        let unknown: BlockHash = Bytes::from_static(b"ack-receive-unknown");
+        let now = BlockRetriever::<TransportLayerStub>::current_millis();
+        block_retriever
+            .set_request_state_for_test(known.clone(), fresh_state(now))
+            .await
+            .unwrap();
+
+        assert!(!block_retriever.is_received(known.clone()).await.unwrap());
+        block_retriever.ack_receive(known.clone()).await.unwrap();
+        assert!(block_retriever.is_received(known).await.unwrap());
+
+        assert!(!block_retriever.is_received(unknown.clone()).await.unwrap());
+        block_retriever.ack_receive(unknown.clone()).await.unwrap();
+        assert!(
+            block_retriever.is_received(unknown).await.unwrap(),
+            "an unknown hash is added directly as received"
+        );
+    }
+
+    #[tokio::test]
+    async fn ack_in_casper_stops_tracking_the_hash() {
+        let (block_retriever, _transport) = retriever(vec![]);
+        let hash: BlockHash = Bytes::from_static(b"ack-in-casper");
+        let now = BlockRetriever::<TransportLayerStub>::current_millis();
+        block_retriever
+            .set_request_state_for_test(hash.clone(), fresh_state(now))
+            .await
+            .unwrap();
+
+        block_retriever.ack_in_casper(hash.clone()).await.unwrap();
+
+        assert!(block_retriever
+            .get_request_state_for_test(&hash)
+            .await
+            .unwrap()
+            .is_none());
+        assert!(!block_retriever.is_received(hash).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn request_all_evicts_received_expired_entries() {
+        let (block_retriever, _transport) = retriever(vec![]);
+        let hash: BlockHash = Bytes::from_static(b"evict-received-expired");
+        let stale = BlockRetriever::<TransportLayerStub>::create_timed_out_timestamp(
+            Duration::from_secs(2),
+        );
+        let mut state = fresh_state(stale);
+        state.received = true;
+        block_retriever
+            .set_request_state_for_test(hash.clone(), state)
+            .await
+            .unwrap();
+
+        block_retriever
+            .request_all(Duration::from_millis(1))
+            .await
+            .unwrap();
+
+        assert!(
+            block_retriever
+                .get_request_state_for_test(&hash)
+                .await
+                .unwrap()
+                .is_none(),
+            "a received request past its re-request interval is evicted"
+        );
+    }
+
+    #[tokio::test]
+    async fn requested_blocks_bound_evicts_oldest_unresolved_entries_first() {
+        let (block_retriever, _transport) = retriever(vec![]);
+        let now = BlockRetriever::<TransportLayerStub>::current_millis();
+
+        let oldest: BlockHash = Bytes::from_static(b"bound-oldest-unresolved");
+        let mut oldest_state = fresh_state(now);
+        oldest_state.initial_timestamp = now.saturating_sub(600_000);
+        oldest_state.timestamp = now;
+        block_retriever
+            .set_request_state_for_test(oldest.clone(), oldest_state)
+            .await
+            .unwrap();
+
+        for i in 0..2048u32 {
+            let hash: BlockHash = Bytes::from(format!("bound-filler-{i:04}").into_bytes());
+            block_retriever
+                .set_request_state_for_test(hash, fresh_state(now))
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            block_retriever.get_requested_blocks_count().await.unwrap(),
+            2049
+        );
+
+        block_retriever
+            .request_all(Duration::from_secs(3_600))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            block_retriever.get_requested_blocks_count().await.unwrap(),
+            2048,
+            "the bound holds after maintenance"
+        );
+        assert!(
+            block_retriever
+                .get_request_state_for_test(&oldest)
+                .await
+                .unwrap()
+                .is_none(),
+            "the oldest unresolved entry is the eviction candidate"
+        );
     }
 }

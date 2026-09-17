@@ -1,6 +1,6 @@
 // UC-51, UC-52, UC-53 — DAG topology variants for AdmissibleEquivocation.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12.
 // Theorems: T-1 (soundness), T-9.6 (self-regression), T-15 (bisim).
 //
 // These three UCs exercise the equivocation pipeline at three

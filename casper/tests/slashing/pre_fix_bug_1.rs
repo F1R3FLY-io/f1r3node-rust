@@ -1,6 +1,6 @@
 // Pre-fix regression backstop for bug #1 (IgnorableEquivocation drop).
 //
-// Reference: docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.1.
+// Reference: docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.1.
 // Out-of-band approach: this file asserts the *post-fix* invariant
 // directly; running it against the parent of the fix commit (where
 // `is_slashable()` returns `false` for IgnorableEquivocation and the

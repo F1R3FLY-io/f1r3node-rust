@@ -10,6 +10,12 @@ use block_storage::rust::test::indexed_block_dag_storage::IndexedBlockDagStorage
 use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
 use casper::rust::casper::CasperSnapshot;
 use casper::rust::genesis::genesis::Genesis;
+use casper::rust::metrics_constants::{
+    REPEAT_DEPLOY_ANCESTOR_BODY_READS_METRIC, REPEAT_DEPLOY_CARRIER_FALLBACK_SCAN_METRIC,
+    REPEAT_DEPLOY_CARRIER_INDEX_ABSENCE_METRIC, REPEAT_DEPLOY_CARRIER_INDEX_HIT_METRIC,
+    REPEAT_DEPLOY_CARRIER_ROW_READS_METRIC, REPEAT_DEPLOY_CARRIER_WATERMARK_ENGAGED_METRIC,
+    REPEAT_DEPLOY_CARRIER_WATERMARK_NOT_READY_METRIC,
+};
 use casper::rust::util::rholang::interpreter_util;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::util::{construct_deploy, proto_util};
@@ -20,6 +26,7 @@ use crypto::rust::private_key::PrivateKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use crypto::rust::signatures::signed::Signed;
+use metrics_util::debugging::{DebugValue, DebuggingRecorder, Snapshotter};
 use models::rust::block_implicits::get_random_block;
 use models::rust::casper::protocol::casper_message;
 use models::rust::casper::protocol::casper_message::{
@@ -39,6 +46,31 @@ use crate::util::rholang::resources::mk_test_rnode_store_manager_from_genesis;
 const SHARD_ID: &str = "root-shard";
 
 fn mk_casper_snapshot(dag: KeyValueDagRepresentation) -> CasperSnapshot { CasperSnapshot::new(dag) }
+
+fn record_metrics<T>(f: impl FnOnce() -> T) -> (T, Snapshotter) {
+    let recorder = DebuggingRecorder::new();
+    let snapshotter = recorder.snapshotter();
+    let result = metrics::with_local_recorder(&recorder, f);
+    (result, snapshotter)
+}
+
+#[allow(clippy::mutable_key_type)]
+fn counter_value(snapshotter: &Snapshotter, metric_name: &str) -> u64 {
+    snapshotter
+        .snapshot()
+        .into_hashmap()
+        .iter()
+        .filter_map(|(key, (_, _, value))| {
+            if key.key().name() != metric_name {
+                return None;
+            }
+            match value {
+                DebugValue::Counter(value) => Some(*value),
+                _ => None,
+            }
+        })
+        .sum()
+}
 
 fn create_chain(
     block_store: &mut KeyValueBlockStore,
@@ -989,11 +1021,25 @@ async fn repeat_deploy_validation_should_not_accept_blocks_with_a_repeated_deplo
             .expect("dag representation");
         let mut casper_snapshot = mk_casper_snapshot(dag);
 
-        let result = Validate::repeat_deploy(&block1, &mut casper_snapshot, &block_store, 50, None);
+        let (result, snapshotter) = record_metrics(|| {
+            Validate::repeat_deploy(&block1, &mut casper_snapshot, &block_store, 50, None)
+        });
         assert_eq!(
             result,
             Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy))
         );
+        assert_eq!(
+            counter_value(
+                &snapshotter,
+                REPEAT_DEPLOY_CARRIER_WATERMARK_NOT_READY_METRIC
+            ),
+            1
+        );
+        assert_eq!(
+            counter_value(&snapshotter, REPEAT_DEPLOY_CARRIER_FALLBACK_SCAN_METRIC),
+            1
+        );
+        assert!(counter_value(&snapshotter, REPEAT_DEPLOY_ANCESTOR_BODY_READS_METRIC) >= 1);
     })
     .await
 }
@@ -1041,6 +1087,248 @@ async fn repeat_deploy_accepts_fresh_deploys_in_block_not_yet_inserted() {
         let result =
             Validate::repeat_deploy(&candidate, &mut casper_snapshot, &block_store, 50, None);
         assert_eq!(result, Either::Right(ValidBlock::Valid));
+    })
+    .await
+}
+
+/// Fast-path equivalence, repeat case: with the carrier index certified
+/// complete, a row hit routes to the exact scan and the repeat is flagged
+/// exactly as the uncertified path flags it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repeat_deploy_certified_index_still_flags_a_repeated_deploy() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            None,
+            None,
+            Some(vec![deploy.clone()]),
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let block1 = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![genesis.block_hash.clone()],
+            &genesis,
+            None,
+            None,
+            None,
+            Some(vec![deploy]),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        dag.carrier_index
+            .write()
+            .set_watermark_if_absent(0)
+            .expect("certify");
+        let mut casper_snapshot = mk_casper_snapshot(dag);
+
+        let (result, snapshotter) = record_metrics(|| {
+            Validate::repeat_deploy(&block1, &mut casper_snapshot, &block_store, 50, None)
+        });
+        assert_eq!(
+            result,
+            Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy))
+        );
+        assert_eq!(
+            counter_value(&snapshotter, REPEAT_DEPLOY_CARRIER_WATERMARK_ENGAGED_METRIC),
+            1
+        );
+        assert_eq!(
+            counter_value(&snapshotter, REPEAT_DEPLOY_CARRIER_ROW_READS_METRIC),
+            1
+        );
+        assert_eq!(
+            counter_value(&snapshotter, REPEAT_DEPLOY_CARRIER_INDEX_HIT_METRIC),
+            1
+        );
+        assert_eq!(
+            counter_value(&snapshotter, REPEAT_DEPLOY_CARRIER_INDEX_ABSENCE_METRIC),
+            0
+        );
+        assert_eq!(
+            counter_value(&snapshotter, REPEAT_DEPLOY_CARRIER_FALLBACK_SCAN_METRIC),
+            1
+        );
+        assert!(counter_value(&snapshotter, REPEAT_DEPLOY_ANCESTOR_BODY_READS_METRIC) >= 1);
+    })
+    .await
+}
+
+/// Fast-path equivalence, fresh case: with the carrier index certified
+/// complete, a fresh sig's absence proof skips the ancestor scan and the
+/// verdict stays Valid — identical to the uncertified path.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repeat_deploy_certified_index_accepts_fresh_deploys() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let genesis_deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            None,
+            None,
+            Some(vec![genesis_deploy]),
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let fresh_deploy = construct_deploy::basic_processed_deploy(1, None).unwrap();
+        let candidate = build_block(
+            vec![genesis.block_hash.clone()],
+            None,
+            1786500000000,
+            None,
+            None,
+            Some(vec![fresh_deploy]),
+            None,
+            None,
+            None,
+            Some(1),
+        );
+
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        dag.carrier_index
+            .write()
+            .set_watermark_if_absent(0)
+            .expect("certify");
+        let mut casper_snapshot = mk_casper_snapshot(dag);
+
+        let (result, snapshotter) = record_metrics(|| {
+            Validate::repeat_deploy(&candidate, &mut casper_snapshot, &block_store, 50, None)
+        });
+        assert_eq!(result, Either::Right(ValidBlock::Valid));
+        assert_eq!(
+            counter_value(&snapshotter, REPEAT_DEPLOY_CARRIER_WATERMARK_ENGAGED_METRIC),
+            1
+        );
+        assert_eq!(
+            counter_value(&snapshotter, REPEAT_DEPLOY_CARRIER_ROW_READS_METRIC),
+            1
+        );
+        assert_eq!(
+            counter_value(&snapshotter, REPEAT_DEPLOY_CARRIER_INDEX_ABSENCE_METRIC),
+            1
+        );
+        assert_eq!(
+            counter_value(&snapshotter, REPEAT_DEPLOY_CARRIER_INDEX_HIT_METRIC),
+            0
+        );
+        assert_eq!(
+            counter_value(&snapshotter, REPEAT_DEPLOY_CARRIER_FALLBACK_SCAN_METRIC),
+            0
+        );
+        assert_eq!(
+            counter_value(&snapshotter, REPEAT_DEPLOY_ANCESTOR_BODY_READS_METRIC),
+            0
+        );
+    })
+    .await
+}
+
+/// Fast-path soundness on the invalid-carrier gap that made the removed
+/// deploy_index fast path unportable: a sig carried ONLY by an INVALID
+/// ancestor is still a repeat (the ancestor scan reads bodies without a
+/// validity qualifier), and the certified index must reach the same
+/// verdict — the `CarriedInvalid` row routes the sig to the exact scan
+/// instead of proving absence.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repeat_deploy_certified_index_still_flags_a_repeat_via_an_invalid_ancestor() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let genesis_deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            None,
+            None,
+            Some(vec![genesis_deploy]),
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let carried = construct_deploy::basic_processed_deploy(1, None).unwrap();
+        let invalid_carrier = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![genesis.block_hash.clone()],
+            &genesis,
+            None,
+            None,
+            None,
+            Some(vec![carried.clone()]),
+            None,
+            None,
+            None,
+            None,
+            Some(true),
+            None,
+        );
+
+        let candidate = build_block(
+            vec![invalid_carrier.block_hash.clone()],
+            None,
+            1786500000000,
+            None,
+            None,
+            Some(vec![carried]),
+            None,
+            None,
+            None,
+            Some(1),
+        );
+
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        let mut uncertified_snapshot = mk_casper_snapshot(dag);
+        let scan_verdict = Validate::repeat_deploy(
+            &candidate,
+            &mut uncertified_snapshot,
+            &block_store,
+            50,
+            None,
+        );
+        assert_eq!(
+            scan_verdict,
+            Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy)),
+            "the ancestor scan flags a repeat carried by an invalid ancestor"
+        );
+
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        dag.carrier_index
+            .write()
+            .set_watermark_if_absent(0)
+            .expect("certify");
+        let mut certified_snapshot = mk_casper_snapshot(dag);
+        let index_verdict =
+            Validate::repeat_deploy(&candidate, &mut certified_snapshot, &block_store, 50, None);
+        assert_eq!(
+            index_verdict, scan_verdict,
+            "index-served and scan-served verdicts must be equal"
+        );
     })
     .await
 }
@@ -1123,6 +1411,104 @@ async fn repeat_deploy_validation_should_surface_a_storage_failure_not_admit_the
              reports the gap; whether this node may act on it is decided by the block \
              processor, which alone knows if its own history is cut short. Got {:?}",
             result
+        );
+    })
+    .await
+}
+
+/// Fast-path ENGAGEMENT pin: the three certified-index tests above assert
+/// verdicts that are identical whether the scan ran or was skipped, so a
+/// regression that silently disables the fast path would ship clean past
+/// them. This test makes the skip itself observable: the candidate's
+/// ancestry contains an unreadable parent, so the exact scan CANNOT
+/// succeed (the uncertified control below proves it errors) — a Valid
+/// verdict is therefore only reachable through the engaged absence proof.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repeat_deploy_certified_index_engagement_skips_the_scan() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let genesis_deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            None,
+            None,
+            Some(vec![genesis_deploy]),
+            None,
+            None,
+            None,
+            None,
+        );
+
+        // An ancestor the walk cannot expand sits between the candidate
+        // and genesis, so any scan of the candidate's ancestry fails.
+        let mid = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![
+                genesis.block_hash.clone(),
+                Bytes::from(b"ancestor-absent-from-this-dag".to_vec()),
+            ],
+            &genesis,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let fresh_deploy = construct_deploy::basic_processed_deploy(1, None).unwrap();
+        let candidate = build_block(
+            vec![mid.block_hash.clone()],
+            None,
+            1786500000000,
+            None,
+            None,
+            Some(vec![fresh_deploy]),
+            None,
+            None,
+            None,
+            Some(1),
+        );
+
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        let mut uncertified_snapshot = mk_casper_snapshot(dag);
+        let scan_verdict = Validate::repeat_deploy(
+            &candidate,
+            &mut uncertified_snapshot,
+            &block_store,
+            50,
+            None,
+        );
+        assert!(
+            matches!(scan_verdict, Either::Left(_)),
+            "control: with the fast path off, the unreadable ancestry must fail the scan; \
+             got {:?}",
+            scan_verdict
+        );
+
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        dag.carrier_index
+            .write()
+            .set_watermark_if_absent(0)
+            .expect("certify");
+        let mut certified_snapshot = mk_casper_snapshot(dag);
+        let result =
+            Validate::repeat_deploy(&candidate, &mut certified_snapshot, &block_store, 50, None);
+        assert_eq!(
+            result,
+            Either::Right(ValidBlock::Valid),
+            "a fresh sig's absence proof must skip the scan entirely — this Valid is \
+             unreachable through the scan path"
         );
     })
     .await

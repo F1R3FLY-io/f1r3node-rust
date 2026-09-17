@@ -903,3 +903,139 @@ mod merge_algebra_p2_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod event_log_index_new_tests {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use super::EventLogIndex;
+    use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+    use crate::rspace::merger::merging_logic::{MergeType, NumberChannelsDiff};
+    use crate::rspace::trace::event::{COMM, Consume, Event, IOEvent, Produce};
+
+    fn mk_hash(byte: u8) -> Blake2b256Hash { Blake2b256Hash::from_bytes(vec![byte; 32]) }
+
+    fn mk_produce(id: u8, persistent: bool) -> Produce {
+        Produce::new(mk_hash(id), mk_hash(id), persistent)
+    }
+
+    fn mk_consume(id: u8, persistent: bool) -> Consume {
+        Consume {
+            channel_hashes: vec![mk_hash(id)],
+            hash: mk_hash(100 + id),
+            persistent,
+        }
+    }
+
+    #[test]
+    fn new_with_empty_log_equals_empty() {
+        let idx = EventLogIndex::new(vec![], |_| false, |_| false, NumberChannelsDiff::new());
+        assert_eq!(idx, EventLogIndex::empty());
+    }
+
+    #[test]
+    fn new_classifies_produces_consumes_and_comms() {
+        let p_linear = mk_produce(1, false);
+        let p_persistent = mk_produce(2, true);
+        let p_pre_state = mk_produce(3, false);
+        let p_join_touch = mk_produce(4, false);
+        let p_comm = mk_produce(5, false);
+        let p_peeked = mk_produce(6, false);
+        let c_linear = mk_consume(10, false);
+        let c_persistent = mk_consume(11, true);
+        let c_comm = mk_consume(12, false);
+        let c_peek_comm = mk_consume(13, false);
+
+        let comm_plain = COMM {
+            consume: c_comm.clone(),
+            produces: vec![p_comm.clone()],
+            peeks: BTreeSet::new(),
+            times_repeated: BTreeMap::new(),
+        };
+        let comm_peek = COMM {
+            consume: c_peek_comm.clone(),
+            produces: vec![p_peeked.clone()],
+            peeks: BTreeSet::from([0]),
+            times_repeated: BTreeMap::new(),
+        };
+
+        let events = vec![
+            Event::IoEvent(IOEvent::Produce(p_linear.clone())),
+            Event::IoEvent(IOEvent::Produce(p_persistent.clone())),
+            Event::IoEvent(IOEvent::Produce(p_pre_state.clone())),
+            Event::IoEvent(IOEvent::Produce(p_join_touch.clone())),
+            Event::IoEvent(IOEvent::Consume(c_linear.clone())),
+            Event::IoEvent(IOEvent::Consume(c_persistent.clone())),
+            Event::Comm(comm_plain),
+            Event::Comm(comm_peek),
+        ];
+
+        let mut mergeable = NumberChannelsDiff::new();
+        mergeable.insert(p_linear.channel_hash.clone(), (1, MergeType::IntegerAdd));
+        mergeable.insert(mk_hash(10), (2, MergeType::IntegerAdd));
+
+        let idx =
+            EventLogIndex::new(events, |p| p == &p_pre_state, |p| p == &p_join_touch, mergeable);
+
+        assert!(idx.produces_linear.0.contains(&p_linear));
+        assert!(idx.produces_linear.0.contains(&p_pre_state));
+        assert!(idx.produces_linear.0.contains(&p_join_touch));
+        assert_eq!(idx.produces_linear.0.len(), 3);
+
+        assert_eq!(idx.produces_persistent.0.len(), 1);
+        assert!(idx.produces_persistent.0.contains(&p_persistent));
+
+        assert_eq!(idx.produces_copied_by_peek.0.len(), 1);
+        assert!(idx.produces_copied_by_peek.0.contains(&p_pre_state));
+
+        assert_eq!(idx.produces_touching_base_joins.0.len(), 1);
+        assert!(idx.produces_touching_base_joins.0.contains(&p_join_touch));
+
+        assert_eq!(idx.produces_consumed.0.len(), 1);
+        assert!(idx.produces_consumed.0.contains(&p_comm));
+
+        assert_eq!(idx.produces_peeked.0.len(), 1);
+        assert!(idx.produces_peeked.0.contains(&p_peeked));
+
+        assert_eq!(idx.consumes_linear_and_peeks.0.len(), 1);
+        assert!(idx.consumes_linear_and_peeks.0.contains(&c_linear));
+
+        assert_eq!(idx.consumes_persistent.0.len(), 1);
+        assert!(idx.consumes_persistent.0.contains(&c_persistent));
+
+        assert_eq!(idx.consumes_produced.0.len(), 2);
+        assert!(idx.consumes_produced.0.contains(&c_comm));
+        assert!(idx.consumes_produced.0.contains(&c_peek_comm));
+
+        assert_eq!(idx.produces_mergeable.0.len(), 1);
+        assert!(idx.produces_mergeable.0.contains(&p_linear));
+
+        assert_eq!(idx.consumes_mergeable.0.len(), 1);
+        assert!(idx.consumes_mergeable.0.contains(&c_linear));
+
+        assert_eq!(idx.number_channels_data.len(), 2);
+    }
+
+    #[test]
+    fn new_records_persistent_consume_from_comm_and_mergeable_from_comm_produce() {
+        let p_comm = mk_produce(21, false);
+        let c_comm = mk_consume(22, false);
+        let comm = COMM {
+            consume: c_comm.clone(),
+            produces: vec![p_comm.clone()],
+            peeks: BTreeSet::new(),
+            times_repeated: BTreeMap::new(),
+        };
+
+        let mut mergeable = NumberChannelsDiff::new();
+        mergeable.insert(p_comm.channel_hash.clone(), (1, MergeType::IntegerAdd));
+        mergeable.insert(mk_hash(22), (1, MergeType::IntegerAdd));
+
+        let idx = EventLogIndex::new(vec![Event::Comm(comm)], |_| false, |_| false, mergeable);
+
+        assert!(idx.produces_mergeable.0.contains(&p_comm));
+        assert!(idx.consumes_mergeable.0.contains(&c_comm));
+        assert!(idx.produces_linear.0.is_empty());
+        assert!(idx.consumes_linear_and_peeks.0.is_empty());
+    }
+}

@@ -30,6 +30,24 @@ impl std::hash::Hash for RejectedSlash {
     }
 }
 
+/// Order a freshly-extracted `RejectedSlash` list for deterministic
+/// downstream use. The extraction site builds the list by iterating a
+/// `HashMap` keyed on the source block hash, so its order is
+/// non-deterministic; the list is then cached in `MergedPreState` and
+/// drives the order of the re-issued recovered slash deploys in the
+/// proposed block body. Sorting by `(invalid_block_hash,
+/// source_block_hash)` makes that order a function of the merge inputs
+/// alone. The pair is unique per entry: the extractor emits at most one
+/// slash per `invalid_block_hash` per source block.
+pub fn sorted_for_body(mut slashes: Vec<RejectedSlash>) -> Vec<RejectedSlash> {
+    slashes.sort_by(|a, b| {
+        a.invalid_block_hash
+            .cmp(&b.invalid_block_hash)
+            .then_with(|| a.source_block_hash.cmp(&b.source_block_hash))
+    });
+    slashes
+}
+
 /// Filter rejected slashes for re-issuance by the merge proposer.
 ///
 /// Two collapses happen here:
@@ -196,6 +214,35 @@ mod tests {
     fn empty_inputs_produce_empty_output() {
         let out = filter_recoverable(Vec::<RejectedSlash>::new(), Vec::<BlockHash>::new());
         assert!(out.is_empty());
+    }
+
+    /// `sorted_for_body` must impose a total order that depends only on
+    /// the merge inputs, not on the `HashMap` iteration order the
+    /// extractor happens to produce. Same set in, same order out, with
+    /// `source_block_hash` breaking ties on `invalid_block_hash`.
+    #[test]
+    fn sorted_for_body_orders_by_invalid_then_source_block() {
+        let mk = |invalid: u8, source: u8| RejectedSlash {
+            invalid_block_hash: Bytes::from(vec![invalid; 32]),
+            issuer_public_key: pk(0),
+            source_block_hash: Bytes::from(vec![source; 32]),
+        };
+        let a = mk(1, 9);
+        let b = mk(1, 3);
+        let c = mk(5, 1);
+
+        let one = sorted_for_body(vec![c.clone(), a.clone(), b.clone()]);
+        let two = sorted_for_body(vec![b.clone(), c.clone(), a.clone()]);
+
+        let key = |s: &RejectedSlash| (s.invalid_block_hash.to_vec(), s.source_block_hash.to_vec());
+        assert_eq!(
+            one.iter().map(key).collect::<Vec<_>>(),
+            two.iter().map(key).collect::<Vec<_>>(),
+            "sorted_for_body output must not depend on input order"
+        );
+        assert_eq!(key(&one[0]), key(&b));
+        assert_eq!(key(&one[1]), key(&a));
+        assert_eq!(key(&one[2]), key(&c));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // Integration test — Tier 1 production-path verification of the
@@ -9,7 +9,7 @@
 //
 // Theorem citation: T-9.3 (catch-all dispatcher), Rocq
 // formal/rocq/slashing/theories/BugFixDispatcher.v `t_9_3_dispatch_complete`.
-// Spec reference: docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.4.
+// Spec reference: docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.4.
 //
 // What this pins (and UC-34 does not):
 //   - block_processor.rs:358-371 — the BlockException catch-all. UC-34
@@ -120,13 +120,10 @@ async fn integration_t_invalid_transaction_block_exception() {
         status
     );
 
-    // DAG-layer assertion: the block IS recorded as InvalidTransaction
-    // (via the catch-all's `effects_for_invalid_block(..., &InvalidBlock::InvalidTransaction, ...)`
-    // call at block_processor.rs:362-369), and the dispatcher's
-    // `is_slashable()` catch-all (validation_dispatcher.rs:548) minted
-    // an EquivocationRecord for v0. This is the T-9.3 invariant: a
-    // slashable invalid block always produces a record, regardless of
-    // which upstream path classified it.
+    // DAG-layer assertion: the dispatcher routed the InvalidTransaction
+    // verdict to the drop arm — replay-mismatch is judged against local
+    // state, so it is demoted and must NOT mint an EquivocationRecord.
+    // The status layer still carries the original BlockException.
     let snapshot = production_snapshot_at(
         &nodes[1],
         &genesis.genesis_block,
@@ -138,10 +135,8 @@ async fn integration_t_invalid_transaction_block_exception() {
 
     let has_v0 = (0..=10).any(|b| <_ as SlashingObserver>::has_record(&snapshot, "v0", b));
     assert!(
-        has_v0,
-        "post-fix #3 catch-all: dispatcher mints EquivocationRecord for v0 \
-         on BlockException → InvalidTransaction DAG-layer dispatch \
-         (validation_dispatcher.rs:548 is_slashable() arm). The status \
-         layer carries the original BlockException — see status assertion."
+        !has_v0,
+        "demoted: BlockException → InvalidTransaction is judged against \
+         local replay state and mints no slash evidence"
     );
 }

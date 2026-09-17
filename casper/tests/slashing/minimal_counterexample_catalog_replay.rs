@@ -1,13 +1,13 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // Catalog replay: every named minimal counterexample retains its class
 // and its prescribed mitigation.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §14.6,
-// docs/theory/slashing/slashing-traceability.md.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §14.6,
+// docs/casper/theory/slashing/slashing-traceability.md.
 // Reference: formal/sage/slashing/FINDINGS.md.
 //
 // Each entry in the catalog is a Sage-found minimal counterexample with a

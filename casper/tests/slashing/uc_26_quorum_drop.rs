@@ -1,6 +1,6 @@
 // UC-26 — F-neglectful quorum drop (BFT bound exceeded).
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-26.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-26.
 // Theorem: T-12 counter-example (when `|closure| > F`).
 // Reference: design/08-two-level-and-collusion.md §8.4,
 // design/12-failure-modes.md §12.3.1.

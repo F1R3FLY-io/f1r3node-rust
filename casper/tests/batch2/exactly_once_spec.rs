@@ -517,7 +517,7 @@ async fn reinstated_effect_must_not_be_executed_again() {
         rejected_buffer,
         &runtime_manager,
         &mut nodes[2].block_store,
-        true,
+        casper::rust::blocks::proposer::proposer::DeploySelection::StandardAllowEmpty,
     )
     .await
     .expect("create proposal B on the full frontier");
@@ -626,7 +626,7 @@ async fn floor_covered_effect_survives_a_late_record() {
             rejected_buffer,
             &runtime_manager,
             &mut nodes[2].block_store,
-            true,
+            casper::rust::blocks::proposer::proposer::DeploySelection::StandardAllowEmpty,
         )
         .await
         .expect("create the joining merge J");
@@ -751,7 +751,7 @@ async fn the_floor_never_designates_a_state_missing_the_settled_effect() {
             rejected_buffer,
             &runtime_manager,
             &mut nodes[2].block_store,
-            true,
+            casper::rust::blocks::proposer::proposer::DeploySelection::StandardAllowEmpty,
         )
         .await
         .expect("create the joining merge");

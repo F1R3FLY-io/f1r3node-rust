@@ -11,7 +11,7 @@
 (*   - quorum preservation: the active validator set never falls below      *)
 (*     n − ⌊(n−1)/3⌋                                                       *)
 (*                                                                          *)
-(* Reference: docs/theory/slashing/slashing-verification.md §7.             *)
+(* Reference: docs/casper/theory/slashing/slashing-verification.md §7.             *)
 (****************************************************************************)
 
 EXTENDS Integers, FiniteSets, Sequences, TLC

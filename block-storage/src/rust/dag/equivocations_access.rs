@@ -1,11 +1,11 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // Read-modify-write contract for the equivocation tracker.
 //
-// Reference: docs/theory/slashing/design/14-test-plan.md §14.5,
+// Reference: docs/casper/theory/slashing/design/14-test-plan.md §14.5,
 // design/14a-tier-architecture.md §6 (Plan-agent Item 7 of the
 // principled-resolution session).
 //

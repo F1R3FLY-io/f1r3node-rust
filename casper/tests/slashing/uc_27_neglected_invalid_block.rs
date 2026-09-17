@@ -1,6 +1,6 @@
 // UC-27 — NeglectedInvalidBlock dispatch.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-27.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-27.
 // Theorems: T-3, T-6, T-9.3.
 //
 // Scenario: a block is classified `NeglectedInvalidBlock` (the

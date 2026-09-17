@@ -12,6 +12,7 @@ use std::sync::Arc;
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use comm::rust::transport::transport_layer::TransportLayer;
 use models::rust::block_hash::BlockHash;
+use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{BlockMessage, Justification};
 use models::rust::validator::Validator;
@@ -35,87 +36,6 @@ use crate::rust::util::proto_util;
 /// consensus-critical value, so a rounded estimate (rather than a
 /// per-deploy actual-byte sum) is intentional.
 const DEPLOY_SIG_BYTES_ESTIMATE: f64 = 65.0;
-
-/// Among tips whose LMD-GHOST score TIES the head's, the spine FOLLOWS
-/// CERTIFICATION: prefer the tip whose spine carries the highest
-/// witnessed frontier. An input-sensitive tie-break is free to flip the
-/// spine BETWEEN two sound certificates — each side certifies at a
-/// different instant with full mutual knowledge and zero faults, and the
-/// finalized read surface forks (the ucc ca7197d8 freeze).
-///
-/// The tie this guards is now a genuine one — equal support on both
-/// branches — rather than the permanent saturation that used to follow
-/// from scoring every DAG ancestor. Scoring walks the main-parent chain,
-/// so merged same-height siblings are mutually exclusive and a validator's
-/// weight reaches only one of them; ties are no longer the standing state
-/// of every merged race. A certificate is exactly what makes a branch's frontier
-/// rise; frontiers are monotone per branch and a pure function of the
-/// view, so following the highest frontier is convergent across nodes
-/// and stable across time: any two certifying cliques intersect, and the
-/// shared member's spine is already bound. Frontier ties (the common
-/// case — both branches carry the same floor) keep stage 1's
-/// deterministic (ghost head, hash-ascending) order.
-async fn prefer_certified_main_parent(
-    dag: &KeyValueDagRepresentation,
-    parents: Vec<BlockMessage>,
-    ghost_scores: &HashMap<BlockHash, i64>,
-    latest_messages: &std::collections::BTreeMap<Validator, BlockHash>,
-    ftt: crate::rust::safety::clique_oracle::FtThreshold,
-) -> Result<Vec<BlockMessage>, CasperError> {
-    if parents.len() <= 1 {
-        return Ok(parents);
-    }
-
-    let head_ghost_score = ghost_scores
-        .get(&parents[0].block_hash)
-        .copied()
-        .unwrap_or(0);
-    let head_frontier = crate::rust::finality::floor::parent_frontier(
-        dag,
-        &parents[0].block_hash,
-        latest_messages,
-        ftt,
-    )
-    .await?;
-
-    let mut best: Option<(usize, i64)> = None;
-    for (idx, parent) in parents.iter().enumerate().skip(1) {
-        let ghost_score = ghost_scores.get(&parent.block_hash).copied().unwrap_or(0);
-        if ghost_score != head_ghost_score {
-            continue;
-        }
-        let frontier = crate::rust::finality::floor::parent_frontier(
-            dag,
-            &parent.block_hash,
-            latest_messages,
-            ftt,
-        )
-        .await?;
-        let bar = best.map(|(_, n)| n).unwrap_or(head_frontier.block_number);
-        if frontier.block_number > bar {
-            best = Some((idx, frontier.block_number));
-        }
-    }
-
-    let Some((best_idx, best_frontier_number)) = best else {
-        return Ok(parents);
-    };
-
-    let original_main = parents[0].block_hash.clone();
-    let promoted = parents[best_idx].block_hash.clone();
-    let mut reordered = parents;
-    let promoted_parent = reordered.remove(best_idx);
-    reordered.insert(0, promoted_parent);
-    tracing::info!(
-        target: "f1r3fly.casper.parent_selection",
-        "Spine follows certification at a GHOST tie: original_main={}, promoted_main={}, promoted_frontier=#{}, head_frontier=#{}",
-        PrettyPrinter::build_string_bytes(&original_main),
-        PrettyPrinter::build_string_bytes(&promoted),
-        best_frontier_number,
-        head_frontier.block_number
-    );
-    Ok(reordered)
-}
 
 /// Collapse the parent set to a single deploy-free parent that DAG-covers
 /// every other candidate. No tip content is lost: covering means every other
@@ -221,11 +141,30 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
     // the consensus hot path. Bug #17 / T-9.20 hardened this contract
     // for crash-window drift; same discipline applies to general
     // storage I/O.
-    let mut valid_latest_metas: HashMap<Validator, models::rust::block_metadata::BlockMetadata> =
+    let mut valid_latest_metas: HashMap<Validator, BlockMetadata> =
         HashMap::with_capacity(valid_latest_msgs.len());
+    // A latest message this node does not hold (a stale slot below an LFS
+    // restore horizon) cannot be cited as a parent; abstain the validator
+    // instead of failing every snapshot. Parent and LCA reads below inherit
+    // held provenance from this filter.
+    let mut unheld_validators: Vec<Validator> = Vec::new();
     for (validator, hash) in valid_latest_msgs.iter() {
-        let meta = dag.lookup_unsafe(hash)?;
-        valid_latest_metas.insert(validator.clone(), meta);
+        match dag.lookup(hash)? {
+            Some(meta) => {
+                valid_latest_metas.insert(validator.clone(), meta);
+            }
+            None => {
+                tracing::debug!(
+                    target: "f1r3fly.casper.snapshot",
+                    "abstaining validator with unheld latest message {:?}",
+                    hash
+                );
+                unheld_validators.push(validator.clone());
+            }
+        }
+    }
+    for validator in unheld_validators {
+        valid_latest_msgs.remove(&validator);
     }
     let mut unique_parent_hashes: HashSet<BlockHash> =
         HashSet::with_capacity(valid_latest_msgs.len());
@@ -260,11 +199,26 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
     // anchored. A proposer-side parent filter cannot be a consensus-safety
     // mechanism (validators replay declared parents, not fork-choice), so it
     // was redundant. See docs/sealed-floor-merge-v2-status.md.
+    let fork_choice_floor = crate::rust::finality::floor::fork_choice_floor(
+        &dag,
+        &this.block_store,
+        valid_latest_msgs.values(),
+        BlockMetadata::from_block(&this.approved_block, false, None, None),
+        crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
+            this.casper_shard_conf.fault_tolerance_threshold_ppm,
+        ),
+    )
+    .await?;
     let fork_choice = this
         .estimator
-        .tips_with_latest_messages(&mut dag, &this.approved_block, valid_latest_msgs.clone())
+        .tips_with_latest_messages(
+            &mut dag,
+            &fork_choice_floor,
+            valid_latest_msgs.clone(),
+            this.casper_shard_conf.max_number_of_parents,
+            Some(this.casper_shard_conf.max_parent_depth),
+        )
         .await?;
-    let ghost_scores = fork_choice.scores;
     let ghost_main_parent = fork_choice.tips.into_iter().next();
     let mut sorted_parents_list = parent_blocks_list;
     sorted_parents_list.sort_by(|a, b| {
@@ -274,27 +228,12 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
             .cmp(&a_main)
             .then_with(|| a.block_hash.cmp(&b.block_hash))
     });
-    let tie_break_snapshot: std::collections::BTreeMap<Validator, BlockHash> = valid_latest_msgs
-        .iter()
-        .map(|(v, h)| (v.clone(), h.clone()))
-        .collect();
-    let sorted_parents_list = prefer_certified_main_parent(
-        &dag,
-        sorted_parents_list,
-        &ghost_scores,
-        &tie_break_snapshot,
-        crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
-            this.casper_shard_conf.fault_tolerance_threshold_ppm,
-        ),
-    )
-    .await?;
-
     // The candidate set IS the latest-message frontier, and merging it is
     // what makes a branch unorphanable: a block that merges every tip keeps
     // every branch in its cone — the property the finality oracle rests on,
     // since it infers "cannot be orphaned" from an agreement pattern that
     // only holds while validators follow the estimator. Parent selection
-    // therefore only ORDERS the frontier (the deploy-support sort above);
+    // therefore only ORDERS the frontier (the ghost-first sort above);
     // it never drops tips to pick a main parent. A recovery-context
     // collapse to the single top-sorted tip used to live here: under load
     // it fired on essentially every proposal, the DAG stopped re-merging,
@@ -353,10 +292,8 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
         // `retain` on the vector. Eliminates one intermediate Vec
         // allocation per snapshot and a redundant `.iter()` walk for
         // the max computation.
-        let mut parents_with_meta: Vec<(
-            BlockMessage,
-            models::rust::block_metadata::BlockMetadata,
-        )> = Vec::with_capacity(parents_after_count_limit.len());
+        let mut parents_with_meta: Vec<(BlockMessage, BlockMetadata)> =
+            Vec::with_capacity(parents_after_count_limit.len());
         let mut max_block_num: i64 = 0;
         for b in parents_after_count_limit {
             let meta = dag.lookup_unsafe(&b.block_hash)?;
@@ -398,34 +335,8 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
         parents_after_count_limit
     };
 
-    // C13 / Perf-3: hoist the parent-metadata lookup. Previously this
-    // function performed two passes of `dag.lookup_unsafe` over the
-    // same `parents` set — one to build `parent_metas_for_lca` and
-    // another (via `lookups_unsafe`) to build `parent_metas`. The
-    // batched `lookups_unsafe` is cheaper per parent, so use it once
-    // up-front and borrow into the LCA call.
     let parent_hashes: Vec<BlockHash> = parents.iter().map(|b| b.block_hash.clone()).collect();
     let parent_metas = dag.lookups_unsafe(parent_hashes.clone())?;
-
-    let approved_meta = models::rust::block_metadata::BlockMetadata::from_block(
-        &this.approved_block,
-        false,
-        None,
-        None,
-    );
-    let lca = if parent_metas.is_empty() {
-        this.approved_block.block_hash.clone()
-    } else {
-        crate::rust::util::dag_operations::DagOperations::lowest_universal_common_ancestor_many(
-            &parent_metas,
-            &dag,
-            &approved_meta,
-        )
-        .await?
-        .block_hash
-    };
-
-    let tips: Vec<BlockHash> = parents.iter().map(|b| b.block_hash.clone()).collect();
 
     tracing::debug!(
         "Parent selection: {} validators, {} invalid, {} valid, {} unfiltered, {} parents",
@@ -474,17 +385,14 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
             .collect::<HashSet<_>>()
     };
 
-    // C13 / Perf-3: `parent_metas` is reused from the hoisted lookup
-    // above — no second pass of `dag.lookups_unsafe`.
     let max_block_num = proto_util::max_block_number_metadata(&parent_metas);
 
     let max_seq_nums = valid_latest_metas
         .iter()
         .map(
-            |(validator, block_metadata): (
-                &Validator,
-                &models::rust::block_metadata::BlockMetadata,
-            )| (validator.clone(), block_metadata.sequence_number as u64),
+            |(validator, block_metadata): (&Validator, &BlockMetadata)| {
+                (validator.clone(), block_metadata.sequence_number as u64)
+            },
         )
         .collect::<HashMap<_, _>>();
 
@@ -539,16 +447,15 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
             // single parent would shrink `deploys_in_scope`, which
             // could then admit a duplicate-signature deploy past
             // `InvalidRepeatDeploy` detection.
-            let neighbor_fn = |block_metadata: &models::rust::block_metadata::BlockMetadata| -> Result<
-                Vec<models::rust::block_metadata::BlockMetadata>,
-                CasperError,
-            > {
-                proto_util::get_parent_metadatas_above_block_number(
-                    block_metadata,
-                    earliest_block_number,
-                    &dag,
-                )
-            };
+            let neighbor_fn =
+                |block_metadata: &BlockMetadata| -> Result<Vec<BlockMetadata>, CasperError> {
+                    proto_util::parent_metadatas_above_block_number(
+                        block_metadata,
+                        earliest_block_number,
+                        &dag,
+                        proto_util::UnheldParent::SkipSettled,
+                    )
+                };
 
             let traversal_result = dag_ops::try_bf_traverse(parent_metas, neighbor_fn)?;
 
@@ -612,8 +519,6 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
     Ok(CasperSnapshot {
         dag,
         last_finalized_block,
-        lca,
-        tips,
         parents,
         justifications,
         invalid_blocks,
@@ -712,9 +617,7 @@ mod tests {
     use block_storage::rust::dag::block_dag_key_value_storage::{
         BlockDagKeyValueStorage, InsertMode,
     };
-    use block_storage::rust::key_value_block_store::KeyValueBlockStore;
     use models::rust::block_implicits;
-    use models::rust::casper::protocol::casper_message::ProcessedDeploy;
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 
     use super::{deploy_scope_cache_key_matches, prune_dag_covered_parents};
@@ -887,413 +790,5 @@ mod tests {
         assert_eq!(diverged_from_seal.len(), 3);
         assert_eq!(diverged_from_seal[0].block_hash, left_child.block_hash);
         assert_eq!(diverged_from_seal[1].block_hash, right_child.block_hash);
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // Fork-choice FV — T-MP STAGE 2 (formal/rocq/fork_choice/theories/GuardBridge.v
-    // seam (3)). LOCAL-ONLY verification; not consensus code.
-    //
-    // The proposer picks its main parent in TWO stages:
-    //   stage 1 — the GHOST head + the (is_main DESC, hash ASC) sort;
-    //   stage 2 — `prefer_certified_main_parent`: among tips whose GHOST
-    //             score TIES the head's, the spine follows certification
-    //             (highest witnessed frontier), and frontier ties are the
-    //             exact identity. The former deploy-support promotion is
-    //             deleted: its input evolved over time, so a spine could
-    //             legally flip BETWEEN two sound certificates and fork the
-    //             finalized read surface (the ucc ca7197d8 freeze); deploys
-    //             need no spine position to finalize (see
-    //             verdict_convergence_spec::
-    //             a_deploy_finalizes_from_a_carrier_the_spine_never_holds).
-    //             (GuardBridge.v still models the retired deploy-support
-    //             stage 2; its re-derivation for the certification-guided
-    //             pipeline is pending.)
-    //
-    // The proptest runs stage 2 with an EMPTY ghost-score map (every tip
-    // ties at 0) and an EMPTY latest-message snapshot (nothing witnessed,
-    // every frontier equal), and discharges the determinism claim: the
-    // composed pipeline is a deterministic pure function whose stage 2 is
-    // the identity at frontier ties, so the main parent is stage 1's
-    // canonical sort head. The certification arm is pinned
-    // deterministically by `main_parent_follows_certification_at_ghost_ties`.
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    use std::collections::HashSet as StdHashSet;
-    use std::sync::OnceLock;
-
-    use models::rust::block_hash::BlockHash;
-    use models::rust::casper::protocol::casper_message::BlockMessage;
-    use proptest::prelude::*;
-
-    use super::{prefer_certified_main_parent, KeyValueDagRepresentation};
-    use crate::rust::safety::clique_oracle::FtThreshold;
-
-    /// Shared Tokio runtime: `proptest!` emits plain `#[test]` fns, which cannot be
-    /// `#[tokio::test]`. Mirrors casper/tests/fork_choice/prop_ghost_argmax.rs.
-    fn runtime() -> &'static tokio::runtime::Runtime {
-        static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
-        RUNTIME.get_or_init(|| tokio::runtime::Runtime::new().expect("tokio runtime"))
-    }
-
-    /// Mirror of the STAGE-1 comparator at snapshot.rs:325-331. Stage 1 is written
-    /// INLINE in `compute_snapshot` (it is not a callable fn), so the composed-pipeline
-    /// property below mirrors the six-line comparator verbatim. Kept adjacent to the
-    /// real code so the two drift together.
-    fn ghost_sort_mirror(ghost_main_parent: Option<&BlockHash>, parents: &mut [BlockMessage]) {
-        parents.sort_by(|a, b| {
-            let a_main = ghost_main_parent == Some(&a.block_hash);
-            let b_main = ghost_main_parent == Some(&b.block_hash);
-            b_main
-                .cmp(&a_main)
-                .then_with(|| a.block_hash.cmp(&b.block_hash))
-        });
-    }
-
-    /// Every permutation of `items` (n! of them; n <= 4 here, so <= 24).
-    fn all_permutations(items: &[BlockMessage]) -> Vec<Vec<BlockMessage>> {
-        let n = items.len();
-        let mut out = Vec::with_capacity((1..=n).product::<usize>());
-        if n == 0 {
-            out.push(Vec::new());
-            return out;
-        }
-        for i in 0..n {
-            let mut rest = items.to_vec();
-            let head = rest.remove(i);
-            for mut tail in all_permutations(&rest) {
-                let mut perm = Vec::with_capacity(n);
-                perm.push(head.clone());
-                perm.append(&mut tail);
-                out.push(perm);
-            }
-        }
-        out
-    }
-
-    /// Every value the ghost head (`:317-323`) can take: `None` (empty tips), or any
-    /// one of the parents.
-    fn ghost_candidates(parents: &[BlockMessage]) -> Vec<Option<BlockHash>> {
-        let mut out = Vec::with_capacity(parents.len() + 1);
-        out.push(None);
-        out.extend(parents.iter().map(|p| Some(p.block_hash.clone())));
-        out
-    }
-
-    /// Builds `genesis <- {parent_i}`, where branch `i` carries `n_deploys_i` distinct
-    /// user deploys and sits at block number `number_i`. Genesis is the last finalized
-    /// block, so every parent (number >= 1) is in the unfinalized scoring window.
-    /// Mirrors the fixture style of the `deploy_support_*` example tests above.
-    async fn build_deploy_branch_fixture(
-        specs: &[(usize, i64)],
-    ) -> (
-        KeyValueBlockStore,
-        KeyValueDagRepresentation,
-        BlockMessage,
-        Vec<BlockMessage>,
-    ) {
-        let mut kvm = InMemoryStoreManager::new();
-        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
-            .await
-            .expect("block store");
-        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
-            .await
-            .expect("dag storage");
-
-        let genesis = block_implicits::get_random_block(
-            Some(0),
-            Some(0),
-            None,
-            None,
-            None,
-            None,
-            Some(0),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            None,
-            Some("test".to_string()),
-            None,
-        );
-
-        let mut parents = Vec::with_capacity(specs.len());
-        let mut deploy_id: i32 = 0;
-        for (idx, (n_deploys, number)) in specs.iter().enumerate() {
-            let mut processed = Vec::with_capacity(*n_deploys);
-            for _ in 0..*n_deploys {
-                deploy_id += 1;
-                let deploy = crate::rust::util::construct_deploy::basic_deploy_data(
-                    deploy_id,
-                    None,
-                    Some("test".to_string()),
-                )
-                .expect("deploy");
-                processed.push(ProcessedDeploy::empty(deploy));
-            }
-            parents.push(block_implicits::get_random_block(
-                Some(*number),
-                Some(idx as i32 + 1),
-                None,
-                None,
-                None,
-                None,
-                Some(*number),
-                Some(vec![genesis.block_hash.clone()]),
-                Some(Vec::new()),
-                Some(processed),
-                Some(Vec::new()),
-                None,
-                Some("test".to_string()),
-                None,
-            ));
-        }
-
-        block_store
-            .put_block_message(&genesis)
-            .expect("store genesis");
-        for parent in &parents {
-            block_store.put_block_message(parent).expect("store parent");
-        }
-        dag_storage
-            .insert(&genesis, InsertMode::Approved)
-            .expect("insert genesis");
-        for parent in &parents {
-            dag_storage
-                .insert(parent, InsertMode::Normal)
-                .expect("insert parent");
-        }
-
-        let dag = dag_storage.get_representation().expect("dag");
-        (block_store, dag, genesis, parents)
-    }
-
-    proptest! {
-        #![proptest_config(ProptestConfig::with_cases(16))]
-
-        /// The composed pipeline (stage-1 mirror, then the real stage 2)
-        /// with nothing witnessed anywhere: every frontier ties, so stage 2
-        /// must be the EXACT identity (multiset and order preserved), and
-        /// the composed output must be byte-identical for every input
-        /// ordering and every possible ghost head — the main parent is
-        /// stage 1's canonical sort head, nothing else.
-        #[test]
-        fn certified_tie_break_is_identity_and_deterministic_at_frontier_ties(
-            specs in prop::collection::vec((0usize..=2usize, 1i64..=2i64), 2..=4),
-        ) {
-            let (_block_store, dag, _genesis, parents) =
-                runtime().block_on(build_deploy_branch_fixture(&specs));
-
-            let distinct: StdHashSet<BlockHash> =
-                parents.iter().map(|p| p.block_hash.clone()).collect();
-            prop_assert_eq!(
-                distinct.len(),
-                parents.len(),
-                "fixture produced colliding parent hashes"
-            );
-
-            let perms = all_permutations(&parents);
-            let empty_scores = std::collections::HashMap::new();
-            let empty_snapshot = std::collections::BTreeMap::new();
-            let ftt = FtThreshold::from_f32_lossy(0.1);
-
-            for perm in &perms {
-                let out = runtime()
-                    .block_on(prefer_certified_main_parent(
-                        &dag,
-                        perm.clone(),
-                        &empty_scores,
-                        &empty_snapshot,
-                        ftt,
-                    ))
-                    .expect("prefer certified");
-                let want: Vec<BlockHash> = perm.iter().map(|b| b.block_hash.clone()).collect();
-                let got: Vec<BlockHash> = out.iter().map(|b| b.block_hash.clone()).collect();
-                prop_assert_eq!(
-                    got,
-                    want,
-                    "stage 2 must be the exact identity at frontier ties"
-                );
-            }
-
-            for ghost in ghost_candidates(&parents) {
-                let outputs: StdHashSet<Vec<BlockHash>> = perms
-                    .iter()
-                    .map(|perm| {
-                        let mut staged = perm.clone();
-                        ghost_sort_mirror(ghost.as_ref(), &mut staged);
-                        runtime()
-                            .block_on(prefer_certified_main_parent(
-                                &dag,
-                                staged,
-                                &empty_scores,
-                                &empty_snapshot,
-                                ftt,
-                            ))
-                            .expect("prefer certified")
-                            .iter()
-                            .map(|b| b.block_hash.clone())
-                            .collect()
-                    })
-                    .collect();
-                prop_assert_eq!(
-                    outputs.len(),
-                    1,
-                    "the composed pipeline output depends on the input parent order"
-                );
-            }
-        }
-    }
-
-    /// Among score-tied tips the spine FOLLOWS CERTIFICATION: branch X
-    /// carries a mutually-witnessed block (its tip's frontier rises to it);
-    /// branch Y carries a user deploy but no certification (its frontier
-    /// stays at genesis). Whatever the input order, X's tip must take the
-    /// main-parent slot — a certificate binds fork choice, so the spine can
-    /// never flip onto the uncertified side of a tie and mint the second
-    /// half of a temporal double-certification (the ucc ca7197d8 fork).
-    #[tokio::test]
-    async fn main_parent_follows_certification_at_ghost_ties() {
-        use models::rust::casper::protocol::casper_message::{Bond, Justification};
-
-        let v1 = prost::bytes::Bytes::from(vec![0x11u8; 65]);
-        let v2 = prost::bytes::Bytes::from(vec![0x22u8; 65]);
-        let v3 = prost::bytes::Bytes::from(vec![0x33u8; 65]);
-        let bonds = vec![
-            Bond {
-                validator: v1.clone(),
-                stake: 100,
-            },
-            Bond {
-                validator: v2.clone(),
-                stake: 100,
-            },
-            Bond {
-                validator: v3.clone(),
-                stake: 100,
-            },
-        ];
-        let justif = |entries: Vec<(&prost::bytes::Bytes, &BlockMessage)>| {
-            entries
-                .into_iter()
-                .map(|(v, b)| Justification {
-                    validator: v.clone(),
-                    latest_block_hash: b.block_hash.clone(),
-                })
-                .collect::<Vec<_>>()
-        };
-        let mk = |number: i64,
-                  seq: i32,
-                  creator: &prost::bytes::Bytes,
-                  parents: Vec<BlockHash>,
-                  justifications: Vec<Justification>,
-                  deploys: Vec<ProcessedDeploy>| {
-            block_implicits::get_random_block(
-                Some(number),
-                Some(seq),
-                None,
-                None,
-                Some(creator.clone()),
-                None,
-                Some(number),
-                Some(parents),
-                Some(justifications),
-                Some(deploys),
-                Some(Vec::new()),
-                Some(bonds.clone()),
-                Some("test".to_string()),
-                None,
-            )
-        };
-
-        let mut kvm = InMemoryStoreManager::new();
-        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
-            .await
-            .expect("block store");
-        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
-            .await
-            .expect("dag storage");
-
-        let genesis = mk(0, 0, &v1, Vec::new(), Vec::new(), Vec::new());
-        let gj = justif(vec![(&v1, &genesis), (&v2, &genesis), (&v3, &genesis)]);
-
-        // Branch X: s_x mutually witnessed by v1 and v2.
-        let s_x = mk(
-            1,
-            1,
-            &v1,
-            vec![genesis.block_hash.clone()],
-            gj.clone(),
-            Vec::new(),
-        );
-        let x1 = mk(
-            2,
-            1,
-            &v2,
-            vec![s_x.block_hash.clone()],
-            justif(vec![(&v1, &s_x), (&v2, &genesis), (&v3, &genesis)]),
-            Vec::new(),
-        );
-        let x2 = mk(
-            3,
-            2,
-            &v1,
-            vec![x1.block_hash.clone()],
-            justif(vec![(&v1, &s_x), (&v2, &x1), (&v3, &genesis)]),
-            Vec::new(),
-        );
-
-        // Branch Y: a deploy-carrying sibling with no certification.
-        let deploy = crate::rust::util::construct_deploy::basic_deploy_data(
-            7,
-            None,
-            Some("test".to_string()),
-        )
-        .expect("deploy");
-        let y1 = mk(
-            1,
-            1,
-            &v3,
-            vec![genesis.block_hash.clone()],
-            gj.clone(),
-            vec![ProcessedDeploy::empty(deploy)],
-        );
-
-        for block in [&genesis, &s_x, &x1, &x2, &y1] {
-            block_store.put_block_message(block).expect("store block");
-        }
-        dag_storage
-            .insert(&genesis, InsertMode::Approved)
-            .expect("insert genesis");
-        for block in [&s_x, &x1, &x2, &y1] {
-            dag_storage
-                .insert(block, InsertMode::Normal)
-                .expect("insert block");
-        }
-        let dag = dag_storage.get_representation().expect("dag");
-
-        let snapshot: std::collections::BTreeMap<_, _> = [
-            (v1.clone(), x2.block_hash.clone()),
-            (v2.clone(), x1.block_hash.clone()),
-            (v3.clone(), y1.block_hash.clone()),
-        ]
-        .into_iter()
-        .collect();
-        let scores: std::collections::HashMap<BlockHash, i64> =
-            [(x2.block_hash.clone(), 300), (y1.block_hash.clone(), 300)]
-                .into_iter()
-                .collect();
-        let ftt = FtThreshold::from_f32_lossy(0.1);
-
-        for parents in [vec![y1.clone(), x2.clone()], vec![x2.clone(), y1.clone()]] {
-            let out = prefer_certified_main_parent(&dag, parents, &scores, &snapshot, ftt)
-                .await
-                .expect("prefer certified");
-            assert_eq!(
-                out[0].block_hash, x2.block_hash,
-                "the certified branch's tip must take the main-parent slot \
-                 regardless of input order"
-            );
-            assert_eq!(out.len(), 2, "no parent may be dropped");
-        }
     }
 }

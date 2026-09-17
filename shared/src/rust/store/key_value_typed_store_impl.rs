@@ -228,3 +228,190 @@ where
 
     fn non_empty(&self) -> Result<bool, KvStoreError> { self.store.non_empty() }
 }
+
+#[cfg(test)]
+mod tests {
+    use heed::EnvOpenOptions;
+
+    use super::*;
+    use crate::rust::store::lmdb_key_value_store::LmdbKeyValueStore;
+
+    fn new_store() -> KeyValueTypedStoreImpl<String, i64> {
+        let dir = tempfile::tempdir().unwrap();
+        let path = Box::leak(Box::new(dir)).path();
+        let mut builder = EnvOpenOptions::new();
+        builder.map_size(10 * 1024 * 1024);
+        builder.max_dbs(1);
+        let env = Arc::new(unsafe { builder.open(path).unwrap() });
+        let mut wtxn = env.write_txn().unwrap();
+        let db = env.create_database(&mut wtxn, None).unwrap();
+        wtxn.commit().unwrap();
+        KeyValueTypedStoreImpl::new(Arc::new(LmdbKeyValueStore::new(env, db)))
+    }
+
+    fn seeded_store() -> KeyValueTypedStoreImpl<String, i64> {
+        let store = new_store();
+        store
+            .put(vec![
+                ("one".to_string(), 1),
+                ("two".to_string(), 2),
+                ("three".to_string(), 3),
+            ])
+            .unwrap();
+        store
+    }
+
+    #[test]
+    fn key_and_value_codecs_round_trip() {
+        let store = new_store();
+        let key = "some-key".to_string();
+        let encoded_key = store.encode_key(&key).unwrap();
+        assert_eq!(store.decode_key(&encoded_key).unwrap(), key);
+
+        let encoded_value = store.encode_value(&-42i64).unwrap();
+        assert_eq!(store.decode_value(&encoded_value).unwrap(), -42);
+    }
+
+    #[test]
+    fn decoding_garbage_bytes_is_a_serialization_error() {
+        let store = new_store();
+        let result = store.decode_key(&vec![0xff, 0xff]);
+        assert!(matches!(result, Err(KvStoreError::SerializationError(_))));
+    }
+
+    #[test]
+    fn get_preserves_key_order_and_marks_missing_keys() {
+        let store = seeded_store();
+        let values = store
+            .get(&vec![
+                "two".to_string(),
+                "absent".to_string(),
+                "one".to_string(),
+            ])
+            .unwrap();
+        assert_eq!(values, vec![Some(2), None, Some(1)]);
+    }
+
+    #[test]
+    fn get_one_and_get_or_else_handle_missing_keys() {
+        let store = seeded_store();
+        assert_eq!(store.get_one(&"one".to_string()).unwrap(), Some(1));
+        assert_eq!(store.get_one(&"absent".to_string()).unwrap(), None);
+        assert_eq!(store.get_or_else("two".to_string(), 99).unwrap(), 2);
+        assert_eq!(store.get_or_else("absent".to_string(), 99).unwrap(), 99);
+    }
+
+    #[test]
+    fn get_unsafe_errors_on_missing_key() {
+        let store = seeded_store();
+        assert_eq!(store.get_unsafe(&"three".to_string()).unwrap(), 3);
+        assert!(matches!(
+            store.get_unsafe(&"absent".to_string()),
+            Err(KvStoreError::KeyNotFound(_))
+        ));
+    }
+
+    #[test]
+    fn get_batch_requires_every_key_to_exist() {
+        let store = seeded_store();
+        assert_eq!(
+            store
+                .get_batch(&vec!["one".to_string(), "two".to_string()])
+                .unwrap(),
+            vec![1, 2]
+        );
+        assert!(matches!(
+            store.get_batch(&vec!["one".to_string(), "absent".to_string()]),
+            Err(KvStoreError::KeyNotFound(_))
+        ));
+    }
+
+    #[test]
+    fn put_one_overwrites_and_put_one_if_absent_does_not() {
+        let store = new_store();
+        store.put_one("k".to_string(), 1).unwrap();
+        store.put_one("k".to_string(), 2).unwrap();
+        assert_eq!(store.get_one(&"k".to_string()).unwrap(), Some(2));
+
+        assert!(store.put_one_if_absent("fresh".to_string(), 10).unwrap());
+        assert!(!store.put_one_if_absent("fresh".to_string(), 20).unwrap());
+        assert_eq!(store.get_one(&"fresh".to_string()).unwrap(), Some(10));
+    }
+
+    #[test]
+    fn put_if_absent_only_writes_missing_keys() {
+        let store = seeded_store();
+        store
+            .put_if_absent(vec![("one".to_string(), 100), ("four".to_string(), 4)])
+            .unwrap();
+        assert_eq!(store.get_one(&"one".to_string()).unwrap(), Some(1));
+        assert_eq!(store.get_one(&"four".to_string()).unwrap(), Some(4));
+    }
+
+    #[test]
+    fn contains_and_contains_key_report_membership() {
+        let store = seeded_store();
+        assert_eq!(
+            store
+                .contains(vec!["one".to_string(), "absent".to_string()])
+                .unwrap(),
+            vec![true, false]
+        );
+        assert!(store.contains_key("two".to_string()).unwrap());
+        assert!(!store.contains_key("absent".to_string()).unwrap());
+    }
+
+    #[test]
+    fn delete_removes_only_named_keys() {
+        let store = seeded_store();
+        store
+            .delete(vec!["one".to_string(), "absent".to_string()])
+            .unwrap();
+        assert_eq!(store.get_one(&"one".to_string()).unwrap(), None);
+        assert_eq!(store.get_one(&"two".to_string()).unwrap(), Some(2));
+    }
+
+    #[test]
+    fn collect_projects_and_filters_entries() {
+        let store = seeded_store();
+        let mut doubled_evens: Vec<i64> = store
+            .collect(|(_, value)| {
+                if value % 2 == 0 {
+                    Some(value * 2)
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+        doubled_evens.sort_unstable();
+        assert_eq!(doubled_evens, vec![4]);
+    }
+
+    #[test]
+    fn to_map_returns_every_typed_entry() {
+        let store = seeded_store();
+        let map = store.to_map().unwrap();
+        assert_eq!(map.len(), 3);
+        assert_eq!(map.get("three"), Some(&3));
+    }
+
+    #[test]
+    fn any_value_scans_until_a_match() {
+        let store = seeded_store();
+        assert!(store.any_value(|value| Ok(*value == 2)).unwrap());
+        assert!(!store.any_value(|value| Ok(*value > 100)).unwrap());
+        assert!(matches!(
+            store.any_value(|_| Err(KvStoreError::InvalidArgument("boom".to_string()))),
+            Err(KvStoreError::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
+    fn non_empty_and_raw_store_reflect_the_backing_store() {
+        let store = new_store();
+        assert!(!store.non_empty().unwrap());
+        store.put_one("k".to_string(), 1).unwrap();
+        assert!(store.non_empty().unwrap());
+        assert!(store.raw_store().non_empty().unwrap());
+    }
+}

@@ -160,7 +160,8 @@ async fn floor_of_view_holds_until_witnessed_then_advances() {
         let dag = dag_store.get_representation().expect("dag representation");
         let advanced = floor_of_view(&dag, &store, &at(&genesis), thr)
             .await
-            .expect("floor of view");
+            .expect("floor of view")
+            .advanced();
         assert_eq!(
             advanced.as_ref().map(|f| &f.hash),
             Some(&b1.block_hash),
@@ -202,7 +203,8 @@ async fn floor_of_view_holds_until_witnessed_then_advances() {
         let dag = dag_store.get_representation().expect("dag representation");
         let held = floor_of_view(&dag, &store, &at(&b1), thr)
             .await
-            .expect("floor of view");
+            .expect("floor of view")
+            .advanced();
         assert_eq!(
             held, None,
             "descent without mutual visibility does not witness b7 — the LFB \
@@ -229,6 +231,7 @@ async fn floor_of_view_holds_until_witnessed_then_advances() {
         let advanced = floor_of_view(&dag, &store, &at(&b1), thr)
             .await
             .expect("floor of view")
+            .advanced()
             .expect("mutual visibility witnesses b7's chain — the LFB advances");
         assert!(
             advanced.block_number >= b7.body.state.block_number
@@ -318,7 +321,8 @@ async fn floor_of_view_advances_onto_the_already_finalized_candidate() {
             FtThreshold::from_f32_lossy(0.1),
         )
         .await
-        .expect("floor of view");
+        .expect("floor of view")
+        .advanced();
         assert_eq!(
             advanced.as_ref().map(|f| &f.hash),
             Some(&candidate.block_hash)

@@ -393,16 +393,41 @@ pub async fn get_results(
     match tokio::time::timeout(execution_timeout, body).await {
         Ok(result) => result?,
         Err(_) => {
-            return Err(InterpreterError::BugFoundError(format!(
-                "Timeout of {:?} expired in phase '{}' while executing test from {}",
+            return Err(timeout_error(
                 execution_timeout,
-                phase.lock().expect("phase label mutex is never poisoned"),
-                test_object.path
-            )))
+                &phase.lock().expect("phase label mutex is never poisoned"),
+                &test_object.path,
+            ))
         }
     }
 
     Ok(test_result_collector.get_result())
+}
+
+/// Pipeline phase that evaluates the spec's Rholang source.
+pub const EVAL_TEST_SOURCE_PHASE: &str = "eval-test-source";
+
+const TIMEOUT_PREFIX: &str = "Timeout of ";
+const TIMEOUT_PHASE_OPEN: &str = " expired in phase '";
+const TIMEOUT_PHASE_CLOSE: &str = "' while executing test from ";
+
+fn timeout_error(timeout: Duration, phase: &str, path: &str) -> InterpreterError {
+    InterpreterError::BugFoundError(format!(
+        "{TIMEOUT_PREFIX}{timeout:?}{TIMEOUT_PHASE_OPEN}{phase}{TIMEOUT_PHASE_CLOSE}{path}"
+    ))
+}
+
+/// Phase a `run_tests` timeout expired in, or `None` when the error is not a
+/// harness timeout. The encoder and decoder live together so a message
+/// change cannot silently disable a caller's retry gate.
+pub fn timeout_phase(err: &InterpreterError) -> Option<&str> {
+    let InterpreterError::BugFoundError(message) = err else {
+        return None;
+    };
+    let rest = message.strip_prefix(TIMEOUT_PREFIX)?;
+    let start = rest.find(TIMEOUT_PHASE_OPEN)? + TIMEOUT_PHASE_OPEN.len();
+    let end = rest[start..].find(TIMEOUT_PHASE_CLOSE)? + start;
+    Some(&rest[start..end])
 }
 
 async fn setup_runtime<R: RhoRuntime>(
@@ -463,4 +488,31 @@ fn rho_spec_deploy() -> Signed<DeployData> {
     };
 
     Signed::create(deploy_data, Box::new(Secp256k1), sk).expect("Failed to sign RhoSpec deploy")
+}
+
+#[cfg(test)]
+mod timeout_phase_tests {
+    use super::*;
+
+    #[test]
+    fn timeout_phase_round_trips_the_encoded_phase() {
+        let err = timeout_error(
+            Duration::from_secs(60),
+            EVAL_TEST_SOURCE_PHASE,
+            "PoSTest.rho",
+        );
+        assert_eq!(timeout_phase(&err), Some(EVAL_TEST_SOURCE_PHASE));
+    }
+
+    #[test]
+    fn timeout_phase_rejects_other_errors() {
+        let err = InterpreterError::BugFoundError("Failed to create RSpaceStore: x".into());
+        assert_eq!(timeout_phase(&err), None);
+        assert_eq!(
+            timeout_phase(&InterpreterError::UndefinedRequiredProtobufFieldError(
+                "f".into()
+            )),
+            None
+        );
+    }
 }

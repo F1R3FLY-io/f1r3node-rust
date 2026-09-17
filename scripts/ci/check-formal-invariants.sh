@@ -132,6 +132,8 @@ run_rocq_checks() {
         "$REPO_ROOT/formal/rocq/slashing/theories/"
     ! grep -rnE "^[[:space:]]*(Axioms?|Admitted|Parameters?|Conjectures?)\b" \
         "$REPO_ROOT/formal/rocq/fork_choice/theories/"
+    ! grep -rnE "^[[:space:]]*(Axioms?|Admitted|Parameters?|Conjectures?)\b" \
+        "$REPO_ROOT/formal/rocq/rspace_guards/theories/"
 
     build_rocq_project slashing Slashing
     check_assumptions slashing Slashing 2 \
@@ -144,6 +146,14 @@ run_rocq_checks() {
         fork_choice_ghost_correct \
         fork_choice_bound_correct \
         fork_choice_bridge_correct
+
+    build_rocq_project rspace_guards RSpaceGuards
+    check_assumptions rspace_guards RSpaceGuards 5 \
+        rspace_first_match_guard \
+        rspace_play_guard_complete \
+        rspace_replay_log_gated \
+        rspace_replay_equivalent \
+        rspace_replay_guard_complete
 }
 
 if [[ "$run_tla" == true ]]; then

@@ -48,13 +48,16 @@ fn is_private_ip_address(ip: &str) -> Option<bool> {
     })
 }
 
+/// Reliably reachable remote address used only to pick the outbound
+/// interface; no traffic is sent.
+const LOCAL_IP_PROBE_ADDR: &str = "8.8.8.8:80";
+const GATEWAY_SEARCH_TIMEOUT: Duration = Duration::from_secs(3);
+
 fn find_local_ip() -> Option<std::net::Ipv4Addr> {
     use std::net::UdpSocket;
 
-    // Connect to a remote address to determine local interface
-    // Using Google DNS as it's reliably reachable
     let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
-    socket.connect("8.8.8.8:80").ok()?;
+    socket.connect(LOCAL_IP_PROBE_ADDR).ok()?;
 
     match socket.local_addr().ok()?.ip() {
         std::net::IpAddr::V4(ipv4) if !ipv4.is_loopback() => Some(ipv4),
@@ -417,7 +420,7 @@ async fn discover() -> Result<UPnPDevices, CommError> {
     let mut gateways: Vec<Arc<Gateway<Tokio>>> = Vec::new();
     let mut valid_gateway: Option<Arc<Gateway<Tokio>>> = None;
 
-    let timeout = Duration::from_secs(3);
+    let timeout = GATEWAY_SEARCH_TIMEOUT;
 
     // Workaround: Perform multiple sequential searches since igd-next's search_gateway
     // returns after finding the first gateway, not all gateways like Java's GatewayDiscover
@@ -512,4 +515,68 @@ fn show_port_mapping(m: &PortMappingEntry) -> String {
         "{} {} {} {} {}",
         protocol, external_port, internal_client, internal_port, description
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn private_ranges_are_detected() {
+        for ip in [
+            "10.0.0.1",
+            "10.255.255.255",
+            "127.0.0.1",
+            "192.168.0.1",
+            "192.168.255.254",
+            "172.16.0.1",
+            "172.31.255.255",
+            "169.254.10.20",
+            "0.0.0.0",
+        ] {
+            assert_eq!(is_private_ip_address(ip), Some(true), "ip: {}", ip);
+        }
+    }
+
+    #[test]
+    fn public_addresses_are_not_private() {
+        for ip in [
+            "8.8.8.8",
+            "1.1.1.1",
+            "172.15.0.1",
+            "172.32.0.1",
+            "192.167.0.1",
+            "11.0.0.1",
+            "169.253.0.1",
+        ] {
+            assert_eq!(is_private_ip_address(ip), Some(false), "ip: {}", ip);
+        }
+    }
+
+    #[test]
+    fn non_ipv4_input_returns_none() {
+        for ip in [
+            "",
+            "not-an-ip",
+            "256.1.1.1",
+            "1.2.3",
+            "1.2.3.4.5",
+            "fe80::1",
+        ] {
+            assert_eq!(is_private_ip_address(ip), None, "input: {}", ip);
+        }
+    }
+
+    #[test]
+    fn upnp_devices_constructors() {
+        let empty = UPnPDevices::empty();
+        assert!(empty.all.is_empty());
+        assert!(empty.gateways.is_empty());
+        assert!(empty.valid_gateway.is_none());
+
+        let built = UPnPDevices::new(HashMap::new(), Vec::new(), None);
+        assert!(built.all.is_empty());
+        assert!(built.gateways.is_empty());
+        assert!(built.valid_gateway.is_none());
+    }
 }

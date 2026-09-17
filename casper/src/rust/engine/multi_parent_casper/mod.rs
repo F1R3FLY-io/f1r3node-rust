@@ -38,6 +38,7 @@ pub(crate) mod block_admission;
 pub(crate) mod buffer_resolver;
 pub(crate) mod events;
 pub(crate) mod finalization_runner;
+pub use finalization_runner::DivergenceMonitor;
 pub(crate) mod snapshot;
 pub(crate) mod dispatch;
 pub(crate) mod types;

@@ -1,6 +1,6 @@
 // UC-25 — Successful slash transfers the entire prior bond to coop vault.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-25.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-25.
 // Theorems: T-7 (bond accounting after slash).
 //
 // Scenario: validator v2 is slashed. Post-slash: v2's bond is exactly 0,

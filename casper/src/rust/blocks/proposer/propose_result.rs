@@ -36,6 +36,11 @@ pub enum ProposeFailure {
     NoNewDeploys,
     InternalDeployError,
     BugError,
+    /// The propose walk needed a block this node does not hold. This is
+    /// availability, not a bug: the proposer requests the named block from
+    /// peers and the heartbeat retries at normal cadence (no backoff
+    /// escalation) until the gap heals.
+    MissingBlock(Bytes),
     CheckConstraintsFailure(CheckProposeConstraintsFailure),
 }
 
@@ -165,6 +170,11 @@ impl fmt::Display for ProposeStatus {
                     write!(f, "Proposal failed: internal deploy error")
                 }
                 ProposeFailure::BugError => write!(f, "Proposal failed: BugError"),
+                ProposeFailure::MissingBlock(hash) => write!(
+                    f,
+                    "Proposal failed: MissingBlock {} — requested from peers, retrying",
+                    hex::encode(&hash[..hash.len().min(8)])
+                ),
                 ProposeFailure::CheckConstraintsFailure(check_failure) => match check_failure {
                     CheckProposeConstraintsFailure::NotBonded => {
                         write!(f, "Proposal failed: validator is not bonded")

@@ -13,22 +13,25 @@ use rholang::rust::interpreter::rho_runtime::RhoRuntime;
 use rholang::rust::interpreter::system_processes::{BlockData, Definition};
 use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use rspace_plus_plus::rspace::reporting_rspace::{ReportingEvent, ReportingRspace};
+use rspace_plus_plus::rspace::reporting_rspace::{ReportBatch, ReportingRspace};
 use rspace_plus_plus::rspace::rspace::RSpaceStore;
 use shared::rust::ByteString;
+
+/// Reporting events for one phase-segment of a deploy's replay.
+type DeployReportEvents = Vec<ReportBatch<Par, BindPattern, ListParWithRandom, TaggedContinuation>>;
 
 /// Deploy details + reporting events
 #[derive(Clone, Debug)]
 pub struct DeployReportResult {
     pub processed_deploy: ProcessedDeploy,
-    pub events: Vec<Vec<ReportingEvent<Par, BindPattern, ListParWithRandom, TaggedContinuation>>>,
+    pub events: DeployReportEvents,
 }
 
 /// System deploy details + reporting events
 #[derive(Clone, Debug)]
 pub struct SystemDeployReportResult {
     pub processed_system_deploy: SystemDeployData,
-    pub events: Vec<Vec<ReportingEvent<Par, BindPattern, ListParWithRandom, TaggedContinuation>>>,
+    pub events: DeployReportEvents,
 }
 
 /// Aggregated replay results
@@ -281,15 +284,9 @@ pub struct ReportingRuntime {
 }
 
 impl ReportingRuntime {
-    /// Get reporting events from the space
-    pub fn get_report(
-        &self,
-    ) -> Result<
-        Vec<Vec<ReportingEvent<Par, BindPattern, ListParWithRandom, TaggedContinuation>>>,
-        RSpaceError,
-    > {
-        self.space.get_report()
-    }
+    /// Get reporting events from the space, segmented and tagged with
+    /// the phase that was in force when each segment was flushed.
+    pub fn get_report(&self) -> Result<DeployReportEvents, RSpaceError> { self.space.get_report() }
 
     /// Reset the runtime to a specific state hash
     pub async fn reset(

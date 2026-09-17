@@ -24,12 +24,12 @@
 //! * `block_metadata_index` is itself `parking_lot::RwLock`-wrapped for
 //!   fine-grained concurrency.
 //!
-//! See `docs/theory/slashing/slashing-verification.md` for the
+//! See `docs/casper/theory/slashing/slashing-verification.md` for the
 //! protocol-level theorems whose witnesses are recorded here.
 
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // See block-storage/src/main/scala/coop/rchain/blockstorage/dag/BlockDagKeyValueStorage.scala
@@ -54,11 +54,12 @@ use models::rust::validator::{self, Validator, ValidatorSerde};
 use parking_lot::RwLock as PlRwLock;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
-use shared::rust::store::key_value_store::KvStoreError;
+use shared::rust::store::key_value_store::{KvStoreError, MissingBlockContext};
 use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 
 use super::block_metadata_store::BlockMetadataStore;
+use super::carrier_index::CarrierIndex;
 use super::deploy_lifecycle_types::{
     DeployLifecycleTables, LifecycleEvent, LifecycleEventKind, LifecycleEvents, TerminalRecord,
 };
@@ -83,6 +84,13 @@ pub enum InsertMode {
     /// Genesis / approved-block insertion. Marks the block as the
     /// initial finalization root.
     Approved,
+    /// Settled-history insertion: a hash-checked, unjudged block below the
+    /// node's sync anchor, admitted the way LFS restore admitted its
+    /// neighbours. Identical to `Normal` except that latest messages are
+    /// untouched — settled history predates the anchor's justification
+    /// frontier, so it is never anyone's latest message, and letting it
+    /// advance one hands fork choice a frontier this node does not hold.
+    SettledHistory,
 }
 
 // Phase 8 (A-6): `InsertMode::flags()` projection deleted; `insert_internal`
@@ -124,6 +132,10 @@ pub struct KeyValueDagRepresentation {
     /// these — Pending/Finalized/Expired/Failed are lookups, never
     /// computations.
     pub lifecycle: Arc<PlRwLock<DeployLifecycleTables>>,
+    /// The repeat-deploy carrier index (see `carrier_index`): per-sig
+    /// carrier records over valid, invalid, and settled blocks, plus the
+    /// engagement watermark. Fed by `insert` before DAG visibility.
+    pub carrier_index: Arc<PlRwLock<CarrierIndex>>,
 }
 
 impl KeyValueDagRepresentation {
@@ -224,10 +236,35 @@ impl KeyValueDagRepresentation {
         self.lifecycle.read().open_sigs()
     }
 
+    /// Repeat-deploy carrier index: the height since which every insert
+    /// has recorded carriers on this database. The fast path engages only
+    /// for scan windows starting at or above this watermark; `None` means
+    /// the index was never initialized and the fast path stays off.
+    pub fn carrier_index_watermark(&self) -> Result<Option<i64>, KvStoreError> {
+        self.carrier_index.read().watermark()
+    }
+
+    /// Repeat-deploy carrier index: true when the index holds NO carrier
+    /// for the sig. Sound as an absence proof only when the scan window
+    /// starts at or above the watermark. A `false` is not a verdict — it
+    /// routes the sig to the exact ancestor scan.
+    pub fn carrier_index_proves_absence(&self, sig: &[u8]) -> Result<bool, KvStoreError> {
+        self.carrier_index.read().proves_absence(sig)
+    }
+
+    /// Repeat-deploy carrier index: drop entries below the cutoff (below
+    /// every future scan window). The finality register drives this on
+    /// floor advances.
+    pub fn prune_carriers_below(&self, cutoff: i64) -> Result<u64, KvStoreError> {
+        self.carrier_index.read().prune_below(cutoff)
+    }
+
     /// The sig's most recent canonical appearance — the latest lifecycle
     /// event by (height, hash), or the terminal record's frozen display
     /// block once the row is pruned. A pure function of the DAG's bodies,
-    /// so the answer never depends on node-local insertion order.
+    /// so the answer never depends on node-local insertion order. Events
+    /// whose block is not in this representation's `dag_set` are orphans
+    /// from a crash inside the ingest-first window and never resolve.
     pub fn deploy_canonical_appearance(
         &self,
         sig: &[u8],
@@ -235,7 +272,9 @@ impl KeyValueDagRepresentation {
         Ok(self
             .lifecycle
             .read()
-            .canonical_appearance(sig)?
+            .canonical_appearance(sig, &|h| {
+                self.dag_set.contains(&BlockHash::copy_from_slice(h))
+            })?
             .map(BlockHash::from))
     }
 
@@ -386,12 +425,15 @@ impl KeyValueDagRepresentation {
         }
     }
 
+    // A latest-message slot can name a block this node does not hold (a
+    // stale slot below an LFS restore horizon); both readers treat it as
+    // absent rather than erroring.
     pub fn latest_message(
         &self,
         validator: &Validator,
     ) -> Result<Option<BlockMetadata>, KvStoreError> {
         match self.latest_message_hash(validator) {
-            Some(hash) => self.lookup_unsafe(&hash).map(Some),
+            Some(hash) => self.lookup(&hash),
             None => Ok(None),
         }
     }
@@ -401,8 +443,9 @@ impl KeyValueDagRepresentation {
 
         let mut result = HashMap::new();
         for (validator, hash) in latest_messages.iter() {
-            let metadata = self.lookup_unsafe(hash)?;
-            result.insert(validator.clone(), metadata);
+            if let Some(metadata) = self.lookup(hash)? {
+                result.insert(validator.clone(), metadata);
+            }
         }
 
         Ok(result)
@@ -453,26 +496,6 @@ impl KeyValueDagRepresentation {
             }
         }
         Ok(invalid_block_hashes)
-    }
-
-    pub fn self_justification_chain(
-        &self,
-        block_hash: BlockHash,
-    ) -> Result<Vec<BlockHash>, KvStoreError> {
-        let mut result = Vec::new();
-        let mut current_hash = block_hash;
-
-        loop {
-            match self.self_justification(&current_hash)? {
-                Some(next_hash) => {
-                    result.push(next_hash.clone());
-                    current_hash = next_hash;
-                }
-                None => break,
-            }
-        }
-
-        Ok(result)
     }
 
     pub fn self_justification(
@@ -667,6 +690,56 @@ impl KeyValueDagRepresentation {
         Ok(result)
     }
 
+    /// `ancestors` for the finalized-ancestry MARKING walk over a possibly
+    /// truncated DAG. A parent referenced by a held block whose own metadata
+    /// is not held is the restore horizon: everything below it is below the
+    /// anchor's floor, hence already settled, so the walk terminates there —
+    /// the parent is neither marked nor expanded. Erroring instead (as
+    /// `ancestors` does) aborts the LFB adoption and wedges the finalizer
+    /// forever while the chain grows past it. Callers for whom a missing
+    /// block is an availability failure to surface (merge scope) stay on
+    /// `ancestors`.
+    pub fn held_ancestors(
+        &self,
+        block_hash: BlockHash,
+        filter_f: impl Fn(&BlockHash) -> bool,
+    ) -> Result<HashSet<BlockHash>, KvStoreError> {
+        let mut result = HashSet::new();
+        let mut current_level = vec![self.lookup_unsafe(&block_hash)?];
+
+        while !current_level.is_empty() {
+            let mut next_level = Vec::new();
+
+            for metadata in &current_level {
+                for parent in &metadata.parents {
+                    if filter_f(parent) && !result.contains(parent) {
+                        if let Some(parent_metadata) = self.lookup(parent)? {
+                            result.insert(parent.clone());
+                            next_level.push(parent_metadata);
+                        } else {
+                            // Routine on a truncated node while the sweep
+                            // first crosses its restore horizon; on a node
+                            // holding full history the same skip means the
+                            // index lost a block — keep it visible either
+                            // way rather than terminating silently.
+                            tracing::warn!(
+                                parent = %PrettyPrinter::build_string_bytes(parent),
+                                child = %PrettyPrinter::build_string_bytes(&metadata.block_hash),
+                                "finalization sweep skipped an unheld parent: settled \
+                                 ancestry below a restore horizon, or lost data on a \
+                                 fully-synced node"
+                            );
+                        }
+                    }
+                }
+            }
+
+            current_level = next_level;
+        }
+
+        Ok(result)
+    }
+
     pub fn with_ancestors(
         &self,
         block_hash: BlockHash,
@@ -716,6 +789,8 @@ pub struct BlockDagKeyValueStorage {
     pub(crate) equivocation_tracker_index: EquivocationTrackerStore,
     /// Deploy-lifecycle tables (see `KeyValueDagRepresentation::lifecycle`).
     pub(crate) lifecycle: Arc<PlRwLock<DeployLifecycleTables>>,
+    /// Repeat-deploy carrier index (see `KeyValueDagRepresentation::carrier_index`).
+    pub(crate) carrier_index: Arc<PlRwLock<CarrierIndex>>,
     /// Monotonically increasing counter incremented on every successful block insert.
     /// Used by caches to detect when the DAG has changed.
     pub(crate) dag_generation: Arc<AtomicU64>,
@@ -735,21 +810,68 @@ pub struct BlockDagKeyValueStorage {
     /// sufficient here; a reader outside the lock would need stronger
     /// ordering, and could observe a stale-high bound.
     pub(crate) ft_lower_bound: Arc<AtomicU32>,
+    /// The shard's genesis block hash, persisted as a single-slot register.
+    /// On ceremony nodes it is derivable from the DAG (the height-0 block);
+    /// a truncated (LFS-restored) node holds no height-0 block and must
+    /// LEARN it — hash only, never the block — during restore. Consumers
+    /// that need a network-uniform genesis sentinel read this register.
+    pub(crate) genesis_hash_index: KeyValueTypedStoreImpl<String, BlockHashSerde>,
 }
 
 impl BlockDagKeyValueStorage {
     /// Storage-level twin of `KeyValueDagRepresentation::deploy_canonical_appearance`
     /// (same shared lifecycle tables), for callers holding the storage rather
-    /// than a representation.
+    /// than a representation. Lock order: `block_metadata_index` before
+    /// `lifecycle` (the DAG-visibility filter reads the metadata state).
     pub fn deploy_canonical_appearance(
         &self,
         sig: &[u8],
     ) -> Result<Option<BlockHash>, KvStoreError> {
+        let metadata_guard = self.block_metadata_index.read();
         Ok(self
             .lifecycle
             .read()
-            .canonical_appearance(sig)?
+            .canonical_appearance(sig, &|h| {
+                metadata_guard.contains(&BlockHash::copy_from_slice(h))
+            })?
             .map(BlockHash::from))
+    }
+
+    /// First-boot carrier-index initialization (startup, next to the
+    /// LFB-migration precedent). Writes the watermark W once: 0 on an
+    /// empty database (complete from the first insert), else the current
+    /// max height + 1 (complete from the next insert). Blocks below W are
+    /// never claimed — the fast path engages only for scan windows that
+    /// start at or above W — so no backfill walk exists and there is no
+    /// walk-completeness state to certify or to forge. Returns the
+    /// effective watermark.
+    pub fn ensure_carrier_watermark(&self) -> Result<i64, KvStoreError> {
+        let _lock_guard = self.global_lock.write();
+        let next_height = {
+            let metadata_guard = self.block_metadata_index.read();
+            let dag_state_guard = metadata_guard.dag_state().read();
+            dag_state_guard
+                .height_map
+                .get_max()
+                .map(|(h, _)| h + 1)
+                .unwrap_or(0)
+        };
+        self.carrier_index
+            .read()
+            .set_watermark_if_absent(next_height)
+    }
+
+    /// Test-only corruption helper (P2-16-style escape hatch): deletes the
+    /// PERSISTED metadata row for a block while the in-memory DAG state
+    /// still lists it, simulating a crash between the lifecycle ingest and
+    /// the metadata add.
+    #[cfg(any(test, feature = "test-internals"))]
+    pub fn remove_block_metadata_row_for_tests(
+        &self,
+        hash: &BlockHash,
+    ) -> Result<(), KvStoreError> {
+        let metadata_guard = self.block_metadata_index.read();
+        metadata_guard.delete_kv_row_for_tests(hash)
     }
 
     pub async fn new(kvm: &mut impl KeyValueStoreManager) -> Result<Self, KvStoreError> {
@@ -782,8 +904,16 @@ impl BlockDagKeyValueStorage {
         let lifecycle_events_kv_store = kvm.store("deploy-lifecycle-events".to_string()).await?;
         let lifecycle_terminal_kv_store =
             kvm.store("deploy-lifecycle-terminal".to_string()).await?;
+        let carrier_index_kv_store = kvm.store("carrier-index".to_string()).await?;
+        let carrier_index_meta_kv_store = kvm.store("carrier-index-meta".to_string()).await?;
+        let carrier_index_tables =
+            CarrierIndex::new(carrier_index_kv_store, carrier_index_meta_kv_store);
         let lifecycle_tables =
             DeployLifecycleTables::new(lifecycle_events_kv_store, lifecycle_terminal_kv_store);
+
+        let genesis_hash_kv_store = kvm.store("genesis-hash".to_string()).await?;
+        let genesis_hash_db: KeyValueTypedStoreImpl<String, BlockHashSerde> =
+            KeyValueTypedStoreImpl::new(genesis_hash_kv_store);
 
         Ok(Self {
             global_lock: Arc::new(PlRwLock::new(())),
@@ -793,16 +923,58 @@ impl BlockDagKeyValueStorage {
             frontier_index: frontier_index_db,
             equivocation_tracker_index: equivocation_tracker_store,
             lifecycle: Arc::new(PlRwLock::new(lifecycle_tables)),
+            carrier_index: Arc::new(PlRwLock::new(carrier_index_tables)),
             latest_messages_index: latest_messages_db,
             dag_generation: Arc::new(AtomicU64::new(0)),
             ft_lower_bound: Arc::new(AtomicU32::new(0.0f32.to_bits())),
+            genesis_hash_index: genesis_hash_db,
         })
+    }
+
+    const GENESIS_HASH_KEY: &'static str = "genesis";
+
+    /// Record the shard's genesis block hash. Write-once: recording the same
+    /// value again is a no-op; recording a DIFFERENT value is an error — two
+    /// genesis identities on one node is a bootstrap-integrity violation,
+    /// never something to silently overwrite.
+    pub fn record_genesis_hash(&self, hash: BlockHash) -> Result<(), KvStoreError> {
+        let _lock_guard = self.global_lock.write();
+        let key = Self::GENESIS_HASH_KEY.to_string();
+        if let Some(BlockHashSerde(existing)) = self.genesis_hash_index.get_one(&key)? {
+            if existing == hash {
+                return Ok(());
+            }
+            return Err(KvStoreError::InvalidArgument(format!(
+                "genesis hash already recorded as {}; refusing to overwrite with {}",
+                PrettyPrinter::build_string_bytes(&existing),
+                PrettyPrinter::build_string_bytes(&hash),
+            )));
+        }
+        self.genesis_hash_index.put_one(key, BlockHashSerde(hash))
+    }
+
+    /// The shard's genesis hash: the learned register when present, else
+    /// derived from the held height-0 block (ceremony nodes). `None` only on
+    /// a truncated node that has not learned it.
+    pub fn genesis_hash(&self) -> Result<Option<BlockHash>, KvStoreError> {
+        if let Some(BlockHashSerde(hash)) = self
+            .genesis_hash_index
+            .get_one(&Self::GENESIS_HASH_KEY.to_string())?
+        {
+            return Ok(Some(hash));
+        }
+        let guard = self.block_metadata_index.read();
+        let dag_state = guard.dag_state().read();
+        Ok(dag_state
+            .height_map
+            .get(&0)
+            .and_then(|blocks| blocks.iter().min().cloned()))
     }
 
     // P2-16: the following two methods bypass `global_lock` — production
     // code MUST route through `access_equivocations_tracker` to honor the
     // Bug #2 / T-9.2 atomicity contract (see
-    // `docs/theory/slashing/slashing-verification.md` §9.2 and
+    // `docs/casper/theory/slashing/slashing-verification.md` §9.2 and
     // `formal/rocq/slashing/theories/BugFixAtomicTracker.v`). They are
     // gated behind `#[cfg(any(test, feature = "test-internals"))]` so the
     // compiler hard-fails on any production caller — the prior
@@ -850,8 +1022,12 @@ impl BlockDagKeyValueStorage {
             frontier_index,
             equivocation_tracker_index,
             lifecycle: Arc::new(PlRwLock::new(DeployLifecycleTables::in_memory())),
+            carrier_index: Arc::new(PlRwLock::new(CarrierIndex::in_memory())),
             dag_generation,
             ft_lower_bound: Arc::new(AtomicU32::new(0.0f32.to_bits())),
+            genesis_hash_index: KeyValueTypedStoreImpl::new(Arc::new(
+                rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore::new(),
+            )),
         }
     }
 
@@ -948,6 +1124,7 @@ impl BlockDagKeyValueStorage {
             floor_index: self.floor_index.clone(),
             frontier_index: self.frontier_index.clone(),
             lifecycle: self.lifecycle.clone(),
+            carrier_index: self.carrier_index.clone(),
         })
     }
 
@@ -982,6 +1159,7 @@ impl BlockDagKeyValueStorage {
         // shim survived a Phase-4 transition; it is no longer needed.
         let invalid = matches!(mode, InsertMode::Invalid);
         let approved = matches!(mode, InsertMode::Approved);
+        let settled_history = matches!(mode, InsertMode::SettledHistory);
         let sender_is_empty = block.sender.is_empty();
         let sender_has_invalid_format =
             !sender_is_empty && (block.sender.len() != validator::LENGTH);
@@ -998,9 +1176,7 @@ impl BlockDagKeyValueStorage {
 
         // Latest-message updates are NOT gated on `invalid`. Equivocation blocks
         // (and other invalid blocks) advance the sender's latest message and
-        // register newly-bonded validators just like valid blocks. This matches
-        // the Scala source-of-truth (`BlockDagKeyValueStorage.scala`, where
-        // `newLatestMessages` and `shouldAddAsLatest` never reference `invalid`).
+        // register newly-bonded validators just like valid blocks.
         //
         // Safety argument:
         //   - Fork choice and finalization are unaffected. Parent selection filters
@@ -1013,9 +1189,9 @@ impl BlockDagKeyValueStorage {
         //     or finalization depth.
         //   - Slashing requires invalid blocks to BE in the LMM. The equivocation
         //     detector reads `invalid_latest_messages` and feeds it to
-        //     `prepare_slashing_deploys`. The pre-fix `if invalid { return empty }`
-        //     guard had no Scala counterpart and silently disabled the slashing
-        //     pipeline (no slashes ever issued, equivocators never punished).
+        //     `prepare_slashing_deploys`. Gating the LMM on `invalid` would leave
+        //     the slashing pipeline with nothing to act on — no slashes issued,
+        //     equivocators never punished.
         //   - `justification_follows` validation requires every bonded validator
         //     to appear in a new block's justifications. Without the LMM advancing
         //     on invalid blocks, validators whose latest is invalid would be
@@ -1061,15 +1237,21 @@ impl BlockDagKeyValueStorage {
 
             let mut result = HashMap::new();
             if !newly_bonded_unseen.is_empty() {
-                let placeholder = {
-                    let guard = self.block_metadata_index.read();
-                    let dag_state = guard.dag_state().read();
-                    dag_state
-                        .height_map
-                        .get(&0)
-                        .and_then(|blocks| blocks.iter().min().cloned())
-                        .unwrap_or_else(|| block_hash.clone())
-                };
+                // The placeholder must be NETWORK-UNIFORM: every node seeds
+                // the same slot with the same value, or the joiner's first
+                // self-justifying proposal reads as an equivocation on
+                // whichever side seeded differently. Ceremony nodes derive
+                // genesis from their height-0 block; a truncated node holds
+                // none and uses the genesis hash it learned during restore.
+                // There is no third source — the block being inserted is
+                // right on no node.
+                let placeholder = self.genesis_hash()?.ok_or_else(|| {
+                    KvStoreError::InvalidArgument(format!(
+                        "cannot seed newly-bonded latest-message slot(s) while inserting {}: \
+                         no height-0 block is held and no genesis hash was learned",
+                        PrettyPrinter::build_string_bytes(&block_hash),
+                    ))
+                })?;
 
                 for validator in newly_bonded_unseen {
                     tracing::debug!(
@@ -1120,85 +1302,120 @@ impl BlockDagKeyValueStorage {
                 tracing::warn!("{}", log_empty_sender);
             }
 
+            // Carrier-index ingest: every body sig — valid, invalid, and
+            // settled alike — is recorded BEFORE the metadata-index add, so
+            // the completeness invariant behind the repeat-deploy fast path
+            // holds at every crash point: a crash here leaves orphan
+            // carrier entries (harmless — a hit just routes to the exact
+            // scan), never a DAG-visible block with unindexed sigs. Every
+            // insert path (validated, proposed, genesis, LFS, fixtures)
+            // flows through here, so coverage is total by construction
+            // from the watermark onward. `body.deploys` sigs are
+            // decode-verified (`Signed::from_signed_data`); the unverified
+            // `rejected_deploys` sigs are deliberately NOT recorded — the
+            // ancestor scan never reads them, and the carrier index must
+            // not ingest attacker-chosen keys.
+            {
+                let block_number = block.body.state.block_number;
+                let carrier_guard = self.carrier_index.write();
+                for pd in &block.body.deploys {
+                    carrier_guard.record_once(
+                        &pd.deploy.sig,
+                        block_number,
+                        block.block_hash.to_vec(),
+                    )?;
+                }
+            }
+
+            // Lifecycle event ingest: one body pass projects inclusion and
+            // rejection events into the per-sig lifecycle rows. Invalid
+            // blocks contribute nothing — their bodies are not canonical
+            // history (the carrier index above covers the repeat-deploy
+            // scan's view of them). Appends go through `append_event_once`:
+            // after a crash inside this ingest-first window the block is
+            // not yet DAG-visible, so its redelivery re-runs this pass —
+            // the per-(block, kind) dedup makes that retry write nothing
+            // twice.
+            {
+                let block_number = block.body.state.block_number;
+                let lifecycle_guard = self.lifecycle.write();
+                if !invalid {
+                    for pd in &block.body.deploys {
+                        lifecycle_guard.append_event_once(
+                            &pd.deploy.sig,
+                            Some(pd.deploy.data.valid_after_block_number),
+                            LifecycleEvent {
+                                height: block_number,
+                                block_hash: block.block_hash.to_vec(),
+                                kind: LifecycleEventKind::Included {
+                                    is_failed: pd.is_failed,
+                                },
+                            },
+                        )?;
+                    }
+                    for rd in &block.body.rejected_deploys {
+                        lifecycle_guard.append_event_once(&rd.sig, None, LifecycleEvent {
+                            height: block_number,
+                            block_hash: block.block_hash.to_vec(),
+                            kind: LifecycleEventKind::Rejected {
+                                duplicate: rd.duplicate,
+                                carrier: rd.carrier.to_vec(),
+                            },
+                        })?;
+                    }
+                }
+                drop(lifecycle_guard);
+            }
+
             let block_metadata = BlockMetadata::from_block(block, invalid, None, None);
             let mut block_metadata_guard = self.block_metadata_index.write();
             block_metadata_guard.add(block_metadata.clone())?;
             drop(block_metadata_guard);
             self.dag_generation.fetch_add(1, Ordering::Relaxed);
 
-            // Lifecycle event ingest: one body pass projects inclusion and
-            // rejection events into the per-sig lifecycle rows. Invalid
-            // blocks contribute nothing — their bodies are not canonical
-            // history. Every insert path
-            // (validated, proposed, genesis, LFS, fixtures) flows through
-            // here, so ingest coverage is total by construction.
-            if !invalid {
-                let block_number = block.body.state.block_number;
-                let lifecycle_guard = self.lifecycle.write();
-                for pd in &block.body.deploys {
-                    lifecycle_guard.append_events(
-                        &pd.deploy.sig,
-                        Some(pd.deploy.data.valid_after_block_number),
-                        vec![LifecycleEvent {
-                            height: block_number,
-                            block_hash: block.block_hash.to_vec(),
-                            kind: LifecycleEventKind::Included {
-                                is_failed: pd.is_failed,
-                            },
-                        }],
-                    )?;
-                }
-                for rd in &block.body.rejected_deploys {
-                    lifecycle_guard.append_events(&rd.sig, None, vec![LifecycleEvent {
-                        height: block_number,
-                        block_hash: block.block_hash.to_vec(),
-                        kind: LifecycleEventKind::Rejected {
-                            duplicate: rd.duplicate,
-                            carrier: rd.carrier.to_vec(),
-                        },
-                    }])?;
-                }
-                drop(lifecycle_guard);
-            }
-
             if invalid {
                 self.invalid_blocks_index
                     .put_one(block_hash.clone().into(), block_metadata)?;
             }
 
-            let new_latest_from_sender = if !sender_is_empty {
-                // Add LM either if there is no existing message for the sender, or if sequence number advances
-                // - assumes block sender is not valid hash
-                if match self
-                    .latest_messages_index
-                    .get_one(&block.sender.clone().into())
-                {
-                    Ok(Some(latest_message_hash)) => {
-                        let block_metadata_index_guard = self.block_metadata_index.read();
-                        match block_metadata_index_guard.get(&latest_message_hash.into()) {
-                            Ok(Some(metadata)) => block.seq_num >= metadata.sequence_number,
-                            _ => true,
+            // Settled-history blocks never touch latest messages: neither the
+            // sender advance below, nor the newly-bonded seeding above —
+            // a sub-anchor block's bond set is stale testimony.
+            if !settled_history {
+                let new_latest_from_sender = if !sender_is_empty {
+                    // Add LM either if there is no existing message for the sender, or if sequence number advances
+                    // - assumes block sender is not valid hash
+                    if match self
+                        .latest_messages_index
+                        .get_one(&block.sender.clone().into())
+                    {
+                        Ok(Some(latest_message_hash)) => {
+                            let block_metadata_index_guard = self.block_metadata_index.read();
+                            match block_metadata_index_guard.get(&latest_message_hash.into()) {
+                                Ok(Some(metadata)) => block.seq_num >= metadata.sequence_number,
+                                _ => true,
+                            }
                         }
+                        _ => true,
+                    } {
+                        HashMap::from([senders_new_lm])
+                    } else {
+                        HashMap::new()
                     }
-                    _ => true,
-                } {
-                    HashMap::from([senders_new_lm])
                 } else {
                     HashMap::new()
-                }
-            } else {
-                HashMap::new()
-            };
+                };
 
-            let mut new_latest_to_add = new_latest_messages()?;
-            new_latest_to_add.extend(new_latest_from_sender);
+                let mut new_latest_to_add = new_latest_messages()?;
+                new_latest_to_add.extend(new_latest_from_sender);
 
-            self.latest_messages_index.put(
-                new_latest_to_add
-                    .into_iter()
-                    .map(|(k, v)| (k.into(), v.into()))
-                    .collect(),
-            )?;
+                self.latest_messages_index.put(
+                    new_latest_to_add
+                        .into_iter()
+                        .map(|(k, v)| (k.into(), v.into()))
+                        .collect(),
+                )?;
+            }
 
             if approved {
                 let mut block_metadata_guard = self.block_metadata_index.write();
@@ -1215,10 +1432,9 @@ impl BlockDagKeyValueStorage {
         &self,
         f: impl FnOnce(&EquivocationTrackerStore) -> Result<A, KvStoreError>,
     ) -> Result<A, KvStoreError> {
-        // P2-12: RMW path — acquire exclusive write lock. Bug #2 / T-9.2
-        // atomicity contract: the closure observes the equivocation index
-        // under exclusive access; no concurrent reader or writer may
-        // observe a partial mutation.
+        // Exclusive access only, not a transaction: no concurrent reader or
+        // writer interleaves with the closure, but writes it makes before
+        // returning `Err` persist.
         //
         // SAFETY/CONTRACT (P2-13): non-reentrant. The closure `f` MUST NOT
         // recursively call `access_equivocations_tracker`, nor any
@@ -1312,8 +1528,16 @@ impl BlockDagKeyValueStorage {
                     )));
                 }
 
+                // Held, unfinalized ancestry only. A parent edge can reach
+                // BELOW a restored node's truncation horizon — referenced but
+                // not held — and such an ancestor is settled by the restore
+                // contract (everything under the shipped window is finalized
+                // ancestry). Descending into it errored the whole finalizer
+                // run on the first sub-horizon parent, permanently: the same
+                // ancestry re-walks every run, so a restored node's LFB froze
+                // at its restore-era floor while the shard finalized on.
                 let indirectly_finalized = dag
-                    .ancestors(directly_finalized_hash.clone(), |hash| {
+                    .held_ancestors(directly_finalized_hash.clone(), |hash| {
                         !dag.is_finalized(hash)
                     })?;
 
@@ -1418,13 +1642,9 @@ impl super::equivocations_access::EquivocationsAccess for BlockDagKeyValueStorag
 /// run, escalating into propose failures). Captured only on the error path, and
 /// with `force_capture` so it does not depend on RUST_BACKTRACE being set in the
 /// shard's environment.
-fn missing_block(block_hash: &BlockHash, method: &str) -> KvStoreError {
+fn missing_block(block_hash: &BlockHash, method: &'static str) -> KvStoreError {
     KvStoreError::MissingBlock {
         hash: block_hash.clone(),
-        context: format!(
-            " [{}]\n  caller backtrace:\n{}",
-            method,
-            std::backtrace::Backtrace::force_capture()
-        ),
+        context: MissingBlockContext::with_backtrace(method),
     }
 }

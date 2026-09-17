@@ -59,8 +59,9 @@ impl FtThreshold {
 
 /// Exact rational finalization test: θ = num/den.
 ///
-/// `strict=false` ⇒ (2q−S)/S ≥ θ (floor path); `strict=true` ⇒ > θ (LFB
-/// finalizer). Cleared of denominators (S, den > 0), the test is
+/// `strict=false` ⇒ (2q−S)/S ≥ θ — every production decision site (the LFB
+/// is the floor of the live view, one clock); `strict=true` ⇒ > θ, retained
+/// in the API and its unit pins only. Cleared of denominators (S, den > 0), the test is
 /// `2·q·den ⋛ S·(den+num)`. `i128` so `2·q·den` and `S·(den+num)` (≤ ~2^84 for
 /// S ≤ i64::MAX, den = 10^6) never overflow, and `2·agreeing` near i64::MAX
 /// stays exact.
@@ -70,12 +71,11 @@ impl FtThreshold {
 /// validator runs the branch binary together, so there is no mixed-version
 /// window and no on-chain activation parameter is required.
 pub fn ft_decides_exact(agreeing: i64, q: i64, s: i64, num: i64, den: i64, strict: bool) -> bool {
-    // Domain: the doc-contract is 0 ≤ num ≤ den (θ ∈ [0,1]), but the on-chain ppm
-    // is range-checked to [-den, den] (token_metadata_check.rs) and some callers
-    // pass a negative sentinel θ (e.g. -1.0 "finalize on any majority clique"), so
-    // the lower bound is -den here. The comparison math below is unchanged and is
-    // exact across the full [-den, den] range.
-    debug_assert!(den > 0 && s > 0 && (0..=s).contains(&q) && (-den..=den).contains(&num));
+    // Domain (den > 0, s > 0, q ∈ [0, s], num ∈ [-den, den]) is discharged by
+    // the callers: den is the fixed ppm constant, the oracle short-circuits
+    // non-positive stake, q is a clique weight within total stake, and the
+    // on-chain ppm is range-gated typed at its single read choke point
+    // (`runtime.rs`). The comparison math is exact across [-den, den].
     if (agreeing as i128) * 2 <= s as i128 {
         return false; // agreeing ≤ S/2 ⇒ MIN ⇒ not finalized
     }
@@ -158,21 +158,22 @@ impl CliqueOracle {
     /// ```
     ///
     /// 1. get justification of validator b as per latest message of a (lmAjB)
-    /// 2. check if any self justifications between latest message of b (lmB) and lmAjB are NOT in main chain
-    ///    with target message.
+    /// 2. check if any self justifications between latest message of b (lmB) and lmAjB
+    ///    DISAGREE with the target message. The test is two-sided by height:
+    ///    a visited block at or above the target's height disagrees iff the
+    ///    target is not on its spine (a rival estimate); a visited block
+    ///    BELOW the target's height disagrees iff it is not on the TARGET'S
+    ///    spine (a rival prefix). A below-target block on the target's own
+    ///    main chain is settled ancestry the window has not caught up past —
+    ///    ignorance, not disagreement — and must not veto the edge.
     ///
-    ///    If one found - this is a source of disagreement.
+    ///    If a disagreeing block is found - this is a source of disagreement.
     async fn never_eventually_see_disagreement(
         lm_b: &M,
         lm_a_j_b: &M,
         dag: &KeyValueDagRepresentation,
         target_msg: &M,
-        yield_check_interval: usize,
-        yield_timeslice: Duration,
-        self_justification_cache: &mut BTreeMap<M, Option<M>>,
-        ancestor_cache: &mut BTreeMap<(M, M), bool>,
-        max_self_justification_cache_entries: usize,
-        max_ancestor_cache_entries: usize,
+        run_cache: &mut CliqueOracleRunCache,
     ) -> Result<bool, KvStoreError> {
         /// Check if there might be eventual disagreement between validators
         async fn might_eventually_disagree(
@@ -180,41 +181,39 @@ impl CliqueOracle {
             lm_a_j_b: &M,
             dag: &KeyValueDagRepresentation,
             target_msg: &M,
-            self_justification_cache: &mut BTreeMap<M, Option<M>>,
-            ancestor_cache: &mut BTreeMap<(M, M), bool>,
-            yield_check_interval: usize,
-            yield_timeslice: Duration,
-            max_self_justification_cache_entries: usize,
-            max_ancestor_cache_entries: usize,
+            run_cache: &mut CliqueOracleRunCache,
         ) -> Result<bool, KvStoreError> {
+            let yield_check_interval = run_cache.yield_check_interval;
+            let yield_timeslice = run_cache.yield_timeslice;
             // self justification of lmAjB or lmAjB itself. Used as a stopper for traversal
             // TODO not completely clear why try to use self justification and not just message itself
-            let stopper = if let Some(cached) = self_justification_cache.get(lm_a_j_b) {
+            let stopper = if let Some(cached) = run_cache.self_justification_cache.get(lm_a_j_b) {
                 cached.clone().unwrap_or_else(|| lm_a_j_b.clone())
             } else {
                 let value = dag.self_justification(lm_a_j_b)?;
                 CliqueOracle::bounded_cache_insert(
-                    self_justification_cache,
+                    &mut run_cache.self_justification_cache,
                     lm_a_j_b.clone(),
                     value.clone(),
-                    max_self_justification_cache_entries,
+                    run_cache.max_self_justification_cache_entries,
                 );
                 value.unwrap_or_else(|| lm_a_j_b.clone())
             };
 
             // Traverse only until stopper instead of materializing full history to genesis.
-            let mut current = if let Some(cached) = self_justification_cache.get(lm_b) {
+            let mut current = if let Some(cached) = run_cache.self_justification_cache.get(lm_b) {
                 cached.clone()
             } else {
                 let value = dag.self_justification(lm_b)?;
                 CliqueOracle::bounded_cache_insert(
-                    self_justification_cache,
+                    &mut run_cache.self_justification_cache,
                     lm_b.clone(),
                     value.clone(),
-                    max_self_justification_cache_entries,
+                    run_cache.max_self_justification_cache_entries,
                 );
                 value
             };
+            let target_height = dag.lookup_unsafe(target_msg)?.block_number;
             let mut last_yield = Instant::now();
             let mut idx: usize = 0;
             while let Some(hash) = current {
@@ -228,44 +227,63 @@ impl CliqueOracle {
                     last_yield = Instant::now();
                 }
                 idx += 1;
-                // Main-chain membership, matching `agree`: a
-                // self-justification of b whose SPINE does not pass through
-                // `target_msg` is a genuine divergence — b's chain left (or
-                // never held) the candidate, which is exactly the
-                // fork-choice flip the clique must not contain. Merging the
-                // target on a secondary parent is not agreement; counting
-                // it as such let both sides of a conflicting sibling pair
-                // keep full mutual cliques and certify together (the ucc
-                // 00e6a2e3 consensus halt). Matches the Scala reference
-                // (`dag.isInMainChain(targetMsg, j.latestBlockHash)`).
-                // (`ancestor_cache` memoizes the spine verdict, keyed by
-                // (target, hash).)
+                // Main-chain membership, matching `agree`, decided by height.
+                //
+                // At or above the target's height: a self-justification of b
+                // whose SPINE does not pass through `target_msg` is a genuine
+                // divergence — b's chain left (or never held) the candidate,
+                // which is exactly the fork-choice flip the clique must not
+                // contain. Merging the target on a secondary parent is not
+                // agreement; counting it as such let both sides of a
+                // conflicting sibling pair keep full mutual cliques and
+                // certify together (the ucc 00e6a2e3 consensus halt).
+                //
+                // BELOW the target's height, the target can never be on the
+                // visited block's spine, so that test conflates two
+                // different prefixes: a block on the TARGET'S OWN main chain
+                // (settled ancestry the window has not caught up past —
+                // ignorance, not disagreement) and a rival prefix (a real
+                // divergent estimate). Only the rival prefix vetoes. The
+                // conflation held certification hostage to the STALEST
+                // window in the committee: one departed-era justification
+                // reaching below the candidate froze finality for 851 s in
+                // CI (stall instance i5, run 32397055615 — see
+                // tests/finalized_floor/oracle_stall_replay_spec.rs).
+
+                // (`ancestor_cache` memoizes the per-(target, hash) verdict:
+                // true = this visited block does not veto.)
                 let ancestor_key = (target_msg.clone(), hash.clone());
-                let target_on_spine = if let Some(cached) = ancestor_cache.get(&ancestor_key) {
-                    *cached
-                } else {
-                    let value = dag.is_in_main_chain(target_msg, &hash)?;
-                    CliqueOracle::bounded_cache_insert(
-                        ancestor_cache,
-                        ancestor_key,
-                        value,
-                        max_ancestor_cache_entries,
-                    );
-                    value
-                };
-                if !target_on_spine {
+                let no_disagreement =
+                    if let Some(cached) = run_cache.ancestor_cache.get(&ancestor_key) {
+                        *cached
+                    } else {
+                        let visited_height = dag.lookup_unsafe(&hash)?.block_number;
+                        let value = if visited_height < target_height {
+                            dag.is_in_main_chain(&hash, target_msg)?
+                        } else {
+                            dag.is_in_main_chain(target_msg, &hash)?
+                        };
+                        CliqueOracle::bounded_cache_insert(
+                            &mut run_cache.ancestor_cache,
+                            ancestor_key,
+                            value,
+                            run_cache.max_ancestor_cache_entries,
+                        );
+                        value
+                    };
+                if !no_disagreement {
                     return Ok(true);
                 }
 
-                current = if let Some(cached) = self_justification_cache.get(&hash) {
+                current = if let Some(cached) = run_cache.self_justification_cache.get(&hash) {
                     cached.clone()
                 } else {
                     let value = dag.self_justification(&hash)?;
                     CliqueOracle::bounded_cache_insert(
-                        self_justification_cache,
+                        &mut run_cache.self_justification_cache,
                         hash,
                         value.clone(),
-                        max_self_justification_cache_entries,
+                        run_cache.max_self_justification_cache_entries,
                     );
                     value
                 };
@@ -273,20 +291,9 @@ impl CliqueOracle {
             Ok(false)
         }
 
-        might_eventually_disagree(
-            lm_b,
-            lm_a_j_b,
-            dag,
-            target_msg,
-            self_justification_cache,
-            ancestor_cache,
-            yield_check_interval,
-            yield_timeslice,
-            max_self_justification_cache_entries,
-            max_ancestor_cache_entries,
-        )
-        .await
-        .map(|r| !r)
+        might_eventually_disagree(lm_b, lm_a_j_b, dag, target_msg, run_cache)
+            .await
+            .map(|r| !r)
     }
 
     async fn compute_max_clique_weight(
@@ -391,29 +398,11 @@ impl CliqueOracle {
                         continue;
                     };
                     let no_a_b_disagreement = CliqueOracle::never_eventually_see_disagreement(
-                        lm_b,
-                        lm_a_j_b,
-                        dag,
-                        target_msg,
-                        yield_check_interval,
-                        yield_timeslice,
-                        &mut run_cache.self_justification_cache,
-                        &mut run_cache.ancestor_cache,
-                        run_cache.max_self_justification_cache_entries,
-                        run_cache.max_ancestor_cache_entries,
+                        lm_b, lm_a_j_b, dag, target_msg, run_cache,
                     )
                     .await?;
                     let no_b_a_disagreement = CliqueOracle::never_eventually_see_disagreement(
-                        lm_a,
-                        lm_b_j_a,
-                        dag,
-                        target_msg,
-                        yield_check_interval,
-                        yield_timeslice,
-                        &mut run_cache.self_justification_cache,
-                        &mut run_cache.ancestor_cache,
-                        run_cache.max_self_justification_cache_entries,
-                        run_cache.max_ancestor_cache_entries,
+                        lm_a, lm_b_j_a, dag, target_msg, run_cache,
                     )
                     .await?;
 
@@ -525,9 +514,22 @@ impl CliqueOracle {
             // at one height and every join derivation refuses forever (the
             // ucc 00e6a2e3 consensus halt). Matches the Scala reference
             // (CliqueOracle.scala `dag.isInMainChain(targetMsg, ...)`).
-            latest_messages
-                .get(validator)
-                .map_or(Ok(false), |hash| dag.is_in_main_chain(message, hash))
+            //
+            // An unheld hash in the walk resolves to false DETERMINISTICALLY,
+            // not node-locally: any unheld hash reachable from held
+            // references sits below the restore horizon (above-horizon
+            // dependencies are fetched before admission; the LFS restore
+            // inserts the anchor and above), hence below every held
+            // candidate — a fully-held node's walk returns false at the
+            // same point by height comparison alone. The verdict is
+            // bit-identical with or without the block.
+            let Some(hash) = latest_messages.get(validator) else {
+                return Ok(false);
+            };
+            match dag.is_in_main_chain(message, hash) {
+                Err(KvStoreError::MissingBlock { .. }) => Ok(false),
+                other => other,
+            }
         }
 
         let mut agreeing_map = HashMap::new();
@@ -543,8 +545,8 @@ impl CliqueOracle {
     /// EXACT deterministic finalization DECISION over a FROZEN snapshot — the
     /// integer-exact analog of [`CliqueOracle::ft_witnessed`]. Returns `true` iff
     /// the clique oracle certifies `target_msg` finalized at threshold `ftt` under
-    /// the exact rule `2·q·den ⋛ S·(den+num)` (see [`ft_decides_exact`]); `strict`
-    /// selects ≥ (floor path) vs > (LFB finalizer). Mirrors `ft_witnessed`'s
+    /// the exact rule `2·q·den ⋛ S·(den+num)` (see [`ft_decides_exact`]); every
+    /// production caller passes `strict=false` (≥). Mirrors `ft_witnessed`'s
     /// contains / zero-stake / `agreeing ≤ S/2` short-circuits so the two agree
     /// everywhere except at the `f32` rounding boundary this replaces.
     pub async fn ft_witnessed_exact(
@@ -651,6 +653,24 @@ impl CliqueOracle {
             if full_weight_map.values().sum::<i64>() <= 0 {
                 return Ok(MIN_FAULT_TOLERANCE);
             }
+            // A latest message this node does not hold (a stale slot below an
+            // LFS restore horizon) abstains its validator: it can neither
+            // agree nor witness, and erroring here would fail every
+            // fault-tolerance read on the node. Abstention only ever
+            // understates the clique.
+            let mut held_latest_messages = BTreeMap::new();
+            for (validator, hash) in latest_messages.iter() {
+                if dag.lookup(hash)?.is_some() {
+                    held_latest_messages.insert(validator.clone(), hash.clone());
+                } else {
+                    tracing::debug!(
+                        target: "f1r3fly.casper.safety.clique_oracle",
+                        "abstaining validator with unheld latest message {:?}",
+                        hash
+                    );
+                }
+            }
+            let latest_messages = &held_latest_messages;
             let agreeing_weight_map =
                 Self::agreeing_weight_map(&full_weight_map, target_msg, dag, latest_messages)
                     .await?;
@@ -779,6 +799,26 @@ mod ft_decides_exact_tests {
         let agreeing = 5i64; // 2·5 == 10 == S
         assert!(!ft_decides_exact(agreeing, s, s, 0, den, false));
         assert!(!ft_decides_exact(agreeing, s, s, 0, den, true));
+    }
+
+    /// At θ = 0 the rule is `q ≥ S/2`, which two DISJOINT cliques can satisfy
+    /// at once — each certifying a different sibling from its own snapshot,
+    /// neither validator equivocating. The `agreeing > S/2` gate does not stop
+    /// it: agreeing is per-snapshot, the clique is the safety-relevant weight.
+    /// Any positive θ forces `q > S/2`, so the cliques must overlap.
+    #[test]
+    fn two_disjoint_half_cliques_both_certify_at_zero_but_not_above_it() {
+        let den = FT_PPM_DEN;
+        let s = 100i64;
+        // Three of four equal validators agree in each snapshot; the certifying
+        // cliques are {v1,v2} and {v3,v4}, disjoint, 50 each.
+        let (agreeing, q) = (75i64, 50i64);
+
+        assert!(ft_decides_exact(agreeing, q, s, 0, den, false));
+        assert!(
+            !ft_decides_exact(agreeing, q, s, 1, den, false),
+            "one ppm above zero already forces the cliques to overlap"
+        );
     }
 
     /// i64::MAX-scale q and S must not overflow: `2·q·den ≈ 2^84` exceeds i64 but

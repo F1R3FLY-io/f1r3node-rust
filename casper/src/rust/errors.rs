@@ -5,7 +5,7 @@ use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use rholang::rust::interpreter::errors::InterpreterError;
 use rspace_plus_plus::rspace::errors::HistoryError;
-use shared::rust::store::key_value_store::KvStoreError;
+use shared::rust::store::key_value_store::{KvStoreError, MissingBlockContext};
 
 use super::slashing_authorization::SlashAuthError;
 use super::util::rholang::replay_failure::ReplayFailure;
@@ -34,7 +34,17 @@ pub enum CasperError {
     /// peers have. Carried as a variant rather than a message so the block
     /// processor can request the named block and retry, instead of folding it
     /// into the storage-failure class that becomes a slashable verdict.
-    BlockNotHeld(BlockHash),
+    /// The second field names the walk that tripped.
+    BlockNotHeld(BlockHash, MissingBlockContext),
+    /// The floor derivation found finalized candidates that are mutually
+    /// incompatible (same-height certified siblings with no containment and
+    /// no re-merge). Under a BFT threshold (θ ≥ 0) this is impossible
+    /// without a protocol breach and stays a loud error; under a negative
+    /// threshold "finalized" is bare majority agreement per snapshot, so the
+    /// live clock absorbs it as an expected transient hold
+    /// (`FloorOfView::IncompatibilityHold`). Typed so that regime split is a
+    /// match, not a string search. Carries the full preformatted detail.
+    IncompatibleFinalizedFork(String),
     Other(String),
 }
 
@@ -52,11 +62,16 @@ impl fmt::Display for CasperError {
             CasperError::StreamError(error) => write!(f, "Stream error: {}", error),
             CasperError::LockError(error) => write!(f, "Lock error: {}", error),
             CasperError::SlashAuth(error) => write!(f, "Slash authorization error: {}", error),
-            CasperError::BlockNotHeld(hash) => write!(
+            CasperError::BlockNotHeld(hash, site) => write!(
                 f,
-                "block not held by this node: {} — its history does not reach that block",
-                PrettyPrinter::build_string_bytes(hash)
+                "block not held by this node: {} — its history does not reach that block [{}]",
+                PrettyPrinter::build_string_bytes(hash),
+                site.accessor()
             ),
+            // The detail is self-describing ("finalized-floor safety
+            // violation: ... — incompatible finalized fork"), and harness
+            // forbidden-log patterns key on that text — print it verbatim.
+            CasperError::IncompatibleFinalizedFork(detail) => write!(f, "{}", detail),
             CasperError::Other(error) => write!(f, "Other error: {}", error),
         }
     }
@@ -74,7 +89,7 @@ impl CasperError {
 
         matches!(
             self,
-            CasperError::BlockNotHeld(_)
+            CasperError::BlockNotHeld(..)
                 | CasperError::InterpreterError(InterpreterError::RSpaceError(
                     RSpaceError::HistoryError(HistoryError::RootError(RootError::RootNotFound(_))),
                 ))
@@ -101,7 +116,9 @@ impl From<InterpreterError> for CasperError {
 impl From<KvStoreError> for CasperError {
     fn from(error: KvStoreError) -> Self {
         match error {
-            KvStoreError::MissingBlock { hash, .. } => CasperError::BlockNotHeld(hash),
+            KvStoreError::MissingBlock { hash, context } => {
+                CasperError::BlockNotHeld(hash, context)
+            }
             other => CasperError::KvStoreError(other),
         }
     }
@@ -123,6 +140,13 @@ impl From<CommError> for CasperError {
 /// replaces, but without the per-site boilerplate.
 impl From<String> for CasperError {
     fn from(error: String) -> Self { CasperError::RuntimeError(error) }
+}
+
+/// Conversion from a poisoned `std::sync::Mutex` / `RwLock` guard. Lets
+/// `?` propagate a lock-acquisition failure directly instead of the
+/// per-site `.map_err(|e| CasperError::LockError(e.to_string()))?`.
+impl<T> From<std::sync::PoisonError<T>> for CasperError {
+    fn from(error: std::sync::PoisonError<T>) -> Self { CasperError::LockError(error.to_string()) }
 }
 
 /// Conversion from `std::time::SystemTimeError`. Wraps the underlying

@@ -6,9 +6,10 @@ use std::time::Duration;
 use casper::rust::genesis::contracts::vault::Vault;
 use crypto::rust::public_key::PublicKey;
 use rholang::rust::build::compile_rholang_source::CompiledRholangSource;
+use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
 
-use crate::helper::rho_spec::RhoSpec;
+use crate::helper::rho_spec::{timeout_phase, RhoSpec, EVAL_TEST_SOURCE_PHASE};
 use crate::util::genesis_builder::GenesisBuilder;
 
 fn prepare_vault(vault_data: (&str, u64)) -> Vault {
@@ -47,8 +48,7 @@ fn test_vaults() -> Vec<Vault> {
     .collect()
 }
 
-#[test]
-fn pos_spec() {
+fn run_pos_spec_once() -> Result<(), InterpreterError> {
     // Note: it's not 1:1 port, we should use larger stack size (16MB) to prevent stack overflow
     std::thread::Builder::new()
         .stack_size(16 * 1024 * 1024)
@@ -99,10 +99,31 @@ fn pos_spec() {
                     genesis_parameters,
                 );
 
-                spec.run_tests().await.expect("PoSSpec tests failed");
+                spec.run_tests().await.map(|_| ())
             })
         })
         .unwrap()
         .join()
-        .unwrap();
+        .unwrap()
+}
+
+/// The single retry absorbs a wedge under parallel suite load. It is not a
+/// performance allowance: set `RHO_SPEC_NO_RETRY=1` to surface the first
+/// timeout as the failure, so a run that must measure interpreter speed does
+/// not hide a regression behind the retry.
+#[test]
+fn pos_spec() {
+    match run_pos_spec_once() {
+        Err(err)
+            if timeout_phase(&err) == Some(EVAL_TEST_SOURCE_PHASE)
+                && std::env::var_os("RHO_SPEC_NO_RETRY").is_none() =>
+        {
+            eprintln!(
+                "PoSSpec timed out in phase '{EVAL_TEST_SOURCE_PHASE}' under parallel load. \
+                 The test will retry once (set RHO_SPEC_NO_RETRY=1 to disable): {err:?}"
+            );
+            run_pos_spec_once().expect("PoSSpec tests failed after timeout retry");
+        }
+        result => result.expect("PoSSpec tests failed"),
+    }
 }

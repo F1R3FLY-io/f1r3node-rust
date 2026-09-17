@@ -1,6 +1,6 @@
 // TLA+ trace-replay test driver.
 //
-// Reference: docs/theory/slashing/design/14-test-plan.md §14.6
+// Reference: docs/casper/theory/slashing/design/14-test-plan.md §14.6
 // (TLA+ trace replay), Item 4 (Track 7) of the principled-resolution
 // session.
 //

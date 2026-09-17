@@ -11,7 +11,7 @@
 This glossary is load-bearing: documentation, ADRs, and code reviews cite
 its anchors. See `**Preferred usage.**` subsections for canonical vs. avoided
 phrasings. Mathematical notation and theorem naming remain in
-`docs/theory/slashing/design/02-glossary-and-notation.md` pending unification
+`docs/casper/theory/slashing/design/02-glossary-and-notation.md` pending unification
 (BACKLOG-DOC-001).
 
 ## Architecture Overview
@@ -46,9 +46,16 @@ brew install protobuf openssl pkg-config just
 | `graphz` | DAG traversal and graph algorithms |
 
 ### Multi-Consensus Design
-Four consensus mechanisms, all implemented in Rholang:
-1. **Cordial Miners** — Cooperative, energy-efficient
-2. **Casper CBC** — BFT with mathematical safety proofs (primary, implemented)
+The platform is designed to be neutral about consensus and state-machine
+replication. One consensus mechanism is implemented today:
+1. **Casper CBC** — BFT with mathematical safety proofs (implemented:
+   Rust consensus in the `casper` crate, with a Rholang economic layer
+   in `casper/src/main/resources/PoS.rhox` — bonds, rewards, slashing
+   effect, epochs). Documentation: `docs/casper/`.
+
+Three further mechanisms are design intentions with no implementation
+artifacts in this repository yet:
+2. **Cordial Miners** — Cooperative, energy-efficient
 3. **RGB PSSM** — Client-side validation with Bitcoin anchoring
 4. **Casanova** — Adaptive consensus for high-performance scenarios
 

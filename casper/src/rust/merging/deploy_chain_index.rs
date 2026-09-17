@@ -41,6 +41,11 @@ pub struct DeployChainIndex {
     /// merge-time window rule; NOT part of the chain's identity
     /// (`PartialEq`/`Hash`/`Ord` cover `deploys_with_cost` only).
     pub deploy_windows: std::collections::HashMap<Bytes, i64>,
+    /// Kept (non-duplicate) rejection records for this chain's deploys
+    /// visible in the merge scope — on-DAG data, so every validator derives
+    /// the same count. Feeds loss-aware conflict adjudication (issue #294);
+    /// NOT part of the chain's identity.
+    pub prior_rejections: u64,
 }
 
 impl DeployChainIndex {
@@ -114,6 +119,7 @@ impl DeployChainIndex {
             source_block_hash,
             source_block_number,
             deploy_windows,
+            prior_rejections: 0,
         })
     }
 
@@ -149,6 +155,7 @@ impl DeployChainIndex {
             source_block_hash,
             source_block_number,
             deploy_windows,
+            prior_rejections: 0,
         }
     }
 }
@@ -279,6 +286,7 @@ mod tests {
             source_block_hash: Bytes::from(vec![post_state_seed; 32]),
             source_block_number: 0,
             deploy_windows: std::collections::HashMap::new(),
+            prior_rejections: 0,
         }
     }
 

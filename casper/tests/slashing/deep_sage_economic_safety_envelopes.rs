@@ -1,11 +1,11 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // UC-97 — Economic safety envelope: coop-vault accumulation cannot overflow.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-97.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-97.
 // Threat class: Economic-safety boundary (Sage row
 // `arithmetic_envelope_model.sage`).
 // Reference: formal/sage/arithmetic_envelope_model.sage,

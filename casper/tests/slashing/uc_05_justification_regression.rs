@@ -1,6 +1,6 @@
 // UC-05 — JustificationRegression dispatch.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-05.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-05.
 // Theorems: T-3, T-6, T-9.3.
 //
 // Scenario: a block whose justifications regress on the validator's own

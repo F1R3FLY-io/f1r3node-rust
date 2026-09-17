@@ -1,11 +1,11 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // UC-23 — Self-correcting block (Rust widening, T-9.9).
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-23.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-23.
 // Theorem: T-9.9 (`t_9_9_self_correcting_admitted`,
 // formal/rocq/slashing/theories/MainTheorem.v).
 // Reference: design/09-bug-fixes-and-rationale.md §9.10.

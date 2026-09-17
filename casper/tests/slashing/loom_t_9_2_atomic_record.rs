@@ -1,6 +1,6 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // T-9.2 — Exhaustive thread-interleaving model check for the
@@ -8,7 +8,7 @@
 //
 // Theorem: T-9.2 (`t_9_2_atomic_record_insert`,
 // formal/rocq/slashing/theories/BugFixAtomicTracker.v).
-// Reference: docs/theory/slashing/slashing-specification.md §10.2,
+// Reference: docs/casper/theory/slashing/slashing-specification.md §10.2,
 // design/09-bug-fixes-and-rationale.md §9.2,
 // design/14-test-plan.md §14.5.
 //
@@ -20,7 +20,7 @@
 //
 // Why this is a SHADOW IMPLEMENTATION rather than `cfg(loom)`-shimmed
 // production code:
-//   docs/theory/slashing/design/14-test-plan.md §14.7 forbids
+//   docs/casper/theory/slashing/design/14-test-plan.md §14.7 forbids
 //   carrying alternate code paths for production-vs-test variants
 //   into the production source tree (the same prohibition that
 //   eliminated the `pre-fix-bug-N` Cargo features). The atomicity

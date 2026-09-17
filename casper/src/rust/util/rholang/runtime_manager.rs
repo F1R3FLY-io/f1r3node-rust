@@ -43,7 +43,7 @@ use crate::rust::merging::block_index::BlockIndex;
 use crate::rust::metrics_constants::{
     BLOCK_INDEX_CACHE_SIZE_METRIC, CASPER_METRICS_SOURCE, PARENTS_POST_STATE_CACHE_SIZE_METRIC,
     REPLAY_CACHE_ENTRIES_METRIC, REPLAY_CACHE_RETAINED_BYTES_METRIC,
-    RUNTIME_SPAWN_REPLAY_TIME_METRIC, RUNTIME_SPAWN_TIME_METRIC,
+    RUNTIME_SPAWN_REPLAY_CALLS_METRIC, RUNTIME_SPAWN_REPLAY_TIME_METRIC, RUNTIME_SPAWN_TIME_METRIC,
 };
 use crate::rust::rholang::replay_runtime::ReplayRuntimeOps;
 use crate::rust::rholang::runtime::RuntimeOps;
@@ -100,6 +100,32 @@ impl ExploratoryDeployConfig {
             execution_timeout,
         })
     }
+
+    /// Resolve the operator-facing form of `max_concurrent`: `0` derives the
+    /// value from this host's cores (observers are the dedicated servers of
+    /// exploratory traffic, and the right ceiling is a host property); an
+    /// explicit value is honored, clamped to the semaphore's permit range.
+    /// The constructed config always carries a real ceiling — `new` still
+    /// rejects 0.
+    pub fn resolve(
+        max_concurrent: usize,
+        phlo_limit: i64,
+        execution_timeout: Duration,
+    ) -> Result<Self, CasperError> {
+        let resolved = if max_concurrent == 0 {
+            let cores = std::thread::available_parallelism()
+                .map(std::num::NonZeroUsize::get)
+                .unwrap_or(4);
+            Self::derive_max_concurrent(cores)
+        } else {
+            max_concurrent.min(Semaphore::MAX_PERMITS)
+        };
+        Self::new(resolved, phlo_limit, execution_timeout)
+    }
+
+    /// Two cores stay reserved for block-following; a floor of two keeps any
+    /// host able to serve overlapping clients.
+    pub fn derive_max_concurrent(cores: usize) -> usize { cores.saturating_sub(2).max(2) }
 
     /// Fixture for the test-only constructors. Deliberately not a `Default`
     /// impl: the operator-facing default lives in `defaults.conf` and reaches
@@ -231,7 +257,6 @@ pub struct ParentsPostStateCacheKey {
     // Sorted (validator, latest_block_hash) pairs keep such contexts from
     // sharing a cache entry.
     pub sorted_latest_messages: Vec<(Validator, BlockHash)>,
-    pub disable_late_block_filtering: bool,
     // Whether the computation ran with a rejected-deploy buffer attached.
     // Buffer population is a side effect of the merge, not part of the
     // cached value — a bufferless computation (exploratory deploy) must
@@ -481,6 +506,8 @@ impl RuntimeManager {
             self.external_services.clone(),
         )
         .await;
+        metrics::counter!(RUNTIME_SPAWN_REPLAY_CALLS_METRIC, "source" => CASPER_METRICS_SOURCE)
+            .increment(1);
         metrics::histogram!(RUNTIME_SPAWN_REPLAY_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(start.elapsed().as_secs_f64());
 
@@ -510,6 +537,7 @@ impl RuntimeManager {
                 system_deploys,
                 block_data,
                 invalid_blocks,
+                None,
             )
             .await?;
 
@@ -577,6 +605,7 @@ impl RuntimeManager {
         system_deploys: Vec<super::system_deploy_enum::SystemDeployEnum>,
         block_data: BlockData,
         invalid_blocks: Option<HashMap<BlockHash, Validator>>,
+        play_budget: Option<std::time::Duration>,
     ) -> Result<
         (
             StateHash,
@@ -608,6 +637,7 @@ impl RuntimeManager {
                 system_deploys,
                 block_data,
                 invalid_blocks,
+                play_budget,
             )
             .await?;
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
@@ -876,6 +906,19 @@ impl RuntimeManager {
         runtime_ops
             .get_fault_tolerance_threshold_ppm(start_hash)
             .await
+    }
+
+    /// On-chain consensus parameters `(max-parent-depth, deploy-lifespan,
+    /// min-phlo-price)` at `start_hash`, or `None` when the chain's genesis
+    /// predates them. Read once at casper construction (`hash_set_casper`) —
+    /// not cached here.
+    pub async fn get_consensus_parameters(
+        &self,
+        start_hash: &StateHash,
+    ) -> Result<Option<(i32, i64, i64)>, CasperError> {
+        let runtime = self.spawn_runtime().await;
+        let mut runtime_ops = RuntimeOps::new(runtime);
+        runtime_ops.get_consensus_parameters(start_hash).await
     }
 
     pub async fn compute_bonds(&self, hash: &StateHash) -> Result<Vec<Bond>, CasperError> {
@@ -1528,6 +1571,32 @@ mod tests {
         assert_eq!(valid.max_concurrent, 2);
         assert_eq!(valid.phlo_limit, 42);
         assert_eq!(valid.execution_timeout, Duration::from_millis(500));
+    }
+
+    #[test]
+    fn exploratory_deploy_concurrency_derivation() {
+        assert_eq!(ExploratoryDeployConfig::derive_max_concurrent(1), 2);
+        assert_eq!(ExploratoryDeployConfig::derive_max_concurrent(4), 2);
+        assert_eq!(ExploratoryDeployConfig::derive_max_concurrent(8), 6);
+        assert_eq!(ExploratoryDeployConfig::derive_max_concurrent(16), 14);
+
+        let derived = ExploratoryDeployConfig::resolve(0, 5_000_000, Duration::from_secs(15))
+            .expect("the sentinel derives, never rejects");
+        assert!(derived.max_concurrent >= 2);
+
+        let explicit = ExploratoryDeployConfig::resolve(5, 5_000_000, Duration::from_secs(15))
+            .expect("explicit value");
+        assert_eq!(explicit.max_concurrent, 5);
+
+        let clamped =
+            ExploratoryDeployConfig::resolve(usize::MAX, 5_000_000, Duration::from_secs(15))
+                .expect("an oversized explicit value clamps instead of panicking");
+        assert_eq!(clamped.max_concurrent, Semaphore::MAX_PERMITS);
+
+        assert!(
+            ExploratoryDeployConfig::resolve(0, 0, Duration::from_secs(15)).is_err(),
+            "the sentinel does not bypass the other range checks"
+        );
     }
 
     #[tokio::test]

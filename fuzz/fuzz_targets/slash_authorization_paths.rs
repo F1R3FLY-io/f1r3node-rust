@@ -1,6 +1,6 @@
 //! `slash_authorization_paths` — differential testing of slash authorization.
 //!
-//! Reference: docs/theory/slashing/slashing-specification.md §9 + §10.
+//! Reference: docs/casper/theory/slashing/slashing-specification.md §9 + §10.
 //! Production code under test: `slashing_authorization::authorized_slash_candidates`
 //! and `validate_received_slash_deploys`.
 //!
@@ -190,7 +190,8 @@ fuzz_target!(|input: Input| {
         bonds,
     );
 
-    let candidate_result = authorized_slash_candidates(&snapshot);
+    let candidate_result =
+        authorized_slash_candidates(&snapshot);
     let current_candidate_epoch =
         epoch_for_block_number(bounded_height(input.max_block_num) + 1, epoch_length);
     match current_candidate_epoch {
@@ -266,6 +267,7 @@ fuzz_target!(|input: Input| {
         deploys,
     );
     let expected_ok = expected_validation_ok(&block, &snapshot);
-    let actual_ok = validate_received_slash_deploys(&block, &snapshot).is_ok();
+    let actual_ok = validate_received_slash_deploys(&block, &snapshot)
+    .is_ok();
     assert_eq!(actual_ok, expected_ok);
 });

@@ -343,7 +343,7 @@ Proof.
     split; [exact (anc_ofb_sound d fuel o p Hop) | exact (anc_ofb_sound d fuel c p Hcp)].
 Qed.
 
-(* Candidates sorted highest-first by block number (models floor.rs:129-133's
+(* Candidates sorted highest-first by block number (models floor.rs:156-160's
    `sort_by` descending; the hash tiebreak is omitted — it only orders equal-height
    candidates and does not affect the height-maximality below). *)
 Inductive DescSorted (d : DAG) : list BlockHash -> Prop :=

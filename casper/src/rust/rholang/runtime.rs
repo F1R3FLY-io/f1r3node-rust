@@ -145,6 +145,7 @@ impl RuntimeOps {
         system_deploys: Vec<crate::rust::util::rholang::system_deploy_enum::SystemDeployEnum>,
         block_data: BlockData,
         invalid_blocks: HashMap<BlockHash, Validator>,
+        play_budget: Option<std::time::Duration>,
     ) -> Result<
         (
             StateHash,
@@ -181,8 +182,9 @@ impl RuntimeOps {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_set_invalid_blocks", rss_kb);
         }
 
-        let (start_hash, processed_deploys) =
-            self.play_deploys_for_state(start_hash, terms).await?;
+        let (start_hash, processed_deploys) = self
+            .play_deploys_for_state(start_hash, terms, play_budget)
+            .await?;
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_play_deploys_for_state", rss_kb);
         }
@@ -292,6 +294,7 @@ impl RuntimeOps {
         &mut self,
         start_hash: &StateHash,
         terms: Vec<Signed<DeployData>>,
+        play_budget: Option<std::time::Duration>,
     ) -> Result<(StateHash, Vec<(ProcessedDeploy, NumberChannelsEndVal)>), CasperError> {
         // Using tracing events for async - Span[F].withMarks("play-deploys") from Scala
         tracing::info!(target: "f1r3fly.casper.play_deploys", "play-deploys-started");
@@ -305,9 +308,27 @@ impl RuntimeOps {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_reset", rss_kb);
         }
 
-        let mut res = Vec::with_capacity(terms.len());
+        // Checked after each deploy, so one always plays and a spent budget
+        // defers the rest to the next proposal; the block carries exactly
+        // the played prefix.
+        let budget_started = std::time::Instant::now();
+        let total_terms = terms.len();
+        let mut res = Vec::with_capacity(total_terms);
         for deploy in terms {
             res.push(self.play_deploy_with_cost_accounting(deploy).await?);
+            if let Some(budget) = play_budget {
+                if budget_started.elapsed() >= budget && res.len() < total_terms {
+                    tracing::info!(
+                        target: "f1r3fly.casper.play_deploys",
+                        executed = res.len(),
+                        deferred = total_terms - res.len(),
+                        budget_ms = budget.as_millis() as u64,
+                        elapsed_ms = budget_started.elapsed().as_millis() as u64,
+                        "play budget spent: remaining deploys deferred to a later proposal"
+                    );
+                    break;
+                }
+            }
         }
 
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
@@ -508,6 +529,7 @@ impl RuntimeOps {
                 // Handle evaluation errors from PreCharge
                 // - assigning 0 cost - replay should reach the same state
                 let mut empty_pd = ProcessedDeploy::empty(deploy);
+                empty_pd.is_failed = true;
                 empty_pd.system_deploy_error = Some(error.error_message);
 
                 // Update result with accumulated event logs
@@ -1356,6 +1378,102 @@ impl RuntimeOps {
         QUERY.get_or_init(|| {
             Compiler::source_to_adt(&Self::fault_tolerance_ppm_query_source())
                 .expect("Failed to compile fault tolerance ppm query source")
+        })
+    }
+
+    /// The on-chain consensus parameters `(max-parent-depth, deploy-lifespan,
+    /// min-phlo-price)` baked into the PoS contract at `start_hash`. Returns
+    /// `None` when the contract does not expose the getter (a chain whose
+    /// genesis predates the parameters).
+    pub async fn get_consensus_parameters(
+        &mut self,
+        start_hash: &StateHash,
+    ) -> Result<Option<(i32, i64, i64)>, CasperError> {
+        // STRICT query — same rationale as the protocol-FTT read: a runtime
+        // failure must fail startup, never degrade into the local-config arm.
+        let pars = self
+            .play_exploratory_par_strict(Self::consensus_parameters_query_par().clone(), start_hash)
+            .await?;
+
+        if pars.is_empty() {
+            tracing::warn!(
+                "No result from getConsensusParameters query for state {}; \
+                 genesis predates the on-chain consensus parameters",
+                PrettyPrinter::build_string_bytes(start_hash)
+            );
+            return Ok(None);
+        }
+        if pars.len() != 1 {
+            return Err(CasperError::RuntimeError(format!(
+                "Incorrect number of results from getConsensusParameters query in state {}: {}",
+                PrettyPrinter::build_string_bytes(start_hash),
+                pars.len()
+            )));
+        }
+
+        let bad = |detail: &str| {
+            CasperError::RuntimeError(format!(
+                "getConsensusParameters returned an invalid value in state {}: {}",
+                PrettyPrinter::build_string_bytes(start_hash),
+                detail
+            ))
+        };
+        let int_at = |tuple: &models::rhoapi::ETuple, i: usize| -> Option<i64> {
+            match tuple.ps.get(i)?.exprs.first()?.expr_instance.as_ref()? {
+                ExprInstance::GInt(v) => Some(*v),
+                _ => None,
+            }
+        };
+
+        match pars[0].exprs.first().and_then(|e| e.expr_instance.as_ref()) {
+            Some(ExprInstance::ETupleBody(tuple)) if tuple.ps.len() == 3 => {
+                let mpd = int_at(tuple, 0).ok_or_else(|| bad("non-integer maxParentDepth"))?;
+                let lifespan = int_at(tuple, 1).ok_or_else(|| bad("non-integer deployLifespan"))?;
+                let min_phlo = int_at(tuple, 2).ok_or_else(|| bad("non-integer minPhloPrice"))?;
+                // RANGE GATES at the single read choke point. The parent-spread
+                // rule takes mpd as i32 (i32::MAX = depth check disabled); a
+                // window of zero or less inverts the expiry and repeat rules;
+                // a negative floor price rejects every deploy.
+                if !(1..=i32::MAX as i64).contains(&mpd) {
+                    return Err(bad(&format!(
+                        "maxParentDepth out of range [1, i32::MAX]: {mpd}"
+                    )));
+                }
+                // Capped at i32::MAX because the narrowest consumer (the
+                // expiry rule's expiration_threshold) is i32.
+                if !(1..=i32::MAX as i64).contains(&lifespan) {
+                    return Err(bad(&format!(
+                        "deployLifespan out of range [1, i32::MAX]: {lifespan}"
+                    )));
+                }
+                if min_phlo < 0 {
+                    return Err(bad(&format!(
+                        "minPhloPrice out of range [0, i64::MAX]: {min_phlo}"
+                    )));
+                }
+                Ok(Some((mpd as i32, lifespan, min_phlo)))
+            }
+            other => Err(bad(&format!("expected a 3-tuple, got {other:?}"))),
+        }
+    }
+
+    fn consensus_parameters_query_source() -> String {
+        r#"
+          new return, rl(`rho:registry:lookup`), poSCh in {
+          rl!(`rho:system:pos`, *poSCh) |
+          for(@(_, PoS) <- poSCh) {
+            @PoS!("getConsensusParameters", *return)
+          }
+        }
+      "#
+        .to_string()
+    }
+
+    fn consensus_parameters_query_par() -> &'static Par {
+        static QUERY: OnceLock<Par> = OnceLock::new();
+        QUERY.get_or_init(|| {
+            Compiler::source_to_adt(&Self::consensus_parameters_query_source())
+                .expect("Failed to compile consensus parameters query source")
         })
     }
 

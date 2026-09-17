@@ -320,6 +320,47 @@ async fn multi_parent_casper_should_propose_blocks_it_adds_to_peers() {
     );
 }
 
+/// A block carrying a deploy priced below the shard's min-phlo-price must be
+/// REJECTED at validation, not merely warned about: the floor is a consensus
+/// value (adopted from chain), and a verdict that only logs lets a
+/// misconfigured or malicious proposer ship underpriced work every node then
+/// executes for free.
+#[tokio::test]
+async fn multi_parent_casper_should_reject_block_carrying_underpriced_deploy() {
+    let ctx = TestContext::new().await;
+
+    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 1, None, None, None, None)
+        .await
+        .unwrap();
+
+    // Below the fixture's shard-conf floor (min_phlo_price = 1); the deploy
+    // enters the pool directly, modeling a proposer that skipped the API gate.
+    let underpriced = construct_deploy::source_deploy_now_full(
+        "Nil".to_string(),
+        None,
+        Some(0),
+        None,
+        None,
+        Some(ctx.shard_id.clone()),
+    )
+    .unwrap();
+
+    let result = nodes[0]
+        .add_block_status(&[underpriced], |s| {
+            matches!(
+                s,
+                Either::Left(BlockError::Invalid(InvalidBlock::LowDeployCost))
+            )
+        })
+        .await;
+
+    assert!(
+        result.is_ok(),
+        "a block carrying an underpriced deploy must validate as LowDeployCost, got: {:?}",
+        result.err()
+    );
+}
+
 #[tokio::test]
 async fn multi_parent_casper_should_add_a_valid_block_from_peer() {
     let ctx = TestContext::new().await;
@@ -728,8 +769,7 @@ async fn multi_parent_casper_should_not_ignore_equivocation_blocks_that_are_requ
 }
 
 #[tokio::test]
-async fn multi_parent_casper_should_prepare_to_slash_a_block_that_includes_an_invalid_block_pointer(
-) {
+async fn multi_parent_casper_drops_an_invalid_pointer_without_minting_evidence() {
     let ctx = TestContext::new().await;
 
     let mut nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None, None)
@@ -798,25 +838,23 @@ async fn multi_parent_casper_should_prepare_to_slash_a_block_that_includes_an_in
         .await
         .expect("Node 1 should handle receive");
 
-    // Verify the invalid block was recorded in the DAG (better than checking log messages)
+    // A bad sequence number is judged against local state (demoted since
+    // the is_slashable narrowing): the block is dropped without entering
+    // the DAG or minting slash evidence.
     let dag = nodes[1].casper.block_dag().await.unwrap();
     let invalid_blocks = dag.invalid_blocks();
 
-    // Check if the signed_invalid_block is in the invalid blocks set
-    let is_invalid = invalid_blocks
+    let is_recorded = invalid_blocks
         .iter()
         .any(|block_meta| block_meta.block_hash == signed_invalid_block.block_hash);
 
     assert!(
-        is_invalid,
-        "The invalid block should be recorded in the DAG's invalid blocks set"
+        !is_recorded,
+        "a demoted verdict's block must be dropped, not recorded as evidence"
     );
-
-    // Verify we have exactly 1 invalid block
-    assert_eq!(
-        invalid_blocks.len(),
-        1,
-        "Should have exactly 1 invalid block recorded in the DAG"
+    assert!(
+        !dag.contains(&signed_invalid_block.block_hash),
+        "a demoted verdict's block must not enter the DAG"
     );
 }
 

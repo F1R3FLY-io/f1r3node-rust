@@ -1,13 +1,13 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // Property-based test for T-Idem (slash idempotence).
 //
 // Theorem: T-Idem (alias T-9), `t_idem_slash_idempotent`,
 // formal/rocq/slashing/theories/PoSContract.v:117.
-// Reference: docs/theory/slashing/slashing-specification.md §5.2,
+// Reference: docs/casper/theory/slashing/slashing-specification.md §5.2,
 // design/06-proposing-and-effect.md §6.5.
 //
 // Property: for all PoS states `ps` and all validators `v`, slashing

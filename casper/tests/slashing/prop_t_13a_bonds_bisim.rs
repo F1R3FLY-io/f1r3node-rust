@@ -1,13 +1,13 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // Property-based test for T-13a (bonds-map bisimulation).
 //
 // Theorem: T-13a (`bonds_bisim`,
 // formal/rocq/slashing/theories/Bisimulation.v).
-// Reference: docs/theory/slashing/slashing-specification.md §10
+// Reference: docs/casper/theory/slashing/slashing-specification.md §10
 // (Theorem 10.2a), design/10-bisimilarity.md §10.4.
 //
 // Property: under any sequence of slash events, the bonds-map

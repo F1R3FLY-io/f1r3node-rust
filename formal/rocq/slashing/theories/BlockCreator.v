@@ -46,6 +46,25 @@ Set Implicit Arguments.
 
 Definition AuthorizedCandidate := (Validator * BlockHash * nat)%type.
 
+Definition candidate_key (candidate : AuthorizedCandidate) : Validator * nat :=
+  match candidate with
+  | (validator, _, targetEpoch) => (validator, targetEpoch)
+  end.
+
+Definition candidate_authorized
+  (bonds : BondMap) (currentEpoch : nat) (candidate : AuthorizedCandidate) : bool :=
+  match candidate with
+  | (validator, _, targetEpoch) =>
+      Nat.eqb targetEpoch currentEpoch && Nat.ltb 0 (bm_lookup bonds validator)
+  end.
+
+Definition selected_slash_candidates
+  (candidates : list AuthorizedCandidate)
+  (bonds : BondMap)
+  (currentEpoch : nat)
+  : list AuthorizedCandidate :=
+  filter (candidate_authorized bonds currentEpoch) candidates.
+
 Definition prepare_slashing_deploys
   (candidates : list AuthorizedCandidate)
   (bonds : BondMap)
@@ -54,15 +73,7 @@ Definition prepare_slashing_deploys
   (currentEpoch : nat)
   (seed_fn : Validator -> nat -> BlockHash -> nat)
   : list SlashDeploy :=
-  let authorized := filter
-                  (fun p =>
-                     match p with
-                     | (v, _, targetEpoch) =>
-                         Nat.eqb targetEpoch currentEpoch
-                         && Nat.ltb 0 (bm_lookup bonds v)
-                     end)
-                  candidates
-  in map
+  map
        (fun p =>
           match p with
           | (_, h, targetEpoch) =>
@@ -71,33 +82,7 @@ Definition prepare_slashing_deploys
                  and the §9.8 receive gate's issuer==sender rule holds. *)
               mkSlashDeploy h proposer targetEpoch (seed_fn proposer seqNum h) proposer
           end)
-       authorized.
-
-Definition RejectedSlash := (BlockHash * Validator)%type.
-
-Definition rejected_slash_hash (rs : RejectedSlash) : BlockHash := fst rs.
-
-Fixpoint hash_member (h : BlockHash) (hs : list BlockHash) : bool :=
-  match hs with
-  | [] => false
-  | h' :: rest => Nat.eqb h h' || hash_member h rest
-  end.
-
-Definition recoverable_rejected_slash_hashes
-  (rejected : list RejectedSlash) (own_invalid_hashes : list BlockHash)
-  : list BlockHash :=
-  nodup hash_eq_dec
-    (filter
-       (fun h => negb (hash_member h own_invalid_hashes))
-       (map rejected_slash_hash rejected)).
-
-Definition recoverable_current_rejected_slash_hashes
-  (rejected : list RejectedSlash)
-  (own_invalid_hashes current_evidence_hashes : list BlockHash)
-  : list BlockHash :=
-  filter
-    (fun h => hash_member h current_evidence_hashes)
-    (recoverable_rejected_slash_hashes rejected own_invalid_hashes).
+       (selected_slash_candidates candidates bonds currentEpoch).
 
 (* ═══════════════════════════════════════════════════════════════════════════
    §2 — Properties
@@ -176,88 +161,72 @@ Proof.
   rewrite <- Hsd. reflexivity.
 Qed.
 
-Lemma hash_member_true_iff :
-  forall h hs,
-    hash_member h hs = true <-> In h hs.
+Theorem authorized_candidate_selected :
+  forall candidates bonds currentEpoch candidate,
+    In candidate candidates ->
+    candidate_authorized bonds currentEpoch candidate = true ->
+    In candidate (selected_slash_candidates candidates bonds currentEpoch).
 Proof.
-  intros h hs. induction hs as [| x xs IH]; simpl.
-  - split; intros H; [discriminate | contradiction].
-  - rewrite Bool.orb_true_iff. rewrite Nat.eqb_eq. rewrite IH.
-    split.
-    + intros [Heq | Hin]; [left; symmetry; assumption | right; assumption].
-    + intros [Heq | Hin]; [left; symmetry; assumption | right; assumption].
+  intros candidates bonds currentEpoch candidate Hin Hauthorized.
+  apply filter_In. split; assumption.
 Qed.
 
-Lemma hash_member_false_iff :
-  forall h hs,
-    hash_member h hs = false <-> ~ In h hs.
+Theorem merge_rejected_hint_subsumed_by_authorized_scan :
+  forall rejectedHints candidates bonds currentEpoch candidate,
+    In candidate rejectedHints ->
+    In candidate candidates ->
+    candidate_authorized bonds currentEpoch candidate = true ->
+    In candidate (selected_slash_candidates candidates bonds currentEpoch).
 Proof.
-  intros h hs. rewrite <- Bool.not_true_iff_false.
-  rewrite hash_member_true_iff. reflexivity.
+  intros rejectedHints candidates bonds currentEpoch candidate _ Hin Hauthorized.
+  apply authorized_candidate_selected; assumption.
 Qed.
 
-Theorem recoverable_rejected_slash_hashes_nodup :
-  forall rejected own_invalid_hashes,
-    NoDup (recoverable_rejected_slash_hashes rejected own_invalid_hashes).
+Theorem zero_bond_candidate_not_selected :
+  forall candidates bonds currentEpoch validator hash targetEpoch,
+    bm_lookup bonds validator = 0 ->
+    ~ In (validator, hash, targetEpoch)
+        (selected_slash_candidates candidates bonds currentEpoch).
 Proof.
-  intros. unfold recoverable_rejected_slash_hashes. apply NoDup_nodup.
+  intros candidates bonds currentEpoch validator hash targetEpoch Hzero Hin.
+  unfold selected_slash_candidates in Hin.
+  apply filter_In in Hin as [_ Hauthorized].
+  unfold candidate_authorized in Hauthorized. simpl in Hauthorized.
+  apply andb_prop in Hauthorized as [_ Hpositive].
+  apply Nat.ltb_lt in Hpositive.
+  rewrite Hzero in Hpositive. lia.
 Qed.
 
-Theorem own_detected_hash_not_recovered :
-  forall rejected own_invalid_hashes h,
-    In h own_invalid_hashes ->
-    ~ In h (recoverable_rejected_slash_hashes rejected own_invalid_hashes).
+Lemma mapped_keys_of_filter_nodup :
+  forall candidates predicate,
+    NoDup (map candidate_key candidates) ->
+    NoDup (map candidate_key (filter predicate candidates)).
 Proof.
-  intros rejected own_invalid_hashes h Hown Hin.
-  unfold recoverable_rejected_slash_hashes in Hin.
-  apply nodup_In in Hin.
-  apply filter_In in Hin.
-  destruct Hin as [_ Hfilter].
-  rewrite Bool.negb_true_iff in Hfilter.
-  apply hash_member_false_iff in Hfilter.
-  contradiction.
+  intros candidates predicate Hnodup.
+  induction candidates as [| candidate rest IH]; simpl.
+  - constructor.
+  - inversion Hnodup as [| key keys Hnotin Hrest]; subst.
+    destruct (predicate candidate) eqn:Hpredicate; simpl.
+    + constructor.
+      * intro Hin.
+        apply Hnotin.
+        apply in_map_iff in Hin.
+        destruct Hin as [other [Hkey Hother]].
+        apply in_map_iff.
+        exists other. split; [assumption |].
+        apply filter_In in Hother as [Hother _]. assumption.
+      * apply IH. assumption.
+    + apply IH. assumption.
 Qed.
 
-Theorem uncovered_rejected_hash_recovered :
-  forall rejected own_invalid_hashes rs,
-    In rs rejected ->
-    ~ In (rejected_slash_hash rs) own_invalid_hashes ->
-    In (rejected_slash_hash rs)
-       (recoverable_rejected_slash_hashes rejected own_invalid_hashes).
+Theorem selected_target_keys_nodup :
+  forall candidates bonds currentEpoch,
+    NoDup (map candidate_key candidates) ->
+    NoDup
+      (map candidate_key
+        (selected_slash_candidates candidates bonds currentEpoch)).
 Proof.
-  intros rejected own_invalid_hashes rs Hrej Hnotown.
-  unfold recoverable_rejected_slash_hashes.
-  apply nodup_In.
-  apply filter_In. split.
-  - apply in_map. assumption.
-  - rewrite Bool.negb_true_iff. apply hash_member_false_iff. assumption.
-Qed.
-
-Theorem recoverable_rejected_slash_requires_current_evidence :
-  forall rejected own_invalid_hashes current_evidence_hashes h,
-    In h (recoverable_current_rejected_slash_hashes
-            rejected own_invalid_hashes current_evidence_hashes) ->
-    In h current_evidence_hashes.
-Proof.
-  intros rejected own_invalid_hashes current_evidence_hashes h Hin.
-  unfold recoverable_current_rejected_slash_hashes in Hin.
-  apply filter_In in Hin.
-  destruct Hin as [_ Hcurrent].
-  apply hash_member_true_iff. assumption.
-Qed.
-
-Theorem current_uncovered_rejected_hash_recovered :
-  forall rejected own_invalid_hashes current_evidence_hashes rs,
-    In rs rejected ->
-    ~ In (rejected_slash_hash rs) own_invalid_hashes ->
-    In (rejected_slash_hash rs) current_evidence_hashes ->
-    In (rejected_slash_hash rs)
-       (recoverable_current_rejected_slash_hashes
-          rejected own_invalid_hashes current_evidence_hashes).
-Proof.
-  intros rejected own_invalid_hashes current_evidence_hashes rs Hrej Hnotown Hcurrent.
-  unfold recoverable_current_rejected_slash_hashes.
-  apply filter_In. split.
-  - apply uncovered_rejected_hash_recovered; assumption.
-  - apply hash_member_true_iff. assumption.
+  intros candidates bonds currentEpoch Hcanonical.
+  unfold selected_slash_candidates.
+  apply mapped_keys_of_filter_nodup. assumption.
 Qed.

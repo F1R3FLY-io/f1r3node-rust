@@ -1,11 +1,11 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // UC-92 — Dropped preconditions classify as not exploitable.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-92.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-92.
 // Reference: formal/sage/theorem_assumption_counterexamples.sage,
 // formal/sage/slashing/FINDINGS.md.
 //

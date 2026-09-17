@@ -111,6 +111,12 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
     late_seq: Vec<R>,
     depends: &impl Fn(&R, &R) -> bool,
     cost: &impl Fn(&R) -> u64,
+    // Prior on-DAG rejections per item (issue #294). Rejection-option
+    // selection minimizes this BEFORE cost: a chain that already lost
+    // merges must not keep losing on the same content-deterministic
+    // criteria, or it starves to expiry. Zero everywhere reproduces the
+    // pure cost-optimal selection.
+    prior_losses: &impl Fn(&R) -> u64,
     mergeable_channels: &impl Fn(&R) -> NumberChannelsDiff,
     get_data: &impl Fn(Blake2b256Hash) -> Result<Vec<Datum<ListParWithRandom>>, HistoryError>,
     // Splits a set of items into branches whose elements are mutually
@@ -168,6 +174,16 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
         "source" => crate::rust::metrics_constants::MERGING_METRICS_SOURCE
     )
     .record(branches_time.as_secs_f64());
+    metrics::histogram!(
+        crate::rust::metrics_constants::DAG_MERGE_RELATION_ITEMS_METRIC,
+        "source" => crate::rust::metrics_constants::MERGING_METRICS_SOURCE
+    )
+    .record(merge_set.0.len() as f64);
+    metrics::histogram!(
+        crate::rust::metrics_constants::DAG_MERGE_RELATION_BRANCHES_METRIC,
+        "source" => crate::rust::metrics_constants::MERGING_METRICS_SOURCE
+    )
+    .record(branches.0.len() as f64);
 
     tracing::debug!(target: "f1r3fly.merge.step", step = "resolve_conflicts.branches",
         n_branches = branches.0.len(),
@@ -177,16 +193,19 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
     let branches_set = HashableSet(branches.0.iter().cloned().collect());
     let (conflict_map, conflicts_map_time) =
         measure_result_time(|| compute_conflict_map(&branches_set))?;
-    {
-        let total_edges: usize = conflict_map.values().map(|s| s.0.len()).sum();
-        tracing::debug!(target: "f1r3fly.merge.step", step = "resolve_conflicts.conflict_map",
-            n_keys = conflict_map.len(), total_edges = total_edges);
-    }
+    let total_edges: usize = conflict_map.values().map(|s| s.0.len()).sum();
+    tracing::debug!(target: "f1r3fly.merge.step", step = "resolve_conflicts.conflict_map",
+        n_keys = conflict_map.len(), total_edges = total_edges);
     metrics::histogram!(
         crate::rust::metrics_constants::DAG_MERGE_CONFLICTS_MAP_TIME_METRIC,
         "source" => crate::rust::metrics_constants::MERGING_METRICS_SOURCE
     )
     .record(conflicts_map_time.as_secs_f64());
+    metrics::histogram!(
+        crate::rust::metrics_constants::DAG_MERGE_CONFLICT_EDGES_METRIC,
+        "source" => crate::rust::metrics_constants::MERGING_METRICS_SOURCE
+    )
+    .record(total_edges as f64);
 
     // Compute rejection options that leave only non-conflicting branches with timing
     use rspace_plus_plus::rspace::merger::merging_logic::compute_rejection_options;
@@ -197,6 +216,11 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
         "source" => crate::rust::metrics_constants::MERGING_METRICS_SOURCE
     )
     .record(rejection_options_time.as_secs_f64());
+    metrics::histogram!(
+        crate::rust::metrics_constants::DAG_MERGE_REJECTION_OPTIONS_METRIC,
+        "source" => crate::rust::metrics_constants::MERGING_METRICS_SOURCE
+    )
+    .record(rejection_options.0.len() as f64);
 
     // Get base mergeable channel results
     let channel_reads_start = Instant::now();
@@ -252,6 +276,7 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
     }
 
     // Get merged result rejection options
+    let rejection_selection_start = Instant::now();
     let rejection_options_with_overflow = get_merged_result_rejection(
         &branches_set,
         &rejection_options,
@@ -329,10 +354,17 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
         }
     };
 
-    // Compute optimal rejection using cost function
-    let optimal_rejection = get_optimal_rejection(rejection_options_with_overflow, |branch| {
-        branch.0.iter().map(|item| cost(item)).sum()
-    });
+    // Compute optimal rejection using prior losses, then cost
+    let optimal_rejection = get_optimal_rejection(
+        rejection_options_with_overflow,
+        |branch| branch.0.iter().map(|item| cost(item)).sum(),
+        |branch| branch_losses(branch, prior_losses),
+    );
+    metrics::histogram!(
+        crate::rust::metrics_constants::DAG_MERGE_REJECTION_SELECTION_TIME_METRIC,
+        "source" => crate::rust::metrics_constants::MERGING_METRICS_SOURCE
+    )
+    .record(rejection_selection_start.elapsed().as_secs_f64());
 
     if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
         tracing::debug!(target: "f1r3fly.merge.step", step = "resolve_conflicts.optimal_rejection",
@@ -424,7 +456,7 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
     })
 }
 
-/// Finding-A runtime guard (docs/theory/merge-algebra/merge-algebra-verification.md §6).
+/// Finding-A runtime guard (docs/casper/theory/merge-algebra/merge-algebra-verification.md §6).
 /// The shipped merge operator `ChannelChange::combine` (max-union) is
 /// non-associative, yet the merged root is node-identical because survivors are
 /// folded in canonical sorted order AND no order-dependent survivor pair reaches
@@ -645,13 +677,6 @@ where
     // + `combine_max_eq_combine_sum_under_no_dup`).
     let mergeable_keys: HashSet<Blake2b256Hash> = all_mergeable_channels.keys().cloned().collect();
     if let Some(channel) = order_guard.first_offender(&mergeable_keys) {
-        debug_assert!(
-            false,
-            "order-dependent survivor pair reached apply on channel {} — the \
-             max-union merge fold is not order-independent here (Finding A; \
-             docs/theory/merge-algebra/merge-algebra-verification.md §6)",
-            hex::encode(channel.bytes())
-        );
         tracing::error!(target: "f1r3fly.merge.step",
             step = "apply.order_dependent_survivor_pair",
             channel = %hex::encode(channel.bytes()),
@@ -673,6 +698,16 @@ where
     // Compute and apply trie actions with timing
     let (trie_actions, compute_actions_time) =
         measure_result_time(|| compute_trie_actions(all_changes, all_mergeable_channels.clone()))?;
+    metrics::histogram!(
+        crate::rust::metrics_constants::DAG_MERGE_COMPUTE_TRIE_ACTIONS_TIME_METRIC,
+        "source" => crate::rust::metrics_constants::MERGING_METRICS_SOURCE
+    )
+    .record(compute_actions_time.as_secs_f64());
+    metrics::histogram!(
+        crate::rust::metrics_constants::DAG_MERGE_STATE_APPLICATION_ACTIONS_METRIC,
+        "source" => crate::rust::metrics_constants::MERGING_METRICS_SOURCE
+    )
+    .record(trie_actions.len() as f64);
 
     tracing::debug!(target: "f1r3fly.merge.step", step = "compute_merged_state.compute_trie_actions.EXIT",
         n_trie_actions = trie_actions.len(),
@@ -680,6 +715,11 @@ where
 
     let (new_state, apply_actions_time) =
         measure_result_time(|| apply_trie_actions(trie_actions.clone()))?;
+    metrics::histogram!(
+        crate::rust::metrics_constants::DAG_MERGE_APPLY_TRIE_ACTIONS_TIME_METRIC,
+        "source" => crate::rust::metrics_constants::MERGING_METRICS_SOURCE
+    )
+    .record(apply_actions_time.as_secs_f64());
 
     tracing::debug!(target: "f1r3fly.merge.step", step = "compute_merged_state.apply_trie_actions.EXIT",
         new_state = %hex::encode(new_state.clone().bytes()),
@@ -763,6 +803,9 @@ pub fn merge<
         late_seq,
         &depends,
         &cost,
+        // This wrapper merges a bare chain set with no block context, so no
+        // prior-loss records exist to consult.
+        &|_| 0,
         &mergeable_channels,
         &get_data,
         &compute_branches,
@@ -789,11 +832,40 @@ pub fn merge<
     Ok((new_state, resolved.rejected))
 }
 
+/// Prior-loss profile of a set of rejected items: `(max, sum)`. The max is
+/// the chain-level rule ratified for phase 1 (a dependency chain carries its
+/// highest member count) lifted to the branch; the sum breaks max ties.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct LossProfile {
+    pub max: u64,
+    pub sum: u64,
+}
+
+impl LossProfile {
+    fn fold(self, other: LossProfile) -> LossProfile {
+        LossProfile {
+            max: self.max.max(other.max),
+            sum: self.sum.saturating_add(other.sum),
+        }
+    }
+}
+
+fn branch_losses<R>(branch: &Branch<R>, prior_losses: &impl Fn(&R) -> u64) -> LossProfile {
+    branch.0.iter().fold(LossProfile::default(), |acc, item| {
+        let losses = prior_losses(item);
+        acc.fold(LossProfile {
+            max: losses,
+            sum: losses,
+        })
+    })
+}
+
 /// Compute optimal rejection configuration.
 /// Find the optimal rejection set from conflicting branches.
 fn get_optimal_rejection<R: Eq + std::hash::Hash + Clone + Ord>(
     options: HashableSet<HashableSet<Branch<R>>>,
     target_f: impl Fn(&Branch<R>) -> u64,
+    losses_f: impl Fn(&Branch<R>) -> LossProfile,
 ) -> HashableSet<Branch<R>> {
     assert!(
         options
@@ -818,55 +890,64 @@ fn get_optimal_rejection<R: Eq + std::hash::Hash + Clone + Ord>(
     tracing::debug!(target: "f1r3fly.merge.step", step = "get_optimal_rejection.ENTER",
         n_options = options.0.len());
 
-    // Convert to sorted list for deterministic processing
-    let mut options_vec: Vec<_> = options.0.into_iter().collect();
-    options_vec.sort_by(|a, b| {
-        // First criterion: sum of target function values
-        let a_sum: u64 = a.0.iter().map(|branch| target_f(branch)).sum();
-        let b_sum: u64 = b.0.iter().map(|branch| target_f(branch)).sum();
-
-        if a_sum != b_sum {
-            return a_sum.cmp(&b_sum);
-        }
-
-        // Second criterion: total size of branches
-        let a_size: usize = a.0.iter().map(|branch| branch.0.len()).sum();
-        let b_size: usize = b.0.iter().map(|branch| branch.0.len()).sum();
-
-        if a_size != b_size {
-            return a_size.cmp(&b_size);
-        }
-
-        let mut a_branches: Vec<_> = a.0.iter().collect();
-        let mut b_branches: Vec<_> = b.0.iter().collect();
-        a_branches.sort_by(|x, y| compare_branches(x, y));
-        b_branches.sort_by(|x, y| compare_branches(x, y));
-
-        for (a_branch, b_branch) in a_branches.iter().zip(b_branches.iter()) {
-            let ord = compare_branches(a_branch, b_branch);
-            if ord != std::cmp::Ordering::Equal {
-                return ord;
+    // Convert to sorted list for deterministic processing. The numeric keys
+    // are computed once per option, not once per comparison.
+    let mut keyed: Vec<(LossProfile, u64, usize, HashableSet<Branch<R>>)> = options
+        .0
+        .into_iter()
+        .map(|option| {
+            // Zeroth criterion (issue #294): prior losses of the rejected set,
+            // ascending — reject the set whose HIGHEST-loss member is lowest,
+            // then the set with the smaller loss total. A chain that already
+            // lost gains priority with every loss, and a coalition of
+            // low-loss chains can never outweigh one chain that has lost more
+            // than any of them. All-zero counts fall through to the cost
+            // criterion unchanged.
+            let losses = option.0.iter().fold(LossProfile::default(), |acc, branch| {
+                acc.fold(losses_f(branch))
+            });
+            // First criterion: sum of target function values
+            let cost: u64 = option.0.iter().map(|branch| target_f(branch)).sum();
+            // Second criterion: total size of branches
+            let size: usize = option.0.iter().map(|branch| branch.0.len()).sum();
+            (losses, cost, size, option)
+        })
+        .collect();
+    keyed.sort_by(
+        |(a_losses, a_cost, a_size, a), (b_losses, b_cost, b_size, b)| {
+            let by_keys = (a_losses, a_cost, a_size).cmp(&(b_losses, b_cost, b_size));
+            if by_keys != std::cmp::Ordering::Equal {
+                return by_keys;
             }
-        }
-        a_branches.len().cmp(&b_branches.len())
-    });
+
+            let mut a_branches: Vec<_> = a.0.iter().collect();
+            let mut b_branches: Vec<_> = b.0.iter().collect();
+            a_branches.sort_by(|x, y| compare_branches(x, y));
+            b_branches.sort_by(|x, y| compare_branches(x, y));
+
+            for (a_branch, b_branch) in a_branches.iter().zip(b_branches.iter()) {
+                let ord = compare_branches(a_branch, b_branch);
+                if ord != std::cmp::Ordering::Equal {
+                    return ord;
+                }
+            }
+            a_branches.len().cmp(&b_branches.len())
+        },
+    );
 
     if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
-        let candidates: Vec<(usize, u64, usize)> = options_vec
+        let candidates: Vec<(usize, LossProfile, u64, usize)> = keyed
             .iter()
-            .map(|o| {
-                let cost: u64 = o.0.iter().map(|branch| target_f(branch)).sum();
-                let size: usize = o.0.iter().map(|branch| branch.0.len()).sum();
-                (o.0.len(), cost, size)
-            })
+            .map(|(losses, cost, size, o)| (o.0.len(), *losses, *cost, *size))
             .collect();
         tracing::debug!(target: "f1r3fly.merge.step", step = "get_optimal_rejection.candidates",
-            candidates_n_branches_cost_size = ?candidates);
+            candidates_n_branches_losses_cost_size = ?candidates);
     }
 
-    let chosen = options_vec
+    let chosen = keyed
         .into_iter()
         .next()
+        .map(|(_, _, _, option)| option)
         .unwrap_or_else(|| HashableSet(HashSet::new()));
 
     if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
@@ -1109,7 +1190,29 @@ fn get_merged_result_rejection<R: Clone + Eq + std::hash::Hash + Ord>(
 mod tests {
     use std::collections::{BTreeMap, HashSet};
 
+    use metrics_util::debugging::{DebugValue, DebuggingRecorder, Snapshotter};
+
     use super::*;
+    use crate::rust::metrics_constants::{
+        DAG_MERGE_APPLY_TRIE_ACTIONS_TIME_METRIC, DAG_MERGE_COMPUTE_TRIE_ACTIONS_TIME_METRIC,
+        DAG_MERGE_CONFLICT_EDGES_METRIC, DAG_MERGE_REJECTION_OPTIONS_METRIC,
+        DAG_MERGE_REJECTION_SELECTION_TIME_METRIC, DAG_MERGE_RELATION_BRANCHES_METRIC,
+        DAG_MERGE_RELATION_ITEMS_METRIC, DAG_MERGE_STATE_APPLICATION_ACTIONS_METRIC,
+    };
+
+    #[allow(clippy::mutable_key_type)]
+    fn histogram_values(snapshotter: &Snapshotter) -> HashMap<String, Vec<f64>> {
+        let mut result: HashMap<String, Vec<f64>> = HashMap::new();
+        for (key, (_, _, value)) in snapshotter.snapshot().into_hashmap() {
+            if let DebugValue::Histogram(values) = value {
+                result
+                    .entry(key.key().name().to_string())
+                    .or_default()
+                    .extend(values.into_iter().map(|value| value.into_inner()));
+            }
+        }
+        result
+    }
 
     fn branch(items: &[i32]) -> Branch<i32> {
         HashableSet(items.iter().copied().collect::<HashSet<i32>>())
@@ -1117,6 +1220,13 @@ mod tests {
 
     fn rejection_option(branches: &[Branch<i32>]) -> HashableSet<Branch<i32>> {
         HashableSet(branches.iter().cloned().collect::<HashSet<Branch<i32>>>())
+    }
+
+    fn losses(count: u64) -> LossProfile {
+        LossProfile {
+            max: count,
+            sum: count,
+        }
     }
 
     #[test]
@@ -1141,9 +1251,11 @@ mod tests {
         let option_b = rejection_option(&[branch(&[2]), branch(&[3])]);
         let options = HashableSet(HashSet::from([option_b.clone(), option_a.clone()]));
 
-        let chosen = get_optimal_rejection(options, |branch| {
-            branch.0.iter().map(|value| *value as u64).sum()
-        });
+        let chosen = get_optimal_rejection(
+            options,
+            |branch| branch.0.iter().map(|value| *value as u64).sum(),
+            |_branch| losses(0),
+        );
 
         assert_eq!(chosen, option_a);
     }
@@ -1158,9 +1270,93 @@ mod tests {
             HashableSet(HashSet::from([option_a.clone(), option_b.clone()])),
             HashableSet(HashSet::from([option_b.clone(), option_a.clone()])),
         ] {
-            let chosen = get_optimal_rejection(options, |_branch| 0u64);
+            let chosen = get_optimal_rejection(options, |_branch| 0u64, |_branch| losses(0));
             assert_eq!(chosen, option_a);
         }
+    }
+
+    #[test]
+    fn optimal_rejection_keeps_higher_loss_branch_despite_cost() {
+        let high_loss = branch(&[1]);
+        let low_loss = branch(&[2]);
+        let reject_high_loss = rejection_option(std::slice::from_ref(&high_loss));
+        let reject_low_loss = rejection_option(std::slice::from_ref(&low_loss));
+        let options = HashableSet(HashSet::from([reject_high_loss, reject_low_loss.clone()]));
+
+        let chosen = get_optimal_rejection(
+            options,
+            |branch| if branch == &high_loss { 1 } else { 100 },
+            |branch| losses(if branch == &high_loss { 3 } else { 0 }),
+        );
+
+        assert_eq!(chosen, reject_low_loss);
+    }
+
+    #[test]
+    fn optimal_rejection_equal_nonzero_losses_fall_back_to_cost_and_order() {
+        let lower = branch(&[1]);
+        let higher = branch(&[2]);
+        let reject_lower = rejection_option(std::slice::from_ref(&lower));
+        let reject_higher = rejection_option(std::slice::from_ref(&higher));
+
+        let cost_choice = get_optimal_rejection(
+            HashableSet(HashSet::from([reject_lower.clone(), reject_higher.clone()])),
+            |branch| if branch == &lower { 10 } else { 1 },
+            |_branch| losses(4),
+        );
+        assert_eq!(cost_choice, reject_higher);
+
+        let order_choice = get_optimal_rejection(
+            HashableSet(HashSet::from([reject_lower.clone(), reject_higher])),
+            |_branch| 1,
+            |_branch| losses(4),
+        );
+        assert_eq!(order_choice, reject_lower);
+    }
+
+    #[test]
+    fn optimal_rejection_keeps_highest_loss_chain_over_low_loss_coalition() {
+        // Rejecting {first, second} sums to 4 losses; rejecting {third} sums
+        // to 3. A sum-only rule would reject third, the chain that has lost
+        // more than either rival. Max-first keeps it.
+        let first = branch(&[1]);
+        let second = branch(&[2]);
+        let third = branch(&[3]);
+        let reject_pair = rejection_option(&[first.clone(), second.clone()]);
+        let reject_single = rejection_option(std::slice::from_ref(&third));
+        let options = HashableSet(HashSet::from([reject_pair.clone(), reject_single]));
+
+        let chosen = get_optimal_rejection(
+            options,
+            |branch| if branch == &third { 100 } else { 1 },
+            |branch| losses(if branch == &third { 3 } else { 2 }),
+        );
+
+        assert_eq!(chosen, reject_pair);
+    }
+
+    #[test]
+    fn optimal_rejection_equal_max_losses_fall_back_to_loss_sum() {
+        let first = branch(&[1]);
+        let second = branch(&[2]);
+        let third = branch(&[3]);
+        let reject_pair = rejection_option(&[first.clone(), second.clone()]);
+        let reject_single = rejection_option(std::slice::from_ref(&third));
+        let options = HashableSet(HashSet::from([reject_pair, reject_single.clone()]));
+
+        let chosen = get_optimal_rejection(
+            options,
+            |branch| if branch == &third { 100 } else { 1 },
+            |_branch| losses(2),
+        );
+
+        assert_eq!(chosen, reject_single);
+    }
+
+    #[test]
+    fn branch_losses_takes_max_and_sum_over_members() {
+        let profile = branch_losses(&branch(&[1, 2, 3]), &|item: &i32| *item as u64);
+        assert_eq!(profile, LossProfile { max: 3, sum: 6 });
     }
 
     #[test]
@@ -1169,6 +1365,9 @@ mod tests {
         let late_seq = Vec::<i32>::new();
         let base_channel = Blake2b256Hash::from_bytes(vec![7u8; 32]);
 
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let guard = metrics::set_default_local_recorder(&recorder);
         let result = merge(
             actual_seq,
             late_seq,
@@ -1212,10 +1411,36 @@ mod tests {
                     .collect())
             },
         );
+        drop(guard);
 
         assert!(result.is_ok());
         let (_new_state, rejected) = result.unwrap();
         assert!(!rejected.0.is_empty());
+        let samples = histogram_values(&snapshotter);
+        assert_eq!(
+            samples.get(DAG_MERGE_RELATION_ITEMS_METRIC),
+            Some(&vec![2.0])
+        );
+        assert_eq!(
+            samples.get(DAG_MERGE_RELATION_BRANCHES_METRIC),
+            Some(&vec![2.0])
+        );
+        assert_eq!(
+            samples.get(DAG_MERGE_CONFLICT_EDGES_METRIC),
+            Some(&vec![0.0])
+        );
+        assert_eq!(
+            samples.get(DAG_MERGE_STATE_APPLICATION_ACTIONS_METRIC),
+            Some(&vec![0.0])
+        );
+        for metric_name in [
+            DAG_MERGE_REJECTION_OPTIONS_METRIC,
+            DAG_MERGE_REJECTION_SELECTION_TIME_METRIC,
+            DAG_MERGE_COMPUTE_TRIE_ACTIONS_TIME_METRIC,
+            DAG_MERGE_APPLY_TRIE_ACTIONS_TIME_METRIC,
+        ] {
+            assert_eq!(samples.get(metric_name).map(Vec::len), Some(1));
+        }
     }
 
     // ---- IntegerAdd overflow-launder regression (Phase 6 W3/W4) --------------

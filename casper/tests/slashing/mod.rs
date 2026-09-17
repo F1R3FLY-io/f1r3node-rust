@@ -1,12 +1,12 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // Slashing-subsystem test suite.
 //
 // This module hosts the test catalogue prescribed by
-// docs/theory/slashing/design/14-test-plan.md:
+// docs/casper/theory/slashing/design/14-test-plan.md:
 //   • example-based use-case tests (uc_<NN>_*.rs and integration_t_*.rs)
 //   • frontier/threat-model fixtures from Sage and Hypothesis search
 //   • property-based theorem tests (prop_t_*.rs)
@@ -163,7 +163,7 @@ mod bounded_arithmetic_projection;
 mod closure_fixed_point_certificate;
 mod disconnected_neglect_cycle;
 mod detector_totality_helpers;
-mod dispatch_catchall_mints_record_for_each_slashable_variant;
+mod dispatch_routes_demoted_variants_to_the_drop_arm;
 mod divergence_class;
 mod duplicate_neglect_edges;
 mod epoch_evidence_rollover;

@@ -92,6 +92,11 @@ pub struct MultiParentCasperImpl<T: TransportLayer + Send + Sync> {
     /// Flag to track finalization status - block proposals fail fast if finalization is running.
     /// This prevents validators from creating blocks with stale snapshots during finalization.
     pub finalization_in_progress: Arc<AtomicBool>,
+    /// Escalates a persistent containment hold (the shard finalizing floors
+    /// this node's LFB is not contained in) to a finality-divergence ERROR
+    /// and metric. See `finalization_runner::DivergenceMonitor`.
+    pub divergence_monitor:
+        Arc<crate::rust::engine::multi_parent_casper::finalization_runner::DivergenceMonitor>,
     /// Single-flight guard for background finalizer scheduling from propose path.
     pub finalizer_task_in_progress: Arc<AtomicBool>,
     /// Indicates a finalizer run was requested while another run was still in progress.

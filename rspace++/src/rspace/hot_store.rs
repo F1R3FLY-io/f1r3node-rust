@@ -1252,3 +1252,162 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod behavior_tests {
+    use super::*;
+
+    struct StubHistoryReaderBase {
+        data: Vec<Datum<String>>,
+        conts: Vec<WaitingContinuation<String, String>>,
+        joins: Vec<Vec<String>>,
+    }
+
+    impl HistoryReaderBase<String, String, String, String> for StubHistoryReaderBase {
+        fn get_data_proj(&self, _key: &String) -> Vec<Datum<String>> { self.data.clone() }
+
+        fn get_continuations_proj(
+            &self,
+            _key: &Vec<String>,
+        ) -> Vec<WaitingContinuation<String, String>> {
+            self.conts.clone()
+        }
+
+        fn get_joins_proj(&self, _key: &String) -> Vec<Vec<String>> { self.joins.clone() }
+    }
+
+    fn store_with_history(
+        data: Vec<Datum<String>>,
+        conts: Vec<WaitingContinuation<String, String>>,
+        joins: Vec<Vec<String>>,
+    ) -> Box<dyn HotStore<String, String, String, String>> {
+        HotStoreInstances::create_from_hr(Box::new(StubHistoryReaderBase { data, conts, joins }))
+    }
+
+    fn mk_datum(value: &str) -> Datum<String> {
+        Datum {
+            a: value.to_string(),
+            persist: false,
+            source: Default::default(),
+        }
+    }
+
+    fn mk_continuation(pattern: &str) -> WaitingContinuation<String, String> {
+        WaitingContinuation {
+            patterns: vec![pattern.to_string()],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn get_continuations_prepends_installed_before_history_fill() {
+        let history_cont = mk_continuation("from-history");
+        let store = store_with_history(vec![], vec![history_cont.clone()], vec![]);
+        let channels = vec!["ch".to_string()];
+
+        store
+            .install_continuation(&channels, mk_continuation("installed"))
+            .unwrap();
+
+        let result = store.get_continuations(&channels);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].patterns, vec!["installed".to_string()]);
+        assert_eq!(result[1], history_cont);
+
+        let arcs = store.get_continuations_arc(&channels);
+        assert_eq!(arcs.len(), 2);
+        assert_eq!(arcs[0].patterns, vec!["installed".to_string()]);
+    }
+
+    #[test]
+    fn get_joins_merges_installed_with_history_fill_and_cache() {
+        let history_join = vec!["other".to_string()];
+        let store = store_with_history(vec![], vec![], vec![history_join.clone()]);
+        let channel = "ch".to_string();
+        let installed_join = vec!["installed".to_string()];
+
+        store.install_join(&channel, &installed_join).unwrap();
+
+        let first = store.get_joins(&channel);
+        assert_eq!(first, vec![installed_join.clone(), history_join.clone()]);
+
+        let second = store.get_joins(&channel);
+        assert_eq!(second, vec![installed_join, history_join]);
+    }
+
+    #[test]
+    fn to_map_combines_data_with_continuations_and_skips_empty_rows() {
+        let store = store_with_history(vec![], vec![], vec![]);
+        let channel = "ch".to_string();
+        let datum = mk_datum("value");
+        let continuation = mk_continuation("pattern");
+
+        store.put_datum(&channel, datum.clone());
+        store
+            .put_continuation(&[channel.clone()], continuation.clone())
+            .unwrap();
+        let _ = store.get_data(&"empty-channel".to_string());
+
+        let map = store.to_map();
+        let row = map
+            .get(&vec![channel])
+            .expect("populated row must be present");
+        assert_eq!(row.data, vec![datum]);
+        assert_eq!(row.wks, vec![continuation]);
+        assert!(!map.contains_key(&vec!["empty-channel".to_string()]));
+    }
+
+    #[test]
+    fn is_empty_ignores_cached_empty_reads_and_changes_reports_deletes() {
+        let store = store_with_history(vec![], vec![], vec![]);
+        assert!(store.is_empty());
+
+        let _ = store.get_data(&"d".to_string());
+        let _ = store.get_continuations(&["k".to_string()]);
+        let _ = store.get_joins(&"j".to_string());
+        assert!(store.is_empty());
+
+        let changes = store.changes();
+        assert_eq!(changes.len(), 3);
+        assert!(
+            changes
+                .iter()
+                .all(|action| matches!(action, HotStoreAction::Delete(_)))
+        );
+
+        store.put_datum(&"d".to_string(), mk_datum("value"));
+        assert!(!store.is_empty());
+    }
+
+    #[test]
+    fn clear_resets_state_and_refills_from_history() {
+        let history_datum = mk_datum("from-history");
+        let store = store_with_history(vec![history_datum.clone()], vec![], vec![]);
+        let channel = "ch".to_string();
+
+        store.put_datum(&channel, mk_datum("hot"));
+        assert_eq!(store.get_data(&channel).len(), 2);
+
+        store.clear();
+        assert!(store.is_empty());
+        assert_eq!(store.get_data(&channel), vec![history_datum]);
+    }
+
+    #[test]
+    fn history_cache_eviction_is_transparent_to_reads() {
+        let history_datum = mk_datum("stable");
+        let history_cont = mk_continuation("stable");
+        let history_join = vec!["stable".to_string()];
+        let store =
+            store_with_history(vec![history_datum.clone()], vec![history_cont.clone()], vec![
+                history_join.clone(),
+            ]);
+
+        for i in 0..(MAX_HISTORY_STORE_CACHE_ENTRIES + 8) {
+            let key = format!("chan-{i}");
+            assert_eq!(store.get_data(&key), vec![history_datum.clone()]);
+            assert_eq!(store.get_continuations(&[key.clone()]), vec![history_cont.clone()]);
+            assert_eq!(store.get_joins(&key), vec![history_join.clone()]);
+        }
+    }
+}

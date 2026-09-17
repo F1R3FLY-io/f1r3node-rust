@@ -1,7 +1,7 @@
 // Shared helpers for the Track 2 production-path integration
 // tests and Track 3 triple-bisimilarity proptests.
 //
-// Reference: docs/theory/slashing/design/14-test-plan.md §14.3.5
+// Reference: docs/casper/theory/slashing/design/14-test-plan.md §14.3.5
 // (production-path integration), §14.5 (cross-tier bisim).
 // Plan-agent design from session ending at commit 030336a.
 
@@ -572,7 +572,7 @@ pub async fn propose_with_block_mutation(
 /// `is_neglected_equivocation_detected_with_update` fires and
 /// classifies as `InvalidBlock::NeglectedEquivocation`.
 ///
-/// Reference: docs/theory/slashing/design/14-test-plan.md §14.3.5
+/// Reference: docs/casper/theory/slashing/design/14-test-plan.md §14.3.5
 /// (production-path integration). Plan-agent designed Item 5 of
 /// the principled-resolution session.
 ///

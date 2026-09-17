@@ -107,7 +107,7 @@ curl http://localhost:40403/api/status
 | `shardId` | string | Shard identifier |
 | `peers` | int | Connected peer count |
 | `nodes` | int | Discovered node count |
-| `minPhloPrice` | int | Minimum phlogiston price for deploys |
+| `minPhloPrice` | int | Minimum phlogiston price for deploys — the chain-adopted floor once casper is up; until then the local genesis-seed value. `isReady: false` marks every value in this payload provisional |
 | `peerList` | array | Detailed peer info with connection status |
 | `nativeTokenName` | string | Full token name from genesis |
 | `nativeTokenSymbol` | string | Token ticker symbol |
@@ -118,6 +118,16 @@ curl http://localhost:40403/api/status
 | `isReady` | bool | `true` after engine enters Running state |
 | `currentEpoch` | int | `lastFinalizedBlockNumber / epochLength` |
 | `epochLength` | int | Blocks per epoch, from genesis configuration |
+
+---
+
+### `GET /api/ready`
+
+Readiness probe. Returns HTTP 200 with `{"ready": true}` once the Casper engine has entered the Running state and the node can serve deploys and exploratory deploys. Returns HTTP 503 with `{"ready": false}` while Casper is still initializing (genesis ceremony, or last-finalized-state sync on an observer).
+
+Unlike `GET /api/status`, which answers 200 throughout startup, this endpoint fails until the node is deploy-ready, so it works directly as a container health check (`docker compose up --wait`, `depends_on: condition: service_healthy`) and as a Kubernetes `httpGet` readiness probe without needing `jq`.
+
+A node running the genesis ceremony (minutes to hours) reports `unhealthy` for the whole window, because it cannot serve deploys yet. Operators spanning a long genesis raise `--wait-timeout` (Docker Compose) or probe `failureThreshold` / `start_period` (Kubernetes, Docker `HEALTHCHECK`) accordingly.
 
 ---
 
@@ -335,6 +345,60 @@ Possible `state` values: `Finalized`, `Failed`, `Pending`, `Expired`.
 | `200` | Status determined |
 | `400` | Signature is not valid hex (`invalid_hash`) |
 | `500` | Node-side failure |
+
+#### `GET /api/pending-deploys`
+
+Bulk snapshot of deploys currently queued in the node's local proposer pools: `deploy_storage` (submitted, not yet proposed) and `rejected_deploy_buffer` (recovering after a merge conflict). Each entry carries an `isRejected` flag so consumers can distinguish fresh deploys from recovery-backlog deploys.
+
+The queue is **node-local**: deploys never gossip between nodes, so an observer (read-only) node always answers `{"deploys": [], "totalAvailable": 0}` — it rejects `doDeploy`, so it never holds pending deploys. Route this request to a validator. For deploy status that is consistent across nodes, use `GET /api/deploy-finalization-status/{sig}` instead, which is DAG-derived.
+
+Already-included, future (`validAfterBlockNumber` ahead of the tip), and expired deploys are filtered out; a signature sitting in both pools is reported once with `isRejected: true`.
+
+**Parameters:**
+
+| Parameter | Location | Required | Description |
+|-----------|----------|----------|-------------|
+| `deployer` | query | no | Hex-encoded deployer public key; omit to return all pending deploys |
+
+```bash
+curl http://localhost:40403/api/pending-deploys
+curl http://localhost:40403/api/pending-deploys?deployer=04abc...
+```
+
+```json
+{
+  "deploys": [
+    {
+      "term": "@1!(1)",
+      "timestamp": 1700000000000,
+      "phloPrice": 1,
+      "phloLimit": 90000,
+      "validAfterBlockNumber": 0,
+      "shardId": "",
+      "deployer": "04abc...",
+      "sig": "3044...",
+      "sigAlgorithm": "secp256k1",
+      "expirationTimestamp": null,
+      "isRejected": false
+    }
+  ],
+  "totalAvailable": 1
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `deploys` | array | Pending deploys, sorted by `(timestamp, sig)` |
+| `totalAvailable` | int | Count before cap truncation. If `totalAvailable > deploys.length`, more entries exist than returned |
+| `deploys[].isRejected` | bool | `true` = rejected-recovery buffer (merge conflict), `false` = fresh in deploy_storage |
+
+Responses are capped at 1000 entries; compare `totalAvailable` with the array length to detect truncation.
+
+| Status | Condition |
+|--------|-----------|
+| `200` | Snapshot taken |
+| `400` | Deployer key is not valid hex (`invalid_public_key`) |
+| `500` | Node-side failure (including bootstrapping node, Casper not yet initialised) |
 
 #### `GET /api/prepare-deploy`
 
@@ -808,6 +872,7 @@ curl -X POST http://localhost:40405/api/propose
 | `visualizeDag` | `VisualizeDagQuery` | `stream VisualizeBlocksResponse` | DAG visualization in DOT format. Takes depth + startBlockNumber + showJustificationLines |
 | `machineVerifiableDag` | `MachineVerifyQuery` | `MachineVerifyResponse` | Machine-parseable DAG representation |
 | `status` | `google.protobuf.Empty` | `StatusResponse` | Node status — version, address, peers, network, native token metadata, LFB number, isValidator, isReadOnly, isReady, epoch |
+| `getPendingDeploys` | `PendingDeploysQuery` | `PendingDeploysResponse` | Bulk list of the node-local pending-deploy queue (deploy_storage + rejected-recovery buffer), optionally filtered by `deployerPubkey`. Capped at 1000 entries; `totalAvailable` reports the pre-cap count. Observers always answer empty. HTTP: `GET /api/pending-deploys` |
 
 ### ProposeService (port 40402)
 

@@ -3,7 +3,7 @@
 // and exposes per-step `SlashingObserver` accessors so test
 // assertions can pin pointwise agreement.
 //
-// Reference: docs/theory/slashing/design/14-test-plan.md §14.5
+// Reference: docs/casper/theory/slashing/design/14-test-plan.md §14.5
 // (cross-implementation tests), design/14a-tier-architecture.md §3
 // (triple-bisim test pattern). Plan-agent designed.
 //

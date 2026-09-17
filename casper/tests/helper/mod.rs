@@ -12,4 +12,3 @@ pub mod rho_spec;
 pub mod secp256k1_sign_contract;
 pub mod sys_auth_token_contract;
 pub mod test_node;
-pub mod unlimited_parents_estimator_fixture;

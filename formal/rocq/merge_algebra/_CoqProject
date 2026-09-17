@@ -5,15 +5,14 @@
 # fork-choice and finalized-floor developments (axiom-free, Stdlib-only).
 #
 # Properties, and what each rules out (all are no-fork / merge-soundness):
-#   * KeepOneOrder (P3) - the 5-key DeployChainIndex comparator is a STRICT TOTAL
-#     order whose Equal-class is EXACTLY the injective terminal key, so the merge
+#   * KeepOneOrder (P3) - the DeployChainIndex comparator's four priority tiers
+#     plus composite Eq/Hash identity form a STRICT TOTAL order, so the merge
 #     winner is node-identical. STRICTLY FIRMER than fork_choice/TieBreak.v: NO
 #     NoDup / hash-distinctness premise (the injective key makes distinct entries
 #     orderable BY CONSTRUCTION).
-#   * ChannelNetting (GAP-1) - ChannelChange.combine is commutative; the shipped
-#     max-union operator is NON-associative (Finding A, EXHIBITED as a theorem,
-#     mirror of IntegerAdd.launder_exhibit); the sum-union FIX is a commutative
-#     monoid whose fold is permutation-invariant (order-independent netting).
+#   * ChannelNetting (GAP-1) - causal effect-map union deduplicates identities;
+#     distinct effects compose in the free commutative multiset monoid. Max-union
+#     and whole-block-delta replication remain mechanized negative models.
 #   * ConflictSoundness (GAP-3) - the REMOVED single-value-cell (consume-then-
 #     produce) conflict predicate is SUBSUMED by the retained double-consume race
 #     detector, except on number/foldable channels (intrinsically mergeable).
@@ -24,8 +23,8 @@
 #     module, introducing NO new assumptions.
 #
 # Source under verification:
-#   casper/src/rust/merging/deploy_chain_index.rs            (impl Ord, 5-key tower)
-#   rspace++/src/rspace/merger/channel_change.rs             (combine / vec_union)
+#   casper/src/rust/merging/deploy_chain_index.rs            (impl Ord, causal effects)
+#   rspace++/src/rspace/merger/channel_change.rs             (additive_join)
 #   rspace++/src/rspace/merger/merging_logic.rs              (conflicts detectors)
 #   rspace++/src/rspace/merger/event_log_index.rs            (combine, split fold)
 #

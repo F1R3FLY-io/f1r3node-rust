@@ -1,6 +1,6 @@
 // UC-44 — Two validators equivocate simultaneously (independently).
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-44.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-44.
 // Theorems: T-1 (soundness — only the two equivocators get records),
 // T-9.2 (atomic-RMW), T-Idem.
 

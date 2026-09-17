@@ -1,7 +1,6 @@
 ---
 task: merge-recovery-validation-port
 branch: fix/dev-merge-recovery-validation
-claimed_by: claude-session-07b4ccc6
 started: 2026-07-13T20:00:00Z
 handoff_status: in_progress
 ---
@@ -13,7 +12,7 @@ handoff_status: in_progress
 The branch validates the corrections developed on `fix/merge-recovery-finalization`
 (preserved tip `backup/test-asi-chain-validations-f584e9e` = `f584e9e9`) against a
 `dev` baseline (`e71dd897`). Commit `394ecf80` added the intentionally-red
-validation suite; see `docs/validation/merge-recovery-validation-plan.md`.
+validation suite; see `docs/casper/validation/merge-recovery-validation-plan.md`.
 
 ## Phase 1 — minimal port (committed as `7b92f8c7`)
 

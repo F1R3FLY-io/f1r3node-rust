@@ -1,7 +1,7 @@
 // T-13c generalized — Triple bisimilarity on the fork-choice
 // projection.
 //
-// Reference: docs/theory/slashing/design/14-test-plan.md §14.5,
+// Reference: docs/casper/theory/slashing/design/14-test-plan.md §14.5,
 // design/14a-tier-architecture.md §3.
 //
 // Property: an equivocation followed by no slash should leave

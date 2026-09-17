@@ -2,7 +2,7 @@
 # scripts/ci/check-tla-invariants.sh — run TLC against the bounded
 # post-fix MC configs under formal/tlaplus/ and assert clean.
 #
-# Reference: docs/theory/slashing/design/14-test-plan.md §14.6 / §14.9.
+# Reference: docs/casper/theory/slashing/design/14-test-plan.md §14.6 / §14.9.
 # Invokes the TLA+ model checker (TLC) against each MC instance:
 #   • slashing/MC_EquivocationDetector_liveness{,_2v}.tla / .cfg
 #   • slashing/MC_EquivocationDetectorEager{,_3v2s}.tla / .cfg
@@ -18,6 +18,7 @@
 #   • fork_choice/MC_PromotionConvergence.tla / .cfg
 #   • recovery_leader/MC_RecoveryLeader.tla / .cfg
 #   • replay_liveness/MC_ReplayHotLoop.tla / .cfg
+#   • carrier_index/MC_CarrierIndex.tla / .cfg
 #
 # A non-zero exit code from TLC for any post-fix configuration is a CI
 # failure; the pre-fix configurations (e.g. MC_ConcurrentTracker_pre_fix)
@@ -94,6 +95,7 @@ POST_FIX_CONFIGS=(
     fork_choice/MC_PromotionConvergence
     recovery_leader/MC_RecoveryLeader
     replay_liveness/MC_ReplayHotLoop
+    carrier_index/MC_CarrierIndex
 )
 
 if [[ "${RUN_EXHAUSTIVE_TLA:-0}" == "1" ]]; then

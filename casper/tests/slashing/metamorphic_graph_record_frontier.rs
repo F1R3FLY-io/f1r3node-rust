@@ -1,11 +1,11 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // UC-78 — Metamorphic graph and record frontier.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-78.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-78.
 // Theorems: T-12 graph equivalence, T-5 record equivalence.
 // Reference: formal/sage/slashing/FINDINGS.md (metamorphic
 // properties), formal/tlaplus/slashing/TwoLevelSlashing.tla

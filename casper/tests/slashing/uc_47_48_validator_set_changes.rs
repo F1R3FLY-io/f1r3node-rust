@@ -1,6 +1,6 @@
 // UC-47 + UC-48 — Validator-set changes during pending slash.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12.
 // Theorems: T-Idem, T-10 (fork-choice exclusion).
 //
 // UC-47: a new validator bonds while a slash is pending; the slash

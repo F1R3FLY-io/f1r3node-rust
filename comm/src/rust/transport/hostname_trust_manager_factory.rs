@@ -562,7 +562,236 @@ impl rustls::server::danger::ClientCertVerifier for F1r3flyClientCertVerifier {
 
 #[cfg(test)]
 mod tests {
+    use crypto::rust::util::certificate_helper::CertificatePrinter;
+
     use super::*;
+
+    fn generated_cert_and_address() -> (Vec<u8>, String) {
+        let (secret_key, public_key) = CertificateHelper::generate_key_pair();
+        let cert_der = CertificateHelper::generate_certificate(&secret_key, &public_key)
+            .expect("certificate generation");
+        let address =
+            hex::encode(CertificateHelper::public_address(&public_key).expect("public address"));
+        (cert_der, address)
+    }
+
+    fn generated_pem_pair() -> (String, String) {
+        let (secret_key, public_key) = CertificateHelper::generate_key_pair();
+        let cert_der = CertificateHelper::generate_certificate(&secret_key, &public_key)
+            .expect("certificate generation");
+        let cert_pem = CertificatePrinter::print_certificate(&cert_der);
+        let key_pem =
+            CertificatePrinter::print_private_key_from_secret(&secret_key).expect("key pem");
+        (cert_pem, key_pem)
+    }
+
+    #[test]
+    fn test_validation_error_display_messages() {
+        let cases: Vec<(CertificateValidationError, &str)> = vec![
+            (
+                CertificateValidationError::ValidationFailed("x".to_string()),
+                "Certificate validation failed: x",
+            ),
+            (
+                CertificateValidationError::NotAllowedMethod,
+                "Not allowed validation method",
+            ),
+            (
+                CertificateValidationError::NoHandshakeSession,
+                "No handshake session",
+            ),
+            (
+                CertificateValidationError::WrongAlgorithm,
+                "Certificate's public key has the wrong algorithm",
+            ),
+            (
+                CertificateValidationError::AddressHostnameMismatch,
+                "Certificate's public address doesn't match the hostname",
+            ),
+            (
+                CertificateValidationError::NoEndpointIdentification,
+                "No endpoint identification algorithm",
+            ),
+            (
+                CertificateValidationError::UnknownIdentificationAlgorithm("md5".to_string()),
+                "Unknown identification algorithm: md5",
+            ),
+            (
+                CertificateValidationError::ParsingError("bad der".to_string()),
+                "Certificate parsing error: bad der",
+            ),
+        ];
+
+        for (error, expected) in cases {
+            assert_eq!(error.to_string(), expected);
+        }
+    }
+
+    #[test]
+    fn test_check_server_trusted_requires_hostname() {
+        let manager = HostnameTrustManager::new();
+        let (cert_der, _) = generated_cert_and_address();
+
+        let result = manager.check_server_trusted(&cert_der, "RSA", None);
+        match result.unwrap_err() {
+            CertificateValidationError::ValidationFailed(msg) => {
+                assert!(msg.contains("No hostname provided"));
+            }
+            other => panic!("unexpected error: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_check_identity_rejects_unknown_algorithm() {
+        let manager = HostnameTrustManager::new();
+        let (cert_der, address) = generated_cert_and_address();
+
+        let result = manager.check_identity(Some(&address), &cert_der, "ldaps");
+        assert!(matches!(
+            result.unwrap_err(),
+            CertificateValidationError::UnknownIdentificationAlgorithm(alg) if alg == "ldaps"
+        ));
+    }
+
+    #[test]
+    fn test_check_identity_rejects_garbage_certificate() {
+        let manager = HostnameTrustManager::new();
+        let result = manager.check_identity(Some("host"), b"not a certificate", "https");
+        assert!(matches!(
+            result.unwrap_err(),
+            CertificateValidationError::ParsingError(_)
+        ));
+    }
+
+    #[test]
+    fn test_extract_public_key_rejects_garbage() {
+        let manager = HostnameTrustManager::new();
+        let result = manager.extract_public_key_from_cert(b"junk bytes");
+        assert!(matches!(
+            result.unwrap_err(),
+            CertificateValidationError::ParsingError(_)
+        ));
+    }
+
+    #[test]
+    fn test_get_accepted_issuers_is_empty() {
+        let manager = HostnameTrustManager::new();
+        assert!(manager.get_accepted_issuers().is_empty());
+    }
+
+    #[test]
+    fn test_parse_pem_certificate_round_trip() {
+        let (cert_pem, _) = generated_pem_pair();
+        let cert_der = HostnameTrustManagerFactory::parse_pem_certificate(&cert_pem).unwrap();
+        assert!(!cert_der.as_ref().is_empty());
+    }
+
+    #[test]
+    fn test_parse_pem_certificate_rejects_input_without_certificate() {
+        let result = HostnameTrustManagerFactory::parse_pem_certificate("no pem here");
+        assert!(matches!(
+            result.unwrap_err(),
+            CertificateValidationError::ParsingError(msg) if msg.contains("No certificate found")
+        ));
+    }
+
+    #[test]
+    fn test_parse_pem_private_key_round_trip() {
+        let (_, key_pem) = generated_pem_pair();
+        let key_der = HostnameTrustManagerFactory::parse_pem_private_key(&key_pem).unwrap();
+        assert!(matches!(
+            key_der,
+            rustls::pki_types::PrivateKeyDer::Pkcs8(_)
+        ));
+    }
+
+    #[test]
+    fn test_parse_pem_private_key_rejects_input_without_key() {
+        let result = HostnameTrustManagerFactory::parse_pem_private_key("no pem here");
+        assert!(matches!(
+            result.unwrap_err(),
+            CertificateValidationError::ParsingError(msg) if msg.contains("No private key found")
+        ));
+    }
+
+    #[test]
+    fn test_client_and_server_config_advertise_h2() {
+        let (cert_pem, key_pem) = generated_pem_pair();
+
+        let client_config =
+            HostnameTrustManagerFactory::client_config(&cert_pem, &key_pem).unwrap();
+        assert_eq!(client_config.alpn_protocols, vec![b"h2".to_vec()]);
+
+        let server_config =
+            HostnameTrustManagerFactory::server_config(&cert_pem, &key_pem).unwrap();
+        assert_eq!(server_config.alpn_protocols, vec![b"h2".to_vec()]);
+    }
+
+    #[test]
+    fn test_verify_server_cert_via_rustls_trait() {
+        let manager = HostnameTrustManager::new();
+        let (cert_der, address) = generated_cert_and_address();
+        let cert = CertificateDer::from(cert_der);
+
+        let matching_name = ServerName::try_from(address.clone()).unwrap();
+        let result = manager.verify_server_cert(
+            &cert,
+            &[],
+            &matching_name,
+            &[],
+            rustls::pki_types::UnixTime::now(),
+        );
+        assert!(result.is_ok());
+
+        let wrong_name = ServerName::try_from("wrong.example.com".to_string()).unwrap();
+        let result = manager.verify_server_cert(
+            &cert,
+            &[],
+            &wrong_name,
+            &[],
+            rustls::pki_types::UnixTime::now(),
+        );
+        assert!(matches!(
+            result.unwrap_err(),
+            RustlsError::InvalidCertificate(
+                rustls::CertificateError::ApplicationVerificationFailure
+            )
+        ));
+    }
+
+    #[test]
+    fn test_signature_verification_stubs_accept() {
+        let manager = HostnameTrustManager::new();
+        assert_eq!(manager.supported_verify_schemes(), vec![
+            SignatureScheme::ECDSA_NISTP256_SHA256,
+            SignatureScheme::RSA_PSS_SHA256,
+            SignatureScheme::RSA_PKCS1_SHA256,
+        ]);
+    }
+
+    #[test]
+    fn test_client_cert_verifier_accepts_valid_and_rejects_garbage() {
+        use rustls::server::danger::ClientCertVerifier;
+
+        let verifier = F1r3flyClientCertVerifier::new();
+        let (cert_der, _) = generated_cert_and_address();
+        let cert = CertificateDer::from(cert_der);
+
+        let result = verifier.verify_client_cert(&cert, &[], rustls::pki_types::UnixTime::now());
+        assert!(result.is_ok());
+
+        let garbage = CertificateDer::from(b"garbage".to_vec());
+        let result = verifier.verify_client_cert(&garbage, &[], rustls::pki_types::UnixTime::now());
+        assert!(result.is_err());
+
+        assert!(verifier.client_auth_mandatory());
+        assert!(verifier.root_hint_subjects().is_empty());
+        assert_eq!(verifier.supported_verify_schemes(), vec![
+            SignatureScheme::ECDSA_NISTP256_SHA256,
+            SignatureScheme::RSA_PSS_SHA256,
+            SignatureScheme::RSA_PKCS1_SHA256,
+        ]);
+    }
 
     #[test]
     fn test_hostname_trust_manager_factory_singleton() {

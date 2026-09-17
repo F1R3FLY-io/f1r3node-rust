@@ -1,12 +1,12 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // UC-22 — Unbonded proposer's `prepare_slashing_deploys` returns
 // an empty list (post-fix #8).
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-22.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-22.
 // Theorem: T-9.8 (`t_9_8_unbonded_proposer_no_slash`,
 // formal/rocq/slashing/theories/BugFixUnbondedProposer.v).
 // Reference: design/09-bug-fixes-and-rationale.md §9.9.

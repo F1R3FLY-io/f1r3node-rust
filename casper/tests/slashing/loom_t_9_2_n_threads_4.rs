@@ -2,7 +2,7 @@
 // (nightly-only).
 //
 // Theorem: T-9.2 (atomic record insert).
-// Reference: docs/theory/slashing/slashing-specification.md §10.2,
+// Reference: docs/casper/theory/slashing/slashing-specification.md §10.2,
 // design/14-test-plan.md §14.8.6 (thread counts 2, 4, 8).
 //
 // Loom's state space grows factorially with thread count; 4-thread

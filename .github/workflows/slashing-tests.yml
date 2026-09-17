@@ -69,18 +69,26 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: nightly-2026-02-09
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/master') }}
+      - name: Install nextest
+        uses: taiki-e/install-action@84f5ac3124727fb3d284d4d22ee9ab3654fd09a6 # v2.87.7
+        with:
+          tool: nextest
       - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y protobuf-compiler libssl-dev pkg-config
       - name: Run example-based tests
-        run: cargo test -p casper -- slashing::uc_
+        run: cargo nextest run -p casper slashing::uc_
 
   property-based:
     name: Property-based theorem tests
@@ -89,12 +97,20 @@ jobs:
     # of aborting early; 30 min was exceeded doing real work.
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: nightly-2026-02-09
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/master') }}
+      - name: Install nextest
+        uses: taiki-e/install-action@84f5ac3124727fb3d284d4d22ee9ab3654fd09a6 # v2.87.7
+        with:
+          tool: nextest
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -112,7 +128,7 @@ jobs:
         env:
           PROPTEST_CASES: 2000
           PROPTEST_MAX_GLOBAL_REJECTS: 8192
-        run: cargo test --release -p casper -- slashing::prop_t_ --skip slashing::prop_t_triple_bisim
+        run: cargo nextest run --release -p casper slashing::prop_t_ -- --skip slashing::prop_t_triple_bisim
       - name: Run triple-bisim property tests (serial, bounded cases)
         # The three triple-bisim tests each drive the full dispatch stack per
         # case and accumulate scoped LMDB envs monotonically. Run concurrently
@@ -131,7 +147,7 @@ jobs:
         env:
           PROPTEST_CASES: 25
           PROPTEST_MAX_GLOBAL_REJECTS: 8192
-        run: cargo test --release -p casper -- slashing::prop_t_triple_bisim --test-threads=1
+        run: cargo nextest run --release -p casper --test-threads=1 slashing::prop_t_triple_bisim
 
   pre-fix-regressions:
     name: Pre-fix regression backstops
@@ -141,18 +157,26 @@ jobs:
       matrix:
         bug: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: nightly-2026-02-09
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/master') }}
+      - name: Install nextest
+        uses: taiki-e/install-action@84f5ac3124727fb3d284d4d22ee9ab3654fd09a6 # v2.87.7
+        with:
+          tool: nextest
       - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y protobuf-compiler libssl-dev pkg-config
       - name: Run pre_fix_bug_${{ matrix.bug }}
-        run: cargo test -p casper -- slashing::pre_fix_bug_${{ matrix.bug }}
+        run: cargo nextest run -p casper slashing::pre_fix_bug_${{ matrix.bug }}
 
   loom-interleavings:
     name: Loom exhaustive interleaving (T-9.2)
@@ -162,14 +186,21 @@ jobs:
     # slow run alive without masking a genuine hang for long.
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: nightly-2026-02-09
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: loom
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/master') }}
+      - name: Install nextest
+        uses: taiki-e/install-action@84f5ac3124727fb3d284d4d22ee9ab3654fd09a6 # v2.87.7
+        with:
+          tool: nextest
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -178,7 +209,7 @@ jobs:
         env:
           LOOM_MAX_PREEMPTIONS: "3"
           LOOM_LOG: "off"
-        run: cargo test --release -p casper -- slashing::loom_t_9_2
+        run: cargo nextest run --release -p casper slashing::loom_t_9_2
 
   tla-model-check:
     name: TLA+ invariant check
@@ -193,7 +224,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 240
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
       - name: Install Java + TLC
         # Pinned release + sha256 (same fail-closed pattern as the OCI CLI
         # installer pin in _integration-pipeline.yml): a moved or compromised
@@ -220,11 +253,13 @@ jobs:
           bash scripts/ci/check-formal-invariants.sh "${args[@]}"
 
   rocq-build:
-    name: Rocq slashing and fork-choice rebuild
+    name: Rocq slashing, fork-choice and rspace-guards rebuild
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
       - name: Install Rocq / Coq
         run: |
           sudo apt-get update
@@ -242,14 +277,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: nightly-2026-02-09
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: fuzz
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/master') }}
+      - name: Install nextest
+        uses: taiki-e/install-action@84f5ac3124727fb3d284d4d22ee9ab3654fd09a6 # v2.87.7
+        with:
+          tool: nextest
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -269,12 +311,16 @@ jobs:
     runs-on: ubuntu-latest-8-cores
     timeout-minutes: 240
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: nightly-2026-02-09
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/master') }}
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -299,12 +345,20 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 240
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: nightly-2026-02-09
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/master') }}
+      - name: Install nextest
+        uses: taiki-e/install-action@84f5ac3124727fb3d284d4d22ee9ab3654fd09a6 # v2.87.7
+        with:
+          tool: nextest
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -317,7 +371,7 @@ jobs:
         env:
           PROPTEST_CASES: 10000
           PROPTEST_MAX_GLOBAL_REJECTS: 40960
-        run: cargo test --release -p casper -- slashing::prop_t_ --skip slashing::prop_t_triple_bisim
+        run: cargo nextest run --release -p casper slashing::prop_t_ -- --skip slashing::prop_t_triple_bisim
       - name: Run triple-bisim extended property tests (serial, bounded cases)
         # Same memory-exhaustion guard as the PR-gate job: the triple-bisim
         # trio run concurrently kills the hosted runner (see PR-gate step
@@ -327,7 +381,7 @@ jobs:
         env:
           PROPTEST_CASES: 100
           PROPTEST_MAX_GLOBAL_REJECTS: 8192
-        run: cargo test --release -p casper -- slashing::prop_t_triple_bisim --test-threads=1
+        run: cargo nextest run --release -p casper --test-threads=1 slashing::prop_t_triple_bisim
 
   search-horizon-nightly:
     name: Search-horizon nightly tier (1M fuzz runs)
@@ -335,14 +389,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 300
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: nightly-2026-02-09
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: fuzz
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/master') }}
+      - name: Install nextest
+        uses: taiki-e/install-action@84f5ac3124727fb3d284d4d22ee9ab3654fd09a6 # v2.87.7
+        with:
+          tool: nextest
       - name: Install system dependencies
         run: |
           sudo apt-get update

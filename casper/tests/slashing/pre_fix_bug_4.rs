@@ -1,7 +1,7 @@
 // Pre-fix regression backstop for bug #4 (PoS slash transfer-failure
 // FIXME).
 //
-// Reference: docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.5.
+// Reference: docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.5.
 // Out-of-band approach: this asserts the post-fix behaviour the
 // PoS.rhox `match transferResult { (true, _) | (_, errorMessage) }`
 // idiom guarantees. Pre-fix the slash flow at PoS.rhox:469 had a

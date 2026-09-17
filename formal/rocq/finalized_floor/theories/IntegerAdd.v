@@ -7,7 +7,7 @@
    Two arithmetics meet in the merger:
      * COMBINE (rspace++/merging_logic.rs:42): folds a branch's per-channel
        IntegerAdd diffs with `wrapping_add` (silent mod-2^64).
-     * APPLY-to-base (conflict_set_merger.rs:788): `checked_add`, rejecting the
+     * APPLY-to-base (conflict_set_merger.rs:872): `checked_add`, rejecting the
        branch on overflow OR a negative vault result.
 
    The asymmetry is the launder: a branch whose diffs sum past i64::MAX wraps in
@@ -26,7 +26,7 @@
    Rocq                          | Rust
    ------------------------------+-----------------------------------------------
    wadd (= wrap (a+b))           | combine_mergeable_value IntegerAdd (merging_logic.rs:42)
-   checked_add / checked_apply   | cal_merged_result IntegerAdd arm (conflict_set_merger.rs:788)
+   checked_add / checked_apply   | cal_merged_result IntegerAdd arm (conflict_set_merger.rs:872)
    wsum                          | fold of a branch's diffs via combine (the buggy path)
    checked_combine               | the fail-loudly FIX (W3): checked fold in combine
    launder_exhibit               | the confirmed defect

@@ -1347,4 +1347,599 @@ mod tests {
         let target = r#"{"a" : 1, "b" : 2, "c" : 3}"#;
         assert_eq!(result, target);
     }
+
+    mod direct_ast {
+        use models::rhoapi::connective::ConnectiveInstance;
+        use models::rhoapi::expr::ExprInstance;
+        use models::rhoapi::g_unforgeable::UnfInstance;
+        use models::rhoapi::var::VarInstance;
+        use models::rhoapi::{
+            Bundle, Connective, ConnectiveBody, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte,
+            EMatches, EMethod, EMinus, EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr, EPathMap,
+            EPercentPercent, EPlus, EPlusPlus, ETuple, EVar, EZipper, Expr, GBigRational,
+            GDeployId, GDeployerId, GFixedPoint, GPrivate, GSysAuthToken, GUnforgeable, Match,
+            MatchCase, New, Par, Receive, ReceiveBind, Send, Var, VarRef,
+        };
+        use models::rust::utils::new_gint_par;
+        use pretty_assertions::assert_eq;
+
+        use crate::rust::interpreter::pretty_printer::PrettyPrinter;
+
+        fn gint(i: i64) -> Par { new_gint_par(i, Vec::new(), false) }
+
+        fn expr(instance: ExprInstance) -> Expr {
+            Expr {
+                expr_instance: Some(instance),
+            }
+        }
+
+        fn print_expr(instance: ExprInstance) -> String {
+            PrettyPrinter::new().build_string_from_expr(&expr(instance))
+        }
+
+        fn print_par(par: &Par) -> String { PrettyPrinter::new().build_string_from_message(par) }
+
+        #[test]
+        fn binary_operators_print_with_their_symbols() {
+            let (a, b) = (gint(1), gint(2));
+            let cases: Vec<(ExprInstance, &str)> = vec![
+                (
+                    ExprInstance::EMultBody(EMult {
+                        p1: Some(a.clone()),
+                        p2: Some(b.clone()),
+                    }),
+                    "1 * 2",
+                ),
+                (
+                    ExprInstance::EDivBody(EDiv {
+                        p1: Some(a.clone()),
+                        p2: Some(b.clone()),
+                    }),
+                    "1 / 2",
+                ),
+                (
+                    ExprInstance::EModBody(EMod {
+                        p1: Some(a.clone()),
+                        p2: Some(b.clone()),
+                    }),
+                    "1 % 2",
+                ),
+                (
+                    ExprInstance::EPercentPercentBody(EPercentPercent {
+                        p1: Some(a.clone()),
+                        p2: Some(b.clone()),
+                    }),
+                    "1 %% 2",
+                ),
+                (
+                    ExprInstance::EPlusBody(EPlus {
+                        p1: Some(a.clone()),
+                        p2: Some(b.clone()),
+                    }),
+                    "1 + 2",
+                ),
+                (
+                    ExprInstance::EPlusPlusBody(EPlusPlus {
+                        p1: Some(a.clone()),
+                        p2: Some(b.clone()),
+                    }),
+                    "1 ++ 2",
+                ),
+                (
+                    ExprInstance::EMinusBody(EMinus {
+                        p1: Some(a.clone()),
+                        p2: Some(b.clone()),
+                    }),
+                    "1 - 2",
+                ),
+                (
+                    ExprInstance::EMinusMinusBody(EMinusMinus {
+                        p1: Some(a.clone()),
+                        p2: Some(b.clone()),
+                    }),
+                    "1 - 2",
+                ),
+                (
+                    ExprInstance::EAndBody(EAnd {
+                        p1: Some(a.clone()),
+                        p2: Some(b.clone()),
+                    }),
+                    "1 && 2",
+                ),
+                (
+                    ExprInstance::EOrBody(EOr {
+                        p1: Some(a.clone()),
+                        p2: Some(b.clone()),
+                    }),
+                    "1 || 2",
+                ),
+                (
+                    ExprInstance::EEqBody(EEq {
+                        p1: Some(a.clone()),
+                        p2: Some(b.clone()),
+                    }),
+                    "1 == 2",
+                ),
+                (
+                    ExprInstance::ENeqBody(ENeq {
+                        p1: Some(a.clone()),
+                        p2: Some(b.clone()),
+                    }),
+                    "1 != 2",
+                ),
+                (
+                    ExprInstance::EGtBody(EGt {
+                        p1: Some(a.clone()),
+                        p2: Some(b.clone()),
+                    }),
+                    "1 > 2",
+                ),
+                (
+                    ExprInstance::EGteBody(EGte {
+                        p1: Some(a.clone()),
+                        p2: Some(b.clone()),
+                    }),
+                    "1 >= 2",
+                ),
+                (
+                    ExprInstance::ELtBody(ELt {
+                        p1: Some(a.clone()),
+                        p2: Some(b.clone()),
+                    }),
+                    "1 < 2",
+                ),
+                (
+                    ExprInstance::ELteBody(ELte {
+                        p1: Some(a.clone()),
+                        p2: Some(b.clone()),
+                    }),
+                    "1 <= 2",
+                ),
+            ];
+
+            for (instance, expected) in cases {
+                assert_eq!(print_expr(instance), expected);
+            }
+        }
+
+        #[test]
+        fn unary_operators_and_matches_print() {
+            assert_eq!(
+                print_expr(ExprInstance::ENegBody(ENeg { p: Some(gint(1)) })),
+                "-1"
+            );
+            assert_eq!(
+                print_expr(ExprInstance::ENotBody(ENot { p: Some(gint(1)) })),
+                "~1"
+            );
+            assert_eq!(
+                print_expr(ExprInstance::EMatchesBody(EMatches {
+                    target: Some(gint(1)),
+                    pattern: Some(gint(2)),
+                })),
+                "(1 matches 2)"
+            );
+        }
+
+        #[test]
+        fn method_calls_print_target_name_and_arguments() {
+            let method = ExprInstance::EMethodBody(EMethod {
+                method_name: "add".to_string(),
+                target: Some(gint(7)),
+                arguments: vec![gint(1), gint(2)],
+                locally_free: Vec::new(),
+                connective_used: false,
+            });
+            assert_eq!(print_expr(method), "(7).add(1, 2)");
+        }
+
+        #[test]
+        fn numeric_ground_types_print_with_suffixes() {
+            assert_eq!(
+                print_expr(ExprInstance::GByteArray(vec![0xDE, 0xAD])),
+                "dead"
+            );
+            assert_eq!(
+                print_expr(ExprInstance::GDouble(2.0f64.to_bits())),
+                "2.0f64"
+            );
+            assert_eq!(
+                print_expr(ExprInstance::GDouble(2.5f64.to_bits())),
+                "2.5f64"
+            );
+            assert_eq!(print_expr(ExprInstance::GBigInt(vec![0x00, 0xFF])), "255n");
+            assert_eq!(print_expr(ExprInstance::GBigInt(vec![])), "0n");
+            assert_eq!(
+                print_expr(ExprInstance::GBigRat(GBigRational {
+                    numerator: vec![1],
+                    denominator: vec![2],
+                })),
+                "1/2r"
+            );
+        }
+
+        #[test]
+        fn fixed_point_printing_covers_scales_and_signs() {
+            let fp = |unscaled: Vec<u8>, scale: u32| {
+                print_expr(ExprInstance::GFixedPoint(GFixedPoint { unscaled, scale }))
+            };
+            assert_eq!(fp(vec![5], 0), "5p0");
+            assert_eq!(fp(vec![0x30, 0x39], 2), "123.45p2");
+            assert_eq!(fp(vec![5], 3), "0.005p3");
+            assert_eq!(fp(vec![0xFB], 3), "-0.005p3");
+        }
+
+        #[test]
+        fn variables_print_by_kind_and_binding() {
+            let printer = PrettyPrinter::new();
+            assert_eq!(
+                printer.build_string_from_var(&Var {
+                    var_instance: Some(VarInstance::FreeVar(2)),
+                }),
+                "free2"
+            );
+            assert_eq!(
+                printer.build_string_from_var(&Var {
+                    var_instance: Some(VarInstance::Wildcard(Default::default())),
+                }),
+                "_"
+            );
+            assert_eq!(
+                printer.build_string_from_var(&Var { var_instance: None }),
+                "@Nil"
+            );
+
+            let mut bound = PrettyPrinter::new();
+            bound.bound_shift = 1;
+            assert_eq!(
+                bound.build_string_from_var(&Var {
+                    var_instance: Some(VarInstance::BoundVar(0)),
+                }),
+                "x0"
+            );
+
+            let mut new_bound = PrettyPrinter::new();
+            new_bound.bound_shift = 1;
+            new_bound.news_shift_indices = vec![0];
+            assert_eq!(
+                new_bound.build_string_from_var(&Var {
+                    var_instance: Some(VarInstance::BoundVar(0)),
+                }),
+                "*x0"
+            );
+        }
+
+        #[test]
+        fn list_remainders_print_by_var_kind() {
+            let list = |remainder: Option<Var>, ps: Vec<Par>| {
+                print_expr(ExprInstance::EListBody(EList {
+                    ps,
+                    locally_free: Vec::new(),
+                    connective_used: false,
+                    remainder,
+                }))
+            };
+            let free = Var {
+                var_instance: Some(VarInstance::FreeVar(0)),
+            };
+            let bound = Var {
+                var_instance: Some(VarInstance::BoundVar(0)),
+            };
+            let wildcard = Var {
+                var_instance: Some(VarInstance::Wildcard(Default::default())),
+            };
+
+            assert_eq!(list(None, vec![]), "[]");
+            assert_eq!(list(None, vec![gint(1), gint(2)]), "[1, 2]");
+            assert_eq!(list(Some(free.clone()), vec![gint(1)]), "[1...free0]");
+            assert_eq!(list(Some(free), vec![]), "[...free0]");
+            assert_eq!(list(Some(bound), vec![gint(1)]), "[1...bound0]");
+            assert_eq!(list(Some(wildcard), vec![gint(1)]), "[1..._]");
+            assert_eq!(
+                list(Some(Var { var_instance: None }), vec![gint(1)]),
+                "[1...Nil]"
+            );
+        }
+
+        #[test]
+        fn tuples_pathmaps_and_zippers_print() {
+            assert_eq!(
+                print_expr(ExprInstance::ETupleBody(ETuple {
+                    ps: vec![gint(1), gint(2)],
+                    locally_free: Vec::new(),
+                    connective_used: false,
+                })),
+                "(1, 2)"
+            );
+
+            let pathmap = EPathMap {
+                ps: vec![gint(1)],
+                locally_free: Vec::new(),
+                connective_used: false,
+                remainder: None,
+            };
+            assert_eq!(
+                print_expr(ExprInstance::EPathmapBody(pathmap.clone())),
+                "{|1|}"
+            );
+
+            assert_eq!(
+                print_expr(ExprInstance::EZipperBody(EZipper {
+                    pathmap: Some(pathmap.clone()),
+                    current_path: vec![],
+                    is_write_zipper: false,
+                    locally_free: Vec::new(),
+                    connective_used: false,
+                })),
+                "ReadZipper(at: [], {|1|})"
+            );
+            assert_eq!(
+                print_expr(ExprInstance::EZipperBody(EZipper {
+                    pathmap: Some(pathmap),
+                    current_path: vec![],
+                    is_write_zipper: true,
+                    locally_free: Vec::new(),
+                    connective_used: false,
+                })),
+                "WriteZipper(at: [], {|1|})"
+            );
+        }
+
+        #[test]
+        fn unforgeables_print_by_kind() {
+            let print_unf = |instance: Option<UnfInstance>| {
+                print_par(&Par {
+                    unforgeables: vec![GUnforgeable {
+                        unf_instance: instance,
+                    }],
+                    ..Default::default()
+                })
+            };
+
+            assert_eq!(
+                print_unf(Some(UnfInstance::GPrivateBody(GPrivate { id: vec![1, 2] }))),
+                "Unforgeable(0x0102)"
+            );
+            assert_eq!(
+                print_unf(Some(UnfInstance::GDeployIdBody(GDeployId {
+                    sig: vec![1, 2],
+                }))),
+                "DeployId(0x0102)"
+            );
+            assert_eq!(
+                print_unf(Some(UnfInstance::GDeployerIdBody(GDeployerId {
+                    public_key: vec![1, 2],
+                }))),
+                "DeployerId(0x0102)"
+            );
+            assert_eq!(
+                print_unf(Some(UnfInstance::GSysAuthTokenBody(
+                    GSysAuthToken::default()
+                ))),
+                format!("GSysAuthTokenBody({:?})", GSysAuthToken::default())
+            );
+            assert_eq!(print_unf(None), "Nil");
+        }
+
+        #[test]
+        fn connectives_print_by_kind() {
+            let print_conn = |instance: ConnectiveInstance| {
+                print_par(&Par {
+                    connectives: vec![Connective {
+                        connective_instance: Some(instance),
+                    }],
+                    ..Default::default()
+                })
+            };
+
+            assert_eq!(
+                print_conn(ConnectiveInstance::ConnAndBody(ConnectiveBody {
+                    ps: vec![gint(1), gint(2)],
+                })),
+                "{ 1 /\\ 2 }"
+            );
+            assert_eq!(
+                print_conn(ConnectiveInstance::ConnOrBody(ConnectiveBody {
+                    ps: vec![gint(1), gint(2)],
+                })),
+                "{ 1 \\/ 2 }"
+            );
+            assert_eq!(print_conn(ConnectiveInstance::ConnNotBody(gint(1))), "~{1}");
+            assert_eq!(print_conn(ConnectiveInstance::ConnBool(true)), "Bool");
+            assert_eq!(print_conn(ConnectiveInstance::ConnInt(true)), "Int");
+            assert_eq!(print_conn(ConnectiveInstance::ConnString(true)), "String");
+            assert_eq!(print_conn(ConnectiveInstance::ConnUri(true)), "Uri");
+            assert_eq!(
+                print_conn(ConnectiveInstance::ConnByteArray(true)),
+                "ByteArray"
+            );
+
+            let mut printer = PrettyPrinter::new();
+            printer.free_shift = 2;
+            let var_ref = Par {
+                connectives: vec![Connective {
+                    connective_instance: Some(ConnectiveInstance::VarRefBody(VarRef {
+                        index: 0,
+                        depth: 1,
+                    })),
+                }],
+                ..Default::default()
+            };
+            assert_eq!(printer.build_string_from_message(&var_ref), "=free1");
+        }
+
+        #[test]
+        fn sends_print_with_persistence_markers() {
+            let send = |persistent: bool| Par {
+                sends: vec![Send {
+                    chan: Some(gint(7)),
+                    data: vec![gint(42), gint(43)],
+                    persistent,
+                    locally_free: Vec::new(),
+                    connective_used: false,
+                }],
+                ..Default::default()
+            };
+            assert_eq!(print_par(&send(false)), "7!(42, 43)");
+            assert_eq!(print_par(&send(true)), "7!!(42, 43)");
+        }
+
+        #[test]
+        fn new_prints_bound_variables_and_body() {
+            let new_par = Par {
+                news: vec![New {
+                    bind_count: 2,
+                    p: Some(Par::default()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            assert_eq!(print_par(&new_par), "new x0, x1 in {\n  Nil\n}");
+        }
+
+        #[test]
+        fn bundles_print_their_polarity() {
+            let bundle = |write_flag: bool, read_flag: bool| Par {
+                bundles: vec![Bundle {
+                    body: Some(gint(7)),
+                    write_flag,
+                    read_flag,
+                }],
+                ..Default::default()
+            };
+            assert_eq!(print_par(&bundle(true, false)), "bundle+ {\n  7\n}");
+            assert_eq!(print_par(&bundle(false, true)), "bundle- {\n  7\n}");
+            assert_eq!(print_par(&bundle(false, false)), "bundle0 {\n  7\n}");
+            assert_eq!(print_par(&bundle(true, true)), "bundle  {\n  7\n}");
+        }
+
+        #[test]
+        fn match_prints_cases_with_braces() {
+            let match_par = Par {
+                matches: vec![Match {
+                    target: Some(gint(1)),
+                    cases: vec![MatchCase {
+                        pattern: Some(Par {
+                            exprs: vec![expr(ExprInstance::EVarBody(EVar {
+                                v: Some(Var {
+                                    var_instance: Some(VarInstance::Wildcard(Default::default())),
+                                }),
+                            }))],
+                            ..Default::default()
+                        }),
+                        source: Some(Par::default()),
+                        free_count: 0,
+                        guard: None,
+                    }],
+                    locally_free: Vec::new(),
+                    connective_used: false,
+                }],
+                ..Default::default()
+            };
+            let rendered = print_par(&match_par);
+            // The target renders as an "<unprintable ...>" placeholder today:
+            // the Match arm hands `&m.target` (an `Option<Par>`) to the
+            // Any-based printer, which only downcasts `Par`. Asserting the
+            // exact target fragment would bless that, so this test pins the
+            // case structure around it instead.
+            assert!(rendered.starts_with("match "), "got {rendered:?}");
+            assert!(
+                rendered.ends_with(" {\n    _ => {\n    Nil\n  }\n}"),
+                "got {rendered:?}"
+            );
+        }
+
+        #[test]
+        fn receive_prints_binds_and_body() {
+            let freevar_par = Par {
+                exprs: vec![expr(ExprInstance::EVarBody(EVar {
+                    v: Some(Var {
+                        var_instance: Some(VarInstance::FreeVar(0)),
+                    }),
+                }))],
+                ..Default::default()
+            };
+            let receive = |persistent: bool, peek: bool| Par {
+                receives: vec![Receive {
+                    binds: vec![ReceiveBind {
+                        patterns: vec![freevar_par.clone()],
+                        source: Some(Par::default()),
+                        remainder: None,
+                        free_count: 1,
+                    }],
+                    body: Some(Par::default()),
+                    persistent,
+                    peek,
+                    bind_count: 1,
+                    locally_free: Vec::new(),
+                    connective_used: false,
+                    condition: None,
+                }],
+                ..Default::default()
+            };
+            assert_eq!(
+                print_par(&receive(false, false)),
+                "for( @{x0} <- @{Nil} ) {\n  Nil\n}"
+            );
+            assert_eq!(
+                print_par(&receive(true, false)),
+                "for( @{x0} <= @{Nil} ) {\n  Nil\n}"
+            );
+            assert_eq!(
+                print_par(&receive(false, true)),
+                "for( @{x0} <<- @{Nil} ) {\n  Nil\n}"
+            );
+        }
+
+        #[test]
+        fn parallel_components_join_with_pipes() {
+            let par = Par {
+                sends: vec![Send {
+                    chan: Some(gint(7)),
+                    data: vec![gint(42)],
+                    persistent: false,
+                    locally_free: Vec::new(),
+                    connective_used: false,
+                }],
+                exprs: vec![expr(ExprInstance::GInt(1))],
+                ..Default::default()
+            };
+            assert_eq!(print_par(&par), "7!(42) |\n1");
+        }
+
+        #[test]
+        fn channel_strings_quote_non_new_channels() {
+            let mut printer = PrettyPrinter::new();
+            assert_eq!(printer.build_channel_string(&gint(7)), "@{7}");
+
+            let mut new_printer = PrettyPrinter::new();
+            new_printer.bound_shift = 1;
+            new_printer.news_shift_indices = vec![0];
+            let bound_par = Par {
+                exprs: vec![expr(ExprInstance::EVarBody(EVar {
+                    v: Some(Var {
+                        var_instance: Some(VarInstance::BoundVar(0)),
+                    }),
+                }))],
+                ..Default::default()
+            };
+            assert_eq!(new_printer.build_channel_string(&bound_par), "x0");
+        }
+
+        #[test]
+        fn fallbacks_render_placeholders_instead_of_panicking() {
+            assert_eq!(print_par(&Par::default()), "Nil");
+            assert_eq!(print_expr(ExprInstance::GBool(true)), "true");
+            assert_eq!(
+                PrettyPrinter::new().build_string_from_expr(&Expr {
+                    expr_instance: None,
+                }),
+                "Nil"
+            );
+
+            let unknown = "not a message".to_string();
+            let rendered = PrettyPrinter::new().build_string_from_message(&unknown);
+            assert!(rendered.starts_with("<unprintable"));
+        }
+    }
 }

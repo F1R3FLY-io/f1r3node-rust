@@ -2,7 +2,6 @@
 doc_type: work-log
 title: "Coordination archive — narrative entries moved out of docs/ToDos.md"
 created_at: 2026-08-01T03:50:00Z
-author: claude-session-68b96ecd
 provenance: docs/ToDos.md
 reason: >
   Format normalization: docs/ToDos.md is the canonical epic/task file per

@@ -1,13 +1,13 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // Property-based test for T-5 (record witness-set monotonicity).
 //
 // Theorem: T-5 (`record_monotone`,
 // formal/rocq/slashing/theories/EquivocationRecord.v).
-// Reference: docs/theory/slashing/slashing-specification.md §4
+// Reference: docs/casper/theory/slashing/slashing-specification.md §4
 // (Theorem 4.5), design/05-storage-and-records.md.
 //
 // Property: the witness set of an EquivocationRecord is monotone

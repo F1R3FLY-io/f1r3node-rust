@@ -1,6 +1,6 @@
 // UC-108 — Duplicate paths to the same child do not count as two children.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-108.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-108.
 // Theorems: T-9.11.
 //
 // Scenario: two justifications independently route to the *same*
