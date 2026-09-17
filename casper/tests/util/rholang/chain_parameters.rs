@@ -56,6 +56,70 @@ async fn consensus_parameters_genesis_rejects_out_of_range_values() {
     );
 }
 
+#[tokio::test]
+async fn consensus_parameters_native_missing_data_and_state_fail_startup_read() {
+    use casper::rust::util::rholang::runtime_manager::RuntimeManager;
+    use casper::rust::util::token_metadata_check::read_on_chain_consensus_parameters;
+    use models::rust::block::state_hash::StateHash;
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+
+    use crate::util::rholang::resources::mk_runtime_manager_at;
+
+    let mut stores = InMemoryStoreManager::new();
+    let runtime = mk_runtime_manager_at(&mut stores, None).await;
+    let empty_root = RuntimeManager::empty_state_hash_fixed();
+    assert_eq!(
+        runtime.get_consensus_parameters(&empty_root).await.unwrap(),
+        None
+    );
+    let missing = read_on_chain_consensus_parameters(&runtime, &empty_root)
+        .await
+        .expect_err("missing parameters must not use local configuration");
+    assert!(missing.to_string().contains("no getConsensusParameters"));
+
+    let unknown_root = StateHash::from(vec![0xab; 32]);
+    let unavailable = read_on_chain_consensus_parameters(&runtime, &unknown_root)
+        .await
+        .expect_err("an unavailable root must not use local configuration");
+    assert!(
+        unavailable
+            .to_string()
+            .to_ascii_lowercase()
+            .contains("unknown root"),
+        "{unavailable}"
+    );
+    assert_eq!(
+        runtime.get_consensus_parameters(&empty_root).await.unwrap(),
+        None
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn consensus_parameters_native_boundary_values_round_trip() {
+    use crate::util::genesis_builder::GenesisBuilder;
+    use crate::util::rholang::resources::{
+        mk_runtime_manager_with_history_at, mk_test_rnode_store_manager_from_genesis,
+    };
+
+    for expected in [(1, 1, 0), (i32::MAX, i64::from(i32::MAX), i64::MAX)] {
+        let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(4));
+        parameters.2.proof_of_stake.max_parent_depth = expected.0;
+        parameters.2.proof_of_stake.deploy_lifespan = expected.1;
+        parameters.2.proof_of_stake.min_phlo_price = expected.2;
+        let genesis = GenesisBuilder::new()
+            .build_genesis_with_parameters(Some(parameters))
+            .await
+            .expect("boundary parameters must support genesis execution");
+        let mut stores = mk_test_rnode_store_manager_from_genesis(&genesis);
+        let (runtime, _history) = mk_runtime_manager_with_history_at(&mut *stores).await;
+        let actual = runtime
+            .get_consensus_parameters(&genesis.genesis_block.body.state.post_state_hash)
+            .await
+            .expect("boundary parameters must support native query execution");
+        assert_eq!(actual, Some(expected));
+    }
+}
+
 async fn adopted_parameters(
     genesis_context: &crate::util::genesis_builder::GenesisContext,
     local_values: (i32, i64, i64),

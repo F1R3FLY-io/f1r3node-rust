@@ -515,6 +515,34 @@ proptest! {
             expected,
         );
     }
+
+    #[test]
+    fn genesis_consensus_parameters_have_injective_blessed_terms(
+        first in (1i32..=i32::MAX, 1i64..=i64::from(i32::MAX), 0i64..=i64::MAX),
+        second in (1i32..=i32::MAX, 1i64..=i64::from(i32::MAX), 0i64..=i64::MAX),
+    ) {
+        use casper::rust::genesis::contracts::standard_deploys::pos_generator;
+
+        let (_, _, genesis) = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(3));
+        let source = |values: (i32, i64, i64)| {
+            let mut pos = genesis.proof_of_stake.clone();
+            pos.max_parent_depth = values.0;
+            pos.deploy_lifespan = values.1;
+            pos.min_phlo_price = values.2;
+            pos_generator(&pos, RCHAIN_SHARD_ID).data.term
+        };
+        let first_source = source(first);
+        prop_assert_eq!(&first_source, &source(first));
+        prop_assert_eq!(first_source == source(second), first == second);
+        for mask in 1u8..8 {
+            let changed = (
+                if mask & 1 != 0 { if first.0 == 1 { 2 } else { 1 } } else { first.0 },
+                if mask & 2 != 0 { if first.1 == 1 { 2 } else { 1 } } else { first.1 },
+                if mask & 4 != 0 { if first.2 == 0 { 1 } else { 0 } } else { first.2 },
+            );
+            prop_assert_ne!(&first_source, &source(changed), "changed fields: {}", mask);
+        }
+    }
 }
 
 #[test]

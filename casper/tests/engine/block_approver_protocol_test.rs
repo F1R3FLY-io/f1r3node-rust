@@ -282,6 +282,90 @@ async fn block_approver_protocol_should_reject_mismatched_protocol_version() {
 
 #[tokio::test]
 #[serial]
+async fn block_approver_protocol_consensus_parameters_require_ceremony_agreement() {
+    let ctx = TestContext::create_protocol().await.unwrap();
+    let unapproved = TestContext::create_unapproved(ctx.required_sigs, &ctx.node.genesis);
+    let original = (
+        ctx.protocol.max_parent_depth,
+        ctx.protocol.deploy_lifespan,
+        ctx.protocol.min_phlo_price,
+    );
+
+    for mask in 0u8..8 {
+        let expected = (
+            if mask & 1 != 0 {
+                if original.0 == 1 {
+                    2
+                } else {
+                    1
+                }
+            } else {
+                original.0
+            },
+            if mask & 2 != 0 {
+                if original.1 == 1 {
+                    2
+                } else {
+                    1
+                }
+            } else {
+                original.1
+            },
+            if mask & 4 != 0 {
+                if original.2 == 0 {
+                    1
+                } else {
+                    0
+                }
+            } else {
+                original.2
+            },
+        );
+        let result = BlockApproverProtocol::<TransportLayerTestImpl>::validate_candidate(
+            &ctx.node.runtime_manager,
+            &unapproved.candidate,
+            ctx.protocol.required_sigs,
+            ctx.protocol.deploy_timestamp,
+            &ctx.protocol.vaults,
+            &ctx.protocol.bonds_bytes,
+            ctx.protocol.minimum_bond,
+            ctx.protocol.maximum_bond,
+            ctx.protocol.epoch_length,
+            ctx.protocol.quarantine_length,
+            ctx.protocol.number_of_active_validators,
+            ctx.protocol.fault_tolerance_threshold_ppm,
+            expected.0,
+            expected.1,
+            expected.2,
+            SHARD_ID,
+            &ctx.protocol.pos_multi_sig_public_keys,
+            ctx.protocol.pos_multi_sig_quorum,
+            ctx.protocol.max_cosigners_per_deploy,
+            ctx.protocol.initial_phlogiston,
+            ctx.protocol.epoch_phlogiston,
+            ctx.protocol.protocol_version,
+            &ctx.protocol.client_fuel_allocations,
+            &ctx.protocol.native_token_name,
+            &ctx.protocol.native_token_symbol,
+            ctx.protocol.native_token_decimals,
+            ctx.protocol.resource_policy.as_ref(),
+        )
+        .await;
+
+        if mask == 0 {
+            assert_eq!(result, Ok(()));
+        } else {
+            let error = result.expect_err("different ceremony parameters must reject");
+            assert!(
+                error.contains("Genesis candidate deploys do not match expected blessed contracts"),
+                "changed fields {mask}: {error}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+#[serial]
 async fn block_approver_protocol_should_reject_mismatched_genesis_vault_funding() {
     let ctx = TestContext::create_protocol().await.unwrap();
     let unapproved = TestContext::create_unapproved(ctx.required_sigs, &ctx.node.genesis.clone());

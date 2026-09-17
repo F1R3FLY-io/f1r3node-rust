@@ -168,8 +168,13 @@ These parameters are maximum parent depth, deploy lifespan, and minimum price.
 The model uses upstream integer ranges, including the signed 32-bit upper bound for lifespan.
 Missing, malformed, or invalid parameter data cannot produce an adopted configuration.
 Valid chain data overrides local configuration.
+
 The consumer theorem assumes the same authenticated data, input, and deterministic consumer.
 It does not prove that every production caller uses that configuration.
+
+`chain_parameter_values_injective` proves that equal parameter tuples identify equal parameter records.
+`chain_parameter_disagreement_changes_values` proves that different records cannot share that tuple.
+These lemmas describe tuple identity, not Rholang source generation or cryptographic collision resistance.
 
 ### Native chain-parameter authority
 
@@ -192,7 +197,15 @@ It skips collection until Casper becomes available.
 
 [`consensus_parameter_tests.rs`](../../../../casper/src/rust/rholang/consensus_parameter_tests.rs) checks numeric boundaries, malformed results, and generated inputs against an independent range predicate.
 [`chain_parameters.rs`](../../../../casper/tests/util/rholang/chain_parameters.rs) checks actual genesis storage, chain queries, and concurrent adoption with different local settings.
+Its startup-reader regression requires absent parameter data and unavailable state roots to cause errors, without a local fallback.
+Native boundary tests execute genesis and queries with the minimum and maximum accepted values.
 Genesis and startup regressions require invalid values to fail before execution.
+
+The generated contract-source property in [`genesis_test.rs`](../../../../casper/tests/genesis/genesis_test.rs) checks the tuple-identity contract against native PoS generation.
+It checks repeated generation, independent parameter tuples, and all seven nonempty combinations of changed fields.
+The [ceremony regression](../../../../casper/tests/engine/block_approver_protocol_test.rs) accepts matching parameters and rejects each mismatch combination through the native candidate validator.
+Changing a parameter must change the expected blessed contract. Candidate validation must reject that difference before approval.
+
 These tests establish the checked boundaries. They do not prove every behavior of the consensus protocol.
 
 These contracts do not activate the funded format or establish full upstream replay compatibility.

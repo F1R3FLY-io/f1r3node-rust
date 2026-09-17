@@ -100,6 +100,17 @@ Record chain_parameters := {
   chain_minimum_price : Z
 }.
 
+Definition chain_parameter_values (p : chain_parameters) : list Z :=
+  [chain_parent_depth p; chain_deploy_lifespan p; chain_minimum_price p].
+
+Theorem chain_parameter_values_injective : forall p q,
+  chain_parameter_values p = chain_parameter_values q -> p = q.
+Proof. intros [pd pl pm] [qd ql qm] equal. inversion equal. reflexivity. Qed.
+
+Theorem chain_parameter_disagreement_changes_values : forall p q,
+  p <> q -> chain_parameter_values p <> chain_parameter_values q.
+Proof. intros p q different equal. apply different. now apply chain_parameter_values_injective. Qed.
+
 Definition valid_chain_parameters (p : chain_parameters) : bool :=
   (1 <=? chain_parent_depth p)%Z && (chain_parent_depth p <=? 2147483647)%Z &&
   (1 <=? chain_deploy_lifespan p)%Z && (chain_deploy_lifespan p <=? 2147483647)%Z &&
@@ -177,6 +188,8 @@ Proof.
 Qed.
 
 Print Assumptions chain_parameter_ranges_exact.
+Print Assumptions chain_parameter_values_injective.
+Print Assumptions chain_parameter_disagreement_changes_values.
 Print Assumptions chain_adoption_ignores_local_configuration.
 Print Assumptions missing_chain_parameters_reject.
 Print Assumptions invalid_chain_parameters_reject.
