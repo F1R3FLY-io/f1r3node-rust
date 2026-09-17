@@ -384,7 +384,7 @@ named constant with a single definition. Current values:
 
 | HOCON key | Default | Purpose |
 |-----------|--------:|---------|
-| `heartbeat.enabled` | `false` | Enable the heartbeat proposer |
+| `heartbeat.enabled` | `true` | Enable the heartbeat proposer. It drives block and finalization cadence across validators, so multi-validator deployments leave it on; a single-node dev shard may set `false` and rely on `autopropose` or operator-triggered proposes |
 | `heartbeat.check-interval` | 5s | How often the loop evaluates its decision tree |
 | `heartbeat.max-lfb-age` | 5s | LFB age threshold above which stale-LFB recovery may fire |
 | `heartbeat.self-propose-cooldown` | 3s | Min interval between self-proposals; gates every routine lane (never the stale-recovery lane, which paces on the interval below) |
