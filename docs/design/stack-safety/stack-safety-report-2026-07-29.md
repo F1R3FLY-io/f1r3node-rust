@@ -8305,15 +8305,15 @@ replacement, following 22 main and 14 control Rocq assumption reports and indepe
 checking. All 49 post-migration tests passed across the structural path, both cursor and both
 decoder-differential suites; the structural suite took 2.97 s. Its predecessor diagnostic reached
 a 2,400-second watchdog with the deep fixture unfinished. These are qualification observations,
-not a paired speedup estimate. The nested-EPathMap fixture and geometric, phase-separated resource
-measurements remain open. See [J-169](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-169--2026-09-17-formal-first-final-root-fixture-construction)
+not a paired speedup estimate. The later nested-map qualification below closes that fixture;
+geometric, phase-separated resource measurements remain open. See [J-169](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-169--2026-09-17-formal-first-final-root-fixture-construction)
 and invariant catalog UEL-01–09 for the exact evidence and proof scope.
 
 The same qualified unary construction now supplies both encoder-space fixtures (empty terminal)
 and the EPM1 escaped fixture (`GInt(1)` beneath the unchanged outer set). Bounded frozen equivalence
 passed before migration. The subsequent 16 encoder-space and 17 EPM1 tests passed under a 6 GiB
 cap with zero swap; the whole service took 569.938 s and reported 443.4 MiB peak memory. The nested
-map term-operation test was explicitly excluded and is still open. These aggregate measurements
+map term-operation test was explicitly excluded from that earlier invocation. These aggregate measurements
 must not be presented as a full EPM1 pass or as phase-separated performance evidence; see J-169.
 
 **Nested-map successor qualification (2026-09-17).** After a separate fixed-key framing proof and

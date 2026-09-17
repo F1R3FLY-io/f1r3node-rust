@@ -237,7 +237,8 @@ The native bridge additionally covers empty-Par terminals for both encoder-space
 The outer ESet constructor is unchanged; composition uses the exact unary byte equivalence, with
 a bounded frozen witness checking the enclosing EPathMap snapshot as well. Both prerequisite
 witnesses passed before replacement; all 16 encoder-space tests and 17 EPM1 tests then passed.
-The distinct nested-map term-operation gate was excluded from that invocation and remains open.
+The distinct nested-map term-operation gate was excluded from that invocation; the later SMC
+qualification below includes and passes it.
 
 The replay/output-value terminal correspondence is additionally bound by
 `final_root_output_value_fixture_matches_frozen_resident_wrapping`, which passed before the two
@@ -281,7 +282,8 @@ prefixes through each bounded level, and reject missing depth, changed key/leaf 
 key/value. The helper then switched to integer arena handles, one inner finish, and the unchanged
 outer `EPathMap::new_map`. The complete EPM1 snapshot suite passed 21 tests with none excluded,
 including depth-4,096 Eq/Ord/Hash and snapshot/codec gates on 256 KiB stacks. See J-170 for evidence.
-SMC-08's phase-separated measurements, remaining fixture consumers and task 6444 remain open.
+The named fixture consumers subsequently passed their migrations as recorded above. SMC-08's
+phase-separated measurements and task 6444 remain open.
 
 ## Original workspace-regression completion gates
 
