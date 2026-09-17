@@ -65,7 +65,7 @@ The source distinguishes a whole-job cap from a per-configuration cap.
 | Source at the reviewed revision | Observed behavior |
 | --- | --- |
 | PR #432 `.github/workflows/slashing-tests.yml`, `tla-model-check` | Pull-request/push job cap: 15 minutes. Scheduled/manual job cap: 240 minutes. |
-| PR #432 `scripts/ci/check-tla-invariants.sh --soak-pr` | Fixed two-minute per-configuration cap, one TLC worker, 13 positives, 61 negative controls. |
+| PR #432 `scripts/ci/check-tla-invariants.sh --soak-pr` | Fixed two-minute per-configuration cap, two TLC workers, 13 positives, 61 negative controls. |
 | Same script's timeout command | Sends TERM at the cap and permits another 60 seconds before KILL. |
 | Same script without the bounded option | Defaults to 45 minutes per configuration, subject to the enclosing job cap. |
 | PR #433 `docs/cbc-verification-tiers.md` | Describes the pull-request refutation tier as “in two minutes” without distinguishing those budgets. |
@@ -176,4 +176,76 @@ All twelve existing runner unit tests passed. These regression checks do not ver
 
 The deterministic STE Check and `git diff --check` passed. Human STE Review remains necessary.
 
-This increment adds no executable implementation or claim discharge. No TLC model, prerequisite fixture suite, or soak campaign was executed.
+The initial increment added no executable implementation or claim discharge. It executed no TLC model, prerequisite fixture suite, or soak campaign.
+
+## Fixture review continuation
+
+The continuation inspected source at `65f7f6daa832c0acb6fddf2b462db1b9d5461729` without merging or changing the checkout's scripts.
+
+The starting checkout was clean at `8b9f5d61614a529b2047d6c04d68f17405b89e17`. Staging and commits remain with the other agent.
+
+GitHub's BLOCKED status does not establish merge conflicts. No local merge was attempted, and this review found no local merge conflicts.
+
+### Source and evidence corrections
+
+The bounded shared gate sets `TLC_WORKERS=2`. The budget table above corrects the earlier one-worker transcription error.
+
+The inherited gate ledger claims sixty-one controls times seven fixture outcomes. The current fixture tests six rejection outcomes on one control per registered area.
+
+There are three registered areas, so that rejection loop contains eighteen cases. A separate full-gate fixture checks acceptance for all sixty-one registered controls.
+
+These are source-derived coverage counts, not newly executed results. The inherited ledger's blanket case-count description cannot establish current coverage.
+
+The shared gate accepts a positive exit zero without a completed-search marker. Its negative branch requires exit twelve and the expected invariant line, but not a trace.
+
+Keep the stricter Casper runner checks when shared registration becomes authorized. This review does not weaken the contract to match the inherited gate.
+
+### Executed summary fixture
+
+The unchanged `scripts/bench/test-write-soak-summary.sh` passed in an isolated source snapshot. It exercised five data cases and a jq keyword scan.
+
+The cases cover base aggregation, per-core aggregation, empty input, mixed iteration outcomes, and sparse metrics. They do not verify Casper scenario verdicts.
+
+The observed jq version was 1.8.2. The keyword scan is not execution under jq 1.6.
+
+A separate malformed-metric probe invoked the unchanged summary writer with two declared iterations, one valid metric file, and one malformed metric file.
+
+The writer exited zero, retained one iteration entry, and reported two iterations with zero failures. It emitted neither `scenario_verdict` nor `soak_verdict`.
+
+This reproduces an evidence-completeness gap at DR-SUMMARY. It does not establish a product pass or a node failure.
+
+TASK-017-4 must validate artifact completeness separately from dashboard aggregation. Malformed required input must remain explicit and prevent a passing conformance result.
+
+The [retained report](../casper/cbc-evidence/runs/casper-prerequisite-fixtures-20260917-01/report.json) records source digests, tool versions, invocation, duration, and fixture outcome.
+
+The [probe record](../casper/cbc-evidence/runs/casper-prerequisite-fixtures-20260917-01/malformed-metric-probe/result.json) retains input/output digests and the observed gap.
+
+The malformed input uses a `.txt` archive suffix. Its mapping records the original runtime filename for reproduction.
+
+To reproduce these observations without repository changes:
+
+1. Create a new temporary source directory.
+2. Extract the report's source paths from its exact `source_revision` with `git show`.
+3. Preserve executable permissions on the extracted shell scripts.
+4. Run `bash scripts/bench/test-write-soak-summary.sh` inside the source directory.
+5. Copy the probe's two input files into a separate temporary output directory.
+6. Restore the malformed input's runtime filename from `input_archive_mapping`.
+7. Set the probe record's environment with temporary paths replacing its placeholders.
+8. Run the extracted `scripts/bench/write-soak-summary.sh` with that environment.
+9. Compare its exit status and summary fields with `actual_observation`.
+
+Do not replay into the retained evidence directory. The writer replaces its summary files.
+
+### Deferred execution and ownership
+
+The gate fixture writes fixed `/tmp/tlc-*.log` paths. Ninety-two matching paths already existed, so this review did not execute that fixture or overwrite those files.
+
+An isolated log destination remains necessary before concurrent gate execution. A copied source tree alone does not isolate these absolute output paths.
+
+The driver fixture received source review only. Its three scenarios test resource-stop handling, deadline handling, and disk-band refusal through controlled tools.
+
+Those scenarios do not supply the ten Casper lifecycle bindings. In particular, graceful deadline exit zero must not become a passing conformance verdict.
+
+No driver, shared gate, workflow, pin, task status, or claim ledger changed. No node, Docker workload, or TLC model ran.
+
+The new evidence supports prerequisite review only. All full Casper harness/profile claims remain pending.
