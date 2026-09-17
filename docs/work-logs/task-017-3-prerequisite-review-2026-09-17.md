@@ -249,3 +249,64 @@ Those scenarios do not supply the ten Casper lifecycle bindings. In particular, 
 No driver, shared gate, workflow, pin, task status, or claim ledger changed. No node, Docker workload, or TLC model ran.
 
 The new evidence supports prerequisite review only. All full Casper harness/profile claims remain pending.
+
+## Historical evidence audit
+
+The next increment started from clean commit `7d362bb9b`. It inspected inherited references without changing source, pins, task status, or Git state.
+
+The ledger snapshot is `65f7f6daa832c0acb6fddf2b462db1b9d5461729`. The examined historical tree is `2388a8eedf33d07018f0630bced51a6e054ba439`.
+
+Thirty-six of thirty-eight historical manifest/observation references were present in that tree. All thirty-six matched their exact ledger SHA-256 values.
+
+Two references were absent from the examined tree:
+
+- `g0-hosted-d6aaba962-2026-09-08/manifest.json`
+- `repin-962effd-2026-09-08/manifest.json`
+
+This result does not establish absence from other revisions or external raw stores. Retrieval of those two records remains open.
+
+### Retrieved hosted artifacts
+
+| Artifact | Run | Archive digest check | Retrieved content |
+| --- | --- | --- | --- |
+| 10056856375 | 34228660038 | Matches GitHub metadata and the historical hosted-observation record | Two clean transcripts and two invariant-violation transcripts |
+| 10063312912 | 34244230926 | Matches GitHub metadata and the inherited ledger | Two clean transcripts and two invariant-violation transcripts |
+
+Both artifacts were available and unexpired. Their reported expiration date is December 7, 2026.
+
+Each archive contains the carrier-index clean configuration, two carrier-index negative controls, and the replay hot-loop clean configuration.
+
+The clean transcripts report completed searches with 222 and nine distinct states. The negative transcripts contain `IndexCompleteForWindow` and `AbsenceProofSound` violations with traces.
+
+The archives do not independently record each TLC process exit code. A successful workflow result does not supply that missing exit-code evidence.
+
+The first hosted record distinguishes PR head `43af06dab41ddf81b8dd1fcc5cf9e1303027aab7` from synthetic checkout `bad72c4c299b73ede9abb1b5adc0f70fbdfb8e7b`.
+
+Its workflow-control identity remains null. The second run reports head `d6aaba9628536245fc42183d1682539583d6550b`.
+
+Neither historical head establishes verification of the current prerequisite stack or Casper harness.
+
+### Nested references and retention
+
+Forty-five nested references across the three gate manifests and hosted-observation record matched their digests. These checks cover thirty-seven unique resolved paths, not forty-five independent files.
+
+The audit resolved renamed `.jsonc` files explicitly. It recovered hosted TLC logs from artifact 10056856375 where the historical tree did not contain them.
+
+Eight retained transcripts replace the CI workspace prefix with `[WORKSPACE]`. The report keeps both original and retained digests, archive digests, seeds, workers, and state counts.
+
+The [audit report](../casper/cbc-evidence/runs/casper-prerequisite-evidence-audit-20260917-01/report.json) records every reference, resolution, digest comparison, and limitation.
+
+The raw driver stores and all nested driver outputs remain unaudited. Manifest byte integrity does not establish complete package coverage or semantic validity.
+
+No model or node was rerun. No claim was discharged. TASK-017-3 remains in progress.
+
+### Reproduction
+
+1. Read the two ledgers from the report's `ledger_revision` with `git show`.
+2. Compare their manifest references against bytes at `historical_tree_revision`.
+3. Retrieve artifact metadata with `gh api repos/F1R3FLY-io/f1r3node-rust/actions/artifacts/<id>`.
+4. Download each archive through that endpoint's `/zip` suffix into a new temporary directory.
+5. Compare archive and member digests with the audit report.
+6. Apply the recorded workspace-prefix substitution before comparing retained transcript digests.
+
+Keep downloaded archives outside existing evidence directories. Do not replace historical records with regenerated results.
