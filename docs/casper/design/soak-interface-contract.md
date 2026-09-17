@@ -39,7 +39,7 @@ Paths in this table are relative to that external repository. “Primitive” me
 | SI-LOAD | `integration-tests/test/tests/custom/test_load.py::test_deploy_throughput_and_finalization` | Provider, timeouts, resource monitor → pytest result and phase report | Primitive. Fixed load scenarios, not a generic profile dispatcher. |
 | SI-DEPLOY | `integration-tests/test/infra/node.py::Node.deploy_string` and `Node.deploy` | Rholang or deploy protobuf, test signer, both Phlo fields → deploy signature ID | Primitive. Envelope capture and mutation need a profile adapter. Private keys must never enter evidence. |
 | SI-QUERY | Same file: `get_block`, `get_blocks`, `last_finalized_block`, `is_finalized`, `deploy_status`, `get_event_data` | Block/deploy identifiers → client response or transport exception | Primitive. A response is not a complete committee, publication, settlement, or custody observation. |
-| SI-FAULT | `integration-tests/test/infra/providers/base.py::NodeHandle`; implementations in `docker.py` and `subprocess.py` | `pause`, `unpause`, `restart`, `stop`, `wait_for_exit` → command completion or process status | Primitive. Pause/restart methods do not return a structured fault acknowledgment. |
+| SI-FAULT | `integration-tests/test/infra/providers/base.py::NodeHandle`, with implementations in `docker.py` and `subprocess.py` | `pause`, `unpause`, `restart`, `stop`, `wait_for_exit` → command completion or process status | Primitive. Pause/restart methods do not return a structured fault acknowledgment. |
 | SI-METRICS | `Node.http_get`, provider `monitor_output_dir`, and load phase report | `/metrics`, CSV files, text report → raw samples | Primitive. Aggregate samples do not establish exact event identity or path engagement. |
 | SI-ADOPTED | `subprocess.py::_AdoptedHandle.restart` | Adopted handle → `NotImplementedError` | Unsupported. An adopted subprocess cannot satisfy a restart scenario through this method. |
 
@@ -57,13 +57,13 @@ Each affected scenario remains blocked until a pinned adapter supplies the requi
 
 | ID | Exact local boundary | Existing contract | Required addition, owned by TASK-017-4 |
 | --- | --- | --- | --- |
-| DR-START | Environment initialization and state-file load | Requires `SOAK_DURATION_SECONDS`, `SYSTEM_INTEGRATION_DIR`; accepts `SOAK_OUTPUT_DIR`, target identity, deadlines, and resource limits | Validate immutable manifest and capabilities before side effects. Do not execute untrusted state as shell input. |
+| DR-START | Environment initialization and state-file load | Requires `SOAK_DURATION_SECONDS` and `SYSTEM_INTEGRATION_DIR`. Accepts `SOAK_OUTPUT_DIR`, target identity, deadlines, and resource limits | Validate immutable manifest and capabilities before side effects. Do not execute untrusted state as shell input. |
 | DR-STATE | `persist_soak_state` | Writes `.soak-state` and `.soak-checkpoint-state.json` through temporary files | Bind state to manifest digest. Preserve history, failures, and immutable artifact references across segments. |
 | DR-LAUNCH | Main loop's `poetry run pytest` call | Executes `integration-tests/test/tests/custom/test_load.py` with alternating `docker` and `subprocess` providers | Select the declared profile and pass its pinned request. Record launch count and receipt. |
 | DR-OBSERVE | `emit_iteration_metrics`, `iteration_finalization_latency` | Reads pytest text and telemetry roots into `iteration-*/metrics.json` | Emit correlated events and explicit missing/error observations. Existing phase counts are not deploy counts. |
 | DR-CAPTURE | `snapshot_iteration_monitor_outputs` | Copies the newest matching CSV or marker from three telemetry roots | Require session identity, complete inventory, and digest verification. Modification time alone is insufficient correlation. |
 | DR-STOP | Deadline loop, terminal markers, `cleanup_soak_processes` | Stops workload processes and handles resource markers | Preserve failure evidence before cleanup. Retain PR #431's B44 limitation until separately resolved. |
-| DR-SUMMARY | `scripts/bench/write-soak-summary.sh` | Writes `iterations.json` and `summary.json`; `.ok` originates from process exit status | Add explicit coverage and scenario verdicts. Neither exit zero nor a fallback summary establishes conformance. |
+| DR-SUMMARY | `scripts/bench/write-soak-summary.sh` | Writes `iterations.json` and `summary.json`. The `.ok` field originates from process exit status | Add explicit coverage and scenario verdicts. Neither exit zero nor a fallback summary establishes conformance. |
 | DR-PUBLISH | `.github/workflows/merge-recovery-soak.yml` | Selects image/suite, runs segments, and uploads artifacts | Require complete manifest and result inventory. No shared workflow change belongs to TASK-017-2. |
 
 Telemetry roots are `integration-tests/data`, `integration-tests/log-archive`, and `integration-tests/.subprocess-data` within the selected external checkout.
@@ -82,9 +82,26 @@ Numbers that represent token amounts, heights, stake, or Phlo use decimal intege
 
 Unknown observations use `null` with a reason. Missing required identifiers, malformed numbers, duplicate record IDs, and unsupported schema versions cannot pass validation.
 
+IDs are nonempty strings. Each transport record has a unique `record_id`. Repeated observations may share `event_id`, but not `record_id`.
+
+`phase` is `pre_pr216_merge` or `post_pr216_merge`. `seed` is an unsigned decimal integer string. `required_scenarios` is a nonempty array of unique scenario IDs.
+
+`source_digests` maps relative source paths to SHA-256 strings. `tool_versions` maps tool names to observed version strings, not requested versions.
+
+`capabilities` maps capability IDs to status, provider, revision, and qualification references. Status is `qualified`, `unsupported`, or `unknown`.
+
+Source-audited primitives remain `unknown` until their required adapter binding passes. Unsupported and unknown required capabilities prevent node launch.
+
+`resource_limits` names child count, timeout seconds, RSS ceiling MB, host-free floor MB, disk-free floor MB, and artifact-byte budget with explicit units.
+
+`presence` is `observed`, `missing`, or `error`. Missing/error observations require a reason and null value, not a substituted zero.
+
+Observation times carry a clock ID, monotonic nanoseconds as a decimal string, and UTC text. A deadline identifies its clock and numeric time basis.
+
 | Record | Required fields and constraints |
 | --- | --- |
-| Manifest | `run_id`, `phase`, `candidate_id`, `node_revision`, `node_binary_digest`, `image_digest`, `harness_revision`, `external_harness_revision`, `source_digests`, `configuration_digest`, `profile_id`, `profile_digest`, `fixture_digest`, `expectation_digest`, `seed`, `provider`, `policy_variant`, `evidence_kind`, `capabilities`, `tool_versions`, `bounds`, `assumptions`, `resource_limits`, `required_scenarios`, `deadline`, `merge_gate` |
+| Manifest identity fields | `run_id`, `phase`, `candidate_id`, `node_revision`, `node_binary_digest`, `image_digest`, `harness_revision`, `external_harness_revision`, `source_digests`, `configuration_digest`, `profile_id`, `profile_digest` |
+| Additional required manifest fields | `fixture_digest`, `expectation_digest`, `seed`, `provider`, `policy_variant`, `evidence_kind`, `capabilities`, `tool_versions`, `bounds`, `assumptions`, `resource_limits`, `required_scenarios`, `deadline`, `merge_gate` |
 | Scenario request | Manifest digest, `scenario_id`, `pair_id`, `member_id`, input fixture references, expected-value references, required observation kinds, fault schedule, observation deadline |
 | Fault request | `fault_id`, target node and process incarnation, action, trigger event, bounded acknowledgment deadline, requested ordering constraints |
 | Fault acknowledgment | Same identity and `fault_id`, observed action/state, supporting raw artifact reference, producer sequence, observation time, status `applied`, `not_applied`, or `unknown` |
@@ -183,7 +200,7 @@ Each row needs a matching positive control. Each negative mutation must fail bef
 | --- | --- | --- | --- |
 | resume_changed_identity | IdentityPinned | DR-START/DR-STATE: resume with each immutable identity component changed independently | Reject before launch. Preserve prior state and artifact digests. Matching identity resumes. |
 | resume_overwrites_iteration | ResumePreservesHistory | DR-STATE: two segments with existing iterations and failure records | New iteration ID exceeds every old ID. Earlier bytes and failure records remain unchanged. |
-| product_failure_then_resource_stop | ProductFailureMonotone | DR-OBSERVE/DR-STOP: observed failure followed by disk or memory stop | Retain failure and `termination=resource_stop`; `soak_verdict=non_passing`. |
+| product_failure_then_resource_stop | ProductFailureMonotone | DR-OBSERVE/DR-STOP: observed failure followed by disk or memory stop | Retain failure and `termination=resource_stop`. Require `soak_verdict=non_passing`. |
 | missing_artifact_cannot_pass | PassRequiresEvidence | DR-SUMMARY/DR-PUBLISH: complete observations with missing or corrupt required artifact | Reject publication as passing. Complete inventory is the positive control. |
 | terminal_marker_prevents_launch | StopPreventsLaunch | DR-START/DR-LAUNCH: terminal marker, expired deadline, or resource stop | Launch counter remains unchanged. Exercise each stop cause separately. |
 | capture_before_cleanup | EvidenceBeforeCleanup | DR-CAPTURE/DR-STOP: capture acknowledgment delayed or failed | No evidence deletion before successful capture and digest verification. Retain incomplete outcome on failure. |

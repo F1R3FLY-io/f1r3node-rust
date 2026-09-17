@@ -105,6 +105,14 @@ The start gate requires the accepted pre-merge handoff and the actual PR #216 me
 
 This phase adapts the harness to the merged node. It does not prove or repair the merged node.
 
+## TASK-017-2 contract delivery
+
+The [interface contract](../casper/design/soak-interface-contract.md) defines record fields, source boundaries, fault acknowledgments, fixture expectations, and capability blockers.
+
+All seven profile claims specify their payloads and post-merge adaptations. No profile implementation or product evidence is claimed by this specification work.
+
+The [task log](../work-logs/task-017-2-interface-contract-2026-09-17.md) records the external-source audit and the completion helper's TASK-ID limitation.
+
 ## Claim and task map
 
 | Claim | Verified component | Pre-merge owner | Post-merge owner |

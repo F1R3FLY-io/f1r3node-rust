@@ -64,7 +64,9 @@ It records the audited external harness revision and distinguishes existing prim
 
 Inputs are the approved matrix, immutable candidate identities, workload seeds, fault schedule, resource limits, model verdicts, and per-iteration observations.
 
-The model state contains the phase, run identity, segment, iteration, child state, resource-stop flag, product-failure set, artifact set, and terminal outcome.
+Required driver state includes phase, run identity, segment, iteration, child state, stop cause, product failures, artifact inventory, and terminal outcome.
+
+The finite model abstracts that state. It does not encode complete manifests, artifact inventories, or specific resource-stop causes.
 
 Outputs are an immutable manifest, event trace, per-iteration measurements, model logs, fixture results, and final report with artifact digests.
 

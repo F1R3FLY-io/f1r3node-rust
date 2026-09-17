@@ -3,7 +3,9 @@ task: TASK-017-2
 branch: formal/soak-casper-consensus
 claimed_by: pi-casper-harness
 started_at: 2026-09-17T00:46:59Z
-handoff_status: in_progress
+handoff_status: blocked
+contract_status: complete
+tracking_status: completion-helper-incompatible
 ---
 
 # TASK-017-2 Interface Contract
@@ -38,6 +40,19 @@ Adopted subprocess handles explicitly reject restart. Generic pause methods do n
 
 The existing driver uses fail-soft metric extraction and process-exit-derived `.ok`. Neither proves required profile coverage.
 
+## Retrieved source digests
+
+These SHA-256 values identify retrieved bytes at the selected external revision. Paths are relative to that repository, not the local sibling checkout.
+
+| External path | SHA-256 |
+| --- | --- |
+| `integration-tests/test/infra/node.py` | `26ee175079b5fc2b064de3bdb4c9d0402860ab2388038d380917356b4e89a9bc` |
+| `integration-tests/test/infra/providers/base.py` | `50ee05e50befc4e897fa9cdfea61716d5013b8777a556ee6c9511de000844352` |
+| `integration-tests/test/infra/providers/docker.py` | `29906538de5921829e50c1911523d0a6e47fa02efc5e3db35c3ae1502251e3a8` |
+| `integration-tests/test/infra/providers/subprocess.py` | `9149e1e272f1504809307cc52c91cfdf88797d38ab3d9d4877bae1a3c52535da` |
+| `integration-tests/test/tests/custom/test_load.py` | `aa06c14d0268f36c58eb3102ae2d2224b1f968f335631b8161d43d4d4999c19b` |
+| `integration-tests/test/conftest.py` | `f76a78baeee1ebfda24c9bdc745602a137e8de84221183e55588542c4fc5ef82` |
+
 ## Acceptance map
 
 | TASK-017-2 criterion | Contract evidence |
@@ -46,9 +61,41 @@ The existing driver uses fail-soft metric extraction and process-exit-derived `.
 | Ratified expectations without conflicting node claims | Profile-specific expectations and branch-plan authority links |
 | Harness-only mandatory source scope | Unchanged twenty-one-artifact inventory and proposed harness modules only |
 | No node-proof obligation | Explicit exclusions in common contract and every claim |
-| Missing interfaces block scenarios; mocks are not product evidence | Capability admission, fault receipts, `evidence_kind`, and per-profile qualification limits |
+| Missing interfaces block scenarios. Mocks are not product evidence. | Capability admission, fault receipts, `evidence_kind`, and per-profile qualification limits |
 | Post-merge adaptation for every profile | Per-profile field mappings and TASK-018 owner references |
+
+## Completion-tool limitation
+
+The shared `task-complete/scripts/task-complete.sh TASK-017-2` invocation returned exit 2: `target must start with TODO- or EPIC-`.
+
+The canonical framework copy has the same dispatch limitation. No repository-local completion wrapper exists.
+
+The contract work is complete, but task status remains `in_progress`. The task record identifies the helper limitation instead of silently bypassing the wrapper.
+
+TASK-017-1 remains unchanged. The user authorized this specification increment directly, not completion of its broader prerequisite review.
+
+## Evidence impact
+
+The model, configurations, runner, retained TLC results, and staged ledger records are unchanged. No verification timestamp, discharge, or waiver was added.
+
+Earlier pending ledger claim digests describe the earlier specifications. They cannot establish current binding evidence for these expanded contracts.
+
+TASK-017-4 and the profile owners must refresh claim-bound evidence after implementation. This task does not relabel previous results as verification of new requirements.
 
 ## Verification
 
-Verification results and completion-tool behavior will be recorded after the final checks. Model, runner, profile, and soak evidence remain distinct.
+Contract checks passed for eight claim specifications, ten harness fixture IDs, twenty-one profile negative fixture IDs, and twenty-one positive/generation fixture obligations.
+
+YAML parsing, source digests, documentation links, source scope, unrelated task preservation, and index preservation checks passed.
+
+All twelve existing runner unit tests passed. They are regression checks for the existing runner, not executable verification of the new profile contracts.
+
+The deterministic STE Check and `git diff --check` passed. Human STE Review remains necessary.
+
+Strict EPIC-017 CbC discharge returned exit 4. All twenty-one artifact records remain pending, and no node or soak test ran.
+
+## Handoff
+
+The user authorized continuation to TASK-017-3 after the contract work. Prerequisite review can proceed without treating tracker closure as resolved.
+
+The next task must retain separate Git authorization for integration and repinning. The completion helper needs a separate compatibility repair.
