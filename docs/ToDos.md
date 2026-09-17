@@ -189,8 +189,8 @@ tasks:
     status: in_progress
     claimed_by: pi-casper-harness
     claimed_at: 2026-09-16T22:18:38Z
-    execution_scope: "Authorized continuation: shared formal-gate trace and positive-search validation. Workload dispatch and full claim completion remain blocked."
-    work_log: docs/work-logs/task-017-4-positive-search-2026-09-17.md
+    execution_scope: "Authorized continuation: shared formal-gate exact-result classification. Workload dispatch and full claim completion remain blocked."
+    work_log: docs/work-logs/task-017-4-exact-result-2026-09-17.md
     blocked_by: [TASK-017-2, TASK-017-3]
     decisions: [D-11]
     acceptance:

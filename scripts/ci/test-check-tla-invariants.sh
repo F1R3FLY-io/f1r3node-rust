@@ -55,6 +55,15 @@ if [[ "$config" == "${TEST_TLC_TARGET:-}" ]]; then
     case "$TEST_TLC_RESULT" in
         clean) printf 'Model checking completed. No error has been found.\n'; exit 0 ;;
         incomplete) printf 'Finished in 0s.\n'; exit 0 ;;
+        contradictory)
+            printf 'Model checking completed. No error has been found.\n'
+            if [[ -z "$invariant" ]]; then
+                printf 'Error: The verifier encountered an unexpected failure.\n'
+                exit 0
+            fi ;;
+        extra-invariant) printf 'Error: Invariant TypeOK is violated.\n' ;;
+        duplicate-invariant) printf 'Error: Invariant %s is violated.\n' "$invariant" ;;
+        extra-error) printf 'Error: The verifier encountered an unexpected failure.\n' ;;
         wrong-invariant) invariant=TypeOK ;;
         tool-error) printf 'Error: The configuration could not be parsed.\n'; exit 1 ;;
         wrong-exit) printf 'Error: Invariant %s is violated.\n' "$invariant"; exit 1 ;;
@@ -245,6 +254,24 @@ if run_gate pull_request TEST_TLC_TARGET="${baseline##*/}.cfg" TEST_TLC_RESULT=i
 fi
 grep -Fq "FAIL   $baseline (" "$WORK/run.log" ||
     fail 'The gate failed for a reason other than the incomplete baseline search.'
+
+ambiguous_targets=("$baseline")
+for area in "${AREAS[@]}"; do
+    check="$(printf '%s\n' "${CONTROLS[@]}" | grep -m1 "^$area/")"
+    ambiguous_targets+=("${check%%:*}")
+done
+for target in "${ambiguous_targets[@]}"; do
+    for result in contradictory extra-invariant duplicate-invariant extra-error; do
+        if [[ "$target" == "$baseline" && "$result" != contradictory ]]; then
+            continue
+        fi
+        if run_gate pull_request TEST_TLC_TARGET="${target##*/}.cfg" TEST_TLC_RESULT="$result"; then
+            fail "The gate accepted ambiguous output for $target with result $result."
+        fi
+        grep -Fq "FAIL   $target (" "$WORK/run.log" ||
+            fail "The gate failed for a reason other than the ambiguous output for $target."
+    done
+done
 
 # 3. Registration.
 tla="$WORK/repo/formal/tlaplus"

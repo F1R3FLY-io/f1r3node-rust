@@ -283,16 +283,20 @@ for check in "${POST_FIX_CONFIGS[@]}" "${NEGATIVE_CONTROLS[@]}"; do
     set -e
     elapsed="$(($(date +%s) - started_epoch))s"
     if ((status == 0)) && [[ -z "$expected_invariant" ]] &&
-        grep -Fxq 'Model checking completed. No error has been found.' "$log"; then
+        grep -Fxq 'Model checking completed. No error has been found.' "$log" &&
+        awk '/^Error:/ { invalid = 1 } END { exit invalid }' "$log"; then
         echo "OK     $entry ($elapsed)"
     elif ((status == 12)) && [[ -n "$expected_invariant" ]] &&
         grep -Fxq "Error: Invariant $expected_invariant is violated." "$log" &&
-        awk '
+        awk -v expected="Error: Invariant $expected_invariant is violated." '
+            $0 == expected { violations++ }
+            /^Error:/ && $0 != expected && $0 != "Error: The behavior up to this point is:" { invalid = 1 }
+            /^Model checking completed\. No error has been found\.$/ { invalid = 1 }
             /^Error: The behavior up to this point is:$/ { trace_header = 1; next }
             trace_header && /^[[:space:]]*$/ { next }
             trace_header && /^State 1:/ { found = 1 }
             { trace_header = 0 }
-            END { exit !found }
+            END { exit !(found && violations == 1 && !invalid) }
         ' "$log"; then
         echo "EXPECTED-FAIL $entry ($expected_invariant, $elapsed)"
     elif ((status == 124)); then

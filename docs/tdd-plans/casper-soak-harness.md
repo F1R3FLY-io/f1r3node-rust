@@ -19,7 +19,7 @@ The [claim](../claims/casper-soak-harness.md) defines the contract. The [formal 
 | H07 | Keep deferred experiments outside baseline authority. | PolicyIsolation | Pending |
 | H08 | Keep missing measurements distinct from zero values. | MissingIsUnknown | Pending |
 | H09 | Require the actual merge for a post-#216 profile. | PostMergeGate | Pending |
-| H10 | Accept only the named negative-control violation. | ControlVerdictExact | Partial: trace and positive-search checks pass |
+| H10 | Accept only the named negative-control violation. | ControlVerdictExact | Partial: shared result classification passes |
 
 ## First bounded model result
 
@@ -43,7 +43,17 @@ The shared gate now requires exit zero and the exact completed-search marker for
 
 GREEN rejected that result through the pull-request workflow command. The shared bounded tier passed all 13 positives and 61 negatives.
 
-The [cycle log](../work-logs/task-017-4-positive-search-2026-09-17.md) records the evidence. Contradictory markers and multiple invariant violations still require exact-result classification tests.
+The [cycle log](../work-logs/task-017-4-positive-search-2026-09-17.md) records the evidence. The following cycle covers contradictory markers and multiple invariant violations.
+
+## H10 exact-result classification
+
+The shared gate rejects contradictory success/error output, additional invariant violations, duplicate expected violations, and additional verifier errors.
+
+RED reproduced acceptance of contradictory positive output. GREEN rejected all 13 new ambiguity cases through the pull-request workflow command.
+
+The bounded shared tier passed 13 positives and 61 negatives. Existing fixture checks, Casper model controls, and twelve runner tests also passed.
+
+The [cycle log](../work-logs/task-017-4-exact-result-2026-09-17.md) links the retained results. Shared Casper registration and full driver/evidence bindings remain pending.
 
 ## Per-cycle record template
 

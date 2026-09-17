@@ -49,6 +49,15 @@ The evidence package contains partial results only. No node correctness claim or
       "ref": "docs/casper/cbc-evidence/runs/casper-positive-search-20260917-01/report.json",
       "sha256": "db4db3a796ccd1e7bfd8d11754c8b7870826df9030944b727ad6d9cf52ba3ea5",
       "detail": "RED reproduced acceptance of an incomplete positive search. GREEN requires a completed-search marker. Full classification remains pending."
+    },
+    {
+      "cycle": "H10-exact-result",
+      "status": "partial-binding-pass",
+      "base_revision": "4204340b0d573e14df9b224ae43e0c0aea083136",
+      "artifact_sha256": "cfd7c5ebec8610161571cb887c866ede74ae43d7161e7c9fbadc8772e9ddddc2",
+      "ref": "docs/casper/cbc-evidence/runs/casper-exact-result-20260917-01/report.json",
+      "sha256": "d9722f0eb25e8d74a377ba2a68244722acd80f18ef2a068242408411a2301052",
+      "detail": "RED reproduced contradictory-output acceptance. GREEN rejected 13 ambiguity cases. Shared Casper registration and full driver bindings remain pending."
     }
   ],
   "tiers": {
