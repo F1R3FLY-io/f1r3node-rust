@@ -189,7 +189,8 @@ tasks:
     status: in_progress
     claimed_by: pi-casper-harness
     claimed_at: 2026-09-16T22:18:38Z
-    execution_scope: "Independent bounded model and runner only. Shared driver and CI integration remain blocked on prerequisite review."
+    execution_scope: "Authorized continuation after prerequisite application: shared formal-gate trace validation. Workload dispatch and full claim completion remain blocked."
+    work_log: docs/work-logs/task-017-4-control-trace-2026-09-17.md
     blocked_by: [TASK-017-2, TASK-017-3]
     decisions: [D-11]
     acceptance:
@@ -344,6 +345,27 @@ tasks:
       - "The handoff lists model and artifact digests, seeds, assumptions, pending bindings, and TASK-018 owners."
       - "The review separates bounded harness models, executable profile fixtures, and observed product outcomes. Node proofs are outside scope."
       - "No required pre-merge claim is deferred merely to close this epic. Post-merge obligations stay pending, not waived."
+
+  - id: TASK-017-14
+    title: "Reduce the branch diff to the formal-verification deliverables"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-017-13]
+    created_at: 2026-09-17
+    rationale: "At 6814682e4 the branch differs from origin/dev by 762 files and about 46,000 added lines. That diff is too large for the repository PR review standard."
+    removal_targets:
+      - "Evidence run packages under docs/casper/cbc-evidence/runs/: 440 files across four runs. Keep one report and one source manifest per run. Move raw TLC transcripts, fixture inputs, and container logs to an external evidence store and record their digests."
+      - "Files applied verbatim from PR #430 through PR #433: soak_disk models and configurations, deploy_storage models, scripts/bench fixtures, the verification-tiers document, the architecture note, and the soak-disk claim. Remove them after those PRs merge to dev, or rebase the branch onto the merged stack."
+      - "Compatibility symlinks in docs/cbc-evidence/: 21 links. Remove them when the CbC driver supports module routing. Otherwise keep the canonical record only."
+      - "Historical hosted TLC transcripts recovered in the evidence audit. Keep the audit report and digests, not the transcript copies."
+    acceptance:
+      - "The PR diff against dev contains only the Casper soak harness deliverables: the interface contract, the claims, the harness model and controls, the runner and its tests, the glossary entries, and the task records."
+      - "Each removed file is either reproducible from a recorded digest and revision, or duplicated upstream on dev, or listed with an explicit reason."
+      - "No removal changes a claim status, a ledger record status, or a discharge result. Pending claims stay pending."
+      - "Evidence that a claim cites remains reachable. A record names the external location and digest of any artifact that leaves the tree."
+      - "The task records the file and line counts of the diff before and after reduction."
+      - "The link check, the STE check, and the strict CbC gate produce the same results after reduction as before it."
+      - "The maintainer confirms the reduced diff meets the PR review standard before the PR opens."
 ---
 ```
 

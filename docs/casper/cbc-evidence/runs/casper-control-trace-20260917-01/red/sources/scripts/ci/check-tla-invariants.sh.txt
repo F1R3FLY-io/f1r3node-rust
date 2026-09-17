@@ -285,14 +285,7 @@ for check in "${POST_FIX_CONFIGS[@]}" "${NEGATIVE_CONTROLS[@]}"; do
     if ((status == 0)) && [[ -z "$expected_invariant" ]]; then
         echo "OK     $entry ($elapsed)"
     elif ((status == 12)) && [[ -n "$expected_invariant" ]] &&
-        grep -Fxq "Error: Invariant $expected_invariant is violated." "$log" &&
-        awk '
-            /^Error: The behavior up to this point is:$/ { trace_header = 1; next }
-            trace_header && /^[[:space:]]*$/ { next }
-            trace_header && /^State 1:/ { found = 1 }
-            { trace_header = 0 }
-            END { exit !found }
-        ' "$log"; then
+        grep -Fxq "Error: Invariant $expected_invariant is violated." "$log"; then
         echo "EXPECTED-FAIL $entry ($expected_invariant, $elapsed)"
     elif ((status == 124)); then
         echo "TIMEOUT $entry after $elapsed (cap $TLC_PER_CONFIG_TIMEOUT) — treat as failure; profile or split the config"
@@ -301,7 +294,7 @@ for check in "${POST_FIX_CONFIGS[@]}" "${NEGATIVE_CONTROLS[@]}"; do
     else
         echo "FAIL   $entry ($elapsed)"
         if [[ -n "$expected_invariant" ]]; then
-            echo "Expected invariant $expected_invariant with TLC exit 12 and a counterexample trace, received exit $status."
+            echo "Expected invariant $expected_invariant with TLC exit 12, received exit $status."
         fi
         echo "--- last 40 lines of $log ---"
         tail -40 "$log"
