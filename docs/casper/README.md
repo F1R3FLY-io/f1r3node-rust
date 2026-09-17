@@ -33,6 +33,8 @@ Shared storage, execution, protobuf, and harness evidence remains in `docs/cbc-e
 
 Relative symlinks at the old evidence paths preserve the shared CbC driver's flat lookup. They contain no duplicate evidence or independent status.
 
+A record with a compatibility symlink must name other files by repository-relative path in code spans, not by relative link. The link checker resolves a relative link from the symlink path, where it breaks.
+
 Until the driver supports module routing, keep a root compatibility symlink for each new Casper record. Mixed epic checks still use the default evidence directory.
 
 For Casper-only operations, `CBC_EVIDENCE_DIR=docs/casper/cbc-evidence` selects the canonical directory. Do not use that override for an epic with shared artifacts.

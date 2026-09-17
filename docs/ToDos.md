@@ -163,8 +163,9 @@ tasks:
     status: in_progress
     claimed_by: pi-casper-harness
     claimed_at: 2026-09-17T01:43:26Z
-    execution_scope: "Prerequisite review and candidate-matrix preparation only. Integration and repinning require separate authorization."
-    work_log: docs/work-logs/task-017-3-prerequisite-review-2026-09-17.md
+    execution_scope: "Authorized working-tree application of reviewed prerequisites and candidate-matrix completion. No staging, commits, pushes, or merges."
+    work_log: docs/work-logs/task-017-3-prerequisite-application-2026-09-17.md
+    prerequisite_review: docs/work-logs/task-017-3-prerequisite-review-2026-09-17.md
     blocked_by: [TASK-017-1]
     external_prs: [390, 430, 431, 432, 433]
     acceptance:

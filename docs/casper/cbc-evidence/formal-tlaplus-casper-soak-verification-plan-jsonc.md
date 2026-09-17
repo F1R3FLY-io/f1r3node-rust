@@ -2,14 +2,14 @@
 
 **Status:** Pending. The bounded model result does not discharge the full harness/profile claim.
 
-- [CLAIM-CASPER-SOAK-001](../../claims/casper-soak-harness.md)
-- [CLAIM-CASPER-SOAK-002](../../claims/casper-soak-authority-finality.md)
-- [CLAIM-CASPER-SOAK-003](../../claims/casper-soak-publication.md)
-- [CLAIM-CASPER-SOAK-004](../../claims/casper-soak-recovery.md)
-- [CLAIM-CASPER-SOAK-005](../../claims/casper-soak-merge-accounting.md)
-- [CLAIM-CASPER-SOAK-006](../../claims/casper-soak-slashing.md)
-- [CLAIM-CASPER-SOAK-007](../../claims/casper-soak-version-phlo.md)
-- [CLAIM-CASPER-SOAK-008](../../claims/casper-soak-carrier-index.md)
+- CLAIM-CASPER-SOAK-001 (`docs/claims/casper-soak-harness.md`)
+- CLAIM-CASPER-SOAK-002 (`docs/claims/casper-soak-authority-finality.md`)
+- CLAIM-CASPER-SOAK-003 (`docs/claims/casper-soak-publication.md`)
+- CLAIM-CASPER-SOAK-004 (`docs/claims/casper-soak-recovery.md`)
+- CLAIM-CASPER-SOAK-005 (`docs/claims/casper-soak-merge-accounting.md`)
+- CLAIM-CASPER-SOAK-006 (`docs/claims/casper-soak-slashing.md`)
+- CLAIM-CASPER-SOAK-007 (`docs/claims/casper-soak-version-phlo.md`)
+- CLAIM-CASPER-SOAK-008 (`docs/claims/casper-soak-carrier-index.md`)
 
 The evidence package contains partial results only. No node correctness claim or construction proof belongs to this scope.
 

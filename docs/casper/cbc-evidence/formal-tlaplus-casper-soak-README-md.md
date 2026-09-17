@@ -2,7 +2,7 @@
 
 **Status:** Pending. The bounded model result does not discharge the full harness/profile claim.
 
-- [CLAIM-CASPER-SOAK-001](../../claims/casper-soak-harness.md)
+- CLAIM-CASPER-SOAK-001 (`docs/claims/casper-soak-harness.md`)
 
 The evidence package contains partial results only. No node correctness claim or construction proof belongs to this scope.
 
