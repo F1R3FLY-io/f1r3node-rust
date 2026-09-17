@@ -18,6 +18,24 @@ fi
 PROVIDERS=(docker subprocess)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CASPER_MANIFEST_DIGEST=""
+CASPER_RUNTIME=0
+CASPER_TERMINATION=completed
+casper_runtime() {
+	python3 "$SCRIPT_DIR/bench/casper_soak_runtime.py" "$@" --output "$OUTPUT_DIR"
+}
+if [ -n "${SOAK_INPUT_DIR:-}" ]; then
+	CASPER_ADMISSION="$(casper_runtime admit)"
+	CASPER_STATUS=$?
+	if [ "$CASPER_STATUS" -ne 0 ]; then
+		printf '%s\n' "$CASPER_ADMISSION" >&2
+		exit "$CASPER_STATUS"
+	fi
+	CASPER_RUNTIME=1
+	CASPER_LIMIT="$(printf '%s' "$CASPER_ADMISSION" | jq -er .iterations)" || exit 2
+	CASPER_SEGMENT_LIMIT="$(printf '%s' "$CASPER_ADMISSION" | jq -er .iterations_per_segment)" || exit 2
+	CASPER_PROVIDER="$(printf '%s' "$CASPER_ADMISSION" | jq -er .provider)" || exit 2
+	CASPER_DEADLINE="$(printf '%s' "$CASPER_ADMISSION" | jq -er .deadline)" || exit 2
+fi
 if [ -n "${SOAK_MANIFEST_PATH:-}" ] || [ -e "$OUTPUT_DIR/.casper-manifest.json" ] || [ -L "$OUTPUT_DIR/.casper-manifest.json" ]; then
 	CASPER_MANIFEST_DIGEST="$(python3 "$SCRIPT_DIR/bench/casper_soak_manifest.py" "${SOAK_MANIFEST_PATH:-}" "$OUTPUT_DIR")" || exit 2
 fi
@@ -32,6 +50,11 @@ fi
 mkdir -p "$OUTPUT_DIR"
 STATE_FILE="$OUTPUT_DIR/.soak-state"
 MANIFEST_BOUND=0
+RUNTIME_BOUND=0
+if [ "$CASPER_RUNTIME" -eq 1 ]; then
+	exec 9>"$OUTPUT_DIR/.casper-lock" || exit 2
+	flock -n 9 || exit 2
+fi
 INFLIGHT_ITERATION=0
 INFLIGHT_BENCHMARK=0
 if [ -e "$STATE_FILE" ] || [ -L "$STATE_FILE" ]; then
@@ -44,7 +67,7 @@ if [ -e "$STATE_FILE" ] || [ -L "$STATE_FILE" ]; then
 		saved_key="${saved_line%%=*}"
 		saved_value="${saved_line#*=}"
 		case "$saved_key" in
-			STARTED_AT|ITERATIONS|FAILURES|SEGMENT|BENCH_SEGMENTS|BENCH_FAILURES|INFLIGHT_ITERATION|INFLIGHT_BENCHMARK|MANIFEST_BOUND) ;;
+			STARTED_AT|ITERATIONS|FAILURES|SEGMENT|BENCH_SEGMENTS|BENCH_FAILURES|INFLIGHT_ITERATION|INFLIGHT_BENCHMARK|MANIFEST_BOUND|RUNTIME_BOUND) ;;
 			*) printf 'The saved soak state contains an unknown field.\n' >&2; exit 2 ;;
 		esac
 		if [[ " $saved_keys " == *" $saved_key "* ]] ||
@@ -69,6 +92,10 @@ if [ -e "$STATE_FILE" ] || [ -L "$STATE_FILE" ]; then
 		{ [ "$MANIFEST_BOUND" -eq 1 ] && [ -z "$CASPER_MANIFEST_DIGEST" ]; } ||
 		{ [ "$MANIFEST_BOUND" -eq 0 ] && [ -n "$CASPER_MANIFEST_DIGEST" ]; }; then
 		printf 'The saved manifest binding is missing or invalid.\n' >&2
+		exit 2
+	fi
+	if [ "$RUNTIME_BOUND" -ne "$CASPER_RUNTIME" ]; then
+		printf 'The saved profile execution mode differs.\n' >&2
 		exit 2
 	fi
 	SEGMENT="$((SEGMENT + 1))"
@@ -124,9 +151,20 @@ if [ -f "$OUTPUT_DIR/early-exit.txt" ]; then
 	DEADLINE=0
 fi
 
-if [ -n "$CASPER_MANIFEST_DIGEST" ] && [ "$(date +%s)" -lt "$DEADLINE" ]; then
+if [ "$CASPER_RUNTIME" -eq 0 ] && [ -n "$CASPER_MANIFEST_DIGEST" ] && [ "$(date +%s)" -lt "$DEADLINE" ]; then
 	printf 'Casper profile dispatch remains blocked until its adapter is qualified.\n' >&2
 	exit 2
+fi
+
+CASPER_SEGMENT_START="$ITERATIONS"
+if [ "$CASPER_RUNTIME" -eq 1 ]; then
+	if [ "$INFLIGHT_ITERATION" -eq 0 ]; then
+		casper_runtime history --iteration "$ITERATIONS" --failures "$FAILURES" || exit 2
+	fi
+	[ "$CASPER_DEADLINE" -ge "$DEADLINE" ] || DEADLINE="$CASPER_DEADLINE"
+	if [ -e "$OUTPUT_DIR/finalize-requested" ] || [ "$ITERATIONS" -ge "$CASPER_LIMIT" ]; then
+		DEADLINE=0
+	fi
 fi
 
 # Harness telemetry roots. Subprocess sessions write monitor artifacts and
@@ -781,6 +819,9 @@ if [ -n "$NODE_REPO_DIR" ] && [ -f "$NODE_REPO_DIR/node/Cargo.toml" ]; then
 fi
 
 emit_soak_state() {
+	if [ "$CASPER_RUNTIME" -eq 1 ]; then
+		printf 'RUNTIME_BOUND=1\n'
+	fi
 	if [ -n "$CASPER_MANIFEST_DIGEST" ]; then
 		printf 'MANIFEST_BOUND=1\n'
 	fi
@@ -1689,6 +1730,11 @@ if [ "$RUN_BENCHMARKS" = "true" ] && [ "$SEGMENT" -eq 1 ] &&
 fi
 
 while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+	if [ "$CASPER_RUNTIME" -eq 1 ]; then
+		[ "$ITERATIONS" -lt "$CASPER_LIMIT" ] || break
+		[ "$((ITERATIONS - CASPER_SEGMENT_START))" -lt "$CASPER_SEGMENT_LIMIT" ] || break
+		casper_runtime history --iteration "$ITERATIONS" --failures "$FAILURES" || exit 2
+	fi
 	# The orchestrator guardian can fire outside a failing iteration — during a
 	# bench segment, or after an iteration that still exited 0. Never start new
 	# work once the host has been defended.
@@ -1812,11 +1858,12 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 		esac
 	fi
 	PROVIDER="${PROVIDERS[$((ITERATIONS % ${#PROVIDERS[@]}))]}"
+	if [ "$CASPER_RUNTIME" -eq 1 ]; then PROVIDER="$CASPER_PROVIDER"; fi
 	ITERATIONS="$((ITERATIONS + 1))"
 	INFLIGHT_ITERATION=1
 	persist_soak_state || exit 2
 	ITERATION_DIR="$OUTPUT_DIR/iteration-$(printf '%05d' "$ITERATIONS")-$PROVIDER"
-	mkdir -p "$ITERATION_DIR"
+	mkdir "$ITERATION_DIR" || exit 2
 	REMAINING="$((DEADLINE - $(date +%s)))"
 	if [ "$REMAINING" -le 0 ]; then
 		INFLIGHT_ITERATION=0
@@ -1835,6 +1882,11 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 		export SOAK_WRITER_OWNER SOAK_DOCKER_REAL SOAK_DOCKER_OWNER_DIR
 		export SOAK_PROCESS_OWNER="$SOAK_WRITER_OWNER"
 		export PATH="$SOAK_WORKLOAD_PATH"
+		if [ "$CASPER_RUNTIME" -eq 1 ]; then
+			exec timeout --signal=TERM --kill-after=30 "${REMAINING}s" \
+				python3 "$SCRIPT_DIR/bench/casper_soak_runtime.py" run --output "$OUTPUT_DIR" \
+				--directory "$ITERATION_DIR" --iteration "$ITERATIONS" --segment "$SEGMENT"
+		fi
 		exec timeout --signal=TERM --kill-after=30 "${REMAINING}s" \
 			poetry run pytest \
 			integration-tests/test/tests/custom/test_load.py \
@@ -1846,8 +1898,10 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 			--timeout=1200
 	) >"$ITERATION_FIFO" 2>&1 &
 	ITERATION_PID=$!
-	snapshot_iteration_monitor_outputs "$ITERATION_DIR" &
-	ITERATION_SNAPSHOT_PID=$!
+	if [ "$CASPER_RUNTIME" -eq 0 ]; then
+		snapshot_iteration_monitor_outputs "$ITERATION_DIR" &
+		ITERATION_SNAPSHOT_PID=$!
+	fi
 	GUARDIAN_INTERRUPTED=0
 	while kill -0 "$ITERATION_PID" 2>/dev/null; do
 		if ! jobs -pr | grep -Fxq "$CRASH_MONITOR_PID" && [ ! -s "$HOST_GUARDIAN_BREACH" ]; then
@@ -1888,7 +1942,14 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 	fi
 	if [ "$GUARDIAN_INTERRUPTED" -eq 1 ]; then
 		STATUS=1
-		stop_node_writers -aq rm -f >/dev/null 2>&1 || true
+		if [ "$CASPER_RUNTIME" -eq 1 ]; then
+			stop_node_writers -q kill >/dev/null 2>&1 || true
+		else
+			stop_node_writers -aq rm -f >/dev/null 2>&1 || true
+		fi
+	fi
+	if [ "$CASPER_RUNTIME" -eq 1 ]; then
+		stop_node_writers -q kill >/dev/null 2>&1 || true
 	fi
 	if [ -n "$EMERGENCY_DEADLINE_EPOCH" ]; then
 		while kill -0 "$ITERATION_TEE_PID" 2>/dev/null && [ "$(emergency_remaining)" -gt 0 ]; do
@@ -1897,8 +1958,10 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 		kill "$ITERATION_TEE_PID" 2>/dev/null || true
 	fi
 	wait "$ITERATION_TEE_PID" 2>/dev/null || true
-	kill "$ITERATION_SNAPSHOT_PID" 2>/dev/null || true
-	wait "$ITERATION_SNAPSHOT_PID" 2>/dev/null || true
+	if [ -n "$ITERATION_SNAPSHOT_PID" ]; then
+		kill "$ITERATION_SNAPSHOT_PID" 2>/dev/null || true
+		wait "$ITERATION_SNAPSHOT_PID" 2>/dev/null || true
+	fi
 	rm -f "$ITERATION_FIFO"
 	ITERATION_PID=""
 	ITERATION_TEE_PID=""
@@ -1910,6 +1973,25 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 	# iteration leaves nothing to sample, which killed every segment mid-loop
 	# before the state file or rollup could be written (run 30516534214).
 	ITER_FINISHED="$(date +%s)"
+	if [ "$CASPER_RUNTIME" -eq 1 ]; then
+		CASPER_TERMINATION=completed
+		if [ "$GUARDIAN_INTERRUPTED" -eq 1 ]; then CASPER_TERMINATION=resource_stop;
+		elif [ "$STATUS" -eq 124 ]; then CASPER_TERMINATION=deadline;
+		elif [ "$STATUS" -ne 0 ]; then CASPER_TERMINATION=tool_error; fi
+		casper_runtime finish --directory "$ITERATION_DIR" --iteration "$ITERATIONS" \
+			--segment "$SEGMENT" --status "$STATUS" --termination "$CASPER_TERMINATION"
+		CASPER_STATUS=$?
+		INFLIGHT_ITERATION=0
+		if [ "$CASPER_STATUS" -ne 0 ]; then FAILURES="$((FAILURES + 1))"; fi
+		if [ "$CASPER_STATUS" -gt 1 ]; then INFLIGHT_ITERATION=2; fi
+		if [ "$CASPER_TERMINATION" != completed ]; then
+			printf '%s\n' "$CASPER_TERMINATION" >"$OUTPUT_DIR/early-exit.txt"
+		fi
+		persist_soak_state || exit 2
+		if [ "$CASPER_STATUS" -gt 1 ] || [ "$CASPER_TERMINATION" != completed ]; then break; fi
+		if ! jq -e '.capture_complete == true' "$OUTPUT_DIR/casper-history/$(printf '%08d' "$ITERATIONS").json" >/dev/null; then break; fi
+		continue
+	fi
 	emit_iteration_metrics "$ITERATION_DIR" "$ITERATIONS" "$PROVIDER" \
 		"$ITER_STARTED" "$ITER_FINISHED" "$STATUS" || true
 	INFLIGHT_ITERATION=0
@@ -2102,6 +2184,13 @@ if command -v jq >/dev/null; then
           degraded: "full summary emission failed; sampled metrics missing"}' ||
 				printf 'fallback summary emission failed too (non-fatal)\n' >&2
 		}
+fi
+
+if [ "$CASPER_RUNTIME" -eq 1 ]; then
+	if [ "${EARLY_EXIT_REASON:-}" = host_protection_breach ]; then CASPER_TERMINATION=resource_stop;
+	elif [ -e "$OUTPUT_DIR/finalize-requested" ]; then CASPER_TERMINATION=cancelled;
+	elif [ "$(date +%s)" -ge "$CASPER_DEADLINE" ]; then CASPER_TERMINATION=deadline; fi
+	publish_record "$OUTPUT_DIR/casper-result.json" casper_runtime publish --termination "$CASPER_TERMINATION" || exit 2
 fi
 
 # Durability is a bounded step so a stalled storage sync never blocks the

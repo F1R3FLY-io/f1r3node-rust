@@ -39,6 +39,15 @@ class VerdictTests(unittest.TestCase):
         log = violation("IdentityPinned") + violation("PostMergeGate")
         self.assertNotEqual(RUNNER.classify(12, log, "IdentityPinned"), "passed")
 
+    def test_negative_rejects_extra_errors_and_non_exact_markers(self):
+        log = violation("IdentityPinned")
+        for text in (log + "Error: verifier failure\n", log + violation("IdentityPinned"),
+                     log + RUNNER.CLEAN_MARKER, log.replace("Error: Invariant", "Invariant"),
+                     log.replace("State 1:", "not State 1:")):
+            with self.subTest(log=text):
+                self.assertNotEqual(RUNNER.classify(12, text, "IdentityPinned"), "passed")
+        self.assertNotEqual(RUNNER.classify(0, "prefix " + RUNNER.CLEAN_MARKER), "passed")
+
 
 class ConfigurationTests(unittest.TestCase):
     def setUp(self):

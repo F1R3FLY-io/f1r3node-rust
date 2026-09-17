@@ -22,17 +22,21 @@ def digest(path):
 
 
 def classify(returncode, output, expected_property=None):
+    lines = output.splitlines()
+    errors = [line for line in lines if line.startswith("Error:")]
     violations = re.findall(r"Invariant ([A-Za-z][A-Za-z0-9_]*) is violated\.", output)
     if expected_property is None:
-        if returncode == 0 and CLEAN_MARKER in output and not violations and "Error:" not in output:
+        if returncode == 0 and CLEAN_MARKER in lines and not violations and not errors:
             return "passed"
-    elif (
-        returncode == 12
-        and violations == [expected_property]
-        and re.search(r"The behavior up to this point is:\s+State 1:", output)
-        and CLEAN_MARKER not in output
-    ):
-        return "passed"
+    elif returncode == 12 and violations == [expected_property] and CLEAN_MARKER not in output:
+        expected = f"Error: Invariant {expected_property} is violated."
+        headers = [index for index, line in enumerate(lines)
+                   if line in ("The behavior up to this point is:", "Error: The behavior up to this point is:")]
+        if lines.count(expected) == 1 and len(headers) == 1:
+            states = [line for line in lines[headers[0] + 1:] if line.strip()]
+            allowed = {expected, "Error: The behavior up to this point is:"}
+            if states and states[0].startswith("State 1:") and all(line in allowed for line in errors):
+                return "passed"
     return "unexpected_result"
 
 

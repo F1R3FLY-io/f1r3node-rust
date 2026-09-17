@@ -2,6 +2,7 @@ import copy
 import hashlib
 import json
 import os
+import stat
 from pathlib import Path
 import subprocess
 import tempfile
@@ -51,6 +52,39 @@ def retained_tree(root):
     }
 
 
+def recorded_driver(environment, case, expected, timeout):
+    destination = os.environ.get("SOAK_TEST_ARTIFACTS")
+    evidence = Path(destination) / "manifest-invocations" / case if destination else None
+    output = Path(environment["SOAK_OUTPUT_DIR"])
+
+    def snapshot(label):
+        if evidence is None:
+            return
+        directory = evidence / label
+        directory.mkdir(parents=True, exist_ok=False)
+        for path in output.rglob("*") if output.exists() else ():
+            if path.is_file() and not path.is_symlink():
+                retained = directory / path.relative_to(output)
+                retained.parent.mkdir(parents=True, exist_ok=True)
+                retained.write_bytes(path.read_bytes())
+
+    snapshot("before")
+    supplied = environment.get("SOAK_MANIFEST_PATH")
+    if evidence is not None:
+        source = Path(supplied) if supplied else None
+        mode = source.lstat().st_mode if source is not None and os.path.lexists(source) else None
+        if source is not None and mode is not None and stat.S_ISREG(mode):
+            (evidence / "manifest.bin").write_bytes(source.read_bytes())
+        (evidence / "input.json").write_text(json.dumps({"argument_present": supplied is not None, "file_mode": mode}) + "\n")
+    result = subprocess.run(["bash", str(ROOT / "scripts/run-merge-recovery-soak.sh")], env=environment, capture_output=True, text=True, timeout=timeout)
+    snapshot("after")
+    if evidence is not None:
+        (evidence / "stdout.txt").write_text(result.stdout)
+        (evidence / "stderr.txt").write_text(result.stderr)
+        (evidence / "result.json").write_text(json.dumps({"expected_exit": expected, "actual_exit": result.returncode, "timeout_seconds": timeout, "command": ["bash", "scripts/run-merge-recovery-soak.sh"]}) + "\n")
+    return result
+
+
 class ManifestDriverTests(unittest.TestCase):
     def test_invalid_manifests_do_not_create_run_state(self):
         manifest = fixture_manifest()
@@ -94,10 +128,7 @@ class ManifestDriverTests(unittest.TestCase):
                         "SOAK_OUTPUT_DIR": str(output),
                         "SOAK_MANIFEST_PATH": str(source),
                     })
-                    result = subprocess.run(
-                        ["bash", str(ROOT / "scripts/run-merge-recovery-soak.sh")],
-                        env=environment, capture_output=True, text=True, timeout=5,
-                    )
+                    result = recorded_driver(environment, "invalid-" + case, 2, 5)
                     self.assertEqual(result.returncode, 2, result.stderr)
                     self.assertFalse(output.exists())
                     self.assertFalse((root / "suite").exists())
@@ -124,15 +155,16 @@ class ManifestDriverTests(unittest.TestCase):
                 "SOAK_RUN_BENCHMARKS": "false",
             })
 
-            def run():
-                return subprocess.run(
-                    ["bash", str(ROOT / "scripts/run-merge-recovery-soak.sh")],
-                    env=environment, capture_output=True, text=True, timeout=15,
-                )
+            invocation = 0
 
-            first = run()
+            def run(expected=2):
+                nonlocal invocation
+                invocation += 1
+                return recorded_driver(environment, f"resume-{invocation:02d}", expected, 15)
+
+            first = run(0)
             self.assertEqual(first.returncode, 0, first.stderr)
-            matching = run()
+            matching = run(0)
             self.assertEqual(matching.returncode, 0, matching.stderr)
             self.assertIn("SEGMENT=2\n", (output / ".soak-state").read_text())
             before = retained_tree(output)
