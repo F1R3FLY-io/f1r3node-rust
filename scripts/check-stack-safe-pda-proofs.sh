@@ -252,13 +252,16 @@ free_map_journal_runtime() {
 match_preparation_proof_clients() {
   rocq_reject_placeholders \
     theories/TwoLevelRSpaceMatchPreparation.v \
+    theories/EncodedRSpaceCandidateCatalog.v \
     theories/TwoLevelRSpaceFlatDeltaTrace.v \
     theories/TwoLevelRSpaceMatchPreparationMutants.v
   rocq_compile_with_closed_count theories/TwoLevelRSpaceMatchPreparation.v 58 \
     "constructive RSpace preparation and grouped delta refinement"
+  rocq_compile_with_closed_count theories/EncodedRSpaceCandidateCatalog.v 18 \
+    "encoded whole-catalog and lazy semantic refinement"
   rocq_compile_with_closed_count theories/TwoLevelRSpaceFlatDeltaTrace.v 4 \
     "finite flat-delta traces and separate normalized supports"
-  rocq_compile_with_closed_count theories/TwoLevelRSpaceMatchPreparationMutants.v 36 \
+  rocq_compile_with_closed_count theories/TwoLevelRSpaceMatchPreparationMutants.v 41 \
     "absolute-address and flat-delta mutation controls"
 }
 
@@ -507,18 +510,22 @@ if [[ "${1:-}" == "--match-preparation" ]]; then
   match_preparation_proof_clients
   rocq_check_modules "RSpace preparation, trace refinement and mutation controls" \
     StackSafePDA.TwoLevelRSpaceMatchPreparation \
+    StackSafePDA.EncodedRSpaceCandidateCatalog \
     StackSafePDA.TwoLevelRSpaceFlatDeltaTrace \
     StackSafePDA.TwoLevelRSpaceMatchPreparationMutants
   popd >/dev/null
   pushd "$repo_root" >/dev/null
-  rspace_preparation_run_tests 6 --lib flat_delta_refinement_tests
+  rspace_preparation_run_tests 69 --lib rspace::data_index::
+  rspace_preparation_run_tests 1 --lib catalog_hash_preimages_are_exact_raw_identity_bytes
   rspace_preparation_run_tests 12 --lib accepted_match_formal_bindings
-  rspace_preparation_run_tests 26 --test data_index_spec
-  rspace_preparation_run_tests 19 --lib two_level_channel_authority
-  rspace_preparation_run_tests 6 --lib candidate_pool_reservation
+  rspace_preparation_run_tests 28 --test data_index_spec
+  rspace_preparation_run_tests 5 --test serializer_byte_goldens
   rspace_preparation_run_tests 2 --test bag_spec transaction_delta
   rspace_preparation_run_tests 1 --test bag_spec multiplicity_rejects_zero_and_detects_overflow
   rspace_preparation_run_tests 22 --test rho_path_spec
+  TLC_MEMORY_HIGH=1792M TLC_RSS=2G TLC_CPU_QUOTA=400% TLC_TASKS_MAX=512 \
+    rpb3_run_tests 1 --release --locked -j4 --test cold_store_records \
+      par_typed_datum_decode_matches_the_derived_oracle
   popd >/dev/null
   exit 0
 fi
@@ -803,6 +810,7 @@ rocq_reject_placeholders \
   theories/TwoLevelRSpaceContinuationAuthority.v \
   theories/TwoLevelRSpaceContinuationAuthorityMutants.v \
   theories/TwoLevelRSpaceMatchPreparation.v \
+  theories/EncodedRSpaceCandidateCatalog.v \
   theories/TwoLevelRSpaceFlatDeltaTrace.v \
   theories/TwoLevelRSpaceMatchPreparationMutants.v \
   theories/TwoLevelRSpaceMatchTransaction.v \
@@ -828,6 +836,7 @@ rocq_check_modules "two-level RSpace authority and RBA1 checkpoint recovery" \
   StackSafePDA.TwoLevelRSpaceContinuationAuthority \
   StackSafePDA.TwoLevelRSpaceContinuationAuthorityMutants \
   StackSafePDA.TwoLevelRSpaceMatchPreparation \
+  StackSafePDA.EncodedRSpaceCandidateCatalog \
   StackSafePDA.TwoLevelRSpaceFlatDeltaTrace \
   StackSafePDA.TwoLevelRSpaceMatchPreparationMutants \
   StackSafePDA.TwoLevelRSpaceMatchTransaction \

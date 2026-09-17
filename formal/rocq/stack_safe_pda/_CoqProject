@@ -54,6 +54,7 @@ theories/RhoPathV2.v
 theories/TwoLevelRSpaceContinuationAuthority.v
 theories/TwoLevelRSpaceContinuationAuthorityMutants.v
 theories/TwoLevelRSpaceMatchPreparation.v
+theories/EncodedRSpaceCandidateCatalog.v
 theories/TwoLevelRSpaceMatchTransaction.v
 theories/TwoLevelRSpaceMatchTransactionMutants.v
 theories/TwoLevelRSpaceCurrentPublication.v

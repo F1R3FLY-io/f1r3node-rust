@@ -398,6 +398,71 @@ fn continuation_arena_matches_the_legacy_pda_and_byte_oracle() {
 }
 
 #[test]
+fn normalized_query_positions_preserve_catalog_gaps_and_fresh_offset() {
+    let mut fixture = ProductFixture::from_parts(vec![
+        (vec![b"b".to_vec()], false),
+        (vec![b"z".to_vec()], true),
+        (vec![b"c".to_vec()], false),
+        (vec![b"a".to_vec()], true),
+    ]);
+    let query = RhoPathQuery::structural_sequence([RhoPathQueryAtom::Wildcard], false);
+    assert_eq!(fixture.pool.positions_matching_query(&query, false), [1, 3]);
+    assert_eq!(fixture.pool.positions_with_structure_prefix(&[], false), [0, 1, 2, 3]);
+    assert!(fixture.pool.prepend_fresh(Datum::default()));
+    assert_eq!(fixture.pool.positions_matching_query(&query, false), [2, 4]);
+    assert_eq!(fixture.pool.positions_matching_query(&query, true), [0, 2, 4]);
+    assert_eq!(fixture.pool.positions_with_structure_prefix(&[], false), [1, 2, 3, 4]);
+    assert_eq!(fixture.pool.positions_with_structure_prefix(&[], true), [0, 1, 2, 3, 4]);
+}
+
+#[test]
+fn synthetic_duplicate_position_reports_are_deduplicated_without_decoding() {
+    let mut fixture =
+        ProductFixture::from_parts(vec![(vec![b"b".to_vec()], true), (vec![b"a".to_vec()], true)]);
+    let second = RhoPathV1::relative_datum_key(&fixture.structures[1], &1u64.to_be_bytes());
+    fixture
+        .pool
+        .positions
+        .insert(&second, CandidatePosition::from_index(0));
+    let query = RhoPathQuery::structural_sequence([RhoPathQueryAtom::Wildcard], false);
+    assert_eq!(fixture.pool.positions_with_structure_prefix(&[], false), [0, 0]);
+    assert_eq!(fixture.pool.positions_matching_query(&query, false), [0]);
+}
+
+#[test]
+fn lazy_catalog_isolates_good_and_empty_channels_from_unrelated_malformed_keys() {
+    let good = "good".to_owned();
+    let empty = "empty".to_owned();
+    let poisoned = "poisoned".to_owned();
+    let mut index = RSpaceDataIndex::new();
+    let value = Datum {
+        a: Arc::new("payload".to_owned()),
+        ..Datum::default()
+    };
+    index.insert(&good, &value).unwrap();
+    index
+        .replace_channel_at_marker(&RhoPathV1::datum_prefix(&empty), Bag::new())
+        .unwrap();
+    let mut malformed = Bag::new();
+    malformed.insert(&[0, 2]).unwrap();
+    index
+        .replace_channel_at_marker(&RhoPathV1::datum_prefix(&poisoned), malformed)
+        .unwrap();
+
+    let pool = index.candidate_pool::<_, String>(&good).unwrap();
+    assert_eq!(pool.len(), 1);
+    assert!(pool.ordered.iter().all(|entry| entry.datum.get().is_none()));
+    assert!(
+        index
+            .candidate_pool::<_, String>(&empty)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(matches!(index.candidate_pool::<_, String>(&poisoned), Err(DataIndexError::Path(_))));
+    assert!(pool.ordered.iter().all(|entry| entry.datum.get().is_none()));
+}
+
+#[test]
 fn terminal_endpoint_is_scanned_at_the_live_product_cursor() {
     let mut availability = Bag::new();
     let mut positions = CandidatePositionMap::new();

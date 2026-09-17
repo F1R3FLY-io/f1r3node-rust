@@ -181,6 +181,9 @@ fn continuation_fixtures() -> Vec<(
 
 #[test]
 fn par_typed_datum_decode_matches_the_derived_oracle() {
+    use rspace_plus_plus::rspace::data_index::RSpaceDataIndex;
+    use rspace_plus_plus::rspace::rho_path::{RhoPathEncode, RhoPathV1};
+
     for (label, datum) in datum_fixtures() {
         let bytes = encode_datum(&datum);
         let oracle: DatumOracle<ListParWithRandom> =
@@ -197,6 +200,24 @@ fn par_typed_datum_decode_matches_the_derived_oracle() {
             "{label}: `persist` — an extent off by one reads this from inside `a`"
         );
         assert_eq!(machine.source, oracle.source, "{label}: `source`");
+        assert_eq!(
+            encode_datum(&machine),
+            bytes,
+            "{label}: canonical identity fixed point"
+        );
+        let path = RSpaceDataIndex::datum_path(&Par::default(), &machine);
+        let view = RhoPathV1::parse_datum(&path).unwrap();
+        assert_eq!(view.datum_identity(), bytes, "{label}: identity suffix");
+        assert_eq!(
+            view.datum_structure(),
+            machine.a.rho_path_structure(),
+            "{label}: structure"
+        );
+        assert_eq!(
+            &path[view.channel_prefix_len()..],
+            RhoPathV1::relative_datum_key(&machine.a.rho_path_structure(), &bytes),
+            "{label}: exact channel-relative address",
+        );
     }
 }
 
@@ -372,9 +393,11 @@ fn assert_ordered_receive_correspondence(fields: &[(u8, i32, bool)], peeks: BTre
             .collect::<Vec<_>>();
         assert_eq!(actual, expected);
         assert!(actual.windows(2).all(|pair| pair[0] < pair[1]));
-        assert!(actual
-            .iter()
-            .all(|&position| position < u64::try_from(fields.len()).unwrap()));
+        assert!(
+            actual
+                .iter()
+                .all(|&position| position < u64::try_from(fields.len()).unwrap())
+        );
     }
 }
 

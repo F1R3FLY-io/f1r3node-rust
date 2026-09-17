@@ -11984,6 +11984,117 @@ explicitly account for this renumbering; equal candidate values do not establish
 equal integers across unavailable gaps. No production traversal redesign is
 implied. All observations remain recorded under task 6589, reachable from root 4131.
 
+### J-165 — 2026-09-17 Encoded whole-catalog refinement and concrete codec bindings
+
+**Status: PROVED conditional whole-catalog and indexed-retrieval refinement;
+MEASURED focused native bindings; combined gate and final kernel recheck pending.**
+This continues task 6589, under root 4131. It changes the formal development,
+test-only observations, tests and verification gate, not production RSpace,
+PathMap, serialization or consensus behavior.
+
+**Construction and interpretation.** `EncodedRSpaceCandidateCatalog.v` models
+the decoder-free catalog first: observe only the requested channel Bag, parse
+endpoint framing, retain the raw identity bytes and multiplicity, compute the
+identity digest, sort by `(digest, identity)`, and reject duplicate identities.
+Interpretation is a separate proof-level operation. Sorting and duplicate
+checks commute with that interpretation. Whole-builder success and refusal
+agree with the semantic builder under an explicit canonical-admission premise.
+The proof derives global identity uniqueness from builder-provided digest
+coherence; it does not assume that different identities have different hashes.
+
+Canonical admission requires successful identity decoding to re-encode to
+exactly the same bytes and produce the stored structure. It is deliberately
+stronger than merely accepting a legacy bincode prefix. The native negative
+control appends a byte to a valid datum: decoding accepts it, but canonical
+re-encoding does not preserve the trailing byte. Another control has valid
+framing and identity but a mismatched structural prefix. Neither control claims
+that lazy catalog construction eagerly decodes or rejects those cases. The
+model's codec functions are supplied explicitly, with no implicit correctness
+laws. These proofs do not verify the complete bincode or cryptographic backend.
+
+**Invariant-to-native correspondence.**
+
+| Boundary | Native evidence |
+|---|---|
+| Digest preimage is exactly canonical datum identity, with no channel/frame prefix; output is 32 bytes | `catalog_hash_preimages_are_exact_raw_identity_bytes` observes the actual test-build catalog digest seam for two distinct datums in two channels, including a repeated occurrence. The historical 105-byte datum golden anchors one result independently of the new observer. |
+| Canonical identity, structural path, relative address and multiplicity agree | Expanded `decoded_entries_and_encoded_pool_have_the_same_exact_order_and_addresses` and generated `generated_catalog_identity_refines_codec_structure_and_multiplicity`. |
+| Production recursive payload codec agrees with the independent derived oracle | Expanded `models::cold_store_records::par_typed_datum_decode_matches_the_derived_oracle`, reusing the existing empty, all-field and deep `ListParWithRandom` corpus. |
+| Candidate order is independent of structural trie order and resolves digest collisions with full identity | Existing forced-collision/replay controls, plus explicit tuple-order comparison in the new digest test. |
+| Catalog creation does not decode, and good/empty requested channels ignore unrelated malformed keys | `lazy_catalog_isolates_good_and_empty_channels_from_unrelated_malformed_keys`; existing first-access decoding controls. |
+| Query normalization preserves catalog gaps and the fresh-candidate offset | `normalized_query_positions_preserve_catalog_gaps_and_fresh_offset`. |
+| Repeated reported positions are deduplicated without decoding | `synthetic_duplicate_position_reports_are_deduplicated_without_decoding`; explicitly a synthetic normalization control, not a valid duplicate-identity catalog. |
+
+The digest observer is scoped and thread-local, and restores its previous state
+on drop. Comparing its result with the same Blake2b implementation establishes
+wrapper/input correspondence, not independent cryptographic correctness; the
+fixed historical known-answer datum adds a distinct regression anchor.
+
+**Index distinction and review.** Rust preserves original catalog indices, while
+the semantic full scan numbers retained candidates after availability filtering.
+For example, retained original indices `[1, 3]` become semantic ordinals `[0, 1]`.
+The normalizer separately proves exact membership, uniqueness, strict order and
+bounds. Review found that the first projection theorem selected by membership
+in catalog order rather than actually retrieving candidates through the sorted
+position vector. That is a membership-mask bridge, not the complete positional
+implementation bridge. The final extension now models retrieval with `nth_error`
+and proves that a normalized, in-range position vector retrieves exactly the
+catalog-order selection. Its composed theorem preserves available candidate
+values and order against the semantic scan, assuming the query mask agrees on
+live candidates. It uses normalization's strict-order and membership laws rather
+than assuming them. No equality of the different ordinal numberings is asserted.
+
+**Observed results and limitations.** The source-bound release invocation passed
+104 tests: raw digest observation 1, complete data-index library group 69,
+`data_index_spec` 28, serializer goldens 5, and the production-Par codec test 1.
+The systemd service took 101.070 s including compilation, consumed 290.114 s CPU,
+peaked at 1.7 GiB, and used no swap under a 2 GiB hard limit. This is a regression
+qualification, not an application benchmark or a full-workspace result.
+
+Before the final positional extension, the encoded module compiled with 16
+closed-context reports, the mutant module with 41, and independent kernel
+checking passed. The combined service took 17.450 s, peaked at 440.9 MiB and used
+no swap under a 1 GiB hard cap. Earlier type/borrow/proof-script failures were
+repaired and rerun; their unsuccessful attempts are not counted as evidence.
+
+The runs used `ff975482a` plus this slice and preserved pre-existing worktree
+changes, not a clean immutable checkout. Cargo used the existing lockfile with
+SHA-256 `f6f30a7f3b8df0f7f0891e643dd85332a3b6613315f342581cf9f864095fa0ce`.
+The final native log is `target/verification/candidate-catalog-final-native-r1.log`,
+SHA-256 `f1df265f975ae521f99d4a6ce1e905277c5b62a8703ec76730065fc09ad07406`.
+Ignored local logs aid diagnosis but are not durable verified tracker receipts.
+
+The preserved pre-existing Rust/lockfile source delta is captured separately in
+`target/verification/candidate-catalog-preserved-source-delta-r3.patch`, SHA-256
+`b5013b21fa778089f30276cea38c30d9e6998ab395959924ce1231888ac39b67`.
+Those unrelated edits are not included in this slice's commit. The snapshot
+documents the tested worktree rather than claiming a clean-checkout result.
+
+The maintained `--match-preparation` gate now includes the whole data-index
+group instead of overlapping incomplete subgroups, the digest-preimage test,
+serializer goldens and production-Par differential. Its existing accepted-match,
+Bag and framing checks remain. Updating those invocations does not itself prove
+the combined gate has run successfully; its final result will be recorded here.
+
+The additional focused run passed the 12 accepted-match, 2 transaction-delta,
+1 multiplicity-overflow and 22 framing checks. It also reran the new catalog
+property with `PROPTEST_CASES=256` and `PROPTEST_RNG_SEED=41316588`. Together with
+the first run this covers the gate's 141 distinct native tests, with the property
+repeated once; it is not a single combined gate invocation. The second service
+took 70.645 s, consumed 203.013 s CPU, peaked at 1.7 GiB and used no swap under
+the same 2 GiB hard cap. Its log is
+`target/verification/candidate-catalog-extra-native-r1.log`, SHA-256
+`1ee1612f0f96c4d1b879be6e53a111e0be159a909fb5d1e923bbb53added78ac`.
+
+**Requested pause.** The user requested a clean pause after these runs. No new
+build, benchmark or broader proof gate will start before resumption. Task 6589
+remains in progress. The in-flight indexed-retrieval extension finished with 18
+closed-context reports, exit 0, 1.743 s elapsed, 448.4 MiB peak and no swap under
+a 1 GiB hard cap. Its log is `target/verification/catalog-indexed-retrieval-r5.log`,
+SHA-256 `503a9c60062bc52b58f1d3c5a22c5f18a3896778ede308caa6faa78374600700`.
+The gate now requires 18 reports. Resume with its independent kernel recheck,
+the complete maintained gate and source-bound tracker evidence.
+No verified-completion or campaign-completion claim follows from this checkpoint.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

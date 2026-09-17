@@ -2,6 +2,20 @@
 
 This development proves the algorithmic obligations shared by the generated Rust machines.
 
+For the requested-channel RSpace candidate catalog, `RhoPathV1Datum.v` supplies
+the executable byte framing, `TwoLevelRSpaceMatchPreparation.v` supplies semantic
+construction and collision-safe ordering, and `EncodedRSpaceCandidateCatalog.v`
+separates decoder-free construction from later semantic interpretation. The
+whole-catalog equivalence requires canonical admission: decoded identity bytes
+must re-encode exactly and agree with the stored structure. It does not assume
+cryptographic collision-freedom or verify the supplied Blake2b/bincode functions.
+The native bindings observe the actual digest preimage, check a historical
+known-answer datum, compare production-Par decoding with its derived oracle,
+and exercise collisions, malformed framing, lazy decoding, empty catalogs and
+unrelated-channel isolation. `scripts/check-stack-safe-pda-proofs.sh
+--match-preparation` is the maintained exact-count gate. The detailed invariant
+mapping and qualification limits are in [journal entry J-165](../../../docs/design/pathmap/pathmap-engineering-journal-2026-08-23.md#j-165--2026-09-17-encoded-whole-catalog-refinement-and-concrete-codec-bindings).
+
 - `compile_run_equivalence` proves that an explicit post-order instruction/value-stack machine equals the mutually recursive fold for every finite typed tree and every algebra. Clone, equality, hashing, ordering, debug formatting, bincode/protobuf encoding, encoded length, clear, and teardown are instances of that theorem.
 - `decoder_machine_equivalent_to_recursive_rebuild` instantiates the same machine with the tree-building algebra and proves exact reconstruction.
 - `compiled_program_has_one_instruction_per_node` proves linear work and one completion instruction per node.

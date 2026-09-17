@@ -6,12 +6,14 @@ use rspace_plus_plus::rspace::bag::{BagDelta, Multiplicity};
 use rspace_plus_plus::rspace::data_index::{DataIndexError, RSpaceDataIndex, RSpaceDataStore};
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider::StableHashSerialize;
-use rspace_plus_plus::rspace::internal::{ConsumeCandidate, Datum, DatumAddress, stored_datum_removal_delta};
+use rspace_plus_plus::rspace::internal::{
+    ConsumeCandidate, Datum, DatumAddress, stored_datum_removal_delta,
+};
 use rspace_plus_plus::rspace::rho_path::RhoPathEncode;
 use rspace_plus_plus::rspace::serializers::cold_store_decode::{
     ColdStoreDecode, ColdStoreDecodeError, legacy_prefix,
 };
-use rspace_plus_plus::rspace::serializers::serializers::encode_datum;
+use rspace_plus_plus::rspace::serializers::serializers::{decode_datum, encode_datum};
 use rspace_plus_plus::rspace::trace::event::Produce;
 use serde::{Deserialize, Serialize};
 
@@ -274,7 +276,7 @@ fn candidate_pool_uses_identity_bytes_for_order_and_decodes_on_first_access() {
 fn decoded_entries_and_encoded_pool_have_the_same_exact_order_and_addresses() {
     let channel = "channel".to_string();
     let values = [
-        datum("alpha", false, 1),
+        datum("alpha\0payload", false, 1),
         datum("beta", true, 2),
         datum("gamma", false, 3),
         datum("delta", true, 4),
@@ -309,6 +311,75 @@ fn decoded_entries_and_encoded_pool_have_the_same_exact_order_and_addresses() {
             encode_datum(actual),
             "the decoded datum must be the exact identity bytes that ordered the encoded catalog"
         );
+        let round_trip = decode_datum::<String>(view.datum_identity()).unwrap();
+        assert_eq!(&round_trip, actual);
+        assert_eq!(view.datum_structure(), actual.a.rho_path_structure());
+        assert_eq!(round_trip.persist, expected.datum.persist);
+        assert_eq!(index.count_path(&path), expected.multiplicity.get());
+        assert_eq!(
+            &path[view.channel_prefix_len()..],
+            rspace_plus_plus::rspace::rho_path::RhoPathV1::relative_datum_key(
+                &actual.a.rho_path_structure(),
+                view.datum_identity(),
+            ),
+        );
+        assert_eq!(&path[path.len() - view.datum_identity().len()..], view.datum_identity());
+    }
+}
+
+#[test]
+fn canonical_admission_is_stronger_than_legacy_decoder_acceptance() {
+    use rspace_plus_plus::rspace::rho_path::RhoPathV1;
+
+    let value = datum("payload\0bytes", true, 7);
+    let canonical = encode_datum(&value);
+    let mut trailing = canonical.clone();
+    trailing.push(0xA5);
+    let accepted = decode_datum::<String>(&trailing).unwrap();
+    assert_eq!(accepted, value);
+    assert_eq!(encode_datum(&accepted), canonical);
+    assert_ne!(encode_datum(&accepted), trailing);
+    assert!(decode_datum::<String>(&canonical[..canonical.len() - 1]).is_err());
+
+    let mut mismatched = RhoPathV1::datum_prefix(&"channel".to_owned());
+    mismatched.extend_from_slice(&RhoPathV1::relative_datum_key(b"wrong structure", &canonical));
+    let view = RhoPathV1::parse_datum(&mismatched).unwrap();
+    let decoded = decode_datum::<String>(view.datum_identity()).unwrap();
+    assert_ne!(view.datum_structure(), decoded.a.rho_path_structure());
+    assert_eq!(encode_datum(&decoded), canonical);
+}
+
+proptest::proptest! {
+    #[test]
+    fn generated_catalog_identity_refines_codec_structure_and_multiplicity(
+        payload in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..80),
+        channel_bytes in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..40),
+        persistent in proptest::prelude::any::<bool>(),
+        discriminator in proptest::prelude::any::<u8>(),
+        count in 1u8..8,
+    ) {
+        use rspace_plus_plus::rspace::rho_path::RhoPathV1;
+
+        let channel = String::from_utf8_lossy(&channel_bytes).into_owned();
+        let value = datum(&String::from_utf8_lossy(&payload), persistent, discriminator);
+        let mut index = RSpaceDataIndex::new();
+        for _ in 0..count {
+            index.insert(&channel, &value).unwrap();
+        }
+        let pool = index.candidate_pool::<_, String>(&channel).unwrap();
+        proptest::prop_assert_eq!(pool.len(), 1);
+        let (decoded, address) = pool.candidate(0).unwrap();
+        let DatumAddress::Stored(path) = address else {
+            return Err(proptest::test_runner::TestCaseError::fail("stored catalog produced a fresh address"));
+        };
+        let view = RhoPathV1::parse_datum(&path).unwrap();
+        proptest::prop_assert_eq!(decoded, &value);
+        proptest::prop_assert_eq!(view.datum_identity(), encode_datum(decoded));
+        proptest::prop_assert_eq!(view.datum_structure(), decoded.a.rho_path_structure());
+        proptest::prop_assert_eq!(index.count_path(&path), u64::from(count));
+        proptest::prop_assert_eq!(path.as_ref(), RSpaceDataIndex::datum_path(&channel, decoded));
+        let round_trip = decode_datum::<String>(view.datum_identity()).unwrap();
+        proptest::prop_assert_eq!(encode_datum(&round_trip), view.datum_identity());
     }
 }
 

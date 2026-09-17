@@ -3,12 +3,14 @@ From StackSafePDA Require Import
   PathMapCanonicalStreamPublicationBase
   TwoLevelRSpaceAuthority
   RhoPathV1Datum
-  TwoLevelRSpaceMatchPreparation.
+  TwoLevelRSpaceMatchPreparation
+  EncodedRSpaceCandidateCatalog.
 
 Import ListNotations.
 Import TwoLevelRSpaceAuthority.
 Import RhoPathV1Datum.
 Import TwoLevelRSpaceMatchPreparation.
+Import EncodedRSpaceCandidateCatalog.
 Open Scope nat_scope.
 
 Module TwoLevelRSpaceMatchPreparationMutants.
@@ -311,6 +313,48 @@ Example duplicate_check_must_inspect_the_second_and_third_candidates :
     fixture_candidate marker_a true 2%N] = false.
 Proof. vm_compute. reflexivity. Qed.
 
+Example lazy_whole_catalog_does_not_invoke_a_rejecting_decoder :
+  let codec := CanonicalDatumCodecState (fun _ => None) (fun _ => repeat 0 32) in
+  let authority := [(marker_a, [(relative_a, 2%N)])] in
+  (match build_encoded_catalog (codec_digest_raw_identity codec) authority marker_a with
+   | BuildOk _ => true | BuildRefused _ => false end) = true /\
+  build_candidate_catalog codec authority marker_a =
+    BuildRefused (RefuseNoncanonicalDatumIdentity [5; 0]).
+Proof. vm_compute. auto. Qed.
+
+Example lazy_whole_catalog_retains_duplicate_refusal_before_interpretation :
+  let second := relative_datum_key [4; 0] [6; 0] in
+  build_encoded_catalog (codec_digest_raw_identity preparation_fixture_codec)
+    [(marker_a, [(relative_a, 1%N); (second, 1%N); (second, 2%N)])] marker_a =
+    BuildRefused (RefuseDuplicateDatumIdentity marker_a [5; 0]).
+Proof. vm_compute. reflexivity. Qed.
+
+Example lazy_whole_catalog_distinguishes_loaded_empty_without_visiting_poison :
+  build_encoded_catalog (codec_digest_raw_identity preparation_fixture_codec)
+    [(marker_a, []); (marker_b, [(malformed_path, 1%N)])] marker_a =
+    BuildOk (EncodedCatalogState marker_a true []) /\
+  build_encoded_catalog (codec_digest_raw_identity preparation_fixture_codec)
+    [(marker_b, [(malformed_path, 1%N)])] marker_a =
+    BuildOk (EncodedCatalogState marker_a false []).
+Proof. vm_compute. auto. Qed.
+
+Print Assumptions lazy_whole_catalog_does_not_invoke_a_rejecting_decoder.
+Example normalization_sorts_deduplicates_and_preserves_ordinal_gaps :
+  normalize_positions [3%N; 1%N; 3%N] = [1%N; 3%N] /\
+  normalize_positions [4%N; 2%N; 4%N; 0%N] = [0%N; 2%N; 4%N].
+Proof. vm_compute. auto. Qed.
+
+Example post_availability_ordinals_are_not_original_catalog_positions :
+  map ordinal_candidate_index
+    (enumerate_candidates_from 0%N
+      [fixture_candidate marker_a false 1%N; fixture_candidate marker_a true 1%N]) <>
+    normalize_positions [1%N; 3%N].
+Proof. vm_compute. discriminate. Qed.
+
+Print Assumptions normalization_sorts_deduplicates_and_preserves_ordinal_gaps.
+Print Assumptions post_availability_ordinals_are_not_original_catalog_positions.
+Print Assumptions lazy_whole_catalog_retains_duplicate_refusal_before_interpretation.
+Print Assumptions lazy_whole_catalog_distinguishes_loaded_empty_without_visiting_poison.
 Print Assumptions order_check_must_inspect_the_second_and_third_candidates.
 Example authority_checks_must_inspect_the_second_and_third_entries :
   entries_orderedb [([1], 1%N); ([3], 1%N); ([2], 1%N)] = false /\
