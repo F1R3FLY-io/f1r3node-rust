@@ -1,0 +1,1 @@
+PASS: The disk breach record exists before Docker starts the stop command. Termination remains unconfirmed.

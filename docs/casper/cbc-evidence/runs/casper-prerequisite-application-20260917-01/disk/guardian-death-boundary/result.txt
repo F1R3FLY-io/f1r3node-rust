@@ -1,0 +1,1 @@
+PASS: Guardian death during the boundary probe prevented admission and produced a protection failure.

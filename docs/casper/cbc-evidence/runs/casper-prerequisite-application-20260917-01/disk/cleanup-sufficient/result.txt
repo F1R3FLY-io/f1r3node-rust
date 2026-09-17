@@ -1,0 +1,1 @@
+PASS: Successful cleanup preserved the admission result for its disk sample (cleanup-sufficient).

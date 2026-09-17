@@ -1,0 +1,1 @@
+PASS: The guardian recorded the benchmark disk breach and requested a stop before benchmark return.

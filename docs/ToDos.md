@@ -166,6 +166,10 @@ tasks:
     execution_scope: "Authorized working-tree application of reviewed prerequisites and candidate-matrix completion. No staging, commits, pushes, or merges."
     work_log: docs/work-logs/task-017-3-prerequisite-application-2026-09-17.md
     prerequisite_review: docs/work-logs/task-017-3-prerequisite-review-2026-09-17.md
+    prerequisite_application: complete
+    candidate_matrix: docs/casper/design/soak-candidate-matrix.jsonc
+    validation_evidence: docs/casper/cbc-evidence/runs/casper-prerequisite-application-20260917-01/report.json
+    completion_blocker: "Executable workload configurations remain unpinned. The strict CbC gate reports pending claims."
     blocked_by: [TASK-017-1]
     external_prs: [390, 430, 431, 432, 433]
     acceptance:

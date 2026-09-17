@@ -1,0 +1,1 @@
+host_protection_breach: The host guardian failed its benchmark admission check. Workload termination is unconfirmed.

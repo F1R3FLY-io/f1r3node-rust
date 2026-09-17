@@ -1,0 +1,22 @@
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 11 and seed 4873237527507952877 with 2 workers on 2 cores with 341MB heap and 64MB offheap memory [pid: 503] (Linux 6.12.76-linuxkit aarch64, Debian 17.0.20.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /case/work/formal/tlaplus/soak_disk/MC_MetricMonotonicity.tla
+Parsing file /case/work/formal/tlaplus/soak_disk/MetricMonotonicity.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/Sequences.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module MetricMonotonicity
+Semantic processing of module MC_MetricMonotonicity
+Starting... (2026-09-17 03:08:54)
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-09-17 03:08:54.
+Model checking completed. No error has been found.
+  Estimates of the probability that TLC did not check all reachable states
+  because two distinct states had the same fingerprint:
+  calculated (optimistic):  val = 0.0
+15 states generated, 15 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 3.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 7 and the 95th percentile is 7).
+Finished in 00s at (2026-09-17 03:08:54)
