@@ -713,6 +713,13 @@ if [[ "$streaming_codec_closed_capstones" != "20" ]]; then
 fi
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/EPM1.v
 epathmap_import_proofs
+rocq_reject_placeholders theories/UnaryEListConstruction.v theories/UnaryEListConstructionMutants.v
+rocq_compile_with_closed_count theories/UnaryEListConstruction.v 22 \
+  "concrete unary-EList protobuf, score and checked construction"
+rocq_compile_with_closed_count theories/UnaryEListConstructionMutants.v 14 \
+  "unary-EList encoding, metadata and refusal controls"
+rocq_check_modules "unary-EList construction" \
+  StackSafePDA.UnaryEListConstruction StackSafePDA.UnaryEListConstructionMutants
 rmp2_rocq_output="$(
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/RMP2.v 2>&1
 )"

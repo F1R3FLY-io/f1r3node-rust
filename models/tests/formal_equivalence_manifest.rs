@@ -103,6 +103,49 @@ struct Actree03Correspondence {
     oracle: &'static str,
 }
 
+#[test]
+fn unary_elist_fixture_construction_has_concrete_proof_and_native_bindings() {
+    let theory =
+        read_repository_file("formal/rocq/stack_safe_pda/theories/UnaryEListConstruction.v");
+    for capstone in [
+        "planned_emission_equals_repeated_resident_wrapping",
+        "planned_expression_is_exact",
+        "direct_score_equals_recursive_semantic_score",
+        "positive_depth_score_length_is_exact",
+        "checked_endpoint_success_refines_recursive_specification",
+        "frame_refusal_cannot_publish_endpoint",
+        "reservation_refusal_cannot_publish_endpoint",
+        "modeled_loop_and_copy_cost_is_linear",
+        "representable_score_trailer_round_trips",
+    ] {
+        assert!(theory.contains(&format!("Print Assumptions {capstone}.")));
+    }
+    let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
+    for (source, count) in [
+        ("theories/UnaryEListConstruction.v", "22"),
+        ("theories/UnaryEListConstructionMutants.v", "14"),
+    ] {
+        assert!(has_runner_command(&runner, &[
+            "rocq_compile_with_closed_count",
+            source,
+            count
+        ]));
+    }
+    assert!(has_runner_kernel_check(&runner, &[
+        "StackSafePDA.UnaryEListConstruction",
+        "StackSafePDA.UnaryEListConstructionMutants",
+    ]));
+    let native = read_repository_file("models/tests/match_path_structure.rs");
+    for witness in [
+        "bulk_unary_fixture_matches_frozen_resident_oracle",
+        "bulk_unary_fixture_preserves_arbitrary_terminal_metadata",
+        "wide_fixture_multiplicity_matches_frozen_occurrence_oracle",
+        "wide_fixture_overflow_preserves_components_and_metadata",
+    ] {
+        assert!(native.contains(&format!("fn {witness}(")));
+    }
+}
+
 const ACTREE03_GENERATORS: &[&str] = &[
     "G-ACT03-WRITER",
     "G-ACT03-MUTATION",

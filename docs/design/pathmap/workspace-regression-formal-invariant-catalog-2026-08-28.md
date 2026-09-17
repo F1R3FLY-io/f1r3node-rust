@@ -167,7 +167,72 @@ properties cover these grammars so one parser cannot hide behind the aggregate:
 Every parser is total over bytes by returning success or a typed error. None uses panicking as an
 accepted outcome.
 
-## Completion gates
+## Final-root unary-EList fixture refinement — 2026-09-17, task 6444
+
+**FORMAL-FIRST; FIRST NATIVE MIGRATION QUALIFIED, RESOURCE LADDER OPEN.** The old shared fixture constructs a resident
+parent at every level, copying every suffix's protobuf body and canonical score. The existing
+`Par::wrap_unary_elist` prepares length frames and emits only the final authoritative endpoint.
+`UnaryEListConstruction.v` now compares these two concrete byte computations. It is not an
+extracted Rust program or a proof of arbitrary terminal serialization.
+
+For a child Par body of length $`p`$, a frame has list length
+$`1+v(p)+p`$, expression length $`2+v(l)+l`$, and enclosing Par length $`1+v(e)+e`$,
+where $`v`$ is canonical varint length and $`l,e`$ are the preceding lengths. Its tags are
+`0a`, `a2 01`, and `2a`. Inner-to-outer planning followed by outer-to-inner header emission copies
+the terminal body once into the outer expression; the final key copies that expression once.
+The canonical score uses EList constructor 6, Par constructor 999, remainder -1 and exact closing
+flags. At positive depth $`d`$, its length is terminal component-score length plus $`54d`$.
+
+The model deliberately retains the current initial reservation formula $`44d+64`$, not a fictitious
+exact allocation. Native vectors may grow. Its checked constructor composes frame-length and
+reservation checks: all summands are nonnegative, so a representable final sum also bounds each
+intermediate addition/multiplication. Arithmetic refusal produces no endpoint. Successful
+allocation and representable native lengths are explicit correspondence conditions; the model does
+not claim graceful allocation failure, because the native frame vector is allocated before these
+checks. The trailer theorem separately requires a score length representable in `u64`.
+
+The emitted-byte bound assumes a fixed bound on the three frame varints. A separate explicit cost
+model counts frame/score-loop visits and two body copies; it excludes terminal preparation,
+allocator behavior and PathMap insertion. This is not a measured wall-time bound or a proof of all
+Rust execution costs. Native differential and geometric phase measurements remain mandatory.
+
+| ID | Extracted formal obligation | Native binding required before fixture replacement |
+|---|---|---|
+| UEL-01 | Zero depth preserves terminal bytes and all root metadata. | `bulk_unary_fixture_matches_frozen_resident_oracle` and `bulk_unary_fixture_preserves_arbitrary_terminal_metadata` include depth zero and vary metadata/multiplicity. |
+| UEL-02 | Positive depth has one Expr occurrence and empty/false outer metadata. | Both bounded differentials check root cardinality, family count and metadata. |
+| UEL-03 | Each planned length equals independent protobuf framing; emitted Expr omits only the outer Par header. | Exact generated protobuf and bincode comparisons with frozen repeated wrapping; framing-boundary depths. |
+| UEL-04 | Planned emission equals repeated resident wrapping, with exact frame count. | Exact depth/terminal recognizer; unchanged depth-20,000 gate; no suffix decoding in the witness. |
+| UEL-05 | Score prefix/suffix loops equal recursive score serialization; exact positive-depth length is $`s+54d`$. | Component key/snapshot equality with the frozen oracle; scalar extremes, metadata-bearing terminal and varint boundaries. |
+| UEL-06 | RPB3 family/domain, body and score trailer form the exact same endpoint. | Compact snapshot plus Eq/Ord/Hash comparison and a concrete `GInt(0)` body golden. |
+| UEL-07 | Successful checked planning refines mathematical planning; frame or reservation refusal cannot publish. | Formal positive witness and overflow controls; existing native checked arithmetic is inspected, not tested by attempting unbounded allocations. |
+| UEL-08 | Fixed-width varint premise yields linear emitted bytes and modeled loop/copy cost. | Separate construction, operation and teardown measurements at unchanged geometric depths; allocator costs reported separately. |
+| UEL-09 | Representable eight-byte score-length trailer round-trips. | Exact endpoint/snapshot differential; native allocated-score length must fit `u64`. |
+
+All public capstones are covered by these nine rows; helper lemmas establish frame lengths,
+prefix concatenation and score lengths. Causal controls change a tag, child length, leaf occurrence,
+remainder/flag/close, trailer, depth or zero-depth metadata. Composed frame and reservation overflow
+controls require refusal, and a successful positive construction prevents vacuity. These controls
+do not replace executable correspondence.
+
+The adjacent wide-fixture change uses existing checked `insert_component_many`, not a different
+semantics. Its bounded frozen-vector oracle must preserve exact bytes, multiplicity, distinct count,
+other families and root metadata. Overflow must leave both components and metadata unchanged.
+Nested EPathMap construction is a subsequent slice using existing planned arena handles; it is not
+covered by the unary-EList theorem.
+
+The `gint_zero_qualified_endpoint` theorem specializes the symbolic construction model; the native
+`[42, 2, 16, 0]` protobuf golden and frozen-oracle comparisons supply the separate terminal binding.
+
+The 2026-09-17 qualification compiled both theories, checked 22 main and 14 control assumption
+reports, and independently kernel-checked both modules. Before changing either fixture, all four
+new native witnesses and all 25 formal-manifest tests passed. After migration, all 49 tests passed
+across `match_path_structure`, `match_path_cursor`, `match_schema_cursor`,
+`bincode_decoder_differential` and `protobuf_decoder_differential`. The 20,000-level depths and
+small-stack assertions are unchanged. See engineering journal J-169 for commands and log hashes.
+UEL-08's geometric native cost measurements and the nested-EPathMap slice remain open; this
+qualification does not close task 6444 or the whole-workspace gate.
+
+## Original workspace-regression completion gates
 
 This checkpoint is complete only when all of the following hold:
 

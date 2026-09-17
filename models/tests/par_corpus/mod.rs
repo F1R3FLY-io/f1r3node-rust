@@ -34,13 +34,10 @@
 //!
 //! ## Depth
 //!
-//! [`deep_par`] caps at 48. That is not timidity about the machine — it is a
-//! constraint imposed by the **oracle**. The differential compares against the
-//! *derived* `Deserialize`, which is Θ(depth) at 28,362 B/level in debug, so
-//! the oracle itself aborts somewhere near depth 60 on a 1 MiB stack. Anything
-//! deeper cannot be differentially tested at all, and is covered instead by
-//! `rholang/tests/stack_depth_gate.rs`, which probes the machine alone out to
-//! depth 4,096.
+//! [`deep_par`] builds the requested depth in one final-root pass. Callers that
+//! compare with recursive serde oracles keep their inputs shallow; that is an
+//! oracle constraint, not a construction or traversal limit. The independent
+//! fixed-stack structural gate retains depth 20,000.
 
 // Three test binaries share this module (`bincode_decoder_differential`,
 // `bincode_decoder_malformed`, `bincode_decoder_shapes`) and each uses a different
@@ -496,14 +493,7 @@ pub fn all_par_fields() -> Par {
 /// Depth 48 is large enough to exercise every containment shape repeatedly
 /// while remaining suitable for the retained serde differential in debug mode.
 pub fn deep_par(depth: usize) -> Par {
-    let mut p = gint(0);
-    for _ in 0..depth {
-        p = par_of(ExprInstance::EListBody(EList {
-            ps: vec![p],
-            ..Default::default()
-        }));
-    }
-    p
+    Par::wrap_unary_elist(depth, gint(0)).expect("requested unary fixture depth is representable")
 }
 
 /// A `Par` nested through a *different* slot at each level, so a decoder that

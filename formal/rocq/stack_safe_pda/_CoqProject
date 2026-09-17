@@ -20,6 +20,8 @@ theories/SpatialMatcher.v
 theories/FreeMapJournal.v
 theories/AccountingDemand.v
 theories/ChannelImage.v
+theories/UnaryEListConstruction.v
+theories/UnaryEListConstructionMutants.v
 theories/PathMapPhysicalOwnership.v
 theories/PathMapPhysicalOwnershipMutants.v
 theories/PathMapReversePruneTeardown.v

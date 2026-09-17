@@ -12433,6 +12433,63 @@ report is preserved as such; current local tests are not substitutes for lost
 managed receipts or the campaign's final acceptance. The missing task criteria
 and verification-policy configuration remain visible in pgmcp.
 
+### J-169 — 2026-09-17 Formal-first final-root fixture construction
+
+**Status: DERIVED quadratic fixture mechanism; MEASURED first migration qualification.**
+Task 6444 is a dependency of endpoint-admission qualification 5981. Repeatedly constructing a
+resident unary parent copies every complete child score and protobuf body. A final-root-only test
+needs just one resident result. The shared fixture now calls existing `Par::wrap_unary_elist`;
+the wide structural fixture inserts one checked multiplicity instead of projecting and reinserting
+20,000 occurrences. Neither production code nor PathMap was changed.
+
+**Formal-first sequence.** `UnaryEListConstruction.v` compares independent repeated framing with
+length planning and final emission, including protobuf tags, canonical score, RPB3 trailer,
+metadata, frame/reservation overflow and a conditional linear work model. Its 22 assumption
+reports and 14 controls compiled and passed independent `coqchk`. The native bridge then passed
+four bounded frozen-oracle/property witnesses and all 25 manifest tests, before fixture migration.
+The model assumes successful allocation and representable native lengths; its modeled loop/body
+cost is not a proof of allocator or PathMap insertion costs. Full obligations and limitations are
+in [UEL-01–09](workspace-regression-formal-invariant-catalog-2026-08-28.md#final-root-unary-elist-fixture-refinement--2026-09-17-task-6444).
+
+**Post-migration method and results.** A zero-swap systemd service with 6 GiB maximum memory,
+4 GiB high watermark, four CPU equivalents and a 600-second watchdog ran the following release
+commands with property seed 41316444. No test was filtered out within these five suites.
+
+```bash
+cargo test --release --locked -j4 -p models --test match_path_structure -- --test-threads=4
+cargo test --release --locked -j4 -p models --test match_schema_cursor --test match_path_cursor -- --test-threads=4
+cargo test --release --locked -j4 -p models --test bincode_decoder_differential --test protobuf_decoder_differential -- --test-threads=4
+```
+
+| Suite | Passed | Test elapsed seconds |
+|---|---:|---:|
+| Structural path | 15 | 2.97 |
+| Encoded path cursor | 8 | 0.66 |
+| Schema cursor | 6 | 0.66 |
+| Bincode differential | 15 | 2.27 |
+| Protobuf differential | 5 | 3.26 |
+
+All 49 passed, including unchanged 20,000-level small-stack gates. The old structural invocation
+reached its 2,400-second watchdog before finishing the deep case. Its terminal result was a timeout,
+not a failed equality assertion. That incomplete control and these suite times do not support a
+population speedup estimate. The post-migration service's resource counters were no longer retained
+when inspected, so no peak-RSS claim is made for it.
+
+Evidence is retained under `target/verification/`; these SHA-256 values identify exact local logs:
+
+| Artifact | SHA-256 |
+|---|---|
+| `unary-elist-6444-formal-r19.log` | `fc446b26fbe56184e9f3f8d249de2aba2eae41ba67740f9025bd8d85b83c85b9` |
+| `unary-elist-6444-native-r1.log` (pre-migration witnesses and manifest) | `325f824f378bb040afd98a45bafc94ff90912233c1f9d599357e6a851ccc9149` |
+| `unary-elist-6444-native-r2.log` (49-test migration gate) | `4c326e843fe088feda0a8295c3eb0d34706d3338c891ef86b0a15e969b203a4a` |
+| `epm1-endpoint-5981-native-r3.log` (predecessor timeout) | `323d5571922211e6af6549de61d2eabee936b420dc60028d0d1a28690ef9a714` |
+
+**Decision and remaining scope.** Retain the final-root fixture changes and frozen bounded oracles.
+Finish the analogous nested-EPathMap fixture, audit the remaining named consumers and collect
+geometric construction/operation/teardown measurements before closing 6444. This test-only slice
+changes no production bytes or consensus contract and does not qualify persistent-backend cutover,
+the full release workspace, or the parent endpoint-admission task.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

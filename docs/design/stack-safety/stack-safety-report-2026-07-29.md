@@ -8296,6 +8296,19 @@ contract; it does not establish an execution order among parallel processes.
 
 #### 5.28.5 Release-gate fixture construction follow-through
 
+**2026-09-17 qualification extension (task 6444).** The shared `par_corpus::deep_par` now uses
+the existing final-root `Par::wrap_unary_elist`; the wide structural fixture uses one checked
+multiplicity insertion instead of expanding and reinserting 20,000 occurrences. Production
+implementations, traversal depths and small-stack assertions are unchanged. Exact bounded
+protobuf/bincode, snapshot, score, Eq/Ord/Hash, metadata and multiplicity witnesses passed before
+replacement, following 22 main and 14 control Rocq assumption reports and independent kernel
+checking. All 49 post-migration tests passed across the structural path, both cursor and both
+decoder-differential suites; the structural suite took 2.97 s. Its predecessor diagnostic reached
+a 2,400-second watchdog with the deep fixture unfinished. These are qualification observations,
+not a paired speedup estimate. The nested-EPathMap fixture and geometric, phase-separated resource
+measurements remain open. See [J-169](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-169--2026-09-17-formal-first-final-root-fixture-construction)
+and invariant catalog UEL-01–09 for the exact evidence and proof scope.
+
 The first complete release-workspace diagnostic exposed a boundary outside the production machines:
 several deep validation fixtures still constructed their input by repeatedly wrapping an already
 resident `Par`. Moving the accumulator kept native-stack use constant, but each RPB3 parent key still

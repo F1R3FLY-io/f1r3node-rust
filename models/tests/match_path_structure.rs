@@ -17,6 +17,170 @@ use models::rust::rholang::match_schema::{RhoPathCursor, RhoPathEvent, RhoScalar
 use models::rust::rholang::match_schema_tables::ParCursor;
 use models::rust::rholang::protobuf_cursor::CanonicalFieldCursor;
 use models::rust::rholang::protobuf_encoder;
+use proptest::prelude::*;
+use rspace_plus_plus::rspace::bag::Multiplicity;
+
+fn frozen_resident_unary_fixture(depth: usize, mut terminal: Par) -> Par {
+    use models::rhoapi::expr::ExprInstance;
+    use models::rhoapi::EList;
+
+    for _ in 0..depth {
+        terminal = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EListBody(EList {
+                ps: vec![terminal],
+                ..EList::default()
+            })),
+        }]);
+    }
+    terminal
+}
+
+fn assert_fixture_representation_equal(actual: &Par, expected: &Par) {
+    use std::hash::{Hash, Hasher};
+
+    assert_eq!(actual, expected);
+    assert_eq!(actual.cmp(expected), std::cmp::Ordering::Equal);
+    assert_eq!(
+        actual.protobuf_bytes().unwrap(),
+        expected.protobuf_bytes().unwrap()
+    );
+    assert_eq!(
+        models::rust::rholang::bincode_encoder::encode(actual),
+        models::rust::rholang::bincode_encoder::encode(expected),
+    );
+    assert_eq!(actual.compact_snapshot(), expected.compact_snapshot());
+    assert_eq!(actual.locally_free(), expected.locally_free());
+    assert_eq!(actual.connective_used(), expected.connective_used());
+    assert_eq!(actual.cardinality(), expected.cardinality());
+    assert_eq!(actual.distinct_len(), expected.distinct_len());
+    assert_eq!(
+        actual.family_cardinality::<Expr>(),
+        expected.family_cardinality::<Expr>()
+    );
+    let mut actual_hash = std::collections::hash_map::DefaultHasher::new();
+    let mut expected_hash = std::collections::hash_map::DefaultHasher::new();
+    actual.hash(&mut actual_hash);
+    expected.hash(&mut expected_hash);
+    assert_eq!(actual_hash.finish(), expected_hash.finish());
+}
+
+#[test]
+fn bulk_unary_fixture_matches_frozen_resident_oracle() {
+    assert_eq!(par_corpus::gint(0).protobuf_bytes().unwrap(), [
+        42, 2, 16, 0
+    ]);
+    for depth in [0, 1, 2, 15, 16, 17, 31, 32, 33, 127, 128] {
+        for leaf in [i64::MIN, -1, 0, 1, i64::MAX] {
+            let terminal = par_corpus::gint(leaf);
+            let mut terminal_component_score = 0;
+            terminal.visit_encoded::<Expr>(|entry| terminal_component_score += entry.score().len());
+            let expected = frozen_resident_unary_fixture(depth, terminal.clone());
+            let actual = Par::wrap_unary_elist(depth, terminal).unwrap();
+            assert_fixture_representation_equal(&actual, &expected);
+            assert_eq!(
+                actual.canonical_unary_elist_gint_parts(),
+                Some((depth, leaf))
+            );
+            if depth != 0 {
+                actual.visit_encoded::<Expr>(|entry| {
+                    assert_eq!(entry.score().len(), terminal_component_score + 54 * depth);
+                    assert_eq!(entry.multiplicity(), Multiplicity::ONE);
+                });
+            }
+        }
+    }
+    for depth in [0, 1, 4] {
+        let terminal = par_corpus::all_par_fields();
+        let expected = frozen_resident_unary_fixture(depth, terminal.clone());
+        let actual = Par::wrap_unary_elist(depth, terminal).unwrap();
+        assert_fixture_representation_equal(&actual, &expected);
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+
+    #[test]
+    fn bulk_unary_fixture_preserves_arbitrary_terminal_metadata(
+        depth in 0usize..40,
+        leaf in any::<i64>(),
+        metadata in proptest::collection::vec(any::<u8>(), 0..8),
+        connective in any::<bool>(),
+        count in 1u64..5,
+    ) {
+        let expression = Expr {
+            expr_instance: Some(models::rhoapi::expr::ExprInstance::GInt(leaf)),
+        };
+        let mut terminal = Par::default();
+        terminal.insert_component_many(
+            &expression, Multiplicity::new(count).unwrap(), metadata, connective,
+        ).unwrap();
+        let expected = frozen_resident_unary_fixture(depth, terminal.clone());
+        let actual = Par::wrap_unary_elist(depth, terminal).unwrap();
+        assert_fixture_representation_equal(&actual, &expected);
+        if depth != 0 {
+            prop_assert_eq!(actual.cardinality(), 1);
+            prop_assert!(actual.locally_free().is_empty());
+            prop_assert!(!actual.connective_used());
+        }
+    }
+}
+
+fn extend_wide_fixture(mut original: Par, amount: u64) -> Par {
+    let (seed, _) = original
+        .first::<Expr>()
+        .unwrap()
+        .expect("nonempty Expr family");
+    original
+        .insert_component_many(
+            &seed,
+            Multiplicity::new(amount).expect("positive fixture extension"),
+            Vec::new(),
+            false,
+        )
+        .expect("bounded fixture multiplicity");
+    original
+}
+
+#[test]
+fn wide_fixture_multiplicity_matches_frozen_occurrence_oracle() {
+    for amount in [1, 2, 16, 64] {
+        let original = par_corpus::all_par_fields();
+        let (seed, _) = original.first::<Expr>().unwrap().unwrap();
+        let before_count = original.count(&seed);
+        let mut expected = original.clone();
+        let mut occurrences = expected.decode_occurrences::<Expr>();
+        occurrences.extend(std::iter::repeat_n(occurrences[0].clone(), amount as usize));
+        expected.replace_exprs(occurrences);
+        let actual = extend_wide_fixture(original.clone(), amount);
+        assert_fixture_representation_equal(&actual, &expected);
+        assert_eq!(actual.count(&seed), before_count + amount);
+        assert_eq!(actual.distinct_len(), original.distinct_len());
+        assert_eq!(
+            actual.family_cardinality::<Send>(),
+            original.family_cardinality::<Send>()
+        );
+    }
+}
+
+#[test]
+fn wide_fixture_overflow_preserves_components_and_metadata() {
+    let seed = Expr {
+        expr_instance: Some(models::rhoapi::expr::ExprInstance::GInt(7)),
+    };
+    let mut original = Par::default();
+    original
+        .insert_component_many(&seed, Multiplicity::new(u64::MAX).unwrap(), vec![1], false)
+        .unwrap();
+    let snapshot = original.compact_snapshot().to_vec();
+    assert!(original
+        .insert_component_many(&seed, Multiplicity::ONE, vec![2], true)
+        .is_err());
+    assert_eq!(original.compact_snapshot(), snapshot);
+    assert_eq!(original.count(&seed), u64::MAX);
+    assert_eq!(original.locally_free(), [1]);
+    assert!(!original.connective_used());
+}
 
 #[derive(Debug, PartialEq, Eq)]
 enum SemanticScalar {
@@ -711,12 +875,7 @@ fn deep_and_wide_structural_encoding_fits_a_small_native_stack() {
                 "the native ParBag token must remain compact regardless of AST depth"
             );
 
-            let mut wide = par_corpus::all_par_fields();
-            let mut exprs = wide.decode_occurrences::<models::rhoapi::Expr>();
-            exprs.reserve(20_000);
-            let seed = exprs[0].clone();
-            exprs.extend(std::iter::repeat_n(seed, 20_000));
-            wide.replace_exprs(exprs);
+            let wide = extend_wide_fixture(par_corpus::all_par_fields(), 20_000);
             let wide = encode_par_match_path(&wide);
             assert!(
                 wide.len() < 256,
