@@ -364,16 +364,22 @@ async fn test_case(
                 &chains_vec,
                 &event_logs,
             );
-            merging_logic::gather_related_sets(&depends_map)
+            HashableSet(
+                merging_logic::gather_related_sets(&depends_map)
+                    .0
+                    .into_iter()
+                    .map(std::sync::Arc::new)
+                    .collect(),
+            )
         },
         // Combine each branch's chain event logs into a single
         // `EventLogIndex` per branch, then run the event-indexed conflict
         // map and union with the test helper's `branches_are_conflicting`
         // structural check.
-        |branches_set: &HashableSet<HashableSet<DeployChainIndex>>| {
-            let branches_refs: Vec<&HashableSet<DeployChainIndex>> =
+        |branches_set: &HashableSet<std::sync::Arc<HashableSet<DeployChainIndex>>>| {
+            let branches_refs: Vec<&std::sync::Arc<HashableSet<DeployChainIndex>>> =
                 branches_set.0.iter().collect();
-            let branches_owned: Vec<HashableSet<DeployChainIndex>> =
+            let branches_owned: Vec<std::sync::Arc<HashableSet<DeployChainIndex>>> =
                 branches_refs.iter().map(|b| (*b).clone()).collect();
 
             let combined_logs: Vec<rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex> =

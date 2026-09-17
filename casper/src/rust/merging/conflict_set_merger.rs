@@ -16,7 +16,7 @@ use rspace_plus_plus::rspace::merger::state_change::StateChange;
 use shared::rust::hashable_set::HashableSet;
 use tracing::{debug, info};
 
-type Branch<R> = HashableSet<R>;
+type Branch<R> = std::sync::Arc<HashableSet<R>>;
 
 // Utility for timing operations
 fn measure_time<T, F: FnOnce() -> T>(f: F) -> (T, Duration) {
@@ -36,7 +36,7 @@ fn measure_result_time<T, E, F: FnOnce() -> Result<T, E>>(f: F) -> Result<(T, Du
 
 /// Compare two branches for deterministic ordering.
 /// Ordering for branches to ensure deterministic comparison.
-fn compare_branches<R: Ord>(a: &Branch<R>, b: &Branch<R>) -> std::cmp::Ordering {
+fn compare_branches<R: Ord>(a: &HashableSet<R>, b: &HashableSet<R>) -> std::cmp::Ordering {
     // Compare by sorted elements
     let mut a_sorted: Vec<_> = a.0.iter().collect();
     let mut b_sorted: Vec<_> = b.0.iter().collect();
@@ -122,16 +122,14 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
     // Splits a set of items into branches whose elements are mutually
     // dependent. Returned branches must partition the input — every item
     // appears in exactly one branch.
-    compute_branches: &impl Fn(&HashableSet<R>) -> HashableSet<HashableSet<R>>,
+    compute_branches: &impl Fn(&HashableSet<R>) -> HashableSet<Branch<R>>,
     // Builds the conflict map between branches. Must include every branch
     // as a key — branches with no conflicts get an empty value set — so
     // `compute_rejection_options` downstream sees the full key space.
     compute_conflict_map: &impl Fn(
-        &HashableSet<HashableSet<R>>,
-    ) -> Result<
-        HashMap<HashableSet<R>, HashableSet<HashableSet<R>>>,
-        HistoryError,
-    >,
+        &HashableSet<Branch<R>>,
+    )
+        -> Result<HashMap<Branch<R>, HashableSet<Branch<R>>>, HistoryError>,
     // Chains whose effects are ALREADY in the state of the block being built
     // on — its main parent's committed state. A merge may never adjudicate
     // them away: dropping content the main parent already holds makes the
@@ -228,7 +226,7 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
     let mut all_channel_keys_set: std::collections::HashSet<Blake2b256Hash> =
         std::collections::HashSet::new();
     for branch in &branches {
-        for item in branch {
+        for item in &branch.0 {
             let item_channels = mergeable_channels(item);
             for (channel_hash, _) in item_channels.iter() {
                 all_channel_keys_set.insert(channel_hash.clone());
@@ -318,7 +316,7 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
     let rejection_options_with_overflow = if pinned.is_empty() {
         rejection_options_with_overflow
     } else {
-        let admissible: HashSet<HashableSet<HashableSet<R>>> = rejection_options_with_overflow
+        let admissible: HashSet<HashableSet<Branch<R>>> = rejection_options_with_overflow
             .0
             .iter()
             .filter(|option| {
@@ -384,6 +382,7 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
                 branch.0.iter().all(|item| reject_branch.0.contains(item))
             })
         })
+        .map(|branch| std::sync::Arc::try_unwrap(branch).unwrap_or_else(|a| (*a).clone()))
         .collect();
 
     if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
@@ -395,7 +394,7 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
     // Flatten the optimal rejection set
     let mut optimal_rejection_flattened = HashableSet(HashSet::new());
     for branch in &optimal_rejection {
-        for item in branch {
+        for item in &branch.0 {
             optimal_rejection_flattened.0.insert(item.clone());
         }
     }
@@ -786,13 +785,11 @@ pub fn merge<
         Vec<HotStoreTrieAction<C, P, A, K>>,
     ) -> Result<Blake2b256Hash, HistoryError>,
     get_data: impl Fn(Blake2b256Hash) -> Result<Vec<Datum<ListParWithRandom>>, HistoryError>,
-    compute_branches: impl Fn(&HashableSet<R>) -> HashableSet<HashableSet<R>>,
+    compute_branches: impl Fn(&HashableSet<R>) -> HashableSet<Branch<R>>,
     compute_conflict_map: impl Fn(
-        &HashableSet<HashableSet<R>>,
-    ) -> Result<
-        HashMap<HashableSet<R>, HashableSet<HashableSet<R>>>,
-        HistoryError,
-    >,
+        &HashableSet<Branch<R>>,
+    )
+        -> Result<HashMap<Branch<R>, HashableSet<Branch<R>>>, HistoryError>,
 ) -> Result<(Blake2b256Hash, HashableSet<R>), HistoryError> {
     tracing::debug!(target: "f1r3fly.merge.step", step = "merge.ENTER",
         n_actual = actual_seq.len(),
@@ -1215,7 +1212,7 @@ mod tests {
     }
 
     fn branch(items: &[i32]) -> Branch<i32> {
-        HashableSet(items.iter().copied().collect::<HashSet<i32>>())
+        std::sync::Arc::new(HashableSet(items.iter().copied().collect::<HashSet<i32>>()))
     }
 
     fn rejection_option(branches: &[Branch<i32>]) -> HashableSet<Branch<i32>> {
@@ -1395,7 +1392,7 @@ mod tests {
                         .map(|i| {
                             let mut s = HashSet::new();
                             s.insert(*i);
-                            HashableSet(s)
+                            std::sync::Arc::new(HashableSet(s))
                         })
                         .collect(),
                 )
@@ -1403,7 +1400,7 @@ mod tests {
             // Empty conflict map — every branch as a key with no conflicts.
             // This test exercises only the rejection-via-mergeable-overflow
             // path; the conflict-detection path is covered elsewhere.
-            |branches: &HashableSet<HashableSet<i32>>| {
+            |branches: &HashableSet<std::sync::Arc<HashableSet<i32>>>| {
                 Ok(branches
                     .0
                     .iter()
