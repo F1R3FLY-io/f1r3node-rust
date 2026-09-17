@@ -1,5 +1,9 @@
 use std::collections::HashMap;
 
+#[cfg(feature = "rmp2-digest-experiment")]
+#[path = "support/fixture_phase_probe.rs"]
+mod fixture_phase_probe;
+
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{EList, EPathMap, ESet, Expr, Par};
 use models::rust::canonical_path::{decode_trie_path, encode_trie_path};

@@ -12593,6 +12593,57 @@ encoding or teardown. Task 6444 still requires its remaining consumer audit and 
 geometric measurements. No production source, dependency, PathMap implementation, canonical byte
 format or consensus contract changed in this fixture slice; full campaign acceptance remains open.
 
+### J-171 — 2026-09-17 Final-root phase measurement boundaries
+
+**Status: DECISION and MEASURED instrument calibration; resource hypothesis still open.**
+Experiment 345 (`final-root-fixture-phase-resources-6444`) isolates the remaining costs from
+J-169/J-170 before attributing the slow escaped codec gates to a production operation. The opt-in
+`models/tests/support/fixture_phase_probe.rs` reuses the qualified fixtures and existing
+`rmp2-digest-experiment` feature. It changes no production API, representation, byte format or
+test depth. Four release calibration tests pass; the measurement entry point is explicitly
+ignored in normal test runs. Both subject and preparation-only paths have small exact witnesses.
+
+| Phase | Subject and boundary |
+|---|---|
+| Construction | Final unary/escaped Par, or the actual nested EPathMap root; final output remains alive until the counter window closes. Frozen resident controls are bounded to depth 128 as an experimental domain, not a production restriction. |
+| Outer construction | The escaped Par is prepared before inserting it into the outer set-mode EPathMap. |
+| Snapshot | Fresh EPathMap per sample; warm mode explicitly primes the snapshot before timing. |
+| Par digest | Fresh ParBag, with an observed initialization witness distinguishing cold and warm states. The witness wrapper remains part of the instrumented timing. |
+| EPathMap key digest | Uncached key-topology traversal, deliberately excluding values. Input bytes denote the compact ACT topology image, not the entire value-bearing snapshot or exact hash transcript. |
+| Key cursor/decode | The escaped subject is precisely `encode_trie_path(deep_escaped(depth))`, not an extra EPathMap carrier. Cursor traversal assumes validated input; it is not an admission benchmark. |
+| Public decoders | EPM1, protobuf, bincode and legacy-tag entry points include their actual admission and reconstruction work. Verification and final output destruction occur after the window. |
+| Lookup/decode descent | Map lookup, nested expression decoding and intermediate destruction; explicitly not pure zipper navigation or application replay. |
+| Teardown | The actual EPathMap root for map/escaped shapes, or unary Par. Unique and shared ownership are separate, and a retained clone exists only in the shared case. |
+
+The thread-local allocation meter counts successful allocation requests and releases. Reallocation
+counts the new request and old release; cumulative requested bytes are neither peak live heap nor
+retained size. Timings include this instrumentation. RSS is a whole-process/cgroup observation,
+not a phase-specific heap claim. Seven retained samples after a pilot and three warmups diagnose
+scaling; they do not establish the campaign's powered end-to-end performance acceptance.
+
+`FIXTURE_PREPARE_ONLY=1` performs the selected phase's exact input preparation and cache priming,
+then omits the timed operation and output-specific verification. Whole-process profiler totals
+must not be subtracted as if they isolated that operation: subject output cleanup is absent from
+the control, while teardown controls necessarily still destroy the input during cleanup. Use
+attributed call stacks and the measured allocation windows. Profiling remains headless and capped.
+
+Independent review caught four attribution errors before any ladder result was collected:
+carrier construction/destruction instead of the map root, an extra carrier in escaped-key phases,
+value-bearing snapshot size as the denominator of a value-excluding digest, and a generic setup
+control unrelated to the selected operation. Those interpretations are rejected, not benchmark
+results. Corrected calibration command:
+
+```bash
+cargo test --release --locked -j4 -p models --features rmp2-digest-experiment \
+  --test epathmap_epm1_snapshot fixture_phase_probe:: -- --test-threads=4
+```
+
+The capped service completed in 2.467 seconds, 6.245 seconds CPU, 388.2 MiB peak, zero swap;
+`target/verification/fixture-phase-6444-instrument-r2.log` records four passed, one opt-in
+measurement ignored, and the 21 existing regression tests filtered. This is instrument
+qualification, not a rerun of J-170's full regression suite. Task 6444 remains open for the
+geometric measurements and profiler attribution.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
