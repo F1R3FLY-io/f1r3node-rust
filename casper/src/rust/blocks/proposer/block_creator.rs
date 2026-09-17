@@ -1712,20 +1712,21 @@ async fn prepare_slashing_deploys(
     let slash_candidates = authorized_slash_candidates(casper_snapshot)?;
 
     // `authorized_slash_candidates` documents an at-most-one-per-offender
-    // invariant via its `BTreeMap<Validator, …>` accumulator
-    // (slashing_authorization.rs:253-317). Pin the contract at the boundary
-    // so a future refactor of that helper can't silently produce duplicates.
-    debug_assert!(
-        {
-            let mut offenders: Vec<&prost::bytes::Bytes> =
-                slash_candidates.iter().map(|c| &c.offender).collect();
-            offenders.sort();
-            let original_len = offenders.len();
-            offenders.dedup();
-            offenders.len() == original_len
-        },
-        "authorized_slash_candidates must produce unique offenders; got duplicates"
-    );
+    // invariant via its `BTreeMap<Validator, …>` accumulator. Enforce the
+    // contract at the boundary — a duplicate would ship an invalid block, so
+    // it must fail this propose in every build, not only under debug.
+    {
+        let mut offenders: Vec<&prost::bytes::Bytes> =
+            slash_candidates.iter().map(|c| &c.offender).collect();
+        offenders.sort();
+        let original_len = offenders.len();
+        offenders.dedup();
+        if offenders.len() != original_len {
+            return Err(CasperError::RuntimeError(
+                "authorized slash candidates contain a duplicate offender".to_string(),
+            ));
+        }
+    }
 
     // Slash deploys are NOT persisted in `KeyValueDeployStorage` and
     // this is correct by design (not a TODO).
@@ -2594,8 +2595,9 @@ pub async fn create(
     rejected_deploy_buffer: Arc<Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>>,
     runtime_manager: &RuntimeManager,
     block_store: &mut KeyValueBlockStore,
-    allow_empty_blocks: bool,
+    selection: super::proposer::DeploySelection,
 ) -> Result<BlockCreatorResult, CasperError> {
+    let allow_empty_blocks = selection.allows_empty();
     use crate::rust::metrics_constants::{
         BLOCK_CREATOR_COMPUTE_DEPLOYS_CHECKPOINT_TIME_METRIC,
         BLOCK_CREATOR_COMPUTE_PARENTS_POST_STATE_TIME_METRIC,
@@ -2671,7 +2673,9 @@ pub async fn create(
     let floor_ctx = derive_floor_context(casper_snapshot, block_store).await?;
 
     // Prepare deploys
-    let (user_deploys, _, _) = {
+    let (user_deploys, _, _) = if selection == super::proposer::DeploySelection::RecoveryEmpty {
+        (HashSet::new(), 0usize, false)
+    } else {
         let t = std::time::Instant::now();
         let user_deploys_in_scope =
             scope_has_unfinalized_user_deploys(casper_snapshot, block_store)?;

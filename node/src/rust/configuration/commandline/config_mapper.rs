@@ -370,7 +370,7 @@ impl ConfigMapper<Options> for NodeConf {
                 &mut self.casper.heartbeat_conf.self_propose_cooldown,
                 run.heartbeat_self_propose_cooldown,
             );
-            Self::try_override_value(
+            Self::try_override_option(
                 &mut self.casper.heartbeat_conf.stale_recovery_min_interval,
                 run.heartbeat_stale_recovery_min_interval,
             );
@@ -1076,7 +1076,7 @@ mod tests {
                 .casper
                 .heartbeat_conf
                 .stale_recovery_min_interval,
-            Duration::from_secs(333333)
+            Some(Duration::from_secs(333333))
         );
         assert_eq!(
             default_config

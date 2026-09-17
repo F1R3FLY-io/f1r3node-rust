@@ -103,8 +103,6 @@ fn mk_casper_snapshot(dag: KeyValueDagRepresentation) -> CasperSnapshot {
     CasperSnapshot {
         dag,
         last_finalized_block: Bytes::new(),
-        lca: Bytes::new(),
-        tips: Vec::new(),
         parents: Vec::new(),
         justifications: Default::default(),
         invalid_blocks: HashMap::new(),

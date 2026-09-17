@@ -207,8 +207,6 @@ fn create_snapshot(max_block_num: i64, validator_id: Bytes) -> CasperSnapshot {
     CasperSnapshot {
         dag,
         last_finalized_block: Bytes::new(),
-        lca: Bytes::new(),
-        tips: vec![],
         parents: vec![],
         justifications: HashSet::new(),
         invalid_blocks: HashMap::new(),
@@ -1113,7 +1111,7 @@ async fn should_remove_block_expired_deploys_while_keeping_valid_ones() {
         rejected_deploy_buffer.clone(),
         &runtime_manager,
         &mut block_store.clone(),
-        false,
+        casper::rust::blocks::proposer::proposer::DeploySelection::Standard,
     )
     .await;
 
@@ -1223,7 +1221,7 @@ async fn should_remove_both_block_expired_and_time_expired_deploys() {
         rejected_deploy_buffer.clone(),
         &runtime_manager,
         &mut block_store.clone(),
-        false,
+        casper::rust::blocks::proposer::proposer::DeploySelection::Standard,
     )
     .await;
 
@@ -1324,7 +1322,7 @@ async fn should_remove_expired_deploys_from_rejected_deploy_buffer() {
         rejected_deploy_buffer.clone(),
         &runtime_manager,
         &mut block_store.clone(),
-        false,
+        casper::rust::blocks::proposer::proposer::DeploySelection::Standard,
     )
     .await;
 

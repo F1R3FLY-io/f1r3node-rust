@@ -1151,7 +1151,8 @@ mod tests {
 
     fn service() -> DeployGrpcServiceV1Impl {
         let local = PeerNode::new(
-            NodeIdentifier::new("0a0b0c".to_string()),
+            NodeIdentifier::new("0a0b0c0d00000000000000000000000000000000")
+                .expect("valid test node ID"),
             "localhost".to_string(),
             40400,
             40404,

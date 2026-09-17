@@ -71,12 +71,11 @@ impl FtThreshold {
 /// validator runs the branch binary together, so there is no mixed-version
 /// window and no on-chain activation parameter is required.
 pub fn ft_decides_exact(agreeing: i64, q: i64, s: i64, num: i64, den: i64, strict: bool) -> bool {
-    // Domain: the doc-contract is 0 ≤ num ≤ den (θ ∈ [0,1]), but the on-chain ppm
-    // is range-checked to [-den, den] (token_metadata_check.rs) and some callers
-    // pass a negative sentinel θ (e.g. -1.0 "finalize on any majority clique"), so
-    // the lower bound is -den here. The comparison math below is unchanged and is
-    // exact across the full [-den, den] range.
-    debug_assert!(den > 0 && s > 0 && (0..=s).contains(&q) && (-den..=den).contains(&num));
+    // Domain (den > 0, s > 0, q ∈ [0, s], num ∈ [-den, den]) is discharged by
+    // the callers: den is the fixed ppm constant, the oracle short-circuits
+    // non-positive stake, q is a clique weight within total stake, and the
+    // on-chain ppm is range-gated typed at its single read choke point
+    // (`runtime.rs`). The comparison math is exact across [-den, den].
     if (agreeing as i128) * 2 <= s as i128 {
         return false; // agreeing ≤ S/2 ⇒ MIN ⇒ not finalized
     }
@@ -174,12 +173,7 @@ impl CliqueOracle {
         lm_a_j_b: &M,
         dag: &KeyValueDagRepresentation,
         target_msg: &M,
-        yield_check_interval: usize,
-        yield_timeslice: Duration,
-        self_justification_cache: &mut BTreeMap<M, Option<M>>,
-        ancestor_cache: &mut BTreeMap<(M, M), bool>,
-        max_self_justification_cache_entries: usize,
-        max_ancestor_cache_entries: usize,
+        run_cache: &mut CliqueOracleRunCache,
     ) -> Result<bool, KvStoreError> {
         /// Check if there might be eventual disagreement between validators
         async fn might_eventually_disagree(
@@ -187,38 +181,35 @@ impl CliqueOracle {
             lm_a_j_b: &M,
             dag: &KeyValueDagRepresentation,
             target_msg: &M,
-            self_justification_cache: &mut BTreeMap<M, Option<M>>,
-            ancestor_cache: &mut BTreeMap<(M, M), bool>,
-            yield_check_interval: usize,
-            yield_timeslice: Duration,
-            max_self_justification_cache_entries: usize,
-            max_ancestor_cache_entries: usize,
+            run_cache: &mut CliqueOracleRunCache,
         ) -> Result<bool, KvStoreError> {
+            let yield_check_interval = run_cache.yield_check_interval;
+            let yield_timeslice = run_cache.yield_timeslice;
             // self justification of lmAjB or lmAjB itself. Used as a stopper for traversal
             // TODO not completely clear why try to use self justification and not just message itself
-            let stopper = if let Some(cached) = self_justification_cache.get(lm_a_j_b) {
+            let stopper = if let Some(cached) = run_cache.self_justification_cache.get(lm_a_j_b) {
                 cached.clone().unwrap_or_else(|| lm_a_j_b.clone())
             } else {
                 let value = dag.self_justification(lm_a_j_b)?;
                 CliqueOracle::bounded_cache_insert(
-                    self_justification_cache,
+                    &mut run_cache.self_justification_cache,
                     lm_a_j_b.clone(),
                     value.clone(),
-                    max_self_justification_cache_entries,
+                    run_cache.max_self_justification_cache_entries,
                 );
                 value.unwrap_or_else(|| lm_a_j_b.clone())
             };
 
             // Traverse only until stopper instead of materializing full history to genesis.
-            let mut current = if let Some(cached) = self_justification_cache.get(lm_b) {
+            let mut current = if let Some(cached) = run_cache.self_justification_cache.get(lm_b) {
                 cached.clone()
             } else {
                 let value = dag.self_justification(lm_b)?;
                 CliqueOracle::bounded_cache_insert(
-                    self_justification_cache,
+                    &mut run_cache.self_justification_cache,
                     lm_b.clone(),
                     value.clone(),
-                    max_self_justification_cache_entries,
+                    run_cache.max_self_justification_cache_entries,
                 );
                 value
             };
@@ -258,40 +249,41 @@ impl CliqueOracle {
                 // reaching below the candidate froze finality for 851 s in
                 // CI (stall instance i5, run 32397055615 — see
                 // tests/finalized_floor/oracle_stall_replay_spec.rs).
-                //
+
                 // (`ancestor_cache` memoizes the per-(target, hash) verdict:
                 // true = this visited block does not veto.)
                 let ancestor_key = (target_msg.clone(), hash.clone());
-                let no_disagreement = if let Some(cached) = ancestor_cache.get(&ancestor_key) {
-                    *cached
-                } else {
-                    let visited_height = dag.lookup_unsafe(&hash)?.block_number;
-                    let value = if visited_height < target_height {
-                        dag.is_in_main_chain(&hash, target_msg)?
+                let no_disagreement =
+                    if let Some(cached) = run_cache.ancestor_cache.get(&ancestor_key) {
+                        *cached
                     } else {
-                        dag.is_in_main_chain(target_msg, &hash)?
+                        let visited_height = dag.lookup_unsafe(&hash)?.block_number;
+                        let value = if visited_height < target_height {
+                            dag.is_in_main_chain(&hash, target_msg)?
+                        } else {
+                            dag.is_in_main_chain(target_msg, &hash)?
+                        };
+                        CliqueOracle::bounded_cache_insert(
+                            &mut run_cache.ancestor_cache,
+                            ancestor_key,
+                            value,
+                            run_cache.max_ancestor_cache_entries,
+                        );
+                        value
                     };
-                    CliqueOracle::bounded_cache_insert(
-                        ancestor_cache,
-                        ancestor_key,
-                        value,
-                        max_ancestor_cache_entries,
-                    );
-                    value
-                };
                 if !no_disagreement {
                     return Ok(true);
                 }
 
-                current = if let Some(cached) = self_justification_cache.get(&hash) {
+                current = if let Some(cached) = run_cache.self_justification_cache.get(&hash) {
                     cached.clone()
                 } else {
                     let value = dag.self_justification(&hash)?;
                     CliqueOracle::bounded_cache_insert(
-                        self_justification_cache,
+                        &mut run_cache.self_justification_cache,
                         hash,
                         value.clone(),
-                        max_self_justification_cache_entries,
+                        run_cache.max_self_justification_cache_entries,
                     );
                     value
                 };
@@ -299,20 +291,9 @@ impl CliqueOracle {
             Ok(false)
         }
 
-        might_eventually_disagree(
-            lm_b,
-            lm_a_j_b,
-            dag,
-            target_msg,
-            self_justification_cache,
-            ancestor_cache,
-            yield_check_interval,
-            yield_timeslice,
-            max_self_justification_cache_entries,
-            max_ancestor_cache_entries,
-        )
-        .await
-        .map(|r| !r)
+        might_eventually_disagree(lm_b, lm_a_j_b, dag, target_msg, run_cache)
+            .await
+            .map(|r| !r)
     }
 
     async fn compute_max_clique_weight(
@@ -417,29 +398,11 @@ impl CliqueOracle {
                         continue;
                     };
                     let no_a_b_disagreement = CliqueOracle::never_eventually_see_disagreement(
-                        lm_b,
-                        lm_a_j_b,
-                        dag,
-                        target_msg,
-                        yield_check_interval,
-                        yield_timeslice,
-                        &mut run_cache.self_justification_cache,
-                        &mut run_cache.ancestor_cache,
-                        run_cache.max_self_justification_cache_entries,
-                        run_cache.max_ancestor_cache_entries,
+                        lm_b, lm_a_j_b, dag, target_msg, run_cache,
                     )
                     .await?;
                     let no_b_a_disagreement = CliqueOracle::never_eventually_see_disagreement(
-                        lm_a,
-                        lm_b_j_a,
-                        dag,
-                        target_msg,
-                        yield_check_interval,
-                        yield_timeslice,
-                        &mut run_cache.self_justification_cache,
-                        &mut run_cache.ancestor_cache,
-                        run_cache.max_self_justification_cache_entries,
-                        run_cache.max_ancestor_cache_entries,
+                        lm_a, lm_b_j_a, dag, target_msg, run_cache,
                     )
                     .await?;
 
@@ -836,6 +799,26 @@ mod ft_decides_exact_tests {
         let agreeing = 5i64; // 2·5 == 10 == S
         assert!(!ft_decides_exact(agreeing, s, s, 0, den, false));
         assert!(!ft_decides_exact(agreeing, s, s, 0, den, true));
+    }
+
+    /// At θ = 0 the rule is `q ≥ S/2`, which two DISJOINT cliques can satisfy
+    /// at once — each certifying a different sibling from its own snapshot,
+    /// neither validator equivocating. The `agreeing > S/2` gate does not stop
+    /// it: agreeing is per-snapshot, the clique is the safety-relevant weight.
+    /// Any positive θ forces `q > S/2`, so the cliques must overlap.
+    #[test]
+    fn two_disjoint_half_cliques_both_certify_at_zero_but_not_above_it() {
+        let den = FT_PPM_DEN;
+        let s = 100i64;
+        // Three of four equal validators agree in each snapshot; the certifying
+        // cliques are {v1,v2} and {v3,v4}, disjoint, 50 each.
+        let (agreeing, q) = (75i64, 50i64);
+
+        assert!(ft_decides_exact(agreeing, q, s, 0, den, false));
+        assert!(
+            !ft_decides_exact(agreeing, q, s, 1, den, false),
+            "one ppm above zero already forces the cliques to overlap"
+        );
     }
 
     /// i64::MAX-scale q and S must not overflow: `2·q·den ≈ 2^84` exceeds i64 but
