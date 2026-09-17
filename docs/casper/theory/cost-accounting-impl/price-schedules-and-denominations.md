@@ -219,8 +219,10 @@ Do not silently change its historical meaning or treat it as consent to omitted 
 [`AuthorityResourceDemand::value`](../../../../rholang/src/rust/interpreter/accounting/authority/valuation.rs) checks multiplication and addition over authority atom quantities.
 It retains the source event and atom multiset.
 It does not establish the complete multidimensional tariff, asset authentication, prepaid compatibility, or signed owner consent.
-The current protobuf also reserves the retired `phloPrice` and `phloLimit` names and tags.
-Their restoration needs the separate versioned wire implementation and signing vectors.
+The [versioned wire implementation](signed-phlo-deploy-envelope.md#wire-representation) retains `phloPrice` and `phloLimit` at their original protobuf tags.
+The offered format signs those fields and the complete funding intent. Owner ceilings remain separate from the offered price.
+Its decoder and signing tests cover scalar mutations, version separation, and numeric boundaries.
+These wire checks do not activate production admission or establish complete execution and replay integration.
 
 The current fee evidence binds policy context, physical cohort, obligation, and cursor transition.
 It does not substitute for the full resource schedule or prove a new fee amount is authorized.

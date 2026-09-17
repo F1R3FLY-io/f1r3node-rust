@@ -5,7 +5,8 @@
 Signed funding consent limits what an authorized process can charge to an identified source.
 It is separate from proof that the process has sufficient matching resources and backing.
 This contract defines the required meaning and signature coverage for restored `phloPrice` and `phloLimit` controls.
-It does not claim that the current wire format already implements these controls.
+The [offered envelope](signed-phlo-deploy-envelope.md) implements signature coverage for these controls.
+Production admission, execution, and replay must also enforce the stateful funding contract. Complete production integration is not yet established.
 
 The [price schedule contract](price-schedules-and-denominations.md) defines units, actual prices, and prepaid acquisition terms.
 The [resource bounds contract](resource-bounds-and-exhaustion.md) defines independent resource, debit, exposure, and allowance limits.
@@ -161,9 +162,16 @@ Candidate rollback must not overwrite another committed operation's balances or 
 
 The current [envelope commitment](../../../../crypto/src/rust/signatures/signed.rs) binds canonical intent, policy, and selected-member bitmap.
 The signing hash also separates the signature scheme and envelope protocol version.
-The [intent encoder](../../../../models/src/rust/casper/protocol/casper_message.rs) supplies the current deployment fields.
-The [protobuf](../../../../models/src/main/protobuf/CasperMessage.proto) reserves the removed phlo fields.
-These existing commitments do not already authenticate the restored terms specified here.
+The [protobuf](../../../../models/src/main/protobuf/CasperMessage.proto) retains `phloPrice` at tag 7 and `phloLimit` at tag 8.
+Tag 21 carries the optional canonical funding intent. Tag 15 remains reserved for the retired signer-share field.
+The [offered envelope](signed-phlo-deploy-envelope.md#offered-price-payload) signs both scalar fields and the complete funding intent under authorization format `0x00060003`.
+The funding intent binds separate owner ceilings, permitted schedules, source permissions, and exposure limits.
+Existing body-only signatures cannot authorize these additional terms. Exact format checks reject reinterpretation through another decoder.
+
+The [offered-price checker](signed-phlo-formal-contract.md) requires the selected price to equal the signed offer and satisfy every required owner ceiling.
+The [genesis policy adapter](genesis-resource-policy.md) also requires agreement between the authenticated genesis minimum, adopted minimum, and captured funding minimum.
+These checks establish the price contract at the typed funding boundary.
+They do not activate the offered format in production admission or prove complete execution and replay integration.
 
 [`FundingPriceConsent.v`](../../../../formal/rocq/cost_accounted_rho/theories/FundingPriceConsent.v) relates the minimum ceiling to all required compatible ceilings.
 It includes permutation, added-consent, duplicate-value, and empty-list properties.
