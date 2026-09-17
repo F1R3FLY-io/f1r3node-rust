@@ -19,7 +19,7 @@ The [claim](../claims/casper-soak-harness.md) defines the contract. The [formal 
 | H07 | Keep deferred experiments outside baseline authority. | PolicyIsolation | Pending |
 | H08 | Keep missing measurements distinct from zero values. | MissingIsUnknown | Pending |
 | H09 | Require the actual merge for a post-#216 profile. | PostMergeGate | Pending |
-| H10 | Accept only the named negative-control violation. | ControlVerdictExact | Partial: shared result classification passes |
+| H10 | Accept only the named negative-control violation. | ControlVerdictExact | Shared classification and registration pass. Publication binding remains pending |
 
 ## First bounded model result
 
@@ -53,7 +53,19 @@ RED reproduced acceptance of contradictory positive output. GREEN rejected all 1
 
 The bounded shared tier passed 13 positives and 61 negatives. Existing fixture checks, Casper model controls, and twelve runner tests also passed.
 
-The [cycle log](../work-logs/task-017-4-exact-result-2026-09-17.md) links the retained results. Shared Casper registration and full driver/evidence bindings remain pending.
+The [cycle log](../work-logs/task-017-4-exact-result-2026-09-17.md) links the retained results. That cycle left shared registration and driver/evidence bindings pending.
+
+## Shared registration and restart-state loading
+
+The shared gate now runs the Casper clean configuration and ten controls in both tiers. Casper retains one worker, seed 1, and a two-minute configuration cap.
+
+The bounded shared tier passed 14 positives and 71 negatives. The fixture also rejects an unregistered Casper unsafe configuration.
+
+The real driver now reads numeric checkpoint data without executing shell input. Six restart-state cases and all 42 isolated disk scenarios passed.
+
+These checks are partial prerequisites for H01 and H02, not full identity or history bindings. Manifest validation, correlated profile observations, and conformance publication remain unimplemented.
+
+The [continuation log](../work-logs/task-017-4-driver-integration-2026-09-17.md) records the results and the approved dependency change. Profile implementation may proceed alongside TASK-017-4, but all incomplete verification cycles remain pending.
 
 ## Per-cycle record template
 

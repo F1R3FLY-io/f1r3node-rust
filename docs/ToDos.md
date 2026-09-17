@@ -82,7 +82,7 @@ priority: p0
 user_story: null
 blocked_by: []
 created_at: 2026-09-16
-updated_at: 2026-09-16
+updated_at: 2026-09-17
 claimed_by: pi-casper-ratification-planning
 claimed_at: 2026-09-16T20:29:37Z
 branch: formal/soak-casper-consensus
@@ -99,6 +99,17 @@ execution_contract:
   base_branch: dev
   authority: "The 2026-09-16 ratification meeting controls the selected dispositions. Current dev remains the default Casper authority."
   integration_order: "PR #430 -> #431 -> #432 -> #433. PR #390 records decisions. PR #216 remains a candidate implementation."
+  planned_stack_parent: docs/consensus-neutral-execution
+  stack_integration_status: planned
+  stack_parent_revision: null
+  stack_merge_revision: null
+  dependency_approval_date: 2026-09-17
+  implementation_tasks: [TASK-017-4, TASK-017-5, TASK-017-6, TASK-017-7, TASK-017-8, TASK-017-9, TASK-017-10, TASK-017-11]
+  implementation_prerequisites:
+    TASK-017-2: "contract_status=complete"
+    TASK-017-3: "prerequisite_application=complete"
+  implementation_policy: "The listed tasks may proceed together against the completed contract and applied prerequisites. Tracker closure is not their implementation prerequisite."
+  final_workload_pinning_task: TASK-017-12
   scope: "Verify only the soak harness and profiles: generation, fault scheduling, collection, classification, and evidence handling. The node is the system under test."
   git_policy: "Do not merge, commit, push, or create a PR without separate user authorization."
   completion_policy: "Close after pre-merge scope claims pass, baseline evidence is reviewed, and the EPIC-018 handoff is accepted. PR #216 merge is not a blocker."
@@ -159,22 +170,23 @@ tasks:
       - "Each profile identifies its post-merge interface adaptation under EPIC-018."
 
   - id: TASK-017-3
-    title: "Integrate reviewed harness prerequisites and pin the candidate matrix"
+    title: "Integrate reviewed harness prerequisites and record initial candidate identities"
     status: in_progress
     claimed_by: pi-casper-harness
     claimed_at: 2026-09-17T01:43:26Z
-    execution_scope: "Authorized working-tree application of reviewed prerequisites and candidate-matrix completion. No staging, commits, pushes, or merges."
+    execution_scope: "Approved prerequisites and initial candidate identities only. Final executable workload pinning belongs to TASK-017-12. No Git publication or merge is authorized."
     work_log: docs/work-logs/task-017-3-prerequisite-application-2026-09-17.md
     prerequisite_review: docs/work-logs/task-017-3-prerequisite-review-2026-09-17.md
     prerequisite_application: complete
     candidate_matrix: docs/casper/design/soak-candidate-matrix.jsonc
     validation_evidence: docs/casper/cbc-evidence/runs/casper-prerequisite-application-20260917-01/report.json
-    completion_blocker: "Executable workload configurations remain unpinned. The strict CbC gate reports pending claims."
+    completion_blocker: "Remaining prerequisite review and completion-helper support are pending. Final executable workload pinning belongs to TASK-017-12 before dispatch."
     blocked_by: [TASK-017-1]
     external_prs: [390, 430, 431, 432, 433]
     acceptance:
       - "Approved prerequisite integration preserves the #430 -> #431 -> #432 -> #433 order."
-      - "Node, harness, model, image, and configuration revisions are recorded for every candidate."
+      - "Initial node, harness, model, image, and configuration-source identities are recorded for every candidate."
+      - "TASK-017-12 owns final executable workload pinning. The initial matrix remains non-dispatchable until qualification and required verification pass."
       - "PR #431 containment limitations and inherited evidence remain explicit."
       - "The 15-minute and two-minute bounded-tier descriptions are reconciled against the implemented gate."
       - "The system-integration fixture contract is reviewed before any coordinated harness edit or repin."
@@ -189,9 +201,10 @@ tasks:
     status: in_progress
     claimed_by: pi-casper-harness
     claimed_at: 2026-09-16T22:18:38Z
-    execution_scope: "Authorized continuation: shared formal-gate exact-result classification. Workload dispatch and full claim completion remain blocked."
-    work_log: docs/work-logs/task-017-4-exact-result-2026-09-17.md
-    blocked_by: [TASK-017-2, TASK-017-3]
+    execution_scope: "Authorized completion work: shared registration and real-driver bindings. No node dispatch, external repin, or claim waiver."
+    work_log: docs/work-logs/task-017-4-driver-integration-2026-09-17.md
+    completion_blocker: "Full driver bindings and profile adapters remain incomplete. Approved profile implementation may proceed alongside this task. Dispatch and claim gates remain unchanged."
+    blocked_by: []
     decisions: [D-11]
     acceptance:
       - "The evidence contract includes revisions, seeds, run IDs, tool versions, bounds, assumptions, artifacts, and terminal outcomes."
@@ -209,7 +222,7 @@ tasks:
     claim_spec: docs/claims/casper-soak-authority-finality.md
     status: pending
     claimed_by: null
-    blocked_by: [TASK-017-4]
+    blocked_by: []
     decisions: [D-02, D-03, D-04]
     related_tasks: [TASK-012-19, TASK-012-20, TASK-015-1]
     acceptance:
@@ -225,7 +238,7 @@ tasks:
     claim_spec: docs/claims/casper-soak-publication.md
     status: pending
     claimed_by: null
-    blocked_by: [TASK-017-4]
+    blocked_by: []
     decisions: [D-05]
     acceptance:
       - "Fault coverage requires an observed crash acknowledgment, not only a requested injection."
@@ -240,7 +253,7 @@ tasks:
     claim_spec: docs/claims/casper-soak-recovery.md
     status: pending
     claimed_by: null
-    blocked_by: [TASK-017-4]
+    blocked_by: []
     decisions: [D-06, D-07]
     related_tasks: [TASK-016-5, TASK-016-6, TASK-016-7]
     acceptance:
@@ -258,7 +271,7 @@ tasks:
     claim_spec: docs/claims/casper-soak-merge-accounting.md
     status: pending
     claimed_by: null
-    blocked_by: [TASK-017-4]
+    blocked_by: []
     decisions: [D-08]
     external_prs: [216]
     related_tasks: [TASK-016-1, TASK-016-3, TASK-016-4]
@@ -275,7 +288,7 @@ tasks:
     claim_spec: docs/claims/casper-soak-slashing.md
     status: pending
     claimed_by: null
-    blocked_by: [TASK-017-4]
+    blocked_by: []
     decisions: [D-09]
     acceptance:
       - "The profile schedules merge-lost slash, rebond, stale-epoch, missing-evidence, forged-deploy, and restart scenarios."
@@ -287,7 +300,7 @@ tasks:
     title: "Verify carrier-index comparison inputs and telemetry classification"
     status: pending
     claimed_by: null
-    blocked_by: [TASK-017-4]
+    blocked_by: []
     decisions: [D-10]
     claims: [CLAIM-CASPER-SOAK-008]
     claim_spec: docs/claims/casper-soak-carrier-index.md
@@ -304,7 +317,7 @@ tasks:
     claim_spec: docs/claims/casper-soak-version-phlo.md
     status: pending
     claimed_by: null
-    blocked_by: [TASK-017-4]
+    blocked_by: []
     decisions: [D-01, D-12]
     external_prs: [216, 430]
     acceptance:
@@ -315,15 +328,17 @@ tasks:
       - "The harness cannot authorize protocol activation or undefined funding policies."
 
   - id: TASK-017-12
-    title: "Run the pre-merge baseline soak and package candidate experiments"
+    title: "Pin executable workloads, qualify candidates, and run the pre-merge baseline soak"
     claims: [CLAIM-CASPER-SOAK-001, CLAIM-CASPER-SOAK-004]
     claim_index: docs/claims/casper-soak-harness.md
     status: pending
     claimed_by: null
-    blocked_by: [TASK-017-5, TASK-017-6, TASK-017-7, TASK-017-8, TASK-017-9, TASK-017-10, TASK-017-11]
+    blocked_by: [TASK-017-2, TASK-017-3, TASK-017-4, TASK-017-5, TASK-017-6, TASK-017-7, TASK-017-8, TASK-017-9, TASK-017-10, TASK-017-11]
     related_epics: [EPIC-010, EPIC-013]
     acceptance:
       - "The maintainer approves the resource budget, durations, repetitions, and candidate matrix before dispatch."
+      - "Every dispatched candidate has qualified interfaces and immutable executable workload, node, harness, model, image, and configuration identities."
+      - "Required pre-dispatch harness and profile verification must pass. Missing capabilities and null workload pins block dispatch."
       - "The disk-protected harness completes required pre-merge baseline profiles or reports an explicit non-passing outcome."
       - "Unavailable #216 candidate profiles remain pending for EPIC-018 and are not reported as passes."
       - "Every report retains exact revisions, seeds, run IDs, configuration, metrics, and artifact digests."
@@ -359,7 +374,8 @@ tasks:
       - "Compatibility symlinks in docs/cbc-evidence/: 21 links. Remove them when the CbC driver supports module routing. Otherwise keep the canonical record only."
       - "Historical hosted TLC transcripts recovered in the evidence audit. Keep the audit report and digests, not the transcript copies."
     acceptance:
-      - "The PR diff against dev contains only the Casper soak harness deliverables: the interface contract, the claims, the harness model and controls, the runner and its tests, the glossary entries, and the task records."
+      - "The PR diff against its confirmed stack parent contains only Casper soak harness deliverables. The report also measures the cumulative diff against dev."
+      - "Record the actual stack parent revision and PR base after integration. Planned stack membership alone cannot justify file deletion."
       - "Each removed file is either reproducible from a recorded digest and revision, or duplicated upstream on dev, or listed with an explicit reason."
       - "No removal changes a claim status, a ledger record status, or a discharge result. Pending claims stay pending."
       - "Evidence that a claim cites remains reachable. A record names the external location and digest of any artifact that leaves the tree."
@@ -369,9 +385,13 @@ tasks:
 ---
 ```
 
-**Current state:** The bounded harness model and local control runner are implemented. Driver bindings, profile fixtures, shared CI integration, and soaks remain pending.
+**Current state:** Shared Casper registration and numeric restart-state validation pass their fixtures. Full driver bindings, profile fixtures, evidence publication, and soaks remain pending.
 
-**Next task:** TASK-017-2 contracts are specified, but the completion helper cannot close TASK-* records. Resolve that tracking blocker and TASK-017-3 prerequisite review before shared integration.
+**Approved sequence:** TASK-017-4 and TASK-017-5 through TASK-017-11 may proceed together against the completed contract and applied prerequisites. TASK-017-12 requires final workload pins, qualification, verification, and dispatch approval.
+
+**Planned stack:** Integrate `docs/consensus-neutral-execution` next to place this branch after PR #433. No merge, PR retarget, or publication occurred for this dependency update.
+
+**Tracker limitation:** The completion helper still rejects TASK-* identifiers. That limitation does not cancel the approved implementation sequence or permit task closure without evidence.
 
 The [interface contract](./casper/design/soak-interface-contract.md) records exact payloads, source boundaries, fixture expectations, and missing capabilities. The local model does not discharge the full harness claim.
 

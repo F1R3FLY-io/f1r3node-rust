@@ -219,6 +219,12 @@ done
 checked >"$WORK/full"
 run_gate gate-pr || fail 'The PR-tier gate failed with the fixture.'
 checked >"$WORK/pr"
+for config in "$ROOT"/formal/tlaplus/casper_soak/MC_CasperSoakHarness*.cfg; do
+    entry="casper_soak/$(basename "$config" .cfg)"
+    for tier in full pr; do
+        grep -Fxq "$entry" "$WORK/$tier" || fail "The $tier tier omits $entry."
+    done
+done
 if grep '^CHECK' "$WORK/run.log" | grep -vq 'cap 2m)'; then
     fail 'A PR-tier configuration is not under the two-minute cap.'
 fi
@@ -282,6 +288,14 @@ if run_gate gate; then
 fi
 grep -q 'not registered in NEGATIVE_CONTROLS' "$WORK/run.log" ||
     fail 'The gate failed for a reason other than the unregistered control.'
+rm -f "$planted"
+planted="$tla/casper_soak/MC_CasperSoakHarness_planted_unsafe.cfg"
+cp "$tla/casper_soak/MC_CasperSoakHarness_identity_unsafe.cfg" "$planted"
+if run_gate gate; then
+    fail 'The gate accepted an unregistered Casper unsafe configuration.'
+fi
+grep -q 'not registered in NEGATIVE_CONTROLS' "$WORK/run.log" ||
+    fail 'The gate failed for a reason other than the unregistered Casper control.'
 rm -f "$planted"
 planted="$tla/replay_liveness/MC_ReplayHotLoop_planted_pre_fix.cfg"
 cp "$tla/replay_liveness/MC_ReplayHotLoop_quadratic_pre_fix.cfg" "$planted"

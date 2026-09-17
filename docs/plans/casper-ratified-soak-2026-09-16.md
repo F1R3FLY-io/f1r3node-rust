@@ -1,6 +1,6 @@
 # Casper Soak Harness and Profile Verification Plan
 
-**Status:** The first bounded harness model and local runner pass their controls. Driver/profile bindings, shared CI integration, and soaks remain pending.
+**Status:** Shared Casper registration and restart-state validation pass their fixtures. Full driver/profile bindings, evidence publication, and soaks remain pending.
 
 **Branch:** `formal/soak-casper-consensus`
 
@@ -55,7 +55,24 @@ These revisions were observed on 2026-09-16. They identify reference material, n
 
 Approved prerequisite integration must preserve `#430 -> #431 -> #432 -> #433`. Git integration still needs separate authorization.
 
-PR #431's B44 containment limitation remains explicit. Reconcile the PR #432 15-minute and PR #433 two-minute tier descriptions before registering new gates.
+PR #431's B44 containment limitation remains explicit. The shared PR job has a 15-minute limit. Each Casper configuration has a two-minute cap and a 60-second kill grace.
+
+## Planned stack integration
+
+The user plans to merge `docs/consensus-neutral-execution` into this branch next. The intended stack is `#430 -> #431 -> #432 -> #433 -> formal/soak-casper-consensus`.
+
+The planned parent is PR #433's branch, not a new node authority. Current `dev` remains the baseline authority.
+
+The parent and merge revisions remain unset until integration occurs. This notice does not authorize this assistant to merge, commit, push, or retarget a PR.
+
+After authorized integration:
+
+1. Record the actual parent revision, merge revision, and confirmed PR base.
+2. Recheck the contract, applied prerequisites, shared driver, gate, models, and evidence source digests.
+3. Rerun affected fixtures and formal controls against the integrated sources.
+4. Report the review diff against the confirmed stack parent and the cumulative diff against `dev`.
+
+Previously applied prerequisite bytes do not establish Git ancestry. Historical evidence remains intact and does not automatically verify merged sources.
 
 ## Ratifications as profile inputs
 
@@ -91,6 +108,29 @@ The independent node claim [CLAIM-FINALITY-002](../claims/repeat-deploy-carrier-
 7. Review harness evidence and hand off profile interface requirements to EPIC-018.
 
 PR #216's merge is not a blocker for this phase. Optional candidate experiments remain separate from baseline evidence.
+
+## Approved implementation sequence
+
+On 2026-09-17, the user approved profile implementation alongside unfinished common-driver bindings. TASK-017-4 and TASK-017-5 through TASK-017-11 no longer wait for each other.
+
+Their implementation prerequisites are the completed TASK-017-2 contract and the applied TASK-017-3 prerequisites. Both milestones are recorded, although their parent tasks remain open.
+
+TASK-017-3 owns prerequisite integration and initial candidate identities. TASK-017-12 owns final executable workload pinning and candidate qualification before dispatch.
+
+```mermaid
+flowchart LR
+    M[Completed contract and applied prerequisites] --> H[TASK-017-4 common bindings]
+    M --> P[TASK-017-5 through TASK-017-11 profiles]
+    H --> Q[TASK-017-12 workload pins and qualification]
+    P --> Q
+    Q --> G[Required task closure and verification]
+    G --> A[Approved budget and candidate matrix]
+    A --> S[Baseline dispatch]
+```
+
+The candidate matrix remains non-dispatchable while required pins, capabilities, verification, or approvals are missing. This sequencing change grants no node execution or external repin permission.
+
+The task-completion helper limitation remains separate. No task status, claim status, evidence requirement, or EPIC-018 start gate changes through this approval.
 
 ## Post-merge phase: EPIC-018
 

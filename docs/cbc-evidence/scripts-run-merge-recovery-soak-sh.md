@@ -52,6 +52,17 @@ The evidence package contains partial results only. No node correctness claim or
     "counterexample": null,
     "detail": "Bounded lifecycle controls and runner unit tests pass. Driver/profile bindings, shared CI integration, and soaks remain pending."
   },
+  "incremental_evidence": [
+    {
+      "cycle": "restart-state-data-loading",
+      "status": "partial-binding-pass",
+      "base_revision": "c9faa7d2f4c1cf4564b544a6cf3aa4c95f869d26",
+      "artifact_sha256": "4a2a909b56d9e6585e897726aa9867a63193894627622a954d65dff32b23f32b",
+      "ref": "docs/casper/cbc-evidence/runs/casper-driver-integration-20260917-01/report.json",
+      "sha256": "f8ad774a9856bc9d986058b77caa6e375c92dbc2a0ebccda589afadad339285c",
+      "detail": "RED executed saved shell input. GREEN validated restart data without execution. Six state cases and 42 disk scenarios passed. Manifest bindings remain pending."
+    }
+  ],
   "tiers": {
     "refutation": "pending",
     "construction": "not-applicable",

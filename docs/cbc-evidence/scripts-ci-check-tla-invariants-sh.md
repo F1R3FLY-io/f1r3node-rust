@@ -58,6 +58,15 @@ The evidence package contains partial results only. No node correctness claim or
       "ref": "docs/casper/cbc-evidence/runs/casper-exact-result-20260917-01/report.json",
       "sha256": "d9722f0eb25e8d74a377ba2a68244722acd80f18ef2a068242408411a2301052",
       "detail": "RED reproduced contradictory-output acceptance. GREEN rejected 13 ambiguity cases. Shared Casper registration and full driver bindings remain pending."
+    },
+    {
+      "cycle": "H10-shared-registration",
+      "status": "partial-binding-pass",
+      "base_revision": "c9faa7d2f4c1cf4564b544a6cf3aa4c95f869d26",
+      "artifact_sha256": "41849481aeafbf7b98ec690fc44d209139c8b1749cd99e8de43ebb5ffc876baf",
+      "ref": "docs/casper/cbc-evidence/runs/casper-driver-integration-20260917-01/report.json",
+      "sha256": "f8ad774a9856bc9d986058b77caa6e375c92dbc2a0ebccda589afadad339285c",
+      "detail": "Both shared tiers register all Casper controls. The bounded tier passed 14 positives and 71 negatives. Publication binding remains pending."
     }
   ],
   "tiers": {

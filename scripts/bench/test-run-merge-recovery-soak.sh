@@ -309,4 +309,34 @@ grep -q "$TMP/tmp3/test-live" "$TMP/output3/disk-floor-breach.txt"
 test "$(find "$TMP/output3" -maxdepth 1 -type d -name 'iteration-*' | wc -l | tr -d ' ')" = 0
 test ! -e "$TMP/fake-poetry-3.pid"
 
-printf 'soak driver tests passed (fail-closed + deadline + disk-band paths)\n'
+for state_case in valid executable duplicate unknown missing overflow; do
+	state_output="$TMP/state-$state_case"
+	mkdir -p "$state_output"
+	printf 'STARTED_AT=1\nITERATIONS=0\nFAILURES=0\nSEGMENT=1\n' >"$state_output/.soak-state"
+	case "$state_case" in
+		executable) printf 'printf executed >"$OUTPUT_DIR/executed"\nexit 2\n' >>"$state_output/.soak-state" ;;
+		duplicate) printf 'ITERATIONS=0\n' >>"$state_output/.soak-state" ;;
+		unknown) printf 'UNRECOGNIZED=0\n' >>"$state_output/.soak-state" ;;
+		missing) printf 'STARTED_AT=1\nITERATIONS=0\nFAILURES=0\n' >"$state_output/.soak-state" ;;
+		overflow) printf 'STARTED_AT=1\nITERATIONS=0\nFAILURES=0\nSEGMENT=99999999999999999999\n' >"$state_output/.soak-state" ;;
+	esac
+	cp "$state_output/.soak-state" "$state_output/before.txt"
+	status=0
+	timeout --signal=TERM --kill-after=2 15 env PATH="$TMP/bin:$PATH" \
+		FAKE_POETRY_PID_FILE="$TMP/state-child.pid" \
+		SOAK_DURATION_SECONDS=1 SYSTEM_INTEGRATION_DIR="$TMP/system-integration" \
+		SOAK_OUTPUT_DIR="$state_output" SOAK_RSS_CEILING_MB=0 \
+		SOAK_HOST_FREE_FLOOR_MB=0 SOAK_DISK_FREE_FLOOR_MB=0 \
+		"$ROOT/scripts/run-merge-recovery-soak.sh" >"$TMP/state-$state_case.log" 2>&1 || status=$?
+	if [ "$state_case" = valid ]; then
+		[ "$status" -eq 0 ] || { cat "$TMP/state-$state_case.log" >&2; exit 1; }
+		grep -q '^SEGMENT=2$' "$state_output/.soak-state"
+	else
+		[ "$status" -eq 2 ] || { printf 'Invalid state accepted: %s (exit %s)\n' "$state_case" "$status" >&2; exit 1; }
+		[ ! -e "$state_output/executed" ] || { printf 'Saved state executed shell input.\n' >&2; exit 1; }
+		cmp "$state_output/before.txt" "$state_output/.soak-state"
+	fi
+	[ ! -e "$TMP/state-child.pid" ]
+done
+
+printf 'soak driver tests passed (fail-closed + deadline + disk-band + six restart-state cases)\n'

@@ -33,7 +33,7 @@
     "status": "implemented",
     "expected_exit": 0,
     "properties": ["IdentityPinned", "ResumePreservesHistory", "ProductFailureMonotone", "PassRequiresEvidence", "StopPreventsLaunch", "EvidenceBeforeCleanup", "PolicyIsolation", "MissingIsUnknown", "PostMergeGate", "ControlVerdictExact"],
-    "registration": "local-runner-only"
+    "registration": "local-runner-and-shared-gate"
   },
   "negative_controls": [
     {"configuration": "MC_CasperSoakHarness_identity_unsafe.cfg", "knob": "AllowIdentityDrift", "property": "IdentityPinned", "expected_exit": 12, "fixture": "resume_changed_identity"},
@@ -57,7 +57,7 @@
     "external_harness_revision": null
   },
   "registration_policy": {
-    "status": "pending",
+    "status": "implemented",
     "positive_gate": "scripts/ci/check-tla-invariants.sh",
     "expected_violation_registry": "separate-from-positive-list",
     "negative_pass_rule": "TLC exit 12 and exact named property violation, with retained trace",
@@ -65,9 +65,16 @@
     "timeout": "failure",
     "tool_error": "failure",
     "missing_configuration": "failure",
-    "pr_budget_seconds": null,
-    "nightly_budget_seconds": null,
-    "budget_blocker": "Reconcile the PR #432 15-minute tier with the PR #433 two-minute tier before registration."
+    "pr_budget_seconds": 900,
+    "nightly_budget_seconds": 14400,
+    "budget_scope": "shared-workflow-job",
+    "casper_per_configuration_seconds": 120,
+    "casper_kill_grace_seconds": 60,
+    "casper_workers": 1,
+    "casper_seed": 1,
+    "casper_heap_mb": 512,
+    "budget_blocker": null,
+    "budget_limit": "Local measurements do not establish hosted-CI completion time. Shared job limits remain independent of per-configuration caps."
   },
   "scope": "harness-and-profiles-only",
   "node_role": "system-under-test",

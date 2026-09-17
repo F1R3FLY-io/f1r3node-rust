@@ -135,6 +135,8 @@ if [[ "$SOAK_PR" == true ]]; then
     TLC_WORKERS=2
 fi
 
+POST_FIX_CONFIGS+=(casper_soak/MC_CasperSoakHarness)
+
 if [[ "${RUN_EXHAUSTIVE_TLA:-0}" == "1" ]]; then
     POST_FIX_CONFIGS+=(
         slashing/MC_EquivocationDetector
@@ -158,8 +160,8 @@ if command -v timeout >/dev/null 2>&1; then
 elif command -v gtimeout >/dev/null 2>&1; then
     TIMEOUT_CMD="gtimeout --signal=TERM --kill-after=60 $TLC_PER_CONFIG_TIMEOUT"
 fi
-if [[ "$SOAK_PR" == true && -z "$TIMEOUT_CMD" ]]; then
-    echo "ERROR: The soak PR tier requires timeout or gtimeout." >&2
+if [[ -z "$TIMEOUT_CMD" ]]; then
+    echo "ERROR: The registered Casper controls require timeout or gtimeout." >&2
     exit 3
 fi
 
@@ -232,6 +234,16 @@ NEGATIVE_CONTROLS=(
     soak_disk/MC_ReserveBound_unbounded_pre_fix:OperatingReserveHeld
     soak_disk/MC_RetentionReserve_unskipped_pre_fix:ReserveHeld
     deploy_storage/MC_DeployStorageBound_unmetered_pre_fix:RetainedWithinPhlo
+    casper_soak/MC_CasperSoakHarness_identity_unsafe:IdentityPinned
+    casper_soak/MC_CasperSoakHarness_resume_unsafe:ResumePreservesHistory
+    casper_soak/MC_CasperSoakHarness_failure_unsafe:ProductFailureMonotone
+    casper_soak/MC_CasperSoakHarness_evidence_unsafe:PassRequiresEvidence
+    casper_soak/MC_CasperSoakHarness_stop_unsafe:StopPreventsLaunch
+    casper_soak/MC_CasperSoakHarness_cleanup_unsafe:EvidenceBeforeCleanup
+    casper_soak/MC_CasperSoakHarness_policy_unsafe:PolicyIsolation
+    casper_soak/MC_CasperSoakHarness_samples_unsafe:MissingIsUnknown
+    casper_soak/MC_CasperSoakHarness_merge_unsafe:PostMergeGate
+    casper_soak/MC_CasperSoakHarness_control_unsafe:ControlVerdictExact
 )
 
 # Areas whose expected-violation configurations are all registered. A
@@ -239,11 +251,11 @@ NEGATIVE_CONTROLS=(
 # directories that is absent from NEGATIVE_CONTROLS is a broken registration,
 # not a manual control. Other areas keep manual controls until they opt in
 # (docs/formal-verification.md).
-REGISTERED_CONTROL_AREAS=(carrier_index deploy_storage soak_disk)
+REGISTERED_CONTROL_AREAS=(carrier_index deploy_storage soak_disk casper_soak)
 for entry in "${POST_FIX_CONFIGS[@]}"; do
     area="${entry%%/*}"
     printf '%s\n' "${REGISTERED_CONTROL_AREAS[@]}" | grep -Fxq "$area" || continue
-    for cfg in "$TLA_ROOT/$entry"_*_pre_fix.cfg; do
+    for cfg in "$TLA_ROOT/$entry"_*_pre_fix.cfg "$TLA_ROOT/$entry"_*_unsafe.cfg; do
         [[ -f "$cfg" ]] || continue
         control="$area/$(basename "$cfg" .cfg)"
         if ! printf '%s\n' "${NEGATIVE_CONTROLS[@]}" | grep -q "^$control:"; then
@@ -269,16 +281,30 @@ for check in "${POST_FIX_CONFIGS[@]}" "${NEGATIVE_CONTROLS[@]}"; do
     dir="$TLA_ROOT/${entry%/*}"
     cfg="${entry##*/}"
     log="/tmp/tlc-${entry//\//-}.log"
-    if [[ ! -f "$dir/$cfg.tla" || ! -f "$dir/$cfg.cfg" ]]; then
-        echo "FAIL   $entry (missing $cfg.tla or $cfg.cfg in $dir — registered config not found)"
+    model="$cfg"
+    workers="$TLC_WORKERS"
+    check_timeout="$TLC_PER_CONFIG_TIMEOUT"
+    check_timeout_cmd="$TIMEOUT_CMD"
+    java_options="${JAVA_TOOL_OPTIONS:-}"
+    tlc_args=()
+    if [[ "${entry%%/*}" == casper_soak ]]; then
+        model=CasperSoakHarness
+        workers=1
+        check_timeout=2m
+        check_timeout_cmd="${TIMEOUT_CMD%"$TLC_PER_CONFIG_TIMEOUT"}2m"
+        java_options+=" -Xmx512m"
+        tlc_args=(-seed 1)
+    fi
+    if [[ ! -f "$dir/$model.tla" || ! -f "$dir/$cfg.cfg" ]]; then
+        echo "FAIL   $entry (missing $model.tla or $cfg.cfg in $dir — registered config not found)"
         failed=$((failed + 1))
         violations=$((violations + 1))
         continue
     fi
     started_epoch="$(date +%s)"
-    echo "CHECK  $entry (started $(date -u +%H:%M:%SZ), cap $TLC_PER_CONFIG_TIMEOUT)"
+    echo "CHECK  $entry (started $(date -u +%H:%M:%SZ), cap $check_timeout)"
     set +e
-    (cd "$dir" && $TIMEOUT_CMD $TLC_CMD -workers "$TLC_WORKERS" -config "$cfg.cfg" "$cfg.tla") >"$log" 2>&1
+    (cd "$dir" && JAVA_TOOL_OPTIONS="$java_options" $check_timeout_cmd $TLC_CMD -workers "$workers" "${tlc_args[@]}" -config "$cfg.cfg" "$model.tla") >"$log" 2>&1
     status=$?
     set -e
     elapsed="$(($(date +%s) - started_epoch))s"
@@ -300,7 +326,7 @@ for check in "${POST_FIX_CONFIGS[@]}" "${NEGATIVE_CONTROLS[@]}"; do
         ' "$log"; then
         echo "EXPECTED-FAIL $entry ($expected_invariant, $elapsed)"
     elif ((status == 124)); then
-        echo "TIMEOUT $entry after $elapsed (cap $TLC_PER_CONFIG_TIMEOUT) — treat as failure; profile or split the config"
+        echo "TIMEOUT $entry after $elapsed (cap $check_timeout) — treat as failure; profile or split the config"
         failed=$((failed + 1))
         timeouts=$((timeouts + 1))
     else

@@ -28,9 +28,37 @@ mkdir -p "$OUTPUT_DIR"
 STATE_FILE="$OUTPUT_DIR/.soak-state"
 INFLIGHT_ITERATION=0
 INFLIGHT_BENCHMARK=0
-if [ -f "$STATE_FILE" ]; then
-	# shellcheck source=/dev/null
-	. "$STATE_FILE"
+if [ -e "$STATE_FILE" ] || [ -L "$STATE_FILE" ]; then
+	if [ ! -f "$STATE_FILE" ] || [ -L "$STATE_FILE" ] || [ "$(wc -c <"$STATE_FILE")" -gt 4096 ]; then
+		printf 'The saved soak state must be a regular file of at most 4096 bytes.\n' >&2
+		exit 2
+	fi
+	saved_keys=""
+	while IFS= read -r saved_line || [ -n "$saved_line" ]; do
+		saved_key="${saved_line%%=*}"
+		saved_value="${saved_line#*=}"
+		case "$saved_key" in
+			STARTED_AT|ITERATIONS|FAILURES|SEGMENT|BENCH_SEGMENTS|BENCH_FAILURES|INFLIGHT_ITERATION|INFLIGHT_BENCHMARK) ;;
+			*) printf 'The saved soak state contains an unknown field.\n' >&2; exit 2 ;;
+		esac
+		if [[ " $saved_keys " == *" $saved_key "* ]] ||
+			! [[ "$saved_value" =~ ^(0|[1-9][0-9]*)$ ]] || [ "${#saved_value}" -gt 18 ]; then
+			printf 'The saved soak state contains a duplicate or invalid numeric field.\n' >&2
+			exit 2
+		fi
+		saved_keys+=" $saved_key"
+		printf -v "$saved_key" '%s' "$saved_value"
+	done <"$STATE_FILE"
+	for saved_key in STARTED_AT ITERATIONS FAILURES SEGMENT; do
+		if [[ " $saved_keys " != *" $saved_key "* ]]; then
+			printf 'The saved soak state lacks a required field.\n' >&2
+			exit 2
+		fi
+	done
+	if [ "$STARTED_AT" -lt 1 ] || [ "$SEGMENT" -lt 1 ]; then
+		printf 'The saved start time and segment must be positive.\n' >&2
+		exit 2
+	fi
 	SEGMENT="$((SEGMENT + 1))"
 	printf 'resuming soak: segment %s, %s iterations so far, started %s\n' \
 		"$SEGMENT" "$ITERATIONS" "$(date -d "@$STARTED_AT" '+%F %T %Z' 2>/dev/null || date -r "$STARTED_AT")"
