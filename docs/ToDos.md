@@ -139,7 +139,11 @@ tasks:
 
   - id: TASK-017-2
     title: "Define harness and profile claims, fixture expectations, and source scope"
-    scaffold_status: drafted
+    scaffold_status: specified
+    contract_status: complete
+    interface_contract: docs/casper/design/soak-interface-contract.md
+    work_log: docs/work-logs/task-017-2-interface-contract-2026-09-17.md
+    completion_blocker: "The shared task-complete helper rejects TASK-* identifiers with exit 2. Tracker closure remains pending."
     claim_index: docs/claims/casper-soak-harness.md
     status: in_progress
     claimed_by: pi-casper-harness
@@ -337,7 +341,9 @@ tasks:
 
 **Current state:** The bounded harness model and local control runner are implemented. Driver bindings, profile fixtures, shared CI integration, and soaks remain pending.
 
-**Next task:** Complete TASK-017-2 driver/profile interface contracts and TASK-017-3 prerequisite review before shared integration. The local model does not discharge the full harness claim.
+**Next task:** TASK-017-2 contracts are specified, but the completion helper cannot close TASK-* records. Resolve that tracking blocker and TASK-017-3 prerequisite review before shared integration.
+
+The [interface contract](./casper/design/soak-interface-contract.md) records exact payloads, source boundaries, fixture expectations, and missing capabilities. The local model does not discharge the full harness claim.
 
 **Scope:** This epic covers the pre-#216 PR only. The [branch plan](./plans/casper-ratified-soak-2026-09-16.md) records both phases and their evidence boundary.
 

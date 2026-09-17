@@ -29,6 +29,16 @@ It does not prove the node's consensus, storage, cryptography, or accounting imp
 
 ## Profile contract
 
+The [common interface contract](../casper/design/soak-interface-contract.md) defines record types, correlation, verdicts, and source bindings.
+
+Additional request fields are `cut_point`, `publication_id`, `generation`, `predecessor_incarnation`, `expected_tuple`, and `unresolved_occurrences`.
+
+A publication observation contains `block_hash`, `state_root`, `effect_digest`, generation, durable terminal verdicts, and retained-work identities from one correlated snapshot.
+
+The positive transcript contains an acknowledged cut point and a linked restart. Its recovered tuple matches one permitted complete tuple, never mixed components.
+
+Expected tuples are pinned fixture values. The collector must not recompute node execution or substitute post-crash observations from another node.
+
 Inputs are the pinned scenario, expected fixture outcomes, candidate identities, deterministic seed, requested faults, and observed event transcript.
 
 Outputs are coverage acknowledgments, correlated measurements, scenario verdicts, and immutable evidence references.
@@ -49,11 +59,11 @@ Unavailable test interfaces produce a blocked scenario, not a passing result. Ad
 
 ## Formal controls and executable fixtures
 
-| Proposed property | Defect knob | Required fixture result |
-| --- | --- | --- |
-| FaultAcknowledged | AssumeCrashApplied | An unacknowledged crash request must not count as exercised coverage. |
-| RestartIdentityMatched | MixRestartObservations | Observations from different nodes or restarts must not form a passing tuple. |
-| TornTupleReported | HideTupleMismatch | A planted tuple mismatch must remain a product failure. |
+| Proposed property | Defect knob | Fixture ID | Required fixture result |
+| --- | --- | --- | --- |
+| FaultAcknowledged | AssumeCrashApplied | publication_fault_unacknowledged | Remove the cut-point or exit receipt. Expect `incomplete` and zero acknowledged coverage. |
+| RestartIdentityMatched | MixRestartObservations | publication_restart_mismatch | Substitute an unrelated node/incarnation. Quarantine that observation and report `incomplete`. |
+| TornTupleReported | HideTupleMismatch | publication_torn_tuple | Mix old root with new block in an otherwise correlated observed tuple. Expect `product_failure`. |
 
 A clean fixture uses a complete known transcript. Each negative control mutates profile handling, not the node, and must violate its named property.
 
@@ -63,7 +73,17 @@ Construction is not applicable under PR #433's harness approach. No Rocq theorem
 
 The bound is two scenarios and three observations per scenario for the initial model. This is proposed coverage, not completed verification.
 
-## Phase obligations
+## Interface qualification and phase obligations
+
+SI-FAULT provides generic restarts, not publication-boundary crashes. SI-QUERY does not qualify an atomic durable publication snapshot.
+
+TASK-017-6 must qualify cut-point receipts, durable tuples, stale-generation observations, and unresolved-work inventories. Missing capabilities block their live scenarios.
+
+Generic restart coverage cannot replace before/after-publication coverage. Adopted subprocess handles cannot supply SI-ADOPTED restarts.
+
+Additional fixtures retain stale-publication failures and lost unresolved work. Eviction is acceptable only with the required durable terminal-verdict observation.
+
+TASK-018-3 must adapt tuple fields, generation identity, terminal-verdict capture, and restart receipts to the merged node.
 
 Pre-merge work defines and verifies the profile against current supported interfaces and controlled transcripts.
 

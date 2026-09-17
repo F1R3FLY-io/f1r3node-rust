@@ -58,6 +58,10 @@ Node correctness, Rust changes, and Rocq proofs are outside both epics. Existing
 
 ## Inputs, state, and outputs
 
+The [version-1 interface contract](../casper/design/soak-interface-contract.md) specifies field types, fault receipts, fixture IDs, source boundaries, and scenario blockers.
+
+It records the audited external harness revision and distinguishes existing primitives from unimplemented profile adapters.
+
 Inputs are the approved matrix, immutable candidate identities, workload seeds, fault schedule, resource limits, model verdicts, and per-iteration observations.
 
 The model state contains the phase, run identity, segment, iteration, child state, resource-stop flag, product-failure set, artifact set, and terminal outcome.
@@ -85,16 +89,19 @@ The harness cannot guarantee host survival after external power loss. Such a run
 
 ## Binding contract
 
-| Model action | Existing implementation boundary | Required fixture |
+| Model action | Implementation boundary | Required fixture family |
 | --- | --- | --- |
-| PinRun | Driver environment initialization and workflow image selection | Reject changed image, node, or harness identity on resume. |
-| Resume | State-file load and `persist_soak_state` | Preserve segment history and iteration numbering after restart. |
-| Observe | `emit_iteration_metrics` and `iteration_finalization_latency` | Separate missing samples, duplicate log copies, and completed finalization. |
-| Stop | Deadline handling, resource guards, and `cleanup_soak_processes` | Stop children and prevent new launch after each terminal cause. |
-| Capture | `snapshot_iteration_monitor_outputs` and summary generation | Preserve logs and product failures through resource termination. |
-| Publish | Workflow artifact upload and summary generation | Refuse missing, mismatched, or incomplete evidence. |
+| Init, Admit, Resume | DR-START and DR-STATE | Changed identity, history preservation, and actual post-merge gate |
+| Launch, Stop | DR-LAUNCH and DR-STOP | Terminal launch refusal and failure retention after resource stop |
+| Finish | DR-OBSERVE | Missing samples, observed zero, and duplicate copies |
+| Capture, Cleanup | DR-CAPTURE and DR-STOP | Verified evidence capture before artifact deletion |
+| Experiment | DR-START and DR-LAUNCH | Isolated policy identity and unchanged baseline configuration |
+| JudgeControl | Local runner `classify`, then DR-PUBLISH | Exact negative-control verdict and trace |
+| Report | DR-SUMMARY and DR-PUBLISH | Complete required evidence and non-passing incomplete outcomes |
 
-The driver currently consumes an external system-integration harness. Each run must pin that repository and audit its interface before claiming binding coverage.
+The driver currently consumes the external system-integration harness at `b3d14b27e3c6276b1eb4ab9ccef04e02b0c4e283`.
+
+The interface contract records source-audited primitives at that pin. Each run must qualify its exact adapter and candidate before claiming binding coverage.
 
 Fixtures must execute the real driver with controlled processes and storage responses. A model-only simulation does not satisfy the binding tier.
 
@@ -131,8 +138,9 @@ A failing product observation and an infrastructure termination remain separate 
 
 ## Implementation checklist
 
-- [ ] TASK-017-4: Implement the finite model and one defect knob for each registered control.
-- [ ] TASK-017-4: Register clean and expected-violation configurations separately after the files exist.
+- [x] TASK-017-4: Implement the finite model and ten defect knobs.
+- [x] TASK-017-4: Register clean and expected-violation configurations in the local runner.
+- [ ] TASK-017-4: Integrate those controls into the reviewed shared CI gate.
 - [ ] TASK-017-4: Bind each action to the real driver with deterministic fault fixtures.
 - [ ] TASK-017-4: Validate manifests and refuse missing required evidence in the workflow.
 - [ ] TASK-017-12: Run approved baseline profiles and retain all terminal outcomes.

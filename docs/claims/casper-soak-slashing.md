@@ -29,6 +29,16 @@ It does not prove the node's consensus, storage, cryptography, or accounting imp
 
 ## Profile contract
 
+The [common interface contract](../casper/design/soak-interface-contract.md) defines record types, correlation, verdicts, and source bindings.
+
+Additional request fields are `evidence_digest`, `invalid_hash_seed`, `offender`, `parent_prestate_digest`, `stake`, `epoch`, `rebond_epoch`, and expected authorization.
+
+Required observations contain delivery receipts, evidence identity, parent pre-state reference, observed epoch, actual authorization, and recovery outcome.
+
+The positive transcript matches a reviewed truth-table row. Expected rejection of stale or forged evidence is a passing scenario, not a verifier counterexample.
+
+Source expectations require positive stake, matching epochs, rebond protection, deterministic invalid-hash seeds, current evidence, and offender deduplication.
+
 Inputs are the pinned scenario, expected fixture outcomes, candidate identities, deterministic seed, requested faults, and observed event transcript.
 
 Outputs are coverage acknowledgments, correlated measurements, scenario verdicts, and immutable evidence references.
@@ -49,11 +59,11 @@ Unavailable test interfaces produce a blocked scenario, not a passing result. Ad
 
 ## Formal controls and executable fixtures
 
-| Proposed property | Defect knob | Required fixture result |
-| --- | --- | --- |
-| EvidenceOrderRecorded | ReuseRequestedOrder | A requested delivery order cannot replace the observed delivery trace. |
-| EpochCorrelationRequired | DropEpochIdentity | Different epochs must not be combined into one passing comparison. |
-| AuthorizationMismatchReported | SuppressSlashMismatch | A planted authorization mismatch must be reported as a product failure. |
+| Proposed property | Defect knob | Fixture ID | Required fixture result |
+| --- | --- | --- | --- |
+| EvidenceOrderRecorded | ReuseRequestedOrder | slashing_delivery_order | Request A then B, observe B then A. Retain observed order and report incomplete coverage of the requested order. |
+| EpochCorrelationRequired | DropEpochIdentity | slashing_epoch_mismatch | Supply an observation from an unrelated epoch. Quarantine it and report `incomplete`. |
+| AuthorizationMismatchReported | SuppressSlashMismatch | slashing_authorization_mismatch | Supply correlated evidence with authorization opposite to the pinned expectation. Expect `product_failure`. |
 
 A clean fixture uses a complete known transcript. Each negative control mutates profile handling, not the node, and must violate its named property.
 
@@ -63,7 +73,17 @@ Construction is not applicable under PR #433's harness approach. No Rocq theorem
 
 The bound is two scenarios and three observations per scenario for the initial model. This is proposed coverage, not completed verification.
 
-## Phase obligations
+## Interface qualification and phase obligations
+
+SI-DEPLOY and SI-QUERY do not qualify evidence delivery order or complete slash-authorization context. Generic process control cannot establish ordered protocol-message delivery.
+
+TASK-017-9 must qualify delivery receipts, parent pre-state, rebond identity, and epoch-bound authorization observations. Their absence blocks affected live scenarios.
+
+The family includes merge-lost slash, missing evidence, forged deploy, rebond, duplicate offender evidence, stale epochs, and restart during delivery.
+
+Rejection records alone do not authorize slashing. Reconstruction is supplementary, and node bisimilarity proofs remain external to this profile.
+
+TASK-018-3 must adapt evidence encoding, delivery receipts, pre-state/epoch fields, authorization results, and merge-rejected recovery observations.
 
 Pre-merge work defines and verifies the profile against current supported interfaces and controlled transcripts.
 

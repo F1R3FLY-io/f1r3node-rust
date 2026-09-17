@@ -29,6 +29,20 @@ It does not prove the node's consensus, storage, cryptography, or accounting imp
 
 ## Profile contract
 
+The [common interface contract](../casper/design/soak-interface-contract.md) defines record types, correlation, verdicts, and source bindings.
+
+Additional request fields are `recovery_lane`, `policy_variant`, `coverage_rule`, `frontier_digest`, `objective_height`, `lifespan`, and requested pause/delivery schedule.
+
+Observations retain source occurrence identity and schema, deploy signature, carrier block, sender, custodian, joined reasons, causal references, tombstone state, lease, and terminal outcome.
+
+The occurrence key is candidate-scoped `occurrence_id` under the pinned `occurrence_schema`. Repeated observations of one key differ from independent occurrences.
+
+The adapter must preserve the source identity definition. It cannot fabricate an occurrence or execution index from observation order.
+
+The positive transcript preserves lane labels and occurrence multiplicity. It includes an observed pause acknowledgment and expected retry or expiry outcome.
+
+Durations need same-clock start/end observations. Cross-node clocks require declared synchronization bounds, otherwise recovery latency remains unknown.
+
 Inputs are the pinned scenario, expected fixture outcomes, candidate identities, deterministic seed, requested faults, and observed event transcript.
 
 Outputs are coverage acknowledgments, correlated measurements, scenario verdicts, and immutable evidence references.
@@ -49,11 +63,11 @@ Unavailable test interfaces produce a blocked scenario, not a passing result. Ad
 
 ## Formal controls and executable fixtures
 
-| Proposed property | Defect knob | Required fixture result |
-| --- | --- | --- |
-| LaneLabelsPreserved | ConflateRecoveryLanes | A stale-recovery sample cannot be classified as a convergence sample. |
-| OccurrenceCountsPreserved | CollapseOccurrenceIdentity | Independent occurrences must remain separate in reported counts. |
-| PauseCoverageAcknowledged | AssumePauseApplied | An unconfirmed pause must produce incomplete scenario coverage. |
+| Proposed property | Defect knob | Fixture ID | Required fixture result |
+| --- | --- | --- | --- |
+| LaneLabelsPreserved | ConflateRecoveryLanes | recovery_lane_mismatch | Give a convergence request only stale-recovery observations. Expect `incomplete` for required convergence coverage. |
+| OccurrenceCountsPreserved | CollapseOccurrenceIdentity | recovery_occurrence_counts | Supply three observations: two copies of occurrence A and one of B. Expect two occurrences and one duplicate. |
+| PauseCoverageAcknowledged | AssumePauseApplied | recovery_pause_unacknowledged | Request a pause without an observed paused-state receipt. Expect `incomplete`, not exercised coverage. |
 
 A clean fixture uses a complete known transcript. Each negative control mutates profile handling, not the node, and must violate its named property.
 
@@ -63,7 +77,19 @@ Construction is not applicable under PR #433's harness approach. No Rocq theorem
 
 The bound is two scenarios and three observations per scenario for the initial model. This is proposed coverage, not completed verification.
 
-## Phase obligations
+## Interface qualification and phase obligations
+
+SI-FAULT provides pause commands, but their return values do not acknowledge paused state. SI-LOAD uses explicit stress overrides, not baseline recovery settings.
+
+TASK-017-7 must qualify lane/custody observations, objective-height sampling, exact delivery control, and paused-state receipts. Missing capabilities block affected live scenarios.
+
+Baseline expectations retain all-eligible stale recovery, leader-only convergence, frontier follow, readiness/backstop lanes, and one-parent B1 coverage.
+
+A lease cannot authorize recovery or bypass missing-body, lifespan, or objective-height gates. Reason joins preserve pinned commutative, associative, and idempotent expectations.
+
+Rotating leaders, alternate clocks, collective coverage, and leader-free custody require separate experimental identities and supported test builds.
+
+TASK-018-3 must adapt lane labels, occurrence identities, fault receipts, and retry/expiry observations. TASK-018-5 compares only compatible policy variants.
 
 Pre-merge work defines and verifies the profile against current supported interfaces and controlled transcripts.
 

@@ -29,6 +29,16 @@ It does not prove the node's consensus, storage, cryptography, or accounting imp
 
 ## Profile contract
 
+The [common interface contract](../casper/design/soak-interface-contract.md) defines record types, correlation, verdicts, and source bindings.
+
+Additional request fields are `dag_digest`, `deploy_signature`, `scan_window`, `availability_digest`, `watermark`, `retention_boundary`, and requested traversal path.
+
+Observations retain actual path engagement, result set/verdict, block identities, probe count, ancestor-body-read count, fallback reason, and counter presence states.
+
+The positive transcript pairs identical candidate and fixture context across observed index/reference paths. It preserves observed zero counters distinctly from missing counters.
+
+The current raw deploy key is user `DeployDataProto.sig`, extracted as `pd.deploy.sig.to_vec()`. It is not a block or validator signature.
+
 Inputs are the pinned scenario, expected fixture outcomes, candidate identities, deterministic seed, requested faults, and observed event transcript.
 
 Outputs are coverage acknowledgments, correlated measurements, scenario verdicts, and immutable evidence references.
@@ -49,11 +59,11 @@ Unavailable test interfaces produce a blocked scenario, not a passing result. Ad
 
 ## Formal controls and executable fixtures
 
-| Proposed property | Defect knob | Required fixture result |
-| --- | --- | --- |
-| PathEngagementObserved | AssumeIndexEngaged | A requested index path without engagement evidence must not establish the work bound. |
-| CarrierInputsMatched | CompareDifferentWindows | Different scan windows cannot produce a passing differential result. |
-| MissingCountersUnknown | ZeroMissingCounters | Missing counters must not become zero ancestor reads. |
+| Proposed property | Defect knob | Fixture ID | Required fixture result |
+| --- | --- | --- | --- |
+| PathEngagementObserved | AssumeIndexEngaged | carrier_path_unobserved | Request index traversal without an engagement receipt. Expect `incomplete`, not a measured work result. |
+| CarrierInputsMatched | CompareDifferentWindows | carrier_window_mismatch | Change one paired scan window. Expect `invalid_input`, not a passing differential result. |
+| MissingCountersUnknown | ZeroMissingCounters | carrier_counter_missing | Omit body-read count. Retain `null` plus a reason and report `incomplete` for required work coverage. |
 
 A clean fixture uses a complete known transcript. Each negative control mutates profile handling, not the node, and must violate its named property.
 
@@ -63,7 +73,17 @@ Construction is not applicable under PR #433's harness approach. No Rocq theorem
 
 The bound is two scenarios and three observations per scenario for the initial model. This is proposed coverage, not completed verification.
 
-## Phase obligations
+## Interface qualification and phase obligations
+
+SI-QUERY supplies block queries, not forced index/reference selection or path-engagement receipts. Generic metrics alone cannot establish which traversal path ran.
+
+TASK-017-10 must qualify matched-window input, engagement receipts, availability failures, watermark/pruning controls, and work counters. Missing capabilities block affected live scenarios.
+
+The fixture family covers valid, invalid, and approved carriers, forks, missing history, read errors, restart, watermark boundaries, and retention boundaries.
+
+Typed protocol-7 identity requires a FIP-defined domain-separated envelope. Authentication remains separate, and unavailable typed-identity scenarios cannot pass through raw-key fallback.
+
+TASK-018-4 must adapt traversal selectors, engagement markers, watermark/retention fields, identity encoding, and counter mappings without expanding the optimization's scope.
 
 Pre-merge work defines and verifies the profile against current supported interfaces and controlled transcripts.
 

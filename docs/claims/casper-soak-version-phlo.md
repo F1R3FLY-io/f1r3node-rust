@@ -29,6 +29,16 @@ It does not prove the node's consensus, storage, cryptography, or accounting imp
 
 ## Profile contract
 
+The [common interface contract](../casper/design/soak-interface-contract.md) defines record types, correlation, verdicts, and source bindings.
+
+Additional request fields are `casper_protocol_version`, `accounting_authority_version`, `phloLimit`, `phloPrice`, `shard_minimum_price`, and signed-envelope digest.
+
+Observations retain both signed Phlo fields, acceptance/rejection, execution outcome, prepayment, charge, refund, and exhaustion status with source references.
+
+The positive transcript labels Casper protocol 7 and accounting authority 8 separately. It preserves both signed fields and matches pinned settlement expectations.
+
+A fixture may test refusal of unsupported activation. Actual protocol-7 execution still needs FIPS approval, fresh genesis, and an available supported build.
+
 Inputs are the pinned scenario, expected fixture outcomes, candidate identities, deterministic seed, requested faults, and observed event transcript.
 
 Outputs are coverage acknowledgments, correlated measurements, scenario verdicts, and immutable evidence references.
@@ -49,11 +59,11 @@ Unavailable test interfaces produce a blocked scenario, not a passing result. Ad
 
 ## Formal controls and executable fixtures
 
-| Proposed property | Defect knob | Required fixture result |
-| --- | --- | --- |
-| VersionLabelsSeparate | ConflateAuthorityVersions | Accounting version 8 cannot label a Casper protocol-7 run. |
-| BothPhloFieldsCaptured | OmitPhloPrice | Omitting either Phlo field must fail profile completeness checks. |
-| SettlementOutcomeClassified | IgnoreRefundMismatch | A planted refund mismatch must remain visible in the report. |
+| Proposed property | Defect knob | Fixture ID | Required fixture result |
+| --- | --- | --- | --- |
+| VersionLabelsSeparate | ConflateAuthorityVersions | phlo_version_labels | Substitute authority version 8 for Casper version 7. Expect `invalid_input` before launch. |
+| BothPhloFieldsCaptured | OmitPhloPrice | phlo_signed_field_missing | Remove either signed field in separate cases. Reject malformed requests, or report `incomplete` when capture is missing. |
+| SettlementOutcomeClassified | IgnoreRefundMismatch | phlo_refund_mismatch | Supply a complete correlated refund unequal to its pinned expectation. Expect `product_failure`. |
 
 A clean fixture uses a complete known transcript. Each negative control mutates profile handling, not the node, and must violate its named property.
 
@@ -63,7 +73,17 @@ Construction is not applicable under PR #433's harness approach. No Rocq theorem
 
 The bound is two scenarios and three observations per scenario for the initial model. This is proposed coverage, not completed verification.
 
-## Phase obligations
+## Interface qualification and phase obligations
+
+SI-DEPLOY accepts `phlo_limit` and `phlo_price`; the adapter maps them explicitly to captured `phloLimit` and `phloPrice`.
+
+TASK-017-11 must qualify signed-envelope capture, version rejection, minimum-price configuration, and settlement/exhaustion observations. Unsupported capabilities block their scenarios.
+
+Additional fixtures cover minimum-price equality and adjacent values, exhausted execution, field mutation after signing, and missing prepayment/refund observations.
+
+The profile retains both signed fields and their envelope commitment. Token accounting cannot replace either field, and undefined multi-wallet funding stays blocked.
+
+TASK-018-4 must adapt request encoding, protobuf/API field mappings, version labels, and charge/refund/exhaustion extraction without removing either Phlo field.
 
 Pre-merge work defines and verifies the profile against current supported interfaces and controlled transcripts.
 

@@ -29,6 +29,20 @@ It does not prove the node's consensus, storage, cryptography, or accounting imp
 
 ## Profile contract
 
+The [common interface contract](../casper/design/soak-interface-contract.md) defines record types, correlation, verdicts, and source bindings.
+
+Additional request fields are `execution_fixture`, `causal_edges`, `token_domain`, `protocol_epoch`, `accounting_mode`, and pinned expected admission, effect, and settlement values.
+
+Each observation retains deploy signature, block, execution position, full context digest, admission result, body result, effect identity, and settlement values with presence states.
+
+The execution identity is `(source_block_hash, execution_position)`. Deploy signature and complete context remain separate correlation fields, not replacements for that identity.
+
+Repeated observations of one execution count once. Conflicting signatures or contexts for that execution invalidate the comparison instead of creating another execution.
+
+Admission rejection has no execution position. Executed failure retains its position and requires settlement observations when the fixture expects applied accounting effects.
+
+The positive transcript has two distinct executions with equal effects and a repeated observation of one execution. Counts are two executions and one duplicate.
+
 Inputs are the pinned scenario, expected fixture outcomes, candidate identities, deterministic seed, requested faults, and observed event transcript.
 
 Outputs are coverage acknowledgments, correlated measurements, scenario verdicts, and immutable evidence references.
@@ -49,11 +63,11 @@ Unavailable test interfaces produce a blocked scenario, not a passing result. Ad
 
 ## Formal controls and executable fixtures
 
-| Proposed property | Defect knob | Required fixture result |
-| --- | --- | --- |
-| MultiplicityMeasured | DeduplicateByEffectValue | A fixture with two independent identical effects must retain both observations. |
-| SettlementCoverageRequired | TreatMissingSettlementAsZero | Missing settlement data must not produce balanced zero totals. |
-| CompatibilityLabeled | MixProtocolProfiles | Incompatible profile epochs must not be reported as one comparable run. |
+| Proposed property | Defect knob | Fixture ID | Required fixture result |
+| --- | --- | --- | --- |
+| MultiplicityMeasured | DeduplicateByEffectValue | accounting_multiplicity | Observe executions A and B with equal effects, then A again. Retain both executions and one duplicate. |
+| SettlementCoverageRequired | TreatMissingSettlementAsZero | accounting_settlement_missing | Remove one required settlement. Expect unknown amount and `incomplete`, never a balanced zero. |
+| CompatibilityLabeled | MixProtocolProfiles | accounting_epoch_mismatch | Pair different epochs or accounting modes without a reviewed mapping. Expect `invalid_input`. |
 
 A clean fixture uses a complete known transcript. Each negative control mutates profile handling, not the node, and must violate its named property.
 
@@ -63,7 +77,17 @@ Construction is not applicable under PR #433's harness approach. No Rocq theorem
 
 The bound is two scenarios and three observations per scenario for the initial model. This is proposed coverage, not completed verification.
 
-## Phase obligations
+## Interface qualification and phase obligations
+
+SI-DEPLOY and SI-QUERY supply submission and query primitives. They do not qualify execution-position, full-context, or complete settlement extraction.
+
+TASK-017-8 must qualify those records and causal relationships. Unsupported overflow, token-domain, and effect-admission scenarios remain blocked.
+
+Pinned fixture expectations cover admission/effect alignment, least causal rejection closure, checked arithmetic, and pooling once after aggregation.
+
+Conditional additive profiles require protocol/FIPS/fresh-genesis and compatibility prerequisites. Mixed epochs cannot become a single comparable run.
+
+TASK-018-4 must adapt execution identity, admission results, failed-body settlement, token domains, and compatibility mappings against the actual merged node.
 
 Pre-merge work defines and verifies the profile against current supported interfaces and controlled transcripts.
 
