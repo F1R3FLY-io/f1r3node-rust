@@ -373,3 +373,13 @@ The raw log `target/verification/fixture-phase-6444-ladder-r5.log` has SHA-256
 The phase executable remains
 `eb4e617ba6f8fb5a52bfc9ea253b7fab5e9f177770a756f39ce766672207117d`;
 the post-run hash matches the qualified successor executable.
+
+### Tracker decision caveat
+
+pgmcp decision 389 maps the frozen observational criterion's unset observation and
+inconclusive verdict to `rejected`, with no statistic, p-value or selected-arm samples.
+That machine label is not a data-derived rejection of the constructor mechanism.
+Progress 13846 preserves this discrepancy; no linked outcome was emitted, no frozen
+criterion was changed, and no pgmcp code was modified. The descriptive findings above,
+raw measurements and independent review 339 remain the scientific evidence; neither
+statistical acceptance nor rejection is inferred from that label.
