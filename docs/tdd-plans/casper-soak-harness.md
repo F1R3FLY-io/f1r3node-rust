@@ -1,6 +1,6 @@
 # Casper Soak Harness Verification Cycles
 
-**Status:** Scaffold. No RED, GREEN, proof, fixture, or soak result has been recorded.
+**Status:** Bounded model controls pass. Real-driver fixture cycles, profile verification, and soaks remain pending.
 
 **Owner:** TASK-017-4. Post-merge rebinding belongs to TASK-018-2.
 
@@ -20,6 +20,14 @@ The [claim](../claims/casper-soak-harness.md) defines the contract. The [formal 
 | H08 | Keep missing measurements distinct from zero values. | MissingIsUnknown | Pending |
 | H09 | Require the actual merge for a post-#216 profile. | PostMergeGate | Pending |
 | H10 | Accept only the named negative-control violation. | ControlVerdictExact | Pending |
+
+## First bounded model result
+
+All H01 through H10 negative configurations produced their named invariant violation with exit 12. The clean configuration passed with 43,424 distinct states.
+
+The local runner's twelve unit tests passed. They check the verifier runner, not the live driver behavior required by this checklist.
+
+No RED/GREEN driver cycle is marked complete. The [implementation log](../work-logs/task-017-4-harness-model-2026-09-16.md) links the retained results and limits.
 
 ## Per-cycle record template
 

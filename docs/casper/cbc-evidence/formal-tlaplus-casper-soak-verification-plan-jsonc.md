@@ -1,6 +1,6 @@
 # CbC Evidence: formal/tlaplus/casper_soak/verification-plan.jsonc
 
-**Status:** Pending scaffold. No verification result exists for the claims below.
+**Status:** Pending. The bounded model result does not discharge the full harness/profile claim.
 
 - [CLAIM-CASPER-SOAK-001](../../claims/casper-soak-harness.md)
 - [CLAIM-CASPER-SOAK-002](../../claims/casper-soak-authority-finality.md)
@@ -11,7 +11,7 @@
 - [CLAIM-CASPER-SOAK-007](../../claims/casper-soak-version-phlo.md)
 - [CLAIM-CASPER-SOAK-008](../../claims/casper-soak-carrier-index.md)
 
-These claims cover the harness and profiles only. The node is the system under test, not a proof artifact.
+The evidence package contains partial results only. No node correctness claim or construction proof belongs to this scope.
 
 ```json
 {
@@ -19,7 +19,7 @@ These claims cover the harness and profiles only. The node is the system under t
     "path": "formal/tlaplus/casper_soak/verification-plan.jsonc",
     "commit": null,
     "id": "formal-tlaplus-casper-soak-verification-plan-jsonc",
-    "sha256": "3eb643f211c06964bce7d6ac35045aaa60d265e16c1a2525981b2c3746b3df94"
+    "sha256": "7a80b5e98ce3d8e2c238129de28e307b35d0ac178e2c4f56fa09064ca7a538fa"
   },
   "claim": "docs/claims/casper-soak-harness.md; docs/claims/casper-soak-authority-finality.md; docs/claims/casper-soak-publication.md; docs/claims/casper-soak-recovery.md; docs/claims/casper-soak-merge-accounting.md; docs/claims/casper-soak-slashing.md; docs/claims/casper-soak-version-phlo.md; docs/claims/casper-soak-carrier-index.md",
   "claim_ids": [
@@ -33,7 +33,7 @@ These claims cover the harness and profiles only. The node is the system under t
     "CLAIM-CASPER-SOAK-008"
   ],
   "claim_digests": {
-    "docs/claims/casper-soak-harness.md": "a280729b02c810dda2a4386444581919eeae9046a365bbcc4a391c54bea6cd7b",
+    "docs/claims/casper-soak-harness.md": "636bdd0681096a3fb054a88f114641e4b23812001bff02d873dce5f6d52aa4c5",
     "docs/claims/casper-soak-authority-finality.md": "c3a2a33ba88af166e897da4659b5b6d2aa2f657144edfdc041637107d6c713ec",
     "docs/claims/casper-soak-publication.md": "00ada28c16cc9387de8d762d646174a2cd36117c5718a93962fcced5a0fd74c9",
     "docs/claims/casper-soak-recovery.md": "6aaa2b3d2de8c3eaa5432e46defed512902101d20ed444222b86ec8d9446cae6",
@@ -44,11 +44,13 @@ These claims cover the harness and profiles only. The node is the system under t
   },
   "adapter": "embedded",
   "status": "pending",
+  "scope": "harness-and-profiles-only",
   "evidence": {
-    "kind": "scaffold",
-    "ref": null,
+    "kind": "partial-verification",
+    "ref": "docs/casper/cbc-evidence/runs/casper-harness-controls-20260916-01/report.json",
+    "sha256": "b192d4c2152081f3d47c26fa951a98d14d96aaeeed74d55818c14457134346c7",
     "counterexample": null,
-    "detail": "No verifier, fixture, or soak has run for these claims."
+    "detail": "Bounded lifecycle controls and runner unit tests pass. Driver/profile bindings, shared CI integration, and soaks remain pending."
   },
   "tiers": {
     "refutation": "pending",
@@ -60,9 +62,8 @@ These claims cover the harness and profiles only. The node is the system under t
     "pre_pr216_merge": "pending",
     "post_pr216_merge": "blocked"
   },
-  "scaffold_base_commit": "40e2d2d7c409d9f644c04221286bd95a187d1434",
+  "scaffold_base_commit": "cc7e84b482887f0647277ccbacd6f65ae3cf749d",
   "waiver": null,
-  "verified_at": null,
-  "scope": "harness-and-profiles-only"
+  "verified_at": null
 }
 ```

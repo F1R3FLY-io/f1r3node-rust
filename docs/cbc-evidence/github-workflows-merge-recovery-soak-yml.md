@@ -1,16 +1,16 @@
 # CbC Evidence: .github/workflows/merge-recovery-soak.yml
 
-**Status:** Pending scaffold. No verification result exists for the claims below.
+**Status:** Pending. The bounded model result does not discharge the full harness/profile claim.
 
 - [CLAIM-CASPER-SOAK-001](../claims/casper-soak-harness.md)
 
-These claims cover the harness and profiles only. The node is the system under test, not a proof artifact.
+The evidence package contains partial results only. No node correctness claim or construction proof belongs to this scope.
 
 ```json
 {
   "artifact": {
     "path": ".github/workflows/merge-recovery-soak.yml",
-    "commit": "40e2d2d7c409d9f644c04221286bd95a187d1434",
+    "commit": "cc7e84b482887f0647277ccbacd6f65ae3cf749d",
     "id": "github-workflows-merge-recovery-soak-yml",
     "sha256": "1eae728e3f73ff9086296225ce5b900efdb469a66b1a8b1af784f580cdaf1a76"
   },
@@ -19,15 +19,17 @@ These claims cover the harness and profiles only. The node is the system under t
     "CLAIM-CASPER-SOAK-001"
   ],
   "claim_digests": {
-    "docs/claims/casper-soak-harness.md": "a280729b02c810dda2a4386444581919eeae9046a365bbcc4a391c54bea6cd7b"
+    "docs/claims/casper-soak-harness.md": "636bdd0681096a3fb054a88f114641e4b23812001bff02d873dce5f6d52aa4c5"
   },
   "adapter": "embedded",
   "status": "pending",
+  "scope": "harness-and-profiles-only",
   "evidence": {
-    "kind": "scaffold",
-    "ref": null,
+    "kind": "partial-verification",
+    "ref": "docs/casper/cbc-evidence/runs/casper-harness-controls-20260916-01/report.json",
+    "sha256": "b192d4c2152081f3d47c26fa951a98d14d96aaeeed74d55818c14457134346c7",
     "counterexample": null,
-    "detail": "No verifier, fixture, or soak has run for these claims."
+    "detail": "Bounded lifecycle controls and runner unit tests pass. Driver/profile bindings, shared CI integration, and soaks remain pending."
   },
   "tiers": {
     "refutation": "pending",
@@ -39,9 +41,8 @@ These claims cover the harness and profiles only. The node is the system under t
     "pre_pr216_merge": "pending",
     "post_pr216_merge": "blocked"
   },
-  "scaffold_base_commit": "40e2d2d7c409d9f644c04221286bd95a187d1434",
+  "scaffold_base_commit": "cc7e84b482887f0647277ccbacd6f65ae3cf749d",
   "waiver": null,
-  "verified_at": null,
-  "scope": "harness-and-profiles-only"
+  "verified_at": null
 }
 ```

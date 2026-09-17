@@ -12,7 +12,19 @@ next_steps:
 
 # Ratified Casper Soak Preparation
 
-## Current scope correction
+## Latest implementation increment
+
+The [TASK-017-4 log](./task-017-4-harness-model-2026-09-16.md) records the first executable bounded model and local runner.
+
+The clean model and ten targeted negative controls pass. Twelve runner unit tests pass. Driver bindings, profile models, shared CI integration, and soaks remain pending.
+
+Both epics now list twenty-one harness/formal artifacts. Strict CbC discharge still returns exit 4 because their full claim evidence remains pending.
+
+The Python language-server checks pass. JSON parsing passes, but the JSONC language-server probe remains inconclusive.
+
+The following scope-correction record describes the earlier seven-artifact scaffold. It does not supersede the new implementation inventory.
+
+## Prior scope correction
 
 The maintainer confirmed that both epics verify only the soak harness and profiles. The earlier scaffold incorrectly included node-correctness obligations.
 

@@ -111,6 +111,20 @@ files:
   - .github/workflows/merge-recovery-soak.yml
   - formal/tlaplus/casper_soak/README.md
   - formal/tlaplus/casper_soak/verification-plan.jsonc
+  - formal/tlaplus/casper_soak/CasperSoakHarness.tla
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness.cfg
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness_identity_unsafe.cfg
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness_resume_unsafe.cfg
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness_failure_unsafe.cfg
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness_evidence_unsafe.cfg
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness_stop_unsafe.cfg
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness_cleanup_unsafe.cfg
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness_policy_unsafe.cfg
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness_samples_unsafe.cfg
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness_merge_unsafe.cfg
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness_control_unsafe.cfg
+  - scripts/ci/check_casper_soak_models.py
+  - scripts/ci/tests/test_casper_soak_model_runner.py
 tasks:
   - id: TASK-017-1
     title: "Reconcile ratifications, existing epics, and source dependencies"
@@ -127,8 +141,9 @@ tasks:
     title: "Define harness and profile claims, fixture expectations, and source scope"
     scaffold_status: drafted
     claim_index: docs/claims/casper-soak-harness.md
-    status: pending
-    claimed_by: null
+    status: in_progress
+    claimed_by: pi-casper-harness
+    claimed_at: 2026-09-16T22:18:38Z
     blocked_by: [TASK-017-1]
     decisions: [D-02, D-03, D-04, D-06, D-11]
     acceptance:
@@ -159,8 +174,10 @@ tasks:
     claim_spec: docs/claims/casper-soak-harness.md
     formal_plan: formal/tlaplus/casper_soak/verification-plan.jsonc
     cycle_plan: docs/tdd-plans/casper-soak-harness.md
-    status: pending
-    claimed_by: null
+    status: in_progress
+    claimed_by: pi-casper-harness
+    claimed_at: 2026-09-16T22:18:38Z
+    execution_scope: "Independent bounded model and runner only. Shared driver and CI integration remain blocked on prerequisite review."
     blocked_by: [TASK-017-2, TASK-017-3]
     decisions: [D-11]
     acceptance:
@@ -318,9 +335,9 @@ tasks:
 ---
 ```
 
-**Current state:** The claim specifications, formal-area plan, cycle checklist, and pending evidence records are scaffolded. No runtime change, proof, harness run, or upstream integration is complete.
+**Current state:** The bounded harness model and local control runner are implemented. Driver bindings, profile fixtures, shared CI integration, and soaks remain pending.
 
-**Next task:** Review the harness-only scaffold with CbC. TASK-017-2 defines profile fixture expectations and interfaces. TASK-017-3 handles prerequisites with separate Git consent.
+**Next task:** Complete TASK-017-2 driver/profile interface contracts and TASK-017-3 prerequisite review before shared integration. The local model does not discharge the full harness claim.
 
 **Scope:** This epic covers the pre-#216 PR only. The [branch plan](./plans/casper-ratified-soak-2026-09-16.md) records both phases and their evidence boundary.
 
@@ -366,6 +383,20 @@ files:
   - .github/workflows/merge-recovery-soak.yml
   - formal/tlaplus/casper_soak/README.md
   - formal/tlaplus/casper_soak/verification-plan.jsonc
+  - formal/tlaplus/casper_soak/CasperSoakHarness.tla
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness.cfg
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness_identity_unsafe.cfg
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness_resume_unsafe.cfg
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness_failure_unsafe.cfg
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness_evidence_unsafe.cfg
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness_stop_unsafe.cfg
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness_cleanup_unsafe.cfg
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness_policy_unsafe.cfg
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness_samples_unsafe.cfg
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness_merge_unsafe.cfg
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness_control_unsafe.cfg
+  - scripts/ci/check_casper_soak_models.py
+  - scripts/ci/tests/test_casper_soak_model_runner.py
 tasks:
   - id: TASK-018-1
     title: "Verify the merge gate and establish the post-merge baseline"

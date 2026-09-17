@@ -1,6 +1,6 @@
 # Casper Soak Harness and Profile Verification Plan
 
-**Status:** Scaffold. No model, fixture, or soak result is complete.
+**Status:** The first bounded harness model and local runner pass their controls. Driver/profile bindings, shared CI integration, and soaks remain pending.
 
 **Branch:** `formal/soak-casper-consensus`
 
@@ -124,9 +124,11 @@ New profile implementation files must enter the harness-only inventory when intr
 
 ## Scope and evidence storage
 
-Both epics list seven current artifacts: the driver, fixture script, summary script, TLC gate, soak workflow, formal README, and verification plan.
+Both epics list twenty-one artifacts: the original seven harness/formal paths, twelve model/configuration files, the local runner, and its unit tests.
 
-Seven pending ledger records cover these artifacts. No Rust or protobuf artifact belongs to either epic's CbC scope.
+Their ledger statuses remain pending. No Rust or protobuf artifact belongs to either epic's CbC scope.
+
+The [first implementation log](../work-logs/task-017-4-harness-model-2026-09-16.md) records the bounded safety result and the remaining integration barriers.
 
 The new runtime tags and pending runtime records from the earlier oversized scaffold are removed. Pre-existing runtime tags and evidence remain intact.
 

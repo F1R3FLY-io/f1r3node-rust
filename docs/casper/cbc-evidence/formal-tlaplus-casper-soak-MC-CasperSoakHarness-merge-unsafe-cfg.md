@@ -1,18 +1,18 @@
-# CbC Evidence: scripts/ci/check-tla-invariants.sh
+# CbC Evidence: formal/tlaplus/casper_soak/MC_CasperSoakHarness_merge_unsafe.cfg
 
 **Status:** Pending. The bounded model result does not discharge the full harness/profile claim.
 
-- [CLAIM-CASPER-SOAK-001](../claims/casper-soak-harness.md)
+- [CLAIM-CASPER-SOAK-001](../../claims/casper-soak-harness.md)
 
 The evidence package contains partial results only. No node correctness claim or construction proof belongs to this scope.
 
 ```json
 {
   "artifact": {
-    "path": "scripts/ci/check-tla-invariants.sh",
-    "commit": "cc7e84b482887f0647277ccbacd6f65ae3cf749d",
-    "id": "scripts-ci-check-tla-invariants-sh",
-    "sha256": "ff2ca9e5e6b045db231e374cb43dbec2896e3bdea64e43b321ad73945974eeb9"
+    "path": "formal/tlaplus/casper_soak/MC_CasperSoakHarness_merge_unsafe.cfg",
+    "commit": null,
+    "id": "formal-tlaplus-casper-soak-MC-CasperSoakHarness-merge-unsafe-cfg",
+    "sha256": "f71a9822b0499a7a115e20c30076da785e997fa636ca0605adc54ee6003ac9f1"
   },
   "claim": "docs/claims/casper-soak-harness.md",
   "claim_ids": [
@@ -32,7 +32,7 @@ The evidence package contains partial results only. No node correctness claim or
     "detail": "Bounded lifecycle controls and runner unit tests pass. Driver/profile bindings, shared CI integration, and soaks remain pending."
   },
   "tiers": {
-    "refutation": "pending",
+    "refutation": "bounded-pass",
     "construction": "not-applicable",
     "construction_assumptions": null,
     "binding": "pending"

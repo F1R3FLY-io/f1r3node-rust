@@ -12,8 +12,22 @@ artifacts:
   - scripts/bench/write-soak-summary.sh
   - scripts/ci/check-tla-invariants.sh
   - .github/workflows/merge-recovery-soak.yml
+  - scripts/ci/check_casper_soak_models.py
+  - scripts/ci/tests/test_casper_soak_model_runner.py
+  - formal/tlaplus/casper_soak/CasperSoakHarness.tla
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness.cfg
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness_identity_unsafe.cfg
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness_resume_unsafe.cfg
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness_failure_unsafe.cfg
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness_evidence_unsafe.cfg
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness_stop_unsafe.cfg
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness_cleanup_unsafe.cfg
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness_policy_unsafe.cfg
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness_samples_unsafe.cfg
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness_merge_unsafe.cfg
+  - formal/tlaplus/casper_soak/MC_CasperSoakHarness_control_unsafe.cfg
 mechanization_plan: formal/tlaplus/casper_soak/verification-plan.jsonc
-refutation: pending
+refutation: bounded-safety-pass
 construction: not-applicable
 construction_assumptions: null
 binding: pending
@@ -128,7 +142,15 @@ A failing product observation and an infrastructure termination remain separate 
 
 ## Current gaps
 
-No new model, fixture, or workflow check has been implemented by this scaffold. Refutation, executable fixtures, and soak observations remain pending. Construction is not applicable.
+The local bounded model and control runner are implemented. One clean configuration and ten named negative controls pass their expected verdict checks.
+
+The model checks safety only, not eventual termination. Its bounds are two candidates, two segments, four total iterations, and one active child.
+
+Runner tests verify classification and error handling. They do not bind the Bash driver's behavior to the model.
+
+Driver bindings, profile fixtures, shared CI checks, and soaks remain pending. Construction is not applicable.
+
+The [implementation log](../work-logs/task-017-4-harness-model-2026-09-16.md) records local evidence and limitations.
 
 PRs #431 and #432 supply prerequisite containment and disk models. This claim must compose with them, not replace or duplicate them.
 

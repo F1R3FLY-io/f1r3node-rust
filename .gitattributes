@@ -90,3 +90,5 @@ scripts/bench/write-soak-summary.sh cbc=mandatory cbc-weight=high
 scripts/ci/check-tla-invariants.sh cbc=mandatory cbc-weight=high
 .github/workflows/merge-recovery-soak.yml cbc=mandatory cbc-weight=high
 formal/tlaplus/casper_soak/** cbc=mandatory cbc-weight=high
+scripts/ci/check_casper_soak_models.py cbc=mandatory cbc-weight=high
+scripts/ci/tests/test_casper_soak_model_runner.py cbc=mandatory cbc-weight=high

@@ -1,24 +1,28 @@
 {
   "schema_version": 1,
   "status": "pending",
-  "executable": false,
+  "executable": true,
+  "execution_scope": "bounded-harness-safety-only",
+  "local_runner": "scripts/ci/check_casper_soak_models.py",
+  "evidence_report": "docs/casper/cbc-evidence/runs/casper-harness-controls-20260916-01/report.json",
   "claim": "CLAIM-CASPER-SOAK-001",
   "specification": "docs/claims/casper-soak-harness.md",
   "owner_task": "TASK-017-4",
   "post_merge_tasks": ["TASK-018-2", "TASK-018-5"],
   "model": "formal/tlaplus/casper_soak/CasperSoakHarness.tla",
-  "model_status": "not-implemented",
-  "model_digest": null,
+  "model_status": "implemented",
+  "model_digest": "e08ce354f1e09b9f0873e6f730e509c4be6b394acc0bce7ff5ef53805d91b0c4",
   "construction": "not-applicable",
   "construction_assumptions": null,
   "proposed_bounds": {
     "candidates": 2,
     "segments": 2,
-    "iterations_per_segment": 2,
+    "iterations_total": 4,
     "children": 1,
-    "artifact_slots": 3,
+    "evidence_completeness": "abstract Boolean, not individual artifact slots",
     "phases": ["pre_pr216_merge", "post_pr216_merge"],
-    "terminal_outcomes": ["pending", "passed", "product_failure", "infrastructure_failure", "timeout", "cancelled", "incomplete", "tool_error"]
+    "terminal_outcomes": ["pending", "passed", "product_failure", "incomplete"],
+    "stop_causes": "abstract Stop action; runner separately classifies timeout, cancellation, and tool error"
   },
   "assumptions": {
     "safety": ["Atomic durable artifact rename follows the documented filesystem contract.", "The manifest pins authenticated source and image identities."],
@@ -26,10 +30,10 @@
   },
   "positive_control": {
     "configuration": "MC_CasperSoakHarness.cfg",
-    "status": "not-implemented",
+    "status": "implemented",
     "expected_exit": 0,
     "properties": ["IdentityPinned", "ResumePreservesHistory", "ProductFailureMonotone", "PassRequiresEvidence", "StopPreventsLaunch", "EvidenceBeforeCleanup", "PolicyIsolation", "MissingIsUnknown", "PostMergeGate", "ControlVerdictExact"],
-    "registration": "pending"
+    "registration": "local-runner-only"
   },
   "negative_controls": [
     {"configuration": "MC_CasperSoakHarness_identity_unsafe.cfg", "knob": "AllowIdentityDrift", "property": "IdentityPinned", "expected_exit": 12, "fixture": "resume_changed_identity"},

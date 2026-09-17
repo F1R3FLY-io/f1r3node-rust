@@ -1,4 +1,4 @@
-# CbC Evidence: scripts/ci/check-tla-invariants.sh
+# CbC Evidence: scripts/ci/check_casper_soak_models.py
 
 **Status:** Pending. The bounded model result does not discharge the full harness/profile claim.
 
@@ -9,10 +9,10 @@ The evidence package contains partial results only. No node correctness claim or
 ```json
 {
   "artifact": {
-    "path": "scripts/ci/check-tla-invariants.sh",
-    "commit": "cc7e84b482887f0647277ccbacd6f65ae3cf749d",
-    "id": "scripts-ci-check-tla-invariants-sh",
-    "sha256": "ff2ca9e5e6b045db231e374cb43dbec2896e3bdea64e43b321ad73945974eeb9"
+    "path": "scripts/ci/check_casper_soak_models.py",
+    "commit": null,
+    "id": "scripts-ci-check-casper-soak-models-py",
+    "sha256": "d2ba76df6eb3b3a17d821d9e35d64b2a57e790546cff3243c0d66420bdfec7ca"
   },
   "claim": "docs/claims/casper-soak-harness.md",
   "claim_ids": [
