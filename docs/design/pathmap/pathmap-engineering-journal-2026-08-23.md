@@ -11824,10 +11824,10 @@ complete captured replay archive.
 
 | Artifact | Result | SHA-256 |
 |---|---|---|
-| `/tmp/candidate-catalog-formal-r1.log` | Rocq compile succeeded; 1.5 GiB cap; 465.8 MiB peak | recorded in pgmcp evidence 828 |
-| `/tmp/candidate-catalog-coqchk-r1.log` | independent kernel check succeeded; 1.5 GiB cap; 294.6 MiB peak | recorded in pgmcp evidence 828 |
-| `/tmp/candidate-catalog-data-index-r1.log` | 26 passed, 0 failed | recorded in pgmcp evidence 829 |
-| `/tmp/candidate-catalog-guarded-r1.log` | 18 passed, 0 failed | recorded in pgmcp evidence 829 |
+| `target/verification/candidate-catalog-formal-r1.log` | Rocq compile succeeded; 1.5 GiB cap; 465.8 MiB peak | recorded in pgmcp evidence 828 |
+| `target/verification/candidate-catalog-coqchk-r1.log` | independent kernel check succeeded; 1.5 GiB cap; 294.6 MiB peak | recorded in pgmcp evidence 828 |
+| `target/verification/candidate-catalog-data-index-r1.log` | 26 passed, 0 failed | recorded in pgmcp evidence 829 |
+| `target/verification/candidate-catalog-guarded-r1.log` | 18 passed, 0 failed | recorded in pgmcp evidence 829 |
 
 ## Upstream PathMap integration request register
 
