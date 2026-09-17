@@ -109,8 +109,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
-use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::{BindPattern, EList, Expr, ListParWithRandom, Par, TaggedContinuation};
+use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use models::rust::rholang::par_children::par_child_pars;
 use models::rust::rholang::protobuf_decoder;
 use models::rust::utils::new_gint_par;
@@ -170,21 +169,8 @@ fn max_par_nesting(root: &Par) -> usize {
 /// `[[[…[0]…]]]` with `depth` bracket levels — the same construction
 /// the stack-safety fixtures build, so the reports use one term shape.
 fn nested_list(depth: usize) -> Par {
-    let mut par = new_gint_par(0, vec![], false);
-    for _ in 0..depth {
-        par = models::par_from_default! {
-            exprs: vec![Expr {
-                expr_instance: Some(ExprInstance::EListBody(EList {
-                    ps: vec![par],
-                    locally_free: vec![],
-                    connective_used: false,
-                    remainder: None,
-                })),
-            }],
-            ..Default::default()
-        };
-    }
-    par
+    Par::wrap_unary_elist(depth, new_gint_par(0, Vec::new(), false))
+        .expect("representable output-value fixture depth")
 }
 
 // ---------------------------------------------------------------------------

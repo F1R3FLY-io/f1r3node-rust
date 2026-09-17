@@ -12512,9 +12512,32 @@ timing or speedup inference is supported by this aggregate run.
 | `unary-elist-6444-consumers-r1.log` | `b84b4099b81c69b033e1c37bef269503a3823310e89943b108ff64a031c493d7` |
 
 The audit also found old repeated wrapping in `rholang/tests/replay_output_value_stack_safety.rs`
-and `output_value_write_side_reachability.rs`; these remain in task 6444's required consumer audit.
+and `output_value_write_side_reachability.rs`; the following checkpoint repairs those consumers.
 The decoder differential's deep protobuf case already builds bytes directly, and the separate
 Rholang planned-fixture support already uses arena handles; neither needs a duplicate replacement.
+
+**Replay/output consumer qualification.** The frozen
+`final_root_output_value_fixture_matches_frozen_resident_wrapping` witness first passed against
+the exact existing `new_gint_par(0, [], false)` terminal, with complete protobuf/bincode/snapshot,
+metadata, cardinality, Eq/Ord/Hash and depth agreement through framing boundaries up to depth 128.
+Only then were both helpers switched to `Par::wrap_unary_elist`. Their test depths and assertions
+are unchanged. The complete release invocation passed all seven tests: output write-side 3/3
+(1.98 s), planned-fixture equivalence 3/3 (0.70 s), and output-value play/replay 1/1 (0.36 s).
+The 6/4 GiB zero-swap, four-CPU service took 15.005 s, consumed 45.601 s CPU and reported 710 MiB
+peak. These are qualification timings, not a paired performance comparison.
+
+```bash
+cargo test --release --locked -j4 -p rholang --test planned_deep_fixture_equivalence --test replay_output_value_stack_safety --test output_value_write_side_reachability -- --test-threads=4
+```
+
+| Replay artifact in `target/verification/` | SHA-256 |
+|---|---|
+| `unary-elist-6444-replay-prereq-r1.log` | `d839f1616de5785e4ba1589cd4ae29fcdd379f80690f2d0522c8ca75c231cbd5` |
+| `unary-elist-6444-replay-migration-r1.log` | `8ef6bf2eb35380d04e1c1bc953db2f2c7fa4b672bc1afd48bc671f40deebe96b` |
+
+The named fixture consumer migrations are qualified. Task 6444 remains open for geometric
+phase-separated resource measurements and their interpretation; no broader workspace or production
+performance conclusion follows from these focused gates.
 
 ### J-170 — 2026-09-17 Singleton-map final-root fixture qualification
 

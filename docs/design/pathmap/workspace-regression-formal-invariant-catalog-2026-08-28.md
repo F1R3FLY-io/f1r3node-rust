@@ -239,6 +239,12 @@ a bounded frozen witness checking the enclosing EPathMap snapshot as well. Both 
 witnesses passed before replacement; all 16 encoder-space tests and 17 EPM1 tests then passed.
 The distinct nested-map term-operation gate was excluded from that invocation and remains open.
 
+The replay/output-value terminal correspondence is additionally bound by
+`final_root_output_value_fixture_matches_frozen_resident_wrapping`, which passed before the two
+Rholang fixture helpers changed. Their three complete release test targets then passed all seven
+tests with no exclusions, including the depth-4,096 replay case. This extends UEL-01–06/09 to those
+consumers; it does not close UEL-08's resource measurements. J-169 records commands and log hashes.
+
 ## Fixed-key singleton-map construction — 2026-09-17, task 6444
 
 **FORMAL-FIRST; NATIVE BRIDGE AND MIGRATION QUALIFIED, RESOURCE LADDER OPEN.** `SingletonMapConstruction.v` has compiled and

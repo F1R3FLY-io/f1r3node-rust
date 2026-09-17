@@ -76,8 +76,7 @@
 use std::collections::HashMap;
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
-use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::{EList, Expr, Par};
+use models::rhoapi::Par;
 use models::rust::utils::new_gint_par;
 use prost::Message;
 use rholang::rust::interpreter::accounting::costs::Cost;
@@ -106,30 +105,13 @@ const PROGRAM: &str = r#"
 "#;
 
 // ---------------------------------------------------------------------------
-// term construction — ITERATIVE, so the builder is never the constraint
+// term construction — only the final root is made resident
 // ---------------------------------------------------------------------------
-
-fn elist(ps: Vec<Par>) -> Par {
-    models::par_from_default! {
-        exprs: vec![Expr {
-            expr_instance: Some(ExprInstance::EListBody(EList {
-                ps,
-                locally_free: vec![],
-                connective_used: false,
-                remainder: None,
-            })),
-        }],
-        ..Default::default()
-    }
-}
 
 /// `[[[…[0]…]]]` with `depth` bracket levels.
 fn nested_list(depth: usize) -> Par {
-    let mut p = new_gint_par(0, vec![], false);
-    for _ in 0..depth {
-        p = elist(vec![p]);
-    }
-    p
+    Par::wrap_unary_elist(depth, new_gint_par(0, Vec::new(), false))
+        .expect("representable replay fixture depth")
 }
 
 // ---------------------------------------------------------------------------

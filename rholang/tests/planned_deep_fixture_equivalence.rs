@@ -245,6 +245,33 @@ fn planned_builders_are_byte_exact_with_the_bounded_legacy_oracles() {
 }
 
 #[test]
+fn final_root_output_value_fixture_matches_frozen_resident_wrapping() {
+    for depth in [0usize, 1, 2, 15, 16, 17, 31, 32, 33, 34, 64, 127, 128] {
+        let mut expected = new_gint_par(0, Vec::new(), false);
+        for _ in 0..depth {
+            expected = Par::default().with_exprs(vec![Expr {
+                expr_instance: Some(ExprInstance::EListBody(EList {
+                    ps: vec![expected],
+                    locally_free: Vec::new(),
+                    connective_used: false,
+                    remainder: None,
+                })),
+            }]);
+        }
+        let actual = Par::wrap_unary_elist(depth, new_gint_par(0, Vec::new(), false)).unwrap();
+        assert_eq!(actual.canonical_unary_elist_gint_parts(), Some((depth, 0)));
+        assert_eq!(actual.locally_free(), expected.locally_free());
+        assert_eq!(actual.connective_used(), expected.connective_used());
+        assert_eq!(actual.cardinality(), expected.cardinality());
+        assert_eq!(
+            models::rust::rholang::bincode_encoder::encode(&actual),
+            models::rust::rholang::bincode_encoder::encode(&expected)
+        );
+        assert_exact("output_value unary fixture", actual, expected);
+    }
+}
+
+#[test]
 fn byte_native_witnesses_measure_every_planned_fixture_family() {
     for depth in [0usize, 1, 2, 8, 32, 256] {
         assert_eq!(

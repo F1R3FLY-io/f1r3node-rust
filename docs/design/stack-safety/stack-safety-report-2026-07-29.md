@@ -8326,6 +8326,13 @@ time does not establish their phase costs or eliminate all slopes. SMC-01–08 a
 [J-170](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-170--2026-09-17-singleton-map-final-root-fixture-qualification)
 record the model/native boundary and the remaining resource investigation.
 
+The two remaining named replay/output-value unary helpers also use the qualified final-root
+constructor. Their frozen byte-equivalence witness passed before migration, and all seven tests
+across the planned-fixture, write-side reachability and play/replay targets passed afterward,
+including the original depth-4,096 replay input. The capped service reported 710 MiB peak and zero
+swap. These migrations leave the geometric construction/operation/teardown measurements open;
+J-169 records the precise qualification scope and artifacts.
+
 The first complete release-workspace diagnostic exposed a boundary outside the production machines:
 several deep validation fixtures still constructed their input by repeatedly wrapping an already
 resident `Par`. Moving the accumulator kept native-stack use constant, but each RPB3 parent key still
