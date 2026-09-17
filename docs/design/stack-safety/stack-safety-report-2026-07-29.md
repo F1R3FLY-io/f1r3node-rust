@@ -8316,6 +8316,16 @@ cap with zero swap; the whole service took 569.938 s and reported 443.4 MiB peak
 map term-operation test was explicitly excluded and is still open. These aggregate measurements
 must not be presented as a full EPM1 pass or as phase-separated performance evidence; see J-169.
 
+**Nested-map successor qualification (2026-09-17).** After a separate fixed-key framing proof and
+bounded native correspondence, the map-value fixture now plans its inner chain as PathMap-backed
+arena handles and finishes only once before the unchanged outer map constructor. The previously
+excluded depth-4,096 term-operation gate passed; the complete EPM1 suite passed all 21 tests,
+without exclusions, in 556.03 s. The 6 GiB zero-swap service reported 676.9 MiB peak memory.
+The two deep escaped/legacy codec tests still exceeded 60 seconds individually; aggregate suite
+time does not establish their phase costs or eliminate all slopes. SMC-01–08 and
+[J-170](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-170--2026-09-17-singleton-map-final-root-fixture-qualification)
+record the model/native boundary and the remaining resource investigation.
+
 The first complete release-workspace diagnostic exposed a boundary outside the production machines:
 several deep validation fixtures still constructed their input by repeatedly wrapping an already
 resident `Par`. Moving the accumulator kept native-stack use constant, but each RPB3 parent key still

@@ -4,9 +4,11 @@ use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{EList, EPathMap, ESet, Expr, Par};
 use models::rust::canonical_path::{decode_trie_path, encode_trie_path};
 use models::rust::epathmap_trie_codec::{EPathMapMode, EPathMapRepr};
+use models::rust::par_construction::ParConstruction;
 use models::rust::rholang::{bincode_encoder, protobuf_decoder, protobuf_encoder};
 use pathmap::arena_compact::ArenaCompactTree;
-use pathmap::zipper::ZipperReadOnlyIteration;
+use pathmap::zipper::{ZipperMoving, ZipperReadOnlyIteration};
+use proptest::prelude::*;
 use prost::encoding::{encode_key, encode_varint, WireType};
 use prost::Message;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
@@ -35,7 +37,7 @@ fn epathmap_carrier(map: EPathMap) -> Par {
 
 fn nested_map_value_chain(depth: usize) -> EPathMap { nested_map_value_chain_from(depth, 0) }
 
-fn nested_map_value_chain_from(depth: usize, leaf: i64) -> EPathMap {
+fn frozen_resident_nested_map_value_chain_from(depth: usize, leaf: i64) -> EPathMap {
     assert!(depth > 0);
     let mut value = gint(leaf);
     for _ in 1..depth {
@@ -47,6 +49,133 @@ fn nested_map_value_chain_from(depth: usize, leaf: i64) -> EPathMap {
         ));
     }
     EPathMap::new_map([(gstring("key"), value)], Vec::new(), false, None)
+}
+
+fn nested_map_value_chain_from(depth: usize, leaf: i64) -> EPathMap {
+    assert!(depth > 0);
+    let mut arena = ParConstruction::new();
+    let key = arena.import_par(&gstring("key")).unwrap();
+    let mut value = arena.import_par(&gint(leaf)).unwrap();
+    for _ in 1..depth {
+        let component = arena
+            .epathmap_expr_component(EPathMapMode::Map, &[key, value], Vec::new(), false, None)
+            .unwrap();
+        value = arena
+            .singleton_component(component, Vec::new(), false)
+            .unwrap();
+    }
+    let value = arena.finish(value).unwrap();
+    EPathMap::new_map([(gstring("key"), value)], Vec::new(), false, None)
+}
+
+fn singleton_snapshot_parts(snapshot: &[u8]) -> (&[u8], &[u8]) {
+    assert_eq!(&snapshot[..6], b"EPM1\x01\x02");
+    let mut cursor = 6;
+    let arena_len = read_varint(snapshot, &mut cursor);
+    cursor += arena_len;
+    assert_eq!(read_varint(snapshot, &mut cursor), 1);
+    let prefix_end = cursor;
+    let body_len = read_varint(snapshot, &mut cursor);
+    assert_eq!(cursor + body_len, snapshot.len());
+    (&snapshot[..prefix_end], &snapshot[cursor..])
+}
+
+fn assert_planned_map_fixture_equivalent(depth: usize, leaf: i64) {
+    let expected = frozen_resident_nested_map_value_chain_from(depth, leaf);
+    let actual = nested_map_value_chain_from(depth, leaf);
+    assert_eq!(actual.mode(), EPathMapMode::Map);
+    assert_eq!(actual.len(), 1);
+    assert!(actual.locally_free.is_empty());
+    assert!(!actual.connective_used);
+    assert!(actual.remainder.is_none());
+    assert_eq!(actual.trie_snapshot(), expected.trie_snapshot());
+    assert_eq!(
+        protobuf_encoder::encode_to_vec(&actual),
+        protobuf_encoder::encode_to_vec(&expected)
+    );
+    assert_eq!(
+        bincode_encoder::encode(&actual),
+        bincode_encoder::encode(&expected)
+    );
+    assert_fixture_par_equivalent(
+        &epathmap_carrier(actual.clone()),
+        &epathmap_carrier(expected),
+    );
+
+    let key_bytes = encode_trie_path(&gstring("key"));
+    let prefix = singleton_snapshot_parts(actual.trie_snapshot()).0.to_vec();
+    let mut current = actual;
+    for level in 0..depth {
+        let EPathMapRepr::Map(trie) = current.representation() else {
+            panic!("each level must remain a trie map");
+        };
+        let mut zipper = trie.read_zipper();
+        let child = zipper.to_next_get_val().unwrap().clone();
+        assert_eq!(zipper.path(), key_bytes);
+        assert!(zipper.to_next_get_val().is_none());
+        let (actual_prefix, body) = singleton_snapshot_parts(current.trie_snapshot());
+        assert_eq!(actual_prefix, prefix);
+        assert_eq!(body, child.protobuf_bytes().unwrap());
+        if level + 1 == depth {
+            assert_fixture_par_equivalent(&child, &gint(leaf));
+        } else {
+            let (expression, _) = child.first::<Expr>().unwrap().unwrap();
+            let Some(ExprInstance::EPathmapBody(inner)) = expression.expr_instance else {
+                panic!("every nonterminal fixture value must be a singleton map carrier");
+            };
+            current = inner;
+        }
+    }
+}
+
+#[test]
+fn planned_map_fixture_matches_frozen_resident_snapshots_and_keys() {
+    for depth in [1, 2, 4, 15, 16, 17, 31, 32, 33] {
+        for leaf in [i64::MIN, -1, 0, 1, i64::MAX] {
+            assert_planned_map_fixture_equivalent(depth, leaf);
+        }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    #[test]
+    fn planned_map_fixture_preserves_arbitrary_leaf(depth in 1usize..18, leaf in any::<i64>()) {
+        assert_planned_map_fixture_equivalent(depth, leaf);
+    }
+}
+
+#[test]
+fn planned_map_fixture_controls_reject_wrong_depth_key_and_value() {
+    let expected = nested_map_value_chain_from(2, 0);
+    assert_ne!(
+        expected.trie_snapshot(),
+        nested_map_value_chain_from(1, 0).trie_snapshot()
+    );
+    assert_ne!(
+        expected.trie_snapshot(),
+        nested_map_value_chain_from(2, 1).trie_snapshot()
+    );
+    let wrong_key = EPathMap::new_map(
+        [(
+            gstring("other"),
+            epathmap_carrier(nested_map_value_chain_from(1, 0)),
+        )],
+        Vec::new(),
+        false,
+        None,
+    );
+    assert_ne!(expected.trie_snapshot(), wrong_key.trie_snapshot());
+    let swapped = EPathMap::new_map(
+        [(
+            epathmap_carrier(nested_map_value_chain_from(1, 0)),
+            gstring("key"),
+        )],
+        Vec::new(),
+        false,
+        None,
+    );
+    assert_ne!(expected.trie_snapshot(), swapped.trie_snapshot());
 }
 
 fn frozen_resident_deep_escaped(depth: usize) -> Par {
@@ -109,8 +238,14 @@ fn assert_fixture_par_equivalent(actual: &Par, expected: &Par) {
 
     assert_eq!(actual, expected);
     assert_eq!(actual.cmp(expected), std::cmp::Ordering::Equal);
-    assert_eq!(actual.protobuf_bytes().unwrap(), expected.protobuf_bytes().unwrap());
-    assert_eq!(bincode_encoder::encode(actual), bincode_encoder::encode(expected));
+    assert_eq!(
+        actual.protobuf_bytes().unwrap(),
+        expected.protobuf_bytes().unwrap()
+    );
+    assert_eq!(
+        bincode_encoder::encode(actual),
+        bincode_encoder::encode(expected)
+    );
     assert_eq!(actual.compact_snapshot(), expected.compact_snapshot());
     assert_eq!(actual.locally_free(), expected.locally_free());
     assert_eq!(actual.connective_used(), expected.connective_used());
@@ -134,7 +269,10 @@ fn planned_escaped_fixture_preserves_outer_set_and_exact_representation() {
             panic!("the fixture must retain its outer set");
         };
         assert_eq!(set.ps.len(), 1);
-        assert_eq!(set.ps[0].canonical_unary_elist_gint_parts(), Some((depth, 1)));
+        assert_eq!(
+            set.ps[0].canonical_unary_elist_gint_parts(),
+            Some((depth, 1))
+        );
         let actual_map = EPathMap::new(vec![actual], Vec::new(), false, None);
         let expected_map = EPathMap::new(vec![expected], Vec::new(), false, None);
         assert_eq!(actual_map.trie_snapshot(), expected_map.trie_snapshot());
@@ -572,7 +710,10 @@ fn legacy_tag_1_uses_the_generated_decoder_at_depth_4096_on_a_256_kib_stack() {
                 .expect("generated EPathMap decoder accepts the legacy oracle payload");
             let oracle_message = EPathMap::decode(oracle_bytes.as_slice())
                 .expect("Message EPathMap decoder accepts the legacy oracle payload");
-            assert_eq!(oracle_generated.trie_snapshot(), oracle_message.trie_snapshot());
+            assert_eq!(
+                oracle_generated.trie_snapshot(),
+                oracle_message.trie_snapshot()
+            );
         })
         .expect("spawn the fixed small-stack legacy protobuf probe")
         .join()

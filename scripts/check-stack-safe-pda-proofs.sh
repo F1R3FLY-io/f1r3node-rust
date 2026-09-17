@@ -720,6 +720,10 @@ rocq_compile_with_closed_count theories/UnaryEListConstructionMutants.v 14 \
   "unary-EList encoding, metadata and refusal controls"
 rocq_check_modules "unary-EList construction" \
   StackSafePDA.UnaryEListConstruction StackSafePDA.UnaryEListConstructionMutants
+rocq_reject_placeholders theories/SingletonMapConstruction.v
+rocq_compile_with_closed_count theories/SingletonMapConstruction.v 18 \
+  "fixed-key singleton EPathMap construction and checked publication"
+rocq_check_modules "singleton EPathMap construction" StackSafePDA.SingletonMapConstruction
 rmp2_rocq_output="$(
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/RMP2.v 2>&1
 )"

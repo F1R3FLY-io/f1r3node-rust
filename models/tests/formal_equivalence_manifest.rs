@@ -146,6 +146,41 @@ fn unary_elist_fixture_construction_has_concrete_proof_and_native_bindings() {
     }
 }
 
+#[test]
+fn singleton_map_fixture_has_checked_proof_and_native_correspondence() {
+    let theory =
+        read_repository_file("formal/rocq/stack_safe_pda/theories/SingletonMapConstruction.v");
+    for capstone in [
+        "planned_emission_refines_resident_wrapping",
+        "one_outer_map_and_exact_inner_depth",
+        "snapshot_zero_summary_is_exact",
+        "final_component_score_and_key_are_exact",
+        "checked_endpoint_success_refines_resident",
+        "checked_plan_refusal_cannot_publish",
+        "endpoint_success_has_exact_capacity_and_representable_trailer",
+        "emitted_bytes_bound",
+    ] {
+        assert!(theory.contains(&format!("Print Assumptions {capstone}.")));
+    }
+    let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
+    assert!(has_runner_command(&runner, &[
+        "rocq_compile_with_closed_count",
+        "theories/SingletonMapConstruction.v",
+        "18",
+    ]));
+    assert!(has_runner_kernel_check(&runner, &[
+        "StackSafePDA.SingletonMapConstruction"
+    ]));
+    let native = read_repository_file("models/tests/epathmap_epm1_snapshot.rs");
+    for witness in [
+        "planned_map_fixture_matches_frozen_resident_snapshots_and_keys",
+        "planned_map_fixture_preserves_arbitrary_leaf",
+        "planned_map_fixture_controls_reject_wrong_depth_key_and_value",
+    ] {
+        assert!(native.contains(&format!("fn {witness}(")));
+    }
+}
+
 const ACTREE03_GENERATORS: &[&str] = &[
     "G-ACT03-WRITER",
     "G-ACT03-MUTATION",

@@ -12516,6 +12516,60 @@ and `output_value_write_side_reachability.rs`; these remain in task 6444's requi
 The decoder differential's deep protobuf case already builds bytes directly, and the separate
 Rholang planned-fixture support already uses arena handles; neither needs a duplicate replacement.
 
+### J-170 — 2026-09-17 Singleton-map final-root fixture qualification
+
+**Status: DERIVED construction recurrence; MEASURED complete EPM1 regression pass.** The old
+`nested_map_value_chain_from` fixture rebuilt a resident nested Par at every level. It now imports
+the fixed string key and scalar terminal once, creates the inner maps as `ParConstruction` handles,
+finishes the inner value once, and uses the unchanged outer `EPathMap::new_map`. Intermediate map
+representations remain PathMap instances of planned handles, not decoded value collections.
+
+**Formal-first evidence.** `SingletonMapConstruction.v` proves fixed-prefix snapshot/protobuf
+framing, exact final score/key via the maintained score theory, zero-count summaries, composed
+checked planning, exact endpoint reservation and a conditional output-size bound. Eighteen closed
+assumption reports passed independent kernel checking before the native helper was replaced.
+The model assumes the writer's common topology prefix; bounded native tests separately compare
+the actual canonical keys and prefixes at each level. The native trailer conversion occurs after
+private emission, so no equivalence of internal refusal cost is claimed. Model frames do not count
+all native arena allocations. See [SMC-01–08](workspace-regression-formal-invariant-catalog-2026-08-28.md#fixed-key-singleton-map-construction--2026-09-17-task-6444).
+
+The plan-agent review rejected the draft's reservation formula from a different importer; the
+final model uses the actual constructor's exact capacity. A development run expanding the numeric
+trailer bound timed out at 180 seconds under a 1 GiB, zero-swap cap (874.8 MiB peak); it was not an
+accepted proof run. The corrected symbolic-bound run completed in 18.644 s / 18.398 s CPU with
+428.3 MiB peak. Its finite controls are abstract-prefix witnesses, not fabricated ACT images.
+
+**Native sequence and result.** Before migration, three bounded tests passed: deterministic
+resident differentials through depth 33 with signed scalar extremes; 32 generated depth/leaf cases;
+and wrong-depth/key/value controls. They compare direct snapshots, both codecs, complete carrier
+keys, metadata, Eq/Ord/Hash, mode, singleton structure and exact terminal/depth. All 26 formal
+manifest tests also passed. That service took 5.443 s / 9.739 s CPU and reported 253.9 MiB peak.
+
+After migration, the complete release invocation was:
+
+```bash
+cargo test --release --locked -j4 -p models --test epathmap_epm1_snapshot -- --test-threads=4
+```
+
+All **21 tests passed**, none ignored or filtered, with property seed 41316444. The previously
+unfinished depth-4,096 Eq/Ord/Hash gate and nested-value snapshot gate both passed with unchanged
+256 KiB stacks. The test suite took 556.03 s; the zero-swap service used 6 GiB maximum/4 GiB high
+memory, four CPU equivalents and the original 900-second watchdog. Service elapsed was 559.025 s,
+CPU 839.521 s and reported peak memory 676.9 MiB. Another capped test build overlapped the tail of
+this run, so its timing is qualification evidence, not an uncontended benchmark.
+
+| Artifact in `target/verification/` | SHA-256 |
+|---|---|
+| `singleton-map-6444-formal-r8.log` | `53a84fa91c301f9a3d5554ff0d8744a3dff1b23e389b1ca8e22d1559ac84e315` |
+| `singleton-map-6444-prereq-r2.log` | `85e8b42b92f57a7aa6cb0f95c29e194f99eb75dc91f4c38f89ac96851dc516e0` |
+| `singleton-map-6444-migration-r1.log` | `d4586c31fb16bc6b4c4b2e7928f793c9108f328ed2ad7141dacaea7fc5d1fbd2` |
+
+**Remaining work.** The deep escaped round-trip and legacy-tag codec tests still each reported
+more than 60 seconds. This run does not attribute that cost to construction, admission, sorting,
+encoding or teardown. Task 6444 still requires its remaining consumer audit and phase-separated
+geometric measurements. No production source, dependency, PathMap implementation, canonical byte
+format or consensus contract changed in this fixture slice; full campaign acceptance remains open.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

@@ -22,6 +22,7 @@ theories/AccountingDemand.v
 theories/ChannelImage.v
 theories/UnaryEListConstruction.v
 theories/UnaryEListConstructionMutants.v
+theories/SingletonMapConstruction.v
 theories/PathMapPhysicalOwnership.v
 theories/PathMapPhysicalOwnershipMutants.v
 theories/PathMapReversePruneTeardown.v

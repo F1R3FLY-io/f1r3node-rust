@@ -239,6 +239,44 @@ a bounded frozen witness checking the enclosing EPathMap snapshot as well. Both 
 witnesses passed before replacement; all 16 encoder-space tests and 17 EPM1 tests then passed.
 The distinct nested-map term-operation gate was excluded from that invocation and remains open.
 
+## Fixed-key singleton-map construction — 2026-09-17, task 6444
+
+**FORMAL-FIRST; NATIVE BRIDGE AND MIGRATION QUALIFIED, RESOURCE LADDER OPEN.** `SingletonMapConstruction.v` has compiled and
+passed independent kernel checking with 18 closed assumption reports. It models the fixed-key
+singleton-map fixture, not arbitrary ACT encoding or every arena constructor. A supplied common
+prefix contains the EPM1 magic/version/mode, PathMap-produced topology and one-value count. Each
+snapshot appends the canonical varint body length and child Par bytes. Wrapping uses protobuf field
+9 (`4a`), Expr field 32 (`82 02`) and Par field 5 (`2a`). The native topology-prefix equality is a
+separate mandatory correspondence obligation, supported by the maintained V6 positional-layout
+authority and checked against the frozen resident constructor before migration.
+
+| ID | Formal obligation | Native binding and limitation |
+|---|---|---|
+| SMC-01 | Four frame lengths and framing tags are exact. | Exact snapshot/protobuf/bincode comparisons at depth one and framing boundaries. |
+| SMC-02 | Planned final emission equals repeated resident wrapping; one frame per inner level. | Frozen builder differential with unchanged key, terminal and depth. Frame count is not total arena-record/allocation count. |
+| SMC-03 | One outer map encloses exactly the requested inner depth; depth one retains the terminal. | Explicit Map mode, singleton key/value, outer snapshot and terminal/depth controls. Empty/false/None metadata stays unchanged. |
+| SMC-04 | Snapshot zero-count summaries and escaped-score lengths are exact. | Exact carrier component snapshot and canonical-key comparison against resident serialization, including zero-bearing leaves. |
+| SMC-05 | Final score and endpoint equal maintained canonical score serialization. | Bounded carrier Eq/Ord/Hash, protobuf/bincode and complete RPB3 snapshot differential. The fixture itself returns EPathMap, so direct snapshot equality is also mandatory. |
+| SMC-06 | Checked frame success preserves lengths; composed checked-plan success refines the mathematical plan; refusal cannot publish. | Inspect native checked sums and keep finite model refusal/positive controls; no enormous allocations as an overflow test. Allocation success and addressable sizes are explicit premises. |
+| SMC-07 | Successful endpoint reservation uses exact capacity and a representable score trailer. | Native capacity is $`39+s+z+e`$, with snapshot length $`s`$, zero count $`z`$ and expression length $`e`$. Symbolic score bound specializes to $`2^{64}`$; native conversion follows private allocation/emission, so the model does not claim identical internal refusal cost/order. |
+| SMC-08 | Fixed-size prefix and bounded varints imply linear emitted-byte length. | Geometric phase measurements remain required. This is an output-size bound, not proof of runtime or allocator costs. |
+
+The small `[7, 0, 9]` prefix used by model controls is deliberately abstract, not a canonical EPM1
+example. Actual writer-prefix equality must be checked natively. A failed proof-development run
+expanded the numeric trailer bound and reached its 180-second capped watchdog; the successful
+model keeps that bound symbolic and uses a finite bound only for executable controls. No theorem
+was weakened to a bounded-depth statement.
+
+Before migration, `planned_map_fixture_matches_frozen_resident_snapshots_and_keys`,
+`planned_map_fixture_preserves_arbitrary_leaf` and
+`planned_map_fixture_controls_reject_wrong_depth_key_and_value` all passed, along with 26 formal
+manifest checks. They bind SMC-01–05 to the native writer, compare canonical paths and topology
+prefixes through each bounded level, and reject missing depth, changed key/leaf and swapped
+key/value. The helper then switched to integer arena handles, one inner finish, and the unchanged
+outer `EPathMap::new_map`. The complete EPM1 snapshot suite passed 21 tests with none excluded,
+including depth-4,096 Eq/Ord/Hash and snapshot/codec gates on 256 KiB stacks. See J-170 for evidence.
+SMC-08's phase-separated measurements, remaining fixture consumers and task 6444 remain open.
+
 ## Original workspace-regression completion gates
 
 This checkpoint is complete only when all of the following hold:
