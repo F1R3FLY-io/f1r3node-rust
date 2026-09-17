@@ -49,7 +49,7 @@ fn nested_map_value_chain_from(depth: usize, leaf: i64) -> EPathMap {
     EPathMap::new_map([(gstring("key"), value)], Vec::new(), false, None)
 }
 
-fn deep_escaped(depth: usize) -> Par {
+fn frozen_resident_deep_escaped(depth: usize) -> Par {
     let mut inner = gint(1);
     for _ in 0..depth {
         inner = models::par_from_default! {
@@ -88,6 +88,56 @@ fn read_varint(bytes: &[u8], cursor: &mut usize) -> usize {
             return value;
         }
         shift += 7;
+    }
+}
+
+fn deep_escaped(depth: usize) -> Par {
+    let inner = Par::wrap_unary_elist(depth, gint(1)).unwrap();
+    Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::ESetBody(ESet {
+            ps: vec![inner],
+            locally_free: Vec::new(),
+            connective_used: false,
+            remainder: None,
+        })),
+    }])
+}
+
+fn assert_fixture_par_equivalent(actual: &Par, expected: &Par) {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    assert_eq!(actual, expected);
+    assert_eq!(actual.cmp(expected), std::cmp::Ordering::Equal);
+    assert_eq!(actual.protobuf_bytes().unwrap(), expected.protobuf_bytes().unwrap());
+    assert_eq!(bincode_encoder::encode(actual), bincode_encoder::encode(expected));
+    assert_eq!(actual.compact_snapshot(), expected.compact_snapshot());
+    assert_eq!(actual.locally_free(), expected.locally_free());
+    assert_eq!(actual.connective_used(), expected.connective_used());
+    assert_eq!(actual.cardinality(), expected.cardinality());
+    assert_eq!(actual.distinct_len(), expected.distinct_len());
+    let mut actual_hash = DefaultHasher::new();
+    let mut expected_hash = DefaultHasher::new();
+    actual.hash(&mut actual_hash);
+    expected.hash(&mut expected_hash);
+    assert_eq!(actual_hash.finish(), expected_hash.finish());
+}
+
+#[test]
+fn planned_escaped_fixture_preserves_outer_set_and_exact_representation() {
+    for depth in [0, 1, 2, 15, 16, 17, 31, 32, 33, 127, 128] {
+        let expected = frozen_resident_deep_escaped(depth);
+        let actual = deep_escaped(depth);
+        assert_fixture_par_equivalent(&actual, &expected);
+        let (expression, _) = actual.first::<Expr>().unwrap().unwrap();
+        let Some(ExprInstance::ESetBody(set)) = expression.expr_instance else {
+            panic!("the fixture must retain its outer set");
+        };
+        assert_eq!(set.ps.len(), 1);
+        assert_eq!(set.ps[0].canonical_unary_elist_gint_parts(), Some((depth, 1)));
+        let actual_map = EPathMap::new(vec![actual], Vec::new(), false, None);
+        let expected_map = EPathMap::new(vec![expected], Vec::new(), false, None);
+        assert_eq!(actual_map.trie_snapshot(), expected_map.trie_snapshot());
     }
 }
 

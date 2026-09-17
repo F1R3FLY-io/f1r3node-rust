@@ -29,24 +29,12 @@ mod par_corpus;
 use par_corpus as corpus;
 
 // ---------------------------------------------------------------------------
-// term shapes, built ITERATIVELY so construction is never the constraint
+// term shapes, with only the final deep root made resident
 // ---------------------------------------------------------------------------
 
 /// A left-spine of `depth` nested `EList`s: DEEP and narrow.
 fn deep(depth: usize) -> Par {
-    let mut par = Par::default();
-    for _ in 0..depth {
-        par = models::par_from_default! {
-            exprs: vec![Expr {
-                expr_instance: Some(ExprInstance::EListBody(EList {
-                    ps: vec![par],
-                    ..Default::default()
-                })),
-            }],
-            ..Default::default()
-        };
-    }
-    par
+    Par::wrap_unary_elist(depth, Par::default()).expect("representable fixture depth")
 }
 
 /// One node with `width` children: SHALLOW and wide. Same node COUNT as

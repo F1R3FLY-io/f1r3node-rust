@@ -95,6 +95,11 @@ fn bulk_unary_fixture_matches_frozen_resident_oracle() {
         let actual = Par::wrap_unary_elist(depth, terminal).unwrap();
         assert_fixture_representation_equal(&actual, &expected);
     }
+    for depth in [0, 1, 2, 15, 16, 17, 31, 32, 33, 127, 128] {
+        let expected = frozen_resident_unary_fixture(depth, Par::default());
+        let actual = Par::wrap_unary_elist(depth, Par::default()).unwrap();
+        assert_fixture_representation_equal(&actual, &expected);
+    }
 }
 
 proptest! {

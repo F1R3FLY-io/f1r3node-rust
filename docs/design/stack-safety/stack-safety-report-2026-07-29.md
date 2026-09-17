@@ -8309,6 +8309,13 @@ not a paired speedup estimate. The nested-EPathMap fixture and geometric, phase-
 measurements remain open. See [J-169](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-169--2026-09-17-formal-first-final-root-fixture-construction)
 and invariant catalog UEL-01–09 for the exact evidence and proof scope.
 
+The same qualified unary construction now supplies both encoder-space fixtures (empty terminal)
+and the EPM1 escaped fixture (`GInt(1)` beneath the unchanged outer set). Bounded frozen equivalence
+passed before migration. The subsequent 16 encoder-space and 17 EPM1 tests passed under a 6 GiB
+cap with zero swap; the whole service took 569.938 s and reported 443.4 MiB peak memory. The nested
+map term-operation test was explicitly excluded and is still open. These aggregate measurements
+must not be presented as a full EPM1 pass or as phase-separated performance evidence; see J-169.
+
 The first complete release-workspace diagnostic exposed a boundary outside the production machines:
 several deep validation fixtures still constructed their input by repeatedly wrapping an already
 resident `Par`. Moving the accumulator kept native-stack use constant, but each RPB3 parent key still

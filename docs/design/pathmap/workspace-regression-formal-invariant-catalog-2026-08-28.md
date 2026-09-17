@@ -232,6 +232,13 @@ small-stack assertions are unchanged. See engineering journal J-169 for commands
 UEL-08's geometric native cost measurements and the nested-EPathMap slice remain open; this
 qualification does not close task 6444 or the whole-workspace gate.
 
+The native bridge additionally covers empty-Par terminals for both encoder-space fixtures and
+`planned_escaped_fixture_preserves_outer_set_and_exact_representation` for the EPM1 escaped fixture.
+The outer ESet constructor is unchanged; composition uses the exact unary byte equivalence, with
+a bounded frozen witness checking the enclosing EPathMap snapshot as well. Both prerequisite
+witnesses passed before replacement; all 16 encoder-space tests and 17 EPM1 tests then passed.
+The distinct nested-map term-operation gate was excluded from that invocation and remains open.
+
 ## Original workspace-regression completion gates
 
 This checkpoint is complete only when all of the following hold:

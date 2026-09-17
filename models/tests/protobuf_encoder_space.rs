@@ -35,20 +35,9 @@ use models::rust::rholang::protobuf_encoder::{
     frame_size, len_table_size, op_size, try_visit_par_slots,
 };
 
-/// `[[[…[0]…]]]` — a chain of `depth` nested `EList`s, one message node per level.
+/// A chain of `depth` nested unary `EList`s around the empty Par.
 fn nested_list(depth: usize) -> Par {
-    let mut par = Par::default();
-    for _ in 0..depth {
-        par = Par::default().with_exprs(vec![Expr {
-            expr_instance: Some(ExprInstance::EListBody(EList {
-                ps: vec![par],
-                locally_free: Vec::new(),
-                connective_used: false,
-                remainder: None,
-            })),
-        }]);
-    }
-    par
+    Par::wrap_unary_elist(depth, Par::default()).expect("representable fixture depth")
 }
 
 /// ★★ **The op-stack entry is FOUR WORDS, and that ceiling is load-bearing.**

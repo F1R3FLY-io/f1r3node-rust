@@ -12490,6 +12490,32 @@ geometric construction/operation/teardown measurements before closing 6444. This
 changes no production bytes or consensus contract and does not qualify persistent-backend cutover,
 the full release workspace, or the parent endpoint-admission task.
 
+**Additional unary consumers.** The protobuf/bincode encoder-space fixtures now use the same
+constructor with their original empty-Par terminal. `deep_escaped` in the EPM1 snapshot suite uses
+it with `GInt(1)` and retains the original outer ESet. Before replacement, the empty-terminal
+differential and a frozen outer-set differential passed at depths 0, 1, 2 and framing boundaries
+through 128. The latter compares complete representations and the enclosing EPathMap snapshot;
+it explicitly checks the outer set and exact inner depth/leaf. Its frozen reference remains bounded.
+
+The subsequent release run passed all 9 bincode-space tests (9.34 s), all 7 protobuf-space tests
+(0.04 s), and 17 EPM1 tests (557.17 s). The separately unfinished
+`nested_map_value_term_operations_are_stack_safe_on_a_256_kib_stack` was explicitly excluded, so
+this is not a full EPM1-suite pass. All included deep gates retained their original depths. The
+service used the same 6/4 GiB memory limits, zero swap, four CPU equivalents and 600-second watchdog;
+it completed in 569.938 s, consumed 1,379.788 s CPU, and reported 443.4 MiB peak memory. The still
+resident-built nested-map snapshot fixture is included in this elapsed time. No individual phase
+timing or speedup inference is supported by this aggregate run.
+
+| Additional artifact in `target/verification/` | SHA-256 |
+|---|---|
+| `unary-elist-6444-consumers-prereq-r1.log` | `03874a5ae9c65f915a32bfacb2508d38ef2db0dd3b7bcdae69f81aab106a7a2f` |
+| `unary-elist-6444-consumers-r1.log` | `b84b4099b81c69b033e1c37bef269503a3823310e89943b108ff64a031c493d7` |
+
+The audit also found old repeated wrapping in `rholang/tests/replay_output_value_stack_safety.rs`
+and `output_value_write_side_reachability.rs`; these remain in task 6444's required consumer audit.
+The decoder differential's deep protobuf case already builds bytes directly, and the separate
+Rholang planned-fixture support already uses arena handles; neither needs a duplicate replacement.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
