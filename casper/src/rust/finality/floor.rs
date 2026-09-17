@@ -1831,18 +1831,14 @@ mod frontier_determinism_tests {
                 0,
             ),
         ]);
-        let mut left_deploy =
-            models::rust::casper::protocol::casper_message::ProcessedDeploy::empty(
-                crate::rust::util::construct_deploy::basic_deploy_data(80, None, None)
-                    .expect("left deploy"),
-            );
-        left_deploy.envelope_commitment = Bytes::from(vec![9; 32]);
-        let mut right_deploy =
-            models::rust::casper::protocol::casper_message::ProcessedDeploy::empty(
-                crate::rust::util::construct_deploy::basic_deploy_data(81, None, None)
-                    .expect("right deploy"),
-            );
-        right_deploy.envelope_commitment = left_deploy.envelope_commitment.clone();
+        let left_deploy = models::rust::casper::protocol::casper_message::ProcessedDeploy::empty(
+            crate::rust::util::construct_deploy::basic_deploy_data(80, None, None)
+                .expect("left deploy"),
+        )
+        .unwrap();
+        let mut right_deploy = left_deploy.clone();
+        right_deploy.post_state_hash = Bytes::from(vec![9; 32]);
+        assert_ne!(left_deploy, right_deploy);
         assert_eq!(left_deploy.deploy_id(), right_deploy.deploy_id());
         let store = mk_store();
         let mut memo = StateContainmentMemo::new();
@@ -2080,7 +2076,8 @@ mod frontier_determinism_tests {
         let failed_deploy =
             crate::rust::util::construct_deploy::basic_deploy_data(7, None, None).expect("deploy");
         let mut failed_pd =
-            models::rust::casper::protocol::casper_message::ProcessedDeploy::empty(failed_deploy);
+            models::rust::casper::protocol::casper_message::ProcessedDeploy::empty(failed_deploy)
+                .unwrap();
         failed_pd.is_failed = true;
         let dag = build_dag(vec![
             md(e.clone(), vec![], 0, &v),
@@ -2128,7 +2125,8 @@ mod frontier_determinism_tests {
         let failed_deploy =
             crate::rust::util::construct_deploy::basic_deploy_data(8, None, None).expect("deploy");
         let mut failed_pd =
-            models::rust::casper::protocol::casper_message::ProcessedDeploy::empty(failed_deploy);
+            models::rust::casper::protocol::casper_message::ProcessedDeploy::empty(failed_deploy)
+                .unwrap();
         failed_pd.is_failed = true;
         failed_pd.authority_funding_certificate = Some(Default::default());
         failed_pd.authority_cost_witness = Some(Default::default());

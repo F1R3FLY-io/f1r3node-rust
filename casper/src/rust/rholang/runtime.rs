@@ -712,8 +712,8 @@ impl RuntimeOps {
                         runtime_ops: self,
                         pre_state_root,
                     };
-                    crate::rust::util::rholang::acceptance::state_bound_execution_cap_with_frontier(
-                        &cosigned, &frontier, &reader,
+                    crate::rust::util::rholang::acceptance::state_bound_execution_cap_with_frontier_and_host_work(
+                        &cosigned, &frontier, &reader, host_work.as_ref(),
                     )
                     .await
                 };
@@ -1047,6 +1047,11 @@ impl RuntimeOps {
                             1,
                         ),
                     )?;
+                let fee_plan = crate::rust::util::rholang::acceptance::monetary_fee::required_fee_plan(&prepared.certificate)?;
+                apply = apply.with_fee_cursor(
+                    fee_plan.transition().map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?,
+                    fee_plan.payer_count(),
+                )?;
                 let (apply_log, apply_result, apply_mergeable) =
                     self.play_system_deploy_internal(&mut apply).await?;
                 if let Either::Left(error) = apply_result {
@@ -1448,11 +1453,6 @@ impl RuntimeOps {
     /// `cost` on the returned `ProcessedDeploy` is the canonical weighted
     /// `total_cost()`: one execution unit per committed COMM plus quantitative
     /// introduction, payload-transfer, and trace bytes. The
-    /// `ProcessedDeploy.deploy: Signed<DeployData>` storage shape is
-    /// preserved by reconstituting the primary signer's `Signed<DeployData>`
-    /// envelope via `Cosigned::into_legacy_signed_unchecked` — invariants
-    /// were already enforced at `Cosigned::from_signed_data` construction so
-    /// no re-verification is needed.
     pub async fn process_deploy_cosigned(
         &mut self,
         cosigned: crypto::rust::signatures::signed::Cosigned<DeployData>,
@@ -1519,6 +1519,8 @@ impl RuntimeOps {
     ) -> Result<(ProcessedDeploy, HashMap<Par, MergeType>, bool), CasperError> {
         // INNER soft-checkpoint — wraps the USER DEPLOY only. On a failed user
         // deploy it reverts that deploy's effects (D3: no pre-charge state).
+        let mut deploy_result =
+            ProcessedDeploy::empty_from_cosigned(&cosigned).map_err(CasperError::RuntimeError)?;
         let fallback = self.runtime.create_soft_checkpoint().await;
 
         let eval_result = match self
@@ -1568,25 +1570,15 @@ impl RuntimeOps {
             .iter()
             .any(|error| matches!(error, InterpreterError::OutOfPhlogistonsError));
         let deploy_id = crate::rust::util::rholang::acceptance::admission_deploy_id(&cosigned);
-        let preserved = ProcessedDeploy::empty_from_cosigned(&cosigned);
 
         let deploy_log = deploy_log
             .into_iter()
             .map(event_converter::to_casper_event)
             .collect::<Vec<_>>();
-        let deploy_result = ProcessedDeploy {
-            deploy: preserved.deploy,
-            envelope_commitment: preserved.envelope_commitment,
-            cost: Cost::to_proto(eval_result.cost),
-            deploy_log,
-            is_failed: !eval_succeeded,
-            system_deploy_error: None,
-            cosigners: preserved.cosigners,
-            cosigner_threshold: preserved.cosigner_threshold,
-            pre_state_hash: StateHash::new(),
-            post_state_hash: StateHash::new(),
-            authority_funding_certificate: None,
-            authority_cost_witness: Some(CostAuthorityWitnessProto {
+        deploy_result.cost = Cost::to_proto(eval_result.cost);
+        deploy_result.deploy_log = deploy_log;
+        deploy_result.is_failed = !eval_succeeded;
+        deploy_result.authority_cost_witness = Some(CostAuthorityWitnessProto {
                 protocol_version: rholang::rust::interpreter::accounting::authority::AUTHORITY_ACCOUNTING_PROTOCOL_VERSION,
                 certificate_id: Bytes::new(),
                 pre_state_root: Bytes::new(),
@@ -1624,9 +1616,7 @@ impl RuntimeOps {
                     .collect(),
                 byte_cost: eval_result.quantitative_byte_cost,
                 byte_settlement: Vec::new(),
-            }),
-            admission_status: Default::default(),
-        };
+            });
 
         if !eval_succeeded {
             self.runtime.revert_to_soft_checkpoint(fallback).await;
@@ -2979,6 +2969,128 @@ impl RuntimeOps {
         }
     }
 
+    pub async fn get_consensus_parameters(
+        &mut self,
+        start_hash: &StateHash,
+    ) -> Result<Option<(i32, i64, i64)>, CasperError> {
+        let pars = self
+            .play_exploratory_par_strict(Self::consensus_parameters_query_par().clone(), start_hash)
+            .await?;
+
+        Self::decode_consensus_parameters(&pars, start_hash)
+    }
+
+    pub async fn get_genesis_resource_policy(
+        &mut self,
+        start_hash: &StateHash,
+    ) -> Result<models::rust::phlo_schedule::PhloGenesisPolicy, CasperError> {
+        static QUERY: OnceLock<Par> = OnceLock::new();
+        let query = QUERY.get_or_init(|| {
+            Compiler::source_to_adt(
+                r#"new ret, lookup(`rho:registry:lookup`), channel in {
+                lookup!(`rho:system:tokenMetadata`, *channel) |
+                for (@(_, metadata) <- channel) { @metadata!("resourcePolicy", *ret) }
+            }"#,
+            )
+            .expect("genesis resource policy query must compile")
+        });
+        let pars = self
+            .play_exploratory_par_strict(query.clone(), start_hash)
+            .await?;
+        let [par] = pars.as_slice() else {
+            return Err(CasperError::RuntimeError(
+                "genesis must return exactly one resource policy".to_string(),
+            ));
+        };
+        if par.exprs.len() != 1
+            || *par
+                != (Par {
+                    exprs: par.exprs.clone(),
+                    ..Par::default()
+                })
+        {
+            return Err(CasperError::RuntimeError(
+                "genesis resource policy must be a byte array".to_string(),
+            ));
+        }
+        match par.exprs[0].expr_instance.as_ref() {
+            Some(ExprInstance::GByteArray(bytes)) => {
+                models::rust::phlo_schedule::PhloGenesisPolicy::decode(bytes)
+                    .map_err(|error| CasperError::RuntimeError(error.to_string()))
+            }
+            _ => Err(CasperError::RuntimeError(
+                "genesis resource policy must be a byte array".to_string(),
+            )),
+        }
+    }
+
+    fn decode_consensus_parameters(
+        pars: &[Par],
+        start_hash: &StateHash,
+    ) -> Result<Option<(i32, i64, i64)>, CasperError> {
+        if pars.is_empty() {
+            tracing::warn!(
+                "No result from getConsensusParameters query for state {}; \
+                 genesis predates the on-chain consensus parameters",
+                PrettyPrinter::build_string_bytes(start_hash)
+            );
+            return Ok(None);
+        }
+        if pars.len() != 1 {
+            return Err(CasperError::RuntimeError(format!(
+                "Incorrect number of results from getConsensusParameters query in state {}: {}",
+                PrettyPrinter::build_string_bytes(start_hash),
+                pars.len()
+            )));
+        }
+
+        let bad = |detail: &str| {
+            CasperError::RuntimeError(format!(
+                "getConsensusParameters returned an invalid value in state {}: {}",
+                PrettyPrinter::build_string_bytes(start_hash),
+                detail
+            ))
+        };
+        let int_at = |tuple: &models::rhoapi::ETuple, i: usize| -> Option<i64> {
+            match tuple.ps.get(i)?.exprs.first()?.expr_instance.as_ref()? {
+                ExprInstance::GInt(v) => Some(*v),
+                _ => None,
+            }
+        };
+
+        match pars[0].exprs.first().and_then(|e| e.expr_instance.as_ref()) {
+            Some(ExprInstance::ETupleBody(tuple)) if tuple.ps.len() == 3 => {
+                let mpd = int_at(tuple, 0).ok_or_else(|| bad("non-integer maxParentDepth"))?;
+                let lifespan = int_at(tuple, 1).ok_or_else(|| bad("non-integer deployLifespan"))?;
+                let min_phlo = int_at(tuple, 2).ok_or_else(|| bad("non-integer minPhloPrice"))?;
+                crate::rust::casper_conf::validate_chain_parameter_values(mpd, lifespan, min_phlo)
+                    .map_err(|detail| bad(&detail))?;
+                Ok(Some((mpd as i32, lifespan, min_phlo)))
+            }
+            other => Err(bad(&format!("expected a 3-tuple, got {other:?}"))),
+        }
+    }
+
+    fn consensus_parameters_query_source() -> String {
+        r#"
+          new return, rl(`rho:registry:lookup`), poSCh in {
+          rl!(`rho:system:pos`, *poSCh) |
+          for(@(_, PoS) <- poSCh) {
+            @PoS!("getConsensusParameters", *return)
+          }
+        }
+      "#
+        .to_string()
+    }
+
+    fn consensus_parameters_query_par() -> &'static Par {
+        static QUERY: OnceLock<Par> = OnceLock::new();
+        QUERY.get_or_init(|| {
+            Compiler::source_to_adt(&Self::consensus_parameters_query_source())
+                .expect("Failed to compile consensus parameters query source")
+        })
+    }
+
     fn fault_tolerance_ppm_query_source() -> String {
         r#"
           new return, rl(`rho:registry:lookup`), poSCh in {
@@ -3156,6 +3268,10 @@ impl RuntimeOps {
         .collect()
     }
 }
+
+#[cfg(test)]
+#[path = "consensus_parameter_tests.rs"]
+mod consensus_parameter_tests;
 
 #[cfg(test)]
 mod tests {

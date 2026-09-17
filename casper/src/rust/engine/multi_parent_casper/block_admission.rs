@@ -607,7 +607,12 @@ pub(crate) async fn admit_list_pending_deploys<T: TransportLayer + Send + Sync>(
             current_time_millis,
             &deploy,
         ) {
-            out.push((deploy.into_envelope(), false));
+            out.push((
+                deploy
+                    .into_body_envelope()
+                    .map_err(CasperError::RuntimeError)?,
+                false,
+            ));
         }
     }
 
@@ -623,7 +628,12 @@ pub(crate) async fn admit_list_pending_deploys<T: TransportLayer + Send + Sync>(
             current_time_millis,
             &deploy,
         ) {
-            out.push((deploy.into_envelope(), true));
+            out.push((
+                deploy
+                    .into_body_envelope()
+                    .map_err(CasperError::RuntimeError)?,
+                true,
+            ));
         }
     }
 

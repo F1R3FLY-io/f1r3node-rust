@@ -68,7 +68,7 @@ in {
   // }
 
   new MakeNode, ByteArrayToNybbleList,
-      TreeHashMapSetter, TreeHashMapGetter, TreeHashMapContains, TreeHashMapUpdater, TreeHashMapDeleter, TreeHashMapToMapVisiter, loopTreeMapNodes,
+      TreeHashMapSetter, TreeHashMapLeafWriter, TreeHashMapGetter, TreeHashMapContains, TreeHashMapUpdater, TreeHashMapDeleter, TreeHashMapToMapVisiter, loopTreeMapNodes,
       storeToken, nodeGet, depthP in {
     match [1,2,4,8,16,32,64,128,256,512,1024,2048,4096,8192,16384,32768,65536] {
       powers => {
@@ -168,7 +168,17 @@ in {
           }
         } |
 
-        contract TreeHashMapSetter(@map, @nybList, @n, @len, @newVal, @suffix, ret) = {
+        contract TreeHashMapLeafWriter(@bucket, @update, @suffix, @leaf, ret) = {
+          new resultCh in {
+            @update!(bucket.get(suffix), *resultCh) |
+            for (@newVal <- resultCh) {
+              @leaf!(bucket.set(suffix, newVal)) |
+              ret!(Nil)
+            }
+          }
+        } |
+
+        contract TreeHashMapSetter(@map, @nybList, @n, @len, @operation, @suffix, ret) = {
           // Look up the value of the node at (map, nybList.slice(0, n + 1))
           new valCh, restCh in {
             match (map, nybList.slice(0, n)) {
@@ -177,17 +187,23 @@ in {
                   if (n == len) {
                     // Acquire the lock on this node
                     for (@val <- @(*bitmaskTag, node, *storeToken)) {
-                      // If we're at the end of the path, set the node to newVal.
-                      if (val == 0) {
-                        // Release the lock
-                        @(*bitmaskTag, node, *storeToken)!({suffix: newVal}) |
-                        // Return
-                        ret!(Nil)
-                      } else {
-                        // Release the lock
-                        @(*bitmaskTag, node, *storeToken)!(val.set(suffix, newVal)) |
-                        // Return
-                        ret!(Nil)
+                      match operation {
+                        (false, newVal) => {
+                          if (val == 0) {
+                            @(*bitmaskTag, node, *storeToken)!({suffix: newVal}) |
+                            ret!(Nil)
+                          } else {
+                            @(*bitmaskTag, node, *storeToken)!(val.set(suffix, newVal)) |
+                            ret!(Nil)
+                          }
+                        }
+                        (true, update) => {
+                          if (val == 0) {
+                            TreeHashMapLeafWriter!({}, update, suffix, (*bitmaskTag, node, *storeToken), *ret)
+                          } else {
+                            TreeHashMapLeafWriter!(val, update, suffix, (*bitmaskTag, node, *storeToken), *ret)
+                          }
+                        }
                       }
                     }
                   } else {
@@ -214,18 +230,18 @@ in {
                             }
                           } |
                           // Child node now exists, loop
-                          TreeHashMapSetter!(map, nybList, n + 1, len, newVal, suffix, *ret)
+                          TreeHashMapSetter!(map, nybList, n + 1, len, operation, suffix, *ret)
                         } else {
                           // Child node created between reads
                           // Release lock
                           @(*bitmaskTag, node, *storeToken)!(val) |
                           // Loop
-                          TreeHashMapSetter!(map, nybList, n + 1, len, newVal, suffix, *ret)
+                          TreeHashMapSetter!(map, nybList, n + 1, len, operation, suffix, *ret)
                         }
                       }
                     } else {
                       // Child node exists, loop
-                      TreeHashMapSetter!(map, nybList, n + 1, len, newVal, suffix, *ret)
+                      TreeHashMapSetter!(map, nybList, n + 1, len, operation, suffix, *ret)
                     }
                   }
                 }
@@ -243,7 +259,21 @@ in {
                 // Get the bit list
                 ByteArrayToNybbleList!(hash, 0, depth, [], *nybListCh) |
                 for (@nybList <- nybListCh) {
-                  TreeHashMapSetter!(map, nybList, 0, 2 * depth, newVal, key, *ret)
+                  TreeHashMapSetter!(map, nybList, 0, 2 * depth, (false, newVal), key, *ret)
+                }
+              }
+            }
+          }
+        } |
+
+        contract TreeHashMap(@"updateOrInsert", @map, @key, update, ret) = {
+          new hashCh, nybListCh, keccak256Hash(`rho:crypto:keccak256Hash`) in {
+            keccak256Hash!(key.toByteArray(), *hashCh) |
+            for (@hash <- hashCh) {
+              for (@depth <<- @(map, *depthP)) {
+                ByteArrayToNybbleList!(hash, 0, depth, [], *nybListCh) |
+                for (@nybList <- nybListCh) {
+                  TreeHashMapSetter!(map, nybList, 0, 2 * depth, (true, *update), key, *ret)
                 }
               }
             }

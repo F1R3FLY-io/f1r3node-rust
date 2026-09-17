@@ -3647,8 +3647,9 @@ async fn create_with_checkpoint_attempt_observer<O: CheckpointAttemptObserver>(
 
     let mut canonical_user_candidates = user_deploys
         .into_iter()
-        .map(PendingDeploy::into_envelope)
-        .collect::<Vec<_>>();
+        .map(PendingDeploy::into_body_envelope)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(CasperError::RuntimeError)?;
     crate::rust::util::rholang::acceptance::canonical_sort(&mut canonical_user_candidates);
     let original_user_candidate_count = canonical_user_candidates.len();
     let initial_gate_started = std::time::Instant::now();
@@ -3865,7 +3866,9 @@ async fn create_with_checkpoint_attempt_observer<O: CheckpointAttemptObserver>(
         successful_attempt
             .rejected
             .iter()
-            .map(|deploy| ProcessedDeploy::admission_rejected(deploy, pre_state_hash.clone())),
+            .map(|deploy| ProcessedDeploy::admission_rejected(deploy, pre_state_hash.clone()))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(CasperError::RuntimeError)?,
     );
     let block_bonds = new_bonds;
     let mut bond_generations = runtime_manager
@@ -4119,7 +4122,7 @@ mod tests {
     }
 
     fn processed(deploy: crypto::rust::signatures::signed::Signed<DeployData>) -> ProcessedDeploy {
-        ProcessedDeploy::empty_from_cosigned(&current_envelope(&deploy))
+        ProcessedDeploy::empty_from_cosigned(&current_envelope(&deploy)).unwrap()
     }
 
     fn current_id(deploy: &crypto::rust::signatures::signed::Signed<DeployData>) -> DeployLookupId {
@@ -4735,7 +4738,7 @@ mod tests {
             .deploys
             .first()
             .expect("deploy")
-            .deploy
+            .primary()
             .sig
             .clone();
         snapshot.rejected_in_scope.insert(legacy_sig_id(&user_sig));

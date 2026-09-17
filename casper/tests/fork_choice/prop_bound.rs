@@ -1,5 +1,5 @@
-// BOUND seams (B2/B3/B4) — the real `Estimator::apply(max_parents, depth)
-// .tips_with_context` truncation/overflow/empty edges, mirroring the
+// BOUND seams (B2/B3/B4) — the real `Estimator::tips_with_context`
+// truncation/overflow/empty edges with explicit bounds, mirroring the
 // `formal/rocq/fork_choice/theories/Bound.v` model and the `fork_choice_bound_correct`
 // capstone the gate re-checks axiom-free. These edges previously had NO Rust modality.
 //
@@ -44,7 +44,9 @@ use proptest::test_runner::TestCaseError;
 use shared::rust::store::key_value_store::KvStoreError;
 
 use crate::helper::block_dag_storage_fixture::with_storage;
-use crate::helper::block_generator::{certified_fork_choice, create_block, create_genesis_block};
+use crate::helper::block_generator::{
+    certified_fork_choice_with_bounds as certified_fork_choice, create_block, create_genesis_block,
+};
 use crate::helper::block_util::generate_validator;
 
 lazy_static::lazy_static! {
@@ -142,7 +144,9 @@ async fn b2_sentinel_and_positive_cap_usize_safe() {
 
         // Unlimited via i32::MAX sentinel.
         let full = certified_fork_choice(
-            &Estimator::apply(i32::MAX, None),
+            &Estimator::apply(),
+            i32::MAX,
+            None,
             &dag,
             &genesis,
             latest.clone(),
@@ -153,11 +157,17 @@ async fn b2_sentinel_and_positive_cap_usize_safe() {
         assert_eq!(full.len(), 2, "two sibling leaves must yield two tips");
 
         // Unlimited via the -1 config sentinel — must NOT wrap `-1 as usize`.
-        let neg =
-            certified_fork_choice(&Estimator::apply(-1, None), &dag, &genesis, latest.clone())
-                .await
-                .expect("neg-1 tips")
-                .tips;
+        let neg = certified_fork_choice(
+            &Estimator::apply(),
+            -1,
+            None,
+            &dag,
+            &genesis,
+            latest.clone(),
+        )
+        .await
+        .expect("neg-1 tips")
+        .tips;
         assert_eq!(
             neg, full,
             "max_number_of_parents = -1 must mean unlimited (take all)"
@@ -165,7 +175,7 @@ async fn b2_sentinel_and_positive_cap_usize_safe() {
 
         // Positive cap of 1 truncates to just the head.
         let cap1 =
-            certified_fork_choice(&Estimator::apply(1, None), &dag, &genesis, latest.clone())
+            certified_fork_choice(&Estimator::apply(), 1, None, &dag, &genesis, latest.clone())
                 .await
                 .expect("cap-1 tips")
                 .tips;
@@ -176,7 +186,7 @@ async fn b2_sentinel_and_positive_cap_usize_safe() {
         );
 
         // Positive cap equal to the tip count keeps everything, in order.
-        let cap2 = certified_fork_choice(&Estimator::apply(2, None), &dag, &genesis, latest)
+        let cap2 = certified_fork_choice(&Estimator::apply(), 2, None, &dag, &genesis, latest)
             .await
             .expect("cap-2 tips")
             .tips;
@@ -197,7 +207,8 @@ async fn b3_score_overflow_is_typed_err() {
             .expect("dag representation");
 
         let result =
-            certified_fork_choice(&Estimator::apply(i32::MAX, None), &dag, &genesis, latest).await;
+            certified_fork_choice(&Estimator::apply(), i32::MAX, None, &dag, &genesis, latest)
+                .await;
 
         match result {
             Err(KvStoreError::InvalidArgument(msg)) => {
@@ -242,7 +253,9 @@ async fn b4_some_depth_on_genesis_only_is_ok() {
         // Some(0) drives the `filter_deep_parents` depth branch; empty latest =>
         // LCA = genesis => ranked = [genesis] (non-empty) => Ok([genesis]).
         let forkchoice = certified_fork_choice(
-            &Estimator::apply(i32::MAX, Some(0)),
+            &Estimator::apply(),
+            i32::MAX,
+            Some(0),
             &dag,
             &genesis,
             HashMap::new(),
@@ -277,7 +290,7 @@ proptest! {
                 .expect("dag representation");
 
             let full = certified_fork_choice(
-                &Estimator::apply(i32::MAX, None),
+                &Estimator::apply(), i32::MAX, None,
                 &dag,
                 &genesis,
                 latest.clone(),
@@ -287,7 +300,7 @@ proptest! {
                 .tips;
 
             let capped = certified_fork_choice(
-                &Estimator::apply(cap, None),
+                &Estimator::apply(), cap, None,
                 &dag,
                 &genesis,
                 latest,

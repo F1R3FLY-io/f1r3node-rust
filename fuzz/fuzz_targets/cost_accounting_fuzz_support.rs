@@ -87,21 +87,11 @@ pub fn signed_deploy(seed: u8) -> Signed<DeployData> {
 }
 
 pub fn processed_deploy(seed: u8, cost: u64, failed: bool) -> ProcessedDeploy {
-    ProcessedDeploy {
-        deploy: signed_deploy(seed),
-        envelope_commitment: Vec::<u8>::new().into(),
-        cost: PCost { cost },
-        deploy_log: Vec::new(),
-        is_failed: failed,
-        system_deploy_error: failed.then(|| "fuzz failure".to_string()),
-        cosigners: Vec::new(),
-        cosigner_threshold: 0,
-        pre_state_hash: Vec::<u8>::new().into(),
-        post_state_hash: Vec::<u8>::new().into(),
-        authority_funding_certificate: None,
-        authority_cost_witness: None,
-        admission_status: Default::default(),
-    }
+    let mut processed = ProcessedDeploy::empty(signed_deploy(seed)).unwrap();
+    processed.cost = PCost { cost };
+    processed.is_failed = failed;
+    processed.system_deploy_error = failed.then(|| "fuzz failure".to_string());
+    processed
 }
 
 pub fn block_with_deploy(deploy: ProcessedDeploy) -> BlockMessage {

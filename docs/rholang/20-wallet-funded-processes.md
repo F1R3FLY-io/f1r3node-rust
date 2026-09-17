@@ -16,6 +16,14 @@ The production implementation refines their RevVault, wallet, purse, located
 stack, and phlogiston roles onto F1R3node's existing `SystemVault`, RSpace, and
 Casper architecture. It does not introduce a second token or ledger.
 
+### Current multi-wallet limits
+
+Authority conservation and monetary cost sharing are separate requirements.
+The current physical allocator supports compound authority partitions with more than two members.
+This does not establish even monetary sharing across arbitrary funding wallets.
+The [multi-wallet path audit](../casper/theory/multi-wallet-funding-path-audit.md) records the current allocation paths, fee discrepancy, and test limits.
+Arbitrary-payer sharing and restored signed `phloLimit` and `phloPrice` controls remain incomplete.
+
 ![A sponsor funds authenticated outer and continuation purses, a gateway activates the retained lollipop capability, validators certify and settle each lane independently, and replay reproduces the same roots.](../casper/theory/diagrams/d2-9-funding-flow-sequence.svg)
 
 ## Actors, assets, and authority
@@ -458,6 +466,10 @@ authority. A fee is separately conserving:
 
 The blessed Exchange swaps already-existing carriers. It does not create REV,
 rescue an underfunded certificate, or serve as a hidden intermediate fee ledger.
+
+Exchange does not directly withdraw from SystemVault or quote a wallet conversion rate.
+Its one-datum-per-carrier swap does not establish equal monetary values for those payloads.
+Authorized cross-asset conversion requires the separate conversion contract in the arbitrary-payer plan.
 
 ## Failure and concurrency behavior
 

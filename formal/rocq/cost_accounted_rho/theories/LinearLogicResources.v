@@ -209,6 +209,150 @@ Proof.
   intros gamma f. apply dill_whynot_intro.
 Qed.
 
+Theorem additive_evidence_is_not_payable_duplication : forall atom,
+  dill [] [LLAtom atom] (LLWith (LLAtom atom) (LLAtom atom)) /\
+  length (linear_ctx_atoms [LLAtom atom]) = 1 /\
+  length (ll_consumed_atoms (LLWith (LLAtom atom) (LLAtom atom))) = 2 /\
+  ~ Permutation (linear_ctx_atoms [LLAtom atom])
+      (ll_consumed_atoms (LLWith (LLAtom atom) (LLAtom atom))).
+Proof.
+  intro atom. split; [apply dill_with; apply dill_ax |].
+  split; [reflexivity |]. split; [reflexivity |].
+  intro Hperm. apply Permutation_length in Hperm. simpl in Hperm. lia.
+Qed.
+
+Theorem unrestricted_evidence_is_not_new_linear_funding : forall atom,
+  dill [LLAtom atom] [] (LLBang (LLAtom atom)) /\
+  linear_ctx_atoms [] = [] /\
+  ll_consumed_atoms (LLBang (LLAtom atom)) = [atom].
+Proof.
+  intro atom. split.
+  - apply dill_unrestricted. now left.
+  - split; reflexivity.
+Qed.
+
+Theorem implication_evidence_is_not_an_execution_debit : forall atom,
+  dill [] [] (LLLolly (LLAtom atom) (LLAtom atom)) /\
+  linear_ctx_atoms [] = [] /\
+  ll_consumed_atoms (LLLolly (LLAtom atom) (LLAtom atom)) = [atom; atom].
+Proof.
+  intro atom. split.
+  - apply dill_lolly_intro. apply dill_ax.
+  - split; reflexivity.
+Qed.
+
+Inductive payable_projection_derivation : linear_ctx -> ll_formula -> Prop :=
+| projection_unit : payable_projection_derivation [] LLUnit
+| projection_atom : forall atom,
+    payable_projection_derivation [LLAtom atom] (LLAtom atom)
+| projection_tensor : forall first_ctx second_ctx first second,
+    payable_projection_derivation first_ctx first ->
+    payable_projection_derivation second_ctx second ->
+    payable_projection_derivation (first_ctx ++ second_ctx) (LLTensor first second)
+| projection_left : forall delta chosen other,
+    payable_projection_derivation delta chosen ->
+    payable_projection_derivation delta (LLPlus ChooseLeft chosen other)
+| projection_right : forall delta other chosen,
+    payable_projection_derivation delta chosen ->
+    payable_projection_derivation delta (LLPlus ChooseRight other chosen).
+
+Theorem payable_projection_has_logical_evidence : forall delta formula,
+  payable_projection_derivation delta formula ->
+  forall gamma, dill gamma delta formula.
+Proof.
+  intros delta formula Hderivation. induction Hderivation; intro gamma.
+  - apply dill_unit.
+  - apply dill_ax.
+  - apply dill_tensor; auto.
+  - apply dill_plus_left; auto.
+  - apply dill_plus_right; auto.
+Qed.
+
+Theorem payable_projection_preserves_exact_atoms : forall delta formula,
+  payable_projection_derivation delta formula ->
+  linear_ctx_atoms delta = ll_consumed_atoms formula.
+Proof.
+  intros delta formula Hderivation. induction Hderivation; try assumption;
+    try reflexivity.
+  unfold linear_ctx_atoms in *. rewrite map_app, concat_app.
+  now rewrite IHHderivation1, IHHderivation2.
+Qed.
+
+Theorem payable_projection_preserves_each_multiplicity : forall delta formula atom,
+  payable_projection_derivation delta formula ->
+  linear_atom_count delta atom = count_occ Nat.eq_dec (ll_consumed_atoms formula) atom.
+Proof.
+  intros delta formula atom Hderivation. unfold linear_atom_count.
+  now rewrite (payable_projection_preserves_exact_atoms delta formula Hderivation).
+Qed.
+
+Theorem payable_projection_preserves_required_units : forall delta formula,
+  payable_projection_derivation delta formula ->
+  length (linear_ctx_atoms delta) = ll_required_units formula.
+Proof.
+  intros delta formula Hderivation. induction Hderivation; try assumption;
+    try reflexivity.
+  unfold linear_ctx_atoms in *. rewrite map_app, concat_app, length_app.
+  simpl. now rewrite IHHderivation1, IHHderivation2.
+Qed.
+
+Theorem payable_projection_context_contains_only_atoms : forall delta formula,
+  payable_projection_derivation delta formula ->
+  Forall (fun entry => exists atom, entry = LLAtom atom) delta.
+Proof.
+  intros delta formula Hderivation. induction Hderivation; try assumption.
+  - constructor.
+  - constructor; [eauto | constructor].
+  - apply Forall_app. auto.
+Qed.
+
+Fixpoint payable_tensor_formula (atoms : list nat) : ll_formula :=
+  match atoms with
+  | [] => LLUnit
+  | atom :: rest => LLTensor (LLAtom atom) (payable_tensor_formula rest)
+  end.
+
+Theorem every_finite_atom_inventory_has_a_payable_projection : forall atoms,
+  payable_projection_derivation (map LLAtom atoms) (payable_tensor_formula atoms).
+Proof.
+  induction atoms as [| atom rest IH]; simpl.
+  - apply projection_unit.
+  - change (payable_projection_derivation ([LLAtom atom] ++ map LLAtom rest)
+      (LLTensor (LLAtom atom) (payable_tensor_formula rest))).
+    apply projection_tensor; [apply projection_atom | exact IH].
+Qed.
+
+Theorem committed_left_branch_ignores_unchosen_projection :
+  forall delta chosen first_other second_other,
+    payable_projection_derivation delta chosen ->
+    payable_projection_derivation delta (LLPlus ChooseLeft chosen first_other) /\
+    payable_projection_derivation delta (LLPlus ChooseLeft chosen second_other) /\
+    ll_consumed_atoms (LLPlus ChooseLeft chosen first_other) =
+      ll_consumed_atoms (LLPlus ChooseLeft chosen second_other).
+Proof.
+  intros delta chosen first_other second_other Hchosen.
+  repeat split; try (now apply projection_left); reflexivity.
+Qed.
+
+Theorem committed_right_branch_ignores_unchosen_projection :
+  forall delta chosen first_other second_other,
+    payable_projection_derivation delta chosen ->
+    payable_projection_derivation delta (LLPlus ChooseRight first_other chosen) /\
+    payable_projection_derivation delta (LLPlus ChooseRight second_other chosen) /\
+    ll_consumed_atoms (LLPlus ChooseRight first_other chosen) =
+      ll_consumed_atoms (LLPlus ChooseRight second_other chosen).
+Proof.
+  intros delta chosen first_other second_other Hchosen.
+  repeat split; try (now apply projection_right); reflexivity.
+Qed.
+
+Theorem branch_evidence_requires_a_distinct_projection_judgment :
+  forall delta first second,
+    ~ payable_projection_derivation delta (LLWith first second).
+Proof.
+  intros delta first second Hderivation. inversion Hderivation.
+Qed.
+
 Theorem ll_sig_algebra_required_complete :
   forall s,
     ll_required_units (ll_of_sig_algebra s) =

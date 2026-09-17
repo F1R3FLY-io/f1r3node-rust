@@ -13,7 +13,10 @@ use tracing::{event, Level};
 use super::accounting::authority::{
     AuthorityByteEvent, AuthorityEvent, AuthorityStackBirth, ResourceMultiset,
 };
+use super::accounting::byte_receipts::ByteObservationSnapshot;
 use super::accounting::costs::Cost;
+use super::accounting::economic_failure::{classify_errors, EvaluationFailureSummary};
+use super::accounting::phlo_execution::PhloFailure;
 use super::accounting::{RuntimeBudget, SignedProcess};
 use super::compiler::compiler::Compiler;
 use super::errors::InterpreterError;
@@ -32,9 +35,11 @@ use super::reduce::DebruijnInterpreter;
 pub struct EvaluateResult {
     pub cost: Cost,
     pub errors: Vec<InterpreterError>,
+    pub economic_failures: EvaluationFailureSummary,
     pub mergeable: HashMap<Par, MergeType>,
     pub authority_events: Vec<AuthorityEvent<[u8; 32]>>,
     pub authority_byte_events: Vec<AuthorityByteEvent>,
+    pub byte_observations: ByteObservationSnapshot,
     pub authority_realized: ResourceMultiset<[u8; 32]>,
     pub authority_stack_births: Vec<AuthorityStackBirth>,
     pub quantitative_byte_cost: u64,
@@ -124,9 +129,11 @@ impl InterpreterImpl {
                     "Initial phlo must be non-negative, got {}",
                     initial_phlo.value
                 ))],
+                economic_failures: EvaluationFailureSummary::single(PhloFailure::Unclassified),
                 mergeable: HashMap::new(),
                 authority_events: Vec::new(),
                 authority_byte_events: Vec::new(),
+                byte_observations: ByteObservationSnapshot::default(),
                 authority_realized: ResourceMultiset::default(),
                 authority_stack_births: Vec::new(),
                 quantitative_byte_cost: 0,
@@ -246,15 +253,12 @@ impl InterpreterImpl {
             let phase_start = Instant::now();
             event!(Level::DEBUG, mark = "started-reduce-term", "inj_attempt");
             let _comm_accounting_scope = self.c.enter_comm_accounting_scope();
-            let reduce_result = match &host_work {
-                Some(host_work) => {
-                    reducer
-                        .inj_with_host_work(parsed, rand, host_work.clone())
-                        .await
-                }
-                None => reducer.inj(parsed, rand).await,
-            };
+            let (reduce_result, mut economic_failures) = reducer
+                .inj_with_observation(parsed, rand, host_work.clone())
+                .await;
             let reduce_result = if host_work.as_ref().is_some_and(HostWorkBudget::is_rejected) {
+                economic_failures = economic_failures
+                    .union(EvaluationFailureSummary::single(PhloFailure::Platform));
                 Err(InterpreterError::HostWorkRejected)
             } else {
                 reduce_result
@@ -268,21 +272,29 @@ impl InterpreterImpl {
                 Ok(()) => {
                     event!(Level::DEBUG, mark = "finished-reduce-term", "inj_attempt");
                     let mergeable_channels = { self.merge_chs.read().await.clone() };
+                    let byte_observations = self.c.byte_observations();
+                    let authority_byte_events = byte_observations.legacy_events();
+                    let quantitative_byte_cost = authority_byte_events
+                        .iter()
+                        .try_fold(0_u64, |sum, event| sum.checked_add(event.amount))
+                        .expect("validated byte-cost trace overflow");
 
                     Ok(EvaluateResult {
                         cost: self.c.total_cost(),
                         errors: Vec::new(),
+                        economic_failures,
                         mergeable: mergeable_channels,
                         authority_events: self.c.authority_events(),
-                        authority_byte_events: self.c.authority_byte_events(),
+                        authority_byte_events,
+                        byte_observations,
                         authority_realized: self.c.authority_realized(),
                         authority_stack_births: self.c.authority_stack_births(),
-                        quantitative_byte_cost: self.c.quantitative_byte_cost(),
+                        quantitative_byte_cost,
                     })
                 }
                 Err(e) => {
                     event!(Level::DEBUG, mark = "failed-reduce-term", "inj_attempt");
-                    self.handle_error(e)
+                    self.handle_observed_error(e, economic_failures)
                 }
             }
         };
@@ -324,6 +336,16 @@ impl InterpreterImpl {
     }
 
     fn handle_error(&self, error: InterpreterError) -> Result<EvaluateResult, InterpreterError> {
+        let failures = classify_errors(std::slice::from_ref(&error), None)
+            .unwrap_or_else(|_| EvaluationFailureSummary::single(PhloFailure::Platform));
+        self.handle_observed_error(error, failures)
+    }
+
+    fn handle_observed_error(
+        &self,
+        error: InterpreterError,
+        economic_failures: EvaluationFailureSummary,
+    ) -> Result<EvaluateResult, InterpreterError> {
         if matches!(
             &error,
             InterpreterError::ParserError(_) | InterpreterError::HostWorkRejected
@@ -331,9 +353,11 @@ impl InterpreterImpl {
             return Ok(EvaluateResult {
                 cost: Cost::create(0, "parse failure"),
                 errors: vec![error],
+                economic_failures,
                 mergeable: HashMap::new(),
                 authority_events: Vec::new(),
                 authority_byte_events: Vec::new(),
+                byte_observations: ByteObservationSnapshot::default(),
                 authority_realized: ResourceMultiset::default(),
                 authority_stack_births: Vec::new(),
                 quantitative_byte_cost: 0,
@@ -345,15 +369,23 @@ impl InterpreterImpl {
             InterpreterError::AggregateError { interpreter_errors } => interpreter_errors,
             error => vec![error],
         };
+        let byte_observations = self.c.byte_observations();
+        let authority_byte_events = byte_observations.legacy_events();
+        let quantitative_byte_cost = authority_byte_events
+            .iter()
+            .try_fold(0_u64, |sum, event| sum.checked_add(event.amount))
+            .expect("validated byte-cost trace overflow");
         Ok(EvaluateResult {
             cost: self.c.total_cost(),
             errors,
+            economic_failures,
             mergeable: HashMap::new(),
             authority_events: self.c.authority_events(),
-            authority_byte_events: self.c.authority_byte_events(),
+            authority_byte_events,
+            byte_observations,
             authority_realized: self.c.authority_realized(),
             authority_stack_births: self.c.authority_stack_births(),
-            quantitative_byte_cost: self.c.quantitative_byte_cost(),
+            quantitative_byte_cost,
         })
     }
 }

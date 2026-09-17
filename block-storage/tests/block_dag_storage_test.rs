@@ -24,8 +24,7 @@ use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
 use models::rust::block_implicits::{
     block_element_gen, block_elements_with_parents_gen, block_hash_gen, block_with_new_hashes_gen,
-    get_random_block as random_block, get_random_block_default, processed_deploy_gen,
-    validator_gen,
+    get_random_block as random_block, get_random_block_default, validator_gen,
 };
 use models::rust::block_metadata::{
     AdmissionRejectionReason, BlockMetadata, CertifiedAdmissionOutcome, CertifiedSenderAuthority,
@@ -2049,20 +2048,19 @@ fn deploy_indices_are_arrival_order_independent() {
 
 #[tokio::test]
 async fn approved_v6_genesis_occurrence_and_lifecycle_are_idempotent_and_persistent() {
+    use models::rust::block_implicits::protocol_v6_processed_deploy_gen;
     let mut runner = proptest::test_runner::TestRunner::deterministic();
-    let mut processed = processed_deploy_gen()
+    let mut processed = protocol_v6_processed_deploy_gen()
         .new_tree(&mut runner)
         .expect("processed deploy sample")
         .current();
-    processed.envelope_commitment = Bytes::from(vec![0x51; 32]);
-    processed.cosigner_threshold = 1;
     processed.is_failed = false;
 
     let mut genesis = genesis_block();
     genesis.header.version = CERTIFIED_ADMISSION_PROTOCOL_VERSION;
     genesis.sender = Bytes::new();
     genesis.body.deploys = vec![processed.clone()];
-    let deploy_id = DeployIdV6::try_from(processed.envelope_commitment.as_ref()).unwrap();
+    let deploy_id = processed.deploy_id_v6().unwrap();
     let lookup_id = DeployLookupId::V6(deploy_id);
     let expected_event = LifecycleEvent {
         height: 0,
@@ -2148,9 +2146,7 @@ fn invalid_blocks_are_diagnostic_only_and_do_not_enter_deploy_indices() {
         .new_tree(&mut runner)
         .expect("processed deploy sample")
         .current();
-    let deploy_id = DeployLookupId::V6(
-        DeployIdV6::try_from(processed.envelope_commitment.as_ref()).expect("deploy identity"),
-    );
+    let deploy_id = DeployLookupId::V6(processed.deploy_id_v6().expect("deploy identity"));
     let invalid_block = get_random_block(
         Some(1),
         Some(1),
@@ -3334,8 +3330,7 @@ fn deploy_appearance_is_insertion_order_independent() {
             .new_tree(&mut runner)
             .unwrap()
             .current();
-        let deploy_id =
-            DeployLookupId::V6(DeployIdV6::try_from(deploy.envelope_commitment.as_ref()).unwrap());
+        let deploy_id = DeployLookupId::V6(deploy.deploy_id_v6().unwrap());
 
         for reversed in [false, true] {
             let genesis = genesis_block();
@@ -3409,7 +3404,7 @@ fn canonical_appearance_is_the_latest_inclusion_never_a_record_carrier() {
             .new_tree(&mut runner)
             .unwrap()
             .current();
-        let deploy_id = DeployIdV6::try_from(deploy.envelope_commitment.as_ref()).unwrap();
+        let deploy_id = deploy.deploy_id_v6().unwrap();
 
         let genesis = genesis_block();
         let dag_storage = create_dag_storage(&genesis).await;
@@ -3498,7 +3493,7 @@ fn insert_projects_lifecycle_events_and_carrier_entries() {
             .new_tree(&mut runner)
             .unwrap()
             .current();
-        let executed_id = DeployIdV6::try_from(executed.envelope_commitment.as_ref()).unwrap();
+        let executed_id = executed.deploy_id_v6().unwrap();
         let rejected_id = DeployIdV6::try_from(&[0xAA; 32][..]).unwrap();
         let carrier = prost::bytes::Bytes::from(vec![0xBB; 32]);
 
@@ -3535,7 +3530,7 @@ fn insert_projects_lifecycle_events_and_carrier_entries() {
             .unwrap()
             .current();
         let invalid_deploy_id =
-            DeployIdV6::try_from(invalid_deploy.envelope_commitment.as_ref()).unwrap();
+            invalid_deploy.deploy_id_v6().unwrap();
         let invalid_block = get_random_block(
             Some(1),
             None,
@@ -3569,7 +3564,7 @@ fn insert_projects_lifecycle_events_and_carrier_entries() {
             .expect("executed deploy has a row");
         assert_eq!(
             included_row.valid_after,
-            Some(executed.deploy.data.valid_after_block_number),
+            Some(executed.body().valid_after_block_number),
             "the first inclusion records the deploy's window start"
         );
         assert!(
@@ -3745,7 +3740,7 @@ fn insert_retry_after_ingest_first_crash_does_not_duplicate_events() {
             .write()
             .append_event_once(
                 &deploy_id,
-                Some(deploy.deploy.data.valid_after_block_number),
+                Some(deploy.body().valid_after_block_number),
                 LifecycleEvent {
                     height: 1,
                     block_hash: block.block_hash.to_vec(),

@@ -3272,7 +3272,7 @@ impl BlockDagKeyValueStorage {
                     }
                 };
                 if entry.1.valid_after.is_none() {
-                    entry.1.valid_after = Some(deploy.deploy.data.valid_after_block_number);
+                    entry.1.valid_after = Some(deploy.body().valid_after_block_number);
                 }
                 let event = LifecycleEvent {
                     height: block_number,

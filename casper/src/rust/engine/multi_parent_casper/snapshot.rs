@@ -561,7 +561,13 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
     // consensus-safety mechanism because validators replay declared parents.
     let initial_fork_choice = this
         .estimator
-        .tips_with_context(&dag, &this.approved_block, &consensus_context)
+        .tips_with_context(
+            &dag,
+            &this.approved_block,
+            &consensus_context,
+            this.casper_shard_conf.max_number_of_parents,
+            Some(this.casper_shard_conf.max_parent_depth),
+        )
         .await?;
     let ghost_main_parent = if consensus_context
         .vote_projection()
@@ -1691,7 +1697,7 @@ mod tests {
             Some(19),
             Some(Vec::new()),
             Some(Vec::new()),
-            Some(vec![ProcessedDeploy::empty(canonical.clone())]),
+            Some(vec![ProcessedDeploy::empty(canonical.clone()).unwrap()]),
             Some(Vec::new()),
             None,
             Some("test".to_string()),
@@ -1825,7 +1831,7 @@ mod tests {
             Some(3),
             Some(Vec::new()),
             Some(Vec::new()),
-            Some(vec![ProcessedDeploy::empty(deploy)]),
+            Some(vec![ProcessedDeploy::empty(deploy).unwrap()]),
             Some(Vec::new()),
             None,
             Some("test".to_string()),

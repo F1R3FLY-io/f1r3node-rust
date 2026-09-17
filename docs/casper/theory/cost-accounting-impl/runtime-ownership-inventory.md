@@ -4,7 +4,7 @@
 
 This inventory records the runtime owners inspected on September 7, 2026.
 The baseline is commit `559eb07fac98da2e6392e3a84c93bac41558c86c` plus the current uncommitted feature changes.
-It supports `pr216-runtime-ownership-inventory` and the subsequent cache-release and history-retention tasks.
+It identifies cache-release and history-retention requirements.
 
 The tables distinguish source observations from unproved resource guarantees.
 The source inventory covers the named owner categories and their release boundaries.
@@ -158,7 +158,7 @@ These requirements restore an existing validation contract. They do not require 
 The runtime requester's recording-importer tests do not cover this boundary.
 The [real-store regressions](../../../../casper/src/rust/engine/runtime_state_import_tests.rs) now use the actual importer, real root lookup, and independent history, cold, and root stores.
 Their nonempty fixture uses the real exporter, normal channel hashing, and typed channel lookup.
-Task `pr216-state-import-validity` tracks the native reproduction, provenance, concurrent formal model, repair, and conformance checks.
+State-import verification requires native reproduction, source attribution, a concurrent formal model, repair, and conformance checks.
 These regressions do not establish the historical cause of a CI failure.
 
 ### Real-store regression results
@@ -522,16 +522,14 @@ Its unresolved storage policy requires upstream review.
 This inventory does not select that policy.
 
 The source inventory is complete for the named owner categories.
-The runtime-lifetime repair remains incomplete until the following tasks establish their required evidence.
+The runtime-lifetime repair remains incomplete until the following evidence is available.
 
-| Required verification | Current task owner |
-| --- | --- |
-| Report queue, response, and receipt-manifest allocations under controlled concurrent requests. | `pr216-runtime-cache-release` |
-| Child-task release during shutdown, cancellation, panic, and storage errors. | `pr216-runtime-cache-release` |
-| Concurrent cache admission, counter resets, and post-eviction caller ownership. | `pr216-runtime-cache-release` |
-| Root and history retention across the consumer paths listed above. | `pr216-root-history-retention` |
-| Validated import, canonical cursor handling, and complete-root publication before recovery retirement. | `pr216-state-import-validity` |
-| Aggregate live copies, persistent snapshots, and allocator-retained pages under a pinned concurrent workload. | `pr216-long-horizon-resource-measurement` |
+- Report queue, response, and receipt-manifest allocations under controlled concurrent requests.
+- Child-task release during shutdown, cancellation, panic, and storage errors.
+- Concurrent cache admission, counter resets, and post-eviction caller ownership.
+- Root and history retention across the consumer paths listed above.
+- Validated import, canonical cursor handling, and complete-root publication before recovery retirement.
+- Aggregate live copies, persistent snapshots, and allocator-retained pages under a pinned concurrent workload.
 
 The inventory identified the guard defect before its separate, formally checked repair.
 No Casper architecture change resulted from this repair.

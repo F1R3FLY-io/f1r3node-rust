@@ -124,7 +124,7 @@ async fn fixture() -> (
         block_retriever,
         event_publisher: F1r3flyEvents::new(),
         runtime_manager: Arc::new(runtime_manager),
-        estimator: Estimator::apply(2, None),
+        estimator: Estimator::apply(),
         block_store,
         block_dag_storage,
         deploy_storage: Arc::new(parking_lot::Mutex::new(

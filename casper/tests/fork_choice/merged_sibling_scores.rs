@@ -152,10 +152,9 @@ async fn merged_siblings_must_not_score_equal() {
             (v3.clone(), m3.block_hash.clone()),
         ]);
 
-        let fork_choice =
-            certified_fork_choice(&Estimator::apply(i32::MAX, None), &dag, &genesis, latest)
-                .await
-                .expect("tips");
+        let fork_choice = certified_fork_choice(&Estimator::apply(), &dag, &genesis, latest)
+            .await
+            .expect("tips");
 
         // Scoring the spine narrows what the GHOST descent can walk: it follows
         // MAIN-parent children, so a scored block is reachable only through the

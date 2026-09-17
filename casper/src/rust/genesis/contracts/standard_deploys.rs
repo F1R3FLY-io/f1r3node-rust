@@ -289,7 +289,27 @@ pub fn token_metadata(
     native_token_decimals: u32,
     shard_id: &str,
 ) -> Signed<DeployData> {
+    token_metadata_with_policy(
+        native_token_name,
+        native_token_symbol,
+        native_token_decimals,
+        shard_id,
+        None,
+    )
+}
+
+pub fn token_metadata_with_policy(
+    native_token_name: &str,
+    native_token_symbol: &str,
+    native_token_decimals: u32,
+    shard_id: &str,
+    resource_policy: Option<&models::rust::phlo_schedule::PhloGenesisPolicy>,
+) -> Signed<DeployData> {
     let decimals_str = native_token_decimals.to_string();
+    let getter = resource_policy.map_or_else(String::new, |policy| {
+        let bytes = policy.encode().expect("validated genesis policy must encode");
+        format!("contract TokenMetadata(@\"resourcePolicy\", ret) = {{ ret!(\"{}\".hexToBytes()) }} |\n  ", hex::encode(bytes))
+    });
     to_deploy(
         CompiledRholangTemplate::new(
             "TokenMetadata.rhox",
@@ -299,6 +319,7 @@ pub fn token_metadata(
                 ("nativeTokenName", native_token_name),
                 ("nativeTokenSymbol", native_token_symbol),
                 ("nativeTokenDecimals", &decimals_str),
+                ("resourcePolicyGetter", &getter),
             ],
         ),
         TOKEN_METADATA_PK,
@@ -335,6 +356,9 @@ pub fn pos_generator(pos: &ProofOfStake, shard_id: &str) -> Signed<DeployData> {
                 "faultToleranceThresholdPpm",
                 &pos.fault_tolerance_threshold_ppm.to_string(),
             ),
+            ("maxParentDepth", &pos.max_parent_depth.to_string()),
+            ("deployLifespan", &pos.deploy_lifespan.to_string()),
+            ("minPhloPrice", &pos.min_phlo_price.to_string()),
             (
                 "posMultiSigPublicKeys",
                 &ProofOfStake::public_keys(&pos.pos_multi_sig_public_keys),
@@ -467,6 +491,9 @@ mod embedded_contract_compile_tests {
             quarantine_length: 20,
             number_of_active_validators: 1,
             fault_tolerance_threshold_ppm: 100_000,
+            max_parent_depth: 15,
+            deploy_lifespan: 50,
+            min_phlo_price: 0,
             pos_multi_sig_public_keys: vec![hex::encode(&POS_GENERATOR_PUB_KEY.bytes)],
             pos_multi_sig_quorum: 1,
             max_cosigners_per_deploy: 64,

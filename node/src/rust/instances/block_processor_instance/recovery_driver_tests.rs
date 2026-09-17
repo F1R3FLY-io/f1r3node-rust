@@ -128,7 +128,7 @@ impl Fixture {
             block_retriever: retriever,
             event_publisher: F1r3flyEvents::new(),
             runtime_manager: Arc::new(runtime),
-            estimator: Estimator::apply(2, None),
+            estimator: Estimator::apply(),
             block_store: KeyValueBlockStore::create_from_kvm(&mut manager)
                 .await
                 .unwrap(),

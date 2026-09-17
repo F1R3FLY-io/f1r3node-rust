@@ -1113,7 +1113,7 @@ impl TestNode {
         );
         let connections_cell = ConnectionsCell::new();
         let _clique_oracle = CliqueOracleImpl;
-        let estimator = Estimator::apply(max_number_of_parents, max_parent_depth);
+        let estimator = Estimator::apply();
         let mut rp_conf = create_rp_conf_ask(current_peer_node.clone(), None, None);
         if let Some(bootstrap_peer) = bootstrap_peer {
             rp_conf.bootstrap = Some(bootstrap_peer);

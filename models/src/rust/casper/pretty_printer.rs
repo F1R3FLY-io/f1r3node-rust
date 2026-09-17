@@ -64,10 +64,13 @@ impl PrettyPrinter {
 
     pub fn build_string_processed_deploy(d: &ProcessedDeploy) -> String {
         format!(
-            "User: {}, Cost: {:?} {}",
-            Self::build_string_no_limit(&d.deploy.pk.bytes),
+            "User: {}, Cost: {:?} {} Sig: {} SigAlgorithm: {} ValidAfterBlockNumber: {}",
+            Self::build_string_no_limit(&d.primary().pk.bytes),
             d.cost,
-            Self::build_string_signed_deploy_data(&d.deploy)
+            Self::build_string_deploy_data(d.body()),
+            Self::build_string_sig(&d.primary().sig),
+            d.primary().sig_algorithm.name(),
+            d.body().valid_after_block_number,
         )
     }
 
@@ -123,7 +126,7 @@ mod tests {
     use super::*;
     use crate::rhoapi::PCost;
     use crate::rust::block_implicits::get_random_block;
-    use crate::rust::casper::protocol::casper_message::{DeployAdmissionStatus, HasBlock};
+    use crate::rust::casper::protocol::casper_message::HasBlock;
 
     fn block_with_parents(parents: Vec<Bytes>) -> BlockMessage {
         get_random_block(
@@ -326,21 +329,8 @@ mod tests {
     #[test]
     fn processed_deploy_rendering_includes_deployer_and_cost() {
         let signed = signed_deploy();
-        let processed = ProcessedDeploy {
-            deploy: signed.clone(),
-            envelope_commitment: Bytes::new(),
-            cost: PCost { cost: 17 },
-            deploy_log: Vec::new(),
-            is_failed: false,
-            system_deploy_error: None,
-            cosigners: Vec::new(),
-            cosigner_threshold: 0,
-            pre_state_hash: Bytes::new(),
-            post_state_hash: Bytes::new(),
-            authority_funding_certificate: None,
-            authority_cost_witness: None,
-            admission_status: DeployAdmissionStatus::Executed,
-        };
+        let mut processed = ProcessedDeploy::empty(signed.clone()).unwrap();
+        processed.cost = PCost { cost: 17 };
         let rendered = PrettyPrinter::build_string_processed_deploy(&processed);
         assert!(rendered.starts_with(&format!(
             "User: {}",

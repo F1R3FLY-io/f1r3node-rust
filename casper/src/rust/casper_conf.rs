@@ -5,6 +5,29 @@ use serde::{Deserialize, Serialize};
 
 use crate::rust::casper::UNLIMITED_PARENTS;
 
+pub fn validate_chain_parameter_values(
+    max_parent_depth: i64,
+    deploy_lifespan: i64,
+    min_phlo_price: i64,
+) -> Result<(), String> {
+    if !(1..=i64::from(i32::MAX)).contains(&max_parent_depth) {
+        return Err(format!(
+            "maxParentDepth out of range [1, i32::MAX]: {max_parent_depth}"
+        ));
+    }
+    if !(1..=i64::from(i32::MAX)).contains(&deploy_lifespan) {
+        return Err(format!(
+            "deployLifespan out of range [1, i32::MAX]: {deploy_lifespan}"
+        ));
+    }
+    if min_phlo_price < 0 {
+        return Err(format!(
+            "minPhloPrice out of range [0, i64::MAX]: {min_phlo_price}"
+        ));
+    }
+    Ok(())
+}
+
 pub fn validate_finalization_certificate_capacity(
     number_of_active_validators: u32,
 ) -> Result<(), String> {
@@ -88,6 +111,8 @@ pub struct CasperConf {
     pub max_number_of_parents: i32,
     #[serde(rename = "max-parent-depth")]
     pub max_parent_depth: i32,
+    #[serde(rename = "deploy-lifespan", default = "default_deploy_lifespan")]
+    pub deploy_lifespan: i64,
     #[serde(
         rename = "fork-choice-stale-threshold",
         deserialize_with = "de_duration"
@@ -188,6 +213,8 @@ pub struct CasperConf {
     pub mergeable_channels_gc_depth_buffer: i32,
 }
 
+fn default_deploy_lifespan() -> i64 { 50 }
+
 impl CasperConf {
     pub fn validate_finalization_certificate_capacity(&self) -> Result<(), String> {
         validate_finalization_certificate_capacity(
@@ -281,6 +308,8 @@ pub struct RoundRobinDispatcher {
 /// Genesis block data configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenesisBlockData {
+    #[serde(rename = "resource-policy", default)]
+    pub resource_policy: Option<String>,
     #[serde(rename = "genesis-data-dir")]
     pub genesis_data_dir: String,
     #[serde(rename = "bonds-file")]
@@ -365,6 +394,22 @@ pub struct GenesisBlockData {
 pub const MAX_NATIVE_TOKEN_DECIMALS: u32 = 18;
 
 impl GenesisBlockData {
+    pub fn lowered_resource_policy(
+        &self,
+    ) -> Result<Option<models::rust::phlo_schedule::PhloGenesisPolicy>, String> {
+        use models::rust::phlo_schedule::PhloGenesisPolicy;
+        self.resource_policy
+            .as_ref()
+            .map(|encoded| {
+                if encoded.len() > PhloGenesisPolicy::LIMITS.wire.total_bytes * 2 {
+                    return Err("genesis resource policy exceeds its byte limit".to_string());
+                }
+                let bytes = hex::decode(encoded)
+                    .map_err(|error| format!("invalid genesis resource policy hex: {error}"))?;
+                PhloGenesisPolicy::decode(&bytes).map_err(|error| error.to_string())
+            })
+            .transpose()
+    }
     /// Lower the serde-parsed task #13b client funding-slot allocations
     /// (`[(hex public-key, amount)]`) to `[(crypto::PublicKey, amount)]`,
     /// hex-decoding each key ONCE at startup so a malformed key or a negative
@@ -404,6 +449,7 @@ impl GenesisBlockData {
     }
 
     pub fn validate_cost_accounting_parameters(&self) -> Result<(), String> {
+        self.lowered_resource_policy()?;
         if self.epoch_length <= 0 {
             return Err(format!(
                 "epoch-length must be positive; got {}",
@@ -725,8 +771,29 @@ mod native_token_validation_tests {
 
     use super::*;
 
+    #[test]
+    fn genesis_resource_policy_config_rejects_invalid_or_oversized_records() {
+        let mut genesis = valid_genesis();
+        assert_eq!(genesis.lowered_resource_policy().unwrap(), None);
+        for bytes in ["", "00", "not-hex"] {
+            genesis.resource_policy = Some(bytes.to_string());
+            assert!(genesis.validate_cost_accounting_parameters().is_err());
+        }
+        genesis.resource_policy = Some(
+            "0".repeat(
+                models::rust::phlo_schedule::PhloGenesisPolicy::LIMITS
+                    .wire
+                    .total_bytes
+                    * 2
+                    + 1,
+            ),
+        );
+        assert!(genesis.lowered_resource_policy().is_err());
+    }
+
     fn valid_genesis() -> GenesisBlockData {
         GenesisBlockData {
+            resource_policy: None,
             genesis_data_dir: String::new(),
             bonds_file: String::new(),
             wallets_file: String::new(),

@@ -32,7 +32,7 @@ become channels, tokens become messages on those channels, and signed
 processes must consume fuel before they can communicate.
 
 This article presents a machine-checked proof of that claim, mechanized
-in **Rocq 9.1.1** across 150 modules and 61,805 lines of development, and
+in **Rocq 9.1.1** across 221 modules and 83,386 lines of development, and
 complements it with a **TLA+** finite-state model verified by TLC. The required
 aggregate gate also cross-checks symbolic N-ary authority, the typed threat and
 search-frontier models, and replay-root materialization with Apalache. The
@@ -54,9 +54,83 @@ axiom-free forward weak-barb propagation from a replicated body to both
 the primitive replicator and Meredith's reflective replication encoding
 (`preplicate_bang_encoding_body_barbs_sound`,
 `replication_encoding_forward_barb_sound`).
-All 2,857 `Qed.`/`Defined.` proof terms belong to the current source inventory.
+All 4,171 `Qed.`/`Defined.` proof terms belong to the current source inventory.
 Source counts alone do not establish that an aggregate verification run passed.
+The [economic failure observation](cost-accounting-impl/economic-failure-observation.md) connects failure-summary proofs to concurrent recorder tests and preserves the legacy public error contract.
+The [observed outcome matcher](cost-accounting-impl/observed-funding-outcome.md) binds complete execution evidence to one equivalent prepared settlement and rejects ambiguous captures.
+The [checked wallet adapter](cost-accounting-impl/lexicographic-minimax-funding.md#checked-wallet-settlement-requests) preserves authenticated custody, native amounts, and cursor context through request preparation.
+Its proofs cover projection and zero-row omission, not the authenticity of runtime observations or complete deployment publication.
+The [checked envelope store](cost-accounting-impl/signed-phlo-deploy-envelope.md#checked-envelope-retention) preserves complete signed payloads through explicit format dispatch and canonical record validation.
+Its proofs require a codec round-trip premise. They do not prove cryptographic security or database durability.
+The [authority valuation record](cost-accounting-impl/funding-settlement-design-review.md#checked-valuation-algebra) separates the selected valuation algebra from native pricing and backing integration.
+The [funding assignment record](cost-accounting-impl/funding-settlement-design-review.md#checked-funding-assignments) connects eligibility proofs to the native assignment checker and states its authentication boundary.
+The [prepaid discharge record](cost-accounting-impl/funding-settlement-design-review.md#typed-prepaid-discharge-proof) proves typed residual conservation and states the remaining native correspondence requirements.
+The [minimax ordering record](cost-accounting-impl/lexicographic-minimax-funding.md#verification-progress) separates exact rank proofs from complete feasible-set construction and native settlement integration.
+The [deficit certificate record](cost-accounting-impl/lexicographic-minimax-funding.md#restricted-funding-rejection-certificate) proves a restricted-funding rejection condition and states its native authentication boundary.
+The [residual-cut record](cost-accounting-impl/lexicographic-minimax-funding.md#residual-cut-refinement-and-transition-checks) derives that certificate from partial flow and residual closure, with native transition checks.
+The [residual-transfer record](cost-accounting-impl/lexicographic-minimax-funding.md#residual-transfers-and-path-conservation) proves paired-capacity conservation and path boundary equations, with native history and interruption tests.
+The [reachability record](cost-accounting-impl/lexicographic-minimax-funding.md#residual-reachability-and-search-completion) proves exploration invariants and a terminating reference search, with native queue checks.
+The [graph-composition record](cost-accounting-impl/lexicographic-minimax-funding.md#funding-graph-and-deficit-composition) connects that search to the exact funding edge equations and the deficit theorem.
+The [parent-path record](cost-accounting-impl/lexicographic-minimax-funding.md#ranked-parent-paths-and-bottlenecks) proves extraction of simple parent paths and the greatest safe augmentation amount.
+The [network-augmentation record](cost-accounting-impl/lexicographic-minimax-funding.md#network-augmentation-and-native-transition-checks) derives pair safety and path-flow conservation from executable network updates.
+The [funding-projection record](cost-accounting-impl/lexicographic-minimax-funding.md#funding-projection-from-network-flows) connects network conservation to payer bounds, obligation bounds, eligibility, and assignment-checker acceptance.
+Its [counter extension](cost-accounting-impl/lexicographic-minimax-funding.md#exact-funding-counter-growth) derives exact funding growth from the projected edge flows.
+The [initialization record](cost-accounting-impl/lexicographic-minimax-funding.md#initial-funding-graph) derives initial funding validity from the constructed layout, unique edge kinds, and zero flow.
+The [path-encoding record](cost-accounting-impl/lexicographic-minimax-funding.md#parent-paths-and-residual-pair-uniqueness) derives pair uniqueness from simple paths and proves ranked extraction of linked operations.
+The [native arithmetic record](cost-accounting-impl/lexicographic-minimax-funding.md#direct-native-arithmetic-verification) verifies the shared Rust residual-transfer body with Verus and three incorrect-body controls.
+That result has a separate Verus and imported-library trust boundary. It does not establish complete native solver refinement.
+The [native edge-construction record](cost-accounting-impl/lexicographic-minimax-funding.md#direct-native-edge-construction-verification) verifies the shared paired-edge constructor and its adjacency updates.
+The [native pair-update record](cost-accounting-impl/lexicographic-minimax-funding.md#direct-native-pair-update-verification) verifies exact graph mutations and unchanged state on arithmetic rejection.
+The [native discovery record](cost-accounting-impl/lexicographic-minimax-funding.md#direct-native-discovery-verification) verifies queue membership and preservation of recorded parents.
+The [discovery-history record](cost-accounting-impl/lexicographic-minimax-funding.md#discovery-histories-and-parent-path-termination) derives decreasing parent ranks and simple root paths for arbitrary finite histories.
+The [search-outcome record](cost-accounting-impl/lexicographic-minimax-funding.md#complete-neighbor-scans-and-funding-outcomes) connects sparse neighbor scans to simple parent paths or checked infeasibility certificates.
+The [adjacency record](cost-accounting-impl/lexicographic-minimax-funding.md#native-adjacency-bounds-and-scan-termination) verifies decreasing native links and proves bounded, acyclic chain traversal.
+The [coverage record](cost-accounting-impl/lexicographic-minimax-funding.md#exact-adjacency-ownership-and-coverage) proves that indexed construction preserves complete per-vertex adjacency chains without extra edges.
+The [native ownership record](cost-accounting-impl/lexicographic-minimax-funding.md#native-residual-pair-ownership) verifies the XOR source representation and its preservation by the shared Rust constructor.
+The [native contract connection](cost-accounting-impl/lexicographic-minimax-funding.md#native-update-contract-and-indexed-coverage) derives exact adjacency coverage from those indexed update equations.
+The [native scan step](cost-accounting-impl/lexicographic-minimax-funding.md#verified-native-adjacency-step) verifies valid edge retrieval, cursor progress, and stable exhaustion in the search loop.
+The [queue-bound record](cost-accounting-impl/lexicographic-minimax-funding.md#native-discovery-queue-bound) proves discovery stays within the vertex count and checks reserved queue storage through saturation.
+The [BFS queue record](cost-accounting-impl/lexicographic-minimax-funding.md#bfs-queue-scheduling-and-processed-prefix-bounds) proves exact processed-prefix growth, fresh selection, and a vertex-count bound on scans.
+The [composed BFS](cost-accounting-impl/lexicographic-minimax-funding.md#complete-bfs-and-certified-funding-outcomes) derives termination and a path or checked deficit from the initial search state.
+The [augmentation-history proof](cost-accounting-impl/lexicographic-minimax-funding.md#strict-funding-progress-across-augmentation-histories) derives strict progress and bounded update counts from actual residual updates.
+The [parent-edge model](cost-accounting-impl/lexicographic-minimax-funding.md#recorded-parent-edges-and-operation-paths) derives valid operation paths from recorded discovery histories.
+The [complete fixed-flow reference](cost-accounting-impl/lexicographic-minimax-funding.md#complete-fixed-flow-reference) proves candidate coverage and connects the optimum to a valid assignment matrix.
 The aggregate gate rejects admitted proofs and unsupported axiom declarations.
+The [ownership consent record](cost-accounting-impl/ownership-transfer-consent.md) separates arbitrary-list and transfer-history proofs from native phlo integration.
+The [persistent allowance record](cost-accounting-impl/persistent-funding-allowance.md) records mixed-history conservation proofs, generated model regressions, and bounded concurrent checks.
+Those proofs preserve captured reservation terms but do not establish reservation backing or concurrent native ownership transfer.
+The accompanying local publication model passed nine safety invariants, ten mutation controls, and two reachability checks.
+Its three-worker instance separates preparation, publication, and abort. It does not prove independent-validator agreement.
+The [monetary allocation record](cost-accounting-impl/rotating-monetary-allocation.md#checked-cursor-transitions) separates cursor-transition proofs from unfinished native settlement verification.
+The [family cursor contract](cost-accounting-impl/lexicographic-minimax-funding.md#priority-conditioned-family-cursors) defines priority-conditioned resource projections, exact fee support, and duplicate-group transitions.
+Its Rocq proofs establish abstract selection and coverage properties, not complete Rust or concurrent ledger refinement.
+The [signed family capture](cost-accounting-impl/lexicographic-minimax-funding.md#signed-family-capture) connects one outcome's amounts to its captured resource and fee transitions.
+The [native amount preflight](cost-accounting-impl/lexicographic-minimax-funding.md#native-amount-preflight) establishes per-source representability before execution without imposing an aggregate native limit.
+Its composition theorem requires charge-to-transition correspondence and an authoritative custody list.
+
+`PairedByteReceipts.v` connects raw byte measurements to the existing quantitative debit model.
+Each accepted occurrence retains its raw tuple and an optional legacy event projection in one model transition.
+Unit-authority communication can retain a raw receipt without a legacy byte charge.
+The proofs preserve rejection, retry suppression, occurrence multiplicity, and snapshot alignment.
+They also establish compatible update commutation and reject completeness claims for legacy-only rows.
+
+The receipt model's reset clears both occurrence rows and identity history.
+An allocation update that clears rows but retains persistent retry metadata is not this reset.
+
+Partial clearing marks history as lost if occurrence rows or retained persistent identities exist, or history was already incomplete.
+Empty initialization preserves existing completeness. An unmeasured direct communication marks history as lost even without an occurrence row.
+Snapshot completeness requires a measured context, intact history, and a raw tuple in every occurrence row.
+Later appends cannot repair lost history. A full reset restores history but does not establish a measured context.
+
+Retained retry metadata must reference immutable receipt data, not indices into cleared occurrence rows.
+
+The full reset requires a quiescent evaluation boundary, where no earlier observer can still publish.
+The model preserves previously owned snapshots across append and partial-clear operations.
+These proofs do not establish that native code enforces quiescence or refines every lifecycle operation.
+
+The [numeric merge record](cost-accounting-impl/numeric-merge-authority-preservation.md#concurrent-funding-correspondence-model) connects retained authority to independent funding, settlement, and replay checks.
+Its bounded model passed nineteen safety invariants, thirteen fault controls, and one recovery-reachability check.
+That model does not establish general liveness, cross-root merge correctness, or complete Casper refinement.
 The declared trust base consists of the Rocq 9.1.1 kernel, the Rocq Stdlib, and one `hash_process` encoding parameter.
 That parameter has three explicit section hypotheses (Section 12.1).
 The consensus-critical results
@@ -194,7 +268,7 @@ This article proves that claim. Concretely, we contribute:
    calculus, its compositional translation back into pure rho, and the
    infrastructure (`Split`, `Join`, persistent mediators) required to
    discharge the paper's five reduction rules (Section 5). The
-   development spans 150 modules and 61,805 lines, with 2,857 `Qed.` or
+   development spans 221 modules and 83,386 lines, with 4,171 `Qed.` or
    `Defined.` proof obligations and zero `Admitted` / `admit` /
    `Axiom` declarations.
 
@@ -359,9 +433,9 @@ the proof context.
 
 | Metric                                           | Value                                                      |
 |--------------------------------------------------|------------------------------------------------------------|
-| Rocq source files                                | 150 modules                                                |
-| Total lines of Rocq                              | 61,805                                                     |
-| Proven lemmas and theorems (`Qed.` / `Defined.`) | 2,857                                                      |
+| Rocq source files                                | 221 modules                                                |
+| Total lines of Rocq                              | 83,386                                                     |
+| Proven lemmas and theorems (`Qed.` / `Defined.`) | 4,171                                                      |
 | `Admitted` / `admit`                             | **0**                                                      |
 | Named `Axiom` declarations                       | **0**                                                      |
 | Proof assistant                                  | Rocq (Coq) 9.1.1 (also typechecks under 9.1.0)             |
@@ -383,7 +457,7 @@ on any axiom from Section 12.2.1.
 
 ### 1.7 Module Dependency Graph
 
-The foundational 32-module subgraph of the 150-module formalization
+The foundational 32-module subgraph of the 220-module formalization
 (`formal/rocq/cost_accounted_rho/theories`) organizes into **seven dependency
 tiers**. Figure 1.7 renders that foundational subgraph, transitively reduced
 (`tred`) to its minimal skeleton: an edge `A → B` reads "module `B` imports
@@ -393,7 +467,7 @@ tier is its depth in the import order; the tiers refine — and are colour-keyed
 cool→warm to match — the proof-layer narrative of
 [§7.1](#71-the-proof-layers).
 
-![Dependency graph of the foundational cost-accounted-rho proof subgraph. The graph shows 32 foundational Rocq modules in seven dependency tiers. The current 150-module catalog also includes native syntax, GSLT interfaces, authority, settlement, admission, spatial and modal checks, and refinement modules. The repository's _CoqProject lists every module.](diagrams/module-dependency-graph.svg)
+![Dependency graph of the foundational cost-accounted-rho proof subgraph. The graph shows 32 foundational Rocq modules in seven dependency tiers. The current 220-module catalog also includes native syntax, GSLT interfaces, authority, settlement, admission, spatial and modal checks, and refinement modules. The repository's _CoqProject lists every module.](diagrams/module-dependency-graph.svg)
 
 (*Source: [`diagrams/module-dependency-graph.dot`](diagrams/module-dependency-graph.dot) — render with `tred docs/casper/theory/diagrams/module-dependency-graph.dot | dot -Tsvg -o docs/casper/theory/diagrams/module-dependency-graph.svg` (or `./render.sh module-dependency-graph.dot`). Edges are extracted from the foundational modules' `Require Import` statements; `tred` removes transitively redundant edges. The authoritative full ordered catalog is `formal/rocq/cost_accounted_rho/_CoqProject`.*)
 
@@ -3713,53 +3787,53 @@ references.
 ### 11.1 File Listing
 
 The table below preserves the detailed foundational-module inventory. The
-authoritative complete catalog is `_CoqProject`, which currently lists 124
+authoritative complete catalog is `_CoqProject`, which currently lists 188
 modules. The Scale table in Section 1.6 is computed across that complete list;
 the subtotal at the bottom of this table applies only to the foundational
 inventory shown here.
 
 | Module                      | Lines      | Theorems | Purpose                                                                                                                                                                                                                                                                            |
 |-----------------------------|------------|----------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `RhoSyntax.v`               | 855        | 31       | Syntax (incl. `PReplicate`), substitution, structural equivalence, lifting                                                                                                                                                                                                         |
+| `RhoSyntax.v`               | 855 | 41 | Syntax (incl. `PReplicate`), substitution, structural equivalence, lifting                                                                                                                                                                                                         |
 | `StructEquivInversion.v`    | 253        | 7        | Head count, count_inputs, count_outputs, count_derefs, count_replicates                                                                                                                                                                                                            |
-| `StructEquivHeads.v`        | 1,470      | 45       | Heads lists, permutation characterization, PInput/POutput/PReplicate injectivity (`only_input`/`only_output`/`only_replicate` family), `list_equiv_app_inv`, `list_equiv_in_transport`, `head_count_zero_se_nil` (Section 8.7)                                                       |
-| `RhoReduction.v`            | 442        | 17       | Operational semantics (incl. `rs_replicate`), conflated `barb` + split `input_barb`/`output_barb`/`barb_iff_input_or_output` (§3.6), stuck lemmas                                                                                                                                   |
-| `CostAccountedSyntax.v`     | 231        | 4        | Signatures, tokens, systems, size functions                                                                                                                                                                                                                                        |
-| `CostAccountedReduction.v`  | 283        | 5        | Five cost-accounted rules, reachability                                                                                                                                                                                                                                            |
-| `Translation.v`             | 580        | 12       | N⟦·⟧, T⟦·⟧, P⟦·⟧, S⟦·⟧, Split, Join, PersistentSplit, PersistentJoin                                                                                                                                                                                                              |
-| `ChannelSeparation.v`       | 219        | 7        | Signature-channel invariance under subst/lift; `N_tr_is_Quote`                                                                                                                                                                                                                     |
-| `TokenConservation.v`       | 234        | 9        | Fuel monotonicity (per-step and multi-step)                                                                                                                                                                                                                                        |
+| `StructEquivHeads.v`        | 1,470 | 47 | Heads lists, permutation characterization, PInput/POutput/PReplicate injectivity (`only_input`/`only_output`/`only_replicate` family), `list_equiv_app_inv`, `list_equiv_in_transport`, `head_count_zero_se_nil` (Section 8.7)                                                       |
+| `RhoReduction.v`            | 442 | 22 | Operational semantics (incl. `rs_replicate`), conflated `barb` + split `input_barb`/`output_barb`/`barb_iff_input_or_output` (§3.6), stuck lemmas                                                                                                                                   |
+| `CostAccountedSyntax.v`     | 590 | 25 | Signatures, tokens, systems, size functions                                                                                                                                                                                                                                        |
+| `CostAccountedReduction.v`  | 295 | 5 | Five cost-accounted rules, reachability                                                                                                                                                                                                                                            |
+| `Translation.v`             | 630 | 26 | N⟦·⟧, T⟦·⟧, P⟦·⟧, S⟦·⟧, Split, Join, PersistentSplit, PersistentJoin                                                                                                                                                                                                              |
+| `ChannelSeparation.v`       | 294 | 9 | Signature-channel invariance under subst/lift; `N_tr_is_Quote`                                                                                                                                                                                                                     |
+| `TokenConservation.v`       | 526 | 18 | Fuel monotonicity (per-step and multi-step)                                                                                                                                                                                                                                        |
 | `Settlement.v`              | 139        | 8        | Component-wise RevVault reservation, exact debit/refund arithmetic, and no mid-evaluation refund fuel                                                                                                                                                                             |
 | `SlashingComposition.v`     | Mechanically counted by the proof gate | Mechanically counted by the proof gate | Composition boundary with the slashing protocol: cost-invalid evidence is observational for user cost, canonical slash candidates require present current evidence and positive canonical pre-state bond, parent pre-state authorization gates slash effects, and slash system effects preserve deploy fuel, settlement inputs, and settlement arithmetic |
-| `MergeableChannelAccounting.v` | 347     | 16       | Typed mergeable-channel accounting: `IntegerAdd` additive round trip and widened permutation-invariant total, selection/application agreement, `BitmaskOr` diff/merge round trip, set-like OR folding, merge-type preservation, non-numeric fallback classification, and cost-boundary isolation |
+| `MergeableChannelAccounting.v` | 333 | 16 | Typed mergeable-channel accounting: `IntegerAdd` additive round trip and widened permutation-invariant total, selection/application agreement, `BitmaskOr` diff/merge round trip, set-like OR folding, merge-type preservation, non-numeric fallback classification, and cost-boundary isolation |
 | `BlockHeapLifecycle.v`     | 140        | 8        | Overflow-free concurrent completion cadence, exact default reclamation, interval retained-heap bound, semantic noninterference, and a concrete missing-boundary counterexample |
-| `RuntimeBudgetRefinement.v` | 4,107      | 111      | Bounded-memory runtime-budget refinement: consumed/remaining conservation, successful weighted reservation, batched reservations, out-of-phlo boundary commitment, reset-from-token trace clearing, finalization-read cost traces, post-activation trace evidence, zero-event commitments, block/cache authentication, canonical replay-trace equivalence, slash target activation epoch authentication, and replay-payload field sensitivity |
-| `UseCaseAdequacy.v`         | 2,004      | 88       | Proof-backed UC-CA traceability theorems over token conservation, unit-token expansion, settlement, slashing composition, canonical slash-candidate authorization, typed mergeable channels, recursive reflection, runtime-budget refinement, finalization-read trace digests, replay payload equivalence, post-activation cost-trace requirements, block/cache authentication, zero-event commitments, and failed/control-path trace boundaries |
-| `FuelEventDecomposition.v`  | 239        | 6        | Fuel event multiset determinism                                                                                                                                                                                                                                                    |
+| `RuntimeBudgetRefinement.v` | 4,334 | 189 | Bounded-memory runtime-budget refinement: consumed/remaining conservation, successful weighted reservation, batched reservations, out-of-phlo boundary commitment, reset-from-token trace clearing, finalization-read cost traces, post-activation trace evidence, zero-event commitments, block/cache authentication, canonical replay-trace equivalence, slash target activation epoch authentication, and replay-payload field sensitivity |
+| `UseCaseAdequacy.v`         | 2,030 | 88 | Proof-backed UC-CA traceability theorems over token conservation, unit-token expansion, settlement, slashing composition, canonical slash-candidate authorization, typed mergeable channels, recursive reflection, runtime-budget refinement, finalization-read trace digests, replay payload equivalence, post-activation cost-trace requirements, block/cache authentication, zero-event commitments, and failed/control-path trace boundaries |
+| `FuelEventDecomposition.v`  | 287 | 8 | Fuel event multiset determinism                                                                                                                                                                                                                                                    |
 | `StrongNormalization.v`     | 130        | 5        | Well-foundedness of `ca_step`; `ca_strongly_normalizing`                                                                                                                                                                                                                           |
 | `Confluence.v`              | 483        | 14       | Per-rule determinism, Newman's lemma, full confluence, cost determinism                                                                                                                                                                                                            |
-| `StepDeterminism.v`         | 291        | 5        | Single-token determinism; unique reduction path length                                                                                                                                                                                                                             |
-| `TranslationFaithfulness.v` | 4,183      | 84       | Contextual forward reachability, fuel-bound soundness, phase-based gate reflection, recursive whole-system backward reflection, per-step reverse, generic dispatcher                                                                                                                |
-| `FuelGateSafety.v`          | 357        | 6        | Fuel-gate capability security                                                                                                                                                                                                                                                      |
-| `Bisimulation.v`            | 1,248      | 36       | Coinductive bisim, multi-stuck bisim, generic bisim dispatcher                                                                                                                                                                                                                     |
+| `StepDeterminism.v`         | 291 | 6 | Single-token determinism; unique reduction path length                                                                                                                                                                                                                             |
+| `TranslationFaithfulness.v` | 4,379 | 93 | Contextual forward reachability, fuel-bound soundness, phase-based gate reflection, recursive whole-system backward reflection, per-step reverse, generic dispatcher                                                                                                                |
+| `FuelGateSafety.v`          | 433 | 19 | Fuel-gate capability security                                                                                                                                                                                                                                                      |
+| `Bisimulation.v`            | 1,308 | 39 | Coinductive bisim, multi-stuck bisim, generic bisim dispatcher                                                                                                                                                                                                                     |
 | `WeakBarbedEquiv.v`         | 259        | 17       | Weak barb predicates (`weak_barb_input`, `weak_barb_output`), reachability/≡ₙ-closure, `weak_barbed_equiv_except` hidden-channel equivalence, parallel-congruence lemmas (§6.5, §6.6)                                                                                               |
-| `Replication.v`             | 2,071      | 56       | Meredith's reflective encoding (`bang_encoding`, `D_encoding`); `bang_encoding_unfolds` (§6.5 Theorem 9.19); forward barb propagation `preplicate_bang_encoding_body_barbs_sound` (§6.5 Theorem 9.20); step inversion `step_PReplicate_inv_se`, `step_PPar_PReplicate_inv_se` (§8.7 Lemma 9.21); closed forward-boundary theorem `replication_encoding_forward_barb_sound` (§6.6 Theorem 9.23) |
-| `MintingInjection.v`        | 630        | 26       | Authenticated protocol minting into canonical SystemVault custody, public-key address injectivity, epoch idempotence, direct fee backing, and exclusion of user-step minting |
-| `MintingHalt.v`             | 179        | 8        | A halted (slashed) validator is never minted and never gains supply; redemption is the only path back to funding (`halted_validator_not_minted`, `halted_validator_supply_not_increased`) |
-| `BondIssuanceLifecycle.v`   | 406        | 21       | Genesis-only initial allocation, unsubsidized fresh bond and rebond, guarded epoch issuance, generation discipline, custody conservation, duplicate suppression, and play/replay equality |
+| `Replication.v`             | 2,071 | 62 | Meredith's reflective encoding (`bang_encoding`, `D_encoding`); `bang_encoding_unfolds` (§6.5 Theorem 9.19); forward barb propagation `preplicate_bang_encoding_body_barbs_sound` (§6.5 Theorem 9.20); step inversion `step_PReplicate_inv_se`, `step_PPar_PReplicate_inv_se` (§8.7 Lemma 9.21); closed forward-boundary theorem `replication_encoding_forward_barb_sound` (§6.6 Theorem 9.23) |
+| `MintingInjection.v`        | 571 | 25 | Authenticated protocol minting into canonical SystemVault custody, public-key address injectivity, epoch idempotence, direct fee backing, and exclusion of user-step minting |
+| `MintingHalt.v`             | 182 | 8 | A halted (slashed) validator is never minted and never gains supply; redemption is the only path back to funding (`halted_validator_not_minted`, `halted_validator_supply_not_increased`) |
+| `BondIssuanceLifecycle.v`   | 409 | 21 | Genesis-only initial allocation, unsubsidized fresh bond and rebond, guarded epoch issuance, generation discipline, custody conservation, duplicate suppression, and play/replay equality |
 | `EpochMintAtomicity.v`      | Mechanically counted by the proof gate | Mechanically counted by the proof gate | Whole-close failure identity, exact eligible issuance, zero-amount completion, receipt idempotence, disjoint-validator commutation, deterministic retry, and play/replay equality |
 | `MintedEpochRetention.v`    | Mechanically counted by the proof gate | Mechanically counted by the proof gate | Frontier bootstrap, monotonicity, contiguous advancement, gap rejection, exact rollback, restart preservation, lifecycle stability, sibling selection, bounded storage, and replay idempotence |
 | `CanonicalRevRedemption.v`  | 149        | 8        | Canonical REV custody disposition for slash, vindication, strictly partial guilt, and burn; every authorized branch conserves the combined liquid, quarantined, bonded, cooperative, and burned ledger |
 | `RedemptionCustodyAtomicity.v` | 350     | 11       | Generation-scoped redemption receipts, exact lifecycle restoration, strict partial-guilt rejection, retry idempotence, physical PoS-vault coverage, and pointwise commutation for distinct validators |
-| `RedemptionMintResumption.v` | 142       | 11       | Redemption removes only the target's mint halt, never directly credits its SystemVault purse or rewrites the mint ledger, enables one fresh epoch credit, and makes replayed epoch minting idempotent |
-| `Exchange.v`                | 203        | 7        | The blessed conserving 1:1 token Exchange (Stage D): per-channel and total token conservation of the swap, requires-both-inputs join, and Exchange-is-a-`ca_step`-not-a-mint |
+| `RedemptionMintResumption.v` | 145 | 11 | Redemption removes only the target's mint halt, never directly credits its SystemVault purse or rewrites the mint ledger, enables one fresh epoch credit, and makes replayed epoch minting idempotent |
+| `Exchange.v`                | 280 | 12 | The blessed conserving 1:1 token Exchange (Stage D): per-channel and total token conservation of the swap, requires-both-inputs join, and Exchange-is-a-`ca_step`-not-a-mint |
 | `SystemStructEquiv.v`       | 474        | 14       | System-level structural equivalence (`sys_equiv`): parallel-unit law `sse_par_unit`, Appendix-B token-stack decomposition `token_decomp`, and source-level free names `sig_free_names` (Def 3.3 axes; §3.5) |
 | `SyntacticSugar.v`          | 196        | 6        | Section 3.8 syntactic sugar at the translation level: uniform-signing and linear-transfer (⊸) defining equations as `proc`-level structural equivalences of the translated images (Option A; ⊸ desugars to nested plain-signature gate layers) |
-| `WalletNaming.v`            | 313        | 14       | Canonical SystemVault address injectivity in public-key ownership and domain separation from quarantine and unforgeable funding-slot identities |
+| `WalletNaming.v`            | 312 | 14 | Canonical SystemVault address injectivity in public-key ownership and domain separation from quarantine and unforgeable funding-slot identities |
 | `MultiSignerRefinement.v`   | 530        | 31       | Phase 1.10 multi-signature deploy support: per-deployer Map-in-MVar PoS refinement, single-signer observable equivalence to the legacy contract, and canonical-order FIFO refund-drain conservation |
-| `LinearLogicResources.v`    | 979        | 45       | Publication-derived linear-resource calculus: mixed unrestricted/linear resource boundary, anti-contraction / anti-weakening, no-double-spend, funding decidability, the runtime `sig_algebra` bridge, and the **cross-group cumulative-demand bound** (`cross_group_draw_le_supply`, `cross_group_admission_sound` — TM-CA-165, the live-ledger generalization of `competing_funding_at_most_one_succeeds`/`admitted_prefix_fits`) |
+| `LinearLogicResources.v`    | 1,115 | 57 | Publication-derived linear-resource calculus: mixed unrestricted/linear resource boundary, anti-contraction / anti-weakening, no-double-spend, funding decidability, the runtime `sig_algebra` bridge, and the **cross-group cumulative-demand bound** (`cross_group_draw_le_supply`, `cross_group_admission_sound` — TM-CA-165, the live-ledger generalization of `competing_funding_at_most_one_succeeds`/`admitted_prefix_fits`) |
 | `LLIdentities.v`            | 587        | 51       | Phase 2/3 ILLE algebraic identities: multiplicative (tensor/and), additive (plus/with), and exponential (bang/why-not) laws plus Phase 2 Threshold permutation invariance at the reflection layer |
-| **Foundational-table subtotal** | **25,776** | **967**  |                                                                                                                                                                                                                                                                                    |
+| **Foundational-table subtotal** | **27,272** | **1,041** | |
 
 Theorem counts are `Qed.` + `Defined.` occurrences (the proofs that
 contribute kernel-checked terms). Earlier totals listed in this table
@@ -3773,6 +3847,9 @@ per large module.
 > (the multiplicative unit `1`; tensor/with/plus/bang/why-not/lollipop; and the
 > no-double-spend / no-free-weakening guarantees) — is documented in its dedicated
 > companion, [*The Linear Logic of Compound Signatures*](cost-accounting-linear-logic.md).
+
+The [operator proof boundaries](cost-accounting-impl/operator-authority-proof-boundaries.md#logical-evidence-and-payable-resources) explain why logical derivations do not automatically establish execution debits.
+The restricted payable projection preserves exact atoms and multiplicities without introducing executable additive or exponential funding operators.
 
 ### 11.2 Paper-to-Code Traceability
 
@@ -4628,8 +4705,8 @@ later states, so evidence is recomputed until the retained set is unchanged.
 
 ### B.2 Cross-tool proof obligations
 
-The local pgmcp formal-verification catalog identifies TLC, Apalache, Rocq, and
-SageMath as installed complementary tools. TLC exhausts bounded interleavings;
+The verification suite uses TLC, Apalache, Rocq, and SageMath as complementary tools.
+TLC exhausts bounded interleavings;
 Apalache independently type-checks and symbolically searches selected safe and
 unsafe models; Rocq proves unbounded algebraic laws; SageMath cross-checks finite
 arithmetic. Licensed Wolfram exploration is deliberately not a duplicate
@@ -5224,6 +5301,11 @@ No timeout, retry, relaxed log filter, altered fault-tolerance threshold, or
 test-only consensus path is part of the repair.
 
 ### D.2 Regression and proof matrix
+
+The atomic settlement evidence below proves conservation for supplied fee amounts, not correctness of fee selection.
+The [multi-wallet audit](multi-wallet-funding-path-audit.md#checked-fee-obligation-boundary-control) records a native fee mismatch and a checked formal counterexample.
+The new `FeeMatchesIndependentObligation` invariant rejects a per-signer fee map that passes the existing conservation and replay invariants.
+This control does not establish that the production fee allocator is repaired.
 
 | Invariant | Example-based Rust evidence | Property or exhaustive evidence | Required negative control |
 | --- | --- | --- | --- |

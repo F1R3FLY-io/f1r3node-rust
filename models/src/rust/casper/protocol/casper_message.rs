@@ -264,8 +264,24 @@ pub struct ApprovedBlockCandidate {
 
 impl ApprovedBlockCandidate {
     pub fn from_proto(proto: ApprovedBlockCandidateProto) -> Result<Self, String> {
+        Self::from_proto_with_block_decoder(proto, BlockMessage::from_proto)
+    }
+
+    pub fn from_proto_with_limits(
+        proto: ApprovedBlockCandidateProto,
+        limits: crate::rust::deploy_envelope::DeployEnvelopeLimits,
+    ) -> Result<Self, String> {
+        Self::from_proto_with_block_decoder(proto, |block| {
+            BlockMessage::from_proto_with_limits(block, limits)
+        })
+    }
+
+    fn from_proto_with_block_decoder(
+        proto: ApprovedBlockCandidateProto,
+        decode_block: impl FnOnce(BlockMessageProto) -> Result<BlockMessage, String>,
+    ) -> Result<Self, String> {
         Ok(Self {
-            block: BlockMessage::from_proto(
+            block: decode_block(
                 proto
                     .block
                     .ok_or_else(|| "Missing block field".to_string())?,
@@ -291,8 +307,26 @@ pub struct UnapprovedBlock {
 
 impl UnapprovedBlock {
     pub fn from_proto(proto: UnapprovedBlockProto) -> Result<Self, String> {
+        Self::from_proto_with_candidate_decoder(proto, ApprovedBlockCandidate::from_proto)
+    }
+
+    pub fn from_proto_with_limits(
+        proto: UnapprovedBlockProto,
+        limits: crate::rust::deploy_envelope::DeployEnvelopeLimits,
+    ) -> Result<Self, String> {
+        Self::from_proto_with_candidate_decoder(proto, |candidate| {
+            ApprovedBlockCandidate::from_proto_with_limits(candidate, limits)
+        })
+    }
+
+    fn from_proto_with_candidate_decoder(
+        proto: UnapprovedBlockProto,
+        decode_candidate: impl FnOnce(
+            ApprovedBlockCandidateProto,
+        ) -> Result<ApprovedBlockCandidate, String>,
+    ) -> Result<Self, String> {
         Ok(Self {
-            candidate: ApprovedBlockCandidate::from_proto(
+            candidate: decode_candidate(
                 proto
                     .candidate
                     .ok_or_else(|| "Missing candidate field".to_string())?,
@@ -319,8 +353,26 @@ pub struct BlockApproval {
 
 impl BlockApproval {
     pub fn from_proto(proto: BlockApprovalProto) -> Result<Self, String> {
+        Self::from_proto_with_candidate_decoder(proto, ApprovedBlockCandidate::from_proto)
+    }
+
+    pub fn from_proto_with_limits(
+        proto: BlockApprovalProto,
+        limits: crate::rust::deploy_envelope::DeployEnvelopeLimits,
+    ) -> Result<Self, String> {
+        Self::from_proto_with_candidate_decoder(proto, |candidate| {
+            ApprovedBlockCandidate::from_proto_with_limits(candidate, limits)
+        })
+    }
+
+    fn from_proto_with_candidate_decoder(
+        proto: BlockApprovalProto,
+        decode_candidate: impl FnOnce(
+            ApprovedBlockCandidateProto,
+        ) -> Result<ApprovedBlockCandidate, String>,
+    ) -> Result<Self, String> {
         Ok(Self {
-            candidate: ApprovedBlockCandidate::from_proto(
+            candidate: decode_candidate(
                 proto
                     .candidate
                     .ok_or_else(|| "Missing candidate field".to_string())?,
@@ -457,8 +509,26 @@ pub struct ApprovedBlock {
 
 impl ApprovedBlock {
     pub fn from_proto(proto: ApprovedBlockProto) -> Result<Self, String> {
+        Self::from_proto_with_candidate_decoder(proto, ApprovedBlockCandidate::from_proto)
+    }
+
+    pub fn from_proto_with_limits(
+        proto: ApprovedBlockProto,
+        limits: crate::rust::deploy_envelope::DeployEnvelopeLimits,
+    ) -> Result<Self, String> {
+        Self::from_proto_with_candidate_decoder(proto, |candidate| {
+            ApprovedBlockCandidate::from_proto_with_limits(candidate, limits)
+        })
+    }
+
+    fn from_proto_with_candidate_decoder(
+        proto: ApprovedBlockProto,
+        decode_candidate: impl FnOnce(
+            ApprovedBlockCandidateProto,
+        ) -> Result<ApprovedBlockCandidate, String>,
+    ) -> Result<Self, String> {
         Ok(Self {
-            candidate: ApprovedBlockCandidate::from_proto(
+            candidate: decode_candidate(
                 proto
                     .candidate
                     .ok_or_else(|| "Missing candidate field".to_string())?,
@@ -591,6 +661,20 @@ impl BlockMessage {
     }
 
     pub fn from_proto(proto: BlockMessageProto) -> Result<Self, String> {
+        Self::from_proto_with_body_decoder(proto, Body::from_proto)
+    }
+
+    pub fn from_proto_with_limits(
+        proto: BlockMessageProto,
+        limits: crate::rust::deploy_envelope::DeployEnvelopeLimits,
+    ) -> Result<Self, String> {
+        Self::from_proto_with_body_decoder(proto, |body| Body::from_proto_with_limits(body, limits))
+    }
+
+    fn from_proto_with_body_decoder(
+        proto: BlockMessageProto,
+        decode_body: impl FnOnce(BodyProto) -> Result<Body, String>,
+    ) -> Result<Self, String> {
         Ok(Self {
             block_hash: proto.block_hash,
             header: Header::from_proto(
@@ -598,7 +682,7 @@ impl BlockMessage {
                     .header
                     .ok_or_else(|| "Missing header field".to_string())?,
             )?,
-            body: Body::from_proto(proto.body.ok_or_else(|| "Missing body field".to_string())?)?,
+            body: decode_body(proto.body.ok_or_else(|| "Missing body field".to_string())?)?,
             justifications: proto
                 .justifications
                 .into_iter()
@@ -1413,6 +1497,22 @@ pub struct Body {
 
 impl Body {
     pub fn from_proto(proto: BodyProto) -> Result<Self, String> {
+        Self::from_proto_with_deploy_decoder(proto, ProcessedDeploy::from_proto)
+    }
+
+    pub fn from_proto_with_limits(
+        proto: BodyProto,
+        limits: crate::rust::deploy_envelope::DeployEnvelopeLimits,
+    ) -> Result<Self, String> {
+        Self::from_proto_with_deploy_decoder(proto, |deploy| {
+            ProcessedDeploy::from_proto_with_limits(deploy, limits)
+        })
+    }
+
+    fn from_proto_with_deploy_decoder(
+        proto: BodyProto,
+        decode_deploy: impl FnMut(ProcessedDeployProto) -> Result<ProcessedDeploy, String>,
+    ) -> Result<Self, String> {
         let rejected_state_effects = proto
             .rejected_state_effects
             .into_iter()
@@ -1437,7 +1537,7 @@ impl Body {
             deploys: proto
                 .deploys
                 .into_iter()
-                .map(|d| ProcessedDeploy::from_proto(d))
+                .map(decode_deploy)
                 .collect::<Result<Vec<ProcessedDeploy>, String>>()?,
             rejected_deploys: proto
                 .rejected_deploys
@@ -1633,19 +1733,12 @@ impl ValidatorBondGeneration {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProcessedDeploy {
-    pub deploy: Signed<DeployData>,
-    pub envelope_commitment: ByteString,
+    envelope: crate::rust::deploy_envelope::DeployEnvelope,
+    deploy_id_bytes: ByteString,
     pub cost: PCost,
     pub deploy_log: Vec<Event>,
     pub is_failed: bool,
     pub system_deploy_error: Option<String>,
-    /// Additional cosigners beyond the primary (`deploy.pk` / `deploy.sig`).
-    /// Empty for legacy single-signature deploys. Round-trips through
-    /// `DeployDataProto.cosigners` (proto field 14 on `deploy`).
-    pub cosigners: Vec<crate::casper::CompoundSigner>,
-    /// M-of-N quorum threshold. Protocol v6 uses an explicit value in
-    /// `1..=N`. Zero is reserved for the pre-v6 N-of-N encoding.
-    pub cosigner_threshold: i32,
     pub pre_state_hash: ByteString,
     pub post_state_hash: ByteString,
     pub authority_funding_certificate: Option<CostAuthorityFundingCertificateProto>,
@@ -1682,22 +1775,14 @@ impl ProcessedDeploy {
     pub const FUNDING_ADMISSION_REJECTION: &'static str =
         "Cost-accounting funding admission rejected";
 
-    // D3 (DR-9): `try_refund_amount`/`refund_amount` are REMOVED — there is no
-    // escrow to refund. The deploy's `cost` is the per-COMM token count. Ordinary
-    // block execution reserves the maximum certified authority before retaining
-    // the transition, then settles the realized cost through canonical
-    // SystemVault custody and prepaid located stacks.
-
-    pub fn empty(deploy: Signed<DeployData>) -> Self {
+    pub fn from_envelope(envelope: crate::rust::deploy_envelope::DeployEnvelope) -> Self {
         Self {
-            deploy,
-            envelope_commitment: ByteString::new(),
+            deploy_id_bytes: ByteString::copy_from_slice(envelope.identity().as_bytes()),
+            envelope,
             cost: PCost { cost: 0 },
             deploy_log: Vec::new(),
             is_failed: false,
             system_deploy_error: None,
-            cosigners: Vec::new(),
-            cosigner_threshold: 0,
             pre_state_hash: ByteString::new(),
             post_state_hash: ByteString::new(),
             authority_funding_certificate: None,
@@ -1706,81 +1791,60 @@ impl ProcessedDeploy {
         }
     }
 
-    /// Construct an empty processed-deploy record from a `Cosigned<DeployData>`
-    /// envelope, preserving the full cosigner list. Used by error-envelope
-    /// construction paths in the multi-sig runtime fan-out where a deploy
-    /// fails BEFORE evaluation begins.
+    pub fn empty(deploy: Signed<DeployData>) -> Result<Self, String> {
+        let envelope = crypto::rust::signatures::signed::Cosigned::from_single_signer(deploy)
+            .map_err(|error| error.to_string())?;
+        Self::empty_from_cosigned(&envelope)
+    }
+
     pub fn empty_from_cosigned(
         cosigned: &crypto::rust::signatures::signed::Cosigned<DeployData>,
-    ) -> Self {
-        let primary_index = if cosigned.is_envelope_bound() {
-            cosigned
-                .signers()
-                .iter()
-                .position(|signer| !signer.sig.is_empty())
-                .expect("validated protocol-v6 envelope has a selected signer")
-        } else {
-            0
-        };
-        let primary = &cosigned.signers()[primary_index];
-        let deploy = Signed {
-            data: cosigned.data.clone(),
-            pk: primary.pk.clone(),
-            sig: primary.sig.clone(),
-            sig_algorithm: primary.sig_algorithm.clone(),
-        };
-        let is_compound = cosigned.is_compound();
-        let cosigners = if is_compound {
-            cosigned
-                .signers()
-                .iter()
-                .enumerate()
-                .filter(|(index, _)| *index != primary_index)
-                .map(|(_, c)| crate::casper::CompoundSigner {
-                    pk: c.pk.bytes.clone().into(),
-                    sig: c.sig.clone(),
-                    sig_algorithm: c.sig_algorithm.name(),
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
-        Self {
-            deploy,
-            envelope_commitment: if cosigned.is_envelope_bound() {
-                cosigned
-                    .envelope_commitment()
-                    .expect("envelope-bound Cosigned invariant")
-            } else {
-                ByteString::new()
-            },
-            cost: PCost { cost: 0 },
-            deploy_log: Vec::new(),
-            is_failed: false,
-            system_deploy_error: None,
-            cosigners,
-            cosigner_threshold: i32::try_from(cosigned.cosigner_threshold()).unwrap_or(i32::MAX),
-            pre_state_hash: ByteString::new(),
-            post_state_hash: ByteString::new(),
-            authority_funding_certificate: None,
-            authority_cost_witness: None,
-            admission_status: DeployAdmissionStatus::Executed,
-        }
+    ) -> Result<Self, String> {
+        crate::rust::deploy_envelope::DeployEnvelope::from_body_envelope(cosigned.clone())
+            .map(Self::from_envelope)
     }
 
     pub fn admission_rejected(
         cosigned: &crypto::rust::signatures::signed::Cosigned<DeployData>,
         pre_state_hash: ByteString,
+    ) -> Result<Self, String> {
+        let envelope =
+            crate::rust::deploy_envelope::DeployEnvelope::from_body_envelope(cosigned.clone())?;
+        Ok(Self::admission_rejected_from_envelope(
+            envelope,
+            pre_state_hash,
+        ))
+    }
+
+    pub fn admission_rejected_from_envelope(
+        envelope: crate::rust::deploy_envelope::DeployEnvelope,
+        pre_state_hash: ByteString,
     ) -> Self {
-        let mut rejected = Self::empty_from_cosigned(cosigned);
-        rejected.cosigner_threshold =
-            i32::try_from(cosigned.cosigner_threshold()).unwrap_or(i32::MAX);
+        let mut rejected = Self::from_envelope(envelope);
         rejected.is_failed = true;
         rejected.system_deploy_error = Some(Self::FUNDING_ADMISSION_REJECTION.to_string());
         rejected.pre_state_hash = pre_state_hash.clone();
         rejected.post_state_hash = pre_state_hash;
         rejected.admission_status = DeployAdmissionStatus::Rejected;
         rejected
+    }
+
+    pub fn envelope(&self) -> &crate::rust::deploy_envelope::DeployEnvelope { &self.envelope }
+
+    pub fn body(&self) -> &DeployData { self.envelope.body() }
+
+    pub fn primary(&self) -> &crypto::rust::signatures::signed::Cosigner { self.envelope.primary() }
+
+    pub fn signers(&self) -> &[crypto::rust::signatures::signed::Cosigner] {
+        self.envelope.signers()
+    }
+
+    pub fn threshold(&self) -> u32 { self.envelope.threshold() }
+
+    pub fn typed_deploy_id(&self) -> &DeployLookupId { self.envelope.identity() }
+
+    pub fn is_envelope_bound(&self) -> bool {
+        !matches!(self.typed_deploy_id(), DeployLookupId::Legacy(_))
     }
 
     pub fn is_admission_rejected(&self) -> bool {
@@ -1794,109 +1858,49 @@ impl ProcessedDeploy {
                     && self.authority_cost_witness.is_some()))
     }
 
-    pub fn deploy_id(&self) -> &ByteString {
-        if self.envelope_commitment.is_empty() {
-            &self.deploy.sig
-        } else {
-            &self.envelope_commitment
+    pub fn deploy_id(&self) -> &ByteString { &self.deploy_id_bytes }
+
+    pub fn deploy_id_v6(&self) -> Result<DeployIdV6, String> {
+        match self.typed_deploy_id() {
+            DeployLookupId::V6(identity) => Ok(identity.clone()),
+            DeployLookupId::Legacy(_) => {
+                Err("legacy deploy has no protocol-v6 identity".to_string())
+            }
         }
     }
 
-    pub fn deploy_id_v6(&self) -> Result<crate::rust::deploy_id::DeployIdV6, String> {
-        crate::rust::deploy_id::DeployIdV6::try_from(self.envelope_commitment.as_ref())
-            .map_err(|error| error.to_string())
-    }
-
-    pub fn deploy_id_for_protocol(
-        &self,
-        protocol_version: i64,
-    ) -> Result<crate::rust::deploy_id::DeployLookupId, String> {
-        if protocol_version >= 6 {
-            self.deploy_id_v6()
-                .map(crate::rust::deploy_id::DeployLookupId::V6)
-        } else {
-            Ok(crate::rust::deploy_id::DeployLookupId::Legacy(
-                crate::rust::deploy_id::LegacyDeploySignature::new(self.deploy.sig.to_vec()),
-            ))
+    pub fn deploy_id_for_protocol(&self, protocol_version: i64) -> Result<DeployLookupId, String> {
+        match (protocol_version >= 6, self.typed_deploy_id()) {
+            (true, DeployLookupId::V6(_)) | (false, DeployLookupId::Legacy(_)) => {
+                Ok(self.typed_deploy_id().clone())
+            }
+            _ => Err("deploy identity does not match the block protocol".to_string()),
         }
     }
 
-    /// Reconstitute the [`Cosigned<DeployData>`] envelope from on-disk
-    /// `ProcessedDeploy` shape. For legacy deploys (`cosigners.is_empty()`),
-    /// uplifts via `Cosigned::from_single_signer` for byte-identical replay
-    /// behavior. For multi-sig deploys, rebuilds the full canonical envelope
-    /// with per-signer re-verification.
     pub fn to_cosigned(
         &self,
     ) -> Result<crypto::rust::signatures::signed::Cosigned<DeployData>, String> {
-        use crypto::rust::signatures::signed::{Cosigned, Cosigner};
-
-        let mut signers = Vec::with_capacity(1 + self.cosigners.len());
-        signers.push(Cosigner {
-            pk: self.deploy.pk.clone(),
-            sig: self.deploy.sig.clone(),
-            sig_algorithm: self.deploy.sig_algorithm.clone(),
-        });
-        for cs in &self.cosigners {
-            let alg = SignaturesAlgFactory::apply(&cs.sig_algorithm).ok_or_else(|| {
-                format!(
-                    "Unknown cosigner signature algorithm: {} for cosigner pk={}",
-                    cs.sig_algorithm,
-                    hex::encode(&cs.pk)
-                )
-            })?;
-            signers.push(Cosigner {
-                pk: PublicKey::from_bytes(&cs.pk),
-                sig: cs.sig.clone(),
-                sig_algorithm: alg,
-            });
-        }
-        if !self.envelope_commitment.is_empty() {
-            if self.cosigner_threshold < 1 {
-                return Err(
-                    "ProcessedDeploy v6 envelope requires an explicit positive threshold"
-                        .to_string(),
-                );
+        use crate::rust::deploy_envelope::DeployEnvelopeRef;
+        match self.envelope.view() {
+            DeployEnvelopeRef::Legacy(envelope) | DeployEnvelopeRef::BodyV61(envelope) => {
+                Ok(envelope.clone())
             }
-            let envelope = Cosigned::from_envelope_signed_data_threshold(
-                self.deploy.data.clone(),
-                signers,
-                self.cosigner_threshold as u32,
-            )
-            .map_err(|error| format!("ProcessedDeploy v6 envelope invalid: {error}"))?;
-            if envelope
-                .envelope_commitment()
-                .map_err(|error| format!("ProcessedDeploy v6 envelope invalid: {error}"))?
-                != self.envelope_commitment
-            {
-                return Err("ProcessedDeploy envelope commitment mismatch".to_string());
+            DeployEnvelopeRef::Funded(_) | DeployEnvelopeRef::OfferedFunded(_) => {
+                Err("body-only replay cannot execute a funded envelope".to_string())
             }
-            Ok(envelope)
-        } else if self.cosigners.is_empty() {
-            Cosigned::from_single_signer(self.deploy.clone())
-                .map_err(|error| format!("legacy uplift to Cosigned failed: {error}"))
-        } else if self.cosigner_threshold > 0 {
-            Cosigned::from_signed_data_threshold(
-                self.deploy.data.clone(),
-                signers,
-                self.cosigner_threshold as u32,
-            )
-            .map_err(|error| format!("legacy threshold envelope invalid: {error}"))
-        } else {
-            Cosigned::from_signed_data(self.deploy.data.clone(), signers)
-                .map_err(|error| format!("legacy envelope invalid: {error}"))
         }
     }
 
     pub fn to_deploy_info(self) -> DeployInfo {
         let deploy_id = self.deploy_id().clone();
         DeployInfo {
-            deployer: PrettyPrinter::build_string_no_limit(&self.deploy.pk.bytes),
-            term: self.deploy.data.term.clone(),
-            timestamp: self.deploy.data.time_stamp,
-            sig: PrettyPrinter::build_string_no_limit(&self.deploy.sig),
-            sig_algorithm: self.deploy.sig_algorithm.name(),
-            valid_after_block_number: self.deploy.data.valid_after_block_number,
+            deployer: PrettyPrinter::build_string_no_limit(&self.primary().pk.bytes),
+            term: self.body().term.clone(),
+            timestamp: self.body().time_stamp,
+            sig: PrettyPrinter::build_string_no_limit(&self.primary().sig),
+            sig_algorithm: self.primary().sig_algorithm.name(),
+            valid_after_block_number: self.body().valid_after_block_number,
             cost: self.cost.cost,
             errored: self.is_failed,
             system_deploy_error: self.system_deploy_error.unwrap_or_default(),
@@ -1911,93 +1915,64 @@ impl ProcessedDeploy {
         }
     }
 
-    pub fn from_proto(proto: ProcessedDeployProto) -> Result<Self, String> {
-        let deploy_proto = proto
-            .deploy
-            .ok_or_else(|| "Missing deploy field".to_string())?;
-        // Capture cosigner metadata BEFORE moving `deploy_proto` into
-        // `DeployData::from_proto`. The inner Signed<DeployData> carries
-        // only the primary signer; the cosigners[] populate the
-        // ProcessedDeploy fields directly so the multi-sig shape survives
-        // serialization.
-        let mut cosigners = deploy_proto.cosigners.clone();
-        let mut cosigner_threshold = deploy_proto.cosigner_threshold;
-        let envelope_commitment = deploy_proto.deploy_id.clone();
-        let deploy = if envelope_commitment.is_empty() {
-            DeployData::from_proto(deploy_proto)?
-        } else {
-            let envelope = DeployData::from_proto_cosigned(deploy_proto)?;
-            let selected_index = envelope
-                .signers()
-                .iter()
-                .position(|signer| !signer.sig.is_empty())
-                .ok_or_else(|| "protocol-v6 envelope has no selected signer".to_string())?;
-            let selected = &envelope.signers()[selected_index];
-            cosigner_threshold = i32::try_from(envelope.cosigner_threshold())
-                .map_err(|_| "protocol-v6 threshold exceeds i32".to_string())?;
-            cosigners = envelope
-                .signers()
-                .iter()
-                .enumerate()
-                .filter(|(index, _)| *index != selected_index)
-                .map(|(_, signer)| crate::casper::CompoundSigner {
-                    pk: signer.pk.bytes.clone().into(),
-                    sig: signer.sig.clone(),
-                    sig_algorithm: signer.sig_algorithm.name(),
-                })
-                .collect();
-            Signed {
-                data: envelope.data.clone(),
-                pk: selected.pk.clone(),
-                sig: selected.sig.clone(),
-                sig_algorithm: selected.sig_algorithm.clone(),
-            }
-        };
-        let processed = Self {
-            deploy,
-            envelope_commitment,
+    pub fn from_proto(mut proto: ProcessedDeployProto) -> Result<Self, String> {
+        let envelope = crate::rust::deploy_envelope::DeployEnvelope::from_processed_body_proto(
+            proto
+                .deploy
+                .take()
+                .ok_or_else(|| "Missing deploy field".to_string())?,
+        )?;
+        Self::from_proto_receipt(proto, envelope)
+    }
+
+    pub fn from_proto_with_limits(
+        mut proto: ProcessedDeployProto,
+        limits: crate::rust::deploy_envelope::DeployEnvelopeLimits,
+    ) -> Result<Self, String> {
+        let envelope =
+            crate::rust::deploy_envelope::DeployEnvelope::from_processed_proto_with_limits(
+                proto
+                    .deploy
+                    .take()
+                    .ok_or_else(|| "Missing deploy field".to_string())?,
+                limits,
+            )?;
+        Self::from_proto_receipt(proto, envelope)
+    }
+
+    fn from_proto_receipt(
+        proto: ProcessedDeployProto,
+        envelope: crate::rust::deploy_envelope::DeployEnvelope,
+    ) -> Result<Self, String> {
+        Ok(Self {
             cost: proto.cost.ok_or_else(|| "Missing cost field".to_string())?,
             deploy_log: proto
                 .deploy_log
                 .into_iter()
-                .map(|e| Event::from_proto(e))
-                .collect::<Result<Vec<Event>, String>>()?,
+                .map(Event::from_proto)
+                .collect::<Result<Vec<_>, _>>()?,
             is_failed: proto.errored,
-            system_deploy_error: {
-                if proto.system_deploy_error.is_empty() {
-                    None
-                } else {
-                    Some(proto.system_deploy_error)
-                }
+            system_deploy_error: if proto.system_deploy_error.is_empty() {
+                None
+            } else {
+                Some(proto.system_deploy_error)
             },
-            cosigners,
-            cosigner_threshold,
             pre_state_hash: proto.pre_state_hash,
             post_state_hash: proto.post_state_hash,
             authority_funding_certificate: proto.authority_funding_certificate,
             authority_cost_witness: proto.authority_cost_witness,
             admission_status: DeployAdmissionStatus::from_proto(proto.admission_status)?,
-        };
-        processed.to_cosigned()?;
-        Ok(processed)
+            ..Self::from_envelope(envelope)
+        })
     }
 
     pub fn to_proto(self) -> ProcessedDeployProto {
-        let mut deploy_proto = if self.envelope_commitment.is_empty() {
-            DeployData::to_proto(self.deploy.clone())
-        } else {
-            DeployData::to_proto_cosigned(
-                &self
-                    .to_cosigned()
-                    .expect("validated ProcessedDeploy v6.1 envelope"),
-            )
-        };
-        if self.envelope_commitment.is_empty() {
-            deploy_proto.cosigners = self.cosigners.clone();
-            deploy_proto.cosigner_threshold = self.cosigner_threshold;
-        }
         ProcessedDeployProto {
-            deploy: Some(deploy_proto),
+            deploy: Some(
+                self.envelope
+                    .to_proto()
+                    .expect("checked processed deploy envelope encoding"),
+            ),
             cost: Some(self.cost),
             deploy_log: self.deploy_log.into_iter().map(|e| e.to_proto()).collect(),
             errored: self.is_failed,
@@ -2529,12 +2504,13 @@ impl DeployData {
     pub fn decode(a: ByteVector) -> Result<DeployData, String> {
         let proto = DeployDataProto::decode(&a[..])
             .map_err(|e| format!("Failed to decode DeployData: {}", e))?;
+        Self::reject_funding_intent(&proto)?;
         let data = DeployData::_from_proto(proto);
         data.validate_authority_presentations()?;
         Ok(data)
     }
 
-    fn _from_proto(proto: DeployDataProto) -> Self {
+    pub(crate) fn _from_proto(proto: DeployDataProto) -> Self {
         Self {
             term: proto.term,
             language: proto.language,
@@ -2605,12 +2581,8 @@ impl DeployData {
     /// regardless of whether the wire deploy carries cosigners. Callers that
     /// need the full multi-signature envelope MUST use
     /// [`Self::from_proto_cosigned`].
-    ///
-    /// `ProcessedDeploy::from_proto` calls this routine and SEPARATELY
-    /// captures `proto.cosigners` into the `ProcessedDeploy.cosigners` field,
-    /// so the cosigner data is preserved across deserialization even though the
-    /// inner `Signed<DeployData>` only carries the primary.
     pub fn from_proto(proto: DeployDataProto) -> Result<Signed<DeployData>, String> {
+        Self::reject_funding_intent(&proto)?;
         let algorithm = SignaturesAlgFactory::apply(&proto.sig_algorithm)
             .ok_or_else(|| format!("Unknown signature algorithm: {}", proto.sig_algorithm))?;
 
@@ -2641,6 +2613,7 @@ impl DeployData {
     pub fn from_proto_cosigned_legacy(
         proto: DeployDataProto,
     ) -> Result<crypto::rust::signatures::signed::Cosigned<DeployData>, String> {
+        Self::reject_funding_intent(&proto)?;
         use crypto::rust::signatures::signed::{Cosigned, Cosigner};
 
         if !proto.deploy_id.is_empty() || proto.authorization_v61.is_some() {
@@ -2719,6 +2692,42 @@ impl DeployData {
     pub fn from_proto_cosigned(
         proto: DeployDataProto,
     ) -> Result<crypto::rust::signatures::signed::Cosigned<DeployData>, String> {
+        Self::reject_funding_intent(&proto)?;
+        Self::from_proto_envelope(proto, 0x0006_0001, |proto| {
+            let data = Self::_from_proto(proto);
+            data.validate_authority_presentations()?;
+            Ok(data)
+        })
+    }
+
+    fn reject_funding_intent(proto: &DeployDataProto) -> Result<(), String> {
+        Self::reject_phlo_offer(proto)?;
+        if proto.funding_intent.is_some()
+            || proto
+                .authorization_v61
+                .as_ref()
+                .is_some_and(|auth| auth.format_version != 0x0006_0001)
+        {
+            return Err(
+                "funded deploy requires its explicit authorization decoder and execution policy"
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
+
+    pub(crate) fn reject_phlo_offer(proto: &DeployDataProto) -> Result<(), String> {
+        if proto.phlo_price != 0 || proto.phlo_limit != 0 {
+            return Err("phlo offer requires its explicit authorization decoder".to_string());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn from_proto_envelope<A: std::fmt::Debug + serde::Serialize + ToMessage>(
+        proto: DeployDataProto,
+        format_version: u32,
+        decode: impl FnOnce(DeployDataProto) -> Result<A, String>,
+    ) -> Result<crypto::rust::signatures::signed::Cosigned<A>, String> {
         use crypto::rust::signatures::signed::{Cosigned, Cosigner};
 
         use crate::casper::authorization_policy_v61::Policy;
@@ -2741,8 +2750,10 @@ impl DeployData {
             .authorization_v61
             .as_ref()
             .ok_or_else(|| "protocol-v6 deploy authorization is missing".to_string())?;
-        if authorization.format_version != 0x0006_0001 {
-            return Err("protocol-v6 deploy authorization format is not v6.1".to_string());
+        if authorization.format_version != format_version {
+            return Err(
+                "protocol-v6 deploy authorization format does not match its decoder".to_string(),
+            );
         }
         let policy = authorization
             .policy
@@ -2832,11 +2843,10 @@ impl DeployData {
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
-        Cosigned::<DeployData>::validate_envelope_signer_order(&signers)
+        Cosigned::<A>::validate_envelope_signer_order(&signers)
             .map_err(|error| format!("protocol-v6 envelope validation failed: {error}"))?;
         let expected_commitment = proto.deploy_id.clone();
-        let data = DeployData::_from_proto(proto);
-        data.validate_authority_presentations()?;
+        let data = decode(proto)?;
         let envelope = Cosigned::from_envelope_signed_data_threshold(data, signers, threshold)
             .map_err(|error| format!("protocol-v6 envelope validation failed: {error}"))?;
         if envelope
@@ -3060,6 +3070,28 @@ impl DeployData {
             };
         }
 
+        let proto = DeployDataProto {
+            term: cosigned.data.term.clone(),
+            language: cosigned.data.language.clone(),
+            timestamp: cosigned.data.time_stamp,
+            valid_after_block_number: cosigned.data.valid_after_block_number,
+            shard_id: cosigned.data.shard_id.clone(),
+            expiration_timestamp: cosigned.data.expiration_timestamp.unwrap_or(0),
+            authority_presentations: cosigned.data.authority_presentations.clone(),
+            ..Default::default()
+        };
+        Self::to_proto_envelope(cosigned, proto, 0x0006_0001)
+            .expect("envelope-bound Cosigned invariant")
+    }
+
+    pub(crate) fn to_proto_envelope<A: std::fmt::Debug + serde::Serialize + ToMessage>(
+        cosigned: &crypto::rust::signatures::signed::Cosigned<A>,
+        mut proto: DeployDataProto,
+        format_version: u32,
+    ) -> Result<DeployDataProto, String> {
+        let commitment = cosigned
+            .envelope_commitment()
+            .map_err(|error| error.to_string())?;
         use crate::casper::authorization_policy_v61::Policy;
         let members = cosigned
             .signers()
@@ -3088,30 +3120,19 @@ impl DeployData {
                 signature: signer.sig.clone(),
             })
             .collect();
-        DeployDataProto {
-            term: cosigned.data.term.clone(),
-            language: cosigned.data.language.clone(),
-            timestamp: cosigned.data.time_stamp,
-            valid_after_block_number: cosigned.data.valid_after_block_number,
-            shard_id: cosigned.data.shard_id.clone(),
-            expiration_timestamp: cosigned.data.expiration_timestamp.unwrap_or(0),
-            authority_presentations: cosigned.data.authority_presentations.clone(),
-            deploy_id: cosigned
-                .envelope_commitment()
-                .expect("envelope-bound Cosigned invariant"),
-            authorization_v61: Some(crate::casper::DeployAuthorizationV61 {
-                format_version: 0x0006_0001,
-                policy: Some(crate::casper::AuthorizationPolicyV61 {
-                    policy: Some(policy),
-                }),
-                presence_bitmap: cosigned
-                    .presence_bitmap_v61()
-                    .expect("envelope-bound Cosigned invariant")
-                    .into(),
-                witnesses,
+        proto.deploy_id = commitment;
+        proto.authorization_v61 = Some(crate::casper::DeployAuthorizationV61 {
+            format_version,
+            policy: Some(crate::casper::AuthorizationPolicyV61 {
+                policy: Some(policy),
             }),
-            ..Default::default()
-        }
+            presence_bitmap: cosigned
+                .presence_bitmap_v61()
+                .expect("envelope-bound Cosigned invariant")
+                .into(),
+            witnesses,
+        });
+        Ok(proto)
     }
 }
 
@@ -4118,10 +4139,10 @@ mod tests {
     fn v61_processed_deploy_primary_is_an_authenticated_witness() {
         let envelope = v61_envelope(&[1, 2], 2);
         let unsigned = envelope.signers()[0].pk.clone();
-        let processed = ProcessedDeploy::empty_from_cosigned(&envelope);
+        let processed = ProcessedDeploy::empty_from_cosigned(&envelope).unwrap();
 
-        assert_ne!(processed.deploy.pk, unsigned);
-        assert!(!processed.deploy.sig.is_empty());
+        assert_ne!(processed.primary().pk, unsigned);
+        assert!(!processed.primary().sig.is_empty());
         assert_eq!(processed.to_cosigned().unwrap(), envelope);
     }
 
@@ -4397,7 +4418,7 @@ mod tests {
         #[test]
         fn processed_deploy_proto_rejects_every_unknown_admission_status(status: i32) {
             prop_assume!(!(0..=1).contains(&status));
-            let mut proto = ProcessedDeploy::empty(signed_deploy(deploy_data())).to_proto();
+            let mut proto = ProcessedDeploy::empty(signed_deploy(deploy_data())).unwrap().to_proto();
             proto.admission_status = status;
             let encoded = proto.encode_to_vec();
             let decoded = ProcessedDeployProto::decode(encoded.as_slice()).unwrap();
@@ -4442,11 +4463,9 @@ mod tests {
     fn deploy_signature_hash_excludes_retired_phlo_fields() {
         use prost::Message;
 
-        // D3 (DR-9, fresh-genesis): the deploy-signature preimage NO LONGER
-        // carries phloPrice (tag 7) / phloLimit (tag 8) — those tags are
-        // reserved and `_to_proto` never emits them. This re-pins the preimage
-        // and digest for the post-D3 single-sig wire shape. The retired tag
-        // bytes (`3802...40...` for tags 7/8) MUST be absent.
+        // The historical D3 preimage excludes phloPrice and phloLimit.
+        // Restoring their protobuf tags must preserve this signing format.
+        // OfferedFundedDeploy uses a separate payload and authorization version.
         //
         // Fixed legacy single-sig deploy: term="Nil", timestamp=0,
         // valid_after_block_number=0, shard_id="root", no expiration.
@@ -4713,25 +4732,14 @@ mod tests {
     }
 
     #[test]
-    fn processed_deploy_cosigner_threshold_roundtrips_through_proto() {
-        let processed = ProcessedDeploy {
-            deploy: signed_deploy(deploy_data()),
-            envelope_commitment: ByteString::new(),
-            cost: PCost { cost: 0 },
-            deploy_log: Vec::new(),
-            is_failed: false,
-            system_deploy_error: None,
-            cosigners: Vec::new(),
-            cosigner_threshold: 2,
-            pre_state_hash: ByteString::new(),
-            post_state_hash: ByteString::new(),
-            authority_funding_certificate: None,
-            authority_cost_witness: None,
-            admission_status: Default::default(),
-        };
-
-        let decoded = ProcessedDeploy::from_proto(processed.clone().to_proto()).unwrap();
-        assert_eq!(decoded.cosigner_threshold, 2);
+    fn historical_single_signer_ignored_threshold_preserves_wire_not_authority() {
+        let mut proto = ProcessedDeploy::empty(signed_deploy(deploy_data()))
+            .unwrap()
+            .to_proto();
+        proto.deploy.as_mut().unwrap().cosigner_threshold = 2;
+        let decoded = ProcessedDeploy::from_proto(proto.clone()).unwrap();
+        assert_eq!(decoded.threshold(), 0);
+        assert_eq!(decoded.to_proto(), proto);
     }
 
     #[test]
@@ -4740,19 +4748,16 @@ mod tests {
         let (private_key, _) = algorithm.new_key_pair();
         let deploy = Signed::create(deploy_data(), algorithm, private_key).unwrap();
         let processed = ProcessedDeploy {
-            deploy,
-            envelope_commitment: ByteString::new(),
             cost: PCost { cost: 1 },
             deploy_log: Vec::new(),
             is_failed: false,
             system_deploy_error: None,
-            cosigners: Vec::new(),
-            cosigner_threshold: 0,
             pre_state_hash: ByteString::new(),
             post_state_hash: ByteString::new(),
             authority_funding_certificate: None,
             authority_cost_witness: None,
             admission_status: Default::default(),
+            ..ProcessedDeploy::empty(deploy).unwrap()
         };
 
         let proto = processed.clone().to_proto();
@@ -4788,19 +4793,16 @@ mod tests {
         let pre_state = ByteString::from_static(&[2; 32]);
         let post_state = ByteString::from_static(&[6; 32]);
         let processed = ProcessedDeploy {
-            deploy: signed_deploy(deploy_data()),
-            envelope_commitment: ByteString::new(),
             cost: PCost { cost: 12 },
             deploy_log: Vec::new(),
             is_failed: false,
             system_deploy_error: None,
-            cosigners: Vec::new(),
-            cosigner_threshold: 0,
             pre_state_hash: pre_state.clone(),
             post_state_hash: post_state.clone(),
             authority_funding_certificate: Some(certificate.clone()),
             authority_cost_witness: Some(witness.clone()),
             admission_status: DeployAdmissionStatus::Executed,
+            ..ProcessedDeploy::empty(signed_deploy(deploy_data())).unwrap()
         };
 
         let info = processed.to_deploy_info();
@@ -4821,7 +4823,7 @@ mod tests {
         let cosigned =
             crypto::rust::signatures::signed::Cosigned::from_single_signer(signed).unwrap();
         let pre_state = ByteString::from_static(&[7; 32]);
-        let rejected = ProcessedDeploy::admission_rejected(&cosigned, pre_state.clone());
+        let rejected = ProcessedDeploy::admission_rejected(&cosigned, pre_state.clone()).unwrap();
 
         assert_eq!(rejected.admission_status, DeployAdmissionStatus::Rejected);
         assert!(rejected.is_failed);
@@ -4839,7 +4841,9 @@ mod tests {
     #[test]
     fn processed_deploy_proto_rejects_unknown_admission_status() {
         for status in [-1, 2, i32::MAX] {
-            let mut proto = ProcessedDeploy::empty(signed_deploy(deploy_data())).to_proto();
+            let mut proto = ProcessedDeploy::empty(signed_deploy(deploy_data()))
+                .unwrap()
+                .to_proto();
             proto.admission_status = status;
             assert_eq!(
                 ProcessedDeploy::from_proto(proto),
@@ -4851,7 +4855,7 @@ mod tests {
     #[test]
     fn failed_state_bound_execution_keeps_its_committed_settlement_effect() {
         let signed = signed_deploy(deploy_data());
-        let mut processed = ProcessedDeploy::empty(signed);
+        let mut processed = ProcessedDeploy::empty(signed).unwrap();
         processed.is_failed = true;
         assert!(!processed.has_committed_state_effect());
 
@@ -5092,6 +5096,9 @@ mod tests {
             authority_presentations: Vec::new(),
             deploy_id: ByteString::new(),
             authorization_v61: None,
+            funding_intent: None,
+            phlo_price: 0,
+            phlo_limit: 0,
         };
         let cosigned = DeployData::from_proto_cosigned_legacy(proto)
             .expect("flat N-of-N (no sig_algebra) must decode unchanged post-F-A");
@@ -5702,7 +5709,7 @@ mod coverage_tests {
     #[test]
     fn processed_deploy_round_trips_and_derives_values() {
         let deploy = signed_deploy();
-        let mut processed = ProcessedDeploy::empty(deploy.clone());
+        let mut processed = ProcessedDeploy::empty(deploy.clone()).unwrap();
         processed.cost = PCost { cost: 100 };
         processed.deploy_log = vec![Event::Produce(produce_event())];
         processed.is_failed = true;
@@ -5712,7 +5719,7 @@ mod coverage_tests {
             processed
         );
 
-        let empty = ProcessedDeploy::empty(deploy.clone());
+        let empty = ProcessedDeploy::empty(deploy.clone()).unwrap();
         assert_eq!(empty.cost, PCost { cost: 0 });
         assert!(!empty.is_failed);
         assert_eq!(empty.system_deploy_error, None);

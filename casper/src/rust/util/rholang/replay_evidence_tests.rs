@@ -1,4 +1,4 @@
-use crypto::rust::signatures::signed::{Cosigned, Signed};
+use crypto::rust::signatures::signed::Cosigned;
 use models::casper::{
     CostAuthorityBornStackProto, CostAuthorityByteEventProto, CostAuthorityEventProto,
     CostAuthorityFundingCertificateProto, CostAuthorityPhysicalEventDrawProto,
@@ -7,8 +7,7 @@ use models::casper::{
 };
 use models::rhoapi::{CostAuthority, CostRegion};
 use models::rust::casper::protocol::casper_message::{
-    DeployAdmissionStatus, DeployData, Event, ProcessedDeploy, ProcessedSystemDeploy,
-    SystemDeployData,
+    DeployData, ProcessedDeploy, ProcessedSystemDeploy, SystemDeployData,
 };
 use proptest::prelude::*;
 use prost::bytes::Bytes;
@@ -56,15 +55,16 @@ fn change_string(value: &mut String) { value.push('x'); }
 fn change_i64(value: &mut i64) { *value = value.wrapping_add(1); }
 
 fn bound_evidence(timestamp: u32) -> ProcessedDeploy {
-    let mut seed = execution_evidence();
-    seed.deploy.data.time_stamp = i64::from(timestamp);
+    let seed = execution_evidence();
+    let mut body = seed.body().clone();
+    body.time_stamp = i64::from(timestamp);
     let envelope = Cosigned::create_single_envelope(
-        seed.deploy.data.clone(),
-        seed.deploy.sig_algorithm.clone(),
+        body,
+        seed.primary().sig_algorithm.clone(),
         construct_deploy::DEFAULT_SEC.clone(),
     )
     .unwrap();
-    let mut bound = ProcessedDeploy::empty_from_cosigned(&envelope);
+    let mut bound = ProcessedDeploy::empty_from_cosigned(&envelope).unwrap();
     bound.authority_funding_certificate = seed.authority_funding_certificate;
     bound.authority_cost_witness = seed.authority_cost_witness;
     bound.deploy_log = seed.deploy_log;
@@ -98,6 +98,7 @@ fn certificate_mutations(
         allocation => append_default,
         stack_reservations => append_default,
         fee_allocation => append_default,
+        fee_plan => change_presence,
         fee_recipient => change_bytes,
         byte_cost_schedule_version => change_u32,
         byte_cost_schedule_digest => change_bytes,
@@ -176,6 +177,28 @@ fn witness_with<T: Clone>(
 
 proptest! {
     #[test]
+    fn replay_payload_binds_every_monetary_fee_plan_field(timestamp in any::<u32>()) {
+        let mut original = bound_evidence(timestamp);
+        let plan = models::casper::CostMonetaryFeePlanProto::default();
+        original.authority_funding_certificate.as_mut().unwrap().fee_plan = Some(plan.clone());
+        for (field, changed) in field_mutations!(plan, models::casper::CostMonetaryFeePlanProto, {
+            policy_version => change_u32,
+            policy_context => change_bytes,
+            scope => change_bytes,
+            payer_custodies => append_default,
+            obligation => change_u64,
+            expected_revision => change_i64,
+            expected_position => change_i64,
+            next_revision => change_i64,
+            next_position => change_i64,
+        }) {
+            let mut changed_deploy = original.clone();
+            changed_deploy.authority_funding_certificate.as_mut().unwrap().fee_plan = Some(changed);
+            assert_changed(&original, changed_deploy, field);
+        }
+    }
+
+    #[test]
     fn replay_payload_binds_system_evidence_fields(
         bytes in prop::collection::vec(any::<u8>(), 0..65),
     ) {
@@ -229,24 +252,23 @@ proptest! {
     #[test]
     fn replay_payload_binds_or_rejects_every_processed_field(timestamp in any::<u32>()) {
         let original = bound_evidence(timestamp);
-        for (field, changed) in field_mutations!(original, ProcessedDeploy, {
-            deploy => |deploy: &mut Signed<DeployData>| change_string(&mut deploy.data.term),
-            envelope_commitment => change_bytes,
-            cost => |cost: &mut models::rhoapi::PCost| change_u64(&mut cost.cost),
-            deploy_log => |events: &mut Vec<Event>| events.push(original.deploy_log[0].clone()),
-            is_failed => |failed: &mut bool| *failed = !*failed,
-            system_deploy_error => |error: &mut Option<String>| *error = Some("changed".to_string()),
-            cosigners => append_default,
-            cosigner_threshold => change_i32,
+        let proto = original.clone().to_proto();
+        for (field, changed) in field_mutations!(proto, models::casper::ProcessedDeployProto, {
+            deploy => |deploy: &mut Option<models::casper::DeployDataProto>| change_string(&mut deploy.as_mut().unwrap().term),
+            cost => |cost: &mut Option<models::rhoapi::PCost>| change_u64(&mut cost.as_mut().unwrap().cost),
+            deploy_log => |events: &mut Vec<models::casper::EventProto>| events.push(proto.deploy_log[0].clone()),
+            errored => |failed: &mut bool| *failed = !*failed,
+            system_deploy_error => change_string,
             pre_state_hash => change_bytes,
             post_state_hash => change_bytes,
             authority_funding_certificate => change_presence,
             authority_cost_witness => change_presence,
-            admission_status => |status: &mut DeployAdmissionStatus| *status = DeployAdmissionStatus::Rejected,
+            admission_status => change_i32,
         }) {
-            if matches!(field, "deploy" | "envelope_commitment" | "cosigners" | "cosigner_threshold") {
-                prop_assert!(changed.to_cosigned().is_err(), "forged envelope field {field} was accepted");
+            if field == "deploy" {
+                prop_assert!(ProcessedDeploy::from_proto(changed).is_err(), "forged envelope field {field} was accepted");
             } else {
+                let changed = ProcessedDeploy::from_proto(changed).unwrap();
                 changed.to_cosigned().unwrap();
                 assert_changed(&original, changed, field);
             }
@@ -256,7 +278,7 @@ proptest! {
     #[test]
     fn replay_envelope_rejects_every_unsigned_intent_change(timestamp in any::<u32>()) {
         let original = bound_evidence(timestamp);
-        for (field, data) in field_mutations!(original.deploy.data, DeployData, {
+        for (field, data) in field_mutations!(*original.body(), DeployData, {
             term => change_string,
             language => change_string,
             time_stamp => change_i64,
@@ -265,9 +287,9 @@ proptest! {
             expiration_timestamp => |expiry: &mut Option<i64>| *expiry = Some(i64::from(timestamp) + 1),
             authority_presentations => append_default,
         }) {
-            let mut changed = original.clone();
-            changed.deploy.data = data;
-            prop_assert!(changed.to_cosigned().is_err(), "unsigned intent field {field} was accepted");
+            let mut changed = original.to_cosigned().unwrap();
+            changed.data = data;
+            prop_assert!(ProcessedDeploy::empty_from_cosigned(&changed).is_err(), "unsigned intent field {field} was accepted");
         }
     }
 

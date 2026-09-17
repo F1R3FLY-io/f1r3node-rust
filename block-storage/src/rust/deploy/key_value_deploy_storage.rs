@@ -4,7 +4,8 @@ use std::collections::HashSet;
 
 use crypto::rust::signatures::signed::{Cosigned, Signed};
 use models::rust::casper::protocol::casper_message::DeployData;
-use models::rust::deploy_id::DeployIdV6;
+use models::rust::deploy_envelope::{DeployEnvelopeFormat, DeployEnvelopeLimits};
+use models::rust::deploy_id::{DeployIdV6, DeployLookupId};
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use shared::rust::store::key_value_store::KvStoreError;
 use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
@@ -12,14 +13,27 @@ use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use shared::rust::ByteString;
 
 use super::pending_deploy::PendingDeploy;
+use super::versioned_deploy_storage::{DeployEnvelopeStoreKind, FundedDeployStorage};
 
 #[derive(Clone)]
 pub struct KeyValueDeployStorage {
     pub store: KeyValueTypedStoreImpl<ByteString, Signed<DeployData>>,
     pub envelope_store: KeyValueTypedStoreImpl<DeployIdV6, Cosigned<DeployData>>,
+    funded_store: Option<FundedDeployStorage>,
 }
 
 impl KeyValueDeployStorage {
+    pub fn from_legacy_stores(
+        store: KeyValueTypedStoreImpl<ByteString, Signed<DeployData>>,
+        envelope_store: KeyValueTypedStoreImpl<DeployIdV6, Cosigned<DeployData>>,
+    ) -> Self {
+        Self {
+            store,
+            envelope_store,
+            funded_store: None,
+        }
+    }
+
     pub async fn new(kvm: &mut impl KeyValueStoreManager) -> Result<Self, KvStoreError> {
         let deploy_storage_kv_store = kvm.store("deploy_storage".to_string()).await?;
         let deploy_storage_db: KeyValueTypedStoreImpl<ByteString, Signed<DeployData>> =
@@ -30,9 +44,154 @@ impl KeyValueDeployStorage {
         let storage = Self {
             store: deploy_storage_db,
             envelope_store: envelope_storage_db,
+            funded_store: None,
         };
         storage.validate_consistency()?;
         Ok(storage)
+    }
+
+    pub async fn new_with_limits(
+        kvm: &mut impl KeyValueStoreManager,
+        limits: DeployEnvelopeLimits,
+    ) -> Result<Self, KvStoreError> {
+        let mut storage = Self::new(kvm).await?;
+        storage.funded_store =
+            Some(FundedDeployStorage::new(kvm, DeployEnvelopeStoreKind::Pending, limits).await?);
+        Ok(storage)
+    }
+
+    pub fn add_pending_if_absent(&mut self, pending: &PendingDeploy) -> Result<bool, KvStoreError> {
+        match pending.envelope().format() {
+            DeployEnvelopeFormat::Legacy => {
+                let envelope = pending
+                    .envelope()
+                    .body_envelope()
+                    .map_err(KvStoreError::InvalidArgument)?;
+                if envelope.signers().len() != 1 {
+                    return Err(KvStoreError::InvalidArgument(
+                        "legacy pending storage requires one signer".to_string(),
+                    ));
+                }
+                let signer = envelope.primary();
+                self.add_if_absent(Signed {
+                    data: envelope.data.clone(),
+                    pk: signer.pk.clone(),
+                    sig: signer.sig.clone(),
+                    sig_algorithm: signer.sig_algorithm.clone(),
+                })
+            }
+            DeployEnvelopeFormat::BodyV61 => self.add_envelope_if_absent(
+                pending
+                    .envelope()
+                    .body_envelope()
+                    .map_err(KvStoreError::InvalidArgument)?
+                    .clone(),
+            ),
+            DeployEnvelopeFormat::Funded | DeployEnvelopeFormat::OfferedFunded => self
+                .funded_store
+                .as_ref()
+                .ok_or_else(|| {
+                    KvStoreError::InvalidArgument(
+                        "funded pending storage requires explicit envelope limits".to_string(),
+                    )
+                })?
+                .insert_if_absent(pending.envelope()),
+        }
+    }
+
+    pub fn get_pending(
+        &self,
+        identity: &DeployLookupId,
+    ) -> Result<Option<PendingDeploy>, KvStoreError> {
+        let historical = match identity {
+            DeployLookupId::Legacy(signature) => self
+                .store
+                .get_one(&signature.as_bytes().to_vec())?
+                .map(PendingDeploy::from_legacy)
+                .transpose(),
+            DeployLookupId::V6(id) => self
+                .envelope_store
+                .get_one(id)?
+                .map(PendingDeploy::from_envelope_v6)
+                .transpose(),
+        }
+        .map_err(KvStoreError::InvalidArgument)?;
+        if historical
+            .as_ref()
+            .is_some_and(|pending| pending.typed_deploy_id() != identity)
+        {
+            return Err(KvStoreError::InvalidArgument(
+                "pending store key does not match its envelope".to_string(),
+            ));
+        }
+        let funded = self
+            .funded_store
+            .as_ref()
+            .map(|store| store.get(identity))
+            .transpose()?
+            .flatten()
+            .map(PendingDeploy::from_envelope)
+            .transpose()
+            .map_err(KvStoreError::InvalidArgument)?;
+        match (historical, funded) {
+            (Some(_), Some(_)) => Err(KvStoreError::InvalidArgument(
+                "pending identity occurs in multiple stores".to_string(),
+            )),
+            (historical, funded) => Ok(historical.or(funded)),
+        }
+    }
+
+    pub fn read_all_pending(&self) -> Result<HashSet<PendingDeploy>, KvStoreError> {
+        let mut pending = HashSet::new();
+        for (key, deploy) in self.store.to_map()? {
+            let deploy =
+                PendingDeploy::from_legacy(deploy).map_err(KvStoreError::InvalidArgument)?;
+            if deploy.deploy_id().as_ref() != key.as_slice() {
+                return Err(KvStoreError::InvalidArgument(
+                    "legacy pending key does not match its signature".to_string(),
+                ));
+            }
+            pending.insert(deploy);
+        }
+        for (key, envelope) in self.envelope_store.to_map()? {
+            let deploy =
+                PendingDeploy::from_envelope_v6(envelope).map_err(KvStoreError::InvalidArgument)?;
+            if deploy.typed_deploy_id() != &DeployLookupId::V6(key) {
+                return Err(KvStoreError::InvalidArgument(
+                    "pending envelope key does not match its commitment".to_string(),
+                ));
+            }
+            pending.insert(deploy);
+        }
+        if let Some(store) = &self.funded_store {
+            store.visit(&mut |envelope| {
+                let deploy = PendingDeploy::from_envelope(envelope)
+                    .map_err(KvStoreError::InvalidArgument)?;
+                if !pending.insert(deploy) {
+                    return Err(KvStoreError::InvalidArgument(
+                        "pending identity occurs in multiple stores".to_string(),
+                    ));
+                }
+                Ok(())
+            })?;
+        }
+        Ok(pending)
+    }
+
+    pub fn remove_pending(&mut self, pending: &PendingDeploy) -> Result<bool, KvStoreError> {
+        match pending.envelope().format() {
+            DeployEnvelopeFormat::Legacy => self.remove_by_sig(pending.deploy_id()),
+            DeployEnvelopeFormat::BodyV61 => self.remove_envelope_by_id(pending.deploy_id()),
+            DeployEnvelopeFormat::Funded | DeployEnvelopeFormat::OfferedFunded => self
+                .funded_store
+                .as_ref()
+                .ok_or_else(|| {
+                    KvStoreError::InvalidArgument(
+                        "funded pending storage requires explicit envelope limits".to_string(),
+                    )
+                })?
+                .remove(pending.typed_deploy_id()),
+        }
     }
 
     fn validate_consistency(&self) -> Result<(), KvStoreError> {
@@ -94,6 +253,17 @@ impl KeyValueDeployStorage {
         &self,
         protocol_version: i64,
     ) -> Result<HashSet<PendingDeploy>, KvStoreError> {
+        if self
+            .funded_store
+            .as_ref()
+            .map(FundedDeployStorage::non_empty)
+            .transpose()?
+            .unwrap_or(false)
+        {
+            return Err(KvStoreError::InvalidArgument(
+                "funded pending records require an explicit admission policy".to_string(),
+            ));
+        }
         if protocol_version >= 6 {
             if self.store.non_empty()? {
                 return Err(KvStoreError::InvalidArgument(
@@ -189,7 +359,14 @@ impl KeyValueDeployStorage {
 
     /// Check if the storage contains any pending deploys. O(1) time and space.
     pub fn non_empty(&self) -> Result<bool, KvStoreError> {
-        Ok(self.store.non_empty()? || self.envelope_store.non_empty()?)
+        Ok(self.store.non_empty()?
+            || self.envelope_store.non_empty()?
+            || self
+                .funded_store
+                .as_ref()
+                .map(FundedDeployStorage::non_empty)
+                .transpose()?
+                .unwrap_or(false))
     }
 }
 
@@ -354,6 +531,7 @@ mod tests {
         let storage = KeyValueDeployStorage {
             store: KeyValueTypedStoreImpl::new(store),
             envelope_store: KeyValueTypedStoreImpl::new(envelope_store),
+            funded_store: None,
         };
         let deploy = Signed::create(
             DeployData {
@@ -422,8 +600,10 @@ mod tests {
                 .next()
                 .unwrap();
             assert_eq!(pending.deploy_id().as_ref(), commitment.as_ref());
-            assert_eq!(pending.envelope(), &envelope);
-            let processed = ProcessedDeploy::empty_from_cosigned(pending.envelope());
+            assert_eq!(pending.envelope().body_envelope().unwrap(), &envelope);
+            let processed =
+                ProcessedDeploy::empty_from_cosigned(pending.envelope().body_envelope().unwrap())
+                    .unwrap();
             assert_eq!(processed.to_cosigned().unwrap(), envelope);
             drop(storage);
             runtime.block_on(manager.shutdown()).unwrap();

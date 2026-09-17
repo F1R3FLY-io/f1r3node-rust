@@ -39,6 +39,11 @@ pub struct BlockMetadata {
 
 ## Deploy & Transfer Types (Protobuf)
 
+`DeployDataProto` restores the original `phloPrice` and `phloLimit` tags for the separate offered-price authorization format.
+`OfferedFundedDeploy` signs those scalars with the complete funding intent.
+Existing decoders reject nonzero offers rather than discard unsigned fields.
+The [signed phlo envelope contract](../casper/theory/cost-accounting-impl/signed-phlo-deploy-envelope.md) defines the formats and the inactive execution boundary.
+
 **`DeployInfo`** (proto `DeployServiceCommon.proto`) -- Per-deploy metadata in block responses:
 - Fields: `deployer`, `term`, `timestamp`, `sig`, `sigAlgorithm`,
   `validAfterBlockNumber`, `cost`, `errored`, `systemDeployError`,

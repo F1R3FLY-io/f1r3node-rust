@@ -57,10 +57,10 @@ async fn recovery_effect_is_applied_at_most_once() {
         // A recovered loser (its effect) and a never-seen loser, with distinct sigs.
         let won_deploy = construct_deploy::basic_processed_deploy(0, Some("root".to_string()))
             .expect("won deploy");
-        let sig_won = won_deploy.deploy.sig.clone();
+        let sig_won = won_deploy.primary().sig.clone();
         let loser_deploy = construct_deploy::basic_processed_deploy(1, Some("root".to_string()))
             .expect("loser deploy");
-        let sig_loser = loser_deploy.deploy.sig.clone();
+        let sig_loser = loser_deploy.primary().sig.clone();
         assert_ne!(sig_won, sig_loser, "the two deploys must have distinct signatures");
 
         // Merge scope: genesis (no deploys) <- b1 (includes `sig_won` in body.deploys — a
@@ -172,7 +172,7 @@ async fn recovery_effect_is_applied_at_most_once() {
             None,
         );
         let b2_sigs: HashSet<Bytes> =
-            b2.body.deploys.iter().map(|pd| pd.deploy.sig.clone()).collect();
+            b2.body.deploys.iter().map(|pd| pd.primary().sig.clone()).collect();
         assert!(
             !b2_sigs.contains(&sig_won),
             "the already-applied effect is NOT re-proposed into the next block (no double-apply)"

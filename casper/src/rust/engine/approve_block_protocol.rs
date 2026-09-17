@@ -126,6 +126,9 @@ impl ApproveBlockProtocolFactory {
         quarantine_length: i32,
         number_of_active_validators: u32,
         fault_tolerance_threshold_ppm: i64,
+        max_parent_depth: i32,
+        deploy_lifespan: i64,
+        min_phlo_price: i64,
         shard_id: String,
         deploy_timestamp: Option<i64>,
         required_sigs: i32,
@@ -142,6 +145,7 @@ impl ApproveBlockProtocolFactory {
         native_token_name: String,
         native_token_symbol: String,
         native_token_decimals: u32,
+        resource_policy: Option<models::rust::phlo_schedule::PhloGenesisPolicy>,
         runtime_manager: &RuntimeManager,
         last_approved_block: Arc<Mutex<Option<ApprovedBlock>>>,
         event_log: Option<F1r3flyEvents>,
@@ -179,6 +183,7 @@ impl ApproveBlockProtocolFactory {
             .collect();
 
         let genesis = Genesis {
+            resource_policy,
             shard_id,
             timestamp,
             block_number,
@@ -193,6 +198,9 @@ impl ApproveBlockProtocolFactory {
                 // genesis and read back by every node at startup — the consensus
                 // value the finalized-floor oracle runs on.
                 fault_tolerance_threshold_ppm,
+                max_parent_depth,
+                deploy_lifespan,
+                min_phlo_price,
                 pos_multi_sig_public_keys,
                 pos_multi_sig_quorum,
                 max_cosigners_per_deploy,

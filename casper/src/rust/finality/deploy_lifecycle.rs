@@ -1215,7 +1215,8 @@ mod tests {
             deploy_id,
             models::rust::casper::protocol::casper_message::ProcessedDeploy::empty_from_cosigned(
                 &envelope,
-            ),
+            )
+            .unwrap(),
         )
     }
 
@@ -1334,11 +1335,9 @@ mod tests {
             use models::rust::block_metadata::CERTIFIED_ADMISSION_PROTOCOL_VERSION;
             use models::rust::casper::protocol::casper_message::DeployAdmissionStatus;
 
-            let (_, template) = processed(9000, false);
             let mut deploys = Vec::with_capacity(prefix.len() + 1);
             for (index, (admission_rejected, failed, settled)) in prefix.iter().enumerate() {
-                let mut deploy = template.clone();
-                deploy.envelope_commitment = deploy_id(index.to_le_bytes());
+                let (_, mut deploy) = processed(9000 + i32::try_from(index).unwrap(), false);
                 deploy.is_failed = *failed || *admission_rejected;
                 deploy.admission_status = if *admission_rejected {
                     DeployAdmissionStatus::Rejected
@@ -1351,9 +1350,7 @@ mod tests {
                 }
                 deploys.push(deploy);
             }
-            let mut target = template;
-            let target_id = deploy_id(b"projection-target");
-            target.envelope_commitment = target_id.clone();
+            let (target_id, mut target) = processed(9100, false);
             target.is_failed = target_failed;
             if target_failed {
                 target.authority_funding_certificate = Some(Default::default());

@@ -157,6 +157,12 @@ pub mod builder {
             .casper
             .validate_parent_bounds()
             .map_err(|e| eyre::eyre!("parent-bound config invalid: {}", e))?;
+        casper::rust::casper_conf::validate_chain_parameter_values(
+            i64::from(node_conf.casper.max_parent_depth),
+            node_conf.casper.deploy_lifespan,
+            node_conf.casper.min_phlo_price,
+        )
+        .map_err(|e| eyre::eyre!("consensus parameter config invalid: {}", e))?;
         node_conf
             .casper
             .validate_finalization_certificate_capacity()
@@ -409,6 +415,39 @@ mod embedded_defaults_tests {
     use shared::rust::tracing_init::{LogFormat, LogRotation, LogSink};
 
     use super::*;
+
+    #[test]
+    fn startup_rejects_parameters_outside_chain_reader_ranges() {
+        let baseline: NodeConf = hocon::HoconLoader::new()
+            .load_str(EMBEDDED_DEFAULTS)
+            .expect("load defaults.conf")
+            .resolve()
+            .expect("deserialize NodeConf");
+        for (depth, lifespan, price) in [
+            (0, 50, 1),
+            (-1, 50, 1),
+            (15, 0, 1),
+            (15, -1, 1),
+            (15, i64::from(i32::MAX) + 1, 1),
+            (15, 50, -1),
+        ] {
+            let mut conf = baseline.clone();
+            conf.casper.max_parent_depth = depth;
+            conf.casper.deploy_lifespan = lifespan;
+            conf.casper.min_phlo_price = price;
+            assert!(
+                builder::validate_config(&conf).is_err(),
+                "startup accepted invalid chain parameters: {depth}/{lifespan}/{price}"
+            );
+        }
+        for (depth, lifespan, price) in [(1, 1, 0), (i32::MAX, i64::from(i32::MAX), i64::MAX)] {
+            let mut conf = baseline.clone();
+            conf.casper.max_parent_depth = depth;
+            conf.casper.deploy_lifespan = lifespan;
+            conf.casper.min_phlo_price = price;
+            assert!(builder::validate_config(&conf).is_ok());
+        }
+    }
 
     #[test]
     fn embedded_defaults_deserialize_into_node_conf() {

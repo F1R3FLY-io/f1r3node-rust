@@ -153,7 +153,7 @@ async fn estimator_on_empty_latest_messages_should_return_the_genesis_regardless
         let dag = block_dag_storage
             .get_representation()
             .expect("dag representation");
-        let estimator = Estimator::apply(i32::MAX, None);
+        let estimator = Estimator::apply();
         let forkchoice = certified_fork_choice(&estimator, &dag, &genesis, HashMap::new())
             .await
             .unwrap();
@@ -270,7 +270,7 @@ async fn estimator_on_simple_dag_should_return_the_appropriate_score_map_and_for
             (v2.clone(), b6.block_hash.clone()),
         ]);
 
-        let estimator = Estimator::apply(i32::MAX, None);
+        let estimator = Estimator::apply();
         let forkchoice = certified_fork_choice(&estimator, &dag, &genesis, latest_blocks)
             .await
             .unwrap();
@@ -393,7 +393,7 @@ async fn estimator_on_flipping_forkchoice_dag_should_return_the_appropriate_scor
             (v3.clone(), b7.block_hash.clone()),
         ]);
 
-        let estimator = Estimator::apply(i32::MAX, None);
+        let estimator = Estimator::apply();
         let forkchoice = certified_fork_choice(&estimator, &dag, &genesis, latest_blocks)
             .await
             .unwrap();

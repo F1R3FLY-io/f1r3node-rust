@@ -243,7 +243,7 @@ fn legacy_validation_block(deploy: Signed<DeployData>) -> BlockMessage {
         now,
         None,
         None,
-        Some(vec![ProcessedDeploy::empty(deploy)]),
+        Some(vec![ProcessedDeploy::empty(deploy).unwrap()]),
         None,
         None,
         None,
@@ -600,7 +600,7 @@ async fn future_deploy_validation_should_work() {
         let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
 
         let updated_processed_deploy = {
-            let mut updated_deploy_data = deploy.deploy.data.clone();
+            let mut updated_deploy_data = deploy.body().clone();
             updated_deploy_data.valid_after_block_number = -1;
 
             create_signed_deploy_with_data(updated_deploy_data)
@@ -623,7 +623,7 @@ async fn future_deploy_validation_should_not_accept_blocks_with_a_deploy_for_a_f
         let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
 
         let updated_processed_deploy = {
-            let mut updated_deploy_data = deploy.deploy.data.clone();
+            let mut updated_deploy_data = deploy.body().clone();
             updated_deploy_data.valid_after_block_number = i64::MAX;
 
             create_signed_deploy_with_data(updated_deploy_data)
@@ -670,7 +670,7 @@ async fn deploy_expiration_validation_should_not_accept_blocks_with_a_deploy_tha
         let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
 
         let updated_processed_deploy = {
-            let mut updated_deploy_data = deploy.deploy.data.clone();
+            let mut updated_deploy_data = deploy.body().clone();
             updated_deploy_data.valid_after_block_number = i64::MIN;
 
             create_signed_deploy_with_data(updated_deploy_data)
@@ -785,7 +785,7 @@ async fn time_based_expiration_should_reject_blocks_with_a_time_expired_deploy()
         // `create_genesis_block`). The deploy is therefore time-expired
         // for any block created after the unix epoch.
         let expired_processed_deploy = {
-            let mut data = deploy.deploy.data.clone();
+            let mut data = deploy.body().clone();
             data.expiration_timestamp = Some(1);
             create_signed_deploy_with_data(data).expect("failed to sign expired deploy")
         };

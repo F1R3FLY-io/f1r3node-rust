@@ -1072,7 +1072,7 @@ async fn multi_parent_casper_should_succeed_at_slashing() {
         .iter()
         .chain(&sibling.body.deploys)
     {
-        assert_eq!(processed.envelope_commitment.len(), 32);
+        assert_eq!(processed.deploy_id_v6().unwrap().as_ref().len(), 32);
         processed
             .to_cosigned()
             .expect("protocol-v6 sibling deploy must reconstruct its authenticated envelope");

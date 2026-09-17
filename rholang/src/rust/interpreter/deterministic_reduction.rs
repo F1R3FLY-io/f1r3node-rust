@@ -23,7 +23,12 @@ use rspace_plus_plus::rspace::trace::Log;
 use tokio::sync::{oneshot, OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 use tokio::task::JoinHandle;
 
+use super::accounting::economic_failure::{
+    classify_errors, EvaluationFailureSummary, FailureRecorder,
+};
+use super::accounting::phlo_execution::PhloFailure;
 use super::accounting::RuntimeBudget;
+use super::errors::InterpreterError;
 use super::host_work::HostWorkBudget;
 use super::rho_runtime::RhoISpace;
 
@@ -119,6 +124,17 @@ pub fn current() -> Option<ReductionContext> {
     }
 }
 
+pub(crate) fn record_evaluator_failures(errors: &[InterpreterError]) {
+    if errors.is_empty() {
+        return;
+    }
+    if let Some(context) = current() {
+        let summary = classify_errors(errors, context.session.failure_work.as_ref())
+            .unwrap_or_else(|_| EvaluationFailureSummary::single(PhloFailure::Platform));
+        context.session.failures.record(summary);
+    }
+}
+
 pub fn reserve_host_work(
     dimension: HostWorkDimension,
     units: HostWorkUnits,
@@ -200,6 +216,22 @@ pub async fn root_with_host_work<T>(
     if current().is_some() {
         return future.await;
     }
+    root_with_observation(space, budget, coordinator, host_work, future)
+        .await
+        .0
+}
+
+pub(crate) async fn root_with_observation<T>(
+    space: RhoISpace,
+    budget: RuntimeBudget,
+    coordinator: ReductionCoordinator,
+    host_work: Option<HostWorkBudget>,
+    future: impl Future<Output = T>,
+) -> (T, EvaluationFailureSummary) {
+    if let Some(context) = current() {
+        let result = future.await;
+        return (result, context.session.failures.snapshot());
+    }
     let session_id = budget.deploy_id();
     let evaluation_guard = coordinator.enter_evaluation().await;
     let session = Arc::new(ReductionSession::new(
@@ -210,10 +242,10 @@ pub async fn root_with_host_work<T>(
     ));
     let context = ReductionContext::root(session.clone(), session_id);
     session.register(CausalPath::new());
-    let guard = ParticipantGuard::new(session, CausalPath::new());
+    let guard = ParticipantGuard::new(session.clone(), CausalPath::new());
     let result = scope(context, future).await;
     drop(guard);
-    result
+    (result, session.failures.snapshot())
 }
 
 pub(crate) struct ParticipantGuard {
@@ -276,6 +308,8 @@ struct ReductionSession {
     space: RhoISpace,
     budget: RuntimeBudget,
     host_work: Option<HostWorkBudget>,
+    failures: FailureRecorder,
+    failure_work: Option<HostWorkBudget>,
     state: Mutex<SessionState>,
     evaluation_guard: Mutex<Option<OwnedRwLockReadGuard<()>>>,
 }
@@ -375,7 +409,11 @@ impl ReductionSession {
         Self {
             space,
             budget,
+            failure_work: host_work
+                .as_ref()
+                .map(|budget| HostWorkBudget::new(budget.limits())),
             host_work,
+            failures: FailureRecorder::default(),
             state: Mutex::new(SessionState {
                 participants: BTreeMap::new(),
                 intents: BTreeMap::new(),

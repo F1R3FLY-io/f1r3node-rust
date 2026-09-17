@@ -15,9 +15,14 @@ use thiserror::Error;
 use super::Sig;
 use crate::rust::interpreter::host_work::HostWorkBudget;
 
-const CERTIFICATE_DOMAIN: &[u8] = b"f1r3node:authority-funding-certificate:v8";
-const WITNESS_DOMAIN: &[u8] = b"f1r3node:authority-cost-witness:v8";
-pub const AUTHORITY_ACCOUNTING_PROTOCOL_VERSION: u32 = 8;
+mod monetary;
+mod valuation;
+pub use monetary::monetary_funding_signatures_with_host_work;
+pub use valuation::AuthorityResourceDemand;
+
+const CERTIFICATE_DOMAIN: &[u8] = b"f1r3node:authority-funding-certificate:v9";
+const WITNESS_DOMAIN: &[u8] = b"f1r3node:authority-cost-witness:v9";
+pub const AUTHORITY_ACCOUNTING_PROTOCOL_VERSION: u32 = 9;
 const REGION_DOMAIN: &[u8] = b"f1r3node:cost-accounted-rho:region:v1";
 const REGION_OCCURRENCE_DOMAIN: &[u8] = b"f1r3node:cost-accounted-rho:region-occurrence:v1";
 const STACK_TRANSFER_EVENT_DOMAIN: &[u8] = b"f1r3node:cost-accounted-rho:stack-transfer-event:v1";
@@ -317,14 +322,7 @@ pub fn authority_funding_options(
     let mut unique = BTreeMap::new();
     for allocation in [
         event.debit.clone(),
-        atoms
-            .iter()
-            .try_fold(ResourceMultiset::default(), |allocation, atom| {
-                allocation.checked_add(&ResourceMultiset::singleton(
-                    cost_signature_to_sig(atom)?.lane_hash(),
-                    1,
-                ))
-            })?,
+        valuation::demand_from_atoms(&atoms)?,
         ResourceMultiset::singleton(
             cost_signature_to_sig(&signature_from_atoms(&atoms)?)?.lane_hash(),
             1,
@@ -1729,6 +1727,7 @@ pub struct FundingCertificate<K: Ord> {
     pub stack_reservations: BTreeMap<[u8; 32], u64>,
     #[serde(default)]
     pub fee_allocation: ResourceMultiset<K>,
+    pub fee_plan: Option<super::monetary_allocation::MonetaryFeeEvidence>,
     #[serde(default)]
     pub fee_recipient: Vec<u8>,
     pub byte_cost_schedule_version: u32,
@@ -1885,6 +1884,13 @@ impl<K: CanonicalAuthorityKey + Ord + Clone + Eq> FundingCertificate<K> {
             bytes.extend_from_slice(&count.to_le_bytes());
         }
         self.fee_allocation.write_canonical(&mut bytes);
+        match &self.fee_plan {
+            Some(plan) => {
+                bytes.push(1);
+                plan.write_canonical(&mut bytes);
+            }
+            None => bytes.push(0),
+        }
         bytes.extend_from_slice(&(self.fee_recipient.len() as u64).to_le_bytes());
         bytes.extend_from_slice(&self.fee_recipient);
         bytes.extend_from_slice(&self.byte_cost_schedule_version.to_le_bytes());
@@ -2371,6 +2377,29 @@ mod tests {
 
     use super::*;
 
+    fn funding_tree_with_atoms() -> impl Strategy<Value = (Sig, Vec<Vec<u8>>)> {
+        (0_u8..5, any::<bool>())
+            .prop_map(|(atom, quoted)| {
+                if atom == 0 {
+                    (Sig::Unit, Vec::new())
+                } else {
+                    let bytes = vec![atom];
+                    let signature = if quoted {
+                        Sig::Quote(bytes.clone())
+                    } else {
+                        Sig::Ground(bytes.clone())
+                    };
+                    (signature, vec![bytes])
+                }
+            })
+            .prop_recursive(4, 64, 2, |inner| {
+                (inner.clone(), inner).prop_map(|((left, mut atoms), (right, others))| {
+                    atoms.extend(others);
+                    (Sig::And(Box::new(left), Box::new(right)), atoms)
+                })
+            })
+    }
+
     fn byte_schedule_version() -> u32 { super::super::byte_accounting::BYTE_COST_SCHEDULE_VERSION }
 
     fn byte_schedule_digest() -> [u8; 32] {
@@ -2387,6 +2416,7 @@ mod tests {
             allocation,
             stack_reservations: BTreeMap::new(),
             fee_allocation: ResourceMultiset::default(),
+            fee_plan: None,
             fee_recipient: Vec::new(),
             byte_cost_schedule_version: byte_schedule_version(),
             byte_cost_schedule_digest: byte_schedule_digest(),
@@ -2397,7 +2427,9 @@ mod tests {
 
     #[test]
     fn funding_certificate_id_matches_python_client_golden_vector() {
-        let certificate = FundingCertificate {
+        use super::super::monetary_allocation::{MonetaryFeeEvidence, MonetaryFeeFields};
+
+        let mut certificate = FundingCertificate {
             protocol_version: AUTHORITY_ACCOUNTING_PROTOCOL_VERSION,
             program_hash: [b'm'; 32],
             pre_state_root: [b'p'; 32],
@@ -2406,6 +2438,7 @@ mod tests {
             allocation: ResourceMultiset::singleton([b's'; 32], 2),
             stack_reservations: BTreeMap::from([([b'k'; 32], 1)]),
             fee_allocation: ResourceMultiset::singleton([b'g'; 32], 1),
+            fee_plan: None,
             fee_recipient: b"proposer".to_vec(),
             byte_cost_schedule_version: byte_schedule_version(),
             byte_cost_schedule_digest: byte_schedule_digest(),
@@ -2415,7 +2448,35 @@ mod tests {
 
         assert_eq!(
             hex::encode(certificate.certificate_id()),
-            "1a6cbf75519760b1729bf5a5f0c876c6a2af8e7bf492cbffb40f27d5dd060eef"
+            "093145bb99125f8918e7c93f711a6164c7f8cfc6d166a9f4657b1c8a19410205"
+        );
+        certificate.fee_plan = Some(
+            MonetaryFeeEvidence::try_from(MonetaryFeeFields {
+                policy_version: 1,
+                policy_context: hex::decode(
+                    "5d2e52ab4952964ed53953a58c6a84b4bde70f7416f0422376523a99d1f07e00",
+                )
+                .unwrap()
+                .try_into()
+                .unwrap(),
+                scope: hex::decode(
+                    "42c6a8c9435cf30c7e388e7f0e1c31c6910ec375a467536373638a272a364d01",
+                )
+                .unwrap()
+                .try_into()
+                .unwrap(),
+                payer_custodies: vec![[b'g'; 32], [b'h'; 32]],
+                obligation: 1,
+                expected_revision: 0,
+                expected_position: 0,
+                next_revision: 1,
+                next_position: 1,
+            })
+            .unwrap(),
+        );
+        assert_eq!(
+            hex::encode(certificate.certificate_id()),
+            "8baf872246032dda3ce22fa51ad22371420acd16256b6b593e68492e58c71257"
         );
     }
 
@@ -2598,6 +2659,45 @@ mod tests {
     }
 
     proptest! {
+        #[test]
+        fn capability_evidence_cannot_become_payable_signature(
+            (funding, mut expected_atoms) in funding_tree_with_atoms(),
+            contexts in proptest::collection::vec((funding_tree_with_atoms(), any::<bool>()), 0..12),
+        ) {
+            prop_assert!(funding.is_funding_former());
+            let encoded = sig_to_cost_signature(&funding).unwrap();
+            let mut actual_atoms = signature_atoms(&encoded).unwrap().into_iter().map(|atom| {
+                match atom.value {
+                    Some(CostSignatureValue::Ground(bytes)) => bytes,
+                    other => panic!("unexpected payable atom: {other:?}"),
+                }
+            }).collect::<Vec<_>>();
+            actual_atoms.sort();
+            expected_atoms.sort();
+            prop_assert_eq!(actual_atoms, expected_atoms);
+
+            let capabilities = [
+                Sig::Plus(Box::new(funding.clone()), Box::new(Sig::Unit)),
+                Sig::With(Box::new(funding.clone()), Box::new(funding.clone())),
+                Sig::Bang(Box::new(funding.clone())),
+                Sig::WhyNot(Box::new(funding.clone())),
+                Sig::Lolly(Box::new(funding.clone()), Box::new(funding.clone())),
+                Sig::Threshold { threshold: 1, members: vec![funding] },
+            ];
+            for mut signature in capabilities {
+                for ((context, _), left) in &contexts {
+                    signature = if *left {
+                        Sig::And(Box::new(context.clone()), Box::new(signature))
+                    } else {
+                        Sig::And(Box::new(signature), Box::new(context.clone()))
+                    };
+                }
+                prop_assert!(!signature.is_funding_former());
+                prop_assert_eq!(sig_to_cost_signature(&signature),
+                    Err(AuthorityError::UnsupportedFundingSignature));
+            }
+        }
+
         #[test]
         fn arbitrary_private_name_presentations_cannot_create_event_authority(
             private_id in any::<[u8; 32]>(),
@@ -3349,6 +3449,7 @@ mod tests {
             allocation: physical.clone(),
             stack_reservations: BTreeMap::new(),
             fee_allocation: ResourceMultiset::default(),
+            fee_plan: None,
             fee_recipient: Vec::new(),
             byte_cost_schedule_version: byte_schedule_version(),
             byte_cost_schedule_digest: byte_schedule_digest(),
@@ -3834,6 +3935,7 @@ mod tests {
             allocation: allocation.clone(),
             stack_reservations: BTreeMap::new(),
             fee_allocation: ResourceMultiset::default(),
+            fee_plan: None,
             fee_recipient: Vec::new(),
             byte_cost_schedule_version: byte_schedule_version(),
             byte_cost_schedule_digest: byte_schedule_digest(),
@@ -3891,6 +3993,389 @@ mod tests {
     }
 
     proptest! {
+        #[test]
+        fn complete_join_payable_atoms_preserve_all_surfaces(
+            clauses in prop::collection::vec((
+                prop::collection::vec(0_u8..5, 0..7),
+                prop::collection::vec(0_u8..5, 0..7),
+            ), 0..17),
+            cuts in prop::collection::vec(any::<bool>(), 0..192),
+        ) {
+            let unit = sig_to_cost_signature(&Sig::Unit).unwrap();
+            let surfaces = clauses.iter().flat_map(|(receiver, sender)| [receiver, sender])
+                .map(|atoms| atoms.iter().fold(unit.clone(), |compound, atom| {
+                    let next = if *atom == 0 { unit.clone() } else { ground(&[*atom]) };
+                    compound_cost_signatures(&compound, &next).unwrap()
+                })).collect::<Vec<_>>();
+            let mut expected = clauses.iter().flat_map(|(receiver, sender)| receiver.iter().chain(sender))
+                .filter(|atom| **atom != 0)
+                .map(|atom| ground(&[*atom]).encode_to_vec())
+                .collect::<Vec<_>>();
+            expected.sort();
+            let combined = surfaces.iter().fold(unit.clone(), |compound, surface| {
+                compound_cost_signatures(&compound, surface).unwrap()
+            });
+            let mut combined_atoms = signature_atoms(&combined).unwrap().iter()
+                .map(Message::encode_to_vec).collect::<Vec<_>>();
+            combined_atoms.sort();
+            prop_assert_eq!(&combined_atoms, &expected);
+            let join = event(&surfaces);
+            let mut event_atoms = super::event_atoms(&join).unwrap().iter()
+                .map(Message::encode_to_vec).collect::<Vec<_>>();
+            event_atoms.sort();
+            prop_assert_eq!(&event_atoms, &expected);
+
+            let mut balances = ResourceMultiset::default();
+            let mut signatures = BTreeMap::new();
+            for atom in clauses.iter().flat_map(|(receiver, sender)| receiver.iter().chain(sender))
+                .filter(|atom| **atom != 0)
+            {
+                let signature = ground(&[*atom]);
+                let key = cost_signature_to_sig(&signature).unwrap().lane_hash();
+                *balances.0.entry(key).or_default() += 1;
+                signatures.insert(key, signature);
+            }
+            let inventory = AuthorityPhysicalInventory {
+                balances: balances.clone(),
+                balance_custody: balances.0.keys().map(|key| (*key, *key)).collect(),
+                stacks: BTreeMap::new(),
+                born_stacks: BTreeMap::new(),
+            };
+            let draw = AuthorityPhysicalEventDraw {
+                event_id: join.event_id,
+                balances: balances.clone(),
+                stack_ids: Vec::new(),
+            };
+            let settled = verify_physical_settlement(
+                std::slice::from_ref(&join), &signatures, &inventory, std::slice::from_ref(&draw),
+            ).unwrap();
+            prop_assert_eq!(&settled.balance_debit, &balances);
+
+            let mut groups = Vec::<CostSignature>::new();
+            for (index, atom) in clauses.iter()
+                .flat_map(|(receiver, sender)| receiver.iter().chain(sender))
+                .filter(|atom| **atom != 0).enumerate()
+            {
+                let signature = ground(&[*atom]);
+                if index == 0 || cuts.get(index - 1).copied().unwrap_or(false) {
+                    groups.push(signature);
+                } else {
+                    let group = groups.last_mut().unwrap();
+                    *group = compound_cost_signatures(group, &signature).unwrap();
+                }
+            }
+            let mut grouped_balances = ResourceMultiset::default();
+            let mut grouped_signatures = BTreeMap::new();
+            for group in groups {
+                let key = cost_signature_to_sig(&group).unwrap().lane_hash();
+                *grouped_balances.0.entry(key).or_default() += 1;
+                grouped_signatures.insert(key, group);
+            }
+            let grouped_inventory = AuthorityPhysicalInventory {
+                balances: grouped_balances.clone(),
+                balance_custody: grouped_balances.0.keys().map(|key| (*key, *key)).collect(),
+                stacks: BTreeMap::new(),
+                born_stacks: BTreeMap::new(),
+            };
+            let grouped_draw = AuthorityPhysicalEventDraw {
+                event_id: join.event_id,
+                balances: grouped_balances.clone(),
+                stack_ids: Vec::new(),
+            };
+            let grouped = verify_physical_settlement(
+                std::slice::from_ref(&join), &grouped_signatures, &grouped_inventory, &[grouped_draw],
+            ).unwrap();
+            prop_assert_eq!(grouped.balance_debit, grouped_balances);
+
+            let reversed = event(&surfaces.into_iter().rev().collect::<Vec<_>>());
+            let regrouped = verify_physical_settlement(
+                &[reversed], &signatures, &inventory, std::slice::from_ref(&draw),
+            ).unwrap();
+            prop_assert_eq!(&regrouped.balance_debit, &balances);
+            if let Some(key) = balances.0.keys().next().copied() {
+                let mut weakened = draw.clone();
+                weakened.balances = weakened.balances.checked_sub(&ResourceMultiset::singleton(key, 1)).unwrap();
+                prop_assert_eq!(
+                    verify_physical_settlement(&[join], &signatures, &inventory, &[weakened]),
+                    Err(AuthorityError::PhysicalAuthorityMismatch),
+                );
+            }
+        }
+
+        #[test]
+        fn born_stack_readiness_matches_all_creation_events(
+            seeds in prop::collection::vec((1_u8..5, any::<u64>()), 1..13),
+            insertion_seed in any::<usize>(),
+            use_seed in any::<usize>(),
+        ) {
+            let cells = seeds.iter().map(|(atom, _)| ground(&[*atom])).collect::<Vec<_>>();
+            let payer = ground(b"creation-payer");
+            let payer_lane = cost_signature_to_sig(&payer).unwrap().lane_hash();
+            let produce_hash = [199; 32];
+            let stack_id = [198; 32];
+            let inventory = AuthorityPhysicalInventory {
+                balances: ResourceMultiset::singleton(payer_lane, cells.len() as u64),
+                balance_custody: BTreeMap::from([(payer_lane, payer_lane)]),
+                stacks: BTreeMap::from([(stack_id, cells.clone())]),
+                born_stacks: BTreeMap::from([(stack_id, produce_hash)]),
+            };
+            let signatures = BTreeMap::from([(payer_lane, payer.clone())]);
+            let mut creation_order = (0..cells.len()).collect::<Vec<_>>();
+            creation_order.sort_by_key(|index| (seeds[*index].1, *index));
+            let creations = creation_order.into_iter().map(|index| {
+                let mut creation = event(std::slice::from_ref(&payer));
+                creation.event_id = stack_transfer_event_id(&produce_hash, index as u64);
+                let draw = AuthorityPhysicalEventDraw {
+                    event_id: creation.event_id,
+                    balances: ResourceMultiset::singleton(payer_lane, 1),
+                    stack_ids: Vec::new(),
+                };
+                (creation, draw)
+            }).collect::<Vec<_>>();
+            let used = 1 + use_seed % cells.len();
+            let uses = cells.iter().take(used).enumerate().map(|(index, signature)| {
+                let mut use_event = event(std::slice::from_ref(signature));
+                use_event.event_id = [197; 32];
+                use_event.event_id[0] = index as u8;
+                let draw = AuthorityPhysicalEventDraw {
+                    event_id: use_event.event_id,
+                    balances: ResourceMultiset::default(),
+                    stack_ids: vec![stack_id],
+                };
+                (use_event, draw)
+            }).collect::<Vec<_>>();
+            let insertion = insertion_seed % (creations.len() + 1);
+            let mut candidate = creations.clone();
+            candidate.splice(insertion..insertion, uses.clone());
+            let (events, draws): (Vec<_>, Vec<_>) = candidate.into_iter().unzip();
+            let checked = verify_physical_settlement(&events, &signatures, &inventory, &draws);
+            if insertion == cells.len() {
+                let settlement = checked.unwrap();
+                prop_assert_eq!(settlement.stack_pops, BTreeMap::from([(stack_id, used as u64)]));
+                prop_assert_eq!(settlement.balance_debit, inventory.balances.clone());
+            } else {
+                prop_assert_eq!(checked, Err(AuthorityError::PhysicalAuthorityMismatch));
+                let mut without_birth_guard = inventory.clone();
+                without_birth_guard.born_stacks.clear();
+                prop_assert!(verify_physical_settlement(&events, &signatures, &without_birth_guard, &draws).is_ok());
+            }
+
+            let mut complete = creations;
+            complete.extend(uses);
+            let (complete_events, complete_draws): (Vec<_>, Vec<_>) = complete.clone().into_iter().unzip();
+            let settlement = verify_physical_settlement(&complete_events, &signatures, &inventory, &complete_draws).unwrap();
+            prop_assert_eq!(settlement.stack_pops, BTreeMap::from([(stack_id, used as u64)]));
+            prop_assert_eq!(settlement.balance_debit, inventory.balances.clone());
+            complete.remove(0);
+            let (missing_events, missing_draws): (Vec<_>, Vec<_>) = complete.into_iter().unzip();
+            prop_assert_eq!(verify_physical_settlement(&missing_events, &signatures, &inventory, &missing_draws),
+                Err(AuthorityError::SettlementPresentationMismatch));
+            let mut empty = inventory;
+            empty.stacks.insert(stack_id, Vec::new());
+            prop_assert_eq!(verify_physical_settlement(&complete_events, &signatures, &empty, &complete_draws),
+                Err(AuthorityError::MissingSignature));
+            prop_assert_eq!(verify_physical_settlement(&[], &signatures, &empty, &[]),
+                Err(AuthorityError::MissingSignature));
+            empty.stacks.insert(stack_id, cells);
+            prop_assert_eq!(verify_physical_settlement(&[], &signatures, &empty, &[]),
+                Err(AuthorityError::SettlementPresentationMismatch));
+            empty.stacks.remove(&stack_id);
+            prop_assert_eq!(verify_physical_settlement(&[], &signatures, &empty, &[]),
+                Err(AuthorityError::UnknownStackResource));
+        }
+
+        #[test]
+        fn selected_stack_histories_preserve_exact_prefixes(
+            seeds in prop::collection::vec(prop::collection::vec(1_u8..5, 1..8), 1..9),
+            masks in prop::collection::vec(any::<u8>(), 1..33),
+            split_seed in any::<usize>(),
+        ) {
+            let stacks = seeds.iter().enumerate().map(|(index, seed)| {
+                let cells = (0..masks.len() + seed.len())
+                    .map(|position| ground(&[seed[position % seed.len()]]))
+                    .collect::<Vec<_>>();
+                ([index as u8 + 1; 32], cells)
+            }).chain(std::iter::once(([240; 32], vec![ground(b"untouched")]))).collect::<BTreeMap<_, _>>();
+            let inventory = AuthorityPhysicalInventory {
+                balances: ResourceMultiset::default(),
+                balance_custody: BTreeMap::new(),
+                stacks: stacks.clone(),
+                born_stacks: BTreeMap::new(),
+            };
+            let mut counts = BTreeMap::<[u8; 32], u64>::new();
+            let mut events = Vec::new();
+            let mut draws = Vec::new();
+            for (position, mask) in masks.iter().enumerate() {
+                let mut ids = (0..seeds.len())
+                    .filter(|index| mask & (1_u8 << index) != 0)
+                    .map(|index| [index as u8 + 1; 32])
+                    .collect::<Vec<_>>();
+                if ids.is_empty() {
+                    ids.push([position as u8 % seeds.len() as u8 + 1; 32]);
+                }
+                let signatures = ids.iter().map(|id| {
+                    let used = counts.entry(*id).or_default();
+                    let signature = stacks[id][*used as usize].clone();
+                    *used += 1;
+                    signature
+                }).collect::<Vec<_>>();
+                let mut selected_event = event(&signatures);
+                selected_event.event_id = [position as u8 + 1; 32];
+                draws.push(AuthorityPhysicalEventDraw {
+                    event_id: selected_event.event_id,
+                    balances: ResourceMultiset::default(),
+                    stack_ids: ids,
+                });
+                events.push(selected_event);
+            }
+
+            let whole = verify_physical_settlement(&events, &BTreeMap::new(), &inventory, &draws).unwrap();
+            prop_assert_eq!(&whole.stack_pops, &counts);
+            prop_assert!(whole.balance_debit.0.is_empty());
+            prop_assert!(whole.custody_debit.0.is_empty());
+            prop_assert_eq!(&inventory.stacks, &stacks);
+            prop_assert!(!whole.stack_pops.contains_key(&[240; 32]));
+
+            let split = split_seed % (events.len() + 1);
+            let prefix = verify_physical_settlement(&events[..split], &BTreeMap::new(), &inventory, &draws[..split]).unwrap();
+            let residual_stacks = stacks.iter().map(|(id, cells)| {
+                let used = prefix.stack_pops.get(id).copied().unwrap_or_default() as usize;
+                (*id, cells[used..].to_vec())
+            }).collect();
+            let residual = AuthorityPhysicalInventory {
+                balances: ResourceMultiset::default(),
+                balance_custody: BTreeMap::new(),
+                stacks: residual_stacks,
+                born_stacks: BTreeMap::new(),
+            };
+            let suffix = verify_physical_settlement(&events[split..], &BTreeMap::new(), &residual, &draws[split..]).unwrap();
+            for (id, expected) in &counts {
+                prop_assert_eq!(
+                    prefix.stack_pops.get(id).copied().unwrap_or_default()
+                        + suffix.stack_pops.get(id).copied().unwrap_or_default(),
+                    *expected,
+                );
+            }
+
+            let first_id = draws[0].stack_ids[0];
+            let mut exhausted = inventory.clone();
+            exhausted.stacks.get_mut(&first_id).unwrap().truncate(counts[&first_id] as usize - 1);
+            let exhausted_before = exhausted.stacks.clone();
+            prop_assert_eq!(
+                verify_physical_settlement(&events, &BTreeMap::new(), &exhausted, &draws),
+                Err(AuthorityError::ExhaustedStackResource),
+            );
+            prop_assert_eq!(exhausted.stacks, exhausted_before);
+
+            let mut duplicate = draws.clone();
+            duplicate[0].stack_ids.insert(0, first_id);
+            prop_assert_eq!(
+                verify_physical_settlement(&events, &BTreeMap::new(), &inventory, &duplicate),
+                Err(AuthorityError::NonCanonicalStackDraw),
+            );
+            let mut missing = inventory.clone();
+            missing.stacks.remove(&first_id);
+            prop_assert_eq!(
+                verify_physical_settlement(&events, &BTreeMap::new(), &missing, &draws),
+                Err(AuthorityError::UnknownStackResource),
+            );
+        }
+
+        #[test]
+        fn compound_and_split_stack_histories_preserve_each_occurrence(
+            seeds in prop::collection::vec(prop::collection::vec(1_u8..5, 1..8), 1..33),
+            rounds in 1_usize..9,
+            split_seed in any::<usize>(),
+            changed_seed in any::<usize>(),
+        ) {
+            let split_stacks = seeds.iter().enumerate().map(|(index, seed)| {
+                let cells = (0..rounds + 2)
+                    .map(|position| ground(&[seed[position % seed.len()]]))
+                    .collect::<Vec<_>>();
+                ([index as u8 + 1; 32], cells)
+            }).collect::<BTreeMap<_, _>>();
+            let grouped_cells = (0..rounds + 2).map(|position| {
+                let mut signatures = split_stacks.values().map(|cells| cells[position].clone());
+                let first = signatures.next().unwrap();
+                signatures.fold(first, |left, right| compound_cost_signatures(&left, &right).unwrap())
+            }).collect::<Vec<_>>();
+            let group_id = [200; 32];
+            let untouched_id = [240; 32];
+            let untouched = vec![ground(b"untouched")];
+            let split_inventory = AuthorityPhysicalInventory {
+                balances: ResourceMultiset::default(),
+                balance_custody: BTreeMap::new(),
+                stacks: split_stacks.clone().into_iter()
+                    .chain(std::iter::once((untouched_id, untouched.clone()))).collect(),
+                born_stacks: BTreeMap::new(),
+            };
+            let grouped_inventory = AuthorityPhysicalInventory {
+                stacks: BTreeMap::from([(group_id, grouped_cells), (untouched_id, untouched)]),
+                ..split_inventory.clone()
+            };
+            let events = (0..rounds).map(|position| {
+                let signatures = split_stacks.values().map(|cells| cells[position].clone()).collect::<Vec<_>>();
+                let mut current = event(&signatures);
+                current.event_id = [position as u8 + 1; 32];
+                current
+            }).collect::<Vec<_>>();
+            let grouped_draws = events.iter().map(|current| AuthorityPhysicalEventDraw {
+                event_id: current.event_id,
+                balances: ResourceMultiset::default(),
+                stack_ids: vec![group_id],
+            }).collect::<Vec<_>>();
+            let split_draws = events.iter().map(|current| AuthorityPhysicalEventDraw {
+                stack_ids: split_stacks.keys().copied().collect(),
+                event_id: current.event_id,
+                balances: ResourceMultiset::default(),
+            }).collect::<Vec<_>>();
+            for (inventory, draws, selected) in [
+                (&grouped_inventory, &grouped_draws, vec![group_id]),
+                (&split_inventory, &split_draws, split_stacks.keys().copied().collect()),
+            ] {
+                let original = inventory.stacks.clone();
+                let whole = verify_physical_settlement(&events, &BTreeMap::new(), inventory, draws).unwrap();
+                let expected = selected.iter().map(|id| (*id, rounds as u64)).collect::<BTreeMap<_, _>>();
+                prop_assert_eq!(&whole.stack_pops, &expected);
+                prop_assert!(whole.balance_debit.0.is_empty());
+                prop_assert!(whole.custody_debit.0.is_empty());
+                prop_assert_eq!(&inventory.stacks, &original);
+
+                let split = split_seed % (rounds + 1);
+                let prefix = verify_physical_settlement(&events[..split], &BTreeMap::new(), inventory, &draws[..split]).unwrap();
+                let residual = AuthorityPhysicalInventory {
+                    stacks: inventory.stacks.iter().map(|(id, cells)| {
+                        let used = prefix.stack_pops.get(id).copied().unwrap_or_default() as usize;
+                        (*id, cells[used..].to_vec())
+                    }).collect(),
+                    ..inventory.clone()
+                };
+                let suffix = verify_physical_settlement(&events[split..], &BTreeMap::new(), &residual, &draws[split..]).unwrap();
+                for id in &selected {
+                    let first = prefix.stack_pops.get(id).copied().unwrap_or_default();
+                    let last = suffix.stack_pops.get(id).copied().unwrap_or_default();
+                    prop_assert_eq!(first + last, rounds as u64);
+                    prop_assert_eq!(&residual.stacks[id][last as usize..], &original[id][rounds..]);
+                }
+                prop_assert_eq!(&residual.stacks[&untouched_id], &original[&untouched_id]);
+
+                let mut changed = inventory.clone();
+                let changed_id = selected[changed_seed % selected.len()];
+                changed.stacks.get_mut(&changed_id).unwrap()[changed_seed % rounds] = ground(b"unfunded");
+                prop_assert_eq!(
+                    verify_physical_settlement(&events, &BTreeMap::new(), &changed, draws),
+                    Err(AuthorityError::PhysicalAuthorityMismatch),
+                );
+
+                let mut duplicated = draws.clone();
+                duplicated[0].stack_ids.insert(0, selected[0]);
+                prop_assert_eq!(
+                    verify_physical_settlement(&events, &BTreeMap::new(), inventory, &duplicated),
+                    Err(AuthorityError::NonCanonicalStackDraw),
+                );
+            }
+        }
+
         #[test]
         fn authority_discovery_units_match_arbitrary_tree_shape(leaf_count in 1_u64..17) {
             let mut signature = ground(&[0]);

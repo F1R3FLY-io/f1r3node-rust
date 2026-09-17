@@ -19,7 +19,6 @@ use super::casper::protocol::casper_message::{
     Justification, ProcessedDeploy, ProcessedSystemDeploy, ValidatorBondGeneration,
 };
 use super::validator::{self, Validator, ValidatorSerde};
-use crate::rhoapi::PCost;
 
 const CERTIFIED_VALIDATOR_INCARNATION_PROTOCOL_VERSION: i64 = 5;
 
@@ -139,21 +138,7 @@ pub fn signed_deploy_data_gen() -> impl Strategy<Value = Signed<DeployData>> {
 
 pub fn processed_deploy_gen() -> impl Strategy<Value = ProcessedDeploy> {
     let deploy_data_gen = signed_deploy_data_gen();
-    deploy_data_gen.prop_map(|deploy_data| ProcessedDeploy {
-        deploy: deploy_data,
-        envelope_commitment: ByteString::new(),
-        cost: PCost { cost: 0 },
-        deploy_log: Vec::new(),
-        is_failed: false,
-        system_deploy_error: None,
-        cosigners: Vec::new(),
-        cosigner_threshold: 0,
-        pre_state_hash: ByteString::new(),
-        post_state_hash: ByteString::new(),
-        authority_funding_certificate: None,
-        authority_cost_witness: None,
-        admission_status: Default::default(),
-    })
+    deploy_data_gen.prop_map(|deploy_data| ProcessedDeploy::empty(deploy_data).unwrap())
 }
 
 pub fn protocol_v6_processed_deploy_gen() -> impl Strategy<Value = ProcessedDeploy> {
@@ -178,7 +163,7 @@ pub fn protocol_v6_processed_deploy_gen() -> impl Strategy<Value = ProcessedDepl
             secret,
         )
         .expect("Failed to create protocol-v6 deploy envelope");
-        ProcessedDeploy::empty_from_cosigned(&envelope)
+        ProcessedDeploy::empty_from_cosigned(&envelope).unwrap()
     })
 }
 

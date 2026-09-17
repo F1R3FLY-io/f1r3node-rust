@@ -1929,7 +1929,6 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
-    use crate::rhoapi::PCost;
     use crate::rust::casper::protocol::casper_message::{
         Body, Bond, DeployAdmissionStatus, DeployData, Header, ProcessedDeploy, SystemDeployData,
         ValidatorBondGeneration,
@@ -2015,21 +2014,9 @@ mod tests {
             private_key,
         )
         .unwrap();
-        ProcessedDeploy {
-            deploy,
-            envelope_commitment: Bytes::new(),
-            cost: PCost { cost: 0 },
-            deploy_log: Vec::new(),
-            is_failed,
-            system_deploy_error: None,
-            cosigners: Vec::new(),
-            cosigner_threshold: 0,
-            pre_state_hash: Bytes::new(),
-            post_state_hash: Bytes::new(),
-            authority_funding_certificate: None,
-            authority_cost_witness: None,
-            admission_status: DeployAdmissionStatus::Executed,
-        }
+        let mut processed = ProcessedDeploy::empty(deploy).unwrap();
+        processed.is_failed = is_failed;
+        processed
     }
 
     fn authority_block() -> BlockMessage {

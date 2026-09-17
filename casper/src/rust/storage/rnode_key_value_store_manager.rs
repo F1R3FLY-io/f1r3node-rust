@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+use block_storage::rust::deploy::versioned_deploy_storage::DeployEnvelopeStoreKind;
 use block_storage::rust::finality::FinalizationLedger;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use rspace_plus_plus::rspace::shared::lmdb_dir_store_manager::{
@@ -175,6 +176,20 @@ pub fn rnode_db_mapping(legacy_rspace_paths: Option<bool>) -> Vec<(Db, LmdbEnvCo
             Db::new("deploy_envelope_storage_v6".to_string(), None),
             deploy_storage_env_config(),
         ),
+        (
+            Db::new(
+                DeployEnvelopeStoreKind::Pending.namespace().to_string(),
+                None,
+            ),
+            deploy_storage_env_config(),
+        ),
+        (
+            Db::new(
+                DeployEnvelopeStoreKind::Rejected.namespace().to_string(),
+                None,
+            ),
+            deploy_storage_env_config(),
+        ),
         // Buffer of deploys rejected during multi-parent merge; shares sizing
         // with deploy_storage since its entries are the same value type
         // (Signed<DeployData>) and it is bounded by `deployLifespan`.
@@ -252,4 +267,76 @@ pub fn rnode_db_mapping(legacy_rspace_paths: Option<bool>) -> Vec<(Db, LmdbEnvCo
     }
 
     mappings
+}
+
+#[cfg(test)]
+mod tests {
+    use shared::rust::store::key_value_store::{
+        strict_atomic_mutate, AtomicStoreMutation, AtomicStoreOperation,
+    };
+
+    use super::*;
+
+    #[tokio::test]
+    async fn production_deploy_namespaces_share_an_atomic_environment() {
+        let scratch = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("target/casper-test-scratch");
+        std::fs::create_dir_all(&scratch).unwrap();
+        for legacy in [false, true] {
+            let directory = tempfile::Builder::new()
+                .prefix("deploy-environments-")
+                .tempdir_in(&scratch)
+                .unwrap();
+            let mut manager =
+                new_key_value_store_manager(directory.path().to_path_buf(), Some(legacy));
+            let mut stores = Vec::new();
+            for name in [
+                "deploy_storage",
+                "deploy_envelope_storage_v6",
+                "rejected_deploy_buffer",
+                DeployEnvelopeStoreKind::Pending.namespace(),
+                DeployEnvelopeStoreKind::Rejected.namespace(),
+            ] {
+                stores.push(manager.store(name.to_string()).await.unwrap());
+            }
+            let writes: Vec<_> = stores
+                .iter()
+                .enumerate()
+                .map(|(index, store)| AtomicStoreMutation {
+                    store: store.as_ref(),
+                    key: vec![1],
+                    operation: AtomicStoreOperation::Put(vec![index as u8]),
+                })
+                .collect();
+            strict_atomic_mutate(&writes).unwrap();
+            for (index, store) in stores.iter().enumerate() {
+                assert_eq!(store.get(&vec![vec![1]]).unwrap(), vec![Some(vec![
+                    index as u8
+                ])]);
+            }
+            let rollback = [
+                AtomicStoreMutation {
+                    store: stores[0].as_ref(),
+                    key: vec![2],
+                    operation: AtomicStoreOperation::Put(vec![9]),
+                },
+                AtomicStoreMutation {
+                    store: stores[4].as_ref(),
+                    key: vec![1],
+                    operation: AtomicStoreOperation::CompareAndSwap {
+                        expected: None,
+                        replacement: Some(vec![9]),
+                    },
+                },
+            ];
+            assert!(strict_atomic_mutate(&rollback).is_err());
+            assert_eq!(stores[0].get(&vec![vec![2]]).unwrap(), vec![None]);
+            drop(rollback);
+            drop(writes);
+            drop(stores);
+            manager.shutdown().await.unwrap();
+        }
+    }
 }

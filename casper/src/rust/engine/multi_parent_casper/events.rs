@@ -72,7 +72,7 @@ fn block_event(
             DeployEvent::new(
                 hex::encode(pd.deploy_id()),
                 pd.cost.cost as i64,
-                hex::encode(pd.deploy.pk.bytes.clone()),
+                hex::encode(pd.primary().pk.bytes.clone()),
                 pd.is_failed,
             )
         })

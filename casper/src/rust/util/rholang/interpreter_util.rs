@@ -2933,7 +2933,7 @@ pub async fn compute_parents_post_state(
                                             carrier = %hex::encode(&src_block),
                                             carrier_block = block.body.state.block_number,
                                             valid_after_block =
-                                                pd.deploy.data.valid_after_block_number,
+                                                pd.body().valid_after_block_number,
                                             floor_block = floor_block_number,
                                             "deploy lifecycle"
                                         );
@@ -3215,7 +3215,7 @@ mod backstop_tests {
             PrivateKey::from_bytes(&[0x61; 32]),
         )
         .expect("v6 envelope");
-        ProcessedDeploy::empty_from_cosigned(&envelope)
+        ProcessedDeploy::empty_from_cosigned(&envelope).unwrap()
     }
 
     fn v6_processed_id(processed: &ProcessedDeploy) -> DeployLookupId {
@@ -4499,7 +4499,7 @@ mod backstop_tests {
             Some(0),
             Some(Vec::new()),
             Some(Vec::new()),
-            Some(vec![ProcessedDeploy::empty(deploy.clone())]),
+            Some(vec![ProcessedDeploy::empty(deploy.clone()).unwrap()]),
             Some(Vec::new()),
             Some(Vec::new()),
             Some("root".to_string()),
@@ -4515,7 +4515,7 @@ mod backstop_tests {
             Some(0),
             Some(Vec::new()),
             Some(Vec::new()),
-            Some(vec![ProcessedDeploy::empty(deploy)]),
+            Some(vec![ProcessedDeploy::empty(deploy).unwrap()]),
             Some(Vec::new()),
             Some(Vec::new()),
             Some("root".to_string()),
@@ -4570,7 +4570,7 @@ mod backstop_tests {
             Some(0),
             Some(Vec::new()),
             Some(Vec::new()),
-            Some(vec![ProcessedDeploy::empty(deploy.clone())]),
+            Some(vec![ProcessedDeploy::empty(deploy.clone()).unwrap()]),
             Some(Vec::new()),
             Some(Vec::new()),
             Some("root".to_string()),
@@ -4586,7 +4586,7 @@ mod backstop_tests {
             Some(0),
             Some(Vec::new()),
             Some(Vec::new()),
-            Some(vec![ProcessedDeploy::empty(deploy)]),
+            Some(vec![ProcessedDeploy::empty(deploy).unwrap()]),
             Some(Vec::new()),
             Some(Vec::new()),
             Some("root".to_string()),
@@ -4662,7 +4662,7 @@ mod backstop_tests {
             Some(0),
             Some(Vec::new()),
             Some(Vec::new()),
-            Some(vec![ProcessedDeploy::empty(deploy.clone())]),
+            Some(vec![ProcessedDeploy::empty(deploy.clone()).unwrap()]),
             Some(Vec::new()),
             Some(Vec::new()),
             Some("root".to_string()),
@@ -4678,7 +4678,7 @@ mod backstop_tests {
             Some(0),
             Some(Vec::new()),
             Some(Vec::new()),
-            Some(vec![ProcessedDeploy::empty(deploy)]),
+            Some(vec![ProcessedDeploy::empty(deploy).unwrap()]),
             Some(Vec::new()),
             Some(Vec::new()),
             Some("root".to_string()),
@@ -4776,7 +4776,7 @@ mod backstop_tests {
             Some(11),
             Some(Vec::new()),
             Some(Vec::new()),
-            Some(vec![ProcessedDeploy::empty(deploy.clone())]),
+            Some(vec![ProcessedDeploy::empty(deploy.clone()).unwrap()]),
             Some(Vec::new()),
             Some(Vec::new()),
             Some("root".to_string()),
@@ -4989,7 +4989,7 @@ mod backstop_tests {
             Some(1),
             Some(Vec::new()),
             Some(Vec::new()),
-            Some(vec![ProcessedDeploy::empty(deploy.clone())]),
+            Some(vec![ProcessedDeploy::empty(deploy.clone()).unwrap()]),
             Some(Vec::new()),
             Some(Vec::new()),
             Some("root".to_string()),

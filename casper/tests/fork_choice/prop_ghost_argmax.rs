@@ -286,7 +286,7 @@ proptest! {
             let dag = block_dag_storage
                 .get_representation()
                 .expect("dag representation");
-            let estimator = Estimator::apply(i32::MAX, None);
+            let estimator = Estimator::apply();
 
             let tips = certified_fork_choice(&estimator, &dag, &genesis, latest)
                 .await
@@ -332,7 +332,7 @@ async fn main_parent_is_ghost_head_deterministic() {
         let dag = block_dag_storage
             .get_representation()
             .expect("dag representation");
-        let estimator = Estimator::apply(i32::MAX, None);
+        let estimator = Estimator::apply();
 
         // The heaviest branch is validator 0's (stake 30) — the expected main parent.
         let expected_main = supporter_blocks[0].block_hash.clone();
@@ -397,7 +397,7 @@ async fn aggregate_subtree_weight_beats_larger_terminal_leaf() {
         let dag = block_dag_storage
             .get_representation()
             .expect("dag representation");
-        let tips = certified_fork_choice(&Estimator::apply(i32::MAX, None), &dag, &genesis, latest)
+        let tips = certified_fork_choice(&Estimator::apply(), &dag, &genesis, latest)
             .await
             .expect("tips")
             .tips;
@@ -488,7 +488,7 @@ async fn multi_parent_diamond_has_one_shared_terminal_leaf() {
         let dag = block_dag_storage
             .get_representation()
             .expect("dag representation");
-        let tips = certified_fork_choice(&Estimator::apply(i32::MAX, None), &dag, &genesis, latest)
+        let tips = certified_fork_choice(&Estimator::apply(), &dag, &genesis, latest)
             .await
             .expect("tips")
             .tips;

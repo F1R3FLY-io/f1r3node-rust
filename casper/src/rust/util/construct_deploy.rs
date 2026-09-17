@@ -146,5 +146,5 @@ pub fn basic_processed_deploy(
         Some(shard_id.unwrap_or_else(|| "root".to_string())),
     )?;
     let envelope = envelope_from_deploy_data(deploy.data, None)?;
-    Ok(ProcessedDeploy::empty_from_cosigned(&envelope))
+    ProcessedDeploy::empty_from_cosigned(&envelope).map_err(CasperError::RuntimeError)
 }

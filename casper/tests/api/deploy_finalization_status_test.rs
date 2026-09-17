@@ -40,7 +40,7 @@ fn processed_v6(deploy: crypto::rust::signatures::signed::Signed<DeployData>) ->
     }
     let envelope = casper::rust::util::construct_deploy::envelope_from_deploy_data(data, None)
         .expect("protocol-v6 envelope");
-    ProcessedDeploy::empty_from_cosigned(&envelope)
+    ProcessedDeploy::empty_from_cosigned(&envelope).unwrap()
 }
 
 fn v6_lookup_id(bytes: &[u8]) -> DeployLookupId {

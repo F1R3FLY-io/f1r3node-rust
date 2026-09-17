@@ -5,6 +5,7 @@ use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::signed::Cosigned;
 use models::casper::DeployDataProto;
 use models::rust::casper::protocol::casper_message::DeployData;
+use models::rust::deploy_envelope::{DeployEnvelope, DeployEnvelopeFormat};
 use prost::Message;
 
 pub struct Tools;
@@ -24,13 +25,25 @@ impl Tools {
         if !deploy.is_envelope_bound() {
             return Self::unforgeable_name_rng(&deploy.primary().pk, deploy.data().time_stamp);
         }
-        let mut seed = Vec::new();
-        seed.extend_from_slice(b"f1r3node:user-deploy-unforgeable:v6");
-        seed.extend_from_slice(
+        Self::bound_user_deploy_rng(
             &deploy
                 .envelope_commitment()
                 .expect("validated protocol-v6 deploy RNG identity"),
-        );
+        )
+    }
+
+    pub fn user_envelope_rng(deploy: &DeployEnvelope) -> Blake2b512Random {
+        if deploy.format() == DeployEnvelopeFormat::Legacy {
+            Self::unforgeable_name_rng(&deploy.primary().pk, deploy.body().time_stamp)
+        } else {
+            Self::bound_user_deploy_rng(deploy.identity().as_bytes())
+        }
+    }
+
+    fn bound_user_deploy_rng(identity: &[u8]) -> Blake2b512Random {
+        let mut seed = Vec::new();
+        seed.extend_from_slice(b"f1r3node:user-deploy-unforgeable:v6");
+        seed.extend_from_slice(identity);
         Self::rng(&seed)
     }
 

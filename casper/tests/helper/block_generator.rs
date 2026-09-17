@@ -111,9 +111,34 @@ pub async fn certified_fork_choice(
     authority_floor: &BlockMessage,
     latest_messages: HashMap<Validator, BlockHash>,
 ) -> Result<ForkChoice, KvStoreError> {
+    certified_fork_choice_with_bounds(
+        estimator,
+        i32::MAX,
+        None,
+        dag,
+        authority_floor,
+        latest_messages,
+    )
+    .await
+}
+
+pub async fn certified_fork_choice_with_bounds(
+    estimator: &Estimator,
+    max_number_of_parents: i32,
+    max_parent_depth: Option<i32>,
+    dag: &KeyValueDagRepresentation,
+    authority_floor: &BlockMessage,
+    latest_messages: HashMap<Validator, BlockHash>,
+) -> Result<ForkChoice, KvStoreError> {
     let context = certified_consensus_context(dag, authority_floor, latest_messages)?;
     estimator
-        .tips_with_context(dag, authority_floor, &context)
+        .tips_with_context(
+            dag,
+            authority_floor,
+            &context,
+            max_number_of_parents,
+            max_parent_depth,
+        )
         .await
 }
 

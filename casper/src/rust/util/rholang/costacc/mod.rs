@@ -1,5 +1,8 @@
 pub mod check_balance;
 pub mod close_block_deploy;
+pub mod direct_wallet_funding;
+pub mod genesis_resource_policy;
+pub mod monetary_cursor;
 pub mod redeem_deploy;
 pub mod slash_deploy;
 pub mod vault_cost_deploy;

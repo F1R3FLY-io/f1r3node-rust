@@ -376,6 +376,45 @@ Proof.
     intuition.
 Qed.
 
+Definition positive_grade (grade : list (sig * nat)) : bool :=
+  existsb (fun entry => Nat.ltb 0 (snd entry)) grade.
+
+Definition grade_support (grade : list (sig * nat)) : list sig :=
+  map fst (filter (fun entry => Nat.ltb 0 (snd entry)) grade).
+
+Theorem positive_grade_iff_positive_entry : forall grade,
+  positive_grade grade = true <->
+  exists surface amount, In (surface, amount) grade /\ 0 < amount.
+Proof.
+  intro grade. unfold positive_grade. rewrite existsb_exists.
+  split.
+  - intros [[surface amount] [Hin Hpositive]].
+    exists surface, amount. simpl in Hpositive.
+    split; [ exact Hin | apply Nat.ltb_lt; exact Hpositive ].
+  - intros [surface [amount [Hin Hpositive]]].
+    exists (surface, amount). split; [ exact Hin | simpl ].
+    apply Nat.ltb_lt. exact Hpositive.
+Qed.
+
+Theorem zero_padding_preserves_positive_grade : forall prefix suffix surface,
+  positive_grade (prefix ++ (surface, 0) :: suffix) =
+  positive_grade (prefix ++ suffix).
+Proof.
+  intros prefix suffix surface. unfold positive_grade.
+  rewrite !existsb_app. reflexivity.
+Qed.
+
+Theorem zero_padding_preserves_grade_support : forall prefix suffix surface,
+  grade_support (prefix ++ (surface, 0) :: suffix) =
+  grade_support (prefix ++ suffix).
+Proof.
+  intros prefix suffix surface. unfold grade_support.
+  rewrite !filter_app. reflexivity.
+Qed.
+
+Print Assumptions positive_grade_iff_positive_entry.
+Print Assumptions zero_padding_preserves_positive_grade.
+Print Assumptions zero_padding_preserves_grade_support.
 Print Assumptions exact_spend_check_sound_complete.
 Print Assumptions exact_linear_check_sound.
 Print Assumptions exact_linear_check_complete.

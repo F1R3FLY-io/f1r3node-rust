@@ -1,8 +1,10 @@
 use std::collections::{BTreeMap, HashMap};
+use std::num::NonZeroUsize;
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{ETuple, Expr, Par};
+use rholang::rust::interpreter::accounting::monetary_allocation::MonetaryCursorTransition;
 use rholang::rust::interpreter::rho_type::{
     Extractor, RhoBoolean, RhoByteArray, RhoList, RhoNil, RhoNumber, RhoString,
 };
@@ -11,6 +13,9 @@ use rspace_plus_plus::rspace::history::Either;
 use crate::rust::errors::CasperError;
 use crate::rust::util::rholang::system_deploy::SystemDeployTrait;
 use crate::rust::util::rholang::system_deploy_user_error::SystemDeployUserError;
+
+mod phlo;
+pub use phlo::ApplyPhloCostDeploy;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum VaultRole {
@@ -244,6 +249,7 @@ pub struct ApplyCostDeploy {
     pub settlements: Vec<VaultSettlement>,
     pub fee_address: String,
     pub initial_rand: Blake2b512Random,
+    fee_cursor: Option<(MonetaryCursorTransition, i64)>,
 }
 
 impl ApplyCostDeploy {
@@ -281,7 +287,23 @@ impl ApplyCostDeploy {
             settlements,
             fee_address,
             initial_rand,
+            fee_cursor: None,
         })
+    }
+
+    pub fn with_fee_cursor(
+        mut self,
+        transition: MonetaryCursorTransition,
+        payer_count: NonZeroUsize,
+    ) -> Result<Self, CasperError> {
+        transition
+            .checked_successor(transition.scope(), transition.expected(), payer_count)
+            .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+        let count = i64::try_from(payer_count.get()).map_err(|_| {
+            CasperError::InvalidCostSettlement("monetary payer count exceeds i64".to_string())
+        })?;
+        self.fee_cursor = Some((transition, count));
+        Ok(self)
     }
 }
 
@@ -296,11 +318,17 @@ impl SystemDeployTrait for ApplyCostDeploy {
             allocations(`sys:casper:costAllocations`),
             charges(`sys:casper:costSettlements`),
             feeAddress(`sys:casper:costFeeAddress`),
+            feeCursor(`sys:casper:costFeeCursor`),
             sysAuthToken(`sys:casper:authToken`),
             return(`sys:casper:return`) in {
           rl!(`rho:vault:system`, *systemVaultCh) |
           for (@(_, systemVault) <- systemVaultCh) {
-            @systemVault!("applyCost", *reservationId, *allocations, *charges, *feeAddress, *sysAuthToken, *return)
+            match *feeCursor {
+              [cursor] => {
+                @systemVault!("applyCost", *reservationId, *allocations, *charges, *feeAddress, cursor, *sysAuthToken, *return)
+              }
+              _ => { return!((false, "Invalid monetary cursor transport")) }
+            }
           }
         }
         "#
@@ -333,6 +361,29 @@ impl SystemDeployTrait for ApplyCostDeploy {
         env.insert(
             "sys:casper:costFeeAddress".to_string(),
             RhoString::create_par(self.fee_address.clone()),
+        );
+        let cursor = match &self.fee_cursor {
+            None => RhoNil::create_par(),
+            Some((transition, count)) => Par {
+                exprs: vec![Expr {
+                    expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                        ps: vec![
+                            RhoByteArray::create_par(transition.scope().to_vec()),
+                            RhoNumber::create_par(*count),
+                            RhoNumber::create_par(transition.expected().revision()),
+                            RhoNumber::create_par(transition.expected().position()),
+                            RhoNumber::create_par(transition.next().revision()),
+                            RhoNumber::create_par(transition.next().position()),
+                        ],
+                        ..Default::default()
+                    })),
+                }],
+                ..Default::default()
+            },
+        };
+        env.insert(
+            "sys:casper:costFeeCursor".to_string(),
+            RhoList::create_par(vec![cursor]),
         );
         let (key, value) = self.mk_sys_auth_token();
         env.insert(key, value);
@@ -511,6 +562,71 @@ mod tests {
         Compiler::source_to_adt(ApplyCostDeploy::source()).unwrap();
         Compiler::source_to_adt(ProtocolMintDeploy::source()).unwrap();
         Compiler::source_to_adt(ProtocolBurnDeploy::source()).unwrap();
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(128))]
+
+        #[test]
+        fn monetary_cursor_transport_preserves_optional_values_through_injection(
+            present in any::<bool>(),
+            scope in any::<[u8; 32]>(),
+            revision in 0_i64..i64::MAX,
+            count in 1_usize..1025,
+            position in any::<u16>(),
+            next_position in any::<u16>(),
+        ) {
+            use rholang::rust::interpreter::accounting::monetary_allocation::MonetaryCursor;
+            use rholang::rust::interpreter::env::Env;
+            use rholang::rust::interpreter::util::allocate_new_bindings;
+
+            let mut deploy = ApplyCostDeploy::new(
+                scope,
+                vec![VaultAllocation::new(address(1), 1).unwrap()],
+                vec![VaultSettlement::new(address(1), 0, i64::from(present)).unwrap()],
+                address(2),
+                Blake2b512Random::create_from_bytes(&scope),
+            ).unwrap();
+            let count = NonZeroUsize::new(count).unwrap();
+            let position = i64::from(position) % count.get() as i64;
+            let next_position = i64::from(next_position) % count.get() as i64;
+            if present {
+                deploy = deploy.with_fee_cursor(
+                    MonetaryCursorTransition::new(
+                        scope, MonetaryCursor::new(revision, position, count).unwrap(),
+                        next_position, count,
+                    ).unwrap(), count,
+                ).unwrap();
+            }
+            let key = "sys:casper:costFeeCursor".to_string();
+            let transport = deploy.env().remove(&key).unwrap();
+            let binding = models::rhoapi::New {
+                bind_count: 1,
+                uri: vec![key.clone()],
+                injections: [(key, transport.clone())].into_iter().collect(),
+                ..Default::default()
+            };
+            let injected = allocate_new_bindings(
+                &binding, &Env::new(), &mut deploy.rand(), &HashMap::new(),
+            ).unwrap().get(&0).unwrap();
+            prop_assert_eq!(&injected, &transport);
+            let fields = RhoList::unapply(&injected).unwrap();
+            prop_assert_eq!(fields.len(), 1);
+            if present {
+                let Some(ExprInstance::ETupleBody(tuple)) = &fields[0].exprs[0].expr_instance else {
+                    panic!("the present cursor must remain a tuple");
+                };
+                prop_assert_eq!(tuple.ps.len(), 6);
+                prop_assert_eq!(RhoByteArray::unapply(&tuple.ps[0]), Some(scope.to_vec()));
+                for (field, expected) in tuple.ps[1..].iter().zip([
+                    count.get() as i64, revision, position, revision + 1, next_position,
+                ]) {
+                    prop_assert_eq!(RhoNumber::unapply(field), Some(expected));
+                }
+            } else {
+                prop_assert_eq!(&fields[0], &RhoNil::create_par());
+            }
+        }
     }
 
     #[test]

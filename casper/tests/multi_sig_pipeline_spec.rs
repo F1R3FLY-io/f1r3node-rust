@@ -232,27 +232,11 @@ fn multi_sig_wire_rejects_duplicate_signer() {
 
 #[test]
 fn processed_deploy_to_cosigned_legacy_uplift() {
-    // Legacy single-sig ProcessedDeploy: cosigners.is_empty(). to_cosigned()
-    // should produce a one-element envelope via Cosigned::from_single_signer.
-    // D3 (DR-9): no per-signer phlo_share.
     let data = baseline_deploy_data(100);
     let (sk, _pk) = fresh_keypair();
     let signed = Signed::<DeployData>::create(data, Box::new(Secp256k1), sk).expect("sign");
-    let pd = ProcessedDeploy {
-        deploy: signed.clone(),
-        envelope_commitment: Bytes::new(),
-        cost: PCost { cost: 10 },
-        deploy_log: Vec::new(),
-        is_failed: false,
-        system_deploy_error: None,
-        cosigners: Vec::new(),
-        cosigner_threshold: 0,
-        pre_state_hash: Bytes::new(),
-        post_state_hash: Bytes::new(),
-        authority_funding_certificate: None,
-        authority_cost_witness: None,
-        admission_status: Default::default(),
-    };
+    let mut pd = ProcessedDeploy::empty(signed.clone()).unwrap();
+    pd.cost = PCost { cost: 10 };
     let cosigned = pd.to_cosigned().expect("legacy uplift must succeed");
     assert_eq!(cosigned.signers().len(), 1);
     assert!(!cosigned.is_compound());
@@ -262,51 +246,12 @@ fn processed_deploy_to_cosigned_legacy_uplift() {
 
 #[test]
 fn processed_deploy_to_cosigned_multi_sig_reconstruction() {
-    // Multi-sig ProcessedDeploy: cosigners populated. to_cosigned() must
-    // rebuild the canonical Cosigned envelope with per-signer
-    // re-verification.
     let original = build_multi_sig_proto(3);
     let cosigned_decoded =
         DeployData::from_proto_cosigned(original.clone()).expect("decode original");
 
-    // Construct ProcessedDeploy in the shape that compute_state_cosigned
-    // would produce (primary as Signed.deploy; extras in cosigners field;
-    // primary_phlo_share captured).
-    let primary = cosigned_decoded.primary();
-    let signed = Signed {
-        data: cosigned_decoded.data.clone(),
-        pk: primary.pk.clone(),
-        sig: primary.sig.clone(),
-        sig_algorithm: primary.sig_algorithm.clone(),
-    };
-    let extras: Vec<CompoundSigner> = cosigned_decoded
-        .signers()
-        .iter()
-        .skip(1)
-        .map(|c| CompoundSigner {
-            pk: c.pk.bytes.clone(),
-            sig: c.sig.clone(),
-            sig_algorithm: c.sig_algorithm.name(),
-        })
-        .collect();
-    let pd = ProcessedDeploy {
-        deploy: signed,
-        envelope_commitment: cosigned_decoded
-            .envelope_commitment()
-            .expect("protocol-v6 commitment"),
-        cost: PCost { cost: 50 },
-        deploy_log: Vec::new(),
-        is_failed: false,
-        system_deploy_error: None,
-        cosigners: extras,
-        cosigner_threshold: i32::try_from(cosigned_decoded.cosigner_threshold())
-            .expect("threshold fits i32"),
-        pre_state_hash: Bytes::new(),
-        post_state_hash: Bytes::new(),
-        authority_funding_certificate: None,
-        authority_cost_witness: None,
-        admission_status: Default::default(),
-    };
+    let mut pd = ProcessedDeploy::empty_from_cosigned(&cosigned_decoded).unwrap();
+    pd.cost = PCost { cost: 50 };
     let reconstructed = pd
         .to_cosigned()
         .expect("multi-sig reconstruction must succeed");
@@ -337,41 +282,8 @@ fn processed_deploy_proto_round_trip_preserves_cosigners() {
     let original_proto = build_multi_sig_proto(4);
     let cosigned_decoded =
         DeployData::from_proto_cosigned(original_proto.clone()).expect("decode original");
-    let primary = cosigned_decoded.primary();
-    let signed = Signed {
-        data: cosigned_decoded.data.clone(),
-        pk: primary.pk.clone(),
-        sig: primary.sig.clone(),
-        sig_algorithm: primary.sig_algorithm.clone(),
-    };
-    let extras: Vec<CompoundSigner> = cosigned_decoded
-        .signers()
-        .iter()
-        .skip(1)
-        .map(|c| CompoundSigner {
-            pk: c.pk.bytes.clone(),
-            sig: c.sig.clone(),
-            sig_algorithm: c.sig_algorithm.name(),
-        })
-        .collect();
-    let pd_before = ProcessedDeploy {
-        deploy: signed,
-        envelope_commitment: cosigned_decoded
-            .envelope_commitment()
-            .expect("protocol-v6 commitment"),
-        cost: PCost { cost: 75 },
-        deploy_log: Vec::new(),
-        is_failed: false,
-        system_deploy_error: None,
-        cosigners: extras,
-        cosigner_threshold: i32::try_from(cosigned_decoded.cosigner_threshold())
-            .expect("threshold fits i32"),
-        pre_state_hash: Bytes::new(),
-        post_state_hash: Bytes::new(),
-        authority_funding_certificate: None,
-        authority_cost_witness: None,
-        admission_status: Default::default(),
-    };
+    let mut pd_before = ProcessedDeploy::empty_from_cosigned(&cosigned_decoded).unwrap();
+    pd_before.cost = PCost { cost: 75 };
     let pd_proto = pd_before.clone().to_proto();
     let inner_deploy = pd_proto.deploy.as_ref().expect("proto deploy field");
     assert_eq!(
@@ -385,7 +297,8 @@ fn processed_deploy_proto_round_trip_preserves_cosigners() {
     );
 
     let pd_after = ProcessedDeploy::from_proto(pd_proto).expect("from_proto decode");
-    assert_eq!(pd_after.cosigners.len(), pd_before.cosigners.len());
+    assert_eq!(pd_after.signers(), pd_before.signers());
+    assert_eq!(pd_after, pd_before);
 
     // Reconstruction from the round-tripped ProcessedDeploy still produces
     // a valid Cosigned envelope with per-signer signature re-verification.
@@ -402,30 +315,17 @@ fn legacy_single_sig_processed_deploy_proto_round_trip_unchanged() {
     let (sk, _) = fresh_keypair();
     let signed = Signed::<DeployData>::create(data, Box::new(Secp256k1), sk)
         .expect("legacy single-sig deploy");
-    let pd_before = ProcessedDeploy {
-        deploy: signed,
-        envelope_commitment: Bytes::new(),
-        cost: PCost { cost: 25 },
-        deploy_log: Vec::new(),
-        is_failed: false,
-        system_deploy_error: None,
-        cosigners: Vec::new(),
-        cosigner_threshold: 0,
-        pre_state_hash: Bytes::new(),
-        post_state_hash: Bytes::new(),
-        authority_funding_certificate: None,
-        authority_cost_witness: None,
-        admission_status: Default::default(),
-    };
+    let mut pd_before = ProcessedDeploy::empty(signed).unwrap();
+    pd_before.cost = PCost { cost: 25 };
     let pd_proto = pd_before.clone().to_proto();
     let inner_deploy = pd_proto.deploy.as_ref().expect("proto deploy field");
     // Legacy single-sig: cosigners empty (D3: no primary_phlo_share).
     assert!(inner_deploy.cosigners.is_empty());
 
     let pd_after = ProcessedDeploy::from_proto(pd_proto).expect("from_proto decode");
-    assert!(pd_after.cosigners.is_empty());
-    assert_eq!(pd_after.deploy.pk, pd_before.deploy.pk);
-    assert_eq!(pd_after.deploy.sig, pd_before.deploy.sig);
+    assert_eq!(pd_after.signers().len(), 1);
+    assert_eq!(pd_after.primary(), pd_before.primary());
+    assert_eq!(pd_after, pd_before);
 }
 
 // =====================================================================
@@ -510,6 +410,9 @@ fn sig_algebra_overrides_flat_cosigners_routes_via_algebra_dispatch() {
         authority_presentations: Vec::new(),
         deploy_id: Bytes::new(),
         authorization_v61: None,
+        funding_intent: None,
+        phlo_price: 0,
+        phlo_limit: 0,
     };
 
     // The flat-cosigners path would fail (bogus sig), but the sig_algebra path

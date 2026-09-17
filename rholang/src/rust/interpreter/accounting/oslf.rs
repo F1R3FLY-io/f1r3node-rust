@@ -179,7 +179,13 @@ impl<K: Ord + Clone> Formula<K> {
                 grade,
                 continuation,
             } => {
-                out.extend(grade.0.keys().cloned());
+                out.extend(
+                    grade
+                        .0
+                        .iter()
+                        .filter(|(_, amount)| **amount > 0)
+                        .map(|(key, _)| key.clone()),
+                );
                 continuation.surfaces(out);
             }
         }
@@ -303,7 +309,7 @@ pub fn evaluate<K: Ord + Clone>(
         Formula::Spend {
             grade,
             continuation,
-        } if grade.0.is_empty() => Verdict::Unsatisfied,
+        } if !grade.0.values().any(|amount| *amount > 0) => Verdict::Unsatisfied,
         Formula::Spend {
             grade,
             continuation,
@@ -390,6 +396,9 @@ pub fn check_rho(
         formula,
     )
 }
+
+#[cfg(test)]
+mod property_tests;
 
 #[cfg(test)]
 mod tests {

@@ -45,13 +45,13 @@ fn protocol_envelope_preserves_legacy_identity_before_v6() {
         CERTIFIED_ADMISSION_PROTOCOL_VERSION - 1,
     )
     .unwrap();
-    let processed = ProcessedDeploy::empty_from_cosigned(&envelope);
+    let processed = ProcessedDeploy::empty_from_cosigned(&envelope).unwrap();
 
     assert!(!envelope.is_envelope_bound());
-    assert!(processed.envelope_commitment.is_empty());
-    assert_eq!(processed.deploy.pk, signed.pk);
-    assert_eq!(processed.deploy.sig, signed.sig);
-    assert_eq!(processed.deploy.data, signed.data);
+    assert!(!processed.is_envelope_bound());
+    assert_eq!(processed.primary().pk, signed.pk);
+    assert_eq!(processed.primary().sig, signed.sig);
+    assert_eq!(*processed.body(), signed.data);
 }
 
 #[test]
@@ -62,13 +62,13 @@ fn protocol_envelope_commits_and_round_trips_blessed_v6_identity() {
     )
     .unwrap();
     let commitment = envelope.envelope_commitment().unwrap();
-    let processed = ProcessedDeploy::empty_from_cosigned(&envelope);
+    let processed = ProcessedDeploy::empty_from_cosigned(&envelope).unwrap();
     let replay = processed.to_cosigned().unwrap();
 
     assert!(envelope.is_envelope_bound());
     assert_eq!(commitment.len(), 32);
-    assert_eq!(processed.envelope_commitment, commitment);
-    assert_eq!(processed.cosigner_threshold, 1);
+    assert_eq!(*processed.deploy_id(), commitment);
+    assert_eq!(processed.threshold(), 1);
     assert!(replay.is_envelope_bound());
     assert_eq!(replay.envelope_commitment().unwrap(), commitment);
 }

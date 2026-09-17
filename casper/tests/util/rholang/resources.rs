@@ -409,10 +409,10 @@ pub async fn key_value_deploy_storage_from_dyn(
     let envelope_storage_db: KeyValueTypedStoreImpl<DeployIdV6, Cosigned<DeployData>> =
         KeyValueTypedStoreImpl::new(envelope_storage_kv_store);
 
-    Ok(KeyValueDeployStorage {
-        store: deploy_storage_db,
-        envelope_store: envelope_storage_db,
-    })
+    Ok(KeyValueDeployStorage::from_legacy_stores(
+        deploy_storage_db,
+        envelope_storage_db,
+    ))
 }
 
 pub async fn key_value_rejected_deploy_buffer_from_dyn(
@@ -438,7 +438,7 @@ pub async fn key_value_rejected_deploy_buffer_from_dyn(
     let buffer_db: KeyValueTypedStoreImpl<DeployLookupId, PendingDeploy> =
         KeyValueTypedStoreImpl::new(buffer_kv_store);
 
-    Ok(KeyValueRejectedDeployBuffer { store: buffer_db })
+    Ok(KeyValueRejectedDeployBuffer::from_legacy_store(buffer_db))
 }
 
 pub async fn casper_buffer_storage_from_dyn(

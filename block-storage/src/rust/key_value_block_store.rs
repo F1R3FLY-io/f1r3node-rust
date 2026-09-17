@@ -10,6 +10,7 @@ use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
     ApprovedBlock, BlockMessage, FinalizationCertificate,
 };
+use models::rust::deploy_envelope::{DeployEnvelope, DeployEnvelopeFormat, DeployEnvelopeLimits};
 use models::rust::deploy_id::{DeployIdV6, DeployLookupId, LegacyDeploySignature};
 use prost::Message;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
@@ -23,6 +24,7 @@ pub struct KeyValueBlockStore {
     verified_finalization_certificates: Arc<Mutex<(HashSet<BlockHash>, VecDeque<BlockHash>)>>,
     deploy_id_cache: Arc<Mutex<DeployIdCache>>,
     approved_block_key: [u8; 1],
+    deploy_envelope_limits: Option<DeployEnvelopeLimits>,
 }
 
 thread_local! {
@@ -61,6 +63,7 @@ impl KeyValueBlockStore {
             ))),
             deploy_id_cache: Arc::new(Mutex::new(DeployIdCache::default())),
             approved_block_key: [42],
+            deploy_envelope_limits: None,
         }
     }
 
@@ -79,7 +82,42 @@ impl KeyValueBlockStore {
             ))),
             deploy_id_cache: Arc::new(Mutex::new(DeployIdCache::default())),
             approved_block_key: [42],
+            deploy_envelope_limits: None,
         })
+    }
+
+    pub fn with_deploy_envelope_limits(mut self, limits: DeployEnvelopeLimits) -> Self {
+        self.deploy_envelope_limits = Some(limits);
+        self
+    }
+
+    pub async fn create_from_kvm_with_limits(
+        kvm: &mut dyn KeyValueStoreManager,
+        limits: DeployEnvelopeLimits,
+    ) -> Result<Self, KvStoreError> {
+        Ok(Self::create_from_kvm(kvm)
+            .await?
+            .with_deploy_envelope_limits(limits))
+    }
+
+    fn check_storable_envelopes(&self, block: &BlockMessage) -> Result<(), KvStoreError> {
+        for processed in &block.body.deploys {
+            let envelope = processed.envelope();
+            if let Some(limits) = self.deploy_envelope_limits {
+                DeployEnvelope::from_processed_proto_with_limits(
+                    envelope
+                        .to_proto()
+                        .map_err(KvStoreError::SerializationError)?,
+                    limits,
+                )
+                .map_err(KvStoreError::SerializationError)?;
+            } else {
+                envelope
+                    .require_format(&[DeployEnvelopeFormat::Legacy, DeployEnvelopeFormat::BodyV61])
+                    .map_err(KvStoreError::SerializationError)?;
+            }
+        }
+        Ok(())
     }
 
     fn error_block(hash: BlockHash, cause: String) -> String {
@@ -108,7 +146,10 @@ impl KeyValueBlockStore {
         }
         let bytes = bytes.unwrap();
         let block_proto = Self::bytes_to_block_proto(&bytes)?;
-        let block = BlockMessage::from_proto(block_proto);
+        let block = match self.deploy_envelope_limits {
+            Some(limits) => BlockMessage::from_proto_with_limits(block_proto, limits),
+            None => BlockMessage::from_proto(block_proto),
+        };
         match block {
             Ok(block) => Ok(Some(block)),
             Err(err) => Err(KvStoreError::SerializationError(Self::error_block(
@@ -289,6 +330,7 @@ impl KeyValueBlockStore {
     }
 
     pub fn put(&self, block_hash: BlockHash, block: &BlockMessage) -> Result<(), KvStoreError> {
+        self.check_storable_envelopes(block)?;
         let mut stored_block = block.clone();
         self.persist_finalization_certificate(&mut stored_block)?;
         let block_proto = stored_block.to_proto();
@@ -300,6 +342,7 @@ impl KeyValueBlockStore {
         &self,
         block: &BlockMessage,
     ) -> Result<(), KvStoreError> {
+        self.check_storable_envelopes(block)?;
         let commitment = block.header.finalized_floor.as_ref().ok_or_else(|| {
             KvStoreError::SerializationError(
                 "detached block must carry a finalized-floor commitment".to_string(),
@@ -547,13 +590,18 @@ impl KeyValueBlockStore {
         let block_proto = ApprovedBlockProto::decode(&*bytes).map_err(|err| {
             KvStoreError::SerializationError(Self::error_approved_block(err.to_string()))
         })?;
-        let block = ApprovedBlock::from_proto(block_proto).map_err(|err| {
+        let decoded = match self.deploy_envelope_limits {
+            Some(limits) => ApprovedBlock::from_proto_with_limits(block_proto, limits),
+            None => ApprovedBlock::from_proto(block_proto),
+        };
+        let block = decoded.map_err(|err| {
             KvStoreError::SerializationError(Self::error_approved_block(err.to_string()))
         })?;
         Ok(Some(block))
     }
 
     pub fn put_approved_block(&self, block: &ApprovedBlock) -> Result<(), KvStoreError> {
+        self.check_storable_envelopes(&block.candidate.block)?;
         let block_proto = block.clone().to_proto();
         let bytes = block_proto.encode_to_vec();
         self.store_approved_block
@@ -1454,7 +1502,7 @@ mod tests {
         let input_keys = Arc::clone(&kv.input_keys);
         let bs = KeyValueBlockStore::new(Arc::new(kv), Arc::new(NotImplementedKV));
 
-        let matching_sig = HashSet::from([deploy.deploy.sig.to_vec()]);
+        let matching_sig = HashSet::from([deploy.primary().sig.to_vec()]);
         let not_matching_sig = HashSet::from([vec![0u8]]);
 
         let has_matching = bs.has_any_deploy_sig(&block.block_hash.clone(), &matching_sig);
@@ -1819,7 +1867,7 @@ mod tests {
         let bs = KeyValueBlockStore::create_from_kvm(&mut kvm).await.unwrap();
         bs.put_block_message(&block).unwrap();
         let deploy_id =
-            DeployLookupId::Legacy(LegacyDeploySignature::new(deploy.deploy.sig.to_vec()));
+            DeployLookupId::Legacy(LegacyDeploySignature::new(deploy.primary().sig.to_vec()));
         let deploy_ids = HashSet::from([deploy_id]);
 
         assert!(bs
@@ -1917,10 +1965,10 @@ mod tests {
         let bs = KeyValueBlockStore::new(Arc::new(kv), Arc::new(NotImplementedKV));
 
         let sigs = bs.deploy_sigs(&block.block_hash).unwrap();
-        assert_eq!(sigs, Some(vec![deploy.deploy.sig.to_vec()]));
+        assert_eq!(sigs, Some(vec![deploy.primary().sig.to_vec()]));
 
         let cached = bs.deploy_sigs(&block.block_hash).unwrap();
-        assert_eq!(cached, Some(vec![deploy.deploy.sig.to_vec()]));
+        assert_eq!(cached, Some(vec![deploy.primary().sig.to_vec()]));
         assert_eq!(
             input_keys.lock().unwrap().len(),
             1,
@@ -1932,7 +1980,8 @@ mod tests {
             Arc::new(NotImplementedKV),
         );
         assert_eq!(missing_store.deploy_sigs(&block.block_hash).unwrap(), None);
-        let lookup = DeployLookupId::Legacy(LegacyDeploySignature::new(deploy.deploy.sig.to_vec()));
+        let lookup =
+            DeployLookupId::Legacy(LegacyDeploySignature::new(deploy.primary().sig.to_vec()));
         assert!(matches!(
             missing_store.has_any_deploy_id_strict(&block.block_hash, &HashSet::from([lookup])),
             Err(KvStoreError::KeyNotFound(_))
@@ -1999,11 +2048,10 @@ mod tests {
 
     #[test]
     fn a_short_deploy_sig_is_a_serialization_error() {
-        let mut deploy = processed_deploy_gen()
+        let deploy = processed_deploy_gen()
             .new_tree(&mut TestRunner::default())
             .unwrap()
             .current();
-        deploy.deploy.sig = prost::bytes::Bytes::from(vec![1u8; 4]);
         let mut block = block_element_gen(
             None,
             None,
@@ -2024,7 +2072,13 @@ mod tests {
         .unwrap()
         .current();
         block.header.version = 5;
-        let block_bytes = KeyValueBlockStore::block_proto_to_bytes(&block.to_proto());
+        let mut proto = block.to_proto();
+        proto.body.as_mut().unwrap().deploys[0]
+            .deploy
+            .as_mut()
+            .unwrap()
+            .sig = prost::bytes::Bytes::from(vec![1u8; 4]);
+        let block_bytes = KeyValueBlockStore::block_proto_to_bytes(&proto);
         let bs = KeyValueBlockStore::new(
             Arc::new(MockKeyValueStore::new(Some(block_bytes.clone()))),
             Arc::new(NotImplementedKV),

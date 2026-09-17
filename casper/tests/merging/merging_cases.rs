@@ -136,7 +136,7 @@ async fn two_deploys_executed_inside_single_state_transition_should_be_dependent
                 .into_iter()
                 .map(|(d, merge_chs)| {
                     (
-                        d.deploy.sig,
+                        d.primary().sig.clone(),
                         block_index::create_event_log_index(
                             &d.deploy_log,
                             runtime_manager.get_history_repo(),

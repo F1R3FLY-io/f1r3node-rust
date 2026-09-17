@@ -1,5 +1,82 @@
 # Glossary
 
+## Prepaid discharge
+
+A prepaid discharge consumes an eligible prepaid resource occurrence to satisfy a compatible resource obligation.
+Compatibility includes authority, location, resource class, and applicable acquisition terms.
+See the [typed prepaid-discharge proof](casper/theory/cost-accounting-impl/funding-settlement-design-review.md#typed-prepaid-discharge-proof).
+
+## Monetary allocation terms
+
+### Payer cohort
+
+A payer cohort is the canonically ordered set of authorized physical purses for one monetary allocation scope.
+Different logical names for the same purse share one allocation position.
+See [rotating monetary allocation](casper/theory/cost-accounting-impl/rotating-monetary-allocation.md).
+
+### Residual cursor
+
+A residual cursor identifies the first payer position considered for indivisible units after equal allocation subject to capacity limits.
+It is distinct from an iterator cursor used to traverse stored keys.
+
+### Resource vector
+
+A resource vector records measured quantities for separate resource classes, such as COMM events and transferred bytes.
+Its quantities remain distinct from monetary prices and signature-specific authority requirements.
+
+### Raw byte observation
+
+A raw byte observation pairs accepted byte measurements with their optional legacy charge and event authority.
+It records evidence, not spendable funds.
+See [raw byte observations](casper/theory/cost-accounting-impl/raw-byte-observations.md).
+
+### Price schedule
+
+A price schedule defines resource weights, monetary prices, the settlement asset, and fixed fees for an identified protocol context.
+The [signed phlo proposal](casper/theory/cost-accounting-impl/signed-phlo-contract-proposal.md) describes proposed schedule commitments.
+That proposal does not approve a production tariff.
+
+### Exposure limit
+
+An exposure limit bounds the maximum debit that a purse authorizes for a specified obligation and asset.
+A purse balance can exceed this limit without authorizing a larger debit.
+
+### Conversion quote
+
+A conversion quote specifies an exchange's input assets, output assets, amounts, recipients, validity conditions, and rounding rules.
+An exchange quote does not define the shard's resource price schedule.
+
+### Funding consent
+
+Funding consent identifies the authorized owners, applicable price ceilings, signed resource limits, and permitted funding terms for a draw.
+Ownership changes must not silently replace consent already captured by a reservation.
+See [ownership transfer and funding consent](casper/theory/cost-accounting-impl/ownership-transfer-consent.md).
+
+### Offered price
+
+The offered price is the exact unit price specified by a deploy's signed `phloPrice` field.
+The selected schedule must charge this price under the upstream-compatible funding contract.
+The chain minimum and each required owner ceiling constrain the offer independently.
+
+### Owner price ceiling
+
+An owner price ceiling is the maximum unit price permitted by one applicable signed funding authorization.
+It does not select the actual price or weight the owner's allocation.
+Every required owner ceiling must permit the offered price.
+See [signed price consent](casper/theory/cost-accounting-impl/signed-price-consent.md).
+
+### Authorization generation
+
+An authorization generation distinguishes successive authorizations for the same funding right in the abstract consent model.
+Returning to previous owners does not restore an earlier generation.
+This model term does not specify a production counter format.
+
+### Collision bucket
+
+A collision bucket stores map entries whose keys share the trie's selected hash prefix.
+Updating one entry must preserve all other entries, including entries whose value is `Nil`.
+See [atomic trie update or insertion](casper/theory/cost-accounting-impl/atomic-trie-upsert.md).
+
 ## Recovery service terms
 
 ### Durable owner
@@ -651,6 +728,90 @@ A read tape records the completed history callbacks from one state-import traver
 Each record contains the requested key, the observation cache at that callback, and the classified lookup result.
 Repeated callbacks can share one physical storage observation.
 The verifier must not remove failed records or search later records for a replacement.
+
+## Cold replay
+
+Cold replay executes the recorded effects without a replay-cache shortcut.
+It checks execution against the specified pre-state and runtime context.
+
+## Numeric merge
+
+A numeric merge reconstructs a tagged numeric channel from retained state effects.
+Integer-add and bitmask-OR channels use different value calculations.
+Both calculations must preserve the accounting authority of retained contributions.
+
+## Retained region
+
+A retained region is an accounting region carried by a retained output contribution.
+Different region identities remain distinct when their funding signatures are equal.
+Repeated copies of the same region identity do not add another obligation.
+
+## Persistent allowance
+
+A persistent allowance limits cumulative authorized funding across executions.
+Its accounting identity remains stable across ownership transfers.
+Wallet deposits increase backing, but they do not automatically increase the allowance.
+The [allowance record](casper/theory/cost-accounting-impl/persistent-funding-allowance.md) defines its available, reserved, consumed, and issued quantities.
+
+## Backing source
+
+A backing source is authenticated custody or a prepaid resource that can satisfy a specified funding obligation.
+Different logical funding lanes can refer to the same physical source.
+Those lanes must not count the source balance more than once.
+
+## Funding eligibility
+
+Funding eligibility specifies which backing sources can fund which obligations under captured authority, scope, and consent.
+Monetary capacity alone does not establish funding eligibility.
+
+## All-to-all funding
+
+An all-to-all funding domain has exactly the capped simplex's feasible contribution vectors under its captured terms.
+Complete edge eligibility is sufficient in the independent fixed-flow domain, but redundant missing edges do not necessarily restrict contributions.
+The solver must establish that domain equality before it uses unrestricted monetary allocation.
+The [settlement design review](casper/theory/cost-accounting-impl/funding-settlement-design-review.md) explains restricted funding and its separate reservation requirements.
+
+## Lexicographic minimax
+
+Lexicographic minimax minimizes the largest contribution, then each successive contribution, over feasible allocations of the same total obligation.
+It compares contribution vectors sorted from largest to smallest without changing their associated purse identities.
+See the [restricted-funding decision](casper/theory/cost-accounting-impl/lexicographic-minimax-funding.md).
+
+## Funding deficit
+
+A funding deficit occurs when selected obligations require more funding than all their eligible physical sources can supply.
+A checked deficit certificate proves that the fixed funding problem has no valid assignment.
+See the [certificate contract](casper/theory/cost-accounting-impl/lexicographic-minimax-funding.md#restricted-funding-rejection-certificate).
+
+## Funding box
+
+A funding box specifies a lower and upper contribution bound for each physical source.
+Equal bounds fix a source's contribution exactly.
+The [bounded-row solver](casper/theory/cost-accounting-impl/bounded-funding-feasibility.md) preserves exact obligations while it satisfies these bounds.
+
+## Contribution excess
+
+Contribution excess is the sum of contributions above a specified nonnegative threshold.
+Each source contributes only the amount by which its contribution exceeds that threshold.
+The [minimax certificate](casper/theory/cost-accounting-impl/fixed-flow-minimax.md#independent-optimality-evidence) uses this quantity to verify the full descending rank.
+
+## Minimax certificate
+
+A minimax certificate contains cut evidence for every distinct positive contribution level in a candidate assignment.
+Each cut proves a lower bound on contribution excess.
+Equality with those bounds proves that no feasible assignment has a smaller descending lexicographic rank.
+The certificate does not select the economic tie between equally ranked assignments.
+
+## Optimal domain
+
+An optimal domain contains every feasible assignment with the minimum descending contribution rank, and no other assignment.
+The [fixed-flow construction](casper/theory/cost-accounting-impl/fixed-flow-minimax.md#exact-optimal-domain) derives this domain from independently checked tight cuts.
+
+## Prefix certificate
+
+A prefix certificate proves that a selected contribution cannot increase while earlier priority choices remain fixed.
+Later contributions remain free within the captured optimal domain.
+The [cyclic selector](casper/theory/cost-accounting-impl/fixed-flow-minimax.md#cyclic-contribution-ties) checks each maximum against an upper bound or a funding deficit.
 
 ## Usage Notes
 

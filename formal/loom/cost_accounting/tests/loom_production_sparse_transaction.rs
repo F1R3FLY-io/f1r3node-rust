@@ -119,6 +119,60 @@ fn concurrent_transactions_publish_only_the_cross_store_winner() {
     explore(|| competing_transactions(true));
 }
 
+fn competing_rejected_batches(write_gate: bool) {
+    let coordinator = Arc::new(RwLock::new(()));
+    let historical = Store::new(coordinator.clone(), true, write_gate);
+    let funded = Store::new(coordinator, true, write_gate);
+    let workers = [true, false].map(|insert| {
+        let historical = historical.clone();
+        let funded = funded.clone();
+        thread::spawn(move || {
+            sparse_transaction::apply(&historical, &[
+                Mutation {
+                    store: &historical,
+                    key: &0,
+                    operation: if insert {
+                        Operation::Put(&7)
+                    } else {
+                        Operation::Delete
+                    },
+                },
+                Mutation {
+                    store: &funded,
+                    key: &0,
+                    operation: if insert {
+                        Operation::Put(&9)
+                    } else {
+                        Operation::Delete
+                    },
+                },
+            ])
+            .unwrap();
+        })
+    });
+    for worker in workers {
+        worker.join().unwrap();
+    }
+    assert!(
+        matches!(
+            (historical.current(&0), funded.current(&0)),
+            (None, None) | (Some(7), Some(9))
+        ),
+        "negative control: rejected batch retained only one namespace"
+    );
+}
+
+#[test]
+fn rejected_batch_concurrent_insert_remove_preserves_complete_publication() {
+    explore(|| competing_rejected_batches(true));
+}
+
+#[test]
+#[should_panic(expected = "negative control: rejected batch retained only one namespace")]
+fn rejected_batch_missing_transaction_gate_exposes_partial_publication() {
+    explore(|| competing_rejected_batches(false));
+}
+
 #[test]
 #[should_panic(
     expected = "negative control: competing transactions both claimed the same authority"

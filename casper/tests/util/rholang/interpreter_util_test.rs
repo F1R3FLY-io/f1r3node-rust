@@ -154,7 +154,7 @@ impl TestContext {
                 }
                 let envelope = construct_deploy::envelope_from_deploy_data(data, None)
                     .expect("protocol-v6 test envelope");
-                let mut processed = ProcessedDeploy::empty_from_cosigned(&envelope);
+                let mut processed = ProcessedDeploy::empty_from_cosigned(&envelope).unwrap();
                 processed.cost = cost;
                 processed
             })

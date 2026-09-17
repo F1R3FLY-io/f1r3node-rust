@@ -37,6 +37,33 @@ funding slots, lollipop delegation, exact settlement, replay, and finalization.
    - [Runtime ownership inventory](runtime-ownership-inventory.md)
 10. [Deploy occurrence and exact state effects](../deploy-occurrence/deploy-occurrence-specification.md)
 11. [Finalized-floor specification](../finalized-floor/finalized-floor-specification.md)
+12. [Rotating monetary allocation](rotating-monetary-allocation.md)
+13. [Atomic trie update or insertion](atomic-trie-upsert.md)
+14. [Signed phlo contract proposal](signed-phlo-contract-proposal.md) — design context, with later decisions recorded in the ratification documents below.
+15. [Ownership transfer and funding consent](ownership-transfer-consent.md) — arbitrary-history requirements and abstract proof boundaries.
+16. [Persistent funding allowance](persistent-funding-allowance.md) — quantitative conservation, generated model regressions, and concurrent publication checks.
+17. [Funding settlement design review](funding-settlement-design-review.md) — valuation alternatives, prepaid backing, restricted funding, and the reviewed implementation plan.
+18. [Lexicographic minimax funding](lexicographic-minimax-funding.md) — approved restricted-funding objective, exact ordering, examples, and verification requirements.
+19. [Allocation policy ratification](authority-allocation-policy-ratification.md) — approved allocation, residual, and equivalent-acquisition decisions.
+20. [Economic and activation ratification](economic-activation-policy-ratification.md) — approved failure, conversion, refund, and fresh-genesis release boundaries.
+21. [Delegation and persistent authority contract](delegation-persistent-authority-contract.md) — operation permissions, transfer conservation, expiration, replay protection, and remaining refinement obligations.
+22. [Authority and custody identity](authority-custody-identity-contract.md) — authenticated payer identities, physical aliases, logical multiplicity, joint purses, and proof boundaries.
+23. [Threshold authorization and payer limits](threshold-and-payer-limits.md) — selected signers, absent members, independent size limits, arbitrary payer counts, and replay requirements.
+24. [Resource units and measurement](resource-units-and-measurement.md) — exact byte dimensions, interaction and authority demand, event identity, pricing boundaries, and storage limits.
+25. [Resource bounds and exhaustion](resource-bounds-and-exhaustion.md) — conservative sufficiency, source-specific exposure, signed limits, and distinct failure outcomes.
+26. [Persistence and storage liability](persistence-and-storage-liability.md) — installation, repeated firings, prepaid backing, cross-deploy custody, release, and lifetime verification boundaries.
+27. [Price schedules and denominations](price-schedules-and-denominations.md) — dimensional pricing, schedule identity, prepaid terms, exact arithmetic, owner ceilings, and conversion boundaries.
+    See [Genesis resource policy](genesis-resource-policy.md) for authenticated policy records, ceremony checks, and historical loading.
+28. [Signed price consent](signed-price-consent.md) — required owners, signed limits, funding-domain commitments, transfer capture, rejection, and native verification obligations.
+29. [Price transitions and replay](price-transitions-and-replay.md) — activation scope, compatibility identities, stale plans, captured arithmetic, restart, and historical execution requirements.
+30. [Conversion quotes and rates](conversion-quotes-and-rates.md) — exact-output rules, integer rounding, slippage caps, provider capacity, expiry, and atomic refund boundaries.
+31. [Conversion and withdrawal authority](conversion-and-withdrawal-authority.md) — individual, joint, threshold, delegated, and capability permissions with custody and publication boundaries.
+32. [Conversion provenance and refunds](conversion-provenance-and-refunds.md) — captured asset paths, separate and atomic conversion, prepaid rights, exact release, failure, and replay.
+33. [Signed phlo formal contract](signed-phlo-formal-contract.md) — executable price and usage checks, typed prepaid credit, failure-charge bounds, and native refinement requirements.
+34. [Signed phlo deploy envelope](signed-phlo-deploy-envelope.md) — canonical funding signatures, explicit format dispatch, historical boundaries, and activation requirements.
+35. [Economic failure observation](economic-failure-observation.md) — parallel failure summaries, legacy compatibility, bounded classification, and settlement proof boundaries.
+36. [Observed funding outcome](observed-funding-outcome.md) — exact resource matching, equivalent cases, ambiguous settlements, and native evidence requirements.
+37. [Raw byte observations](raw-byte-observations.md) — paired measurements, legacy charge preservation, retry identity, and evaluation boundaries.
 
 This path follows the ingress envelope through normalization, admission,
 proposal, replay, atomic RevVault settlement, merge, fork choice, and finality.
@@ -49,6 +76,7 @@ proposal, replay, atomic RevVault settlement, merge, fork choice, and finality.
 4. [Threat model](../cost-accounting-threat-model.md)
 5. [Decision records](../cost-accounting-decision-records.md)
 6. [Migration and implementation design](../cost-accounting-migration.md)
+7. [Operator authority proof boundaries](operator-authority-proof-boundaries.md)
 
 The verification catalog maps every production obligation to Rocq, TLA+,
 Apalache, Sage, Verus, Loom, example-based tests, property-based tests, and

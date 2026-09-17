@@ -249,7 +249,7 @@ async fn create_snapshot(
             Some(
                 rejected
                     .iter()
-                    .map(ProcessedDeploy::empty_from_cosigned)
+                    .map(|envelope| ProcessedDeploy::empty_from_cosigned(envelope).unwrap())
                     .collect(),
             ),
             None,

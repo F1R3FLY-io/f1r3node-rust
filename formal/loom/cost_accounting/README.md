@@ -55,6 +55,12 @@ Two negative controls remove the existing transaction or snapshot gate and must 
 These tests use three threads and 5,000 branches per execution without schedule cutoffs or checkpoint resume.
 Native properties separately exercise actual store handles, all operation kinds, and preservation of unrelated allocations.
 
+Two rejected-batch tests use the same production staging function and exploration bounds.
+Concurrent insertion and removal must leave both historical and funded namespaces present, or both absent.
+The negative control removes the transaction guard and must expose a partial result.
+Envelope encoding and LMDB persistence remain separate native test obligations.
+The [deploy storage contract](../../../docs/casper/theory/cost-accounting-impl/signed-phlo-deploy-envelope.md#rejected-storage-facade) defines the facade and its read-snapshot limits.
+
 Four additional sparse-transaction tests cover the state-import alias contract.
 They check two-alias commit guards, unrelated concurrent writes, and raw-first reads split across compatible insertion.
 The added negative control omits the opposite-alias guard and must expose conflicting bindings.
@@ -70,6 +76,16 @@ These tests use the same exhaustive schedule exploration within the stated threa
 The [history transaction record](../../../docs/casper/theory/finalized-floor/state-import-validity.md#observed-history-transactions-and-committed-traversal) separates transaction guarantees from page validation and root publication.
 
 ## Qualification
+
+The [funding cursor tests](tests/funding_cursor_cells.rs) model joint acquisition of resource and fee scopes.
+They cover overlapping requests, reversed role overlap, failure restoration, partial publication, and independent scopes.
+An atomic bitset represents scope-set acquisition without a global settlement mutex.
+The tests do not execute the native RSpace matcher.
+Native contract and replay tests must establish that separate boundary.
+
+These tests use three threads and a 1,000-branch failure limit per execution.
+They disable preemption, permutation, duration, and checkpoint-resume limits.
+The [publication contract](../../../docs/casper/theory/cost-accounting-impl/lexicographic-minimax-funding.md#native-two-cursor-publication) maps the tested invariants to the formal models and native tests.
 
 The [retry control tests](tests/loom_recovery_pump_control.rs) import the actual atomic wake module.
 They cover request coalescing, proposal retention, stop races, and notification before waiter registration.

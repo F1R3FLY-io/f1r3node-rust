@@ -311,23 +311,19 @@ message ObjectiveEquivocationEvidenceProto {
  * enforces canonical `pk.bytes` ascending sort, no duplicate signers, and that
  * every signer's signature verifies against the canonical message hash.
  *
- * D3 (DR-9): there is NO per-deploy phlo escrow/price and NO per-signer
- * phlo_share. A deploy's cost is the per-COMM token count, funded by the
+ * There is no per-signer phlo_share. A deploy's resource cost is funded by the
  * per-signature supply pool Σ⟦s⟧ and gated at block assembly (Def 19, §7.6).
  */
 message DeployDataProto {
-  // Cost-Accounted Rho D3 (DR-9, fresh-genesis): the singular-phlo
-  // escrow/price model is REMOVED. Consensus cost is now the per-COMM
-  // token count gated by the per-signature supply pool Σ⟦s⟧ (no per-deploy
-  // phloPrice/phloLimit, no per-signer phlo_share). The retired tags are
-  // RESERVED so they can never be reused with a different meaning.
-  reserved 7, 8, 15;
-  reserved "phloPrice", "phloLimit", "primary_phlo_share";
+  reserved 15;
+  reserved "primary_phlo_share";
   bytes  deployer             = 1; //public key
   string term                 = 2; //rholang source code to deploy (will be parsed into `Par`)
   int64  timestamp            = 3; //millisecond timestamp
   bytes  sig                  = 4; //signature of (hash(term) + timestamp) using private key
   string sigAlgorithm         = 5; //name of the algorithm used to sign
+  int64 phloPrice              = 7;
+  int64 phloLimit              = 8;
   int64 validAfterBlockNumber = 10;
   string shardId              = 11;//shard ID to prevent replay of deploys between shards
   string language             = 12;//language (rholang or metta) of the source code
@@ -351,6 +347,7 @@ message DeployDataProto {
   repeated rhoapi.CostSignature authorityPresentations = 18;
   bytes deployId = 19;
   DeployAuthorizationV61 authorizationV61 = 20;
+  optional bytes fundingIntent = 21;
 }
 
 enum SignatureSchemeV61 {
@@ -552,6 +549,19 @@ message CostAuthorityFundingCertificateProto {
   bytes byteCostScheduleDigest = 14;
   uint64 byteCostBound = 15;
   repeated CostAuthorityResourceProto byteAllocation = 16;
+  CostMonetaryFeePlanProto feePlan = 17;
+}
+
+message CostMonetaryFeePlanProto {
+  uint32 policyVersion = 1;
+  bytes policyContext = 2;
+  bytes scope = 3;
+  repeated bytes payerCustodies = 4;
+  uint64 obligation = 5;
+  int64 expectedRevision = 6;
+  int64 expectedPosition = 7;
+  int64 nextRevision = 8;
+  int64 nextPosition = 9;
 }
 
 message CostAuthorityStackReservationProto {

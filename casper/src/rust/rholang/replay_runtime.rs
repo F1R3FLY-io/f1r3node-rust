@@ -741,7 +741,6 @@ impl ReplayRuntimeOps {
                 "replay proposer lacks validator fuel at the deploy pre-state".to_string(),
             ));
         }
-        let fee_event = crate::rust::util::rholang::acceptance::fee_authority_event(&cosigned)?;
         let signatures =
             crate::rust::util::rholang::acceptance::authority_purse_signatures_with_host_work(
                 &cosigned,
@@ -823,6 +822,11 @@ impl ReplayRuntimeOps {
                 "verified replay purse snapshot contains unexpected authority lanes".to_string(),
             ));
         }
+        let fee_cohort = crate::rust::util::rholang::acceptance::monetary_fee::fee_cohort(
+            &cosigned,
+            &inventory,
+            host_work.as_ref(),
+        )?;
         let evaluate_start = Instant::now();
         let (eval_result, successful, _user_log) = self
             .run_user_deploy_with_host_work(
@@ -932,13 +936,32 @@ impl ReplayRuntimeOps {
         let after_byte = after_cost
             .checked_sub(&recomputed_byte.custody_debit)
             .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
-        let recomputed_fee =
-            rholang::rust::interpreter::accounting::authority::allocate_authority_events_with_custody(
-                std::slice::from_ref(&fee_event),
+        let fee_scope = fee_cohort.scope_id(
+            &crate::rust::util::rholang::acceptance::monetary_fee::native_fee_policy_context(),
+        );
+        let fee_cursor = state_snapshot.monetary_cursor(
+            certificate.pre_state_root,
+            fee_scope,
+            std::num::NonZeroUsize::new(fee_cohort.payers().len()).unwrap(),
+        )?;
+        let (recomputed_fee, recomputed_plan) =
+            crate::rust::util::rholang::acceptance::monetary_fee::plan_fee_from_cursor(
+                &fee_cohort,
                 &after_byte,
-                &inventory.balance_custody,
-            )
-            .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+                fee_cursor,
+            )?
+            .ok_or_else(|| {
+                CasperError::InvalidCostSettlement(
+                    "replay monetary fee exceeds available capacity".to_string(),
+                )
+            })?;
+        if crate::rust::util::rholang::acceptance::monetary_fee::required_fee_plan(&certificate)?
+            != &recomputed_plan
+        {
+            return Err(CasperError::InvalidCostSettlement(
+                "replay monetary fee plan differs from its certificate".to_string(),
+            ));
+        }
         if recomputed_fee.logical_debit != certificate.fee_allocation {
             return Err(CasperError::InvalidCostSettlement(
                 "replay fee allocation differs from its certificate".to_string(),
@@ -1008,6 +1031,12 @@ impl ReplayRuntimeOps {
                     &certificate.reservation_id,
                     1,
                 ),
+            )?
+            .with_fee_cursor(
+                recomputed_plan
+                    .transition()
+                    .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?,
+                recomputed_plan.payer_count(),
             )?;
         let (_, mut apply_eval) = self
             .replay_system_deploy_internal(&mut apply, &None)
@@ -1055,7 +1084,13 @@ impl ReplayRuntimeOps {
         // preserving the block-level authority reservation for settlement.
         let fallback = self.runtime_ops.runtime.create_soft_checkpoint().await;
 
-        let deploy_data = SystemProcessDeployData::from_deploy(&processed_deploy.deploy);
+        let deploy_data = SystemProcessDeployData {
+            timestamp: processed_deploy.body().time_stamp,
+            authority: rholang::rust::interpreter::system_processes::DeployAuthority::Legacy(
+                processed_deploy.primary().pk.clone(),
+            ),
+            deploy_id: processed_deploy.primary().sig.to_vec(),
+        };
         self.runtime_ops.runtime.set_deploy_data(deploy_data).await;
 
         let mut user_eval_result = match execution_authority {

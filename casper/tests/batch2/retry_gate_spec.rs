@@ -279,7 +279,7 @@ async fn premature_retry_is_rejected_by_every_validator() {
     let checkpoint = interpreter_util::compute_deploys_checkpoint_cosigned_with_effects(
         &mut nodes[loser_owner].block_store,
         snapshot.parents.clone(),
-        vec![retry_deploy.envelope().clone()],
+        vec![retry_deploy.envelope().body_envelope().unwrap().clone()],
         Vec::new(),
         &snapshot,
         &runtime_manager,

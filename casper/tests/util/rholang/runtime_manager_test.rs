@@ -61,6 +61,27 @@ use crate::util::rholang::resources::{self, with_runtime_manager};
 #[path = "replay_cache_lifecycle.rs"]
 mod replay_cache_lifecycle;
 
+#[path = "multi_payer_fee.rs"]
+mod multi_payer_fee;
+
+#[path = "atomic_trie_upsert.rs"]
+mod atomic_trie_upsert;
+
+#[path = "monetary_cursor_vault.rs"]
+mod monetary_cursor_vault;
+
+#[path = "monetary_cursor_branches.rs"]
+mod monetary_cursor_branches;
+
+#[path = "numeric_merge_funding.rs"]
+mod numeric_merge_funding;
+
+#[path = "wallet_snapshot_state.rs"]
+mod wallet_snapshot_state;
+
+#[path = "chain_parameters.rs"]
+mod chain_parameters;
+
 enum SystemDeployReplayResult<A> {
     ReplaySucceeded {
         state_hash: StateHash,
@@ -846,6 +867,16 @@ async fn system_vault_atomic_cost_application_is_conservative_and_rolls_back() {
                             fee_address.to_base58(),
                             Blake2b512Random::create_from_bytes(&[0x31]),
                         )
+                        .unwrap()
+                        .with_fee_cursor(
+                            rholang::rust::interpreter::accounting::monetary_allocation::MonetaryCursorTransition::new(
+                                [0x31; 32],
+                                rholang::rust::interpreter::accounting::monetary_allocation::MonetaryCursor::INITIAL,
+                                0,
+                                std::num::NonZeroUsize::new(2).unwrap(),
+                            ).unwrap(),
+                            std::num::NonZeroUsize::new(2).unwrap(),
+                        )
                         .unwrap(),
                     )
                     .await
@@ -1299,7 +1330,7 @@ async fn replay_compute_state(
     processed_system_deploys: Vec<ProcessedSystemDeploy>,
     state_hash: &StateHash,
 ) -> Result<StateHash, CasperError> {
-    let time_stamp = processed_deploy.deploy.data.time_stamp;
+    let time_stamp = processed_deploy.body().time_stamp;
     runtime_manager
         .replay_compute_state(
             state_hash,
@@ -5424,7 +5455,7 @@ async fn physical_rejection_rolls_back_before_later_state_bound_execution() {
             };
             let accepted_sig = accepted.primary().sig.clone();
             let rejected_record =
-                ProcessedDeploy::admission_rejected(&rejected, seeded_state.clone());
+                ProcessedDeploy::admission_rejected(&rejected, seeded_state.clone()).unwrap();
             let rejected_id = rejected_record
                 .deploy_id_for_protocol(genesis_block.header.version)
                 .unwrap();
@@ -5461,7 +5492,7 @@ async fn physical_rejection_rolls_back_before_later_state_bound_execution() {
                 .await
                 .unwrap();
             assert_eq!(processed.len(), 1);
-            assert_eq!(processed[0].deploy.sig, accepted_sig);
+            assert_eq!(processed[0].primary().sig, accepted_sig);
             processed.push(rejected_record);
 
             let rollback_channel = ParBuilderUtil::mk_term(r#""rollback-proof""#).unwrap();
@@ -5526,10 +5557,8 @@ async fn physical_rejection_rolls_back_before_later_state_bound_execution() {
             assert_eq!(play_post, replay_post);
 
             let mut forged = block;
-            forged.body.deploys = vec![ProcessedDeploy::admission_rejected(
-                &accepted,
-                seeded_state.clone(),
-            )];
+            forged.body.deploys =
+                vec![ProcessedDeploy::admission_rejected(&accepted, seeded_state.clone()).unwrap()];
             let forged_result = runtime_manager
                 .replay_block_from_consensus_data(&seeded_state, &forged, None)
                 .await;
@@ -7326,14 +7355,14 @@ async fn compute_state_should_charge_deploys_separately() {
 
             let matched_first = compound_deploy
                 .iter()
-                .find(|d| d.deploy == first_deploy[0].deploy)
+                .find(|d| d.envelope() == first_deploy[0].envelope())
                 .cloned()
                 .expect("Expected at least one matching deploy");
             assert_eq!(first_deploy_cost, deploy_cost(&[matched_first]));
 
             let matched_second = compound_deploy
                 .iter()
-                .find(|d| d.deploy == second_deploy[0].deploy)
+                .find(|d| d.envelope() == second_deploy[0].envelope())
                 .cloned()
                 .expect("Expected at least one matching deploy");
             assert_eq!(second_deploy_cost, deploy_cost(&[matched_second]));
@@ -7582,11 +7611,9 @@ async fn invalid_replay(source: String) -> Result<StateHash, CasperError> {
             let processed_deploy = processed_deploys.into_iter().next().unwrap();
             let processed_deploy_cost = processed_deploy.cost.cost;
 
-            let invalid_processed_deploy = ProcessedDeploy {
-                cost: PCost {
-                    cost: processed_deploy_cost - 1,
-                },
-                ..processed_deploy
+            let mut invalid_processed_deploy = processed_deploy;
+            invalid_processed_deploy.cost = PCost {
+                cost: processed_deploy_cost - 1,
             };
 
             let result = runtime_manager
@@ -7664,11 +7691,11 @@ async fn matched_and_unmatched_deploys_keep_isolated_cost_traces() {
             );
             let matched = processed_deploys
                 .iter()
-                .find(|deploy| deploy.deploy.data.term == matched_source)
+                .find(|deploy| deploy.body().term == matched_source)
                 .expect("matched deployment must be present in the execution evidence");
             let unmatched = processed_deploys
                 .iter()
-                .find(|deploy| deploy.deploy.data.term == unmatched_source)
+                .find(|deploy| deploy.body().term == unmatched_source)
                 .expect("unmatched deployment must be present in the execution evidence");
             let matched_witness = matched.authority_cost_witness.as_ref().unwrap();
             let unmatched_witness = unmatched.authority_cost_witness.as_ref().unwrap();
@@ -8563,7 +8590,7 @@ async fn cross_deploy_bridge_full_admin_flow() {
     let deploy1_data = rm
         .get_data(
             post_state_1.clone(),
-            &make_deploy_id_par(&pd1_vec[0].deploy.sig),
+            &make_deploy_id_par(&pd1_vec[0].primary().sig),
         )
         .await
         .unwrap();
@@ -8752,7 +8779,7 @@ in {{
         let deploy_data = rm
             .get_data(
                 post_state_n.clone(),
-                &make_deploy_id_par(&pdn_vec[0].deploy.sig),
+                &make_deploy_id_par(&pdn_vec[0].primary().sig),
             )
             .await
             .unwrap();
@@ -8921,7 +8948,9 @@ async fn bridge_query_survives_multi_parent_merge() {
         Some(now_millis()),
         Some(vec![genesis_hash.clone()]),
         Some(Vec::new()),
-        Some(vec![ProcessedDeploy::empty_from_cosigned(&bridge_deploy)]),
+        Some(vec![
+            ProcessedDeploy::empty_from_cosigned(&bridge_deploy).unwrap()
+        ]),
         Some(Vec::new()),
         Some(genesis_bonds.clone()),
         Some(shard_name.clone()),
@@ -9104,7 +9133,9 @@ in {{
         Some(now_millis()),
         Some(vec![block_a.block_hash.clone(), block_b.block_hash.clone()]),
         Some(Vec::new()),
-        Some(vec![ProcessedDeploy::empty_from_cosigned(&query_deploy)]),
+        Some(vec![
+            ProcessedDeploy::empty_from_cosigned(&query_deploy).unwrap()
+        ]),
         Some(Vec::new()),
         Some(genesis_bonds.clone()),
         Some(shard_name.clone()),
@@ -9310,7 +9341,9 @@ async fn concurrent_registry_inserts_should_not_conflict() {
             Some(now_millis()),
             Some(vec![genesis_hash.clone()]),
             Some(Vec::new()),
-            Some(vec![ProcessedDeploy::empty_from_cosigned(&deploy_a)]),
+            Some(vec![
+                ProcessedDeploy::empty_from_cosigned(&deploy_a).unwrap()
+            ]),
             Some(Vec::new()),
             Some(genesis_bonds.clone()),
             Some(shard_name.clone()),
@@ -9375,7 +9408,9 @@ async fn concurrent_registry_inserts_should_not_conflict() {
             Some(now_millis()),
             Some(vec![genesis_hash.clone()]),
             Some(Vec::new()),
-            Some(vec![ProcessedDeploy::empty_from_cosigned(&deploy_b)]),
+            Some(vec![
+                ProcessedDeploy::empty_from_cosigned(&deploy_b).unwrap()
+            ]),
             Some(Vec::new()),
             Some(genesis_bonds.clone()),
             Some(shard_name.clone()),
@@ -10121,7 +10156,9 @@ new deployId(`rho:system:deployId`) in {
         Some(now_millis()),
         Some(vec![genesis_hash.clone()]),
         Some(Vec::new()),
-        Some(vec![ProcessedDeploy::empty_from_cosigned(&deploy_a)]),
+        Some(vec![
+            ProcessedDeploy::empty_from_cosigned(&deploy_a).unwrap()
+        ]),
         Some(Vec::new()),
         Some(genesis_bonds.clone()),
         Some(shard_name.clone()),
@@ -10178,7 +10215,9 @@ new deployId(`rho:system:deployId`) in {
         Some(now_millis()),
         Some(vec![genesis_hash.clone()]),
         Some(Vec::new()),
-        Some(vec![ProcessedDeploy::empty_from_cosigned(&deploy_b)]),
+        Some(vec![
+            ProcessedDeploy::empty_from_cosigned(&deploy_b).unwrap()
+        ]),
         Some(Vec::new()),
         Some(genesis_bonds.clone()),
         Some(shard_name.clone()),
@@ -10235,7 +10274,9 @@ new deployId(`rho:system:deployId`) in {
         Some(now_millis()),
         Some(vec![block_a.block_hash.clone()]),
         Some(Vec::new()),
-        Some(vec![ProcessedDeploy::empty_from_cosigned(&deploy_c)]),
+        Some(vec![
+            ProcessedDeploy::empty_from_cosigned(&deploy_c).unwrap()
+        ]),
         Some(Vec::new()),
         Some(genesis_bonds.clone()),
         Some(shard_name.clone()),
@@ -10292,7 +10333,9 @@ new deployId(`rho:system:deployId`) in {
         Some(now_millis()),
         Some(vec![block_b.block_hash.clone()]),
         Some(Vec::new()),
-        Some(vec![ProcessedDeploy::empty_from_cosigned(&deploy_d)]),
+        Some(vec![
+            ProcessedDeploy::empty_from_cosigned(&deploy_d).unwrap()
+        ]),
         Some(Vec::new()),
         Some(genesis_bonds.clone()),
         Some(shard_name.clone()),
@@ -10354,10 +10397,10 @@ new deployId(`rho:system:deployId`) in {
         .iter()
         .map(|item| prost::bytes::Bytes::copy_from_slice(item.deploy_id()))
         .collect();
-    let ba_rejected = rejected_set.contains(&pd_a[0].deploy.sig);
-    let bb_rejected = rejected_set.contains(&pd_b[0].deploy.sig);
-    let bc_rejected = rejected_set.contains(&pd_c[0].deploy.sig);
-    let bd_rejected = rejected_set.contains(&pd_d[0].deploy.sig);
+    let ba_rejected = rejected_set.contains(&pd_a[0].primary().sig);
+    let bb_rejected = rejected_set.contains(&pd_b[0].primary().sig);
+    let bc_rejected = rejected_set.contains(&pd_c[0].primary().sig);
+    let bd_rejected = rejected_set.contains(&pd_d[0].primary().sig);
 
     tracing::info!("──────── Rejection outcome ────────");
     tracing::info!(
@@ -10381,28 +10424,28 @@ new deployId(`rho:system:deployId`) in {
     let ba_data = rm
         .get_data(
             merged_state.clone(),
-            &make_deploy_id_par(&pd_a[0].deploy.sig),
+            &make_deploy_id_par(&pd_a[0].primary().sig),
         )
         .await
         .unwrap();
     let bb_data = rm
         .get_data(
             merged_state.clone(),
-            &make_deploy_id_par(&pd_b[0].deploy.sig),
+            &make_deploy_id_par(&pd_b[0].primary().sig),
         )
         .await
         .unwrap();
     let bc_data = rm
         .get_data(
             merged_state.clone(),
-            &make_deploy_id_par(&pd_c[0].deploy.sig),
+            &make_deploy_id_par(&pd_c[0].primary().sig),
         )
         .await
         .unwrap();
     let bd_data = rm
         .get_data(
             merged_state.clone(),
-            &make_deploy_id_par(&pd_d[0].deploy.sig),
+            &make_deploy_id_par(&pd_d[0].primary().sig),
         )
         .await
         .unwrap();

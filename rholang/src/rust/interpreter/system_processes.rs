@@ -23,6 +23,7 @@ use models::rhoapi::{
 };
 use models::rust::casper::protocol::casper_message;
 use models::rust::casper::protocol::casper_message::BlockMessage;
+use models::rust::deploy_envelope::{DeployEnvelope, DeployEnvelopeRef};
 use models::rust::rholang::implicits::single_expr;
 use models::rust::utils::{new_gbool_par, new_gbytearray_par, new_gsys_auth_token_par};
 use prost::Message;
@@ -532,33 +533,61 @@ impl DeployData {
         template: &crypto::rust::signatures::signed::Cosigned<casper_message::DeployData>,
     ) -> Self {
         if template.is_envelope_bound() {
-            let selected = template
-                .selected_signers_v61()
-                .expect("validated protocol-v6 selected signers");
-            let authority = if let [signer] = selected.as_slice() {
-                DeployAuthority::Principal(GPrincipalId {
-                    key_family: 1,
-                    public_key: signer.pk.bytes.to_vec(),
-                })
-            } else {
-                DeployAuthority::Compound(GAuthorityId {
-                    id: models::rust::normalizer_env::authority_id_v61(&selected),
-                })
-            };
-            return DeployData {
-                timestamp: template.data.time_stamp,
-                authority,
-                deploy_id: template
-                    .envelope_commitment()
-                    .expect("validated protocol-v6 envelope identity")
-                    .to_vec(),
-            };
+            let identity = template
+                .envelope_commitment()
+                .expect("validated protocol-v6 envelope identity");
+            return Self::from_bound(template, template.data.time_stamp, &identity);
         }
         let primary = template.primary();
         DeployData {
             timestamp: template.data.time_stamp,
             authority: DeployAuthority::Legacy(primary.pk.clone()),
             deploy_id: primary.sig.to_vec(),
+        }
+    }
+
+    pub fn from_envelope(template: &DeployEnvelope) -> Self {
+        let timestamp = template.body().time_stamp;
+        let identity = template.identity().as_bytes();
+        match template.view() {
+            DeployEnvelopeRef::Legacy(_) => Self {
+                timestamp,
+                authority: DeployAuthority::Legacy(template.primary().pk.clone()),
+                deploy_id: template.identity().as_bytes().to_vec(),
+            },
+            DeployEnvelopeRef::BodyV61(template) => Self::from_bound(template, timestamp, identity),
+            DeployEnvelopeRef::Funded(template) => Self::from_bound(template, timestamp, identity),
+            DeployEnvelopeRef::OfferedFunded(template) => {
+                Self::from_bound(template, timestamp, identity)
+            }
+        }
+    }
+
+    fn from_bound<A>(
+        template: &crypto::rust::signatures::signed::Cosigned<A>,
+        timestamp: i64,
+        identity: &[u8],
+    ) -> Self
+    where
+        A: std::fmt::Debug + serde::Serialize + crypto::rust::signatures::signed::ToMessage,
+    {
+        let selected = template
+            .selected_signers_v61()
+            .expect("validated protocol-v6 selected signers");
+        let authority = if let [signer] = selected.as_slice() {
+            DeployAuthority::Principal(GPrincipalId {
+                key_family: 1,
+                public_key: signer.pk.bytes.to_vec(),
+            })
+        } else {
+            DeployAuthority::Compound(GAuthorityId {
+                id: models::rust::normalizer_env::authority_id_v61(&selected),
+            })
+        };
+        Self {
+            timestamp,
+            authority,
+            deploy_id: identity.to_vec(),
         }
     }
 }

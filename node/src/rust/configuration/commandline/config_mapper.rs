@@ -784,6 +784,7 @@ mod tests {
                 finalization_rate: 1,
                 max_number_of_parents: 1,
                 max_parent_depth: 1,
+                deploy_lifespan: 50,
                 fork_choice_stale_threshold: Duration::from_secs(30),
                 fork_choice_check_if_stale_interval: Duration::from_secs(30),
                 synchrony_constraint_threshold: 0.0,
@@ -794,6 +795,7 @@ mod tests {
                     drop_peer_after_retries: 4,
                 },
                 genesis_block_data: casper::rust::casper_conf::GenesisBlockData {
+                    resource_policy: None,
                     genesis_data_dir: "/var/lib/rnode/genesis".to_string(),
                     bonds_file: "".to_string(),
                     wallets_file: "".to_string(),

@@ -3,9 +3,10 @@
 use std::collections::HashMap;
 
 use crypto::rust::public_key::PublicKey;
-use crypto::rust::signatures::signed::{Cosigned, Signed};
+use crypto::rust::signatures::signed::{Cosigned, Signed, ToMessage};
 
 use super::casper::protocol::casper_message::DeployData;
+use super::deploy_envelope::{DeployEnvelope, DeployEnvelopeRef};
 use crate::rhoapi::expr::ExprInstance;
 use crate::rhoapi::g_unforgeable::UnfInstance;
 use crate::rhoapi::{
@@ -87,17 +88,21 @@ fn build_cosigners_list_par(pks: &[&PublicKey]) -> Par {
 }
 
 pub fn normalizer_env_from_deploy(deploy: &Signed<DeployData>) -> HashMap<String, Par> {
+    legacy_normalizer_env(&deploy.pk, &deploy.sig)
+}
+
+fn legacy_normalizer_env(public_key: &PublicKey, signature: &[u8]) -> HashMap<String, Par> {
     let mut env = HashMap::new();
 
     let deploy_id_par = Par::default().with_unforgeables(vec![GUnforgeable {
         unf_instance: Some(UnfInstance::GDeployIdBody(GDeployId {
-            sig: deploy.sig.to_vec(),
+            sig: signature.to_vec(),
         })),
     }]);
 
     let deployer_id_par = Par::default().with_unforgeables(vec![GUnforgeable {
         unf_instance: Some(UnfInstance::GDeployerIdBody(GDeployerId {
-            public_key: deploy.pk.bytes.to_vec(),
+            public_key: public_key.bytes.to_vec(),
         })),
     }]);
 
@@ -123,7 +128,7 @@ pub fn normalizer_env_from_deploy(deploy: &Signed<DeployData>) -> HashMap<String
     // primary signer. In-deploy Rholang code reading `rho:system:cosigners`
     // gets a uniform `List[DeployerId]` shape across single and multi-sig
     // deploys — for legacy deploys the list has one element.
-    let cosigners_par = build_cosigners_list_par(&[&deploy.pk]);
+    let cosigners_par = build_cosigners_list_par(&[public_key]);
     env.insert(SYSTEM_COSIGNERS_URI.to_string(), cosigners_par);
 
     env
@@ -143,7 +148,7 @@ pub fn normalizer_env_from_deploy(deploy: &Signed<DeployData>) -> HashMap<String
 ///   the full cosigner set.
 pub fn normalizer_env_from_cosigned_deploy(deploy: &Cosigned<DeployData>) -> HashMap<String, Par> {
     if !deploy.is_envelope_bound() {
-        let mut env = normalizer_env_from_deploy(&deploy.as_legacy_signed_ref());
+        let mut env = legacy_normalizer_env(&deploy.primary().pk, &deploy.primary().sig);
         let signers = deploy
             .signers()
             .iter()
@@ -156,10 +161,39 @@ pub fn normalizer_env_from_cosigned_deploy(deploy: &Cosigned<DeployData>) -> Has
         return env;
     }
 
-    let mut env = HashMap::new();
-    let deploy_id = deploy
+    let identity = deploy
         .envelope_commitment()
         .expect("validated protocol-v6 envelope identity");
+    bound_normalizer_env(deploy, &identity)
+}
+
+pub fn normalizer_env_from_envelope(deploy: &DeployEnvelope) -> HashMap<String, Par> {
+    let identity = deploy.identity().as_bytes();
+    match deploy.view() {
+        DeployEnvelopeRef::Legacy(_) => {
+            let mut env = legacy_normalizer_env(&deploy.primary().pk, deploy.identity().as_bytes());
+            let signers = deploy
+                .signers()
+                .iter()
+                .map(|signer| &signer.pk)
+                .collect::<Vec<_>>();
+            env.insert(
+                SYSTEM_COSIGNERS_URI.to_string(),
+                build_cosigners_list_par(&signers),
+            );
+            env
+        }
+        DeployEnvelopeRef::BodyV61(deploy) => bound_normalizer_env(deploy, identity),
+        DeployEnvelopeRef::Funded(deploy) => bound_normalizer_env(deploy, identity),
+        DeployEnvelopeRef::OfferedFunded(deploy) => bound_normalizer_env(deploy, identity),
+    }
+}
+
+fn bound_normalizer_env<A: std::fmt::Debug + serde::Serialize + ToMessage>(
+    deploy: &Cosigned<A>,
+    deploy_id: &[u8],
+) -> HashMap<String, Par> {
+    let mut env = HashMap::new();
     let selected = deploy
         .selected_signers_v61()
         .expect("validated protocol-v6 selected signers");

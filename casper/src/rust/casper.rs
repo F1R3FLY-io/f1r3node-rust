@@ -377,6 +377,33 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
     // using. The ppm remains the sole DECISION input; this f32 is display-only.
     casper_shard_conf.fault_tolerance_threshold = (onchain_ppm as f64 / 1_000_000.0) as f32;
 
+    let (onchain_mpd, onchain_lifespan, onchain_min_phlo) =
+        crate::rust::util::token_metadata_check::read_on_chain_consensus_parameters(
+            &runtime_manager,
+            &genesis_block.body.state.post_state_hash,
+        )
+        .await?;
+    if (onchain_mpd, onchain_lifespan, onchain_min_phlo)
+        != (
+            casper_shard_conf.max_parent_depth,
+            casper_shard_conf.deploy_lifespan,
+            casper_shard_conf.min_phlo_price,
+        )
+    {
+        tracing::info!(
+            onchain_max_parent_depth = onchain_mpd,
+            onchain_deploy_lifespan = onchain_lifespan,
+            onchain_min_phlo_price = onchain_min_phlo,
+            local_max_parent_depth = casper_shard_conf.max_parent_depth,
+            local_deploy_lifespan = casper_shard_conf.deploy_lifespan,
+            local_min_phlo_price = casper_shard_conf.min_phlo_price,
+            "Adopting on-chain consensus parameters over local configuration"
+        );
+    }
+    casper_shard_conf.max_parent_depth = onchain_mpd;
+    casper_shard_conf.deploy_lifespan = onchain_lifespan;
+    casper_shard_conf.min_phlo_price = onchain_min_phlo;
+
     let deploy_lifecycle =
         Arc::new(crate::rust::finality::deploy_lifecycle::DeployLifecycle::default());
     deploy_lifecycle

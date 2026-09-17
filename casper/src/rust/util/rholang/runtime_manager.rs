@@ -387,7 +387,8 @@ fn is_canonical_admission_rejection(
     candidate: &Cosigned<DeployData>,
     pre_state: &StateHash,
 ) -> bool {
-    processed == &ProcessedDeploy::admission_rejected(candidate, pre_state.clone())
+    ProcessedDeploy::admission_rejected(candidate, pre_state.clone())
+        .is_ok_and(|expected| processed == &expected)
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
@@ -1752,6 +1753,23 @@ impl RuntimeManager {
             .await
     }
 
+    pub async fn get_consensus_parameters(
+        &self,
+        start_hash: &StateHash,
+    ) -> Result<Option<(i32, i64, i64)>, CasperError> {
+        let runtime = self.spawn_runtime().await;
+        let mut runtime_ops = RuntimeOps::new(runtime);
+        runtime_ops.get_consensus_parameters(start_hash).await
+    }
+
+    pub async fn get_genesis_resource_policy(
+        &self,
+        start_hash: &StateHash,
+    ) -> Result<models::rust::phlo_schedule::PhloGenesisPolicy, CasperError> {
+        let mut runtime_ops = RuntimeOps::new(self.spawn_runtime().await);
+        runtime_ops.get_genesis_resource_policy(start_hash).await
+    }
+
     pub async fn compute_bonds(&self, hash: &StateHash) -> Result<Vec<Bond>, CasperError> {
         if let Some(entry) = self.bonds_cache.get(hash) {
             let cached = entry.value().clone();
@@ -2607,7 +2625,7 @@ mod tests {
             Some("root".to_string()),
         )
         .unwrap();
-        let mut processed = ProcessedDeploy::empty(signed);
+        let mut processed = ProcessedDeploy::empty(signed).unwrap();
         processed.pre_state_hash = vec![2; 32].into();
         processed.post_state_hash = vec![3; 32].into();
         processed.cost.cost = 5;
@@ -2662,14 +2680,31 @@ mod tests {
             let original = execution_evidence();
             let original_hash = RuntimeManager::replay_payload_hash(&[original.clone()], &[], false);
             let mut changed = original;
+            if matches!(axis, 0 | 1 | 6) {
+                let mut proto = changed.to_proto();
+                let deploy = proto.deploy.as_mut().unwrap();
+                match axis {
+                    0 => deploy.term.push_str(" | Nil"),
+                    1 => deploy.sig = vec![11; 64].into(),
+                    6 => deploy.cosigner_threshold += 1,
+                    _ => unreachable!(),
+                }
+                let decoded = ProcessedDeploy::from_proto(proto);
+                if axis == 6 {
+                    prop_assert_ne!(
+                        RuntimeManager::replay_payload_hash(&[decoded.unwrap()], &[], false),
+                        original_hash
+                    );
+                } else {
+                    prop_assert!(decoded.is_err());
+                }
+                return Ok(());
+            }
             match axis {
-                0 => changed.deploy.data.term.push_str(" | Nil"),
-                1 => changed.deploy.sig = vec![11; 64].into(),
                 2 => changed.cost.cost += 1,
                 3 => append_event(&mut changed, 13),
                 4 => changed.is_failed = true,
                 5 => changed.system_deploy_error = Some("changed".to_string()),
-                6 => changed.cosigner_threshold += 1,
                 7 => changed.pre_state_hash = vec![14; 32].into(),
                 8 => changed.post_state_hash = vec![15; 32].into(),
                 9 => changed.authority_funding_certificate.as_mut().unwrap().protocol_version += 1,
@@ -2705,7 +2740,7 @@ mod tests {
                 construct_deploy::DEFAULT_SEC.clone(),
             ).unwrap();
             let pre_state: StateHash = vec![21; 32].into();
-            let mut changed = ProcessedDeploy::admission_rejected(&candidate, pre_state.clone());
+            let mut changed = ProcessedDeploy::admission_rejected(&candidate, pre_state.clone()).unwrap();
             match axis {
                 0 => changed.cost.cost = 1,
                 1 => append_event(&mut changed, 22),
@@ -2716,7 +2751,16 @@ mod tests {
                 6 => changed.authority_funding_certificate = Some(Default::default()),
                 7 => changed.authority_cost_witness = Some(Default::default()),
                 8 => changed.admission_status = DeployAdmissionStatus::Executed,
-                9 => changed.envelope_commitment = vec![25; 32].into(),
+                9 => {
+                    let mut data = candidate.data.clone();
+                    data.time_stamp += 1;
+                    let other = Cosigned::create_single_envelope(
+                        data,
+                        candidate.primary().sig_algorithm.clone(),
+                        construct_deploy::DEFAULT_SEC.clone(),
+                    ).unwrap();
+                    changed = ProcessedDeploy::admission_rejected(&other, pre_state.clone()).unwrap();
+                },
                 _ => unreachable!(),
             }
             prop_assert!(!is_canonical_admission_rejection(&changed, &candidate, &pre_state));

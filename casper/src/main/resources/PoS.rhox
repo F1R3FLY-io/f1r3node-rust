@@ -336,6 +336,9 @@ in {
               contract PoS(@"getFaultToleranceThresholdPpm", returnCh) = {
                 returnCh!($$faultToleranceThresholdPpm$$)
               } |
+              contract PoS(@"getConsensusParameters", returnCh) = {
+                returnCh!(($$maxParentDepth$$, $$deployLifespan$$, $$minPhloPrice$$))
+              } |
               contract PoS(@"posVaultTransfer", @targetAddress, @amount, @deployerID, @transferRet) = {
                 // human transfer would just use this method
                 @humanControlHandle!("transfer", targetAddress, amount, deployerID, transferRet)

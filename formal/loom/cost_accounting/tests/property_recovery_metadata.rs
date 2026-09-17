@@ -1,5 +1,6 @@
-use proptest::prelude::*;
 use std::cell::Cell;
+
+use proptest::prelude::*;
 
 struct PublicationGuard<'a>(&'a Cell<bool>);
 

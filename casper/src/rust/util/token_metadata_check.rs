@@ -215,3 +215,21 @@ pub async fn verify_token_metadata_matches_config(
 
     Ok(())
 }
+
+pub async fn read_on_chain_consensus_parameters(
+    runtime_manager: &RuntimeManager,
+    post_state_hash: &StateHash,
+) -> Result<(i32, i64, i64), CasperError> {
+    runtime_manager
+        .get_consensus_parameters(post_state_hash)
+        .await?
+        .ok_or_else(|| {
+            CasperError::RuntimeError(
+                "PoS contract exposes no getConsensusParameters: max-parent-depth, \
+                 deploy-lifespan and min-phlo-price are consensus values and MUST come \
+                 from chain state; refusing to fall back to local configuration (it \
+                 would diverge this node's validity verdicts from its peers')"
+                    .to_string(),
+            )
+        })
+}

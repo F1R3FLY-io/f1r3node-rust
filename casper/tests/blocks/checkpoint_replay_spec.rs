@@ -72,7 +72,23 @@ fn execution_evidence_mutations(block: &BlockMessage) -> Vec<(&'static str, Bloc
 
     vec![
         mutate(block, "envelope identity", |deploy| {
-            deploy.envelope_commitment = vec![0x91; 32].into();
+            let mut body = deploy.body().clone();
+            body.time_stamp += 1;
+            let other = Cosigned::create_single_envelope(
+                body,
+                deploy.primary().sig_algorithm.clone(),
+                construct_deploy::DEFAULT_SEC.clone(),
+            )
+            .unwrap();
+            let mut proto = deploy.clone().to_proto();
+            proto.deploy = Some(
+                ProcessedDeploy::empty_from_cosigned(&other)
+                    .unwrap()
+                    .to_proto()
+                    .deploy
+                    .unwrap(),
+            );
+            *deploy = ProcessedDeploy::from_proto(proto).unwrap();
         }),
         mutate(block, "cost", |deploy| deploy.cost.cost += 1),
         mutate(block, "event log", |deploy| {
@@ -409,7 +425,7 @@ async fn forced_prefix_shrink_replays_the_canonical_retained_batch() {
     forged
         .body
         .deploys
-        .push(ProcessedDeploy::empty_from_cosigned(removed_envelope));
+        .push(ProcessedDeploy::empty_from_cosigned(removed_envelope).unwrap());
     let forged_replay = nodes[1]
         .runtime_manager
         .replay_block_from_consensus_data(&pre_state, &forged, None)

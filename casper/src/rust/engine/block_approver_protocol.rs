@@ -28,6 +28,7 @@ use crate::rust::validator_identity::ValidatorIdentity;
 /// The field layout and logic mirror the original as closely as possible.
 #[derive(Clone)]
 pub struct BlockApproverProtocol<T: TransportLayer + Send + Sync + 'static> {
+    pub resource_policy: Option<models::rust::phlo_schedule::PhloGenesisPolicy>,
     // Configuration / static data
     validator_id: ValidatorIdentity,
     pub deploy_timestamp: i64,
@@ -39,6 +40,9 @@ pub struct BlockApproverProtocol<T: TransportLayer + Send + Sync + 'static> {
     pub quarantine_length: i32,
     pub number_of_active_validators: u32,
     pub fault_tolerance_threshold_ppm: i64,
+    pub max_parent_depth: i32,
+    pub deploy_lifespan: i64,
+    pub min_phlo_price: i64,
     pub required_sigs: i32,
     pub pos_multi_sig_public_keys: Vec<String>,
     pub pos_multi_sig_quorum: u32,
@@ -69,6 +73,9 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         quarantine_length: i32,
         number_of_active_validators: u32,
         fault_tolerance_threshold_ppm: i64,
+        max_parent_depth: i32,
+        deploy_lifespan: i64,
+        min_phlo_price: i64,
         required_sigs: i32,
         pos_multi_sig_public_keys: Vec<String>,
         pos_multi_sig_quorum: u32,
@@ -80,6 +87,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         native_token_name: String,
         native_token_symbol: String,
         native_token_decimals: u32,
+        resource_policy: Option<models::rust::phlo_schedule::PhloGenesisPolicy>,
         transport: Arc<T>,
         conf: Arc<RPConf>,
     ) -> Result<Self, CasperError> {
@@ -104,6 +112,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             .collect();
 
         Ok(Self {
+            resource_policy,
             validator_id,
             deploy_timestamp,
             vaults,
@@ -114,6 +123,9 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             quarantine_length,
             number_of_active_validators,
             fault_tolerance_threshold_ppm,
+            max_parent_depth,
+            deploy_lifespan,
+            min_phlo_price,
             required_sigs,
             pos_multi_sig_public_keys,
             pos_multi_sig_quorum,
@@ -174,6 +186,9 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         quarantine_length: i32,
         number_of_active_validators: u32,
         fault_tolerance_threshold_ppm: i64,
+        max_parent_depth: i32,
+        deploy_lifespan: i64,
+        min_phlo_price: i64,
         shard_id: &str,
         pos_multi_sig_public_keys: &[String],
         pos_multi_sig_quorum: u32,
@@ -185,7 +200,13 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         native_token_name: &str,
         native_token_symbol: &str,
         native_token_decimals: u32,
+        resource_policy: Option<&models::rust::phlo_schedule::PhloGenesisPolicy>,
     ) -> Result<(), String> {
+        if let Some(policy) = resource_policy {
+            policy
+                .validate_context(protocol_version, shard_id, native_token_decimals)
+                .map_err(|error| error.to_string())?;
+        }
         // Basic checks – required sigs, absence of system deploys, bonds equality
         if candidate.required_sigs < required_sigs {
             return Err(format!(
@@ -238,6 +259,9 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             // ceremony participants must agree on the protocol FTT like every
             // other genesis parameter.
             fault_tolerance_threshold_ppm,
+            max_parent_depth,
+            deploy_lifespan,
+            min_phlo_price,
             pos_multi_sig_public_keys: pos_multi_sig_public_keys.to_vec(),
             pos_multi_sig_quorum,
             max_cosigners_per_deploy,
@@ -267,6 +291,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             native_token_name,
             native_token_symbol,
             native_token_decimals,
+            resource_policy,
         );
 
         let block_deploys: &Vec<ProcessedDeploy> = &block.body.deploys;
@@ -283,10 +308,10 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             .iter()
             .zip(genesis_blessed_contracts.iter())
             .filter(|(candidate_deploy, expected_contract)| {
-                candidate_deploy.deploy.data.term != expected_contract.data.term
+                candidate_deploy.body().term != expected_contract.data.term
             })
             .map(|(candidate_deploy, _)| {
-                let term = &candidate_deploy.deploy.data.term;
+                let term = &candidate_deploy.body().term;
                 term.chars().take(100).collect::<String>()
             })
             .take(5)
@@ -350,6 +375,9 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             self.quarantine_length,
             self.number_of_active_validators,
             self.fault_tolerance_threshold_ppm,
+            self.max_parent_depth,
+            self.deploy_lifespan,
+            self.min_phlo_price,
             shard_id,
             &self.pos_multi_sig_public_keys,
             self.pos_multi_sig_quorum,
@@ -361,6 +389,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             &self.native_token_name,
             &self.native_token_symbol,
             self.native_token_decimals,
+            self.resource_policy.as_ref(),
         )
         .await
     }

@@ -608,12 +608,12 @@ impl RSpaceAccountingObserver<Par, BindPattern, ListParWithRandom, TaggedContinu
             )
             .map_err(interpreter_error_to_rspace)?;
         let charge = super::accounting::byte_accounting::produce_introduction_charge(channel, data)
-            .and_then(|charge| {
-                charge.cost(super::accounting::byte_accounting::BYTE_COST_SCHEDULE_V1)
-            })
+            .map_err(|error| RSpaceError::InterpreterError(error.to_string()))?;
+        charge
+            .cost(super::accounting::byte_accounting::BYTE_COST_SCHEDULE_V1)
             .map_err(|error| RSpaceError::InterpreterError(error.to_string()))?;
         self.budget
-            .reserve_produce_introduction_identity(identity, &authority, charge, persistent)
+            .reserve_produce_introduction_measured(identity, &authority, charge, persistent)
             .map_err(interpreter_error_to_rspace)
     }
 
@@ -642,10 +642,12 @@ impl RSpaceAccountingObserver<Par, BindPattern, ListParWithRandom, TaggedContinu
             patterns,
             continuation,
         )
-        .and_then(|charge| charge.cost(super::accounting::byte_accounting::BYTE_COST_SCHEDULE_V1))
         .map_err(|error| RSpaceError::InterpreterError(error.to_string()))?;
+        charge
+            .cost(super::accounting::byte_accounting::BYTE_COST_SCHEDULE_V1)
+            .map_err(|error| RSpaceError::InterpreterError(error.to_string()))?;
         self.budget
-            .reserve_consume_introduction_identity(identity, &authority, charge, persistent)
+            .reserve_consume_introduction_measured(identity, &authority, charge, persistent)
             .map_err(interpreter_error_to_rspace)
     }
 
@@ -698,12 +700,12 @@ impl RSpaceAccountingObserver<Par, BindPattern, ListParWithRandom, TaggedContinu
         )
         .map_err(|error| RSpaceError::InterpreterError(error.to_string()))?;
         let byte_cost = super::accounting::byte_accounting::comm_charge(comm, data)
-            .and_then(|charge| {
-                charge.cost(super::accounting::byte_accounting::BYTE_COST_SCHEDULE_V1)
-            })
+            .map_err(|error| RSpaceError::InterpreterError(error.to_string()))?;
+        byte_cost
+            .cost(super::accounting::byte_accounting::BYTE_COST_SCHEDULE_V1)
             .map_err(|error| RSpaceError::InterpreterError(error.to_string()))?;
         self.budget
-            .reserve_comm_authority_identity_with_byte_cost(identity, &authority, byte_cost)
+            .reserve_comm_authority_measured(identity, &authority, byte_cost)
             .map_err(interpreter_error_to_rspace)?;
         Ok(())
     }

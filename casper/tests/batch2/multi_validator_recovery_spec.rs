@@ -226,8 +226,8 @@ for(@_v <- @"multi-validator-shared") { Nil }
         Some(vec![genesis_hash.clone()]),
         Some(Vec::new()),
         Some(vec![
-            ProcessedDeploy::empty_from_cosigned(&envelope_x),
-            ProcessedDeploy::empty_from_cosigned(&envelope_marker_v0),
+            ProcessedDeploy::empty_from_cosigned(&envelope_x).unwrap(),
+            ProcessedDeploy::empty_from_cosigned(&envelope_marker_v0).unwrap(),
         ]),
         Some(Vec::new()),
         Some(genesis_bonds.clone()),
@@ -251,7 +251,7 @@ for(@_v <- @"multi-validator-shared") { Nil }
         assert!(
             !pd.is_failed,
             "deploy in R0 must execute cleanly (sig {}): {:?}",
-            hex::encode(&pd.deploy.sig[..8]),
+            hex::encode(&pd.primary().sig[..8]),
             pd.system_deploy_error
         );
     }
@@ -275,8 +275,8 @@ for(@_v <- @"multi-validator-shared") { Nil }
         Some(vec![genesis_hash.clone()]),
         Some(Vec::new()),
         Some(vec![
-            ProcessedDeploy::empty_from_cosigned(&envelope_x),
-            ProcessedDeploy::empty_from_cosigned(&envelope_marker_v1),
+            ProcessedDeploy::empty_from_cosigned(&envelope_x).unwrap(),
+            ProcessedDeploy::empty_from_cosigned(&envelope_marker_v1).unwrap(),
         ]),
         Some(Vec::new()),
         Some(genesis_bonds.clone()),
@@ -300,7 +300,7 @@ for(@_v <- @"multi-validator-shared") { Nil }
         assert!(
             !pd.is_failed,
             "deploy in R1 must execute cleanly (sig {}): {:?}",
-            hex::encode(&pd.deploy.sig[..8]),
+            hex::encode(&pd.primary().sig[..8]),
             pd.system_deploy_error
         );
     }

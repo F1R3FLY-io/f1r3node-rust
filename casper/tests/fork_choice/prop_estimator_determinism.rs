@@ -359,7 +359,7 @@ async fn fork_choice_determinism_correct() {
         let dag = block_dag_storage
             .get_representation()
             .expect("dag representation");
-        let estimator = Estimator::apply(i32::MAX, None);
+        let estimator = Estimator::apply();
 
         let mut all_tips = Vec::new();
         for order in ORDERS_3 {
@@ -472,7 +472,7 @@ async fn filter_t10_invalid_latest_message_excluded() {
             "v1's valid latest message must NOT be flagged"
         );
 
-        let estimator = Estimator::apply(i32::MAX, None);
+        let estimator = Estimator::apply();
 
         let tips_all = certified_fork_choice(&estimator, &dag, &genesis, latest_all)
             .await
@@ -519,8 +519,8 @@ async fn unfinalized_bond_cache_cannot_reweight_frozen_floor_fork_choice() {
         ]);
         let context = certified_consensus_context(&dag, &scenario.genesis, latest)
             .expect("certified consensus context");
-        let choice = Estimator::apply(i32::MAX, None)
-            .tips_with_context(&dag, &scenario.genesis, &context)
+        let choice = Estimator::apply()
+            .tips_with_context(&dag, &scenario.genesis, &context, i32::MAX, None)
             .await
             .expect("fork choice");
 
@@ -545,9 +545,9 @@ async fn certified_fork_choice_is_independent_of_receiver_local_indices() {
         ]);
         let context = certified_consensus_context(&dag, &scenario.genesis, latest)
             .expect("certified consensus context");
-        let estimator = Estimator::apply(i32::MAX, None);
+        let estimator = Estimator::apply();
         let baseline = estimator
-            .tips_with_context(&dag, &scenario.genesis, &context)
+            .tips_with_context(&dag, &scenario.genesis, &context, i32::MAX, None)
             .await
             .expect("baseline fork choice");
 
@@ -567,7 +567,13 @@ async fn certified_fork_choice_is_independent_of_receiver_local_indices() {
         receiver_variant.height_map.insert(10_000, unrelated_height);
 
         let variant = estimator
-            .tips_with_context(&receiver_variant, &scenario.genesis, &context)
+            .tips_with_context(
+                &receiver_variant,
+                &scenario.genesis,
+                &context,
+                i32::MAX,
+                None,
+            )
             .await
             .expect("receiver-variant fork choice");
         assert_eq!(variant, baseline);
@@ -593,8 +599,8 @@ async fn fork_choice_rejects_an_incomplete_frozen_authority_view() {
         .expect("partial context is representable for diagnostics");
         assert!(!context.has_complete_latest_message_slots());
 
-        let error = Estimator::apply(i32::MAX, None)
-            .tips_with_context(&dag, &scenario.genesis, &context)
+        let error = Estimator::apply()
+            .tips_with_context(&dag, &scenario.genesis, &context, i32::MAX, None)
             .await
             .expect_err("incomplete authority view must fail closed");
         assert!(matches!(
@@ -700,7 +706,7 @@ proptest! {
             let dag = block_dag_storage
                 .get_representation()
                 .expect("dag representation");
-            let estimator = Estimator::apply(i32::MAX, None);
+            let estimator = Estimator::apply();
 
             let reference: HashMap<Validator, BlockHash> =
                 scenario.canonical_latest.iter().cloned().collect();
@@ -743,7 +749,7 @@ proptest! {
             let dag = block_dag_storage
                 .get_representation()
                 .expect("dag representation");
-            let estimator = Estimator::apply(i32::MAX, None);
+            let estimator = Estimator::apply();
 
             // Selected sub-relation (default to the full set when the mask is empty).
             let mut selected: Vec<usize> = (0..scenario.canonical_latest.len())

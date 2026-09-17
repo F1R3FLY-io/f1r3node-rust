@@ -14,7 +14,7 @@ use models::rust::bond_generation::BondGeneration;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, FinalizedFloorCommitment, ProcessedDeploy,
 };
-use models::rust::deploy_id::{DeployIdV6, DeployLookupId};
+use models::rust::deploy_id::DeployLookupId;
 use proptest::strategy::{Strategy, ValueTree};
 use proptest::test_runner::TestRunner;
 use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
@@ -263,8 +263,7 @@ async fn v6_late_atomic_admission_failure_has_no_partial_projection_and_exact_re
         .insert(&genesis, InsertMode::ApprovedGenesis)
         .unwrap();
     let deploy = sample_deploy();
-    let deploy_id =
-        DeployLookupId::V6(DeployIdV6::try_from(deploy.envelope_commitment.as_ref()).unwrap());
+    let deploy_id = DeployLookupId::V6(deploy.deploy_id_v6().unwrap());
     let candidate = block(6, 1, vec![genesis.block_hash.to_vec()], vec![deploy]);
     let (authority, outcome) = accepted_admission(&candidate);
 
@@ -329,8 +328,7 @@ async fn concurrent_insert_and_prune_preserve_a_carrier_at_the_cutoff() {
         .insert(&genesis, InsertMode::ApprovedGenesis)
         .unwrap();
     let deploy = sample_deploy();
-    let deploy_id =
-        DeployLookupId::V6(DeployIdV6::try_from(deploy.envelope_commitment.as_ref()).unwrap());
+    let deploy_id = DeployLookupId::V6(deploy.deploy_id_v6().unwrap());
     let candidate = block(6, 100, vec![genesis.block_hash.to_vec()], vec![deploy]);
     let (authority, outcome) = accepted_admission(&candidate);
     let representation = storage.get_representation().unwrap();

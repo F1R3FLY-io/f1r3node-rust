@@ -258,22 +258,21 @@ impl TestFixture {
             KeyValueTypedStoreImpl::<DeployIdV6, Cosigned<DeployData>>::new(Arc::new(
                 MockKeyValueStore::new(),
             ));
-        let deploy_storage = KeyValueDeployStorage {
-            store: deploy_storage_typed_store,
-            envelope_store: envelope_storage_typed_store,
-        };
+        let deploy_storage = KeyValueDeployStorage::from_legacy_stores(
+            deploy_storage_typed_store,
+            envelope_storage_typed_store,
+        );
 
         // Rejected-deploy buffer: mirrors the deploy storage shape with its own backing store.
         let rejected_buffer_store = Arc::new(MockKeyValueStore::new());
         let rejected_buffer_typed_store =
             KeyValueTypedStoreImpl::<DeployLookupId, PendingDeploy>::new(rejected_buffer_store);
-        let rejected_deploy_buffer =
-            Arc::new(std::sync::Mutex::new(KeyValueRejectedDeployBuffer {
-                store: rejected_buffer_typed_store,
-            }));
+        let rejected_deploy_buffer = Arc::new(std::sync::Mutex::new(
+            KeyValueRejectedDeployBuffer::from_legacy_store(rejected_buffer_typed_store),
+        ));
 
         // Scala: implicit val estimator = Estimator[Task](Estimator.UnlimitedParents, None)
-        let estimator = Estimator::apply(Estimator::UNLIMITED_PARENTS, None);
+        let estimator = Estimator::apply();
 
         // Create NoOpsCasperEffect with comprehensive dependencies from genesis context
         // NoOpsCasperEffect will use the same kvm_blockstorage for its internal block store
@@ -396,6 +395,9 @@ impl TestFixture {
             genesis_params.proof_of_stake.quarantine_length,
             genesis_params.proof_of_stake.number_of_active_validators,
             genesis_params.proof_of_stake.fault_tolerance_threshold_ppm,
+            genesis_params.proof_of_stake.max_parent_depth,
+            genesis_params.proof_of_stake.deploy_lifespan,
+            genesis_params.proof_of_stake.min_phlo_price,
             required_sigs,
             genesis_params
                 .proof_of_stake
@@ -410,6 +412,7 @@ impl TestFixture {
             genesis_params.native_token_name.clone(),
             genesis_params.native_token_symbol.clone(),
             genesis_params.native_token_decimals,
+            genesis_params.resource_policy.clone(),
             transport_layer.clone(),
             Arc::new(rp_conf.clone()),
         )

@@ -321,12 +321,7 @@ pub fn new(
     // System deploys carry no window and are absent by construction.
     let deploy_windows: std::collections::HashMap<prost::bytes::Bytes, i64> = usr_processed_deploys
         .iter()
-        .map(|d| {
-            (
-                d.deploy_id().clone(),
-                d.deploy.data.valid_after_block_number,
-            )
-        })
+        .map(|d| (d.deploy_id().clone(), d.body().valid_after_block_number))
         .collect();
 
     // Convert deploy chains to DeployChainIndex
@@ -404,8 +399,8 @@ mod tests {
         ];
         let projected = effect_bearing_user_deploys(&deploys);
         assert_eq!(projected.len(), 2);
-        assert_eq!(projected[0].deploy.data.term, "@0!(0)");
-        assert_eq!(projected[1].deploy.data.term, "@2!(2)");
+        assert_eq!(projected[0].body().term, "@0!(0)");
+        assert_eq!(projected[1].body().term, "@2!(2)");
     }
 
     proptest! {

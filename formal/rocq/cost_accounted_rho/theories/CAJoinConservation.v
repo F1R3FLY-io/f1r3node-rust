@@ -146,3 +146,143 @@ Corollary join_authority_conserved_operational : forall s1 ts,
   Permutation (sig_atoms (join_token_key s1 ts))
               (sig_atoms s1 ++ concat (map sig_atoms ts)).
 Proof. intros s1 ts. exact (join_token_key_atoms ts s1). Qed.
+
+Fixpoint payable_sig_atoms (s : sig) : list sig :=
+  match s with
+  | SUnit => []
+  | SAnd s1 s2 => payable_sig_atoms s1 ++ payable_sig_atoms s2
+  | _ => [s]
+  end.
+
+Definition nonunit_atom (s : sig) : bool :=
+  match s with SUnit => false | _ => true end.
+
+Theorem payable_atoms_filter_syntactic_units : forall s,
+  payable_sig_atoms s = filter nonunit_atom (sig_atoms s).
+Proof.
+  induction s; simpl; try reflexivity.
+  now rewrite filter_app, IHs1, IHs2.
+Qed.
+
+Theorem payable_unit_is_neutral : forall s,
+  payable_sig_atoms (SAnd SUnit s) = payable_sig_atoms s /\
+  payable_sig_atoms (SAnd s SUnit) = payable_sig_atoms s.
+Proof.
+  intro s. simpl. rewrite app_nil_r. auto.
+Qed.
+
+Theorem payable_join_token_key_atoms : forall ts receiver,
+  payable_sig_atoms (join_token_key receiver ts) =
+    payable_sig_atoms receiver ++ concat (map payable_sig_atoms ts).
+Proof.
+  induction ts as [| sender rest IH]; intro receiver.
+  - unfold join_token_key. simpl. now rewrite app_nil_r.
+  - change (payable_sig_atoms (join_token_key (SAnd receiver sender) rest) =
+      payable_sig_atoms receiver ++ concat (map payable_sig_atoms (sender :: rest))).
+    rewrite IH. simpl. now rewrite app_assoc.
+Qed.
+
+Definition join_clause_key (clause : sig * sig) : sig :=
+  SAnd (fst clause) (snd clause).
+
+Definition complete_join_key (clauses : list (sig * sig)) : sig :=
+  join_token_key SUnit (map join_clause_key clauses).
+
+Definition complete_join_demand (clauses : list (sig * sig)) : list sig :=
+  concat (map (fun clause =>
+    payable_sig_atoms (fst clause) ++ payable_sig_atoms (snd clause)) clauses).
+
+Theorem complete_join_preserves_each_clause : forall clauses,
+  payable_sig_atoms (complete_join_key clauses) = complete_join_demand clauses.
+Proof.
+  intro clauses. unfold complete_join_key, complete_join_demand.
+  rewrite payable_join_token_key_atoms. simpl. rewrite map_map. reflexivity.
+Qed.
+
+Theorem complete_join_preserves_receiver_sender_multisets : forall clauses,
+  Permutation (complete_join_demand clauses)
+    (concat (map (fun clause => payable_sig_atoms (fst clause)) clauses) ++
+     concat (map (fun clause => payable_sig_atoms (snd clause)) clauses)).
+Proof.
+  induction clauses as [| [receiver sender] rest IH].
+  - apply Permutation_refl.
+  - unfold complete_join_demand in *. simpl in *.
+    eapply Permutation_trans.
+    + apply Permutation_app_head. exact IH.
+    + rewrite <- !app_assoc. apply Permutation_app_head.
+      rewrite !app_assoc. apply Permutation_app_tail.
+      apply Permutation_app_comm.
+Qed.
+
+Theorem complete_join_regrouping_preserves_payable_authority :
+  forall clauses reordered,
+    Permutation clauses reordered ->
+    Permutation (payable_sig_atoms (complete_join_key clauses))
+      (payable_sig_atoms (complete_join_key reordered)).
+Proof.
+  intros clauses reordered Hperm.
+  rewrite !complete_join_preserves_each_clause.
+  unfold complete_join_demand. now apply Permutation_concat_map.
+Qed.
+
+Theorem complete_join_no_payable_weakening :
+  forall clauses receiver sender,
+    0 < length (payable_sig_atoms receiver) + length (payable_sig_atoms sender) ->
+    length (payable_sig_atoms (complete_join_key clauses)) <
+      length (payable_sig_atoms (complete_join_key ((receiver, sender) :: clauses))).
+Proof.
+  intros clauses receiver sender Hpositive.
+  rewrite !complete_join_preserves_each_clause.
+  unfold complete_join_demand. simpl. rewrite !length_app. lia.
+Qed.
+
+Theorem all_unit_join_has_no_payable_authority : forall arity,
+  payable_sig_atoms (complete_join_key (repeat (SUnit, SUnit) arity)) = [].
+Proof.
+  intro arity. rewrite complete_join_preserves_each_clause.
+  induction arity; simpl; auto.
+Qed.
+
+Theorem repeated_join_clauses_retain_multiplicity : forall receiver sender count,
+  length (payable_sig_atoms (complete_join_key (repeat (receiver, sender) count))) =
+    count * (length (payable_sig_atoms receiver) + length (payable_sig_atoms sender)).
+Proof.
+  intros receiver sender count. rewrite complete_join_preserves_each_clause.
+  induction count; simpl; [reflexivity |].
+  unfold complete_join_demand in *. simpl in *. rewrite !length_app. lia.
+Qed.
+
+Lemma payable_grouped_keys : forall groups,
+  concat (map (fun group => payable_sig_atoms (join_token_key SUnit group)) groups) =
+    concat (map payable_sig_atoms (concat groups)).
+Proof.
+  induction groups as [| group rest IH]; [reflexivity |].
+  simpl. rewrite payable_join_token_key_atoms. simpl.
+  now rewrite IH, map_app, concat_app.
+Qed.
+
+Theorem token_partition_preserves_payable_authority : forall groups required,
+  Permutation (concat groups) required ->
+  Permutation
+    (concat (map (fun group => payable_sig_atoms (join_token_key SUnit group)) groups))
+    (concat (map payable_sig_atoms required)).
+Proof.
+  intros groups required Hpartition.
+  rewrite payable_grouped_keys. now apply Permutation_concat_map.
+Qed.
+
+Theorem signed_block_partitions_preserve_payable_authority :
+  forall receiver_groups sender_groups receivers senders,
+    Permutation (concat receiver_groups) receivers ->
+    Permutation (concat sender_groups) senders ->
+    Permutation
+      (payable_sig_atoms (join_token_key SUnit
+        (map (join_token_key SUnit) receiver_groups ++
+         map (join_token_key SUnit) sender_groups)))
+      (concat (map payable_sig_atoms receivers) ++ concat (map payable_sig_atoms senders)).
+Proof.
+  intros receiver_groups sender_groups receivers senders Hreceiver Hsender.
+  rewrite payable_join_token_key_atoms. simpl.
+  rewrite map_app, concat_app, !map_map.
+  apply Permutation_app; now apply token_partition_preserves_payable_authority.
+Qed.

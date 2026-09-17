@@ -28,6 +28,13 @@ new
   failReservation,
   validateSettlement,
   settleReserved,
+  applyCostAmounts,
+  validateFeeAbsence,
+  ensureCostCursor,
+  applyCostWithCursor,
+  applyCostWithTwoCursors,
+  costContributions,
+  validateContributionCursor,
   splitAndDeposit,
   prepareTransferBatch,
   depositTransferBatch,
@@ -42,11 +49,12 @@ in {
        @(_, Either)   <- EitherCh &
        TreeHashMap    <- TreeHashMapCh) {
     // Each invocation of the SystemVault contract uses a different mint.
-    new mintCh, vaultMapStore, initVault in {
+    new mintCh, vaultMapStore, initVault, costCursorMapStore, costCursorNamespace in {
       // Initializes the vaultMapStore.
       TreeHashMap!("init", 2, *vaultMapStore) |
+      TreeHashMap!("init", 2, *costCursorMapStore) |
       protocolStakeDispositionStore!({}) |
-      for (@vaultMap <- vaultMapStore) {
+      for (@vaultMap <- vaultMapStore & @costCursorMap <- costCursorMapStore) {
         // Called from VaultsGenerator:
         //   SystemVault!("init", *ret)
         new initContinue in {
@@ -120,50 +128,270 @@ in {
               }
             }
           } |
-          contract SystemVault(@"applyCost", @reservationId, @allocations, @charges, @feeAddress, @sysAuthToken, retCh) = {
+          contract SystemVault(@"costCursor", @scope, retCh) = {
+            new existsCh in {
+              TreeHashMap!("get", costCursorMap, scope, *existsCh) |
+              for (@exists <- existsCh) {
+                if (exists == Nil) {
+                  retCh!([false, 0, 0])
+                } else {
+                  for (@revision <<- @(scope, "revision", *costCursorNamespace) &
+                       @position <<- @(scope, "position", *costCursorNamespace)) {
+                    retCh!([true, revision, position])
+                  }
+                }
+              }
+            }
+          } |
+          contract ensureCostCursor(@scope, retCh) = {
+            new existsCh in {
+              TreeHashMap!("get", costCursorMap, scope, *existsCh) |
+              for (@exists <- existsCh) {
+                if (exists == Nil) {
+                  new initialize in {
+                    contract initialize(@current, reply) = {
+                      if (current == Nil) {
+                        @(scope, "revision", *costCursorNamespace)!(0) |
+                        @(scope, "position", *costCursorNamespace)!(0) |
+                        reply!(true)
+                      } else {
+                        reply!(current)
+                      }
+                    } |
+                    TreeHashMap!("updateOrInsert", costCursorMap, scope, *initialize, *retCh)
+                  }
+                } else {
+                  retCh!(Nil)
+                }
+              }
+            }
+          } |
+          contract applyCostWithCursor(@scope, @expectedRevision, @expectedPosition,
+                                       @nextRevision, @nextPosition,
+                                       @allocations, @charges, @feeAddress, retCh) = {
+            new readyCh in {
+              ensureCostCursor!(scope, *readyCh) |
+              for (_ <- readyCh) {
+                for (@revision <- @(scope, "revision", *costCursorNamespace) &
+                     @position <- @(scope, "position", *costCursorNamespace)) {
+                  if (revision == expectedRevision and position == expectedPosition) {
+                    new completedCh in {
+                      applyCostAmounts!(allocations, charges, feeAddress, *completedCh) |
+                      for (@result <- completedCh) {
+                        match result {
+                          (true, _) => {
+                            @(scope, "revision", *costCursorNamespace)!(nextRevision) |
+                            @(scope, "position", *costCursorNamespace)!(nextPosition) |
+                            retCh!(result)
+                          }
+                          _ => {
+                            @(scope, "revision", *costCursorNamespace)!(revision) |
+                            @(scope, "position", *costCursorNamespace)!(position) |
+                            retCh!(result)
+                          }
+                        }
+                      }
+                    }
+                  } else {
+                    @(scope, "revision", *costCursorNamespace)!(revision) |
+                    @(scope, "position", *costCursorNamespace)!(position) |
+                    retCh!((false, "Stale monetary cursor transition"))
+                  }
+                }
+              }
+            }
+          } |
+          contract validateFeeAbsence(@charges, retCh) = {
+            match charges {
+              [] => { retCh!(true) }
+              [(_, _, _, fee), ...tail] => {
+                if (fee == 0) { validateFeeAbsence!(tail, *retCh) }
+                else { retCh!(false) }
+              }
+              _ => { retCh!(false) }
+            }
+          } |
+          contract SystemVault(@"applyCost", @reservationId, @allocations, @charges, @feeAddress, @feeCursor, @sysAuthToken, retCh) = {
             new sysAuthTokenOps(`sys:authToken:ops`), isValidTokenCh in {
               sysAuthTokenOps!("check", sysAuthToken, *isValidTokenCh) |
               for (@isValid <- isValidTokenCh) {
                 if (isValid) {
-                  new reserveCh in {
-                    reserveAll!(allocations, [], *reserveCh) |
-                    for (@reserveResult <- reserveCh) {
-                      match reserveResult {
-                        (true, reserved) => {
-                          new validationCh in {
-                            validateSettlement!(reserved, charges, *validationCh) |
-                            for (@validationResult <- validationCh) {
-                              match validationResult {
-                                (false, error) => {
-                                  failReservation!(reserved, error, *retCh)
+                  match feeCursor {
+                    Nil => {
+                      new noFeeCh in {
+                        validateFeeAbsence!(charges, *noFeeCh) |
+                        for (@noFee <- noFeeCh) {
+                          if (noFee) { applyCostAmounts!(allocations, charges, feeAddress, *retCh) }
+                          else { retCh!((false, "Monetary fee requires a cursor transition")) }
+                        }
+                      }
+                    }
+                    (scope, count, expectedRevision, expectedPosition, nextRevision, nextPosition) => {
+                      if (count > 0 and expectedRevision >= 0 and expectedRevision < 9223372036854775807 and
+                          expectedPosition >= 0 and expectedPosition < count and nextPosition >= 0 and nextPosition < count) {
+                        if (nextRevision == expectedRevision + 1) {
+                          applyCostWithCursor!(scope, expectedRevision, expectedPosition, nextRevision, nextPosition,
+                                               allocations, charges, feeAddress, *retCh)
+                        } else {
+                          retCh!((false, "Invalid monetary cursor successor"))
+                        }
+                      } else {
+                        retCh!((false, "Invalid monetary cursor bounds"))
+                      }
+                    }
+                    _ => {
+                      retCh!((false, "Invalid monetary cursor transition"))
+                    }
+                  }
+                } else {
+                  retCh!((false, "Unauthorized cost application"))
+                }
+              }
+            }
+          } |
+          contract costContributions(@charges, @resource, @fee, retCh) = {
+            match charges {
+              [] => { retCh!((true, resource, fee)) }
+              [(_, _, burn, chargedFee), ...tail] => {
+                if (burn >= 0 and chargedFee >= 0) {
+                  costContributions!(tail, resource or burn > 0, fee or chargedFee > 0, *retCh)
+                } else { retCh!((false, false, false)) }
+              }
+              _ => { retCh!((false, false, false)) }
+            }
+          } |
+          contract validateContributionCursor(@cursor, @positive, retCh) = {
+            match cursor {
+              Nil => { retCh!(not positive) }
+              (_, count, expectedRevision, expectedPosition, nextRevision, nextPosition) => {
+                if (positive and count > 0 and expectedRevision >= 0 and expectedRevision < 9223372036854775807 and
+                    expectedPosition >= 0 and expectedPosition < count and nextPosition >= 0 and nextPosition < count) {
+                  retCh!(nextRevision == expectedRevision + 1)
+                } else { retCh!(false) }
+              }
+              _ => { retCh!(false) }
+            }
+          } |
+          contract applyCostWithTwoCursors(@resourceCursor, @feeCursor, @allocations, @charges, @feeAddress, retCh) = {
+            match (resourceCursor, feeCursor) {
+              ((resourceScope, _, resourceExpectedRevision, resourceExpectedPosition, resourceNextRevision, resourceNextPosition),
+               (feeScope, _, feeExpectedRevision, feeExpectedPosition, feeNextRevision, feeNextPosition)) => {
+                new resourceReady, feeReady in {
+                  ensureCostCursor!(resourceScope, *resourceReady) |
+                  ensureCostCursor!(feeScope, *feeReady) |
+                  for (_ <- resourceReady & _ <- feeReady) {
+                    for (@resourceRevision <- @(resourceScope, "revision", *costCursorNamespace) &
+                         @resourcePosition <- @(resourceScope, "position", *costCursorNamespace) &
+                         @feeRevision <- @(feeScope, "revision", *costCursorNamespace) &
+                         @feePosition <- @(feeScope, "position", *costCursorNamespace)) {
+                      new publish in {
+                        for (@rr, @rp, @fr, @fp, @result <- publish) {
+                          @(resourceScope, "revision", *costCursorNamespace)!(rr) |
+                          @(resourceScope, "position", *costCursorNamespace)!(rp) |
+                          @(feeScope, "revision", *costCursorNamespace)!(fr) |
+                          @(feeScope, "position", *costCursorNamespace)!(fp) |
+                          retCh!(result)
+                        } |
+                        if (resourceRevision == resourceExpectedRevision and resourcePosition == resourceExpectedPosition and
+                            feeRevision == feeExpectedRevision and feePosition == feeExpectedPosition) {
+                          new completedCh in {
+                            applyCostAmounts!(allocations, charges, feeAddress, *completedCh) |
+                            for (@result <- completedCh) {
+                              match result {
+                                (true, _) => {
+                                  publish!(resourceNextRevision, resourceNextPosition, feeNextRevision, feeNextPosition, result)
                                 }
-                                _ => {
-                                  new feeVaultCh in {
-                                    SystemVault!("findOrCreate", feeAddress, *feeVaultCh) |
-                                    for (@feeVaultResult <- feeVaultCh) {
-                                      match feeVaultResult {
-                                        (false, error) => {
-                                          failReservation!(reserved, error, *retCh)
-                                        }
-                                        _ => {
-                                          settleReserved!(reserved, charges, feeAddress, *retCh)
-                                        }
-                                      }
-                                    }
+                                _ => { publish!(resourceRevision, resourcePosition, feeRevision, feePosition, result) }
+                              }
+                            }
+                          }
+                        } else {
+                          publish!(resourceRevision, resourcePosition, feeRevision, feePosition,
+                                   (false, "Stale funding cursor transition"))
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+              _ => { retCh!((false, "Invalid funding cursor pair")) }
+            }
+          } |
+          contract SystemVault(@"applyPhloCost", @reservationId, @allocations, @charges, @feeAddress,
+                               @resourceCursor, @feeCursor, @sysAuthToken, retCh) = {
+            new sysAuthTokenOps(`sys:authToken:ops`), isValidTokenCh in {
+              sysAuthTokenOps!("check", sysAuthToken, *isValidTokenCh) |
+              for (@isValid <- isValidTokenCh) {
+                if (isValid) {
+                  new contributionsCh in {
+                    costContributions!(charges, false, false, *contributionsCh) |
+                    for (@(valid, resource, fee) <- contributionsCh) {
+                      if (valid) {
+                        new resourceValidCh, feeValidCh in {
+                          validateContributionCursor!(resourceCursor, resource, *resourceValidCh) |
+                          validateContributionCursor!(feeCursor, fee, *feeValidCh) |
+                          for (@resourceValid <- resourceValidCh & @feeValid <- feeValidCh) {
+                            if (resourceValid and feeValid) {
+                              match (resourceCursor, feeCursor) {
+                                (Nil, Nil) => { applyCostAmounts!(allocations, charges, feeAddress, *retCh) }
+                                ((scope, _, er, ep, nr, np), Nil) => {
+                                  applyCostWithCursor!(scope, er, ep, nr, np, allocations, charges, feeAddress, *retCh)
+                                }
+                                (Nil, (scope, _, er, ep, nr, np)) => {
+                                  applyCostWithCursor!(scope, er, ep, nr, np, allocations, charges, feeAddress, *retCh)
+                                }
+                                ((resourceScope, resourceCount, _, _, _, _), (feeScope, feeCount, _, _, _, _)) => {
+                                  if (resourceScope != feeScope and resourceCount == feeCount) {
+                                    applyCostWithTwoCursors!(resourceCursor, feeCursor, allocations, charges, feeAddress, *retCh)
+                                  } else { retCh!((false, "Funding cursor roles must have distinct scopes and equal cohorts")) }
+                                }
+                                _ => { retCh!((false, "Invalid funding cursor pair")) }
+                              }
+                            } else { retCh!((false, "Funding cursor does not match its contribution")) }
+                          }
+                        }
+                      } else { retCh!((false, "Invalid funding contributions")) }
+                    }
+                  }
+                } else { retCh!((false, "Unauthorized cost application")) }
+              }
+            }
+          } |
+          contract applyCostAmounts(@allocations, @charges, @feeAddress, retCh) = {
+            new reserveCh in {
+              reserveAll!(allocations, [], *reserveCh) |
+              for (@reserveResult <- reserveCh) {
+                match reserveResult {
+                  (true, reserved) => {
+                    new validationCh in {
+                      validateSettlement!(reserved, charges, *validationCh) |
+                      for (@validationResult <- validationCh) {
+                        match validationResult {
+                          (false, error) => {
+                            failReservation!(reserved, error, *retCh)
+                          }
+                          _ => {
+                            new feeVaultCh in {
+                              SystemVault!("findOrCreate", feeAddress, *feeVaultCh) |
+                              for (@feeVaultResult <- feeVaultCh) {
+                                match feeVaultResult {
+                                  (false, error) => {
+                                    failReservation!(reserved, error, *retCh)
+                                  }
+                                  _ => {
+                                    settleReserved!(reserved, charges, feeAddress, *retCh)
                                   }
                                 }
                               }
                             }
                           }
                         }
-                        (false, error) => {
-                          retCh!((false, error))
-                        }
                       }
                     }
                   }
-                } else {
-                  retCh!((false, "Unauthorized cost application"))
+                  (false, error) => {
+                    retCh!((false, error))
+                  }
                 }
               }
             }

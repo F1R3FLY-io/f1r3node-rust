@@ -1,8 +1,12 @@
 # D3 — Replace Phlo with Tokens (approved design)
 
-**Status:** Historical D3 design, implemented and refined by DR-31, DR-32, and
-DR-47. The removal of singular-phlo escrow/price and the one-unit calculus COMM
-projection remain binding. Protocol 4 additionally charges canonical RSpace
+**Status:** Historical D3 design, refined by DR-31, DR-32, DR-47, and the [signed phlo contract](signed-phlo-contract-proposal.md).
+The removal of persistent deploy escrow and the one-unit calculus COMM projection remain binding.
+The signed phlo contract supersedes D.1's scalar-field removal and D.5's minimum-price removal.
+The [offered envelope](signed-phlo-deploy-envelope.md#offered-price-payload) restores price and limit without restoring per-signer shares or replacing resource proofs.
+Its dedicated decoder does not activate native execution.
+
+Protocol 4 additionally charges canonical RSpace
 introduction, payload-transfer, and trace bytes from the same fixed RevVault
 reservation. Statements below that call unmatched I/O “zero cost” refer only to
 the calculus execution projection, not the protocol-4 total. OD-1's unbounded

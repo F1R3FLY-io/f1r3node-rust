@@ -416,6 +416,38 @@ impl DebruijnInterpreter {
         self.eval(par, &Env::new(), rand).await
     }
 
+    pub(crate) async fn inj_with_observation(
+        &self,
+        par: Par,
+        rand: Blake2b512Random,
+        host_work: Option<HostWorkBudget>,
+    ) -> (
+        Result<(), InterpreterError>,
+        super::accounting::economic_failure::EvaluationFailureSummary,
+    ) {
+        let env = Env::new();
+        StackGrowingFuture {
+            inner: deterministic_reduction::root_with_observation(
+                self.space.clone(),
+                self.metering.budget(),
+                self.reduction_coordinator.clone(),
+                host_work,
+                async {
+                    let result = self
+                        .eval_inner(par, &env, rand, CostAuthority::default())
+                        .await;
+                    if let Err(error) = &result {
+                        deterministic_reduction::record_evaluator_failures(std::slice::from_ref(
+                            error,
+                        ));
+                    }
+                    result
+                },
+            ),
+        }
+        .await
+    }
+
     pub async fn inj_with_host_work(
         &self,
         par: Par,
@@ -1045,6 +1077,7 @@ impl DebruijnInterpreter {
         &self,
         errors: Vec<InterpreterError>,
     ) -> Result<DispatchType, InterpreterError> {
+        deterministic_reduction::record_evaluator_failures(&errors);
         match errors.as_slice() {
             // No errors
             [] => Ok(DispatchType::Skip),
@@ -7878,3 +7911,11 @@ fn describe_par_type(par: &Par) -> String {
         "non-boolean process".to_string()
     }
 }
+
+#[cfg(test)]
+#[path = "reduce_economic_failure_tests.rs"]
+mod economic_failure_tests;
+
+#[cfg(test)]
+#[path = "reduce_byte_receipts_tests.rs"]
+mod byte_receipts_tests;

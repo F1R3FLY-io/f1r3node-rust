@@ -40,6 +40,7 @@ use comm::rust::test_instances::{LogStub, LogicalTime};
 use crypto::rust::hash::blake2b256::Blake2b256;
 use models::rust::casper::protocol::casper_message::{BlockMessage, Bond, Event};
 use models::rust::string_ops::StringOps;
+use proptest::prelude::*;
 use prost::bytes::Bytes;
 use prost::Message;
 use rholang::rust::interpreter::accounting::Sig;
@@ -275,6 +276,7 @@ async fn from_input_files(
         .collect();
 
     let genesis = Genesis {
+        resource_policy: None,
         shard_id: params.shard_id,
         timestamp,
         proof_of_stake: ProofOfStake {
@@ -284,6 +286,9 @@ async fn from_input_files(
             quarantine_length: params.quarantine_length,
             number_of_active_validators: params.number_of_active_validators,
             fault_tolerance_threshold_ppm: 0,
+            max_parent_depth: 15,
+            deploy_lifespan: 50,
+            min_phlo_price: 0,
             validators,
             pos_multi_sig_public_keys: DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS.to_vec(),
             pos_multi_sig_quorum: DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS.len() as u32 - 1,
@@ -321,13 +326,13 @@ async fn genesis_system_vault_funding_is_committed_and_replay_deterministic() {
             .unwrap();
         let mut authority_regions = 0;
         for processed in &genesis_block.body.deploys {
-            assert_eq!(processed.envelope_commitment.len(), 32);
-            assert_eq!(processed.cosigner_threshold, 1);
+            assert_eq!(processed.deploy_id_v6().unwrap().as_ref().len(), 32);
+            assert_eq!(processed.threshold(), 1);
             let envelope = processed.to_cosigned().unwrap();
             assert!(envelope.is_envelope_bound());
             assert_eq!(
                 envelope.envelope_commitment().unwrap(),
-                processed.envelope_commitment
+                *processed.deploy_id()
             );
             let witness = processed
                 .authority_cost_witness
@@ -425,9 +430,10 @@ async fn v6_genesis_envelope_identity_is_deterministic_across_builders() {
         .zip(&second.body.deploys)
         .enumerate()
     {
-        assert_eq!(first_deploy.envelope_commitment.len(), 32);
+        assert_eq!(first_deploy.deploy_id_v6().unwrap().as_ref().len(), 32);
         assert_eq!(
-            first_deploy.envelope_commitment, second_deploy.envelope_commitment,
+            first_deploy.deploy_id(),
+            second_deploy.deploy_id(),
             "blessed deploy {index} envelope identity"
         );
         assert_eq!(
@@ -461,6 +467,54 @@ async fn v6_genesis_envelope_identity_is_deterministic_across_builders() {
         first.body.state.post_state_hash,
         second.body.state.post_state_hash
     );
+}
+
+#[test]
+fn genesis_rejects_consensus_parameters_outside_chain_reader_ranges() {
+    let (_, _, baseline) = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(3));
+    for (depth, lifespan, price) in [
+        (0, 50, 1),
+        (-1, 50, 1),
+        (15, 0, 1),
+        (15, -1, 1),
+        (15, i64::from(i32::MAX) + 1, 1),
+        (15, 50, -1),
+    ] {
+        let mut pos = baseline.proof_of_stake.clone();
+        pos.max_parent_depth = depth;
+        pos.deploy_lifespan = lifespan;
+        pos.min_phlo_price = price;
+        assert!(
+            Genesis::validate_cost_accounting_parameters(&pos, &baseline.client_fuel_allocations)
+                .is_err(),
+            "genesis accepted parameters that chain adoption rejects: {depth}/{lifespan}/{price}"
+        );
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(512))]
+
+    #[test]
+    fn genesis_consensus_parameters_match_formal_ranges(
+        depth in prop_oneof![any::<i32>(), 1i32..=i32::MAX],
+        lifespan in prop_oneof![any::<i64>(), 1i64..=i64::from(i32::MAX)],
+        price in any::<i64>(),
+    ) {
+        let (_, _, mut genesis) = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(3));
+        genesis.proof_of_stake.max_parent_depth = depth;
+        genesis.proof_of_stake.deploy_lifespan = lifespan;
+        genesis.proof_of_stake.min_phlo_price = price;
+        let expected = depth >= 1
+            && lifespan >= 1 && lifespan <= i64::from(i32::MAX)
+            && price >= 0;
+        prop_assert_eq!(
+            Genesis::validate_cost_accounting_parameters(
+                &genesis.proof_of_stake, &genesis.client_fuel_allocations,
+            ).is_ok(),
+            expected,
+        );
+    }
 }
 
 #[test]

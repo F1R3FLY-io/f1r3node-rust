@@ -51,6 +51,7 @@
 From Stdlib Require Import ZArith.
 From Stdlib Require Import Lia.
 From Stdlib Require Import Psatz.
+From Stdlib Require Import List Bool.
 
 From FinalizedFloor Require Import FtExact.
 
@@ -90,3 +91,98 @@ Lemma ppm_range_decision_no_overflow :
 Proof. exact ft_exact_no_overflow. Qed.
 
 Close Scope Z_scope.
+
+Import ListNotations.
+
+Record chain_parameters := {
+  chain_parent_depth : Z;
+  chain_deploy_lifespan : Z;
+  chain_minimum_price : Z
+}.
+
+Definition valid_chain_parameters (p : chain_parameters) : bool :=
+  (1 <=? chain_parent_depth p)%Z && (chain_parent_depth p <=? 2147483647)%Z &&
+  (1 <=? chain_deploy_lifespan p)%Z && (chain_deploy_lifespan p <=? 2147483647)%Z &&
+  (0 <=? chain_minimum_price p)%Z && (chain_minimum_price p <=? 9223372036854775807)%Z.
+
+Definition adopt_chain_parameters (_local : chain_parameters)
+  (authenticated : option (list Z)) : option chain_parameters :=
+  match authenticated with
+  | Some [depth; lifespan; minimum] =>
+      let p := {| chain_parent_depth := depth; chain_deploy_lifespan := lifespan;
+                  chain_minimum_price := minimum |} in
+      if valid_chain_parameters p then Some p else None
+  | _ => None
+  end.
+
+Theorem chain_parameter_ranges_exact : forall p,
+  valid_chain_parameters p = true <->
+  (1 <= chain_parent_depth p <= 2147483647)%Z /\
+  (1 <= chain_deploy_lifespan p <= 2147483647)%Z /\
+  (0 <= chain_minimum_price p <= 9223372036854775807)%Z.
+Proof. intros. unfold valid_chain_parameters. rewrite !andb_true_iff, !Z.leb_le. tauto. Qed.
+
+Theorem chain_adoption_ignores_local_configuration : forall a b authenticated,
+  adopt_chain_parameters a authenticated = adopt_chain_parameters b authenticated.
+Proof. reflexivity. Qed.
+
+Theorem missing_chain_parameters_reject : forall local,
+  adopt_chain_parameters local None = None.
+Proof. reflexivity. Qed.
+
+Theorem invalid_chain_parameters_reject : forall local p,
+  valid_chain_parameters p = false ->
+  adopt_chain_parameters local
+    (Some [chain_parent_depth p; chain_deploy_lifespan p; chain_minimum_price p]) = None.
+Proof. intros local [depth lifespan minimum] invalid. cbn in *. rewrite invalid. reflexivity. Qed.
+
+Theorem valid_chain_parameters_override_local : forall local p,
+  valid_chain_parameters p = true ->
+  adopt_chain_parameters local
+    (Some [chain_parent_depth p; chain_deploy_lifespan p; chain_minimum_price p]) = Some p.
+Proof. intros local [depth lifespan minimum] valid. cbn in *. rewrite valid. reflexivity. Qed.
+
+Theorem accepted_chain_parameters_are_valid : forall local authenticated p,
+  adopt_chain_parameters local authenticated = Some p -> valid_chain_parameters p = true.
+Proof.
+  intros local [values|] p accepted; [|discriminate].
+  destruct values as [|depth [|lifespan [|minimum [|extra rest]]]]; try discriminate.
+  cbn [adopt_chain_parameters] in accepted.
+  destruct (valid_chain_parameters _) eqn:valid; inversion accepted; subst; assumption.
+Qed.
+
+Theorem adopted_consumer_decisions_agree : forall (Input Output : Type)
+  (consumer : chain_parameters -> Input -> Output) local other authenticated p q input,
+  adopt_chain_parameters local authenticated = Some p ->
+  adopt_chain_parameters other authenticated = Some q ->
+  consumer p input = consumer q input.
+Proof.
+  intros Input Output consumer local other authenticated p q input first second.
+  rewrite (chain_adoption_ignores_local_configuration local other authenticated) in first.
+  rewrite first in second. inversion second. reflexivity.
+Qed.
+
+Example local_minimum_can_disagree : (2 <=? 3)%Z = true /\ (4 <=? 3)%Z = false.
+Proof. split; reflexivity. Qed.
+
+Example oversized_lifespan_is_rejected : forall local,
+  adopt_chain_parameters local (Some [10%Z; 2147483648%Z; 0%Z]) = None.
+Proof. reflexivity. Qed.
+
+Theorem malformed_chain_tuple_rejects : forall local values,
+  length values <> 3 -> adopt_chain_parameters local (Some values) = None.
+Proof.
+  intros local [|a [|b [|c [|d rest]]]] malformed; try reflexivity.
+  exfalso. apply malformed. reflexivity.
+Qed.
+
+Print Assumptions chain_parameter_ranges_exact.
+Print Assumptions chain_adoption_ignores_local_configuration.
+Print Assumptions missing_chain_parameters_reject.
+Print Assumptions invalid_chain_parameters_reject.
+Print Assumptions valid_chain_parameters_override_local.
+Print Assumptions accepted_chain_parameters_are_valid.
+Print Assumptions adopted_consumer_decisions_agree.
+Print Assumptions local_minimum_can_disagree.
+Print Assumptions oversized_lifespan_is_rejected.
+Print Assumptions malformed_chain_tuple_rejects.

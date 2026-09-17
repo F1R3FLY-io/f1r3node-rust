@@ -113,6 +113,121 @@ Proof.
   - intros [g Hg]. exact (graded_step_sound S g S' Hg).
 Qed.
 
+Theorem sealed_terms_have_no_internal_graded_step : forall body authority grade target,
+  ~ graded_step (STSigned body authority) grade target.
+Proof.
+  intros body authority grade target Hstep. inversion Hstep.
+Qed.
+
+Theorem isolated_token_stacks_have_no_graded_step : forall tokens grade target,
+  ~ graded_step (STStack tokens) grade target.
+Proof.
+  intros tokens grade target Hstep. inversion Hstep.
+Qed.
+
+Theorem lollipop_outer_step_preserves_continuation_seal :
+  forall channel body payload outer inner remaining,
+    graded_step
+      (STPar
+        (STSigned (CPPar (CPInput channel (STSigned body inner))
+          (CPOutput channel payload)) outer)
+        (STStack (TGate outer remaining)))
+      outer
+      (STPar (STSigned (subst_caproc body 0 (CQuote payload)) inner)
+        (STStack remaining)).
+Proof.
+  intros. apply g_rule1.
+Qed.
+
+Theorem split_lollipop_step_preserves_continuation_seal :
+  forall channel body payload outer inner sender remaining,
+    graded_step
+      (STPar
+        (STPar (STSigned (CPInput channel (STSigned body inner)) outer)
+          (STSigned (CPOutput channel payload) sender))
+        (STStack (TGate (SAnd outer sender) remaining)))
+      (SAnd outer sender)
+      (STPar (STSigned (subst_caproc body 0 (CQuote payload)) inner)
+        (STStack remaining)).
+Proof.
+  intros. apply g_rule4.
+Qed.
+
+Theorem split_tokens_preserve_continuation_seal :
+  forall channel body payload outer inner sender outer_tail sender_tail,
+    graded_step
+      (STPar
+        (STPar
+          (STPar (STSigned (CPInput channel (STSigned body inner)) outer)
+            (STSigned (CPOutput channel payload) sender))
+          (STStack (TGate outer outer_tail)))
+        (STStack (TGate sender sender_tail)))
+      (SAnd outer sender)
+      (STPar
+        (STPar (STSigned (subst_caproc body 0 (CQuote payload)) inner)
+          (STStack outer_tail))
+        (STStack sender_tail)).
+Proof.
+  intros. apply g_rule5.
+Qed.
+
+Theorem whole_redex_step_has_exact_grade_and_residual :
+  forall channel continuation payload outer remaining grade target,
+    graded_step
+      (STPar (STSigned (CPPar (CPInput channel continuation)
+        (CPOutput channel payload)) outer) (STStack (TGate outer remaining)))
+      grade target ->
+    grade = outer /\
+    target = STPar (subst_st continuation 0 (CQuote payload)) (STStack remaining).
+Proof.
+  intros channel continuation payload outer remaining grade target Hstep.
+  inversion Hstep; subst; try (split; reflexivity).
+  - exfalso. eapply sealed_terms_have_no_internal_graded_step. eassumption.
+  - exfalso. eapply isolated_token_stacks_have_no_graded_step. eassumption.
+Qed.
+
+Theorem waiting_lollipop_cannot_force_its_continuation :
+  forall channel body outer inner tokens grade target,
+    ~ graded_step
+      (STPar (STSigned (CPInput channel (STSigned body inner)) outer) (STStack tokens))
+      grade target.
+Proof.
+  intros channel body outer inner tokens grade target Hstep.
+  inversion Hstep; subst.
+  - eapply sealed_terms_have_no_internal_graded_step. eassumption.
+  - eapply isolated_token_stacks_have_no_graded_step. eassumption.
+Qed.
+
+Theorem independent_graded_steps_have_both_orders :
+  forall first first_grade first_result second second_grade second_result,
+    graded_step first first_grade first_result ->
+    graded_step second second_grade second_result ->
+    graded_step (STPar first second) first_grade (STPar first_result second) /\
+    graded_step (STPar first_result second) second_grade (STPar first_result second_result) /\
+    graded_step (STPar first second) second_grade (STPar first second_result) /\
+    graded_step (STPar first second_result) first_grade (STPar first_result second_result).
+Proof.
+  intros first first_grade first_result second second_grade second_result Hfirst Hsecond.
+  repeat split; [apply g_par_l | apply g_par_r | apply g_par_r | apply g_par_l]; assumption.
+Qed.
+
+Fixpoint parallel_terms (terms : list signed_term) : signed_term :=
+  match terms with
+  | [] => STSigned CPNil SUnit
+  | term :: rest => STPar term (parallel_terms rest)
+  end.
+
+Theorem graded_step_at_any_parallel_position :
+  forall prefix source suffix grade target,
+    graded_step source grade target ->
+    graded_step (parallel_terms (prefix ++ source :: suffix)) grade
+      (parallel_terms (prefix ++ target :: suffix)).
+Proof.
+  induction prefix as [| head rest IH]; intros source suffix grade target Hstep; simpl.
+  - now apply g_par_l.
+  - apply g_par_r. now apply IH.
+Qed.
+
 (* A graded modal logic (graded Hennessy–Milner) over the graded LTS: the
    diamond ⟨g⟩φ holds at S when S can take a g-graded step to a state at φ. *)
 Inductive GForm : Type :=

@@ -40,6 +40,12 @@ pub mod oslf;
 pub mod resource_logic;
 pub mod authority;
 pub mod byte_accounting;
+pub mod byte_receipts;
+pub mod monetary_allocation;
+pub mod phlo_bounds;
+pub mod phlo_controls;
+pub mod phlo_execution;
+pub mod economic_failure;
 
 const DEPLOY_SIGNATURE_DOMAIN: &[u8] = b"f1r3node:cost-accounted-rho:deploy-signature:v1";
 /// Domain separator for compound (multi-signer) deploy signatures. Distinct
@@ -90,7 +96,8 @@ pub struct RuntimeBudget {
     attempt_queue: Arc<SegQueue<AttemptRecord>>,
     diagnostic_record_count: Arc<AtomicU64>,
     canonical_consensus_attempts: Arc<Mutex<CanonicalAttemptWindow>>,
-    persistent_introductions: Arc<Mutex<BTreeSet<([u8; 32], BillableKind)>>>,
+    persistent_introductions:
+        Arc<Mutex<BTreeMap<([u8; 32], BillableKind), Arc<byte_receipts::ByteObservation>>>>,
     introduction_authorities:
         Arc<Mutex<BTreeMap<([u8; 32], authority::AuthorityByteEventKind), CostAuthority>>>,
     attempt_generation: Arc<AtomicU64>,
@@ -120,7 +127,7 @@ struct AuthorityRuntimeState {
     allocation: authority::ResourceMultiset<[u8; 32]>,
     enforce_allocation: bool,
     events: BTreeMap<[u8; 32], AuthorityRuntimeEvent>,
-    byte_events: Vec<authority::AuthorityByteEvent>,
+    byte_observations: byte_receipts::ByteObservationLog,
     realized: authority::ResourceMultiset<[u8; 32]>,
     reserved: authority::ResourceMultiset<[u8; 32]>,
     frontier: BTreeMap<[u8; 32], CostAuthority>,
@@ -133,6 +140,7 @@ struct AuthorityRuntimeState {
 struct AuthorityRuntimeEvent {
     authority: CostAuthority,
     debit: authority::ResourceMultiset<[u8; 32]>,
+    byte_observation: Option<Arc<byte_receipts::ByteObservation>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -383,7 +391,7 @@ impl RuntimeBudget {
             attempt_queue: Arc::new(SegQueue::new()),
             diagnostic_record_count: Arc::new(AtomicU64::new(0)),
             canonical_consensus_attempts: Arc::new(Mutex::new(CanonicalAttemptWindow::default())),
-            persistent_introductions: Arc::new(Mutex::new(BTreeSet::new())),
+            persistent_introductions: Arc::new(Mutex::new(BTreeMap::new())),
             introduction_authorities: Arc::new(Mutex::new(BTreeMap::new())),
             attempt_generation: Arc::new(AtomicU64::new(0)),
             reconciled_generation: Arc::new(AtomicU64::new(0)),
@@ -473,7 +481,12 @@ impl RuntimeBudget {
     }
 
     pub fn reserve_comm_identity(&self, identity: [u8; 32]) -> Result<(), InterpreterError> {
-        self.reserve_consensus_identity(identity, BillableKind::Comm, 1, "COMM reduction")
+        let mut state = self.authority_state.lock().expect("authority state");
+        self.reserve_consensus_identity(identity, BillableKind::Comm, 1, "COMM reduction")?;
+        if self.has_comm_accounting_scope() && !self.is_unmetered() {
+            state.byte_observations.mark_incomplete();
+        }
+        Ok(())
     }
 
     pub fn reserve_produce_introduction_identity(
@@ -491,6 +504,28 @@ impl RuntimeBudget {
             byte_cost,
             persistent,
             "RSpace produce introduction bytes",
+            None,
+        )
+    }
+
+    pub fn reserve_produce_introduction_measured(
+        &self,
+        identity: [u8; 32],
+        cost_authority: &CostAuthority,
+        measurement: byte_accounting::ByteCharge,
+        persistent: bool,
+    ) -> Result<(), InterpreterError> {
+        self.reserve_introduction_identity(
+            identity,
+            BillableKind::RSpaceProduce,
+            authority::AuthorityByteEventKind::ProduceIntroduction,
+            cost_authority,
+            measurement
+                .cost(byte_accounting::BYTE_COST_SCHEDULE_V1)
+                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?,
+            persistent,
+            "RSpace produce introduction bytes",
+            Some(measurement),
         )
     }
 
@@ -581,6 +616,28 @@ impl RuntimeBudget {
             byte_cost,
             persistent,
             "RSpace consume introduction bytes",
+            None,
+        )
+    }
+
+    pub fn reserve_consume_introduction_measured(
+        &self,
+        identity: [u8; 32],
+        cost_authority: &CostAuthority,
+        measurement: byte_accounting::ByteCharge,
+        persistent: bool,
+    ) -> Result<(), InterpreterError> {
+        self.reserve_introduction_identity(
+            identity,
+            BillableKind::RSpaceConsume,
+            authority::AuthorityByteEventKind::ConsumeIntroduction,
+            cost_authority,
+            measurement
+                .cost(byte_accounting::BYTE_COST_SCHEDULE_V1)
+                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?,
+            persistent,
+            "RSpace consume introduction bytes",
+            Some(measurement),
         )
     }
 
@@ -593,6 +650,7 @@ impl RuntimeBudget {
         byte_cost: u64,
         persistent: bool,
         description: &'static str,
+        measurement: Option<byte_accounting::ByteCharge>,
     ) -> Result<(), InterpreterError> {
         if !self.has_comm_accounting_scope() || self.unmetered.load(Ordering::Acquire) != 0 {
             return Ok(());
@@ -604,20 +662,21 @@ impl RuntimeBudget {
                 authority::AuthorityError::MissingAuthority.to_string(),
             ));
         }
+        let observation = Arc::new(byte_receipts::ByteObservation {
+            event_id: identity,
+            kind: byte_kind,
+            authority: canonical_authority,
+            measurement,
+            legacy_amount: (byte_cost > 0).then_some(byte_cost),
+        });
         if !persistent {
+            let mut state = self.authority_state.lock().expect("authority state");
+            state
+                .byte_observations
+                .try_reserve(1)
+                .map_err(|_| InterpreterError::HostWorkRejected)?;
             self.reserve_consensus_identity(identity, kind, byte_cost, description)?;
-            if byte_cost > 0 {
-                self.authority_state
-                    .lock()
-                    .expect("authority state")
-                    .byte_events
-                    .push(authority::AuthorityByteEvent {
-                        event_id: identity,
-                        kind: byte_kind,
-                        authority: canonical_authority,
-                        amount: byte_cost,
-                    });
-            }
+            state.byte_observations.push(observation);
             return Ok(());
         }
         let key = (identity, kind.clone());
@@ -625,32 +684,37 @@ impl RuntimeBudget {
             .persistent_introductions
             .lock()
             .expect("persistent introduction set");
-        if introductions.contains(&key) {
+        if let Some(existing) = introductions.get(&key) {
+            if !existing.accepts_retry(&observation) {
+                return Err(InterpreterError::ReduceError(
+                    authority::AuthorityError::EventIdentityConflict.to_string(),
+                ));
+            }
             return Ok(());
         }
+        let mut state = self.authority_state.lock().expect("authority state");
+        state
+            .byte_observations
+            .try_reserve(1)
+            .map_err(|_| InterpreterError::HostWorkRejected)?;
         self.reserve_consensus_identity(identity, kind, byte_cost, description)?;
-        if byte_cost > 0 {
-            self.authority_state
-                .lock()
-                .expect("authority state")
-                .byte_events
-                .push(authority::AuthorityByteEvent {
-                    event_id: identity,
-                    kind: byte_kind,
-                    authority: canonical_authority,
-                    amount: byte_cost,
-                });
-        }
-        introductions.insert(key);
+        state.byte_observations.push(Arc::clone(&observation));
+        introductions.insert(key, observation);
         Ok(())
     }
 
     pub fn install_authority_allocation(&self, allocation: authority::ResourceMultiset<[u8; 32]>) {
+        let introductions = self
+            .persistent_introductions
+            .lock()
+            .expect("persistent introduction set");
         let mut state = self.authority_state.lock().expect("authority state");
         state.allocation = allocation;
         state.enforce_allocation = true;
         state.events.clear();
-        state.byte_events.clear();
+        state
+            .byte_observations
+            .clear_partial_history(!introductions.is_empty());
         state.realized = authority::ResourceMultiset::default();
         state.reserved = authority::ResourceMultiset::default();
         state.frontier.clear();
@@ -673,7 +737,25 @@ impl RuntimeBudget {
         cost_authority: &CostAuthority,
         byte_cost: u64,
     ) -> Result<(), InterpreterError> {
-        self.reserve_authority_identities(&[identity], cost_authority, Some(byte_cost), true)
+        self.reserve_authority_identities(&[identity], cost_authority, Some(byte_cost), None, true)
+    }
+
+    pub fn reserve_comm_authority_measured(
+        &self,
+        identity: [u8; 32],
+        cost_authority: &CostAuthority,
+        measurement: byte_accounting::ByteCharge,
+    ) -> Result<(), InterpreterError> {
+        let cost = measurement
+            .cost(byte_accounting::BYTE_COST_SCHEDULE_V1)
+            .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+        self.reserve_authority_identities(
+            &[identity],
+            cost_authority,
+            Some(cost),
+            Some(measurement),
+            true,
+        )
     }
 
     pub fn prepare_authority_stack_transfer(
@@ -711,6 +793,7 @@ impl RuntimeBudget {
             events.insert(identity, AuthorityRuntimeEvent {
                 authority: canonical_authority.clone(),
                 debit: demand.clone(),
+                byte_observation: None,
             });
         }
         let aggregate_demand = events
@@ -865,6 +948,7 @@ impl RuntimeBudget {
         identities: &[[u8; 32]],
         cost_authority: &CostAuthority,
         comm_byte_cost: Option<u64>,
+        measurement: Option<byte_accounting::ByteCharge>,
         existing_is_idempotent: bool,
     ) -> Result<(), InterpreterError> {
         if !self.has_comm_accounting_scope() || self.unmetered.load(Ordering::Acquire) != 0 {
@@ -878,6 +962,9 @@ impl RuntimeBudget {
             ));
         }
         let mut state = self.authority_state.lock().expect("authority state");
+        let demand = authority::authority_demand(&canonical_authority)
+            .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+        let legacy_amount = comm_byte_cost.filter(|cost| *cost > 0 && !demand.0.is_empty());
         let mut unique_identities = BTreeSet::new();
         for identity in identities {
             if !unique_identities.insert(*identity) {
@@ -891,6 +978,17 @@ impl RuntimeBudget {
                         authority::AuthorityError::EventIdentityConflict.to_string(),
                     ));
                 }
+                if measurement.is_some()
+                    && !existing.byte_observation.as_ref().is_some_and(|row| {
+                        row.measurement == measurement
+                            && row.legacy_amount == legacy_amount
+                            && row.kind == authority::AuthorityByteEventKind::Comm
+                    })
+                {
+                    return Err(InterpreterError::ReduceError(
+                        authority::AuthorityError::EventIdentityConflict.to_string(),
+                    ));
+                }
                 unique_identities.remove(identity);
             }
             if state.pending_stack_event_ids.contains(identity) {
@@ -899,8 +997,6 @@ impl RuntimeBudget {
                 ));
             }
         }
-        let demand = authority::authority_demand(&canonical_authority)
-            .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
         let aggregate_demand = unique_identities
             .iter()
             .try_fold(authority::ResourceMultiset::default(), |aggregate, _| {
@@ -917,6 +1013,14 @@ impl RuntimeBudget {
             }
             return Err(InterpreterError::OutOfPhlogistonsError);
         }
+        let next_realized = state
+            .realized
+            .checked_add(&aggregate_demand)
+            .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+        state
+            .byte_observations
+            .try_reserve(unique_identities.len())
+            .map_err(|_| InterpreterError::HostWorkRejected)?;
         if let Some(byte_cost) = comm_byte_cost.filter(|_| !demand.0.is_empty()) {
             let weight = byte_cost
                 .checked_add(1)
@@ -934,29 +1038,24 @@ impl RuntimeBudget {
                     return Err(error);
                 }
             }
-            if byte_cost > 0 && self.unmetered.load(Ordering::Acquire) == 0 {
-                state
-                    .byte_events
-                    .extend(unique_identities.iter().map(|identity| {
-                        authority::AuthorityByteEvent {
-                            event_id: *identity,
-                            kind: authority::AuthorityByteEventKind::Comm,
-                            authority: canonical_authority.clone(),
-                            amount: byte_cost,
-                        }
-                    }));
-            }
         }
+        let legacy_amount = legacy_amount.filter(|_| self.unmetered.load(Ordering::Acquire) == 0);
         for identity in unique_identities {
+            let observation = Arc::new(byte_receipts::ByteObservation {
+                event_id: identity,
+                kind: authority::AuthorityByteEventKind::Comm,
+                authority: canonical_authority.clone(),
+                measurement,
+                legacy_amount,
+            });
+            state.byte_observations.push(Arc::clone(&observation));
             state.events.insert(identity, AuthorityRuntimeEvent {
                 authority: canonical_authority.clone(),
                 debit: demand.clone(),
+                byte_observation: Some(observation),
             });
         }
-        state.realized = state
-            .realized
-            .checked_add(&aggregate_demand)
-            .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+        state.realized = next_realized;
         state.reserved = next_reserved;
         Ok(())
     }
@@ -984,14 +1083,14 @@ impl RuntimeBudget {
     }
 
     pub fn authority_byte_events(&self) -> Vec<authority::AuthorityByteEvent> {
-        let mut events = self
-            .authority_state
-            .lock()
-            .expect("authority state")
-            .byte_events
-            .clone();
-        events.sort_by_key(authority::AuthorityByteEvent::canonical_key);
-        events
+        self.byte_observations().legacy_events()
+    }
+
+    pub fn byte_observations(&self) -> byte_receipts::ByteObservationSnapshot {
+        let state = self.authority_state.lock().expect("authority state");
+        state
+            .byte_observations
+            .snapshot(self.has_comm_accounting_scope() && !self.is_unmetered())
     }
 
     pub fn authority_stack_births(&self) -> Vec<authority::AuthorityStackBirth> {
@@ -1518,7 +1617,7 @@ impl RuntimeBudget {
             authority.allocation = authority::ResourceMultiset::default();
             authority.enforce_allocation = false;
             authority.events.clear();
-            authority.byte_events.clear();
+            authority.byte_observations.reset();
             authority.realized = authority::ResourceMultiset::default();
             authority.reserved = authority::ResourceMultiset::default();
             authority.frontier.clear();
@@ -3028,7 +3127,7 @@ mod runtime_budget_tests {
         assert_eq!(budget.authority_realized(), allocation);
 
         let signatures = BTreeMap::from([(first_key, first), (second_key, second)]);
-        let inventory = authority::AuthorityPhysicalInventory {
+        let mut inventory = authority::AuthorityPhysicalInventory {
             balances: authority::ResourceMultiset(BTreeMap::from([
                 (first_key, 4),
                 (second_key, 4),
@@ -3047,6 +3146,26 @@ mod runtime_budget_tests {
             .balances
             .checked_sub(&physical.custody_debit)
             .unwrap();
+        assert_eq!(
+            authority::allocate_quantitative_events_with_custody(
+                &budget.authority_byte_events(),
+                &after_compute,
+                &inventory.balance_custody,
+            ),
+            Err(authority::AuthorityError::UnknownPhysicalCustody)
+        );
+        let complete_signatures = authority::authority_funding_signatures_for_events(
+            &budget.authority_events(),
+            &budget.authority_byte_events(),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(complete_signatures.len(), 3);
+        for lane in complete_signatures.keys() {
+            inventory
+                .insert_balance_lane(*lane, *lane, inventory.balances.get(lane))
+                .unwrap();
+        }
         let bytes = authority::allocate_quantitative_events_with_custody(
             &budget.authority_byte_events(),
             &after_compute,
@@ -3289,7 +3408,7 @@ mod runtime_budget_tests {
 
         #[test]
         fn stack_transfer_reserves_exactly_one_authority_cell_per_output(
-            cells in 1usize..65,
+            payload in proptest::collection::vec(1_u8..5, 1..65),
             slack in 0u64..65,
         ) {
             use models::rhoapi::cost_signature::Value;
@@ -3304,7 +3423,10 @@ mod runtime_budget_tests {
             let lane = authority::cost_signature_to_sig(&signature)
                 .unwrap()
                 .lane_hash();
-            let cell_count = u64::try_from(cells).unwrap();
+            let cells = payload.into_iter().map(|atom| CostSignature {
+                value: Some(Value::Ground(vec![atom])),
+            }).collect::<Vec<_>>();
+            let cell_count = u64::try_from(cells.len()).unwrap();
             let budget = RuntimeBudget::new(Cost::create(0, "stack transfer"));
             let _scope = budget.enter_comm_accounting_scope();
             budget.install_authority_allocation(authority::ResourceMultiset::singleton(
@@ -3312,14 +3434,104 @@ mod runtime_budget_tests {
                 cell_count + slack,
             ));
             budget
-                .prepare_authority_stack_transfer([1; 32], vec![signature; cells], &authority)
+                .prepare_authority_stack_transfer([1; 32], cells.clone(), &authority)
                 .unwrap()
                 .commit();
 
             proptest::prop_assert_eq!(budget.authority_realized().get(&lane), cell_count);
-            proptest::prop_assert_eq!(budget.authority_events().len(), cells);
-            proptest::prop_assert_eq!(budget.authority_stack_births().len(), 1);
+            proptest::prop_assert_eq!(budget.authority_events().len(), cells.len());
+            proptest::prop_assert_eq!(budget.authority_stack_births(),
+                vec![authority::AuthorityStackBirth { produce_hash: [1; 32], cells }]);
             proptest::prop_assert_eq!(budget.total_cost().value, 0);
+        }
+
+        #[test]
+        fn stack_materialization_histories_preserve_payload_and_funding(
+            capacities in proptest::array::uniform8(0_u64..49),
+            actions in proptest::collection::vec(
+                (0_u8..3, 0_u8..8, proptest::collection::vec(1_u8..5, 0..9),
+                 proptest::collection::vec(1_u8..9, 1..9)), 1..65),
+        ) {
+            use models::rhoapi::cost_signature::Value;
+            use models::rhoapi::{CostAuthority, CostSignature};
+
+            struct ExpectedBirth {
+                cells: Vec<CostSignature>,
+                charge: BTreeMap<[u8; 32], u64>,
+            }
+
+            fn total_charges<'a>(births: impl Iterator<Item = &'a ExpectedBirth>) -> BTreeMap<[u8; 32], u64> {
+                let mut totals = BTreeMap::new();
+                for birth in births {
+                    for (lane, amount) in &birth.charge {
+                        *totals.entry(*lane).or_default() += amount;
+                    }
+                }
+                totals
+            }
+
+            let allocation = capacities.into_iter().enumerate().map(|(index, amount)| {
+                (Sig::Ground(vec![b'p', index as u8 + 1]).lane_hash(), amount)
+            }).collect::<BTreeMap<_, _>>();
+            let budget = RuntimeBudget::new(Cost::create(0, "materialization histories"));
+            let _scope = budget.enter_comm_accounting_scope();
+            budget.install_authority_allocation(authority::ResourceMultiset(allocation.clone()));
+            let mut pending = BTreeMap::<u8, (AuthorityStackTransferReservation, ExpectedBirth)>::new();
+            let mut committed = BTreeMap::<u8, ExpectedBirth>::new();
+
+            for (action, id, payload, payers) in actions {
+                if action == 0 {
+                    let cells = payload.into_iter().map(|atom| CostSignature {
+                        value: Some(Value::Ground(vec![atom])),
+                    }).collect::<Vec<_>>();
+                    let mut charge = BTreeMap::<[u8; 32], u64>::new();
+                    let mut regions = Vec::new();
+                    for (index, payer) in payers.into_iter().enumerate() {
+                        let signature = CostSignature {
+                            value: Some(Value::Ground(vec![b'p', payer])),
+                        };
+                        let lane = Sig::Ground(vec![b'p', payer]).lane_hash();
+                        *charge.entry(lane).or_default() += cells.len() as u64;
+                        regions.push(authority::cost_region(&signature, &[index as u8], 0).unwrap());
+                    }
+                    let authority = CostAuthority { regions };
+                    let allocated = total_charges(committed.values().chain(pending.values().map(|(_, birth)| birth)));
+                    let accepted = !cells.is_empty() && !pending.contains_key(&id)
+                        && !committed.contains_key(&id)
+                        && charge.iter().all(|(lane, amount)|
+                            allocated.get(lane).copied().unwrap_or(0) + amount <= allocation[lane]);
+                    let result = budget.prepare_authority_stack_transfer([id; 32], cells.clone(), &authority);
+                    if accepted {
+                        let reservation = result.unwrap();
+                        pending.insert(id, (reservation, ExpectedBirth { cells, charge }));
+                    } else {
+                        proptest::prop_assert!(result.is_err());
+                    }
+                } else if let Some((reservation, birth)) = pending.remove(&id) {
+                    if action == 1 {
+                        reservation.commit();
+                        committed.insert(id, birth);
+                    } else {
+                        drop(reservation);
+                    }
+                }
+
+                let held = pending.values().map(|(_, birth)| birth.cells.len() as u64).sum::<u64>();
+                let spent = committed.values().map(|birth| birth.cells.len() as u64).sum::<u64>();
+                let expected_births = committed.iter().map(|(id, birth)| authority::AuthorityStackBirth {
+                    produce_hash: [*id; 32], cells: birth.cells.clone(),
+                }).collect::<Vec<_>>();
+                proptest::prop_assert_eq!(budget.authority_stack_births(), expected_births);
+                proptest::prop_assert_eq!(budget.authority_events().len() as u64, spent);
+                let state = budget.authority_state.lock().unwrap();
+                let expected_reserved = authority::ResourceMultiset(total_charges(
+                    committed.values().chain(pending.values().map(|(_, birth)| birth))));
+                let expected_realized = authority::ResourceMultiset(total_charges(committed.values()));
+                proptest::prop_assert_eq!(&state.reserved, &expected_reserved);
+                proptest::prop_assert_eq!(&state.realized, &expected_realized);
+                proptest::prop_assert_eq!(state.pending_stack_transfers.len(), pending.len());
+                proptest::prop_assert_eq!(state.pending_stack_event_ids.len() as u64, held);
+            }
         }
 
         #[test]

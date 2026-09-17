@@ -205,7 +205,7 @@ async fn the_head_must_not_leave_a_majority_branch_for_a_hash_earlier_rival() {
             let dag = block_dag_storage
                 .get_representation()
                 .expect("dag representation");
-            let estimator = Estimator::apply(i32::MAX, None);
+            let estimator = Estimator::apply();
             let head = certified_fork_choice(&estimator, &dag, &fork.genesis, fork.latest.clone())
                 .await
                 .expect("tips")
@@ -345,7 +345,7 @@ proptest! {
             let dag = block_dag_storage
                 .get_representation()
                 .expect("dag representation");
-            let estimator = Estimator::apply(i32::MAX, None);
+            let estimator = Estimator::apply();
             let head = certified_fork_choice(&estimator, &dag, &genesis, latest)
                 .await
                 .expect("tips")

@@ -32,6 +32,7 @@ mod tests {
             finalization_rate: 1,
             max_number_of_parents: 2147483647,
             max_parent_depth: 100,
+            deploy_lifespan: 50,
             fork_choice_stale_threshold: Duration::from_secs(30 * 60),
             fork_choice_check_if_stale_interval: Duration::from_secs(30),
             synchrony_constraint_threshold: 0.0,
@@ -42,6 +43,7 @@ mod tests {
                 drop_peer_after_retries: 5,
             },
             genesis_block_data: GenesisBlockData {
+                resource_policy: None,
                 genesis_data_dir: "/tmp/genesis".to_string(),
                 bonds_file: "bonds.txt".to_string(),
                 wallets_file: "wallets.txt".to_string(),

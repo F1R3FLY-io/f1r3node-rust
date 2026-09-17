@@ -146,3 +146,58 @@ Theorem replay_uses_the_same_authenticated_capacity :
 Proof.
   reflexivity.
 Qed.
+
+Definition initial_physical_inventory
+  (custody : nat -> nat) (selected frontier : list nat) : list nat :=
+  nodup Nat.eq_dec (map custody (selected ++ frontier)).
+
+Theorem initial_inventory_contains_every_selected_custody :
+  forall custody selected frontier signer,
+    In signer selected ->
+    In (custody signer) (initial_physical_inventory custody selected frontier).
+Proof.
+  intros custody selected frontier signer Hselected.
+  unfold initial_physical_inventory.
+  apply nodup_In.
+  apply in_map.
+  apply in_or_app.
+  now left.
+Qed.
+
+Theorem initial_inventory_has_no_unexplained_custody :
+  forall custody selected frontier key,
+    In key (initial_physical_inventory custody selected frontier) <->
+    exists signer, custody signer = key /\
+      (In signer selected \/ In signer frontier).
+Proof.
+  intros custody selected frontier key.
+  unfold initial_physical_inventory.
+  rewrite nodup_In, in_map_iff.
+  split; intros [signer [Hkey Hin]]; exists signer; split; auto.
+  - now apply in_app_iff in Hin.
+  - now apply in_app_iff.
+Qed.
+
+Theorem initial_inventory_counts_each_custody_once :
+  forall custody selected frontier,
+    NoDup (initial_physical_inventory custody selected frontier).
+Proof.
+  intros custody selected frontier.
+  unfold initial_physical_inventory.
+  apply NoDup_nodup.
+Qed.
+
+Theorem initial_inventory_is_order_independent :
+  forall custody selected frontier key,
+    In key (initial_physical_inventory custody selected frontier) <->
+    In key (initial_physical_inventory custody frontier selected).
+Proof.
+  intros custody selected frontier key.
+  rewrite !initial_inventory_has_no_unexplained_custody.
+  split; intros [signer [Hkey Hin]]; exists signer; tauto.
+Qed.
+
+Print Assumptions initial_inventory_contains_every_selected_custody.
+Print Assumptions initial_inventory_has_no_unexplained_custody.
+Print Assumptions initial_inventory_counts_each_custody_once.
+Print Assumptions initial_inventory_is_order_independent.

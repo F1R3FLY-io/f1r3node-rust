@@ -232,6 +232,7 @@ impl GenesisBuilder {
         let client_fuel_allocations = Vec::new();
 
         (validator_key_pairs, genesis_vaults, Genesis {
+            resource_policy: None,
             shard_id: "root".to_string(),
             timestamp: 0,
             proof_of_stake: ProofOfStake {
@@ -244,6 +245,9 @@ impl GenesisBuilder {
                 quarantine_length: 50000,
                 number_of_active_validators: 100,
                 fault_tolerance_threshold_ppm: 0,
+                max_parent_depth: 15,
+                deploy_lifespan: 50,
+                min_phlo_price: 0,
                 validators: bonds
                     .iter()
                     .map(|(pk, stake)| Validator {

@@ -25,6 +25,7 @@ use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Genesis {
+    pub resource_policy: Option<models::rust::phlo_schedule::PhloGenesisPolicy>,
     pub shard_id: String,
     pub timestamp: i64,
     pub block_number: i64,
@@ -107,6 +108,12 @@ impl Genesis {
         proof_of_stake: &ProofOfStake,
         client_fuel_allocations: &[(PublicKey, i64)],
     ) -> Result<(), CasperError> {
+        crate::rust::casper_conf::validate_chain_parameter_values(
+            i64::from(proof_of_stake.max_parent_depth),
+            proof_of_stake.deploy_lifespan,
+            proof_of_stake.min_phlo_price,
+        )
+        .map_err(CasperError::RuntimeError)?;
         if proof_of_stake.epoch_length <= 0 {
             return Err(CasperError::RuntimeError(format!(
                 "epoch_length must be positive; got {}",
@@ -191,6 +198,7 @@ impl Genesis {
         native_token_name: &str,
         native_token_symbol: &str,
         native_token_decimals: u32,
+        resource_policy: Option<&models::rust::phlo_schedule::PhloGenesisPolicy>,
     ) -> Vec<Signed<DeployData>> {
         // Splits initial vaults creation in multiple deploys (batches)
         const BATCH_SIZE: usize = 100;
@@ -238,11 +246,12 @@ impl Genesis {
         let system_vault = standard_deploys::system_vault(shard_id);
         let multi_sig_system_vault = standard_deploys::multi_sig_system_vault(shard_id);
         let stack = standard_deploys::stack(shard_id);
-        let token_metadata = standard_deploys::token_metadata(
+        let token_metadata = standard_deploys::token_metadata_with_policy(
             native_token_name,
             native_token_symbol,
             native_token_decimals,
             shard_id,
+            resource_policy,
         );
         let pos_generator = standard_deploys::pos_generator(pos_params, shard_id);
         let capabilities_registry = standard_deploys::capabilities_registry(shard_id);
@@ -279,6 +288,7 @@ impl Genesis {
         native_token_name: &str,
         native_token_symbol: &str,
         native_token_decimals: u32,
+        resource_policy: Option<&models::rust::phlo_schedule::PhloGenesisPolicy>,
     ) -> Vec<Signed<DeployData>> {
         // Use hardcoded timestamp for backwards compatibility
         const BASE_TIMESTAMP: i64 = 1565818101792;
@@ -291,6 +301,7 @@ impl Genesis {
             native_token_name,
             native_token_symbol,
             native_token_decimals,
+            resource_policy,
         )
     }
 
@@ -298,6 +309,15 @@ impl Genesis {
         runtime_manager: &RuntimeManager,
         genesis: &Genesis,
     ) -> Result<BlockMessage, CasperError> {
+        if let Some(policy) = &genesis.resource_policy {
+            policy
+                .validate_context(
+                    genesis.version,
+                    &genesis.shard_id,
+                    genesis.native_token_decimals,
+                )
+                .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
+        }
         let funded_vaults = Self::vaults_with_protocol_funding(
             &genesis.proof_of_stake,
             &genesis.vaults,
@@ -311,6 +331,7 @@ impl Genesis {
             &genesis.native_token_name,
             &genesis.native_token_symbol,
             genesis.native_token_decimals,
+            genesis.resource_policy.as_ref(),
         );
         let blessed_terms = blessed_terms
             .into_iter()

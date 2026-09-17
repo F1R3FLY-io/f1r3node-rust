@@ -17,6 +17,8 @@ use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use rspace_plus_plus::rspace::trace::event::{Event as RSpaceEvent, IOEvent};
 
+mod transfer_properties;
+
 async fn runtime() -> RhoRuntimeImpl {
     let mut manager = InMemoryStoreManager::new();
     let stores = manager.r_space_stores().await.unwrap();
