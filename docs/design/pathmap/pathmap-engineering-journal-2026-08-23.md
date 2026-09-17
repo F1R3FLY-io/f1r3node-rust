@@ -11789,6 +11789,7 @@ benchmark magnitude or corrected historical profiling result is claimed.
 | `cancellation-guard-dependent-kernel.log` | five dependent modules checked | `6461687abeda2e5d68636592392f0b2c9f9ef1bd52869ad03b8977d7fd679588` |
 | `cancellation-guard-experiment-feature-r1.log` | semantic audit passed; instrumentation failed before thread-local repair | `32c304c88bec66e83b5cda0cff40861271b39858f929056310c358e2eca8daf8` |
 | `cancellation-guard-experiment-feature-r2.log` | four feature tests passed, including concurrent-session controls | `35c1d2a2205dce6aff395693ca2d96674c799ac9d44584b64896591fde6b15a6` |
+| `cancellation-guard-rspace-full-nextest-r1.log` | complete `rspace_plus_plus`: 1,189 passed, one existing skip | `88415ffffd3e74ad5b7de4aeb2385e66e459291b3bc2ff7ae479e3ea8192f1c9` |
 
 ## Upstream PathMap integration request register
 

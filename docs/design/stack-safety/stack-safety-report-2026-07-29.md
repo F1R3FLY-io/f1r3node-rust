@@ -14991,6 +14991,8 @@ measurement session is thread-local, and deterministic controls cover an
 unmeasured audit thread plus concurrent measured fixtures without changing
 production locking or stack behavior. Task acceptance and persistence
 qualification remain open.
+The complete `rspace_plus_plus` release nextest then passed 1,189 tests with
+one existing skip under the same bounded resource policy.
 
 ## Appendix G — the maintenance contract
 
