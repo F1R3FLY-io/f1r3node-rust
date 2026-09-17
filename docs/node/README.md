@@ -478,6 +478,6 @@ The JSON layer emits one object per event with `span` and `spans` fields for tra
 
 Integration tests in `tests/`: `rho_trie_traverser_test.rs`. Inline tests in `block_info_enricher.rs` (2 unit tests for transfer extraction logic).
 
-**See also:** [node/ crate README](../../node/README.md) | [Docker Setup](../../docker/README.md)
+**See also:** [Joining an Existing Network](joining-a-network.md) | [node/ crate README](../../node/README.md) | [Docker Setup](../../docker/README.md)
 
 [← Back to docs index](../README.md)
