@@ -1,5 +1,76 @@
 mod par_corpus;
 
+#[test]
+fn resident_expr_headers_match_every_generated_variant() {
+    use models::rhoapi::expr::ExprInstance;
+    use models::rhoapi::{EList, Par};
+    use models::rust::canonical_path::takes_split_arm;
+    use models::rust::rholang::protobuf_cursor::{CanonicalFieldCursor, CanonicalFieldValue};
+
+    let corpus = par_corpus::every_expr_instance();
+    let covered: BTreeSet<_> = corpus.iter().map(|(name, _)| *name).collect();
+    let required: BTreeSet<_> = EXPR_INSTANCE_VARIANTS
+        .iter()
+        .map(|variant| variant.name)
+        .collect();
+    assert_eq!(covered, required);
+    for (name, instance) in corpus.into_iter().chain([
+        ("GBool", ExprInstance::GBool(false)),
+        ("GInt", ExprInstance::GInt(0)),
+        ("GString", ExprInstance::GString(String::new())),
+        ("GUri", ExprInstance::GUri(String::new())),
+        ("GByteArray", ExprInstance::GByteArray(Vec::new())),
+        ("EListBody", ExprInstance::EListBody(EList::default())),
+    ]) {
+        let should_split = matches!(&instance, ExprInstance::EListBody(list)
+            if list.remainder.is_none() && list.locally_free.is_empty() && !list.connective_used);
+        let expr = Expr {
+            expr_instance: Some(instance),
+        };
+        let schema = RhoPathCursor::new(ParCursor::from(&expr))
+            .find_map(|event| match event {
+                RhoPathEvent::EnterOneof(oneof) => Some(oneof),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(schema.variant_name, name);
+        let par = Par::default().with_exprs(vec![expr.clone()]);
+        let mut endpoints = 0;
+        par.visit_encoded::<Expr>(|entry| {
+            endpoints += 1;
+            assert_eq!(entry.multiplicity().get(), 1);
+            let mut cursor = CanonicalFieldCursor::new(entry.payload());
+            let field = cursor.next_field().unwrap().unwrap();
+            assert_eq!(field.number, schema.protobuf_tag, "{name}");
+            assert_eq!(field.number == 20, name == "EListBody", "{name}");
+            if field.number == 20 {
+                assert!(matches!(
+                    field.value,
+                    CanonicalFieldValue::LengthDelimited(_)
+                ));
+                assert!(entry.payload().starts_with(&[162, 1]));
+            }
+            assert!(
+                cursor.next_field().unwrap().is_none(),
+                "{name}: multiple oneof fields"
+            );
+        });
+        assert_eq!(endpoints, 1);
+        assert_eq!(takes_split_arm(&par), should_split, "{name}");
+    }
+    let absent = Par::default().with_exprs(vec![Expr::default()]);
+    let mut endpoints = 0;
+    absent.visit_encoded::<Expr>(|entry| {
+        endpoints += 1;
+        assert!(CanonicalFieldCursor::new(entry.payload())
+            .next_field()
+            .unwrap()
+            .is_none());
+    });
+    assert_eq!(endpoints, 1);
+    assert!(!takes_split_arm(&absent));
+}
+
 use std::collections::BTreeSet;
 
 use models::rhoapi::{

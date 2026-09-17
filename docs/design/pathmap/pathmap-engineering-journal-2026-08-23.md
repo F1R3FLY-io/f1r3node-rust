@@ -12671,6 +12671,59 @@ higher-depth non-construction phases. Corrected uProf r2 confirms CPU-3 affinity
 stack unwinding. Tasks 6444, 5981 and the complete campaign remain open. No consensus bytes or
 production sources changed in this measurement checkpoint.
 
+### J-173 — 2026-09-17 Byte-native split-carrier discrimination
+
+**DERIVED; implementation qualification in progress.** The non-list allocation stack isolated in
+J-172 enters `split_carrier_list`, which previously decoded the complete singleton Expr before
+learning that it was not an EList. The repair retains every outer-family/cardinality/metadata
+guard, then inspects the resident canonical Expr header through `CanonicalFieldCursor`.
+A conclusive non-list or absent Expr returns no split. Field 20, including unexpected wire
+framing, and cursor errors delegate to the existing semantic decoder; genuine lists retain all
+list-level metadata checks. This is not a new admission rule for arbitrary protobuf.
+
+The initial two-walk draft passed its focused semantic checks. Review then identified the
+existing `EncodedParComponent::decode` API, so the final implementation inspects and, when
+necessary, decodes inside the same borrowed-endpoint visitor. It does not reconstruct a key,
+project a collection, cache a second representation, or alter PathMap. Both native decode routes
+call `decode_exact::<Expr>`. Positive multiplicity plus the singleton cardinality guard makes
+visitor order irrelevant. The owned result outlives the borrowed endpoint safely.
+
+**FORMAL-FIRST.** `SplitCarrierPrefilter.v` compiled with 20 closed assumption reports and
+passed independent kernel checking before the runtime change. It proves conditional result,
+observation and child preservation; outer/list guard preservation; conservative fallback; and
+absence of a semantic-decode event on conclusive rejection. Header, guard, metadata, hint and
+decode-order controls are non-vacuous. SCP-01–08 in the
+[invariant catalog](workspace-regression-formal-invariant-catalog-2026-08-28.md#split-carrier-header-prefilter--2026-09-17-tasks-6444-and-5834)
+enumerate the complete model-to-native boundary. In particular, the semantic hint model is not
+a proof of the Rust byte parser.
+
+**NATIVE BASELINE.** Before changing the classifier, five tests passed, including 256 generated
+cases against the frozen classifier and top-level path selection, exact returned-list protobuf
+bytes, stable/unstable children, ordered duplicates, all eight other Par families, and metadata
+and multiplicity controls. The exhaustive native test matches every generated Expr variant's
+resident header against its protobuf tag and covers absent/default oneofs. The manifest binds
+the model runner, kernel check, support-module inclusion and actual decode-counter location.
+The baseline and proof log hashes are retained in the catalog.
+
+**PERFORMANCE QUALIFICATION.** Experiment 345 will retain separate successor observations,
+not overwrite its original 126 cells. The hypothesis is elimination of the unnecessary semantic
+decode and its suffix reconstruction during escaped outer-map construction, not elimination of
+the separately observed legacy decoder or map-key validation slopes. A paired probe alternates
+frozen/successor order across an empty list, four-element list, scalar, depth-64/128 lists and
+depth-64/128 escaped sets. Both arms retain the same test-only semantic-decode counter overhead;
+timing excludes dropping and checking the returned list. One pilot and three warmups precede
+seven retained observations. End-to-end phase measurements remain instrumented and use the
+original calibrated harness. No performance conclusion is accepted before those runs.
+
+**NATIVE SUCCESSOR QUALIFIED.** The final single-visitor run passes all 35 canonical-path,
+27 manifest, seven schema-cursor and 25 EPM1 snapshot/meter tests. Only the two explicitly
+opt-in measurement probes are ignored; no correctness gate is excluded. The schema cursor
+retains depth 20,000 and EPM1 retains all depth-4,096 cases. The EPM1 target takes 271.52 seconds
+under a 6 GiB, zero-swap cap, with build/test overlap; this is not a timing comparison. The
+retained log `target/verification/split-prefilter-single-visitor-native-r1.log` has SHA-256
+`3bfab381fc3abe3b3a185fdcd16fd0a6293aaa04208a5411cf502c956428eacc`.
+Measurements remain pending. No end-to-end campaign or full workspace acceptance is claimed.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

@@ -724,6 +724,10 @@ rocq_reject_placeholders theories/SingletonMapConstruction.v
 rocq_compile_with_closed_count theories/SingletonMapConstruction.v 18 \
   "fixed-key singleton EPathMap construction and checked publication"
 rocq_check_modules "singleton EPathMap construction" StackSafePDA.SingletonMapConstruction
+rocq_reject_placeholders theories/SplitCarrierPrefilter.v
+rocq_compile_with_closed_count theories/SplitCarrierPrefilter.v 20 \
+  "conditional split-carrier classification equivalence"
+rocq_check_modules "split-carrier prefilter" StackSafePDA.SplitCarrierPrefilter
 rmp2_rocq_output="$(
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/RMP2.v 2>&1
 )"

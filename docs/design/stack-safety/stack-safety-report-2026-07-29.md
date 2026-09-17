@@ -8350,6 +8350,20 @@ requested-byte exponents 1.0049–1.0097. No OOM or deadline occurred in the 126
 higher-depth non-construction phases and the independently identified reconstruction repairs
 remain unqualified. These descriptive fits do not prove an end-to-end application speedup.
 
+**Classifier repair follow-through (2026-09-17).** The conditional split-carrier model now passes
+20 closed assumption reports and independent kernel checking. Before implementation, a frozen
+classifier/path oracle, native all-variant header correspondence and baseline decode counter passed.
+The successor inspects the canonical header and, for genuine or inconclusive list candidates,
+decodes through the same borrowed endpoint. Proven non-lists perform zero semantic Expr decodes;
+genuine lists retain one, with no second zipper walk. The final single-visitor implementation
+passes 35 canonical-path tests, 27 proof-manifest checks and all seven schema-cursor tests,
+including the original depth-20,000 gate. Its full EPM1 suite passes all 25 tests, including
+four meter controls and the original depth-4,096 cases, under a 6 GiB zero-swap cap. Only the
+opt-in measurement probe is ignored. Resource comparisons remain pending at this checkpoint.
+The proof is conditional on the native header correspondence, not a Rust
+parser correctness proof. Legacy decoder reconstruction and map-value validation slopes remain
+separate open obligations; see J-173 and SCP-01–08.
+
 The first complete release-workspace diagnostic exposed a boundary outside the production machines:
 several deep validation fixtures still constructed their input by repeatedly wrapping an already
 resident `Par`. Moving the accumulator kept native-stack use constant, but each RPB3 parent key still

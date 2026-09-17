@@ -285,6 +285,68 @@ including depth-4,096 Eq/Ord/Hash and snapshot/codec gates on 256 KiB stacks. Se
 The named fixture consumers subsequently passed their migrations as recorded above. SMC-08's
 phase-separated measurements and task 6444 remain open.
 
+
+## Split-carrier header prefilter — 2026-09-17, tasks 6444 and 5834
+
+**FORMAL MODEL AND NATIVE SUCCESSOR QUALIFIED; RESOURCE COMPARISON OPEN.** Profiling the escaped
+nested-list fixture identified full expression decoding in `split_carrier_list` just to reject
+a non-list expression. The proposed prefilter reads the resident Expr endpoint's borrowed
+protobuf field header. Only canonical resident oneof bytes are eligible for this shortcut:
+the first field of arbitrary input protobuf is not an authority because a later oneof field
+can override it. No new untrusted-input admission path is introduced.
+
+`SplitCarrierPrefilter.v` proves equivalence conditional on a sound negative hint. Its
+`canonical_hint` is a semantic abstraction, not an implementation of the byte cursor.
+The field-20 header theorem establishes the constant `a2 01`, not a complete schema-to-parser
+refinement. Those native bridge obligations are independently tested below. Ordered opaque
+child identifiers model exact content, order and duplicates; they are not a standalone proof
+of Rust Par semantics. The abstract event trace models entry into semantic decoding, not
+allocation counts or actual execution time.
+
+| ID | Model invariant and theorem | Required executable binding |
+|---|---|---|
+| SCP-01 | `outer_false`, `outer_guards_not_bypassed`: other families, arity and root metadata retain their guards. | `split_prefilter_preserves_all_outer_guards_and_multiplicity`; all eight other families, zero/two Expr occurrences and root metadata. |
+| SCP-02 | `list_header`, `header_list`, `header_nonlist`, `canonical_hint_sound`: a negative hint excludes a list. | `resident_expr_headers_match_every_generated_variant`; every generated Expr arm, absent Expr and default scalar oneofs, field number versus schema protobuf tag (not serde index). |
+| SCP-03 | `reference_success_is_list`, `conclusive_rejection_sound`, `result_equivalence`, `canonical_result_equivalence`: classification is unchanged. | Frozen prefilter-free classifier versus successor; deterministic controls and 256 generated cases. |
+| SCP-04 | `observations_equivalence`, `returned_children_are_exact`: any observation of the returned list is unchanged. | Exact EList protobuf bytes and complete canonical path/stability differential; ordered duplicates and unstable children. The path oracle retains production segment encoding and independently freezes top-level selection. |
+| SCP-05 | `list_hint_retains_metadata_checks`: a list hint does not bypass list metadata. | `split_prefilter_retains_list_metadata_and_ordered_duplicate_children`; remainder, locally-free bytes, connective flag and empty list. |
+| SCP-06 | `inconclusive_preserves_reference`: unknown hints preserve the old path. | Malformed-framing controls directly call the production private hint helper and require fallthrough. Field 20 with an unexpected wire type also falls through. Malformed bytes are not imported as resident Par values. |
+| SCP-07 | `rejection_has_no_decode`: conclusive rejection has no semantic decode event. | Thread-local counter immediately before decoding; baseline `Par::first::<Expr>` and successor `entry.decode()` share `decode_exact::<Expr>`. Baseline non-list count one, successor count zero; genuine list count one in both. This does not assert zero zipper allocations. |
+| SCP-08 | `wire_header_controls`, `outer_guard_mutant_controls`, `list_metadata_mutant_controls`, `hint_mutant_controls`, `decode_order_mutant_control`: controls distinguish changed tags, guards, metadata, hints and decode ordering. | Positive list witnesses, negative shape/metadata witnesses, malformed framing and exact decode counts; checked proof manifest. |
+
+The runner requires all 20 assumption reports to be closed and independently checks the module
+with the Rocq kernel. The model does not prove Rust compilation, schema correspondence, allocator
+complexity or full campaign completion. Native pre-repair witnesses must pass before the runtime
+prefilter changes; successor witnesses and resource measurements remain mandatory afterward.
+The separate legacy decoder construction and map-value validation costs remain open under 5834.
+
+Before changing runtime classification, the five native classifier tests, exhaustive generated
+variant test and manifest passed under a 6 GiB, zero-swap cap. The baseline counter observed one
+semantic decode for the depth-64 non-list; the genuine list also observed one. Retained log
+`target/verification/split-prefilter-baseline-native-r1.log` has SHA-256
+`2e1f89672b6948d39bbb8ee6bd5b585b9c79671498a202e71802ce362e1add97`.
+The final 20-report proof and kernel-check log is `split-prefilter-6444-proof-r3.log`, SHA-256
+`9142003af0ddfc667b3be918398301beda2b58ef86b659f73c468d6f1ff51d73`.
+The successor must observe zero decodes for that non-list, still one for the genuine list, and
+retain all semantic witnesses. The manifest also binds the test module inclusion and counter
+placement so disconnected test source is not sufficient evidence.
+
+The successor uses a single encoded-endpoint visitor for header inspection and any required
+decode, rather than walking the same trie key a second time. The unit-cardinality guard plus
+positive multiplicities ensures that the callback sees exactly one endpoint. Its decoded Expr
+is owned; payload borrowing ends with the callback. Both this visitor's `entry.decode()` and
+the frozen classifier's `Par::first::<Expr>` call the same `decode_exact::<Expr>` implementation,
+and both map a decoding error to no split. This is a source-reviewed native bridge, not an
+additional theorem about the Rust decoder.
+
+The final single-visitor release run passes 35 canonical-path tests (one opt-in timing probe
+ignored), all 27 manifest tests, all seven schema-cursor tests including depth 20,000, and all
+25 EPM1 snapshot/meter tests (one opt-in phase probe ignored). No correctness test is excluded;
+the original depth-4,096 cases remain. The EPM1 target takes 271.52 seconds under the 6 GiB,
+zero-swap cap. Build/test overlap means this elapsed time is qualification evidence, not a
+benchmark. The log `target/verification/split-prefilter-single-visitor-native-r1.log` has SHA-256
+`3bfab381fc3abe3b3a185fdcd16fd0a6293aaa04208a5411cf502c956428eacc`.
+
 ## Original workspace-regression completion gates
 
 This checkpoint is complete only when all of the following hold:

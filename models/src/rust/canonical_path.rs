@@ -157,6 +157,10 @@
 use std::ops::Range;
 use std::sync::Arc;
 
+#[cfg(test)]
+#[path = "../../tests/support/split_carrier_prefilter.rs"]
+mod split_prefilter_tests;
+
 use pathmap::PathMap;
 #[cfg(test)]
 use prost::Message;
@@ -371,6 +375,15 @@ fn read_uv(bytes: &[u8], cursor: &mut usize, limit: usize) -> Result<u64, CodecE
 /// `0x0F` escape arm, whose key is one segment.
 pub fn takes_split_arm(par: &Par) -> bool { split_carrier_list(par).is_some() }
 
+fn split_header_may_be_list(payload: &[u8]) -> bool {
+    use super::rholang::protobuf_cursor::CanonicalFieldCursor;
+    match CanonicalFieldCursor::new(payload).next_field() {
+        Ok(Some(field)) => field.number == 20,
+        Ok(None) => false,
+        Err(_) => true,
+    }
+}
+
 /// The `EList` of a split-arm carrier, or `None`. See [`takes_split_arm`].
 pub(crate) fn split_carrier_list(par: &Par) -> Option<EList> {
     if par.family_cardinality::<crate::rhoapi::Send>() != 0
@@ -387,7 +400,16 @@ pub(crate) fn split_carrier_list(par: &Par) -> Option<EList> {
     {
         return None;
     }
-    let (expr, multiplicity) = par.first::<Expr>().ok()??;
+    let mut decoded = None;
+    par.visit_encoded::<Expr>(|entry| {
+        if split_header_may_be_list(entry.payload()) {
+            let multiplicity = entry.multiplicity();
+            #[cfg(test)]
+            split_prefilter_tests::record_decode();
+            decoded = entry.decode().ok().map(|expr| (expr, multiplicity));
+        }
+    });
+    let (expr, multiplicity) = decoded?;
     if multiplicity.get() != 1 {
         return None;
     }

@@ -5125,6 +5125,24 @@ importer activation: accepted encodings, emitted bytes, hash inputs, charges,
 storage metering and persistence authority are unchanged. No new axis movement
 is introduced; full campaign/replay and backend qualification remain separate.
 
+**CBR-044 implementation qualification (2026-09-17, split-carrier header discrimination;
+pgmcp #6444/#5834).** The canonical-path classifier now rejects a proven non-list singleton
+expression from its resident protobuf header without decoding that expression. A single borrowed
+endpoint visitor performs both the header check and any required decode. Outer family/cardinality
+and root metadata guards, genuine-list metadata checks, and the underlying semantic decoder are
+unchanged. Cursor failures and field-20 ambiguity delegate to semantic decoding rather than
+establishing a new negative verdict.
+
+This is intended to be byte- and value-neutral: it changes neither the split domain nor returned
+list order/multiplicity, canonical path bytes, stability verdict, PathMap representation, EPM1
+mode/topology, protobuf/bincode encoding, hash inputs, charges, or persistence authority.
+The conditional Rocq equivalence model and independent kernel check precede implementation.
+Frozen-classifier and exact path/stability properties, all generated Expr headers, and the
+mechanical proof manifest pass for the final single-visitor implementation; all 25 EPM1
+snapshot/meter tests also pass with the original depth-4,096 cases retained. J-173 and SCP-01–08 retain the proof/native boundary and
+pending resource checks. This supporting refinement does not open a new consensus-change axis
+or close the broader CBR-044/campaign obligations.
+
 **CBR-044 living implementation continuation (2026-08-25, descriptor-complete codec/admission
 equivalence; pgmcp #6019).** The one descriptor pass now emits a test-only seventh artifact that
 constructs 329 canonical witnesses over all 56 generated messages, every field, five oneofs and all

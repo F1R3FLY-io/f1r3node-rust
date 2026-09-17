@@ -8,6 +8,69 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 #[test]
+fn split_carrier_prefilter_has_conditional_proof_and_native_bindings() {
+    let theory =
+        read_repository_file("formal/rocq/stack_safe_pda/theories/SplitCarrierPrefilter.v");
+    for capstone in [
+        "list_header",
+        "outer_false",
+        "header_list",
+        "header_nonlist",
+        "reference_success_is_list",
+        "conclusive_rejection_sound",
+        "result_equivalence",
+        "observations_equivalence",
+        "rejection_has_no_decode",
+        "inconclusive_preserves_reference",
+        "list_hint_retains_metadata_checks",
+        "outer_guards_not_bypassed",
+        "returned_children_are_exact",
+        "canonical_hint_sound",
+        "canonical_result_equivalence",
+        "wire_header_controls",
+        "outer_guard_mutant_controls",
+        "list_metadata_mutant_controls",
+        "hint_mutant_controls",
+        "decode_order_mutant_control",
+    ] {
+        assert!(theory.contains(&format!("Print Assumptions {capstone}.")));
+    }
+    let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
+    assert!(has_runner_command(&runner, &[
+        "rocq_compile_with_closed_count",
+        "theories/SplitCarrierPrefilter.v",
+        "20",
+    ]));
+    assert!(has_runner_kernel_check(&runner, &[
+        "StackSafePDA.SplitCarrierPrefilter"
+    ]));
+    assert!(
+        read_repository_file("formal/rocq/stack_safe_pda/_CoqProject")
+            .lines()
+            .any(|line| line == "theories/SplitCarrierPrefilter.v")
+    );
+    let native = read_repository_file("models/tests/support/split_carrier_prefilter.rs");
+    for witness in [
+        "split_prefilter_preserves_all_outer_guards_and_multiplicity",
+        "split_prefilter_retains_list_metadata_and_ordered_duplicate_children",
+        "split_prefilter_matches_frozen_classifier_and_path",
+        "split_prefilter_decode_boundary_control",
+        "split_prefilter_inconclusive_framing_controls",
+    ] {
+        assert!(native.contains(&format!("fn {witness}(")));
+    }
+    assert!(read_repository_file("models/tests/match_schema_cursor.rs")
+        .contains("fn resident_expr_headers_match_every_generated_variant("));
+    let source = read_repository_file("models/src/rust/canonical_path.rs");
+    assert!(source.contains(
+        "#[cfg(test)]\n#[path = \"../../tests/support/split_carrier_prefilter.rs\"]\nmod split_prefilter_tests;"
+    ));
+    assert!(source.contains(
+        "#[cfg(test)]\n            split_prefilter_tests::record_decode();\n            decoded = entry.decode().ok().map(|expr| (expr, multiplicity));"
+    ));
+}
+
+#[test]
 fn rmp2_region_summary_differential_has_an_executable_formal_bridge_marker() {
     const MARKER: &str = "resident_and_region_par_bag_summaries_match_for_every_canonical_family";
     assert!(
