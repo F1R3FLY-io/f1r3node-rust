@@ -12151,6 +12151,91 @@ proof parser or dependency was added to bypass this distinction. The leaf's
 local implementation/checks can be claimed complete; verified tracker acceptance
 must remain open until a supported authorized evidence path is established.
 
+### J-167 — 2026-09-17 Candidate-catalog ownership successor and resource qualification
+
+**Status: DERIVED ownership reconciliation; MEASURED focused checks; resource
+experiment preregistered before measurement.** Task 6445's original independent
+catalog-Bag rebuild predates selected two-level commit `d5b1ca6d6`. The parent
+campaign explicitly requires reuse of the existing datum Bag, not a second
+multiset. Current catalogs and issued pools therefore share the whole guarded
+channel anchor. Sharing that anchor is intentional; creating an independently
+owned raw header from an interior compressed focus is not permitted.
+
+`CandidateCatalogAuthorityIsolation.v` remains a historical conditional model:
+its disjoint-allocation premise must not be asserted for current shared holders.
+The current proof owner is `TwoLevelRSpaceGuardedOwnership.v`, with executable
+families TLRS-PROP-05/07 in the two-level invariant catalog. Its shallow-clone,
+nonfinal-release and CoW laws establish the intended ownership boundary without
+requiring a redundant channel reconstruction.
+
+Fresh compilation of that ownership module and its mutant companion, followed
+by independent `coqchk`, passed with eight closed-assumption reports. The capped
+service used 423.8 MiB peak, zero swap, 16.182 s CPU and 16.226 s elapsed. Log:
+`target/verification/catalog-ownership-successor-kernel-r2.log`, SHA-256
+`ee4a56037352492d1a13041b776b9a6afbf373e11448a5cf042073060a9ce65a`.
+The first launch failed before compilation because its service PATH lacked
+`coqc`; the failed `r1` log is retained, not counted as proof evidence.
+
+The additional `candidate_path_pruning_spec` release run passed all ten tests
+with 256 property cases and seed 41316445: 873.9 MiB peak, zero swap, 70.685 s CPU,
+27.592 s elapsed. Log: `target/verification/catalog-ownership-pruning-r1.log`,
+SHA-256 `def2746e4d946b620b1be4fbc69a2feca0bcee7ca918086df42e7202ffbb5540`.
+These complement J-166's 141-test gate; they do not identify a new production
+defect or establish the old rebuild as the repair for a separate sibling-loss bug.
+
+**Preregistered protocol (pgmcp experiment 344).** Extend the existing
+`bag_allocation_spec` binary rather than adding a production instrumentation
+feature. Its allocator measures successful requested allocations on the calling
+thread and restores its disabled state on unwind. Ordinary tests still use
+libtest/nextest discovery; an explicitly selected ignored test runs measurements.
+The automatic regression checks warm-pool allocation independence across the
+entire finite matrix. The ignored test is profiling infrastructure, not an
+ignored correctness requirement.
+
+The deterministic seed is 41316445. Each phase/cell uses a fresh process, five
+excluded warmups and 30 retained observations. One-factor sweeps cover distinct
+counts 128–2048; payload widths 128–2048 at 64 entries with shared/dispersed
+prefixes; unrelated sibling entries 0/128/512/2048; multiplicities 1/16/256; and
+1/16/64/256/1024 retained warm pools at 128 and 2048 entries. A loaded-empty cell
+is separate. Cold means first catalog construction on a newly prepared store;
+warm means issuance after priming. Cold retained-pool sweeps use one pool and
+are redundant controls, not measurements of multiple cold catalogs.
+
+Fixture construction, encoding, pool-holder allocation, validation, logging and
+destruction are outside the allocation/time interval. All issued pools and the
+whole store remain live through the post-operation RSS sample. Check zero lazy
+value decoding, exact candidate count and unchanged authoritative multiplicity
+and siblings outside the measured interval. Canonical order and alias/CoW
+semantics use the existing independent differential and anchor-identity tests.
+
+The prediction is exact invariance of warm requested bytes/calls per pool for a
+fixed channel identity, not a timing speedup against cold construction. Cold
+descriptor and position-index storage may grow with distinct encoded candidate
+bytes. Record RSS separately from requested allocation traffic; RSS effects
+below 64 KiB are inconclusive, and allocator reuse/page granularity prevent
+interpreting RSS subtraction as exact retained allocation. Repeated finite
+samples do not prove asymptotic complexity. No legacy-speedup, whole-RSpace
+throughput, consensus-byte change or campaign-completion claim follows.
+
+**Harness review and executable checkpoint.** The read-only plan-agent review
+found a rustfmt-broken TSV separator and a missing pool-content witness; both
+were repaired before the matrix. Post-measurement validation now compares one
+pool's exact addresses and decoded contents with fixture identities sorted by
+independently serialized tuple bytes and their digest. The zero-decode assertion
+precedes this intentional oracle decoding. The 35 samples within a cell share
+an allocator process; they are not 30 independent process-level RSS replicates,
+and fixture/validation reuse may hide retained allocations at any scale.
+
+Both automatic allocation tests passed after review (2.45 s test time), and
+nextest discovered both nonignored tests. The first nextest command rejected an
+unsupported `-j` flag; the corrected invocation uses `CARGO_BUILD_JOBS=4`. The
+manual profile smoke test passed, producing 30 observations of six allocation
+requests / 355 requested bytes per warm pool at 128 entries. This smoke run is
+not part of the matrix. Logs remain under `target/verification/` with prefixes
+`catalog-allocation-gate-r2`, `catalog-allocation-nextest-list-r2`, and
+`catalog-allocation-profile-smoke-r1`. Their services were limited to 2 GiB
+and zero swap. No production source or dependency was changed.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

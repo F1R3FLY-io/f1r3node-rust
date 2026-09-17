@@ -7,35 +7,54 @@
 //! allocate or serialize one object per occurrence.
 
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::cell::Cell;
+use std::sync::Arc;
+use std::time::Instant;
 
 use rspace_plus_plus::rspace::bag::{Bag, Multiplicity};
+use rspace_plus_plus::rspace::data_index::{CandidatePool, RSpaceDataIndex, RSpaceDataStore};
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::hashing::stable_hash_provider::StableHashSerialize;
+use rspace_plus_plus::rspace::internal::{Datum, DatumAddress};
+use rspace_plus_plus::rspace::rho_path::RhoPathEncode;
+use rspace_plus_plus::rspace::serializers::cold_store_decode::{
+    ColdStoreDecode, ColdStoreDecodeError, legacy_prefix,
+};
+use rspace_plus_plus::rspace::trace::event::Produce;
+use serde::{Deserialize, Serialize};
 
 struct CountingAllocator;
 
-static COUNTING: AtomicBool = AtomicBool::new(false);
-static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
-static ALLOCATED_BYTES: AtomicUsize = AtomicUsize::new(0);
+thread_local! {
+    static COUNTS: Cell<Option<(usize, usize)>> = const { Cell::new(None) };
+    static DECODES: Cell<usize> = const { Cell::new(0) };
+}
+
+fn record(pointer: *mut u8, bytes: usize) {
+    if !pointer.is_null() {
+        let _ = COUNTS.try_with(|counts| {
+            if let Some((calls, allocated)) = counts.get() {
+                counts.set(Some((calls + 1, allocated + bytes)));
+            }
+        });
+    }
+}
 
 unsafe impl GlobalAlloc for CountingAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        if COUNTING.load(Ordering::Relaxed) {
-            ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
-            ALLOCATED_BYTES.fetch_add(layout.size(), Ordering::Relaxed);
-        }
         // SAFETY: this allocator delegates the unchanged allocation request to
         // the process System allocator.
-        unsafe { System.alloc(layout) }
+        let pointer = unsafe { System.alloc(layout) };
+        record(pointer, layout.size());
+        pointer
     }
 
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        if COUNTING.load(Ordering::Relaxed) {
-            ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
-            ALLOCATED_BYTES.fetch_add(layout.size(), Ordering::Relaxed);
-        }
         // SAFETY: this allocator delegates the unchanged allocation request to
         // the process System allocator.
-        unsafe { System.alloc_zeroed(layout) }
+        let pointer = unsafe { System.alloc_zeroed(layout) };
+        record(pointer, layout.size());
+        pointer
     }
 
     unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
@@ -45,13 +64,11 @@ unsafe impl GlobalAlloc for CountingAllocator {
     }
 
     unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        if COUNTING.load(Ordering::Relaxed) {
-            ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
-            ALLOCATED_BYTES.fetch_add(new_size, Ordering::Relaxed);
-        }
         // SAFETY: `pointer` and `layout` identify a live System allocation, and
         // the request is forwarded without changing either value.
-        unsafe { System.realloc(pointer, layout, new_size) }
+        let replacement = unsafe { System.realloc(pointer, layout, new_size) };
+        record(replacement, new_size);
+        replacement
     }
 }
 
@@ -59,12 +76,17 @@ unsafe impl GlobalAlloc for CountingAllocator {
 static GLOBAL: CountingAllocator = CountingAllocator;
 
 fn measure<T>(operation: impl FnOnce() -> T) -> (T, usize, usize) {
-    ALLOCATIONS.store(0, Ordering::SeqCst);
-    ALLOCATED_BYTES.store(0, Ordering::SeqCst);
-    assert!(!COUNTING.swap(true, Ordering::SeqCst));
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) { COUNTS.set(None); }
+    }
+    assert!(COUNTS.get().is_none());
+    COUNTS.set(Some((0, 0)));
+    let reset = Reset;
     let result = operation();
-    assert!(COUNTING.swap(false, Ordering::SeqCst));
-    (result, ALLOCATIONS.load(Ordering::SeqCst), ALLOCATED_BYTES.load(Ordering::SeqCst))
+    let (calls, bytes) = COUNTS.get().unwrap();
+    drop(reset);
+    (result, calls, bytes)
 }
 
 fn singleton(path: &[u8], multiplicity: Multiplicity) -> Bag {
@@ -102,4 +124,313 @@ fn logical_cardinality_never_materializes_occurrence_sized_storage() {
     assert_eq!(maximum_image.len() - one_image.len(), 8);
     assert_eq!(one_image_allocations, maximum_image_allocations);
     assert_eq!(maximum_image_bytes - one_image_bytes, 8);
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct CatalogValue(String);
+
+impl StableHashSerialize for CatalogValue {}
+
+impl RhoPathEncode for CatalogValue {
+    fn rho_path_structure(&self) -> Vec<u8> { self.0.as_bytes().to_vec() }
+}
+
+impl ColdStoreDecode for CatalogValue {
+    fn cold_decode_prefix(bytes: &[u8]) -> Result<(Self, usize), ColdStoreDecodeError> {
+        DECODES.set(DECODES.get() + 1);
+        legacy_prefix(bytes)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct CatalogCase {
+    distinct: usize,
+    width: usize,
+    siblings: usize,
+    multiplicity: usize,
+    pools: usize,
+    dispersed: bool,
+}
+
+fn catalog_cases() -> Vec<CatalogCase> {
+    let base = CatalogCase {
+        distinct: 64,
+        width: 128,
+        siblings: 0,
+        multiplicity: 1,
+        pools: 1,
+        dispersed: false,
+    };
+    let mut cases = vec![CatalogCase {
+        distinct: 0,
+        ..base
+    }];
+    for distinct in [128, 256, 512, 1024, 2048] {
+        cases.push(CatalogCase { distinct, ..base });
+    }
+    for dispersed in [false, true] {
+        for width in [128, 256, 512, 1024, 2048] {
+            cases.push(CatalogCase {
+                width,
+                dispersed,
+                ..base
+            });
+        }
+    }
+    for siblings in [0, 128, 512, 2048] {
+        cases.push(CatalogCase { siblings, ..base });
+    }
+    for multiplicity in [1, 16, 256] {
+        cases.push(CatalogCase {
+            multiplicity,
+            ..base
+        });
+    }
+    for distinct in [128, 2048] {
+        for pools in [1, 16, 64, 256, 1024] {
+            cases.push(CatalogCase {
+                distinct,
+                pools,
+                ..base
+            });
+        }
+    }
+    cases
+}
+
+struct CatalogFixture {
+    store: RSpaceDataStore<String, CatalogValue>,
+    channel: String,
+    paths: Vec<Vec<u8>>,
+    sibling_paths: Vec<Vec<u8>>,
+    ordered_positions: Vec<usize>,
+}
+
+fn catalog_fixture(case: CatalogCase) -> CatalogFixture {
+    fn datums(count: usize, width: usize, dispersed: bool) -> Vec<Datum<CatalogValue>> {
+        (0..count)
+            .map(|index| {
+                let mut payload = vec![b'x'; width];
+                if dispersed {
+                    let mut state = 41316445_u64 ^ index as u64;
+                    for byte in &mut payload {
+                        state ^= state << 13;
+                        state ^= state >> 7;
+                        state ^= state << 17;
+                        *byte = b'a' + (state % 26) as u8;
+                    }
+                }
+                let identity = format!("{index:016x}");
+                payload[width - 16..].copy_from_slice(identity.as_bytes());
+                Datum {
+                    a: Arc::new(CatalogValue(String::from_utf8(payload).unwrap())),
+                    persist: false,
+                    source: Produce::new(
+                        Blake2b256Hash::new(&index.to_le_bytes()),
+                        Blake2b256Hash::new(b"catalog-resource-fixture"),
+                        false,
+                    ),
+                }
+            })
+            .collect()
+    }
+    let channel = "catalog-resource-target".to_owned();
+    let sibling = "catalog-resource-sibling".to_owned();
+    let requested = datums(case.distinct, case.width, case.dispersed);
+    let siblings = datums(case.siblings, 128, false);
+    let identities: Vec<_> = requested
+        .iter()
+        .map(|datum| {
+            let bytes =
+                bincode::serialize(&(datum.a.as_ref(), datum.persist, &datum.source)).unwrap();
+            (Blake2b256Hash::new(&bytes), bytes)
+        })
+        .collect();
+    let mut ordered_positions: Vec<_> = (0..requested.len()).collect();
+    ordered_positions.sort_unstable_by_key(|position| &identities[*position]);
+    let paths = requested
+        .iter()
+        .map(|datum| RSpaceDataIndex::datum_path(&channel, datum))
+        .collect();
+    let sibling_paths = siblings
+        .iter()
+        .map(|datum| RSpaceDataIndex::datum_path(&sibling, datum))
+        .collect();
+    let mut store = RSpaceDataStore::new();
+    store
+        .set_channel(
+            channel.clone(),
+            requested
+                .into_iter()
+                .flat_map(|datum| std::iter::repeat_n(datum, case.multiplicity)),
+        )
+        .unwrap();
+    store.set_channel(sibling, siblings).unwrap();
+    CatalogFixture {
+        store,
+        channel,
+        paths,
+        sibling_paths,
+        ordered_positions,
+    }
+}
+
+fn check_pool(fixture: &CatalogFixture, pool: &CandidatePool<CatalogValue>) {
+    for (position, fixture_position) in fixture.ordered_positions.iter().enumerate() {
+        let (datum, address) = pool.candidate(position).unwrap();
+        let DatumAddress::Stored(path) = address else {
+            panic!("unexpected fresh datum")
+        };
+        assert_eq!(path.as_ref(), fixture.paths[*fixture_position]);
+        assert_eq!(
+            RSpaceDataIndex::datum_path(&fixture.channel, datum),
+            fixture.paths[*fixture_position]
+        );
+    }
+    assert!(pool.candidate(fixture.ordered_positions.len()).is_none());
+}
+
+fn check_fixture(fixture: &CatalogFixture, case: CatalogCase) {
+    assert_eq!(fixture.store.distinct_len(), case.distinct + case.siblings);
+    assert_eq!(
+        fixture.store.cardinality(),
+        (case.distinct * case.multiplicity + case.siblings) as u64
+    );
+    for path in &fixture.paths {
+        assert_eq!(fixture.store.index().count_path(path), case.multiplicity as u64);
+    }
+    for path in &fixture.sibling_paths {
+        assert_eq!(fixture.store.index().count_path(path), 1);
+    }
+}
+
+#[test]
+fn warm_catalog_pools_share_storage_independently_of_catalog_size() {
+    let mut per_pool = None;
+    for case in catalog_cases()
+        .into_iter()
+        .filter(|case| case.distinct != 0)
+    {
+        let fixture = catalog_fixture(case);
+        drop(
+            fixture
+                .store
+                .channel_pool(&fixture.channel)
+                .unwrap()
+                .unwrap(),
+        );
+        let mut pools = Vec::with_capacity(case.pools);
+        DECODES.set(0);
+        let ((), calls, bytes) = measure(|| {
+            for _ in 0..case.pools {
+                pools.push(
+                    fixture
+                        .store
+                        .channel_pool(&fixture.channel)
+                        .unwrap()
+                        .unwrap(),
+                );
+            }
+        });
+        assert_eq!(DECODES.get(), 0);
+        let (unit_calls, unit_bytes) = *per_pool.get_or_insert((calls, bytes));
+        assert_eq!(calls, unit_calls * case.pools, "{case:?}");
+        assert_eq!(bytes, unit_bytes * case.pools, "{case:?}");
+        assert!(pools.iter().all(|pool| pool.len() == case.distinct));
+        check_pool(&fixture, &pools[0]);
+        drop(pools);
+        check_fixture(&fixture, case);
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn resident_kib() -> usize {
+    std::fs::read_to_string("/proc/self/status")
+        .unwrap()
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("VmRSS:")
+                .map(|rss| rss.split_whitespace().next().unwrap().parse().unwrap())
+        })
+        .unwrap()
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "isolated resource measurement; set CATALOG_RESOURCE_CASE and CATALOG_RESOURCE_PHASE"]
+fn catalog_resource_profile() {
+    let cell: usize = std::env::var("CATALOG_RESOURCE_CASE")
+        .unwrap()
+        .parse()
+        .unwrap();
+    let phase = std::env::var("CATALOG_RESOURCE_PHASE").unwrap();
+    assert!(phase == "cold" || phase == "warm");
+    let case = catalog_cases()[cell];
+    let pool_count = if phase == "cold" { 1 } else { case.pools };
+    for sample in 0..35 {
+        let fixture = catalog_fixture(case);
+        if phase == "warm" {
+            drop(
+                fixture
+                    .store
+                    .channel_pool(&fixture.channel)
+                    .unwrap()
+                    .unwrap(),
+            );
+        }
+        let encoded_bytes: usize = fixture.paths.iter().map(Vec::len).sum();
+        let sibling_bytes: usize = fixture.sibling_paths.iter().map(Vec::len).sum();
+        let mut pools = Vec::with_capacity(pool_count);
+        let rss_before = resident_kib();
+        DECODES.set(0);
+        let (((), nanos), calls, bytes) = measure(|| {
+            let start = Instant::now();
+            for _ in 0..pool_count {
+                pools.push(
+                    fixture
+                        .store
+                        .channel_pool(&fixture.channel)
+                        .unwrap()
+                        .unwrap(),
+                );
+            }
+            ((), start.elapsed().as_nanos())
+        });
+        let rss_after = resident_kib();
+        assert_eq!(DECODES.get(), 0);
+        assert!(pools.iter().all(|pool| pool.len() == case.distinct));
+        assert!(
+            pools
+                .iter()
+                .all(|pool| pool.is_empty() == (case.distinct == 0))
+        );
+        check_fixture(&fixture, case);
+        check_pool(&fixture, &pools[0]);
+        drop(pools);
+        check_fixture(&fixture, case);
+        if sample >= 5 {
+            println!(
+                concat!(
+                    "CATALOG\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t",
+                    "{}\t{}\t{}\t{}\t{}\t{}\t{}"
+                ),
+                cell,
+                phase,
+                sample - 5,
+                case.distinct,
+                case.width,
+                case.siblings,
+                case.multiplicity,
+                pool_count,
+                case.dispersed,
+                encoded_bytes,
+                sibling_bytes,
+                calls,
+                bytes,
+                nanos,
+                rss_before,
+                rss_after
+            );
+        }
+    }
 }
