@@ -12539,6 +12539,33 @@ The named fixture consumer migrations are qualified. Task 6444 remains open for 
 phase-separated resource measurements and their interpretation; no broader workspace or production
 performance conclusion follows from these focused gates.
 
+
+**Named-consumer audit reconciliation (2026-09-17).** The ledger below makes the boundary
+explicit. It supersedes the earlier prospective “remaining consumer audit” wording in J-170;
+it does not assert that every test or benchmark constructor in the repository was replaced.
+
+| File and helper | Disposition | Qualification |
+|---|---|---|
+| `models/tests/par_corpus/mod.rs::deep_par` | One final-root unary constructor with the original GInt(0) terminal. | UEL-01–09; 49-test structural/cursor/decoder gate retains depth 20,000. |
+| `models/tests/match_path_structure.rs` wide occurrence construction | One checked bulk multiplicity insertion rather than repeated projection/reinsertion. | Frozen occurrence equality and overflow atomicity, including metadata and unrelated families. |
+| `models/tests/bincode_encoder_space.rs::deep` | One unary finish around the original empty Par. | Empty-terminal bridge and all nine encoder-space tests. |
+| `models/tests/protobuf_encoder_space.rs::nested_list` | Same empty-terminal unary finish. | Same bridge and all seven encoder-space tests. |
+| `models/tests/epathmap_epm1_snapshot.rs::deep_escaped` | One final-root list chain, unchanged enclosing ESet and GInt(1) terminal. | Exact representation/outer-set witness; full EPM1 gate, no depth reduction. |
+| `models/tests/epathmap_epm1_snapshot.rs::nested_map_value_chain_from` | Planned inner PathMap-valued chain, one inner finish, unchanged outer map constructor. | SMC-01–08; full depth-4,096 snapshot and term-operation gates. |
+| `rholang/tests/replay_output_value_stack_safety.rs::nested_list` | One unary finish with original output-value terminal. | Pre-migration frozen witness and complete replay target at depth 4,096. |
+| `rholang/tests/output_value_write_side_reachability.rs::nested_list` | Same terminal and final-root construction. | Complete write-side target and shared terminal/representation witness. |
+| `models/tests/protobuf_decoder_differential.rs` deep byte fixture | Already builds input bytes directly; unchanged. | Generated decoder still runs at its original deep depth. |
+| `models/tests/bincode_encoder_differential.rs` | Shared `deep_par` migration applies; bounded `deep_mixed_par` oracle remains independent. | Complete 13-test release target passed during J-174 acceptance review. |
+| `models/tests/protobuf_encoder_differential.rs` | Same shared helper migration; bounded mixed-shape control unchanged. | Complete 15-test release target passed during J-174 acceptance review. |
+| `rholang/tests/planned_deep_fixture_equivalence.rs` and its support | Already uses arena handles; extended only with the output-value correspondence witness. | Complete three-test target; no duplicate constructor migration. |
+| Bounded frozen constructors and `par_corpus::deep_mixed_par` oracle corpus | Retained as independent shallow semantic/encoding controls, not authoritative deep construction or cost claims. | Declared bounded oracle domains are not production depth restrictions. |
+| `models/benches/bincode_encoder_massif.rs::deep` | Repeated resident wrapping remains in this separate benchmark's setup. It was not used for any accepted experiment-345 measurement. | Explicitly outside the named migrated consumer set; no claim of universal repository-fixture migration or a profile obtained from this driver. |
+
+The larger schema-construction task 5834 remains responsible for production legacy decoding,
+map-value validation and decoded descent. Its earlier 100% self-report is not verified closure.
+Those discoveries do not retroactively turn this fixture investigation into a rewrite of every
+decoder, and they are not waived by finishing the named consumer audit.
+
 ### J-170 — 2026-09-17 Singleton-map final-root fixture qualification
 
 **Status: DERIVED construction recurrence; MEASURED complete EPM1 regression pass.** The old
@@ -12589,8 +12616,10 @@ this run, so its timing is qualification evidence, not an uncontended benchmark.
 
 **Remaining work.** The deep escaped round-trip and legacy-tag codec tests still each reported
 more than 60 seconds. This run does not attribute that cost to construction, admission, sorting,
-encoding or teardown. Task 6444 still requires its remaining consumer audit and phase-separated
-geometric measurements. No production source, dependency, PathMap implementation, canonical byte
+encoding or teardown. At this historical checkpoint, task 6444 still required its remaining
+consumer audit and phase-separated geometric measurements. The reconciled ledger in J-169 now
+completes that named-consumer audit; J-171–173 and the extended phase report record the measurements.
+No production source, dependency, PathMap implementation, canonical byte
 format or consensus contract changed in this fixture slice; full campaign acceptance remains open.
 
 ### J-171 — 2026-09-17 Final-root phase measurement boundaries
@@ -12739,6 +12768,65 @@ memory and zero swap under a 2 GiB cap. CPU 3 was 93.25% idle immediately before
 no owned build/test overlapped. The [phase report](../stack-safety/measurements/final-root-fixture-phase-attribution-2026-09-17.md#qualified-split-carrier-repair-and-successor-measurements)
 preserves raw samples, hashes, exact boundaries and remaining obligations. No end-to-end
 campaign or full workspace acceptance is claimed.
+
+### J-174 — 2026-09-17 Extended phase accounting and fixture acceptance boundary
+
+**MEASURED.** Experiment 345 artifact 682 preserves the completed depth-512/1024
+operation ladder at `0f846b3fd`: 59 complete cells with 413 retained observations,
+three actual 120-second cell deadlines with seven partial retained observations,
+and two explicitly unrun higher-depth cells. All 668 emitted rows, including
+pilots and warmups, are retained in the
+[observation table](../stack-safety/measurements/final-root-fixture-phase-r5-2026-09-17.tsv).
+The [disposition ledger](../stack-safety/measurements/final-root-fixture-phase-r5-dispositions-2026-09-17.tsv)
+covers all 64 planned coordinates. Only the complete cells supply 177 new metric
+groups; incomplete rows are not passed off as seven-observation samples.
+
+The capped service completed in 450.546 seconds, with 446.712 CPU seconds,
+reported 18.8 MiB peak memory and zero swap. It used CPU 3, a one-core quota,
+2 GiB hard/1536 MiB high limits, a 2400-second service watchdog and 120 seconds
+per cell. Preflight idle was 99.34% on CPU 3 and 83.89% machine-wide. Other
+worktree activity is an elapsed-time caveat; no owned build/test overlapped.
+The raw log hash is
+`8c2ccd9555ddf455072babd814515e4793360b518a969e7952b249978ab26bd7`;
+the successor binary hash remains unchanged from J-173.
+
+Escaped legacy decoding at depth 1024 reached the deadline after three retained
+observations; map-key decoding at 512 reached it before retained sampling;
+decoded map descent at 512 produced four retained observations before the deadline.
+The two map depth-1024 cells were not run after their lower-rung deadlines.
+These are whole-cell deadlines, not measured 120-second single-operation latencies,
+semantic failures, OOMs or stack overflows. Conditional operation extensions to
+2048/4096 are not run before the required reconstruction repair; constructor
+measurements at those depths are already complete. The
+[phase report](../stack-safety/measurements/final-root-fixture-phase-attribution-2026-09-17.md#extended-operation-ladder-and-explicit-stopping-outcomes)
+records exact scope and representative completed-cell medians.
+
+**DECISION.** The named-consumer audit after J-169, UEL/SMC/SCP native bindings,
+unchanged correctness gates and geometric measurements now support acceptance
+review of task 6444's fixture/attribution contract. Five explicit criteria
+(4753–4757, revision 1) replace its previously empty acceptance set; this is
+contract clarification, not a waiver. Evidence acceptance and the final stable
+commit remain required. Existing task 5834 still owns production legacy
+reconstruction, map canonical validation and decoded-descent work. Neither its
+historical claimed percentage nor this diagnostic experiment proves it complete.
+Scheduler revision 1201 retains 6444 as the incumbent; no task switch is authorized.
+
+**Acceptance-review corrections.** Independent review found that the historical
+closed-assumption logs did not expose their silent kernel-check invocation. A fresh
+capped run now records source hashes, all four compiler commands, 74 closed reports
+(22 unary, 14 controls, 18 map and 20 prefilter), the explicit four-module
+`coqchk -silent` invocation and its successful exit marker. The service exits zero
+after 20.902 seconds, with 20.617 CPU seconds, 477.6 MiB reported peak and zero swap
+under a 2 GiB cap. The separate encoder-differential qualification passes all 13
+bincode and 15 protobuf tests with no ignored or filtered tests; the 8 GiB capped
+service exits zero after 5.654 seconds, with 16.013 CPU seconds, 722.7 MiB peak and
+zero swap. These are correctness receipts, not uncontended timing measurements.
+The consumer ledger now explicitly names both suites.
+
+| Review artifact under `target/verification/` | SHA-256 |
+|---|---|
+| `fixture-6444-acceptance-proof-r1.log` | `3675c8b3ba7878bb13fc6f1475db482e75e16c602c6946e850306c43c88fdc0a` |
+| `fixture-6444-encoder-differentials-r1.log` | `ae9137bf95a7367f6a5f51c98f731759892d5e0065e4a9473fe47f7cc318a4e6` |
 
 ## Upstream PathMap integration request register
 

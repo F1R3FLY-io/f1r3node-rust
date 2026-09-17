@@ -98,7 +98,8 @@ seven observations per cell. The [additional 12 cells](final-root-fixture-phase-
 took 16.861 seconds / 13.794 seconds CPU in the capped service, with 19.1 MiB reported
 peak cgroup memory and zero swap. Preflight idle fractions were 94.16% on CPU 3 and 76.58%
 machine-wide. All 126 cells across the three ladders passed; no cell was censored or silently
-dropped. Higher-depth non-construction phases have not yet been run and are not counted here.
+dropped. Higher-depth non-construction phases are not counted in this initial ladder;
+their successor run and stopping outcomes appear in the extended operation section below.
 
 An ordinary least-squares fit of log median cost against log depth across all seven sizes
 gives the following descriptive exponents. An exponent near one indicates roughly proportional
@@ -158,10 +159,12 @@ The profile/report services completed under their caps: uProf collection 61.2 Mi
 Heaptrack collection plus uProf reporting 290.5 MiB; Heaptrack text reporting 54 MiB.
 All report zero swap. No GUI, PathMap fork, enlarged stack, or production edit was used.
 
-## Decision and remaining obligations
+## Initial decision and remaining obligations
 
-Retain the qualified fixture migrations. Do not close task 6444 or claim that all slopes
-are fixed. Before a production repair, prove that a resident encoded-Expr discriminator
+At the pre-repair checkpoint, the decision was to retain the qualified fixture migrations.
+The following obligations describe that historical boundary; successor evidence follows.
+Do not close task 6444 or claim that all slopes
+are fixed. The prerequisite before the subsequently implemented repair was to prove that a resident encoded-Expr discriminator
 rejects exactly the expressions that cannot be split as lists, preserving full path bytes,
 stability, metadata, multiplicity and malformed-input boundaries. Keep genuine EList
 handling unchanged unless separately proved. The schema-wide reconstruction repair
@@ -174,8 +177,10 @@ Expr suffix, then `dismantle_collecting_epathmap_keys`, which decodes nested com
 The branch compares protobuf bytes; it does not re-encode the trie path for that comparison.
 The small split-classifier repair must not be claimed to fix this validation path or the
 separate repeated lookup/decode traversal. Their exact profile shares remain unmeasured.
-The remaining high-depth operation ladder, repair qualification, full codec gates and campaign
-acceptance are open. No new production workaround was introduced to obtain these results.
+At this initial checkpoint the high-depth operation ladder and repair qualification were open;
+the successor sections below record their later results. Full codec/campaign acceptance
+does not follow from this investigation. No production workaround was introduced to obtain
+the baseline results.
 
 ## Artifact integrity
 
@@ -296,3 +301,75 @@ and `fixture_phase_probe::fixture_phase_measurement`. The latter retains the ori
 `FIXTURE_SHAPE/PHASE/DEPTH/BATCH/SAMPLES/WARMUPS` selectors. The paired probe uses
 `SPLIT_SAMPLES=7` by default. Invoke with `--exact <name> --ignored --nocapture`, CPU affinity
 and the resource caps above. No profiler or compilation overlaps this measurement service.
+
+## Extended operation ladder and explicit stopping outcomes
+
+**MEASURED, 2026-09-17:** artifact 682 completes the accounting for all 64 initially
+registered operation cells at depths 512 and 1024, at implementation `0f846b3fd`.
+Construction was already measured through 4096 and is not repeated here. The
+[complete observation table](final-root-fixture-phase-r5-2026-09-17.tsv) includes pilots,
+warmups and partial observations; the [64-cell disposition table](final-root-fixture-phase-r5-dispositions-2026-09-17.tsv)
+distinguishes completed cells, actual deadlines and cells not run.
+
+The run retains the same one-pilot, three-warmup, seven-retained protocol, CPU 3 affinity,
+2 GiB hard cap, 1536 MiB high watermark, zero swap and one-core quota. The immediate idle
+check was 99.34% on CPU 3 and 83.89% machine-wide. Other worktrees had build/test activity;
+there was ample idle capacity and no owned compilation/test overlap. Consequently elapsed
+times remain diagnostic; allocation requests are the primary mechanism observation.
+The overall watchdog was 2400 seconds and each cell had a 120-second deadline followed
+by a five-second termination grace period. The service exited successfully after 450.546
+seconds, consuming 446.712 CPU seconds; systemd reported 18.8 MiB peak memory and zero swap.
+
+Service success does not mean every measurement cell completed. There are 59 complete cells
+with 413 retained observations, three deadline-limited cells with seven partial retained
+observations in total, and two higher-depth cells deliberately not run. All 668 emitted
+pilot/warmup/retained rows are preserved. Only complete seven-observation cells enter the
+new metric groups; partial rows are evidence of the stopping boundary, not a complete sample.
+
+| Shape / operation | Depth | Disposition | Retained observations |
+|---|---:|---|---:|
+| Escaped / legacy decoding | 1024 | Actual 120-second cell deadline, exit 124 | 3 of 7 |
+| Map / canonical-key decoding | 512 | Actual 120-second cell deadline, exit 124 | 0 of 7 |
+| Map / canonical-key decoding | 1024 | Not run after the preceding rung's deadline | 0 |
+| Map / decoded lookup descent | 512 | Actual 120-second cell deadline, exit 124 | 4 of 7 |
+| Map / decoded lookup descent | 1024 | Not run after the preceding rung's deadline | 0 |
+
+The deadline covers preparation, pilot, warmups, retained measurements and checks, not one
+operation. It is not evidence that a single operation took 120 seconds, failed semantically,
+overflowed its stack, or exhausted memory. The conditional 2048/4096 operation extensions
+are not run at this checkpoint: the initial ladder has already isolated the unresolved
+reconstruction mechanisms, and larger observations are reserved for the repaired successor
+comparison under task 5834. No correctness-test depth or deadline was reduced.
+
+Selected complete-cell medians:
+
+| Operation | Depth | Time (ms) | Cumulative requested bytes |
+|---|---:|---:|---:|
+| Unary canonical-key decoding | 512 | 8.017 | 2,875,439 |
+| Unary canonical-key decoding | 1024 | 15.488 | 5,740,335 |
+| Escaped EPM1 decoding | 512 | 0.507 | 752,321 |
+| Escaped EPM1 decoding | 1024 | 1.021 | 1,506,625 |
+| Escaped legacy decoding | 512 | 4,241.123 | 1,434,044,544 |
+| Map EPM1 decoding | 512 | 43.114 | 25,642,022 |
+| Map EPM1 decoding | 1024 | 108.861 | 51,493,414 |
+
+The legacy decoder's depth-512 requested bytes remain approximately four times the
+depth-256 successor value. Map EPM1 allocation traffic approximately doubles, whereas
+its time more than doubles on these two rungs; neither result establishes a universal
+complexity theorem. The map validation/descent deadlines strengthen the need for the
+already-required repairs; they do not show a native PathMap point-lookup problem.
+Cumulative requests can exceed a gigabyte while peak live memory remains small.
+
+**DECISION:** retain the exact-equivalent fixture migrations and qualified header
+prefilter. The construction hypothesis is supported over the measured range. The stronger
+claim that all codec/validation/descent costs are linear is not supported. Task 6444's
+remaining closure work is evidence review and durable handoff, not silently expanding
+its fixture contract into task 5834's schema-wide production repair. Those production
+repairs remain required before campaign completion; no deferral or acceptance of their
+costs is implied.
+
+The raw log `target/verification/fixture-phase-6444-ladder-r5.log` has SHA-256
+`8c2ccd9555ddf455072babd814515e4793360b518a969e7952b249978ab26bd7`.
+The phase executable remains
+`eb4e617ba6f8fb5a52bfc9ea253b7fab5e9f177770a756f39ce766672207117d`;
+the post-run hash matches the qualified successor executable.

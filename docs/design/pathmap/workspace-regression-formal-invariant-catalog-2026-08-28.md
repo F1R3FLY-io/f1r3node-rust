@@ -169,7 +169,7 @@ accepted outcome.
 
 ## Final-root unary-EList fixture refinement — 2026-09-17, task 6444
 
-**FORMAL-FIRST; FIRST NATIVE MIGRATION QUALIFIED, RESOURCE LADDER OPEN.** The old shared fixture constructs a resident
+**FORMAL-FIRST; NATIVE MIGRATION AND FINITE RESOURCE LADDER QUALIFIED.** The old shared fixture constructs a resident
 parent at every level, copying every suffix's protobuf body and canonical score. The existing
 `Par::wrap_unary_elist` prepares length frames and emits only the final authoritative endpoint.
 `UnaryEListConstruction.v` now compares these two concrete byte computations. It is not an
@@ -229,8 +229,12 @@ new native witnesses and all 25 formal-manifest tests passed. After migration, a
 across `match_path_structure`, `match_path_cursor`, `match_schema_cursor`,
 `bincode_decoder_differential` and `protobuf_decoder_differential`. The 20,000-level depths and
 small-stack assertions are unchanged. See engineering journal J-169 for commands and log hashes.
-UEL-08's geometric native cost measurements and the nested-EPathMap slice remain open; this
-qualification does not close task 6444 or the whole-workspace gate.
+At that checkpoint UEL-08's measurements and the nested-EPathMap slice remained open.
+The subsequent SMC qualification below covers the nested fixture. Experiment 345 now
+supplies phase-separated constructor measurements through depth 4096 and operation
+measurements through 1024 with explicit deadline/not-run outcomes; see J-174 and the
+[phase report](../stack-safety/measurements/final-root-fixture-phase-attribution-2026-09-17.md).
+These finite observations do not prove every Rust operation linear or close the workspace gate.
 
 The native bridge additionally covers empty-Par terminals for both encoder-space fixtures and
 `planned_escaped_fixture_preserves_outer_set_and_exact_representation` for the EPM1 escaped fixture.
@@ -244,11 +248,12 @@ The replay/output-value terminal correspondence is additionally bound by
 `final_root_output_value_fixture_matches_frozen_resident_wrapping`, which passed before the two
 Rholang fixture helpers changed. Their three complete release test targets then passed all seven
 tests with no exclusions, including the depth-4,096 replay case. This extends UEL-01–06/09 to those
-consumers; it does not close UEL-08's resource measurements. J-169 records commands and log hashes.
+consumers; resource evidence is supplied separately by experiment 345, not inferred from
+test duration. J-169 records commands and log hashes.
 
 ## Fixed-key singleton-map construction — 2026-09-17, task 6444
 
-**FORMAL-FIRST; NATIVE BRIDGE AND MIGRATION QUALIFIED, RESOURCE LADDER OPEN.** `SingletonMapConstruction.v` has compiled and
+**FORMAL-FIRST; NATIVE BRIDGE, MIGRATION AND FINITE RESOURCE LADDER QUALIFIED.** `SingletonMapConstruction.v` has compiled and
 passed independent kernel checking with 18 closed assumption reports. It models the fixed-key
 singleton-map fixture, not arbitrary ACT encoding or every arena constructor. A supplied common
 prefix contains the EPM1 magic/version/mode, PathMap-produced topology and one-value count. Each
@@ -266,7 +271,7 @@ authority and checked against the frozen resident constructor before migration.
 | SMC-05 | Final score and endpoint equal maintained canonical score serialization. | Bounded carrier Eq/Ord/Hash, protobuf/bincode and complete RPB3 snapshot differential. The fixture itself returns EPathMap, so direct snapshot equality is also mandatory. |
 | SMC-06 | Checked frame success preserves lengths; composed checked-plan success refines the mathematical plan; refusal cannot publish. | Inspect native checked sums and keep finite model refusal/positive controls; no enormous allocations as an overflow test. Allocation success and addressable sizes are explicit premises. |
 | SMC-07 | Successful endpoint reservation uses exact capacity and a representable score trailer. | Native capacity is $`39+s+z+e`$, with snapshot length $`s`$, zero count $`z`$ and expression length $`e`$. Symbolic score bound specializes to $`2^{64}`$; native conversion follows private allocation/emission, so the model does not claim identical internal refusal cost/order. |
-| SMC-08 | Fixed-size prefix and bounded varints imply linear emitted-byte length. | Geometric phase measurements remain required. This is an output-size bound, not proof of runtime or allocator costs. |
+| SMC-08 | Fixed-size prefix and bounded varints imply linear emitted-byte length. | Experiment 345 measures final-root construction through depth 4096, separately from decoding/cursors/teardown. This is an output-size bound plus finite native observations, not proof of all runtime or allocator costs. |
 
 The small `[7, 0, 9]` prefix used by model controls is deliberately abstract, not a canonical EPM1
 example. Actual writer-prefix equality must be checked natively. A failed proof-development run
@@ -282,15 +287,18 @@ prefixes through each bounded level, and reject missing depth, changed key/leaf 
 key/value. The helper then switched to integer arena handles, one inner finish, and the unchanged
 outer `EPathMap::new_map`. The complete EPM1 snapshot suite passed 21 tests with none excluded,
 including depth-4,096 Eq/Ord/Hash and snapshot/codec gates on 256 KiB stacks. See J-170 for evidence.
-The named fixture consumers subsequently passed their migrations as recorded above. SMC-08's
-phase-separated measurements and task 6444 remain open.
+The named fixture consumers subsequently passed their migrations as recorded above.
+SMC-08's seven-size constructor ladder has measured time/byte exponents 1.0139/1.0049;
+the initial 512/1024 operation ladder is fully accounted for in J-174, including censored
+and explicitly unrun cells. Separate map validation and decoded-descent costs remain
+required production work under 5834. Task 6444 still requires evidence acceptance.
 
 
 ## Split-carrier header prefilter — 2026-09-17, tasks 6444 and 5834
 
 **FORMAL MODEL, NATIVE SUCCESSOR AND TARGETED RESOURCE COMPARISON QUALIFIED.** Profiling the escaped
 nested-list fixture identified full expression decoding in `split_carrier_list` just to reject
-a non-list expression. The proposed prefilter reads the resident Expr endpoint's borrowed
+a non-list expression. The implemented prefilter reads the resident Expr endpoint's borrowed
 protobuf field header. Only canonical resident oneof bytes are eligible for this shortcut:
 the first field of arbitrary input protobuf is not an authority because a later oneof field
 can override it. No new untrusted-input admission path is introduced.

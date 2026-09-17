@@ -8371,6 +8371,19 @@ The proof is conditional on the native header correspondence, not a Rust
 parser correctness proof. Legacy decoder reconstruction and map-value validation slopes remain
 separate open obligations; see J-173 and SCP-01–08.
 
+**Extended operation ladder (2026-09-17).** Experiment 345 artifact 682 accounts for all
+64 registered depth-512/1024 operation cells: 59 complete, three actual 120-second cell
+deadlines, and two higher-depth cells not run after the preceding deadline. Partial samples
+are preserved separately from the 413 retained observations in complete cells. The deadlines
+cover whole cells, not single operations, and are not stack-overflow or OOM outcomes.
+Systemd reports 450.546 seconds elapsed, 446.712 CPU seconds, 18.8 MiB peak memory and
+zero swap under a 2 GiB cap. Legacy decoding at depth 512 still requests 1,434,044,544
+cumulative bytes per operation; cumulative traffic is not simultaneous residency.
+The report's [extended ladder](measurements/final-root-fixture-phase-attribution-2026-09-17.md#extended-operation-ladder-and-explicit-stopping-outcomes)
+and J-174 preserve every stopping outcome, idle-core conditions and conditional higher-depth
+disposition. The named fixture/measurement work is now undergoing acceptance review;
+5834's reconstruction repairs and whole-campaign verification remain required.
+
 The first complete release-workspace diagnostic exposed a boundary outside the production machines:
 several deep validation fixtures still constructed their input by repeatedly wrapping an already
 resident `Par`. Moving the accumulator kept native-stack use constant, but each RPB3 parent key still
