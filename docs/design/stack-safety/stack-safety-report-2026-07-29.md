@@ -8333,6 +8333,23 @@ including the original depth-4,096 replay input. The capped service reported 710
 swap. These migrations leave the geometric construction/operation/teardown measurements open;
 J-169 records the precise qualification scope and artifacts.
 
+**Phase attribution (2026-09-17, experiment 345).** The first 78-cell instrumented ladder
+separates construction, cold/warm caches, cursors, public decoding and unique/shared teardown.
+Final-root unary and fixed-key map construction requests roughly twice the bytes when depth
+doubles from 64 to 128; frozen resident controls request roughly four times as much. Remaining
+fourfold costs occur in escaped outer-map construction and legacy decoding, and in map key
+decoding and decoded descent. Headless allocation profiles connect the first path to a whole
+Expr decode performed before rejecting a non-list split candidate, followed by repeated resident
+construction/destruction. Thus stack safety and the fixture repair do not mean all allocation
+slopes are fixed. No production change follows from the measurement alone; formal-first repair
+and broader decoder qualification remain open under tasks 6444/5834. See the
+[phase report and retained observations](measurements/final-root-fixture-phase-attribution-2026-09-17.md).
+The third operation rung at depth 256 confirms those costs. The repaired constructors complete
+all seven geometric sizes through depth 4096, with measured time exponents 1.0000–1.0139 and
+requested-byte exponents 1.0049–1.0097. No OOM or deadline occurred in the 126 completed cells;
+higher-depth non-construction phases and the independently identified reconstruction repairs
+remain unqualified. These descriptive fits do not prove an end-to-end application speedup.
+
 The first complete release-workspace diagnostic exposed a boundary outside the production machines:
 several deep validation fixtures still constructed their input by repeatedly wrapping an already
 resident `Par`. Moving the accumulator kept native-stack use constant, but each RPB3 parent key still

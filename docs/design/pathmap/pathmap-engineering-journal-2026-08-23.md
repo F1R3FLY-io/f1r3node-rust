@@ -12644,6 +12644,33 @@ measurement ignored, and the 21 existing regression tests filtered. This is inst
 qualification, not a rerun of J-170's full regression suite. Task 6444 remains open for the
 geometric measurements and profiler attribution.
 
+### J-172 — 2026-09-17 Remaining reconstruction costs isolated
+
+**MEASURED and DERIVED; repair pending.** Experiment 345 now has 78 complete depth-64/128
+cells and 234 metric groups. The qualified final-root constructors show approximately twofold
+requested-byte growth per depth doubling, unlike the fourfold frozen controls. Escaped outer
+EPathMap construction, legacy-tag decoding, map canonical-key decoding and decoded map descent
+still approach fourfold growth. Warm caches allocate nothing in this ladder; a map's key-only
+digest stays independent of nested value depth. These are instrumented diagnostic observations,
+not a `dev` comparison or production speedup verdict.
+
+Read-only plan-agent inspection and headless Heaptrack identify an unnecessary semantic Expr
+decode in `split_carrier_list` before rejecting non-EList expressions. Generated legacy tag-1
+decoding separately rebuilds resident suffixes. Native PathMap point lookup is not the diagnosed
+cause, and changing/forking PathMap is not the proposed repair. Existing task 5834 owns the broader
+schema-driven construction obligation; the concrete evidence is linked there without duplicating
+the task. Formal equivalence of any encoded classifier must precede its implementation.
+
+The [phase report](../stack-safety/measurements/final-root-fixture-phase-attribution-2026-09-17.md)
+records raw retained observations, capped resource results, allocation-stack attribution, uProf
+affinity/unwinding limitations, control limitations and artifact hashes. The depth-256 extension
+passed all 36 cells. All three constructors also passed the four additional depths through 4096:
+their seven-size time exponents are 1.0000–1.0139 and requested-byte exponents 1.0049–1.0097.
+The complete 126-cell dataset contains 882 retained observations; it does not include unrun
+higher-depth non-construction phases. Corrected uProf r2 confirms CPU-3 affinity and optimized
+stack unwinding. Tasks 6444, 5981 and the complete campaign remain open. No consensus bytes or
+production sources changed in this measurement checkpoint.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
