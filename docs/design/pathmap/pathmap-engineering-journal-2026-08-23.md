@@ -1350,8 +1350,9 @@ prefix with a read zipper and inserts each reached group once. The evaluator app
 rules:
 
 1. compile capture discovery in source order;
-2. schedule only pure lattice operands by Sethi–Ullman/Ershov retention pressure, breaking unequal
-   pressure by work and exact ties by source order;
+2. select the maximum-pressure pure lattice operand first, breaking equal
+   pressure by work and choosing the earliest exact maximum; the swap need not
+   preserve the order of all remaining pure operands;
 3. keep work frames scalar and retained maps in a separate LIFO accumulator;
 4. consume native immutable `join`/`meet` results with early `All` and empty absorbers;
 5. traverse the root group mask once, decoding each group ID once; and
@@ -1363,7 +1364,11 @@ The final `Vec<u64>` is deliberately retained. It is neither a membership author
 witnesses. Removing it would change a different matcher schedule and requires its own equivalence
 proof. No PathMap source, feature, value algebra, or compact format changed.
 
-The pressure recurrence for a scheduled n-ary node is:
+The pressure recurrence for a scheduled n-ary node is below. A linear scan puts
+one maximum first; no full child sort is required because every later child
+runs beneath one retained accumulator. This description was corrected during
+the 2026-09-17 source reconciliation; the algorithm itself was already present
+in `e3f3b4831`.
 
 ```math
 P_{\mathrm{nary}} = \max\!\left(P_0,\; 1 + \max_{i>0} P_i,\; 3\right).
@@ -1420,6 +1425,12 @@ not changes to PathMap keys, lattice operations, candidate domains, or Rholang s
 The exact release lifecycle command passed 4,502/4,502 tests with 53 skipped in 139.111 seconds
 under a 24 GiB no-swap cap. Its log SHA-256 is
 `cc4cf12ae290fce055b73ddcc1e2041788242fe2cb0af7d2f92fc4bae56122c4`.
+
+The preceding experiment/lifecycle acceptance is the historical result recorded
+at that checkpoint. On 2026-09-17, experiment 312 no longer resolved through the
+current tracker. The committed timing TSV still matches its recorded hash;
+missing original managed records must not be silently replaced with a new
+benchmark or treated as authenticated current receipts.
 
 ### J-018 — 2026-08-24: selection demand is not membership authority
 
@@ -12319,6 +12330,42 @@ accepts string dimensions while the server requires JSON objects; the STDIO
 The pre-existing Rust/lockfile delta still hashes to the J-165 coordinate.
 Verified task acceptance remains distinct from these locally qualified checks;
 no broader TLRS-PROP-07 or campaign completion is claimed.
+
+### J-168 — 2026-09-17 Existing candidate-mask repair reconciled without reimplementation
+
+**Status: DERIVED description correction; MEASURED current regression pass.**
+Required task 5907 was still in triage despite its recorded repair at
+`e3f3b4831`, lifecycle follow-up at `8035ba826`, and committed measurement report.
+A read-only plan-agent audit found no current algorithm defect. The timing TSV
+still matches SHA-256
+`6cdfc07467d7e9cff11594026dfd482971003a29342d39c41ba0add4a77264c8`.
+No benchmark was repeated and no PathMap or production matcher code was changed.
+
+The concrete documentation error was a claim that all children were sorted by
+descending pressure with globally stable source ties. `place_pressure_first`
+has always selected the earliest maximum `(pressure, work)` in a linear scan,
+then swapped that operand into slot zero. Remaining pure operands need not
+retain source order; capture discovery still does. Maximum-first is sufficient
+for the stated one-accumulator recurrence, because every later child executes
+with one accumulator already retained. J-017, report §5.36.2 and the original
+measurement record now describe that implementation accurately, including the
+zero-pressure `All` case.
+
+The complete current `spatial_matcher_pda_equivalence` release group passed all
+57 tests with none ignored, using 256 property cases and seed 41315907. It covers
+candidate inclusion/order, duplicate compression, adverse scheduling, opposing
+depth/width, expansion lanes, complete `FreeMap`, the recursive corpus and the
+20,000-level gate. The capped service used 2.5 GiB peak and zero swap, with
+134.959 s elapsed / 453.737 s CPU; test execution took 33.99 s. Exact command,
+source coordinate and log hash are in the
+[measurement record §8.1](../stack-safety/measurements/spatial-matcher-candidate-group-mask-2026-08-23.md#81-current-source-qualification--2026-09-17).
+
+**Remaining evidence boundary.** Experiment 312 did not resolve in the current
+tracker, so original artifact IDs 384–390 and the historical full-release log
+were not independently authenticated in this reconciliation. The historical
+report is preserved as such; current local tests are not substitutes for lost
+managed receipts or the campaign's final acceptance. The missing task criteria
+and verification-policy configuration remain visible in pgmcp.
 
 ## Upstream PathMap integration request register
 

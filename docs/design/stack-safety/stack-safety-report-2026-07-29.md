@@ -11825,15 +11825,21 @@ random-access position witness. It is neither the membership authority nor a `Ve
 
 #### 5.36.2 The continuation stores scalar work, not retained maps
 
-The plan compiler computes a Sethi–Ullman-style retention pressure. A leaf has pressure one; an
-n-ary node evaluates children in descending pressure and uses
+The plan compiler computes a Sethi–Ullman-style retention pressure. A finite/query
+leaf has pressure one and `All` has pressure zero. An n-ary node selects a
+maximum-pressure child first and uses
 
 ```math
 P_{\mathrm{nary}} = \max\!\left(P_0,\;1 + \max_{i>0} P_i,\;3\right).
 ```
 
-Work weight breaks unequal-pressure ties, while exact ties preserve source order. Capture
-discovery remains source ordered. The explicit `Work` PDA therefore holds scalar indices and
+Work weight breaks equal-pressure ties. A strict linear scan selects the earliest
+exact maximum and swaps it into slot zero, without sorting all children or
+preserving every remaining source position. Maximum-first suffices because every
+later child executes beneath one retained accumulator. This corrects the earlier
+description, not the implementation: `e3f3b4831` already used this strategy.
+Capture discovery remains source ordered; only pure candidate-set operands move.
+The explicit `Work` PDA therefore holds scalar indices and
 continuations; retained immutable PathMap roots live in a separate LIFO accumulator and are
 released as soon as a parent consumes them. This is still an iterative traversal with $`O(1)`$
 native-stack use and no depth cap, recursive fallback, enlarged stack, or stack-switching crate.

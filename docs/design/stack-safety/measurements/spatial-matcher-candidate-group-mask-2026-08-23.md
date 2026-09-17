@@ -35,14 +35,20 @@ complete `FreeMap`, remainder, and target-position order without changing PathMa
 ## 2. Selected algorithm
 
 The compiler discovers captures in source order, then schedules only pure candidate-set operands.
-For a leaf, $`P = 1`$. For an n-ary node with children sorted by descending pressure, the retained
+For a finite/query leaf, $`P = 1`$; the allocation-free `All` node has pressure
+zero. For an n-ary node with a greatest-pressure child placed first, the retained
 result pressure is:
 
 ```math
 P_{\mathrm{nary}} = \max\!\left(P_0,\; 1 + \max_{i>0} P_i,\; 3\right).
 ```
 
-Work weight breaks unequal-pressure ties; exact ties retain source order. The evaluator's `Work`
+Work weight breaks equal-pressure ties. A linear scan selects the earliest
+maximum `(pressure, work)` child and swaps it into the first slot; it does not
+sort all children or preserve every remaining child's source position. Only the
+first child runs without a retained accumulator, so maximum-first is sufficient
+for the recurrence above. Capture discovery still follows source order; only
+pure candidate-set operands are rearranged. The evaluator's `Work`
 enum remains scalar. Retained `PathMap<()>` values live in a separate LIFO accumulator so the
 continuation frame size does not inherit the map representation.
 
@@ -58,7 +64,7 @@ Output: the predecessor's ascending target-position candidate vector
 2. Insert each reached target group identifier once into a PathMap<()> group mask.
 3. Treat a statically universal query as All; retain Empty and All as absorbing fast paths.
 4. Evaluate AND with native PathMap meet and OR with native PathMap join.
-5. Evaluate higher-pressure children first and release each consumed child mask promptly.
+5. Evaluate the selected maximum-pressure child first, fold the remaining stored order, and release each consumed child mask promptly.
 6. Traverse the final group mask once with a read zipper and decode each fixed-width group ID once.
 7. If group positions are already ordered, concatenate directly.
 8. Otherwise compare sparse sorting work with dense ordered scanning work.
@@ -232,9 +238,16 @@ Negative results are retained because they constrain future reproduction:
 
 ## 8. Artifact integrity
 
-Pgmcp experiment 312 artifacts 384–390 retain the Massif, Heaptrack, Criterion, Cachegrind, protocol-
-audit, test, and uProf summaries with parsed metrics. Primary raw samples are also recorded in the
-experiment's named metric runs.
+The original record identifies pgmcp experiment 312 artifacts 384–390 as the
+Massif, Heaptrack, Criterion, Cachegrind, protocol-audit, test and uProf summaries,
+with raw samples in its named metric runs. During the 2026-09-17 reconciliation,
+experiment 312 did not resolve in the current tracker. These are historical
+provenance references, not newly authenticated managed receipts. The committed
+timing TSV remains available and its SHA-256 matches
+`6cdfc07467d7e9cff11594026dfd482971003a29342d39c41ba0add4a77264c8`.
+The same audit corrected the maximum-first scheduling description in §2;
+`place_pressure_first` already used this linear scan in `e3f3b4831`, so no runtime
+change or benchmark rerun was necessary for that correction.
 
 | artifact | SHA-256 |
 |---|---|
@@ -248,6 +261,31 @@ experiment's named metric runs.
 | uProf control CSV | `033faf0156dd993a067322751e787c77627f1f9aa99b0115610c12e72ac21061` |
 | uProf treatment CSV | `4e3403eb28ec5fe6fc76e33011dc27f424b37c97faf669dbc6cfebda0675a603` |
 | exact release-workspace lifecycle log at `8035ba826` | `cc4cf12ae290fce055b73ddcc1e2041788242fe2cb0af7d2f92fc4bae56122c4` |
+
+### 8.1 Current-source qualification — 2026-09-17
+
+The complete `spatial_matcher_pda_equivalence` release group passed **57/57**
+tests, with zero ignored or failed tests, at `108349623` plus the previously
+recorded preserved Rust/lockfile delta. This includes opposing depth/width and
+source-orientation cases, the node-count adverse scheduler, exact group
+compression, randomized expansion lanes, mixed-duplicate verdict/`FreeMap`
+equivalence, the recursive semantic corpus, a deliberately failing differential
+judge, and the 20,000-level compile/evaluate/drop gate. No production matcher
+source was edited during this reconciliation.
+
+Command: `PROPTEST_CASES=256 PROPTEST_RNG_SEED=41315907 cargo test --release
+--locked -j4 -p rholang --lib spatial_matcher_pda_equivalence -- --test-threads=4`.
+The enclosing systemd service had `MemoryHigh=6G`, `MemoryMax=8G`,
+`MemorySwapMax=0`, `CPUQuota=400%` and a 900-second timeout. It completed with
+exit 0 in 134.959 s, using 453.737 s CPU, 2.5 GiB peak and no swap; test execution
+alone took 33.99 s. The log is
+`target/verification/candidate-group-mask-current-regressions-r1.log`, SHA-256
+`3a13e6d92f40f0b37ab323349a0d4951638da2318fb8bd6aafbe53b09b26da25`.
+The preserved source delta remains
+`b5013b21fa778089f30276cea38c30d9e6998ab395959924ce1231888ac39b67`.
+
+This refreshes executable correctness evidence; it does not rerun experiment
+312, restore its unavailable managed records, or qualify the whole campaign.
 
 ## 9. Threats to validity
 
