@@ -10,7 +10,7 @@ The [claim](../claims/casper-soak-harness.md) defines the contract. The [formal 
 
 | Cycle | Behavior | Formal property | State |
 | --- | --- | --- | --- |
-| H01 | Reject changed candidate identity on resume. | IdentityPinned | Pending |
+| H01 | Reject changed candidate identity on resume. | IdentityPinned | Exact-byte resume slice passes. Full binding and per-invocation evidence remain pending |
 | H02 | Preserve iterations and failure history across segments. | ResumePreservesHistory | Pending |
 | H03 | Preserve product failures after resource termination. | ProductFailureMonotone | Pending |
 | H04 | Refuse passing reports with incomplete evidence. | PassRequiresEvidence | Pending |
@@ -66,6 +66,16 @@ The real driver now reads numeric checkpoint data without executing shell input.
 These checks are partial prerequisites for H01 and H02, not full identity or history bindings. Manifest validation, correlated profile observations, and conformance publication remain unimplemented.
 
 The [continuation log](../work-logs/task-017-4-driver-integration-2026-09-17.md) records the results and the approved dependency change. Profile implementation may proceed alongside TASK-017-4, but all incomplete verification cycles remain pending.
+
+## H01 manifest identity slice
+
+The driver rejects changed manifest bytes before saved-state writes. Matching identities resume across an expired window without workload launch.
+
+The final fixture passes two positive invocations and 45 rejection invocations. Fresh model, driver, disk, and runner checks also pass.
+
+The [resume report](../casper/cbc-evidence/runs/casper-manifest-resume-20260917-01/report.json) records the limits and packed evidence. Capability qualification, observation identity, and individual successful invocation transcripts remain pending.
+
+The helper and fixture are mandatory-scope additions. No task, claim, or full verification cycle is marked complete.
 
 ## Per-cycle record template
 

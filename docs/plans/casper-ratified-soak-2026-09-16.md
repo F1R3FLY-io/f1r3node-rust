@@ -175,7 +175,7 @@ New profile implementation files must enter the harness-only inventory when intr
 
 ## Scope and evidence storage
 
-Both epics list twenty-one artifacts: the original seven harness/formal paths, twelve model/configuration files, the local runner, and its unit tests.
+Both epics list twenty-three artifacts, including the manifest identity helper and its real-driver fixtures. No runtime artifact was added.
 
 Their ledger statuses remain pending. No Rust or protobuf artifact belongs to either epic's CbC scope.
 

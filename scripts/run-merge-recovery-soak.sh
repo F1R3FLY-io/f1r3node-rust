@@ -16,6 +16,11 @@ if ! [[ "$DURATION_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
 	exit 2
 fi
 PROVIDERS=(docker subprocess)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CASPER_MANIFEST_DIGEST=""
+if [ -n "${SOAK_MANIFEST_PATH:-}" ] || [ -e "$OUTPUT_DIR/.casper-manifest.json" ] || [ -L "$OUTPUT_DIR/.casper-manifest.json" ]; then
+	CASPER_MANIFEST_DIGEST="$(python3 "$SCRIPT_DIR/bench/casper_soak_manifest.py" "${SOAK_MANIFEST_PATH:-}" "$OUTPUT_DIR")" || exit 2
+fi
 
 # A soak is run as one or more segments so results can be published part-way
 # through: a single 22h invocation cannot be interrupted to publish, but three
@@ -26,6 +31,7 @@ PROVIDERS=(docker subprocess)
 # directories and silently discard its metrics.
 mkdir -p "$OUTPUT_DIR"
 STATE_FILE="$OUTPUT_DIR/.soak-state"
+MANIFEST_BOUND=0
 INFLIGHT_ITERATION=0
 INFLIGHT_BENCHMARK=0
 if [ -e "$STATE_FILE" ] || [ -L "$STATE_FILE" ]; then
@@ -38,7 +44,7 @@ if [ -e "$STATE_FILE" ] || [ -L "$STATE_FILE" ]; then
 		saved_key="${saved_line%%=*}"
 		saved_value="${saved_line#*=}"
 		case "$saved_key" in
-			STARTED_AT|ITERATIONS|FAILURES|SEGMENT|BENCH_SEGMENTS|BENCH_FAILURES|INFLIGHT_ITERATION|INFLIGHT_BENCHMARK) ;;
+			STARTED_AT|ITERATIONS|FAILURES|SEGMENT|BENCH_SEGMENTS|BENCH_FAILURES|INFLIGHT_ITERATION|INFLIGHT_BENCHMARK|MANIFEST_BOUND) ;;
 			*) printf 'The saved soak state contains an unknown field.\n' >&2; exit 2 ;;
 		esac
 		if [[ " $saved_keys " == *" $saved_key "* ]] ||
@@ -57,6 +63,12 @@ if [ -e "$STATE_FILE" ] || [ -L "$STATE_FILE" ]; then
 	done
 	if [ "$STARTED_AT" -lt 1 ] || [ "$SEGMENT" -lt 1 ]; then
 		printf 'The saved start time and segment must be positive.\n' >&2
+		exit 2
+	fi
+	if { [ "$MANIFEST_BOUND" -ne 0 ] && [ "$MANIFEST_BOUND" -ne 1 ]; } ||
+		{ [ "$MANIFEST_BOUND" -eq 1 ] && [ -z "$CASPER_MANIFEST_DIGEST" ]; } ||
+		{ [ "$MANIFEST_BOUND" -eq 0 ] && [ -n "$CASPER_MANIFEST_DIGEST" ]; }; then
+		printf 'The saved manifest binding is missing or invalid.\n' >&2
 		exit 2
 	fi
 	SEGMENT="$((SEGMENT + 1))"
@@ -112,7 +124,11 @@ if [ -f "$OUTPUT_DIR/early-exit.txt" ]; then
 	DEADLINE=0
 fi
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -n "$CASPER_MANIFEST_DIGEST" ] && [ "$(date +%s)" -lt "$DEADLINE" ]; then
+	printf 'Casper profile dispatch remains blocked until its adapter is qualified.\n' >&2
+	exit 2
+fi
+
 # Harness telemetry roots. Subprocess sessions write monitor artifacts and
 # node logs under .subprocess-data/; docker sessions write them under
 # log-archive/ (the provider's host-visible per-session dir —
@@ -765,6 +781,9 @@ if [ -n "$NODE_REPO_DIR" ] && [ -f "$NODE_REPO_DIR/node/Cargo.toml" ]; then
 fi
 
 emit_soak_state() {
+	if [ -n "$CASPER_MANIFEST_DIGEST" ]; then
+		printf 'MANIFEST_BOUND=1\n'
+	fi
 	printf 'STARTED_AT=%s\n' "$STARTED_AT"
 	printf 'ITERATIONS=%s\n' "$ITERATIONS"
 	printf 'INFLIGHT_ITERATION=%s\n' "$INFLIGHT_ITERATION"
@@ -783,6 +802,7 @@ persist_soak_state() {
 		--arg target_ref "$TARGET_REF" \
 		--arg target_sha "$TARGET_SHA" \
 		--arg trigger_source "$TRIGGER_SOURCE" \
+		--arg manifest_digest "$CASPER_MANIFEST_DIGEST" \
 		--argjson slot_delay "$SLOT_DELAY_SECONDS" \
 		--arg version "$VERSION" \
 		--argjson started_at "$STARTED_AT" \
@@ -793,6 +813,7 @@ persist_soak_state() {
 		--argjson bench_failures "$BENCH_FAILURES" \
 		'{target_ref: $target_ref, target_sha: $target_sha,
       trigger_source: $trigger_source, slot_delay_seconds: $slot_delay,
+      manifest_digest: (if $manifest_digest == "" then null else $manifest_digest end),
       version: $version, started_at: $started_at,
       requested_seconds: $requested_seconds, iterations: $iterations,
       failures: $failures, bench_segments: $bench_segments,

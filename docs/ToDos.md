@@ -120,6 +120,8 @@ execution_contract:
 files:
   - scripts/run-merge-recovery-soak.sh
   - scripts/bench/test-run-merge-recovery-soak.sh
+  - scripts/bench/casper_soak_manifest.py
+  - scripts/bench/test_casper_soak_manifest.py
   - scripts/bench/write-soak-summary.sh
   - scripts/ci/check-tla-invariants.sh
   - .github/workflows/merge-recovery-soak.yml
@@ -439,6 +441,8 @@ execution_contract:
 files:
   - scripts/run-merge-recovery-soak.sh
   - scripts/bench/test-run-merge-recovery-soak.sh
+  - scripts/bench/casper_soak_manifest.py
+  - scripts/bench/test_casper_soak_manifest.py
   - scripts/bench/write-soak-summary.sh
   - scripts/ci/check-tla-invariants.sh
   - .github/workflows/merge-recovery-soak.yml

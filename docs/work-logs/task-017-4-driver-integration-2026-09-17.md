@@ -122,3 +122,37 @@ Fresh Linux-targeted Pyright passed for the unchanged native fixtures. Their hos
 The Boolean identity check deliberately requires JSON false. No native fixture changed to silence those findings.
 
 The deterministic STE Check does not replace human STE Review.
+
+## Manifest Resume Continuation
+
+This continuation started at `03d9834409b930bc68bcb19de64db5a72a4306b7`. TASK-017-4 remains incomplete.
+
+The real driver now seals manifest bytes and records their digest in the checkpoint. Changed manifests cannot advance saved state.
+
+Numeric state records retain a manifest-binding marker. A missing seal, missing manifest argument, or incomplete checkpoint cannot silently restore legacy behavior.
+
+The original RED fixture accepted changes to all 27 manifest fields. It also accepted a resume without the manifest argument.
+
+The final fixture passed 47 driver invocations: two expired-window positive cases and 45 rejection cases. Earlier state and artifact hashes remained unchanged after rejection.
+
+The driver fixture also passed three legacy scenarios and six numeric-state cases. All 42 isolated disk scenarios and twelve model-runner tests passed.
+
+Fresh TLC passed the clean model and ten negative controls. The clean model retained 43,424 distinct states under the existing bounds.
+
+The [resume evidence report](../casper/cbc-evidence/runs/casper-manifest-resume-20260917-01/report.json) identifies 1,245 packed records and 64 source hashes.
+
+The report hash is `82d704d3e7b69e3e6183c690869740b7b594d5f439d9a9f579b8bc1cae17f7a0`. The archive retains individual record hashes without adding 1,245 review files.
+
+This result covers identity syntax and exact-byte resume binding only. It does not verify running binary identity, capability qualification, or observation correlation.
+
+Positive resume cases use expired deadlines. Individual successful subprocess transcripts and temporary checkpoints are not retained, so the full fixture-evidence obligation remains pending.
+
+Profile dispatch remains blocked. Full history binding, classification, capture verification, publication, and workflow claim discharge still require implementation.
+
+Both epic inventories now include the helper and fixture, for 23 artifacts. Their proposed mandatory tags require human ratification before commit.
+
+Linux-targeted Pyright passed. The native fixtures remain unchanged, and no root/systemd fixture or node campaign ran.
+
+The host diagnostics incorrectly reject Linux process-descriptor APIs. The exception and Boolean findings are also false positives, recorded through diagnostic dispositions.
+
+The repeated inline notification remains stale despite those dispositions. No source change weakens the fixtures to satisfy that notification.

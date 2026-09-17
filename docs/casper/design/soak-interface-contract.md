@@ -8,11 +8,19 @@ The [branch plan](../../plans/casper-ratified-soak-2026-09-16.md) defines author
 
 ## Source scope
 
-The current mandatory inventory contains twenty-one harness, model, configuration, and workflow artifacts. TASK-017-2 adds no node artifact or node-proof obligation.
+The current mandatory inventory contains twenty-three harness, model, configuration, and workflow artifacts. TASK-017-2 adds no node artifact or node-proof obligation.
 
 TASK-017-4 owns driver integration, manifest validation, event correlation, and result publication. TASK-017-5 through TASK-017-11 own their profile implementations.
 
 The implementation boundaries are `scripts/run-merge-recovery-soak.sh`, `scripts/bench/test-run-merge-recovery-soak.sh`, and `scripts/bench/write-soak-summary.sh`.
+
+The driver uses `scripts/bench/casper_soak_manifest.py` for manifest identity checks. `scripts/bench/test_casper_soak_manifest.py` tests that boundary through the real driver.
+
+`SOAK_MANIFEST_PATH` enables identity binding only. It does not qualify capabilities, authorize dispatch, or establish a passing profile verdict.
+
+The driver retains exact manifest bytes in `.casper-manifest.json`. Resume requires those bytes and the matching checkpoint digest.
+
+Existing unbound runs cannot acquire a new manifest identity. Profile dispatch remains blocked, and legacy load runs retain their separate behavior.
 
 Proposed profile modules live under `scripts/bench/casper_soak_profiles/`: `authority_finality.py`, `publication.py`, `recovery.py`, `merge_accounting.py`, `slashing.py`, `version_phlo.py`, and `carrier_index.py`.
 

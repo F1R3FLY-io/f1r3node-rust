@@ -9,6 +9,8 @@ post_merge_tasks: [TASK-018-1, TASK-018-2, TASK-018-5, TASK-018-6]
 artifacts:
   - scripts/run-merge-recovery-soak.sh
   - scripts/bench/test-run-merge-recovery-soak.sh
+  - scripts/bench/casper_soak_manifest.py
+  - scripts/bench/test_casper_soak_manifest.py
   - scripts/bench/write-soak-summary.sh
   - scripts/ci/check-tla-invariants.sh
   - .github/workflows/merge-recovery-soak.yml
