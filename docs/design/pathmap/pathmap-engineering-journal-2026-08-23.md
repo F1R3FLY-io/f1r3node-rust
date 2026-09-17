@@ -11791,6 +11791,44 @@ benchmark magnitude or corrected historical profiling result is claimed.
 | `cancellation-guard-experiment-feature-r2.log` | four feature tests passed, including concurrent-session controls | `35c1d2a2205dce6aff395693ca2d96674c799ac9d44584b64896591fde6b15a6` |
 | `cancellation-guard-rspace-full-nextest-r1.log` | complete `rspace_plus_plus`: 1,189 passed, one existing skip | `88415ffffd3e74ad5b7de4aeb2385e66e459291b3bc2ff7ae479e3ea8192f1c9` |
 
+### J-162 — 2026-09-17 Candidate-catalog formal and executable reconciliation
+
+**Status: MEASURED implementation-boundary evidence; pgmcp trusted verification pending.**
+The existing candidate-catalog implementation at `e3abc29c5` was re-read against
+the formal contract rather than reimplemented. `RSpaceDataIndex::candidate_catalog`
+walks the requested channel-relative `Bag` by PathMap cursor, retains each canonical
+identity's raw bytes, computes the 32-byte Blake2b-256 digest, orders by
+`(digest, canonical identity)`, rejects duplicate identities, and builds an
+`Arc`-shared ordered catalog with a guarded PathMap position index. It does not
+project the authoritative Bag into `Vec<Par>`; the ordered vector is a derived
+candidate-selection view and the Bag remains the authority.
+
+The formal `TwoLevelRSpaceMatchPreparation.v` compiled successfully under a
+1.5 GiB hard cap and zero swap (5.046 s, 465.8 MiB peak); independent `coqchk`
+also passed (13.053 s, 294.6 MiB peak). The release `data_index_spec` binary
+passed 26/26 tests, including canonical insertion-independent ordering,
+multiplicity-preserving positions, empty/unloaded channel distinction, lazy
+decode, exact-path removal, catalog invalidation, sibling preservation and
+copy-on-write isolation. The release `guarded_matching_tests` binary passed
+18/18, including forced candidate-order stability, replay agreement, repeated
+occurrences, rollback, and the 20,000-bind stack-safe traversal.
+
+These checks establish the bounded implementation slice and preserve the
+formal distinction between authoritative trie storage and a deliberately
+materialized candidate-order view. They do not manufacture pgmcp-eligible
+machine evidence: the task's two manual evidence records remain advisory, and
+the catalog task is not claimed as `verified` until a configured producer or
+authorized review accepts the proof/test criteria. The separate baseline task
+continues to be blocked on missing historical experiment provenance and a
+complete captured replay archive.
+
+| Artifact | Result | SHA-256 |
+|---|---|---|
+| `/tmp/candidate-catalog-formal-r1.log` | Rocq compile succeeded; 1.5 GiB cap; 465.8 MiB peak | recorded in pgmcp evidence 828 |
+| `/tmp/candidate-catalog-coqchk-r1.log` | independent kernel check succeeded; 1.5 GiB cap; 294.6 MiB peak | recorded in pgmcp evidence 828 |
+| `/tmp/candidate-catalog-data-index-r1.log` | 26 passed, 0 failed | recorded in pgmcp evidence 829 |
+| `/tmp/candidate-catalog-guarded-r1.log` | 18 passed, 0 failed | recorded in pgmcp evidence 829 |
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
