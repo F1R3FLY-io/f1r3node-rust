@@ -12236,6 +12236,90 @@ not part of the matrix. Logs remain under `target/verification/` with prefixes
 `catalog-allocation-profile-smoke-r1`. Their services were limited to 2 GiB
 and zero swap. No production source or dependency was changed.
 
+**Completed matrix at `2b0a301c2`.** All 66 phase/cells passed, with exactly
+30 unique retained sample indices each: 1,980 observations after five excluded
+warmups. The finite matrix preserved exact pool identities/order, payloads,
+multiplicities, loaded-empty behavior and resident siblings; construction and
+issuance decoded no values before the independent oracle check.
+
+| Distinct entries, width 128 | Cold allocation requests | Cold requested bytes | Warm requested bytes per pool |
+|---:|---:|---:|---:|
+| 128 | 3,287 | 615,103 | 355 |
+| 256 | 6,161 | 1,200,327 | 355 |
+| 512 | 11,911 | 2,370,575 | 355 |
+| 1,024 | 23,415 | 4,711,823 | 355 |
+| 2,048 | 46,417 | 9,394,047 | 355 |
+
+Every warm observation made six allocation requests per issued pool, including
+loaded-empty, width 2,048, dispersed prefixes, multiplicity 256 and 2,048 unrelated
+sibling entries. At both 128 and 2,048 target entries, retaining 1,024 pools made
+6,144 requests for 363,520 bytes. These are **cumulative requested bytes**, not
+retained bytes; the preallocated holder array is excluded from the interval.
+Cold traffic grows with the derived catalog. It does not grow with unrelated
+siblings or multiplicity in the fixed-64-entry cells: all requested 322,191 bytes.
+The observed cold doubling ratios approach two; no finite ladder proves a
+universal complexity bound, and this study did not compare with legacy RSpace.
+
+The complete uninstrumented service took 234.035 s elapsed / 167.452 s CPU,
+peaked at 9.1 MiB and used zero swap under its 1 GiB hard cap. CPU 8 was pinned;
+the governor was `performance` with `amd-pstate-epp`. Per-cell host checks showed
+69.84–87.39% aggregate idle capacity. Operation time, current-process RSS and
+GNU time's whole-process maximum RSS are separate fields. Median before/after
+RSS differences were zero throughout; allocator-warm reuse makes this
+**inconclusive for retained-memory slopes**, not evidence of zero memory use.
+
+The headless profiler independently counted 210 additional allocation calls in
+the warm lifecycle at both 128 and 2,048 entries: 35 iterations each issue one
+additional warm pool, consistent with six requests per pool. Complete lifecycle
+call totals were 2,420,653/2,420,863 (cold/warm, 128 entries) and
+37,821,823/37,822,033 (2,048 entries). The paired whole-process peak heaps were
+equal within each size, reported as 354.46K and 4.46M respectively. These include
+fixtures, cold preparation, the content oracle and teardown, not just catalog
+issuance. The four captures plus text reports used 124.4 MiB peak, zero swap,
+57.682 s elapsed and 57.398 s CPU under a 2 GiB hard cap. The initial `r1`
+captures wrapped the affinity launcher inside Heaptrack and recorded no Rust
+allocations; they are preserved and excluded. Corrected `r2` runs put
+`taskset` outside `heaptrack --record-only`; analysis used `heaptrack_print`
+only. No GUI was opened.
+
+Reproduce a cell after building the existing release test binary:
+
+```sh
+CATALOG_RESOURCE_CASE=5 CATALOG_RESOURCE_PHASE=warm \
+  taskset -c 8 target/release/deps/bag_allocation_spec-25c584cd892ce883 \
+  --exact catalog_resource_profile --ignored --nocapture --test-threads=1 --format=terse
+```
+
+Use a systemd service with `MemoryMax=1G`, `MemorySwapMax=0` and an appropriate
+timeout around the command; the binary suffix is build-specific. Cells 0–32
+and phases `cold`/`warm` form the matrix, as defined in `catalog_cases`.
+The instrumented command places `heaptrack --record-only -o OUTPUT` between
+`taskset -c 8` and the test binary. Do not use `heaptrack --analyze`, which can
+open a GUI. The smoke run is not included in the retained matrix.
+
+Raw artifacts:
+
+- [Operation observations](../stack-safety/measurements/candidate-catalog-allocation-2026-09-17.tsv),
+  SHA-256 `aff29866dc6f4f7d3adb74d932cfe7330d5cbc289db94eec5d733827d7113de5`.
+- [Whole-process resources](../stack-safety/measurements/candidate-catalog-process-resources-2026-09-17.tsv),
+  SHA-256 `2004ea19dce0ff1bb736bdf5d4fdc15b853bb0b7f626ae4a1db808e160f2c9cb`.
+- Complete local log `target/verification/catalog-allocation-matrix-r1.log),
+  SHA-256 `2596df24238f4e3e5dcdec39696c5ca82d5af56f6b3234f0110ffb1f99694288`.
+- Headless text reports `target/verification/catalog-heaptrack-{1,5}-{cold,warm}-report-r2.txt`.
+  The ordered SHA-256 values (small cold/warm, large cold/warm) are
+  `3c0138177b2362f68610d735816b358937af95596ce2d9d44f3637df58454460`,
+  `df6ba69304766b68da47b2e2bf3944f3cad9a5147f66e572a2c20a8997caf71f`,
+  `7621a045b88b93411932c9ab34fcb79a1f907c5136acf08359771e7173107824`,
+  `ac5e5f80e80aae17382b6dac2824111a7a58624e695fcf00a34f326f28e9e6df`.
+
+All results are recorded in pgmcp experiment 344, artifacts 671–674 and the
+dimensioned cold/warm observation runs. The advertised measurement tool schema
+accepts string dimensions while the server requires JSON objects; the STDIO
+`call_tool` route with object dimensions succeeded. No pgmcp code was changed.
+The pre-existing Rust/lockfile delta still hashes to the J-165 coordinate.
+Verified task acceptance remains distinct from these locally qualified checks;
+no broader TLRS-PROP-07 or campaign completion is claimed.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

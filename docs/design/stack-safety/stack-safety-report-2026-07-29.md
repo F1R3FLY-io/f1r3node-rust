@@ -13714,6 +13714,59 @@ No Rholang value, datum identity, multiplicity, candidate order, matcher result,
 protobuf/bincode/EPM1/RMP2 byte, hash, COMM schedule, compute/storage charge, PathMap algebra,
 accepted program, or parallel execution order changes.
 
+#### 5.60.5 Selected two-level catalog ownership and resource qualification
+
+**2026-09-17 qualification, not a new runtime change.** The earlier candidate
+ownership-disjointness statement describes the representation tested at that
+checkpoint. Selected two-level commit `d5b1ca6d6` instead shares whole guarded
+channel Bag anchors with catalogs and issued pools; it does not create an owned
+raw PathMap header from an interior focus. Physical allocation disjointness
+between those shared holders is neither true nor required. The successor laws
+are whole-anchor reference counting, nonfinal-drop noninterference and CoW
+snapshot preservation in `TwoLevelRSpaceGuardedOwnership.v` (fresh compilation
+and independent kernel check passed). This does not retire the broader partial
+obligations in TLRS-PROP-07.
+
+Experiment 344 at test-harness commit `2b0a301c2` separates first catalog
+construction from issuance against an already cached catalog. All 1,980 retained
+observations across 33 cells and two phases passed the identity/order, decoded
+content, multiplicity, loaded-empty and sibling-preservation checks. The matrix
+varies distinct entries, payload width and prefix sharing, unrelated siblings,
+multiplicity, and simultaneously retained pools. Five warmups per phase/cell are
+excluded; each phase/cell is a fresh process, not each individual observation.
+
+| Observation | Measured result | Interpretation |
+|---|---:|---|
+| Warm issue, every cell | 6 allocation requests / 355 requested bytes per pool | No catalog-size or multiplicity-dependent allocation traffic during issuance |
+| 1,024 retained pools, at 128 or 2,048 entries | 6,144 requests / 363,520 requested bytes | Scales with wrapper count, not wrapper count multiplied by catalog size |
+| Cold construction, 128 → 2,048 entries, width 128 | 615,103 → 9,394,047 requested bytes | Derived descriptor/index construction still allocates; these are cumulative requests, not retained heap |
+| Fixed 64-entry cold catalog, siblings 0 → 2,048 or multiplicity 1 → 256 | 322,191 requested bytes in every cell | Unrelated data and occurrence counts are not materialized into the catalog |
+| Whole uninstrumented matrix service | 9.1 MiB peak; 234.035 s elapsed; zero swap | Includes fixtures, oracles, logging and teardown; not an operation-only peak |
+
+The preallocated pool-holder array lies outside the operation interval. Median
+before/after RSS differences were zero, but allocator reuse and page granularity
+make those observations **inconclusive for retained-memory slopes**. They must
+not be reported as zero memory consumption. Whole-process GNU time maxima are
+stored separately. A finite allocation ladder is not an asymptotic proof or a
+comparison with legacy RSpace throughput.
+
+Headless Heaptrack provides a second allocation-count observation: at both 128
+and 2,048 entries, 35 additional warm issues add exactly 210 allocator calls.
+Complete lifecycle peak heaps were unchanged within each size (354.46K and 4.46M
+as reported by Heaptrack), but include preparation and validation. Its recording
+and text-report service peaked at 124.4 MiB under a 2 GiB cap with zero swap.
+The uninstrumented service used a 1 GiB cap; CPU 8 was pinned, and each cell's
+host check found 69.84–87.39% aggregate idle capacity. An initial launcher-only
+empty profile is explicitly excluded and retained; no benchmark was rerun to
+select a favorable result.
+
+See [J-167](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-167--2026-09-17-candidate-catalog-ownership-successor-and-resource-qualification)
+for the preregistered protocol, checks, command, artifact hashes and limitations;
+[operation observations](measurements/candidate-catalog-allocation-2026-09-17.tsv)
+and [process resource observations](measurements/candidate-catalog-process-resources-2026-09-17.tsv)
+are committed raw data. This qualification changes no runtime code, consensus
+bytes, storage charges or Rholang semantics, and is not campaign completion.
+
 ### 5.61 Current accepted-match publication certificate [SS-C34]
 
 SS-C34 adds the missing formal boundary between the certified candidate-search/preparation

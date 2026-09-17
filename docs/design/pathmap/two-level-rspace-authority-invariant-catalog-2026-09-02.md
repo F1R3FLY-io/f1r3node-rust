@@ -173,6 +173,16 @@ Production surface: `GuardedPathMap<ChannelSlot, ChannelSlotDisposer, ChannelSlo
 
 Current executable evidence: sibling-anchor preservation, candidate authority sharing, incremental catalog anchor retention, clone splitting, cloned-store isolation, issued-pool isolation, and deep outer/inner clone-and-drop on a small stack.
 
+Additional resource qualification (2026-09-17): `bag_allocation_spec` now checks
+warm pool allocation independence over the finite distinct-count, width,
+prefix-sharing, sibling, multiplicity and retained-pool matrix. Experiment 344
+records 1,980 cold/warm observations and headless allocation profiles in J-167
+of the PathMap engineering journal. Every warm issue requests six allocations
+and 355 bytes, with no value decoding before the oracle. This is whole guarded
+anchor sharing, not the old independent per-catalog Bag rebuild. Allocation
+traffic evidence does not discharge the remaining lifecycle obligations below;
+allocator-warm RSS differences are not proof of zero retained memory.
+
 Open executable obligations:
 
 1. generated unique/shared outer and inner clone/drop orders with exact observer equality;
