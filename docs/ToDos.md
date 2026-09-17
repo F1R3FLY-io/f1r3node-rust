@@ -100,9 +100,12 @@ execution_contract:
   authority: "The 2026-09-16 ratification meeting controls the selected dispositions. Current dev remains the default Casper authority."
   integration_order: "PR #430 -> #431 -> #432 -> #433. PR #390 records decisions. PR #216 remains a candidate implementation."
   planned_stack_parent: docs/consensus-neutral-execution
-  stack_integration_status: planned
-  stack_parent_revision: null
-  stack_merge_revision: null
+  stack_integration_status: verified
+  stack_parent_revision: 65f7f6daa832c0acb6fddf2b462db1b9d5461729
+  stack_merge_revision: 0f1ccdf38f9ab3b056e7601b93961cb56c0a51e9
+  stack_verification: docs/casper/cbc-evidence/runs/casper-stack-integration-20260917-01/report.json
+  pull_request: 436
+  pr_base_branch: docs/consensus-neutral-execution
   dependency_approval_date: 2026-09-17
   implementation_tasks: [TASK-017-4, TASK-017-5, TASK-017-6, TASK-017-7, TASK-017-8, TASK-017-9, TASK-017-10, TASK-017-11]
   implementation_prerequisites:
@@ -329,6 +332,7 @@ tasks:
 
   - id: TASK-017-12
     title: "Pin executable workloads, qualify candidates, and run the pre-merge baseline soak"
+    candidate_review_note: "Current dev is bc23c8667ebef0f3fb7c3310caf85ce106df25fa. The matrix retains a2fe60c7255bf4ba035d41fb65b6d6f1c0f02632. Qualification must review this difference before dispatch."
     claims: [CLAIM-CASPER-SOAK-001, CLAIM-CASPER-SOAK-004]
     claim_index: docs/claims/casper-soak-harness.md
     status: pending
@@ -368,6 +372,7 @@ tasks:
     blocked_by: [TASK-017-13]
     created_at: 2026-09-17
     rationale: "At 6814682e4 the branch differs from origin/dev by 762 files and about 46,000 added lines. That diff is too large for the repository PR review standard."
+    stack_review_baseline: docs/casper/cbc-evidence/runs/casper-stack-integration-20260917-01/report.json
     removal_targets:
       - "Evidence run packages under docs/casper/cbc-evidence/runs/: 440 files across four runs. Keep one report and one source manifest per run. Move raw TLC transcripts, fixture inputs, and container logs to an external evidence store and record their digests."
       - "Files applied verbatim from PR #430 through PR #433: soak_disk models and configurations, deploy_storage models, scripts/bench fixtures, the verification-tiers document, the architecture note, and the soak-disk claim. Remove them after those PRs merge to dev, or rebase the branch onto the merged stack."
@@ -389,7 +394,7 @@ tasks:
 
 **Approved sequence:** TASK-017-4 and TASK-017-5 through TASK-017-11 may proceed together against the completed contract and applied prerequisites. TASK-017-12 requires final workload pins, qualification, verification, and dispatch approval.
 
-**Planned stack:** Integrate `docs/consensus-neutral-execution` next to place this branch after PR #433. No merge, PR retarget, or publication occurred for this dependency update.
+**Verified stack:** Merge `0f1ccdf38` includes PR #433 at `65f7f6daa`. PR #436 targets `docs/consensus-neutral-execution`. Fresh shared-gate, driver, and runner fixtures pass. Full harness verification remains incomplete.
 
 **Tracker limitation:** The completion helper still rejects TASK-* identifiers. That limitation does not cancel the approved implementation sequence or permit task closure without evidence.
 

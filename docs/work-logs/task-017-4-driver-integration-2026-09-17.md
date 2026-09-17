@@ -91,6 +91,30 @@ Protected source and evidence hashes still match. The candidate matrix and exter
 
 The strict CbC gate still returned exit 4. This planning update neither discharges claims nor replaces the retained implementation results.
 
+## Stack Verification After Merge
+
+Merge `0f1ccdf38f9ab3b056e7601b93961cb56c0a51e9` contains the selected PR #433 revision. PR #436 now targets `docs/consensus-neutral-execution`.
+
+The merged tree equals first parent `f72337662039befc77162328a997556719a7062e`. All 228 source hashes and 1,692 earlier evidence records still match.
+
+The shared-gate fixture passed in 18.151 seconds. The real-driver fixture passed its three existing scenarios and six restart-state cases in 14.068 seconds.
+
+Both measurements include container setup. The containers used the previously pinned image, no network, no host mounts, and no Docker socket.
+
+Twelve runner tests, shell syntax, and Linux-targeted Pyright passed. The strict CbC gate returned exit 4 because full claims remain pending.
+
+The [stack report](../casper/cbc-evidence/runs/casper-stack-integration-20260917-01/report.json) retains 132 records and the source-manifest reference. Its SHA-256 is `76852e6cb027dfb81583bade9fdf710cf26a964f362c705c4fe64cf83d006358`.
+
+Actual TLC and the 42-case disk suite were not rerun. Their earlier evidence remains applicable to unchanged source bytes, without extending its coverage.
+
+The confirmed stack-parent diff has 813 files, 94,281 insertions, and 802 deletions. The current-dev merge-base comparison has 980 files, 104,443 insertions, and 513 deletions.
+
+TASK-017-14 still requires diff reduction. This check removed no files and changed no claim or task status.
+
+Current `dev` is `bc23c8667ebef0f3fb7c3310caf85ce106df25fa`. The blocked candidate matrix still selects `a2fe60c7255bf4ba035d41fb65b6d6f1c0f02632` and requires qualification review before dispatch.
+
+No candidate repin, node run, commit, merge, push, or PR change occurred during this verification. The next implementation cycle is H01 manifest/resume identity binding alongside approved profile work.
+
 ## Diagnostic and Language Review
 
 Fresh Linux-targeted Pyright passed for the unchanged native fixtures. Their host API findings and previously reviewed exception-handler findings remain false positives.

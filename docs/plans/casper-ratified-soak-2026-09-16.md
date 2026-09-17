@@ -59,20 +59,23 @@ PR #431's B44 containment limitation remains explicit. The shared PR job has a 1
 
 ## Planned stack integration
 
-The user plans to merge `docs/consensus-neutral-execution` into this branch next. The intended stack is `#430 -> #431 -> #432 -> #433 -> formal/soak-casper-consensus`.
+The planned integration completed at merge `0f1ccdf38f9ab3b056e7601b93961cb56c0a51e9`. Its second parent is PR #433's revision `65f7f6daa832c0acb6fddf2b462db1b9d5461729`.
 
-The planned parent is PR #433's branch, not a new node authority. Current `dev` remains the baseline authority.
+[PR #436](https://github.com/F1R3FLY-io/f1r3node-rust/pull/436) targets `docs/consensus-neutral-execution`. The verified ancestry preserves `#430 -> #431 -> #432 -> #433 -> formal/soak-casper-consensus`.
 
-The parent and merge revisions remain unset until integration occurs. This notice does not authorize this assistant to merge, commit, push, or retarget a PR.
+The merged tree equals its first parent's tree. All 228 recorded source hashes and 1,692 retained evidence records still match.
 
-After authorized integration:
+Fresh shared-gate and driver fixtures passed. Twelve runner tests, shell syntax checks, and Linux-targeted Pyright also passed.
 
-1. Record the actual parent revision, merge revision, and confirmed PR base.
-2. Recheck the contract, applied prerequisites, shared driver, gate, models, and evidence source digests.
-3. Rerun affected fixtures and formal controls against the integrated sources.
-4. Report the review diff against the confirmed stack parent and the cumulative diff against `dev`.
+The [integration report](../casper/cbc-evidence/runs/casper-stack-integration-20260917-01/report.json) retains the checks and diff measurements. The earlier TLC and disk results remain historical results, not new executions.
 
-Previously applied prerequisite bytes do not establish Git ancestry. Historical evidence remains intact and does not automatically verify merged sources.
+At this merge, the stack review diff contains 813 files, 94,281 insertions, and 802 deletions. The merge-base comparison with current `dev` contains 980 files, 104,443 insertions, and 513 deletions.
+
+TASK-017-14 still owns diff reduction. No evidence or upstream file was deleted during integration verification.
+
+Current `dev` is `bc23c8667ebef0f3fb7c3310caf85ce106df25fa`, while the blocked matrix retains `a2fe60c7255bf4ba035d41fb65b6d6f1c0f02632`. TASK-017-12 must review this difference during qualification before dispatch.
+
+This stack merge does not establish the PR #216 gate or accepted EPIC-018 handoff. No candidate repin, node dispatch, task closure, or claim discharge occurred.
 
 ## Ratifications as profile inputs
 
