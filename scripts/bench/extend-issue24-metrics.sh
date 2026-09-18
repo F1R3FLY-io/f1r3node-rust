@@ -65,6 +65,7 @@ END {
 }
 ' "$metrics_file" > "$tmp"
 
+# Scoped Python exception: the helper edits the harness's own Python module. See its docstring.
 python3 "$(dirname "${BASH_SOURCE[0]}")/extend-issue24-metrics.py" "$tmp" "$histograms" "$counters"
 mv "$tmp" "$metrics_file"
 trap - EXIT

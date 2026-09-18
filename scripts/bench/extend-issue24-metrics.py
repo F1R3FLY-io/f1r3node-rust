@@ -1,3 +1,11 @@
+"""Extend the system-integration harness metrics module with the issue 24 diagnostics.
+
+This repository ships Rust and bash. Python is permitted here as a scoped
+exception, because this tool edits the harness's own Python module and the
+injected runtime block becomes part of that module. The AST checks keep the
+edit structural. The tool runs only where the Python harness runs, so python3
+is present. Do not add Python elsewhere under this exception.
+"""
 import ast
 import sys
 from pathlib import Path
