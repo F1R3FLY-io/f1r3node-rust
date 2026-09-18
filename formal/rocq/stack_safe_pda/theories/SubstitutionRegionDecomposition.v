@@ -331,6 +331,227 @@ Qed.
 
 End Builder.
 
+Module DispatchAndSlots.
+
+Inductive action :=
+| BorrowField
+| CutPar
+| DescendMessage (type_id : nat) (retain_empty : bool)
+| DescendMap (value_type_id : nat)
+| AdmitSnapshot.
+
+Inductive field_shape :=
+| ScalarField
+| OptionalField (type_id : nat)
+| RepeatedField (type_id : nat)
+| MapField (value_type_id : nat)
+| SnapshotField
+| MessageArm (type_id : nat)
+| InconsistentField.
+
+Definition child_action par_id type_id retain :=
+  if Nat.eqb par_id type_id then CutPar else DescendMessage type_id retain.
+
+Definition action_for par_id shape : option action :=
+  match shape with
+  | ScalarField => Some BorrowField
+  | OptionalField child | MessageArm child => Some (child_action par_id child true)
+  | RepeatedField child => Some (child_action par_id child false)
+  | MapField child => Some (DescendMap child)
+  | SnapshotField => Some AdmitSnapshot
+  | InconsistentField => None
+  end.
+
+Record descriptor := Descriptor {
+  slot : nat;
+  repeated : bool;
+  expected_wire : wire;
+  shape : field_shape
+}.
+
+Definition wire_eq_dec (a b : wire) : {a = b} + {a <> b}.
+Proof. decide equality. Defined.
+
+Inductive refusal := WrongWire | DuplicateSlot | InconsistentSchema.
+Inductive decision := Accepted (selected : action) | Refused (reason : refusal).
+
+Definition dispatch par_id (known : option descriptor) actual (seen : nat -> bool) :=
+  match known with
+  | None => Accepted BorrowField
+  | Some d =>
+      if wire_eq_dec actual (expected_wire d) then
+        if negb (repeated d) && seen (slot d) then Refused DuplicateSlot
+        else match action_for par_id (shape d) with
+             | Some a => Accepted a | None => Refused InconsistentSchema
+             end
+      else Refused WrongWire
+  end.
+
+Theorem unknown_field_borrows_without_singular_check : forall par_id actual seen,
+  dispatch par_id None actual seen = Accepted BorrowField.
+Proof. reflexivity. Qed.
+
+Theorem wrong_wire_precedes_slot_and_shape_checks : forall par_id d actual seen,
+  actual <> expected_wire d ->
+  dispatch par_id (Some d) actual seen = Refused WrongWire.
+Proof.
+  intros; unfold dispatch; destruct (wire_eq_dec actual (expected_wire d)); congruence.
+Qed.
+
+Theorem duplicate_slot_precedes_shape_check : forall par_id d seen,
+  repeated d = false -> seen (slot d) = true ->
+  dispatch par_id (Some d) (expected_wire d) seen = Refused DuplicateSlot.
+Proof.
+  intros; unfold dispatch; destruct (wire_eq_dec (expected_wire d) (expected_wire d));
+    [now rewrite H, H0 | congruence].
+Qed.
+
+Theorem accepted_dispatch_has_exact_generated_action : forall par_id d actual seen a,
+  dispatch par_id (Some d) actual seen = Accepted a ->
+  actual = expected_wire d /\
+  (repeated d = true \/ seen (slot d) = false) /\
+  action_for par_id (shape d) = Some a.
+Proof.
+  intros par_id d actual seen a H; unfold dispatch in H.
+  destruct (wire_eq_dec actual (expected_wire d)); [|discriminate].
+  destruct (repeated d) eqn:Repeat; destruct (seen (slot d)) eqn:Seen;
+    cbn in H; try discriminate;
+    destruct (action_for par_id (shape d)) eqn:Selected; inversion H; subst;
+    repeat split; auto.
+Qed.
+
+Definition permits (a : action) (p : piece) : Prop :=
+  match a, p with
+  | BorrowField, Borrowed _ => True
+  | CutPar, Par _ _ => True
+  | DescendMessage _ retain, Child _ _ actual => actual = retain
+  | DescendMap _, Child _ _ actual => actual = false
+  | AdmitSnapshot, EPathMap _ _ => True
+  | _, _ => False
+  end.
+
+Theorem recursive_dispatch_cannot_be_replaced_by_borrowing : forall a body,
+  a <> BorrowField -> ~ permits a (Borrowed body).
+Proof. intros a body H; destruct a; cbn; tauto. Qed.
+
+Theorem optional_and_oneof_children_share_presence : forall par_id child,
+  action_for par_id (OptionalField child) = action_for par_id (MessageArm child).
+Proof. reflexivity. Qed.
+
+Theorem nonpar_child_presence_is_exact : forall par_id child,
+  par_id <> child ->
+  action_for par_id (OptionalField child) = Some (DescendMessage child true) /\
+  action_for par_id (RepeatedField child) = Some (DescendMessage child false).
+Proof.
+  intros; unfold action_for, child_action; destruct (Nat.eqb par_id child) eqn:E.
+  - apply Nat.eqb_eq in E; contradiction.
+  - auto.
+Qed.
+
+Theorem dispatched_piece_preserves_source_and_action :
+  forall cuts prefix groups a source fields input max_tag f rest par_id d seen selected p,
+  invariant cuts prefix groups a source (Ready fields input) ->
+  scan_field max_tag input = Some (f, rest) ->
+  dispatch par_id d (field_wire f) seen = Accepted selected ->
+  permits selected p ->
+  field_bytes f = source_piece cuts prefix groups a p ->
+  invariant cuts prefix groups a source (Ready (fields ++ [(p, field_bytes f)]) rest) /\
+  permits selected p.
+Proof.
+  intros; split; [eapply ready_field_consumption_preserves_source; eauto | assumption].
+Qed.
+
+Inductive slot_request :=
+| SubstituteSlot (context : nat)
+| PreserveSlot
+| DropSlot
+| MissingSlot (context : nat)
+| EmptySlot (planned_empty : nat).
+
+Inductive child_job :=
+| SubstituteJob (cut context : nat)
+| PreserveJob (cut : nat)
+| MissingJob (context : nat)
+| EmptyJob (planned_empty : nat).
+
+Inductive selects : list slot_request -> list nat -> list child_job -> list nat -> Prop :=
+| SelectDone : forall cuts, selects [] cuts [] cuts
+| SelectSubstitute : forall ctx requests cut cuts jobs rest,
+    selects requests cuts jobs rest ->
+    selects (SubstituteSlot ctx :: requests) (cut :: cuts) (SubstituteJob cut ctx :: jobs) rest
+| SelectPreserve : forall requests cut cuts jobs rest,
+    selects requests cuts jobs rest ->
+    selects (PreserveSlot :: requests) (cut :: cuts) (PreserveJob cut :: jobs) rest
+| SelectDrop : forall requests cut cuts jobs rest,
+    selects requests cuts jobs rest ->
+    selects (DropSlot :: requests) (cut :: cuts) jobs rest
+| SelectMissing : forall ctx requests cuts jobs rest,
+    selects requests cuts jobs rest ->
+    selects (MissingSlot ctx :: requests) cuts (MissingJob ctx :: jobs) rest
+| SelectEmpty : forall value requests cuts jobs rest,
+    selects requests cuts jobs rest ->
+    selects (EmptySlot value :: requests) cuts (EmptyJob value :: jobs) rest.
+
+Fixpoint consumed_slots requests :=
+  match requests with
+  | [] => 0
+  | (SubstituteSlot _ | PreserveSlot | DropSlot) :: tail => S (consumed_slots tail)
+  | _ :: tail => consumed_slots tail
+  end.
+
+Fixpoint emitted_jobs requests :=
+  match requests with
+  | [] => 0
+  | DropSlot :: tail => emitted_jobs tail
+  | _ :: tail => S (emitted_jobs tail)
+  end.
+
+Theorem selection_consumes_exact_prefix : forall requests cuts jobs rest,
+  selects requests cuts jobs rest ->
+  rest = skipn (consumed_slots requests) cuts /\
+  length cuts = consumed_slots requests + length rest.
+Proof.
+  intros requests cuts jobs rest H; induction H; cbn in *; intuition lia.
+Qed.
+
+Theorem selection_job_count_includes_synthetic_excludes_dropped : forall requests cuts jobs rest,
+  selects requests cuts jobs rest -> length jobs = emitted_jobs requests.
+Proof. intros requests cuts jobs rest H; induction H; cbn; congruence. Qed.
+
+Theorem finished_selection_exhausts_cuts : forall requests cuts jobs,
+  selects requests cuts jobs [] -> length cuts = consumed_slots requests.
+Proof.
+  intros; pose proof (proj2 (selection_consumes_exact_prefix H)); cbn in *; lia.
+Qed.
+
+Theorem reverse_push_executes_children_before_continuation : forall (A : Type) (work children : list A) kont,
+  rev (work ++ [kont] ++ rev children) = children ++ kont :: rev work.
+Proof.
+  intros; rewrite !rev_app_distr, rev_involutive, <- app_assoc; reflexivity.
+Qed.
+
+Example selection_is_not_a_permutation_of_cuts :
+  selects [DropSlot; EmptySlot 99; PreserveSlot] [10; 20]
+    [EmptyJob 99; PreserveJob 20] [].
+Proof. repeat constructor. Qed.
+
+Print Assumptions unknown_field_borrows_without_singular_check.
+Print Assumptions wrong_wire_precedes_slot_and_shape_checks.
+Print Assumptions duplicate_slot_precedes_shape_check.
+Print Assumptions accepted_dispatch_has_exact_generated_action.
+Print Assumptions recursive_dispatch_cannot_be_replaced_by_borrowing.
+Print Assumptions optional_and_oneof_children_share_presence.
+Print Assumptions nonpar_child_presence_is_exact.
+Print Assumptions dispatched_piece_preserves_source_and_action.
+Print Assumptions selection_consumes_exact_prefix.
+Print Assumptions selection_job_count_includes_synthetic_excludes_dropped.
+Print Assumptions finished_selection_exhausts_cuts.
+Print Assumptions reverse_push_executes_children_before_continuation.
+Print Assumptions selection_is_not_a_permutation_of_cuts.
+
+End DispatchAndSlots.
+
+
 Example empty_delimited_field_is_present :
   scan_field 1 [10; 0] = Some (Field 10 Delimited [] [10; 0], []).
 Proof. reflexivity. Qed.

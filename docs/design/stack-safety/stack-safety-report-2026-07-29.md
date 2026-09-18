@@ -8676,6 +8676,20 @@ cached-summary correspondence, not universal native-parser equivalence or the
 whole task. No production or performance change occurs. See
 [J-187](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-187--2026-09-18-bind-cached-act-summaries-to-source-preorder).
 
+The dispatch/retained-slot checkpoint adds thirteen closed declarations to the
+existing decomposition theory. Actual generated rows and oneof arms now bind
+piece category, child schema and empty-shell retention to source certificates;
+byte-identical traversal/retention mutants are rejected. Cursor properties verify
+shared-region prefix consumption, dropped/synthetic jobs and actual work-stack
+order. The final model run passes 114 tests; three Rholang slot properties and
+15 recursive-oracle tests also pass (132 distinct tests). Native runs report at
+most 2.2 GiB peak under an 8 GiB cap, with zero swap. This does not establish the
+remaining family-specific binder/result-map semantics or the original depth-4096
+scaling/watchdog contract: the full oracle run includes fixture construction and
+takes 180.76 seconds. No runtime or performance change is claimed. See
+[J-188](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-188--2026-09-18-verify-dispatch-actions-and-retained-slot-selection)
+for receipts and the precise formal/native boundary. Task 5916 remains open.
+
 ---
 
 ### 5.29 ParBag family and count-domain completeness [SS-A13, SS-A14, SS-Y9]

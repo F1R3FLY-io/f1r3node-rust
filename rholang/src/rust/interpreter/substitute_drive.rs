@@ -2693,6 +2693,10 @@ fn combine(
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[path = "../../../tests/support/substitution_region_slots.rs"]
+mod region_slot_tests;
+
+#[cfg(test)]
 mod representation_guard {
     //! ⚠ The `(depth, shift_delta)` + borrowed-root representation is valid
     //! **only** while the substitution SCC's entire use of `Env` is `get`, the

@@ -400,6 +400,208 @@ fn verify_publication(bytes: Vec<u8>) -> usize {
 }
 
 
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExpectedAction {
+    Borrow,
+    Cut,
+    Message(u16, bool),
+    Map(u16),
+    Snapshot,
+}
+
+fn expected_action(schema: super::FrameSchema, tag: u32) -> ExpectedAction {
+    use crate::rust::rholang::match_schema::{RhoMatchFieldKind as K, RhoMatchPayloadKind as P};
+    let child = |id, retain| {
+        if id == PAR_PROTOBUF_REGION_PROGRAM.type_id { ExpectedAction::Cut }
+        else { ExpectedAction::Message(id, retain) }
+    };
+    let super::FrameSchema::Message(program) = schema else {
+        let super::FrameSchema::MapEntry { value_type_id, .. } = schema else { unreachable!() };
+        return if tag == 2 { child(value_type_id, true) } else { ExpectedAction::Borrow };
+    };
+    for (field, protobuf) in program.fields.iter().zip(program.protobuf_fields) {
+        if let K::Oneof(variants) = field.kind {
+            if let Some(variant) = variants.iter().find(|variant| variant.tag == tag) {
+                return match variant.payload {
+                    P::Message(id) => child(id, true),
+                    _ => ExpectedAction::Borrow,
+                };
+            }
+        } else if protobuf.tag == tag {
+            return match field.kind {
+                K::OptionalMessage(id) => child(id, true),
+                K::MessageSequence(id) => child(id, false),
+                K::StringMessageMap(id) => ExpectedAction::Map(id),
+                K::PathMap => ExpectedAction::Snapshot,
+                K::ParBag | K::Oneof(_) => panic!("wire schema contains a resident-only field"),
+                _ => ExpectedAction::Borrow,
+            };
+        }
+    }
+    ExpectedAction::Borrow
+}
+
+fn verify_dispatch_action(
+    expected: ExpectedAction,
+    piece: &Piece,
+    observations: &[PublishedNode],
+) {
+    use super::FrameSchema;
+    match (expected, piece) {
+        (ExpectedAction::Borrow, Piece::Borrowed(_))
+        | (ExpectedAction::Cut, Piece::Par { .. })
+        | (ExpectedAction::Snapshot, Piece::EPathMap { .. }) => {}
+        (ExpectedAction::Message(id, retain), Piece::Child { node, retain_empty_shell, .. }) => {
+            assert_eq!(*retain_empty_shell, retain);
+            let FrameSchema::Message(program) = observations[*node].schema else {
+                panic!("ordinary child was dispatched as a map entry");
+            };
+            assert_eq!(program.type_id, id);
+        }
+        (ExpectedAction::Map(id), Piece::Child { node, retain_empty_shell, .. }) => {
+            assert!(!retain_empty_shell);
+            let FrameSchema::MapEntry { value_type_id, .. } = observations[*node].schema else {
+                panic!("map entry was dispatched as an ordinary child");
+            };
+            assert_eq!(value_type_id, id);
+        }
+        _ => panic!("wrong generated action: expected {expected:?}, received {piece:?}"),
+    }
+}
+
+fn singleton_field(tag: u32, kind: crate::rust::rholang::protobuf_schema::ProtobufKind) -> Vec<u8> {
+    use crate::rust::rholang::protobuf_schema::{ProtobufKind, ProtobufWireType};
+    let wire = kind.wire_type().expect("concrete generated arm");
+    let mut bytes = Vec::new();
+    prost::encoding::encode_varint(u64::from(tag) << 3 | wire.code(), &mut bytes);
+    match wire {
+        ProtobufWireType::Varint => bytes.push(0),
+        ProtobufWireType::Fixed64 => bytes.extend_from_slice(&[0; 8]),
+        ProtobufWireType::Fixed32 => bytes.extend_from_slice(&[0; 4]),
+        ProtobufWireType::LengthDelimited => {
+            let body: &[u8] = if kind == ProtobufKind::EPathMapSnapshot {
+                &[69, 80, 77, 49, 1, 0, 0, 0]
+            } else { &[] };
+            prost::encoding::encode_varint(body.len() as u64, &mut bytes);
+            bytes.extend_from_slice(body);
+        }
+    }
+    bytes
+}
+
+#[test]
+fn every_generated_field_and_oneof_arm_has_exact_dispatch_and_presence() {
+    use crate::rust::rholang::match_schema::{wire_program_by_type_id, RhoMatchFieldKind};
+    use crate::rust::rholang::match_schema_tables::RHO_MATCH_REGISTRY;
+    use crate::rust::rholang::protobuf_schema::ProtobufKind;
+    let mut actions = [0usize; 6];
+    let mut rows = 0;
+    for (_, registry_program) in RHO_MATCH_REGISTRY {
+        let program = wire_program_by_type_id(registry_program.type_id).unwrap();
+        let mut fields = Vec::new();
+        for (field, protobuf) in program.fields.iter().zip(program.protobuf_fields) {
+            if let RhoMatchFieldKind::Oneof(variants) = field.kind {
+                fields.extend(variants.iter().map(|arm| (arm.tag, arm.protobuf_kind)));
+            } else {
+                fields.push((protobuf.tag, protobuf.kind));
+            }
+        }
+        fields.push((65535, ProtobufKind::Bytes));
+        for (tag, kind) in fields {
+            let source = ProtobufRegion::from(singleton_field(tag, kind));
+            let (result, observations) = capture_build(source, program);
+            let plan = result.unwrap_or_else(|error| panic!("{} tag {tag}: {error}", program.type_name));
+            for index in 0..observations.len() {
+                verify_node_field_certificates(index, &plan, &observations);
+            }
+            let category = match expected_action(super::FrameSchema::Message(program), tag) {
+                ExpectedAction::Borrow => 0,
+                ExpectedAction::Cut => 1,
+                ExpectedAction::Message(_, true) => 2,
+                ExpectedAction::Message(_, false) => 3,
+                ExpectedAction::Map(_) => 4,
+                ExpectedAction::Snapshot => 5,
+            };
+            actions[category] += 1;
+            rows += 1;
+        }
+    }
+    assert!(rows > 200, "{rows} generated fields/arms");
+    assert!(actions.iter().all(|count| *count > 0), "{actions:?}");
+}
+
+#[test]
+fn dispatch_certificate_rejects_byte_identical_borrow_and_retention_mutants() {
+    let source = ProtobufRegion::from(protobuf_encoder::encode_to_vec(&par_corpus::all_par_fields()));
+    let (result, observations) = capture_build(source, &PAR_PROTOBUF_REGION_PROGRAM);
+    let plan = result.unwrap();
+    let mut checked_borrow = false;
+    let mut checked_retention = false;
+    for (index, node) in plan.nodes.iter().enumerate() {
+        let source = &observations[index].source;
+        let mut fields = super::CanonicalRegionFieldCursor::in_prost_slot_order(source.clone());
+        for (slot, piece) in node.pieces.iter().enumerate() {
+            let field = fields.next_field().unwrap().unwrap();
+            if matches!(piece, Piece::Child { .. } | Piece::Par { .. }) && !checked_borrow {
+                let mut mutant = plan.clone();
+                mutant.nodes[index].pieces[slot] =
+                    Piece::Borrowed(source.subregion(field.encoded_range).unwrap());
+                assert_eq!(mutant.reconstructed_bytes(), plan.reconstructed_bytes());
+                assert!(std::panic::catch_unwind(|| {
+                    verify_node_field_certificates(index, &mutant, &observations);
+                }).is_err());
+                checked_borrow = true;
+            }
+            if matches!(piece, Piece::Child { .. }) && !checked_retention {
+                let mut mutant = plan.clone();
+                let Piece::Child { retain_empty_shell, .. } = &mut mutant.nodes[index].pieces[slot] else { unreachable!() };
+                *retain_empty_shell = !*retain_empty_shell;
+                assert_eq!(mutant.reconstructed_bytes(), plan.reconstructed_bytes());
+                assert!(std::panic::catch_unwind(|| {
+                    verify_node_field_certificates(index, &mutant, &observations);
+                }).is_err());
+                checked_retention = true;
+            }
+        }
+    }
+    assert!(checked_borrow && checked_retention);
+}
+
+#[test]
+fn dispatch_refusal_precedence_and_shared_oneof_slots_never_return_a_root() {
+    use crate::rust::rholang::match_schema_tables::{SEND_RHO_MATCH_PROGRAM, EXPR_RHO_MATCH_PROGRAM};
+    use crate::rust::rholang::protobuf_cursor::CanonicalProtobufError;
+    for bytes in [vec![10, 0, 10, 0], vec![8, 0, 16, 0]] {
+        let program = if bytes[0] == 10 { &SEND_RHO_MATCH_PROGRAM } else { &EXPR_RHO_MATCH_PROGRAM };
+        let (result, _) = capture_build(ProtobufRegion::from(bytes), program);
+        assert!(matches!(result, Err(ProtobufRegionError::Schema {
+            detail: "canonical singular field is duplicated", ..
+        })));
+    }
+    let (result, _) = capture_build(ProtobufRegion::from(vec![10, 0, 8, 0]), &SEND_RHO_MATCH_PROGRAM);
+    assert!(matches!(result, Err(ProtobufRegionError::Framing(
+        CanonicalProtobufError::UnexpectedWireType { field: 1, .. }
+    ))));
+}
+
+#[test]
+fn repeated_unknown_fields_do_not_claim_a_known_singular_slot() {
+    use crate::rust::rholang::match_schema_tables::SEND_RHO_MATCH_PROGRAM;
+    use crate::rust::rholang::protobuf_schema::ProtobufKind;
+    let unknown = singleton_field(65535, ProtobufKind::Bytes);
+    let mut bytes = unknown.repeat(2);
+    bytes.extend_from_slice(&singleton_field(1, ProtobufKind::Message));
+    let source = ProtobufRegion::from(bytes.clone());
+    let (result, observations) = capture_build(source, &SEND_RHO_MATCH_PROGRAM);
+    let plan = result.unwrap();
+    assert_eq!(plan.reconstructed_bytes().as_ref(), bytes.as_slice());
+    assert_eq!(verify_node_field_certificates(plan.root, &plan, &observations), [2, 0, 1, 0]);
+    assert!(matches!(plan.nodes[plan.root].pieces.as_slice(),
+        [Piece::Borrowed(_), Piece::Borrowed(_), Piece::Par { tag: 1, .. }]));
+}
+
+
 fn verify_node_field_certificates(
     index: usize,
     plan: &ProtobufCutPlan,
@@ -418,6 +620,7 @@ fn verify_node_field_certificates(
         let field = fields.next_field().unwrap().expect("one source field per piece");
         let occurrence = previous_tags.iter().rev().take_while(|tag| **tag == field.number).count();
         previous_tags.push(field.number);
+        verify_dispatch_action(expected_action(parent.schema, field.number), piece, observations);
         let expected_step = match parent.schema {
             FrameSchema::Message(program) => ProtobufRegionStep {
                 owner_type_id: program.type_id,

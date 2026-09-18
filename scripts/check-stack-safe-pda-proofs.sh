@@ -758,7 +758,7 @@ rocq_compile_with_closed_count theories/SubstitutionVarintAccumulator.v 20 \
   "native substitution varint accumulator and canonical-width equivalence"
 rocq_check_modules "substitution varint accumulator" StackSafePDA.SubstitutionVarintAccumulator
 rocq_reject_placeholders theories/SubstitutionRegionDecomposition.v
-rocq_compile_with_closed_count theories/SubstitutionRegionDecomposition.v 21 \
+rocq_compile_with_closed_count theories/SubstitutionRegionDecomposition.v 34 \
   "substitution field decomposition and suspended-parent source certificates"
 rocq_check_modules "substitution region decomposition" StackSafePDA.SubstitutionRegionDecomposition
 rocq_reject_placeholders theories/SubstitutionRegionTables.v
@@ -987,6 +987,9 @@ epathmap_import_runtime
 rpb3_run_tests 1 --lib \
   production_component_admission_is_differentially_equivalent_for_all_nine_families
 rpb3_run_tests 3 --test par_bag admitted_
+TLC_MEMORY_HIGH=4G TLC_RSS=6G TLC_CPU_QUOTA=400% TLC_TASKS_MAX=512 \
+  rpb3_run_tests 23 --release -j4 --lib emission_tests
+rholang_run_tests 3 --lib region_slot_tests
 rholang_run_tests 4 --lib scalar_projection
 rholang_run_tests 1 --features epathmap-fusion-differential \
   --test epathmap_fusion_equivalence_spec \

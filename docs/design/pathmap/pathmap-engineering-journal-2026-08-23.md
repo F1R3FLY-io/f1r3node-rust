@@ -13863,6 +13863,89 @@ non-identity geometric scaling with the original upper-95% exponent at most
 then replay/consensus and acceptance lifecycle. It does not require another
 framing or ACT-helper model. Reuse the completed foundations unchanged.
 
+### J-188 — 2026-09-18 Verify dispatch actions and retained-slot selection
+
+**Question (task 5916).** Source-byte reconstruction alone cannot establish that
+a generated field was recursively traversed: borrowing its entire encoded field
+can reproduce the same bytes while bypassing substitution. Likewise, flipping
+the empty-shell retention flag changes compact presence without changing original
+bytes. The integration check must bind both the action and its byte certificate.
+
+**DERIVED design.** The existing decomposition theory now contains
+`DispatchAndSlots`, not another parser. It models wire-check precedence, shared
+singular slots, generated action choice, optional/oneof versus repeated presence,
+and composition with the existing source invariant. Its retained-slot relation
+distinguishes Substitute, Preserve, Drop, Missing and Empty. The last two emit
+jobs without consuming input; Drop consumes without emitting. Consequently the
+semantic jobs are not a permutation of all retained cuts. Reverse-pushing jobs
+places them before the component continuation while preserving semantic order.
+
+**Native bindings.** The actual publication capture now checks the expected
+action, child schema and retention as well as field bytes and provenance.
+Singleton fixtures visit every generated wire-schema field and oneof arm, using
+Par's distinct protobuf-region program rather than its resident ParBag program.
+Unknown tags, wrong-wire/duplicate precedence and shared oneof slots are covered.
+Review added a repeated-unknown-tag stream followed by a known singular field:
+both unknown fields must remain borrowed without consuming that known slot.
+Negative controls retain identical reconstructed bytes while replacing descent
+with borrowing or flipping retention; the action certificate must reject both.
+
+The cut-cursor properties generate retained, dropped and synthetic requests
+against a real cut plan, compare exact region ranges and backing pointers, require
+prefix consumption/exhaustion, and pop the real scheduled work vector to inspect
+job order and the continuation. Test code remains under `tests/support`; the
+production-module edit is only its conditional test registration. The existing
+recursive oracle is reused for broader family, error and charge observations.
+
+**Formal-first receipt.** The thirteen new closed declarations extend SRD from
+21 to 34. Final r4 recompiles its ordinal dependent (16 additional declarations)
+and kernel-checks both modules: 18.834 seconds wall, 18.631 CPU seconds, 428.6 MiB
+reported peak, zero swap. The final cap is 1536 MiB with a 1 GiB soft threshold,
+one-core quota and 600-second watchdog. Initial proof-script failures were repaired
+before native additions; only the successful final run is qualifying evidence.
+
+**MEASURED native qualification.** The final r3 model run passes 114 release tests:
+11 EPM prefix/mode/range, 23 publication/dispatch, five varint and 75 integration
+tests (40 manifest, 18 cursor, eight differential, seven range, two registry).
+It takes 82.777 seconds wall and 211.911 CPU seconds, reporting 1.7 GiB peak.
+The r2 combined run also passes the three new Rholang slot properties and all
+15 existing recursive-oracle tests: 302.605 seconds wall, 724.942 CPU seconds,
+2.2 GiB peak. The oracle itself takes 180.76 seconds, including its deep/wide
+and depth-4096 injection fixtures; this is not the preregistered performance
+gate or an isolated substitution timing. Both runs use the 8 GiB hard cap,
+6 GiB soft threshold, zero swap, four-core quota, four build/test workers and
+1800-second watchdog. No selected test fails or is ignored. Across the runs,
+132 distinct tests pass; repeated executions are not counted as extra coverage.
+The final verification runner now requires the 23 publication/dispatch tests
+and three cursor properties, not just the formal declaration count.
+After wiring those commands, r4 passes all 40 manifest tests and reruns the three
+cursor properties: 73.663 seconds wall, 212.429 CPU seconds and 1.5 GiB peak,
+under the same envelope. These 43 repeat executions add no distinct coverage.
+
+**Scope boundary.** These are descriptor/action and cursor/scheduling refinements,
+not a theorem of the whole Rust interpreter. The formal context identifiers are
+opaque; family-specific binder transformations, result-to-wire maps, terminal
+substitution and first semantic errors remain integration obligations. Generated
+descriptor resolution and singular-slot updates are supplied to the formal
+dispatch function. Its action-to-piece predicate constrains category/retention;
+the native publication oracle separately verifies child-schema identity. These
+boundaries were checked in the independent read-only review. Private
+child nodes may exist when a later structural check fails; the API must not return
+a completed root. No runtime, format, consensus or measured-performance change
+is claimed. Task 5916 remains open for those semantics, construction/copy/work
+counters, current non-identity scaling/profile evidence, replay and lifecycle gates.
+
+| Artifact | SHA-256 |
+|---|---|
+| `formal/rocq/stack_safe_pda/theories/SubstitutionRegionDecomposition.v` | `c7d095ee5981a9793ff54956d36be129e115dab5f1fa287cc5b4eab482d6b090` |
+| `target/verification/substitution-5916-dispatch-slots-formal-r4.log` | `83b6a6dcf2322716e15ea55d784045e9a1eb24b924de5b0ea3c029270c038e9d` |
+| `target/verification/substitution-5916-dispatch-slots-models-r3.log` | `4cc0fbc044cdfe3c93892289af92ac04dc4f0026b0c1309d6cf3561e4e3690b3` |
+| `target/verification/substitution-5916-dispatch-slots-native-r2.log` | `00449e9b0d7c58de14660692088afc16b9ed6dc91bbcd9b239372f2084a6fb4c` |
+| `target/verification/substitution-5916-dispatch-bindings-native-r4.log` | `96a74ad4c7e0e9863da92d1711f15224ff3258e0d4981559572f4c7a8704711f` |
+
+The [DSR inventory](workspace-regression-formal-invariant-catalog-2026-08-28.md#dispatch-and-retained-slot-refinement-dsr-task-5916)
+enumerates all thirteen obligations and their native observations.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

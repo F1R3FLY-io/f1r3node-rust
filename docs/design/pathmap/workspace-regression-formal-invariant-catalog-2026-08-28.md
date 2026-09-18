@@ -1,5 +1,63 @@
 # Workspace-regression formal invariant catalog — 2026-08-28
 
+## Dispatch and retained-slot refinement (DSR, task 5916)
+
+This extension of `SubstitutionRegionDecomposition.v::DispatchAndSlots` reuses the
+existing field-source certificate; it does not introduce another parser. All thirteen
+declarations were kernel-checked before adding native bindings. Context and planned
+empty identifiers are opaque. Binder transformation, schema generation, arbitrary
+malformed-byte acceptance and final Par construction are not proved here. All native
+bindings below pass; [J-188](pathmap-engineering-journal-2026-08-23.md#j-188--2026-09-18-verify-dispatch-actions-and-retained-slot-selection)
+records the formal-first and capped native receipts, including their scope limits.
+
+The formal `permits` predicate constrains piece category and retention, not the
+child schema identifier stored in a native frame. The native publication oracle
+separately checks that identifier. Descriptor resolution, slot assignment and
+updates to the supplied `seen` function are native bindings, not extracted Rocq
+implementations or consequences of the action-to-piece theorem.
+
+| ID | Closed declaration | Required native observation |
+|---|---|---|
+| DSR-01 | `unknown_field_borrows_without_singular_check` | Unknown tag borrows without a singular check |
+| DSR-02 | `wrong_wire_precedes_slot_and_shape_checks` | Wrong wire precedes duplicate-slot refusal |
+| DSR-03 | `duplicate_slot_precedes_shape_check` | Duplicate singular and oneof slot refusal |
+| DSR-04 | `accepted_dispatch_has_exact_generated_action` | Generated row/arm selects exact piece, child schema and retention |
+| DSR-05 | `recursive_dispatch_cannot_be_replaced_by_borrowing` | Byte-identical Borrowed replacement is rejected |
+| DSR-06 | `optional_and_oneof_children_share_presence` | Optional and message-arm children retain empty shells |
+| DSR-07 | `nonpar_child_presence_is_exact` | Retention-bit mutant is rejected despite unchanged original bytes |
+| DSR-08 | `dispatched_piece_preserves_source_and_action` | Actual publication binds action and original field bytes together |
+| DSR-09 | `selection_consumes_exact_prefix` | Generated cursor requests consume exact prefixes with shared region identity |
+| DSR-10 | `selection_job_count_includes_synthetic_excludes_dropped` | Missing/Empty emit without consuming; Drop consumes without emitting |
+| DSR-11 | `finished_selection_exhausts_cuts` | Exact exhaustion succeeds; under/over-consumption refuses |
+| DSR-12 | `reverse_push_executes_children_before_continuation` | Actual work stack pops semantic jobs before continuation |
+| DSR-13 | `selection_is_not_a_permutation_of_cuts` | Drop/Empty/Preserve witness is not a permutation of cuts |
+
+DSR-01 is bound by `repeated_unknown_fields_do_not_claim_a_known_singular_slot`;
+DSR-02/03 by `dispatch_refusal_precedence_and_shared_oneof_slots_never_return_a_root`;
+DSR-04/06/08 by `every_generated_field_and_oneof_arm_has_exact_dispatch_and_presence`
+and `verify_node_field_certificates`; DSR-05/07 by
+`dispatch_certificate_rejects_byte_identical_borrow_and_retention_mutants`. These
+live in `models/tests/support/substitution_region_emission.rs`.
+
+`rholang/tests/support/substitution_region_slots.rs` binds DSR-09/10/12 with
+`generated_slot_selection_preserves_prefix_identity_and_semantic_order`, DSR-11
+with `region_cut_cursor_rejects_unconsumed_and_exhausted_plans`, and DSR-13 with
+`dropped_and_synthetic_slots_are_not_a_permutation_of_retained_cuts`. The mandatory
+proof runner executes both native modules, and the manifest checks those commands.
+
+The descriptor-selected wire check precedes singular-slot checking and shape dispatch.
+All arms of one oneof share a slot. Unknown fields bypass the singular-slot check.
+Child type determines cut-at-Par versus descent. A map entry inherits its parent
+path; its value edge uses the outer tag/ordinal despite wire tag 2. Existing provenance
+tests retain authority for these path facts.
+
+Cut selection is not a bijection: missing required and optional empty slots synthesize
+jobs; incomplete Match cases can discard present cuts. Reconstruction order differs
+from semantic evaluation order. This abstract relation does not yet establish the
+family-specific result-index map or first semantic error. Prior private child
+publications may exist after structural failure; no completed root may be returned.
+
+
 ## Status and scope
 
 This is a living engineering report for the two failures exposed by the exact release-workspace

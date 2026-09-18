@@ -428,6 +428,16 @@ fn substitution_varint_accumulator_has_bitwise_proof_and_native_bindings() {
 
 #[test]
 fn substitution_region_decomposition_has_source_certificate_bindings() {
+    let slots = read_repository_file("rholang/tests/support/substitution_region_slots.rs");
+    for witness in [
+        "dropped_and_synthetic_slots_are_not_a_permutation_of_retained_cuts",
+        "region_cut_cursor_rejects_unconsumed_and_exhausted_plans",
+        "generated_slot_selection_preserves_prefix_identity_and_semantic_order",
+    ] {
+        assert!(slots.contains(&format!("fn {witness}(")));
+    }
+    assert!(read_repository_file("rholang/src/rust/interpreter/substitute_drive.rs")
+        .contains("#[cfg(test)]\n#[path = \"../../../tests/support/substitution_region_slots.rs\"]\nmod region_slot_tests;"));
     let theory = read_repository_file("formal/rocq/stack_safe_pda/theories/SubstitutionRegionDecomposition.v");
     for theorem in [
         "taken_body_splits_source",
@@ -451,14 +461,34 @@ fn substitution_region_decomposition_has_source_certificate_bindings() {
         "empty_delimited_field_is_present",
         "truncated_delimited_field_is_refused",
         "unknown_wire_kind_is_refused",
+        "unknown_field_borrows_without_singular_check",
+        "wrong_wire_precedes_slot_and_shape_checks",
+        "duplicate_slot_precedes_shape_check",
+        "accepted_dispatch_has_exact_generated_action",
+        "recursive_dispatch_cannot_be_replaced_by_borrowing",
+        "optional_and_oneof_children_share_presence",
+        "nonpar_child_presence_is_exact",
+        "dispatched_piece_preserves_source_and_action",
+        "selection_consumes_exact_prefix",
+        "selection_job_count_includes_synthetic_excludes_dropped",
+        "finished_selection_exhausts_cuts",
+        "reverse_push_executes_children_before_continuation",
+        "selection_is_not_a_permutation_of_cuts",
     ] {
         assert!(theory.contains(&format!("Print Assumptions {theorem}.")));
     }
     let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
     assert!(has_runner_command(&runner, &[
-        "rocq_compile_with_closed_count", "theories/SubstitutionRegionDecomposition.v", "21",
+        "rocq_compile_with_closed_count", "theories/SubstitutionRegionDecomposition.v", "34",
     ]));
     assert!(has_runner_kernel_check(&runner, &["StackSafePDA.SubstitutionRegionDecomposition"]));
+    assert!(has_runner_command(&runner, &[
+        "TLC_MEMORY_HIGH=4G", "TLC_RSS=6G", "TLC_CPU_QUOTA=400%", "TLC_TASKS_MAX=512",
+        "rpb3_run_tests", "23", "--release", "-j4", "--lib", "emission_tests",
+    ]));
+    assert!(has_runner_command(&runner, &[
+        "rholang_run_tests", "3", "--lib", "region_slot_tests",
+    ]));
     assert!(read_repository_file("formal/rocq/stack_safe_pda/_CoqProject")
         .lines().any(|line| line == "theories/SubstitutionRegionDecomposition.v"));
     let native = read_repository_file("models/tests/support/substitution_region_emission.rs");
@@ -467,6 +497,10 @@ fn substitution_region_decomposition_has_source_certificate_bindings() {
         "every_published_node_preserves_source_caches_indices_and_prior_meaning",
         "epathmap_publication_frames_include_empty_and_distinct_map_values",
         "field_certificate_rejects_swapped_same_tag_par_cuts",
+        "every_generated_field_and_oneof_arm_has_exact_dispatch_and_presence",
+        "dispatch_certificate_rejects_byte_identical_borrow_and_retention_mutants",
+        "dispatch_refusal_precedence_and_shared_oneof_slots_never_return_a_root",
+        "repeated_unknown_fields_do_not_claim_a_known_singular_slot",
     ] {
         assert!(native.contains(&format!("fn {witness}(")));
     }
