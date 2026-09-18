@@ -12,45 +12,54 @@ if [[ "${1:-}" == --inside ]]; then
     cat >bin/df <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-python3 - <<'PY'
-import os
-from pathlib import Path
-import select
-import signal
-
-root = Path('/case/evidence')
-ready = list((root / 'output').glob('.crash-monitor.*/ready'))
-log = (root / 'driver.log').read_text()
-guardians = [int(line.split()[-1]) for line in log.splitlines() if line.startswith('orchestrator host guardian watching')]
-if len(ready) == 1 and len(guardians) == 1 and not (root / 'fault.txt').exists():
-    ancestor = os.getppid()
-    from_guardian = False
-    for _ in range(32):
-        if ancestor == guardians[0]:
-            from_guardian = True
+root=/case/evidence
+shopt -s nullglob
+ready=("$root"/output/.crash-monitor.*/ready)
+mapfile -t guardians < <(grep '^orchestrator host guardian watching' "$root/driver.log" 2>/dev/null | awk '{ print $NF }')
+proc_field() {
+    local stat field="$2"
+    IFS= read -r stat <"/proc/$1/stat"
+    stat="${stat##*) }"
+    set -- $stat
+    printf '%s\n' "${!field}"
+}
+proc_identity() {
+    local stat
+    IFS= read -r stat 2>/dev/null <"/proc/$1/stat" || return 1
+    stat="${stat##*) }"
+    set -- $stat
+    [[ "$1" != Z ]] || return 1
+    printf '%s\n' "${20}"
+}
+if [[ "${#ready[@]}" == 1 && "${#guardians[@]}" == 1 && ! -e "$root/fault.txt" ]]; then
+    ancestor=$PPID
+    from_guardian=0
+    for _ in $(seq 1 32); do
+        if [[ "$ancestor" == "${guardians[0]}" ]]; then
+            from_guardian=1
             break
-        if ancestor <= 1:
-            break
-        ancestor = int(Path(f'/proc/{ancestor}/stat').read_text().rsplit(') ', 1)[1].split()[1])
-    if not from_guardian:
-        pid = int(ready[0].read_text())
-        fd = os.pidfd_open(pid, 0)
-        stat = Path(f'/proc/{pid}/stat').read_text().rsplit(') ', 1)[1].split()
-        driver = int(stat[1])
-        expected = [b'python3', b'-', str(driver).encode(), str(ready[0].parent).encode(), b'/case/evidence/output', b'']
-        assert Path(f'/proc/{pid}/cmdline').read_bytes().split(b'\0') == expected
-        assert os.stat(f'/proc/{pid}').st_uid == os.geteuid()
-        assert os.getsid(pid) == pid
-        poller = select.poll()
-        poller.register(fd, select.POLLIN)
-        assert not poller.poll(0)
-        signal.pidfd_send_signal(fd, signal.SIGKILL)
-        assert poller.poll(1000)
-        os.close(fd)
-        (root / 'fault.txt').write_text('Monitor death was confirmed before the admission probe returned 16384 MiB.\n')
-print('Filesystem 1024-blocks Used Available Capacity Mounted on')
-print('fixture 32768 16384 16384 50% /case')
-PY
+        fi
+        [[ "$ancestor" -gt 1 ]] || break
+        ancestor="$(proc_field "$ancestor" 2)"
+    done
+    if [[ "$from_guardian" == 0 ]]; then
+        pid="$(<"${ready[0]}")"
+        driver="$(proc_field "$pid" 2)"
+        mapfile -d '' -t args <"/proc/$pid/cmdline"
+        [[ "${args[0]}" == bash && "${args[1]}" == -c && "${args[3]}" == soak-crash-monitor && "${args[4]}" == "$driver" && "${args[6]}" == "${ready[0]%/ready}" && "${args[7]}" == /case/evidence/output ]]
+        [[ "$(stat -c %u "/proc/$pid")" == "$(id -u)" && "$(proc_field "$pid" 4)" == "$pid" ]]
+        identity="$(proc_identity "$pid")"
+        kill -KILL "$pid"
+        for _ in $(seq 1 20); do
+            [[ "$(proc_identity "$pid" || true)" == "$identity" ]] || break
+            sleep 0.05
+        done
+        [[ "$(proc_identity "$pid" || true)" != "$identity" ]]
+        printf 'Monitor death was confirmed before the admission probe returned 16384 MiB.\n' >"$root/fault.txt"
+    fi
+fi
+printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n'
+printf 'fixture 32768 16384 16384 50%% /case\n'
 SH
     cat >bin/docker <<'SH'
 #!/usr/bin/env bash
