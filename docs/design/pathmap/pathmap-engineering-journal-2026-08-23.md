@@ -13422,6 +13422,114 @@ guarded. Task 5916 remains open for universal region/path provenance composition
 schema/action selection, full substitution semantics, charge/error ordering,
 operational counters, non-identity scaling/profiling and lifecycle/replay gates.
 
+### J-183 — 2026-09-18 Region-backed registration and frame provenance
+
+**Question and hypothesis (task 5916).** SRT proves that append-only byte tables
+preserve published-node meaning, but erases the source regions, owners and path
+ancestry. Does native region/path registration refine that table model without
+losing where a retained byte slice came from? The hypothesis is that an immutable
+backing interpretation and explicit path-payload relation suffice; no decoded
+Par collection, additional production state or new parser is needed.
+
+**DERIVED design.** `SubstitutionRegionProvenance.v` (SRV) assigns each region
+its owner's byte slice using SRR's offset bounds. A ghost payload on each modeled
+path connects native parent/step records to the region actually registered.
+`path_chain` admits only contained children with backward parent references;
+`cuts_linked` associates cuts with exact leaf payloads; `groups_linked`
+associates groups with their whole-payload anchors and contained prefixes.
+The backing store is an immutable parameter, not a modeled allocator.
+
+Registration follows the existing order: append a path; either retain a Par cut
+or descend a message; for EPM, append the Snapshot path, fold through Value paths
+and cuts in ordinal order, then append the group descriptor. Named kinds avoid
+implying Rust enum discriminants. Erasure to SRT commutes with Par registration,
+the value fold and final group publication. Exact-record lemmas retain original
+schema owner, tag, value order, empty/duplicate bodies, leaf offsets and counts.
+The capstone transports the existing byte-table/arena invariant together with
+path/cut/group provenance and valid retained prefixes.
+
+**Review-driven correction.** A protobuf string-map entry is path-transparent.
+Its frame reuses the enclosing path leaf while its region is the contained entry
+envelope. An ordinary descended message instead owns a dedicated path. Therefore
+general frame provenance is containment, not equality. `MapValue` steps carry
+the outer map field tag and entry occurrence, although the inner value wire tag
+is 2. The transitive-containment lemma permits this without inventing a map-entry
+path. Inspection also confirmed that `add_child` can append a path before a
+schema lookup fails; the proof does not assert failure atomicity of the builder.
+
+**Formal-first construction.** Forty-two printed declarations are closed under
+the global context and kernel-checked before the native test changes. They include
+a wrapper around the existing EPM frame decoder: successful suffix decoding
+with empty remainder, and a prefix subregion starting at zero, derive the new
+field's reconstruction certificate. This does not assume the desired SRT field
+certificate, duplicate the parser or prove ownership merely from equal bytes.
+Containment and path invariants supply the provenance side of that composition.
+The [SRV inventory](workspace-regression-formal-invariant-catalog-2026-08-28.md#region-backed-registration-provenance-srv-task-5916)
+lists all declarations and executable bindings.
+
+**Native correspondence.** The existing test-only exhausted-frame observer now
+captures actual schema and path leaf alongside source region, published output
+and table snapshot. The exact field-certificate checker asserts dedicated-child
+parents, inherited map-entry paths, outer-tag MapValue descriptors, Par-cut and
+EPM-group parents, Value ordinals and shared-backing pointers. Positive corpus
+counts require ordinary descent, transparent entries and map-value edges.
+Generated injection maps extend property coverage. A negative control points a
+cut at a different **existing earlier** path and requires rejection, so backwards
+index validity alone cannot satisfy the association. Existing shifted-range,
+swapped-ordinal and wrong-parent registration controls remain.
+
+Synthetic direct-registration and seeded-ordinal fixtures deliberately use
+independently allocated payloads and empty owner frames. They remain local
+transition witnesses, not whole-frame containment evidence. The new provenance
+checks operate on actual `capture_build` executions instead.
+
+**MEASURED qualification.** Formal r11 passed before native edits. Final r12,
+after renaming a proof-local hypothesis to avoid the placeholder gate's reserved
+word, passes that gate, 42 closed declarations and
+`coqchk`: 17.690 seconds wall, 17.455 CPU seconds, 451.3 MiB peak, under
+`MemoryMax=2G`, zero swap, one-core quota and 120-second watchdog. Earlier
+failed proof scripts are not passing evidence.
+
+Native r1 passes 90 tests: 19 selected models-library tests (513 filtered)
+and 71 integrations (36 manifest, 18 cursor, eight region differential, seven
+region-range and two test-registry tests). No selected test is failed or ignored.
+The service takes 106.625 seconds wall, 322.381 CPU seconds and reports a
+2.2 GiB peak with zero swap. It uses `MemoryHigh=6G`, `MemoryMax=8G`,
+`MemorySwapMax=0`, `CPUQuota=400%`, four build/test workers and a 1800-second
+watchdog. These are focused checks, not a workspace-wide run. Independent final
+model/native review found no remaining blocker for this checkpoint.
+
+| Artifact | SHA-256 |
+|---|---|
+| `formal/rocq/stack_safe_pda/theories/SubstitutionRegionProvenance.v` | `816d342fa49da9b08dac77b987c57b0d4574610a1808c54e88fc6b8351a7c000` |
+| `target/verification/substitution-5916-provenance-formal-r12.log` | `75739cd91dbc722124415d3e4dc82e695bebe11e022ff95df5d02e053a70ab83` |
+| `target/verification/substitution-5916-provenance-native-r1.log` | `662406c39b14490ef4d8806c6a2248b6f3019f2e02d1b92fd47379b9ae75860e` |
+
+Commands run inside the capped services, from the proof directory for formal
+verification and worktree root for native verification:
+
+```sh
+coqc -Q theories StackSafePDA theories/SubstitutionRegionProvenance.v
+coqchk -silent -Q theories StackSafePDA StackSafePDA.SubstitutionRegionProvenance
+cargo test --release --locked -j4 -p models --lib emission_tests -- --test-threads=4
+cargo test --release --locked -j4 -p models --test protobuf_cursor --test substitution_region_ranges --test protobuf_region_differential --test formal_equivalence_manifest --test test_target_registry_gate -- --test-threads=4
+```
+
+**Decision and limits.** The registration/provenance bridge is established in
+the mathematical model with native invariant bindings. It is not extracted-Rust
+equivalence, universal correctness of inspector-selected physical ranges or
+schema dispatch, nor full substitution/binder/error/charge semantics. The decoder
+wrapper establishes byte association; equal bytes from another owner do not by
+themselves establish physical provenance. Supplied cursor regions and selected
+schema actions remain explicit refinement boundaries.
+
+This checkpoint changes only proofs, documentation and test-only observation/
+assertions. It changes no production serialization, PathMap representation,
+persistence, cost rule or consensus result; no additional consensus-register
+entry is warranted for this checkpoint. No benchmark or allocation/speedup claim
+follows. Task 5916 remains open for those selection/semantic boundaries,
+operational counters, non-identity scaling/profiling and lifecycle/replay gates.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

@@ -8,6 +8,79 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 #[test]
+fn substitution_region_provenance_has_region_path_and_decoder_bindings() {
+    let theory = read_repository_file("formal/rocq/stack_safe_pda/theories/SubstitutionRegionProvenance.v");
+    for theorem in [
+        "containment_is_transitive",
+        "containment_preserves_region_validity",
+        "checked_subregion_is_contained",
+        "subregion_bytes_are_parent_interval",
+        "path_append_preserves_old_lookup",
+        "appended_path_has_exact_index",
+        "admitted_parent_is_backward",
+        "path_append_preserves_admission",
+        "path_chain_has_valid_regions",
+        "path_registration_erases_to_identity",
+        "par_registration_erases_to_byte_registration",
+        "value_registration_erases_to_byte_registration",
+        "value_fold_erases_to_sequential_cuts",
+        "value_fold_keeps_groups",
+        "epathmap_registration_erases_to_byte_registration",
+        "path_registration_preserves_cut_links",
+        "par_registration_preserves_cut_links",
+        "par_registration_preserves_path_chain",
+        "group_anchor_is_admitted",
+        "value_fold_preserves_provenance",
+        "epathmap_registration_preserves_provenance",
+        "par_registration_transports_published_arena",
+        "epathmap_registration_transports_published_arena",
+        "epm_region_framing_establishes_new_field_certificate",
+        "inherited_frame_composes_admission",
+        "value_fold_has_exact_paths_and_cuts",
+        "value_path_count_is_exact",
+        "value_cut_count_is_exact",
+        "value_path_lookup_is_exact",
+        "value_cut_lookup_is_exact",
+        "epathmap_has_exact_group_and_value_records",
+        "admitted_region_is_valid",
+        "epm_prefix_retains_backing_and_bounds",
+        "local_value_ranges_interpret_as_parent_slices",
+        "source_framing_derives_region_field_certificate",
+        "region_backed_registration_preserves_provenance_and_publication",
+        "path_registration_preserves_group_links",
+        "value_fold_preserves_group_links",
+        "epathmap_registration_preserves_group_links",
+        "linked_group_prefixes_are_valid",
+        "region_registration_preserves_all_retained_provenance",
+        "decoded_epm_suffix_establishes_region_field_certificate",
+    ] {
+        assert!(theory.contains(&format!("Print Assumptions {theorem}.")));
+    }
+    let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
+    assert!(has_runner_command(&runner, &[
+        "rocq_compile_with_closed_count", "theories/SubstitutionRegionProvenance.v", "42",
+    ]));
+    assert!(has_runner_kernel_check(&runner, &["StackSafePDA.SubstitutionRegionProvenance"]));
+    assert!(read_repository_file("formal/rocq/stack_safe_pda/_CoqProject")
+        .lines().any(|line| line == "theories/SubstitutionRegionProvenance.v"));
+    let native = read_repository_file("models/tests/support/substitution_region_emission.rs");
+    for witness in [
+        "captured_frame_provenance_covers_dedicated_and_inherited_paths",
+        "captured_frame_provenance_rejects_another_valid_earlier_parent",
+        "generated_injection_entries_preserve_inherited_frame_provenance",
+        "registration_preserves_tables_between_map_set_empty_and_ordinary_cuts",
+        "generated_registration_retains_every_value_and_prior_group",
+        "registration_controls_reject_shifted_ranges_and_wrong_value_paths",
+    ] {
+        assert!(native.contains(&format!("fn {witness}(")));
+    }
+    assert!(native.contains("assert_eq!(observations[*node].path_leaf, parent.path_leaf)"));
+    assert!(native.contains("assert_eq!(path.parent, parent.path_leaf)"));
+    assert!(native.contains("assert_eq!(path.parent, Some(group.path_leaf))"));
+    assert!(theory.contains("EPM1.decode_frames count (skipn prefix_end (region_bytes body))"));
+}
+
+#[test]
 fn substitution_region_ordinals_have_machine_bound_and_consumer_bindings() {
     let theory = read_repository_file("formal/rocq/stack_safe_pda/theories/SubstitutionRegionOrdinals.v");
     for theorem in [
@@ -321,7 +394,7 @@ fn substitution_region_publication_has_derived_invariants_and_native_capture() {
         assert!(native.contains(&format!("fn {witness}(")));
     }
     let source = read_repository_file("models/src/rust/rholang/protobuf_region.rs");
-    assert!(source.contains("builder.nodes.push(node);\n        #[cfg(test)]\n        emission_tests::record_publication(node_index, &frame.region, &builder);"));
+    assert!(source.contains("builder.nodes.push(node);\n        #[cfg(test)]\n        emission_tests::record_publication(node_index, &frame.region, frame.schema, frame.path_leaf, &builder);"));
     assert!(read_repository_file("models/src/lib.rs")
         .contains("#[cfg(test)]\nextern crate self as models;"));
 }

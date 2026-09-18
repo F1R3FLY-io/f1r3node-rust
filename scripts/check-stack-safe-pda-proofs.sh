@@ -760,6 +760,10 @@ rocq_reject_placeholders theories/SubstitutionRegionOrdinals.v
 rocq_compile_with_closed_count theories/SubstitutionRegionOrdinals.v 16 \
   "input-bounded native occurrence and EPM1 enumeration ordinals"
 rocq_check_modules "substitution region ordinals" StackSafePDA.SubstitutionRegionOrdinals
+rocq_reject_placeholders theories/SubstitutionRegionProvenance.v
+rocq_compile_with_closed_count theories/SubstitutionRegionProvenance.v 42 \
+  "region-backed path and table registration provenance"
+rocq_check_modules "substitution region provenance" StackSafePDA.SubstitutionRegionProvenance
 rmp2_rocq_output="$(
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/RMP2.v 2>&1
 )"

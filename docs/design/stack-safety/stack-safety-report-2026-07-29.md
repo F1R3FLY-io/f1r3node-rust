@@ -8614,6 +8614,20 @@ See [J-182](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-182--2026-09-
 for formal/native receipts, compatibility and limitations. These are verification
 results, not benchmark evidence.
 
+The SRV provenance bridge now interprets immutable source regions into SRT's
+byte tables, proves registration erasure and transports published-arena validity
+with path/cut/group provenance. It distinguishes dedicated message paths from
+path-transparent map-entry frames and derives EPM field reconstruction using
+the existing successful frame decoder. Forty-two closed obligations and kernel
+checking pass before native edits. Ninety focused native tests pass, including
+captured frame ancestry, generated injection maps and a wrong-parent control
+that still uses a valid earlier index. The native service reports 2.2 GiB peak
+under the 8 GiB cap with zero swap. Changes are proof/test-only: no production,
+consensus or performance claim. Universal inspector/schema selection,
+whole-substitution semantics and resource/lifecycle acceptance remain required.
+[J-183](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-183--2026-09-18-region-backed-registration-and-frame-provenance)
+records the model assumptions, exact receipts and native-binding limits.
+
 ---
 
 ### 5.29 ParBag family and count-domain completeness [SS-A13, SS-A14, SS-Y9]

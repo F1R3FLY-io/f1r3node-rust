@@ -32,6 +32,7 @@ theories/SubstitutionVarintAccumulator.v
 theories/SubstitutionRegionDecomposition.v
 theories/SubstitutionRegionTables.v
 theories/SubstitutionRegionOrdinals.v
+theories/SubstitutionRegionProvenance.v
 theories/PathMapPhysicalOwnership.v
 theories/PathMapPhysicalOwnershipMutants.v
 theories/PathMapReversePruneTeardown.v

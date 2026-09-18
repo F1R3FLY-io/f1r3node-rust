@@ -83,6 +83,8 @@ proptest! {
 
 struct PublishedNode {
     source: ProtobufRegion,
+    schema: super::FrameSchema,
+    path_leaf: Option<usize>,
     output: [prost::bytes::Bytes; 3],
     tables: RegisteredTables,
 }
@@ -331,7 +333,13 @@ thread_local! {
     static PUBLISHED: RefCell<Option<Vec<PublishedNode>>> = const { RefCell::new(None) };
 }
 
-pub(super) fn record_publication(index: usize, source: &ProtobufRegion, builder: &Builder) {
+pub(super) fn record_publication(
+    index: usize,
+    source: &ProtobufRegion,
+    schema: super::FrameSchema,
+    path_leaf: Option<usize>,
+    builder: &Builder,
+) {
     PUBLISHED.with(|capture| {
         let mut capture = capture.borrow_mut();
         let Some(observations) = capture.as_mut() else {
@@ -348,6 +356,8 @@ pub(super) fn record_publication(index: usize, source: &ProtobufRegion, builder:
         };
         observations.push(PublishedNode {
             source: source.clone(),
+            schema,
+            path_leaf,
             tables: RegisteredTables::capture(builder),
             output: [
                 plan.reconstructed_bytes(),
@@ -396,13 +406,40 @@ fn verify_node_field_certificates(
     observations: &[PublishedNode],
 ) -> [usize; 4] {
     use crate::rust::rholang::protobuf_cursor::{CanonicalFieldCursor, CanonicalWireType};
+    use super::{FrameSchema, ProtobufRegionStep, ProtobufRegionStepKind};
+    let parent = &observations[index];
     let source = &observations[index].source;
     let base = source.absolute_range().start;
     let mut fields = CanonicalFieldCursor::in_prost_slot_order(source.as_bytes());
     let mut counts = [0; 4];
     let mut end = 0;
+    let mut previous_tags = Vec::new();
     for piece in &plan.nodes[index].pieces {
         let field = fields.next_field().unwrap().expect("one source field per piece");
+        let occurrence = previous_tags.iter().rev().take_while(|tag| **tag == field.number).count();
+        previous_tags.push(field.number);
+        let expected_step = match parent.schema {
+            FrameSchema::Message(program) => ProtobufRegionStep {
+                owner_type_id: program.type_id,
+                field_tag: field.number,
+                occurrence,
+                kind: ProtobufRegionStepKind::Message,
+            },
+            FrameSchema::MapEntry { owner_type_id, outer_tag, occurrence, .. } => ProtobufRegionStep {
+                owner_type_id,
+                field_tag: outer_tag,
+                occurrence,
+                kind: ProtobufRegionStepKind::MapValue,
+            },
+        };
+        let check_path = |leaf: usize, step: ProtobufRegionStep| {
+            let path = &plan.paths[leaf];
+            assert_eq!(path.parent, parent.path_leaf);
+            assert_eq!(path.step, step);
+            if let Some(parent) = path.parent {
+                assert!(parent < leaf);
+            }
+        };
         assert_eq!(field.encoded_range.start, end);
         end = field.encoded_range.end;
         let encoded = &source.as_bytes()[field.encoded_range.start..end];
@@ -421,20 +458,48 @@ fn verify_node_field_certificates(
                 assert!(*node < index);
                 let child = &observations[*node].source;
                 assert_eq!(child.absolute_range(), payload_range);
+                assert_eq!(child.as_bytes().as_ptr(), payload.as_ptr());
+                match observations[*node].schema {
+                    FrameSchema::MapEntry { owner_type_id, outer_tag, occurrence: entry_ordinal, .. } => {
+                        assert_eq!(observations[*node].path_leaf, parent.path_leaf);
+                        assert!(matches!(parent.schema, FrameSchema::Message(_)));
+                        assert_eq!(owner_type_id, expected_step.owner_type_id);
+                        assert_eq!(outer_tag, field.number);
+                        assert_eq!(entry_ordinal, occurrence);
+                    }
+                    FrameSchema::Message(_) => check_path(
+                        observations[*node].path_leaf.expect("ordinary descent registers a path"),
+                        expected_step,
+                    ),
+                }
                 (*tag, child.as_bytes().to_vec())
             }
             Piece::Par { tag, cut } => {
                 counts[2] += 1;
                 let cut = &plan.cuts[*cut];
                 assert_eq!(cut.region.absolute_range(), payload_range);
+                assert_eq!(cut.region.as_bytes().as_ptr(), payload.as_ptr());
+                check_path(cut.path_leaf, expected_step);
                 (*tag, cut.region.as_bytes().to_vec())
             }
             Piece::EPathMap { tag, group } => {
                 counts[3] += 1;
                 let group = &plan.epathmaps[*group];
                 assert_eq!(group.prefix.absolute_range().start, payload_range.start);
+                assert_eq!(group.prefix.as_bytes().as_ptr(), payload.as_ptr());
+                check_path(group.path_leaf, ProtobufRegionStep {
+                    kind: ProtobufRegionStepKind::EPathMapSnapshot, ..expected_step
+                });
                 let mut body = group.prefix.as_bytes().to_vec();
-                for cut in &plan.cuts[group.cuts.clone()] {
+                for (ordinal, cut) in plan.cuts[group.cuts.clone()].iter().enumerate() {
+                    let path = &plan.paths[cut.path_leaf];
+                    assert_eq!(path.parent, Some(group.path_leaf));
+                    assert!(group.path_leaf < cut.path_leaf);
+                    assert_eq!(path.step, ProtobufRegionStep {
+                        occurrence: ordinal,
+                        kind: ProtobufRegionStepKind::EPathMapValue,
+                        ..expected_step
+                    });
                     prost::encoding::encode_varint(cut.region.len() as u64, &mut body);
                     body.extend_from_slice(cut.region.as_bytes());
                 }
@@ -556,6 +621,71 @@ fn verify_publication_with_piece_counts(bytes: Vec<u8>) -> (usize, [usize; 4]) {
     }
     assert_eq!(plan.reconstructed_bytes().as_ref(), root.as_bytes());
     (value_frames, piece_counts)
+}
+
+#[test]
+fn captured_frame_provenance_covers_dedicated_and_inherited_paths() {
+    let mut ordinary = 0;
+    let mut inherited = 0;
+    let mut map_values = 0;
+    for (_, par) in par_corpus::par_corpus() {
+        let root = ProtobufRegion::from(protobuf_encoder::encode_to_vec(&par));
+        let (result, observations) = capture_build(root, &PAR_PROTOBUF_REGION_PROGRAM);
+        let plan = result.unwrap();
+        for (index, observed) in observations.iter().enumerate() {
+            verify_node_field_certificates(index, &plan, &observations);
+            match observed.schema {
+                super::FrameSchema::MapEntry { .. } => inherited += 1,
+                super::FrameSchema::Message(_) if observed.path_leaf.is_some() => ordinary += 1,
+                _ => {}
+            }
+        }
+        map_values += plan.paths.iter()
+            .filter(|path| path.step.kind == super::ProtobufRegionStepKind::MapValue).count();
+    }
+    assert!(ordinary > 0);
+    assert!(inherited > 0);
+    assert!(map_values > 0);
+}
+
+#[test]
+fn captured_frame_provenance_rejects_another_valid_earlier_parent() {
+    for (_, par) in par_corpus::par_corpus() {
+        let root = ProtobufRegion::from(protobuf_encoder::encode_to_vec(&par));
+        let (result, observations) = capture_build(root, &PAR_PROTOBUF_REGION_PROGRAM);
+        let plan = result.unwrap();
+        for (index, node) in plan.nodes.iter().enumerate() {
+            for piece in &node.pieces {
+                let Piece::Par { cut, .. } = piece else { continue };
+                let leaf = plan.cuts[*cut].path_leaf;
+                let actual = plan.paths[leaf].parent;
+                let Some(other) = (0..leaf).find(|candidate| Some(*candidate) != actual) else { continue };
+                verify_node_field_certificates(index, &plan, &observations);
+                let mut mutant = plan.clone();
+                mutant.paths[leaf].parent = Some(other);
+                assert!(other < leaf && other < mutant.paths.len());
+                assert!(std::panic::catch_unwind(|| {
+                    verify_node_field_certificates(index, &mutant, &observations);
+                }).is_err());
+                return;
+            }
+        }
+    }
+    panic!("corpus must expose a cut with a distinct valid earlier parent");
+}
+
+proptest! {
+    #[test]
+    fn generated_injection_entries_preserve_inherited_frame_provenance(
+        values in prop::collection::vec(any::<i64>(), 0..24),
+    ) {
+        use crate::rhoapi::{New, Par};
+        let injections = values.into_iter().enumerate()
+            .map(|(key, value)| (format!("injection-{key}"), par_corpus::gint(value))).collect();
+        let mut par = Par::default();
+        par.replace_news(vec![New { injections, ..New::default() }]);
+        verify_publication(protobuf_encoder::encode_to_vec(&par));
+    }
 }
 
 #[test]

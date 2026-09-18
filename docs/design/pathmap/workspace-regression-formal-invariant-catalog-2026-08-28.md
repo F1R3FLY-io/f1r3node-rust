@@ -691,6 +691,59 @@ not claimed. Region/path provenance, full substitution semantics and resource/
 lifecycle acceptance remain separate requirements.
 
 
+## Region-backed registration provenance (SRV, task 5916)
+
+`SubstitutionRegionProvenance.v` interprets each SRR region through an immutable
+owner-to-bytes store. A path records its native parent and step plus a **ghost**
+payload region used only in the proof. Cuts link to those payloads; groups link
+their whole payload and contained prefix to their anchor. Erasing region
+references to bytes yields exactly SRT's tables. No production allocation of
+ghost payloads or decoded Par collections is introduced.
+
+Path-transparent protobuf map entries need special care: a map-entry frame
+inherits its parent's path and has a contained payload, whereas an ordinary
+descended message has a dedicated path. Containment composes through SRR;
+equating every frame with its path payload would be incorrect. MapValue edges
+retain the outer map tag/occurrence even though their protobuf value wire tag is
+2. Named model kinds denote semantics, not Rust enum discriminants.
+
+| ID | Printed obligations (42 total) | Native binding / scope |
+|---|---|---|
+| SRV-01 | `containment_is_transitive`, `containment_preserves_region_validity`, `checked_subregion_is_contained`, `subregion_bytes_are_parent_interval` | Checked subregions and captured source/cut/prefix pointer and absolute-range assertions; same-backing slices compose. |
+| SRV-02 | `path_append_preserves_old_lookup`, `appended_path_has_exact_index`, `admitted_parent_is_backward`, `path_append_preserves_admission`, `path_chain_has_valid_regions`, `inherited_frame_composes_admission`, `admitted_region_is_valid` | Actual publication captures retain frame schema and path leaf. Ordinary descent checks its dedicated parent; map entries check inherited paths and exact contained field payloads. |
+| SRV-03 | `path_registration_erases_to_identity`, `par_registration_erases_to_byte_registration`, `value_registration_erases_to_byte_registration`, `value_fold_erases_to_sequential_cuts`, `value_fold_keeps_groups`, `epathmap_registration_erases_to_byte_registration` | Existing direct registration fixtures compare append-only paths/cuts/groups, empty and repeated values, and reconstructed bytes; these synthetic fixtures assert local registration only. |
+| SRV-04 | `path_registration_preserves_cut_links`, `par_registration_preserves_cut_links`, `par_registration_preserves_path_chain`, `group_anchor_is_admitted`, `value_fold_preserves_provenance`, `epathmap_registration_preserves_provenance` | Corpus publication certificates bind every Par cut to its enclosing captured frame and every EPM value to its group; generated injection cases exercise transparent map-entry envelopes. |
+| SRV-05 | `value_fold_has_exact_paths_and_cuts`, `value_path_count_is_exact`, `value_cut_count_is_exact`, `value_path_lookup_is_exact`, `value_cut_lookup_is_exact`, `epathmap_has_exact_group_and_value_records` | Exact registration indices, contiguous value ranges, schema IDs, field tags, ordinals, named Snapshot/Value kinds and ordered value bytes; shifted-range/ordinal/wrong-parent negative controls. |
+| SRV-06 | `par_registration_transports_published_arena`, `epathmap_registration_transports_published_arena`, `epm_region_framing_establishes_new_field_certificate`, `local_value_ranges_interpret_as_parent_slices`, `source_framing_derives_region_field_certificate`, `region_backed_registration_preserves_provenance_and_publication`, `decoded_epm_suffix_establishes_region_field_certificate` | Existing publication captures preserve prior tables and three-mode meaning. Source framing composes with the existing EPM frame decoder; actual physical range selection is bound by native framing/pointer checks. |
+| SRV-07 | `epm_prefix_retains_backing_and_bounds`, `path_registration_preserves_group_links`, `value_fold_preserves_group_links`, `epathmap_registration_preserves_group_links`, `linked_group_prefixes_are_valid`, `region_registration_preserves_all_retained_provenance` | Group anchors retain whole payloads, prefixes remain contained in those payloads, and all retained prefixes are valid under immutable backing/root validity. Native EPM certificates check exact prefix starts and backing. |
+
+**Executable controls.** The maintained manifest lists every printed obligation
+and checks the runner's count/kernel check and test bindings.
+`captured_frame_provenance_covers_dedicated_and_inherited_paths` requires
+ordinary descent, inherited map-entry frames and MapValue edges all to occur.
+`captured_frame_provenance_rejects_another_valid_earlier_parent` changes a cut's
+parent to another existing backward index; index bounds alone therefore cannot
+pass the negative control. `generated_injection_entries_preserve_inherited_frame_provenance`
+adds generated map-entry coverage to the existing publication properties.
+The direct registration and seeded ordinal fixtures use synthetic owner frames:
+they do not establish complete reachable-frame containment and are not presented
+as doing so.
+
+**Assumptions and residuals.** The universal model takes immutable backing,
+valid root/admitted subregions and selected schema actions. Its decoder wrapper
+derives the EPM reconstruction equation from successful existing
+`decode_frames` with empty remainder and prefix interval starting at zero;
+correspondence of the selected physical regions to the actual inspector remains
+a native binding, not extracted-Rust equivalence. Group bounds alone do not
+establish canonical encoding. Successful registration preserves old records;
+`add_child` may append a path before a later schema lookup fails, so failure
+atomicity of the entire builder is not claimed. The capstone transports the
+existing byte-arena/publication invariant without proving universal schema
+dispatch, all substitution semantics, allocator correctness or resource bounds.
+All these latter campaign obligations remain explicit. See
+[J-183](pathmap-engineering-journal-2026-08-23.md#j-183--2026-09-18-region-backed-registration-and-frame-provenance)
+for evidence and remaining boundaries.
+
 ## Original workspace-regression completion gates
 
 This checkpoint is complete only when all of the following hold:
