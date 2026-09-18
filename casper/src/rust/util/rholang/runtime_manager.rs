@@ -41,9 +41,11 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use crate::rust::errors::CasperError;
 use crate::rust::merging::block_index::BlockIndex;
 use crate::rust::metrics_constants::{
-    BLOCK_INDEX_CACHE_SIZE_METRIC, CASPER_METRICS_SOURCE, PARENTS_POST_STATE_CACHE_SIZE_METRIC,
-    REPLAY_CACHE_ENTRIES_METRIC, REPLAY_CACHE_RETAINED_BYTES_METRIC,
-    RUNTIME_SPAWN_REPLAY_CALLS_METRIC, RUNTIME_SPAWN_REPLAY_TIME_METRIC, RUNTIME_SPAWN_TIME_METRIC,
+    BLOCK_INDEX_CACHE_SIZE_METRIC, BLOCK_REPLAY_RUNTIME_EXECUTE_TIME_METRIC,
+    BLOCK_REPLAY_RUNTIME_LOCK_WAIT_TIME_METRIC, BLOCK_REPLAY_RUNTIME_SAVE_MERGEABLE_TIME_METRIC,
+    CASPER_METRICS_SOURCE, PARENTS_POST_STATE_CACHE_SIZE_METRIC, REPLAY_CACHE_ENTRIES_METRIC,
+    REPLAY_CACHE_RETAINED_BYTES_METRIC, RUNTIME_SPAWN_REPLAY_CALLS_METRIC,
+    RUNTIME_SPAWN_REPLAY_TIME_METRIC, RUNTIME_SPAWN_TIME_METRIC,
 };
 use crate::rust::rholang::replay_runtime::ReplayRuntimeOps;
 use crate::rust::rholang::runtime::RuntimeOps;
@@ -811,17 +813,19 @@ impl RuntimeManager {
         }
 
         // Step 2: Full replay (cache miss)
-        let _replay_permit = self
-            .replay_lock
-            .acquire_consensus()
-            .await
+        let lock_start = std::time::Instant::now();
+        let replay_permit = self.replay_lock.acquire_consensus().await;
+        metrics::histogram!(BLOCK_REPLAY_RUNTIME_LOCK_WAIT_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
+            .record(lock_start.elapsed().as_secs_f64());
+        let _replay_permit = replay_permit
             .map_err(|error| CasperError::Other(format!("Replay semaphore closed: {}", error)))?;
         let invalid_blocks = invalid_blocks.unwrap_or_default();
         let replay_runtime = self.spawn_replay_runtime().await;
         let runtime_ops = RuntimeOps::new(replay_runtime);
         let mut replay_runtime_ops = ReplayRuntimeOps::new(runtime_ops);
 
-        let (state_hash, mergeable_chs) = replay_runtime_ops
+        let execute_start = std::time::Instant::now();
+        let replay_result = replay_runtime_ops
             .replay_compute_state(
                 start_hash,
                 terms,
@@ -830,7 +834,10 @@ impl RuntimeManager {
                 Some(invalid_blocks),
                 is_genesis,
             )
-            .await?;
+            .await;
+        metrics::histogram!(BLOCK_REPLAY_RUNTIME_EXECUTE_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
+            .record(execute_start.elapsed().as_secs_f64());
+        let (state_hash, mergeable_chs) = replay_result?;
 
         // Convert from final to diff values and persist mergeable (number) channels for post-state hash
         let pre_state_hash = Blake2b256Hash::from_bytes_prost(start_hash);
@@ -842,14 +849,17 @@ impl RuntimeManager {
         // unhelpful "task panicked" log; the typed Result lets the
         // caller decide how to react (likely abort the proposal, not
         // the whole node).
-        self.save_mergeable_channels(
+        let save_start = std::time::Instant::now();
+        let save_result = self.save_mergeable_channels(
             state_hash.clone(),
             sender.bytes,
             seq_num,
             mergeable_chs,
             &pre_state_hash,
-        )
-        .map_err(|e| {
+        );
+        metrics::histogram!(BLOCK_REPLAY_RUNTIME_SAVE_MERGEABLE_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
+            .record(save_start.elapsed().as_secs_f64());
+        save_result.map_err(|e| {
             CasperError::RuntimeError(format!("Failed to save mergeable channels: {:?}", e))
         })?;
 

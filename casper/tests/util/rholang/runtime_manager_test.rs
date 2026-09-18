@@ -1060,6 +1060,80 @@ async fn compute_state_should_be_replayed_by_replay_compute_state() {
     .unwrap();
 }
 
+#[tokio::test]
+async fn replay_attribution_preserves_success_failure_and_cache_paths() {
+    use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+    with_runtime_manager(
+        |mut runtime_manager, genesis_context, genesis_block| async move {
+            let deploy = construct_deploy::source_deploy_now_full(
+                "@\"attribution\"!(1)".to_string(),
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            let initial = genesis_block.body.state.post_state_hash;
+            let (expected, processed) =
+                compute_state(&mut runtime_manager, &genesis_context, deploy, &initial).await;
+            runtime_manager
+                .delete_mergeable_channels(
+                    &expected,
+                    genesis_context.validator_pks()[0].bytes.clone(),
+                    0,
+                )
+                .unwrap();
+            for attempt in 0..3 {
+                let mut candidate = processed.clone();
+                if attempt == 0 {
+                    candidate.cost.cost -= 1;
+                }
+                let recorder = DebuggingRecorder::new();
+                let snapshotter = recorder.snapshotter();
+                let guard = metrics::set_default_local_recorder(&recorder);
+                let result = replay_compute_state(
+                    &mut runtime_manager,
+                    &genesis_context,
+                    candidate,
+                    &initial,
+                )
+                .await;
+                drop(guard);
+                if attempt == 0 {
+                    assert!(result.is_err());
+                } else {
+                    assert_eq!(result.unwrap(), expected);
+                }
+                let snapshot = snapshotter.snapshot().into_vec();
+                for (stage, count) in [
+                    ("lock-wait", usize::from(attempt != 2)),
+                    ("execute", usize::from(attempt != 2)),
+                    ("save-mergeable", usize::from(attempt == 1)),
+                ] {
+                    let name = format!("block.replay.runtime.{stage}.time");
+                    let actual: usize = snapshot
+                        .iter()
+                        .filter(|(key, _, _, _)| key.key().name() == name)
+                        .map(|(_, _, _, value)| match value {
+                            DebugValue::Histogram(values) => {
+                                assert!(values.iter().all(|value| value.into_inner().is_finite()
+                                    && value.into_inner() >= 0.0));
+                                values.len()
+                            }
+                            _ => 0,
+                        })
+                        .sum();
+                    assert_eq!(actual, count, "{name}, attempt={attempt}");
+                }
+            }
+        },
+    )
+    .await
+    .unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn compute_state_should_charge_deploys_separately() {
     with_runtime_manager(

@@ -88,6 +88,10 @@ pub const DAG_MERGE_REJECTION_OPTIONS_METRIC: &str = "dag.merge.rejection.option
 pub const DAG_MERGE_STATE_APPLICATION_ACTIONS_METRIC: &str = "dag.merge.state-application.actions";
 pub const BLOCK_REPLAY_SYSDEPLOY_EVAL_TIME_METRIC: &str = "block.replay.sysdeploy.eval.time";
 pub const BLOCK_REPLAY_SYSDEPLOY_CHECK_TIME_METRIC: &str = "block.replay.sysdeploy.check.time";
+pub const BLOCK_REPLAY_RUNTIME_LOCK_WAIT_TIME_METRIC: &str = "block.replay.runtime.lock-wait.time";
+pub const BLOCK_REPLAY_RUNTIME_EXECUTE_TIME_METRIC: &str = "block.replay.runtime.execute.time";
+pub const BLOCK_REPLAY_RUNTIME_SAVE_MERGEABLE_TIME_METRIC: &str =
+    "block.replay.runtime.save-mergeable.time";
 pub const CASPER_INIT_TIME_TO_APPROVED_BLOCK_METRIC: &str = "casper.init.time-to-approved-block";
 pub const CASPER_INIT_TIME_TO_RUNNING_METRIC: &str = "casper.init.time-to-running";
 
@@ -239,6 +243,17 @@ pub const BLOCK_VALIDATION_SHARD_IDENTIFIER_TIME_METRIC: &str =
 pub const BLOCK_VALIDATION_DEPLOYS_SHARD_IDENTIFIER_TIME_METRIC: &str =
     "block.validation.deploys-shard-identifier.time";
 pub const BLOCK_VALIDATION_REPEAT_DEPLOY_TIME_METRIC: &str = "block.validation.repeat-deploy.time";
+pub const REPEAT_DEPLOY_PARENTS_TIME_METRIC: &str = "block.validation.repeat-deploy.parents.time";
+pub const REPEAT_DEPLOY_REJECTED_SIGS_TIME_METRIC: &str =
+    "block.validation.repeat-deploy.rejected-sigs.time";
+pub const REPEAT_DEPLOY_RETRY_GATE_TIME_METRIC: &str =
+    "block.validation.repeat-deploy.retry-gate.time";
+pub const REPEAT_DEPLOY_CARRIER_WATERMARK_TIME_METRIC: &str =
+    "block.validation.repeat-deploy.carrier.watermark.time";
+pub const REPEAT_DEPLOY_CARRIER_PROBES_TIME_METRIC: &str =
+    "block.validation.repeat-deploy.carrier.probes.time";
+pub const REPEAT_DEPLOY_ANCESTOR_SCAN_TIME_METRIC: &str =
+    "block.validation.repeat-deploy.ancestor-scan.time";
 pub const REPEAT_DEPLOY_CARRIER_WATERMARK_ENGAGED_METRIC: &str =
     "block.validation.repeat-deploy.carrier.watermark-engaged";
 pub const REPEAT_DEPLOY_CARRIER_WATERMARK_NOT_READY_METRIC: &str =
