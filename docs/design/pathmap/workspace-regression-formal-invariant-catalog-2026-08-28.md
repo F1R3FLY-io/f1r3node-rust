@@ -649,6 +649,48 @@ an input-length bound alone does not establish `u32` representability on a
 substitution, charge/error-order and operational-resource gates remain open.
 
 
+## Input-bounded native ordinals (SRO, task 5916)
+
+`SubstitutionRegionOrdinals.v` models the real contiguous-tag-run counter:
+the first positive tag receives ordinal zero, equal adjacent tags increment,
+and a changed tag resets the ordinal. After a positive number of successful
+fields, the ordinal is strictly below that field count. Successful field
+framing has a positive tag and consumes at least one byte, so another successful
+field keeps the next ordinal within the native input-length bound.
+
+EPM1's length prefix is nonempty even for an empty value. Its framed byte count
+therefore bounds value count and every enumeration index. The machine limit is
+a parameter: selecting the host's `usize::MAX` aligns both counters with the
+resident slice/arena domain instead of assuming every input fits a u32 counter.
+
+| ID | Printed obligations (16 total) | Native binding |
+|---|---|---|
+| SRO-01 | `initial_state_is_counted`, `next_ordinal_is_bounded_by_seen_fields`, `advance_preserves_counted_state`, `input_bounded_step_cannot_overflow`, `tag_change_resets_ordinal`, `positive_tag_run_preserves_count` | Real `Frame::next_occurrence` properties compare independent contiguous tag-run lengths; a seeded 64-bit counter crosses the old u32 boundary, and tag changes reset it. |
+| SRO-02 | `encoded_varint_is_nonempty`, `successful_field_has_positive_tag_and_extent`, `successful_field_trace_bounds_count_and_tags`, `successful_prefix_makes_next_ordinal_machine_representable` | Existing canonical cursor/region reconstruction tests supply positive field progress and exact source consumption; the capstone composes modeled successful scans with the counter invariant. |
+| SRO-03 | `epm_framed_value_count_is_bounded_by_bytes`, `epm_enumeration_ordinal_is_machine_representable`, `narrow_counter_is_not_justified_by_wider_input` | Existing set/map/empty EPM registration tests preserve every framed value and ordinal. The new path test retains full machine-sized occurrences without allocating a huge input. |
+| SRO-04 | `widening_preserves_successful_steps`, `paired_cut_indices_are_in_bounds`, `method_argument_index_is_in_bounds` | Receive-address/pairing tests cover wide equality, ordering, surplus skipping and non-aliasing; ordinary printer tests and a source-binding guard cover removal of narrowing in all three sequence helpers. |
+
+**Scope and controls.** The field-count capstone composes the successful
+mathematical scanner and reconstruction lemmas; it is not an extracted-Rust or
+compiler-correctness theorem. Widening preserves numeric successful transitions,
+not by itself every matcher or printer execution. Counter/path/address boundary
+fixtures deliberately seed otherwise tiny native objects with large ordinals.
+They expose arithmetic and narrowing behavior without pretending to process
+billions of fields. The old-boundary tests are gated to 64-bit hosts; ordinary
+transition and maximum-native-index path/address tests also run on narrower
+hosts. A deliberately invalid synthetic maximum counter retains checked-overflow
+behavior, while changing its tag still resets successfully.
+
+No arbitrary input-size or traversal-depth ceiling is added. Machine-index
+representability does not establish allocation feasibility or an acceptable
+runtime-resource envelope. Field tags remain u32; protobuf, bincode and EPM1
+formats are unchanged. The public Rust `ProtobufRegionStep::occurrence` field
+changes type, and previously over-u32 native paths can change disposition. See
+CBR-044's dated ordinal qualification; unconditional consensus neutrality is
+not claimed. Region/path provenance, full substitution semantics and resource/
+lifecycle acceptance remain separate requirements.
+
+
 ## Original workspace-regression completion gates
 
 This checkpoint is complete only when all of the following hold:

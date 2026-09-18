@@ -1436,9 +1436,9 @@ struct ConcreteCut {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct ReceiveCutAddress {
     group: u8,
-    bind: u32,
+    bind: usize,
     field: u8,
-    occurrence: u32,
+    occurrence: usize,
 }
 
 impl ReceiveCutAddress {
@@ -6595,6 +6595,10 @@ fn prepare_path_entries(
         dynamic_patterns,
     ))
 }
+
+#[cfg(test)]
+#[path = "../../../../tests/support/region_occurrence.rs"]
+mod region_occurrence_tests;
 
 #[cfg(test)]
 mod layout_tests {

@@ -4054,9 +4054,6 @@ mod drive {
         };
         plan.cuts().iter().enumerate().all(|(cut, _region)| {
             let occurrence = cut;
-            let Ok(occurrence) = u32::try_from(occurrence) else {
-                return false;
-            };
             plan.cut_step_from_leaf(cut, 0)
                 == Some(ProtobufRegionStep {
                     owner_type_id: owner.type_id,
@@ -4081,9 +4078,7 @@ mod drive {
             return false;
         };
         (0..plan.cuts().len() / 2).all(|entry| {
-            let Ok(occurrence) = u32::try_from(entry) else {
-                return false;
-            };
+            let occurrence = entry;
             let entry_step = ProtobufRegionStep {
                 owner_type_id: EMAP_RHO_MATCH_PROGRAM.type_id,
                 field_tag: entries_tag,
@@ -4126,9 +4121,7 @@ mod drive {
                 kind: ProtobufRegionStepKind::Message,
             })
             && (1..plan.cuts().len()).all(|cut| {
-                let Ok(occurrence) = u32::try_from(cut - 1) else {
-                    return false;
-                };
+                let occurrence = cut - 1;
                 plan.cut_step_from_leaf(cut, 0)
                     == Some(ProtobufRegionStep {
                         owner_type_id: EMETHOD_RHO_MATCH_PROGRAM.type_id,

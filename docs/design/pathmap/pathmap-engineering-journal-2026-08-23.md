@@ -13324,6 +13324,104 @@ required. Scheduler revision 1208 retained 5916 as the incumbent; no priority
 switch or completion claim occurred.
 
 
+### J-182 — 2026-09-18 Native ordinal width follows resident input bounds
+
+**DERIVED defect.** Task 5916's table/provenance review found that
+`ProtobufRegionStep::occurrence`, frame counters and EPM1 value ordinals were
+limited to u32, although their justification was a bound by resident input byte
+length. On a 64-bit host, that bound does not imply u32 representability.
+The printer's direct/map/method sequence checks narrowed native indices too;
+the concrete receive matcher stored both bind and pattern indices as u32.
+
+**DERIVED repair and formal-first sequence.** These local ordinals now use
+`usize`, matching the slices/arenas they index. EPM enumeration no longer
+narrows its index; the printer checks use their existing native indices directly;
+receive-address equality and ordering retain the same lexicographic structure.
+Field tags remain u32. No protobuf, bincode, EPM1, ACT or hash encoding changes.
+The checked increment remains: successful cursor progress supplies its bound,
+rather than a new artificial ceiling. This is machine-index safety, not a
+promise that every representable input is affordable to allocate or execute.
+
+Before production edits, `SubstitutionRegionOrdinals.v` proved the actual
+reset-on-tag-change transition, its count invariant, and representability by
+composing successful field scans with positive encoded extents. Every EPM1
+value frame consumes a length prefix even for an empty body, bounding its
+enumeration index as well. Additional obligations preserve previously successful
+numeric transitions and bound printer pair multiplication and method subtraction.
+The [SRO inventory](workspace-regression-formal-invariant-catalog-2026-08-28.md#input-bounded-native-ordinals-sro-task-5916)
+enumerates all 16 printed obligations and native bindings. The model is not
+extracted Rust and does not establish universal concrete-cursor refinement.
+
+The new native tests call the real counter and path-registration methods.
+A 64-bit fixture seeds a counter just below the old u32 boundary, crosses it and
+checks tag resets. Tiny retained paths preserve occurrences through the native
+maximum. An invalid synthetic maximum counter still triggers checked overflow,
+but changing tags resets normally. A property compares transitions with an
+independent contiguous-run count over generated positive tags. Receive tests
+check full-width addresses and prove that zero does not alias the old u32
+boundary; exact high-address matches and surplus skipping retain the expected
+Par obligations. These are deliberately synthetic arithmetic/path witnesses,
+not multi-gigabyte input executions. Ordinary region reconstruction, PathMap
+set/map/empty registration, recursive matcher/printer comparisons and the
+maintained no-narrowing source gate supply complementary coverage.
+
+**MEASURED (qualification).** Formal r7 passes 16 closed declarations and explicit
+kernel checking in 15.689 seconds wall, 15.365 CPU seconds and 412.5 MiB peak,
+under a 2 GiB hard cap, zero swap, one-core quota and 120-second watchdog.
+Earlier script failures are not passing evidence. Native r1 passes 102 selected
+tests: 16 models library (513 filtered), 70 models integrations, two ordinal
+matcher witnesses, one legacy receive-zip witness, one recursive printer
+collection comparison and 12 ordinary printer tests. The Rholang filtered
+counts are respectively 411, 412, 412 and 401; no selected test is ignored.
+Its build-plus-test service takes 176.537 seconds wall, 562.648 CPU seconds and
+a reported 3 GiB peak.
+
+The full Rholang library follow-up passes all 413 tests, with zero failures,
+ignored tests or filtered tests. Both long-running deep substitution cases pass.
+The service takes 216.819 seconds wall, 517.329 CPU seconds and 383.1 MiB peak
+with zero swap. Its 413 tests include the 16 Rholang tests selected above;
+they are not additional distinct witnesses. The combined native runs therefore
+cover 499 distinct tests (16 models library, 70 integrations, 413 Rholang library),
+not 515. This is library/focused integration coverage, not a workspace-wide run.
+
+Both native services use `MemoryHigh=6G`, `MemoryMax=8G`, `MemorySwapMax=0`,
+`CPUQuota=400%` and a 1800-second watchdog. No benchmark, allocation reduction
+or speedup claim follows. Independent plan and final source/model review found
+no blocking flaw, conditional on the now-passing native tests.
+
+| Artifact | SHA-256 |
+|---|---|
+| `formal/rocq/stack_safe_pda/theories/SubstitutionRegionOrdinals.v` | `fa7cda0889157ecb0db4d55d314b0cf194588380a2bef8d5e97e723aa89f3298` |
+| `target/verification/substitution-5916-ordinals-formal-r7.log` | `df8b62bf4a5dc3e66d15558b391e4985dbd01d31e83853f2b25c3a8b42155b9d` |
+| `target/verification/substitution-5916-ordinals-native-r1.log` | `dcb8e8ccca68a1f36e0189b5768e916c655609d37a1e8672b8ff1e15eeec7202` |
+| `target/verification/substitution-5916-ordinals-rholang-lib-r1.log` | `9ae8d19398d1828ba50612b7ea6d95017eb15f9f3a0f279962e854abf26e7fa9` |
+
+Formal commands run from `formal/rocq/stack_safe_pda`; native commands run from
+the worktree root, inside the capped services:
+
+```sh
+coqc -Q theories StackSafePDA theories/SubstitutionRegionOrdinals.v
+coqchk -silent -Q theories StackSafePDA StackSafePDA.SubstitutionRegionOrdinals
+cargo test --release --locked -j4 -p models --lib emission_tests -- --test-threads=4
+cargo test --release --locked -j4 -p models --test protobuf_cursor --test substitution_region_ranges --test protobuf_region_differential --test formal_equivalence_manifest --test test_target_registry_gate -- --test-threads=4
+cargo test --release --locked -j4 -p rholang --lib region_occurrence_tests -- --test-threads=4
+cargo test --release --locked -j4 -p rholang --lib concrete_receive_region_route_preserves_legacy_zip_equations -- --test-threads=4
+cargo test --release --locked -j4 -p rholang --lib nested_unsorted_sets_and_maps_match_the_recursive_oracle -- --test-threads=4
+cargo test --release --locked -j4 -p rholang --lib pretty_printer::tests -- --test-threads=4
+cargo test --release --locked -j4 -p rholang --lib -- --test-threads=4
+```
+
+**DECISION and compatibility.** This repairs the identified ordinal-width
+obligation without adding limits, changing PathMap or widening serialized
+identifiers. The public Rust field changes type, and formerly oversized native
+paths can cease panicking or losing an optimized route. Therefore this is not
+classified as globally unchanged execution disposition. CBR-044's dated
+qualification records the potential consensus/liveness boundary and the missing
+external-admission/chain-state evidence. Exact wire reconstruction remains
+guarded. Task 5916 remains open for universal region/path provenance composition,
+schema/action selection, full substitution semantics, charge/error ordering,
+operational counters, non-identity scaling/profiling and lifecycle/replay gates.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

@@ -225,7 +225,7 @@ proptest! {
             prop_assert_eq!(region.as_bytes(), &encoded[range.clone()]);
             prop_assert_eq!(region.as_bytes().as_ptr(), root.as_bytes()[range.start..].as_ptr());
             let path = plan.cut_path(ordinal).unwrap();
-            prop_assert_eq!(path.last().unwrap().occurrence as usize, ordinal);
+            prop_assert_eq!(path.last().unwrap().occurrence, ordinal);
         }
         let cuts = plan.into_cuts();
         drop(root);

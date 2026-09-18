@@ -10,7 +10,7 @@
 | **Companion surface** | `mettail-rust`, branch `feature/rho-native-set-automata`. |
 | **Companion reports** | the [stack-safety report](../design/stack-safety/stack-safety-report-2026-07-29.md) and the [PathMap report](../design/pathmap/pathmap-report-2026-08-03.md), which carry the equivalence evidence this register's retirements cite. |
 | **Audience** | F1r3node consensus reviewers deciding whether to accept the fork risk of a coordinated protocol-version bump. |
-| **Date** | 2026-07-29, re-scoped to the final criterion 2026-08-03, revised through 2026-09-14 |
+| **Date** | 2026-07-29, re-scoped to the final criterion 2026-08-03, revised through 2026-09-18 |
 | **Maintenance** | [§7](#7-maintenance). Adding an entry is filling the form in [Appendix A](#appendix-a--the-entry-template). |
 
 ---
@@ -2349,6 +2349,55 @@ The focused suite passes **3/3** without the feature and **6/6** with
 `epathmap-fusion-differential`. This cleanup changes no consensus axis: diagnostic event weights and
 their digest were already removed from consensus; `EvaluateResult::cost` remains exactly the
 evaluated `Send`/`Receive` prefix count.
+
+**CBR-044 implementation qualification (2026-09-18, native ordinal width;
+task 5916).** Region construction and its printer/receive-matcher consumers now
+use `usize` for local occurrence indices. These are resident slice/arena
+addresses, not protobuf field numbers or serialized EPM1 markers. The previous
+`u32` counter could overflow, and the EPM1 conversion could panic, even when an
+ordinal fit its 64-bit input's byte length. Three printer sequence checks also
+narrowed native indices before choosing their optimized route.
+
+| Axis | Qualification for this repair |
+|---|---|
+| 1 · computed value | NO for previously successful represented ordinals; universal outcomes beyond the old bound are not established |
+| 2 · verdict | UNVERIFIED globally: an old panic or narrowing-based route refusal can cease; this is not a changed pattern-equation specification |
+| 3 · bytes (Lane B, bincode) | NO format change; local occurrence metadata is not serialized |
+| 3 · bytes (Lane P, protobuf/EPM1) | NO format change; field tags, value markers and length encodings are untouched |
+| 4 · post-state hash | UNVERIFIED for newly executable oversized paths; no hash function or encoded preimage construction changes |
+| 5 · accepted programs | Potentially permissive execution disposition on wider hosts; no proof of an external admission bound excluding such ordinals |
+| 6 · metering | NO formula or storage-metering change; completed execution where a predecessor stopped can expose additional work |
+
+**Classification:** mechanism-only compatibility qualification of CBR-044's
+existing traversal-ceiling removal, not an unconditional consensus-neutral
+retirement. The register's original entry grade describes its original witnessed
+format change; it does not upgrade this qualification to a witnessed chain fork.
+A mixed deployment could differ in liveness on an oversized evaluation. Ordinary
+deploy reachability and historic chain-state exposure are **UNVERIFIED**. A
+concrete answer requires auditing the deployed admission limits and maximum
+field/value counts in admitted state; this bounded checkpoint does not supply
+those measurements.
+
+The public Rust field `ProtobufRegionStep::occurrence` changes from `u32` to
+`usize`; explicitly typed downstream Rust consumers need source adaptation.
+No stored-data migration, new language syntax, new size cap, PathMap fork or
+blessed-contract change is introduced. Existing successful bounded cases retain
+numeric equality and ordering. Native width remains appropriate because each
+index is bounded by the host's resident input; it is not emitted onto a
+cross-platform wire.
+
+Formal checking precedes implementation: 16 closed obligations and explicit
+kernel checking establish counter bounds from successful field progress, EPM1
+enumeration bounds, preserved numeric transitions, and printer index arithmetic.
+Allocation-free native witnesses seed counters and paths around the old u32
+boundary and maximum native index. They are not executions of multi-gigabyte
+Rholang inputs. The source audit covers **five consumer/producer paths on the
+ordinal-narrowing axis**: field runs, EPM1 enumeration, direct printer sequences,
+map printer sequences and method printer sequences; receive-address storage
+preserves both resulting indices. The fixed-width field tags and serialized
+formats remain guarded by existing exact-byte reconstruction tests. See
+[J-182](../design/pathmap/pathmap-engineering-journal-2026-08-23.md#j-182--2026-09-18-native-ordinal-width-follows-resident-input-bounds)
+for the passing-test receipts, scope and residual obligations.
 
 #### Authority and residuals
 

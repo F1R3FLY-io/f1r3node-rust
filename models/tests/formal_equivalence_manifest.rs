@@ -8,6 +8,66 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 #[test]
+fn substitution_region_ordinals_have_machine_bound_and_consumer_bindings() {
+    let theory = read_repository_file("formal/rocq/stack_safe_pda/theories/SubstitutionRegionOrdinals.v");
+    for theorem in [
+        "initial_state_is_counted",
+        "next_ordinal_is_bounded_by_seen_fields",
+        "advance_preserves_counted_state",
+        "input_bounded_step_cannot_overflow",
+        "tag_change_resets_ordinal",
+        "positive_tag_run_preserves_count",
+        "encoded_varint_is_nonempty",
+        "successful_field_has_positive_tag_and_extent",
+        "successful_field_trace_bounds_count_and_tags",
+        "successful_prefix_makes_next_ordinal_machine_representable",
+        "epm_framed_value_count_is_bounded_by_bytes",
+        "epm_enumeration_ordinal_is_machine_representable",
+        "narrow_counter_is_not_justified_by_wider_input",
+        "widening_preserves_successful_steps",
+        "paired_cut_indices_are_in_bounds",
+        "method_argument_index_is_in_bounds",
+    ] {
+        assert!(theory.contains(&format!("Print Assumptions {theorem}.")));
+    }
+    let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
+    assert!(has_runner_command(&runner, &[
+        "rocq_compile_with_closed_count", "theories/SubstitutionRegionOrdinals.v", "16",
+    ]));
+    assert!(has_runner_kernel_check(&runner, &["StackSafePDA.SubstitutionRegionOrdinals"]));
+    assert!(read_repository_file("formal/rocq/stack_safe_pda/_CoqProject")
+        .lines().any(|line| line == "theories/SubstitutionRegionOrdinals.v"));
+    let native = read_repository_file("models/tests/support/substitution_region_emission.rs");
+    for witness in [
+        "native_occurrence_counter_crosses_u32_boundary_and_resets",
+        "synthetic_invalid_counter_retains_checked_overflow_behavior",
+        "native_par_cut_paths_preserve_machine_sized_occurrences",
+        "occurrence_transition_matches_independent_tag_run_length",
+    ] {
+        assert!(native.contains(&format!("fn {witness}(")));
+    }
+    let region = read_repository_file("models/src/rust/rholang/protobuf_region.rs");
+    assert!(region.contains("pub occurrence: usize"));
+    assert!(!region.contains("occurrence: u32"));
+    assert!(!region.contains("u32::try_from(ordinal)"));
+    let printer = read_repository_file("rholang/src/rust/interpreter/pretty_printer.rs");
+    let sequences = printer.split("fn direct_cut_sequence(").nth(1).unwrap()
+        .split("fn descend_encoded_expr").next().unwrap();
+    assert!(!sequences.contains("u32::try_from"));
+    let matcher = read_repository_file("rholang/src/rust/interpreter/matcher/spatial_matcher_pda.rs");
+    assert!(matcher.contains("bind: usize"));
+    assert!(matcher.contains("occurrence: usize"));
+    assert!(matcher.contains("#[path = \"../../../../tests/support/region_occurrence.rs\"]"));
+    let tests = read_repository_file("rholang/tests/support/region_occurrence.rs");
+    for witness in [
+        "receive_cut_addresses_retain_full_native_ordinals",
+        "receive_pairing_does_not_alias_ordinals_at_u32_boundary",
+    ] {
+        assert!(tests.contains(&format!("fn {witness}(")));
+    }
+}
+
+#[test]
 fn substitution_region_tables_have_registration_and_publication_bindings() {
     let theory = read_repository_file("formal/rocq/stack_safe_pda/theories/SubstitutionRegionTables.v");
     for theorem in [

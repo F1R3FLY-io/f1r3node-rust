@@ -8598,6 +8598,22 @@ open alongside the semantic/resource/lifecycle gates. See
 [J-181](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-181--2026-09-18-append-only-cut-tables-preserve-published-node-meaning)
 for receipts and boundaries.
 
+The subsequent SRO ordinal repair closes the identified native-index width
+obligation: occurrence counters, retained path ordinals and receive addresses
+use `usize`; printer sequence checks no longer narrow native indices to u32.
+Sixteen closed formal obligations and explicit kernel checking pass before
+production edits, followed by 102 selected native tests and the full Rholang
+library's 413 tests (499 distinct tests across the overlapping runs). The full
+library service peaks at 383.1 MiB under the 8 GiB cap with zero swap. Boundary
+tests are synthetic counter/path witnesses, not multi-gigabyte executions.
+Serialized tags and formats are unchanged, but newly reachable oversized paths
+can change execution disposition on wider hosts; CBR-044's dated qualification
+records this rather than asserting unconditional consensus neutrality. Region/path
+provenance composition and the semantic/resource/lifecycle gates remain open.
+See [J-182](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-182--2026-09-18-native-ordinal-width-follows-resident-input-bounds)
+for formal/native receipts, compatibility and limitations. These are verification
+results, not benchmark evidence.
+
 ---
 
 ### 5.29 ParBag family and count-domain completeness [SS-A13, SS-A14, SS-Y9]

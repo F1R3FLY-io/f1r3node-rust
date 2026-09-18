@@ -54,7 +54,7 @@ pub enum ProtobufRegionStepKind {
 pub struct ProtobufRegionStep {
     pub owner_type_id: u16,
     pub field_tag: u32,
-    pub occurrence: u32,
+    pub occurrence: usize,
     pub kind: ProtobufRegionStepKind,
 }
 
@@ -180,7 +180,7 @@ enum FrameSchema {
     MapEntry {
         owner_type_id: u16,
         outer_tag: u32,
-        occurrence: u32,
+        occurrence: usize,
         value_type_id: u16,
     },
 }
@@ -203,7 +203,7 @@ struct Frame {
     return_retain_empty_shell: bool,
     pieces: Vec<Piece>,
     last_tag: u32,
-    occurrence: u32,
+    occurrence: usize,
     seen_singular: Vec<bool>,
 }
 
@@ -239,12 +239,12 @@ impl Frame {
         }
     }
 
-    fn next_occurrence(&mut self, tag: u32) -> u32 {
+    fn next_occurrence(&mut self, tag: u32) -> usize {
         if self.last_tag == tag {
             self.occurrence = self
                 .occurrence
                 .checked_add(1)
-                .expect("a field occurrence cannot exceed the message byte length");
+                .expect("successful field progress bounds occurrence by the usize message length");
         } else {
             self.last_tag = tag;
             self.occurrence = 0;
@@ -442,7 +442,7 @@ impl Builder {
         owner: &'static RhoMatchProgram,
         wire_tag: u32,
         path_tag: u32,
-        occurrence: u32,
+        occurrence: usize,
         kind: ProtobufRegionStepKind,
         type_id: u16,
         parent_path: Option<usize>,
@@ -481,7 +481,7 @@ impl Builder {
         payload: ProtobufRegion,
         owner: &'static RhoMatchProgram,
         tag: u32,
-        occurrence: u32,
+        occurrence: usize,
         parent_path: Option<usize>,
     ) -> Result<(), ProtobufRegionError> {
         let inspection = inspect_canonical_snapshot_value_regions(payload.as_bytes())?;
@@ -499,8 +499,6 @@ impl Builder {
             .expect("the inspected EPM1 prefix lies inside its payload");
         let first_cut = self.cuts.len();
         for (ordinal, range) in inspection.value_bodies.into_iter().enumerate() {
-            let ordinal = u32::try_from(ordinal)
-                .expect("an EPM1 ordinal cannot exceed its input byte length");
             let path_leaf = self.path(Some(group_path), ProtobufRegionStep {
                 owner_type_id: owner.type_id,
                 field_tag: tag,
@@ -560,7 +558,7 @@ fn process_message_field(
     frames: &mut Vec<Frame>,
     program: &'static RhoMatchProgram,
     path_leaf: Option<usize>,
-    occurrence: u32,
+    occurrence: usize,
     field: CanonicalRegionField,
 ) -> Result<(), ProtobufRegionError> {
     let Some(resolved) = resolve_protobuf_field(program, field.number) else {
@@ -722,7 +720,7 @@ fn process_map_entry_field(
     frames: &mut Vec<Frame>,
     owner_type_id: u16,
     outer_tag: u32,
-    occurrence: u32,
+    occurrence: usize,
     value_type_id: u16,
     parent_path: Option<usize>,
     field: CanonicalRegionField,

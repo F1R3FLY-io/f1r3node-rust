@@ -12,6 +12,75 @@ use crate::rust::rholang::match_schema::RhoMatchProgram;
 use crate::rust::rholang::match_schema_tables::PAR_PROTOBUF_REGION_PROGRAM;
 use crate::rust::rholang::protobuf_encoder;
 
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn native_occurrence_counter_crosses_u32_boundary_and_resets() {
+    use super::{Frame, FrameSchema};
+    let mut frame = Frame::new(
+        ProtobufRegion::from(Vec::new()), FrameSchema::Message(&PAR_PROTOBUF_REGION_PROGRAM),
+        None, None, true,
+    );
+    frame.last_tag = 1;
+    frame.occurrence = u32::MAX as usize - 1;
+    assert_eq!(frame.next_occurrence(1), u32::MAX as usize);
+    assert_eq!(frame.next_occurrence(1), u32::MAX as usize + 1);
+    assert_eq!(frame.next_occurrence(2), 0);
+    assert_eq!(frame.next_occurrence(1), 0);
+}
+
+#[test]
+fn synthetic_invalid_counter_retains_checked_overflow_behavior() {
+    use super::{Frame, FrameSchema};
+    let mut frame = Frame::new(
+        ProtobufRegion::from(Vec::new()), FrameSchema::Message(&PAR_PROTOBUF_REGION_PROGRAM),
+        None, None, true,
+    );
+    frame.last_tag = 1;
+    frame.occurrence = usize::MAX;
+    assert_eq!(frame.next_occurrence(2), 0);
+    frame.last_tag = 1;
+    frame.occurrence = usize::MAX;
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| frame.next_occurrence(1))).is_err());
+}
+
+#[test]
+fn native_par_cut_paths_preserve_machine_sized_occurrences() {
+    use super::{Frame, FrameSchema, ProtobufRegionStepKind};
+    let mut builder = Builder::new();
+    let mut frames = vec![Frame::new(
+        ProtobufRegion::from(Vec::new()), FrameSchema::Message(&PAR_PROTOBUF_REGION_PROGRAM),
+        None, None, true,
+    )];
+    let ordinals = [0, 1, u32::MAX as usize, usize::MAX / 2, usize::MAX];
+    for occurrence in ordinals {
+        let index = builder.cuts.len();
+        builder.add_child(
+            &mut frames, ProtobufRegion::from(vec![0x20, 1]),
+            &PAR_PROTOBUF_REGION_PROGRAM, 1, 1, occurrence,
+            ProtobufRegionStepKind::Message, PAR_PROTOBUF_REGION_PROGRAM.type_id, None, true,
+        ).unwrap();
+        let path = &builder.paths[builder.cuts[index].path_leaf];
+        assert_eq!(path.step.occurrence, occurrence);
+        assert!(matches!(frames[0].pieces.last(), Some(Piece::Par { tag: 1, cut }) if *cut == index));
+    }
+}
+
+proptest! {
+    #[test]
+    fn occurrence_transition_matches_independent_tag_run_length(tags in prop::collection::vec(1u32..128, 0..96)) {
+        use super::{Frame, FrameSchema};
+        let mut frame = Frame::new(
+            ProtobufRegion::from(Vec::new()), FrameSchema::Message(&PAR_PROTOBUF_REGION_PROGRAM),
+            None, None, true,
+        );
+        for (index, tag) in tags.iter().copied().enumerate() {
+            let expected = tags[..index].iter().rev().take_while(|previous| **previous == tag).count();
+            prop_assert_eq!(frame.next_occurrence(tag), expected);
+            prop_assert_eq!(frame.last_tag, tag);
+        }
+    }
+}
+
 struct PublishedNode {
     source: ProtobufRegion,
     output: [prost::bytes::Bytes; 3],
@@ -86,7 +155,7 @@ fn verify_registered_group(builder: &Builder, observed: &RegisteredGroup) {
     assert_eq!(path.step.kind, ProtobufRegionStepKind::EPathMapSnapshot);
     assert_eq!(path.step.owner_type_id, PAR_PROTOBUF_REGION_PROGRAM.type_id);
     assert_eq!(path.step.field_tag, 1);
-    assert_eq!(path.step.occurrence, observed.index as u32);
+    assert_eq!(path.step.occurrence, observed.index);
     let mut rebuilt = group.prefix.as_bytes().to_vec();
     assert_eq!(group.prefix.absolute_range().start, observed.payload.absolute_range().start);
     assert_eq!(group.prefix.as_bytes().as_ptr(), observed.payload.as_bytes().as_ptr());
@@ -98,7 +167,7 @@ fn verify_registered_group(builder: &Builder, observed: &RegisteredGroup) {
         assert_eq!(path.step.kind, ProtobufRegionStepKind::EPathMapValue);
         assert_eq!(path.step.owner_type_id, PAR_PROTOBUF_REGION_PROGRAM.type_id);
         assert_eq!(path.step.field_tag, 1);
-        assert_eq!(path.step.occurrence, ordinal as u32);
+        assert_eq!(path.step.occurrence, ordinal);
         prost::encoding::encode_varint(expected.len() as u64, &mut rebuilt);
         let start = rebuilt.len();
         let end = start + expected.len();
@@ -139,7 +208,7 @@ fn build_registration_sequence(values: &[Option<i64>]) -> (Builder, Vec<Register
         let ordinary = ProtobufRegion::from(protobuf_encoder::encode_to_vec(&par_corpus::gint(index as i64)));
         builder.add_child(
             &mut frames, ordinary.clone(), &PAR_PROTOBUF_REGION_PROGRAM,
-            1, 1, index as u32, ProtobufRegionStepKind::Message,
+            1, 1, index, ProtobufRegionStepKind::Message,
             PAR_PROTOBUF_REGION_PROGRAM.type_id, None, true,
         ).unwrap();
         before.assert_preserved(&builder.paths, &builder.cuts, &builder.epathmaps);
@@ -162,7 +231,7 @@ fn build_registration_sequence(values: &[Option<i64>]) -> (Builder, Vec<Register
             payload: payload.clone(), values: expected, mode: map.mode(),
         };
         builder.add_epathmap(
-            &mut frames, payload, &PAR_PROTOBUF_REGION_PROGRAM, 1, index as u32, None,
+            &mut frames, payload, &PAR_PROTOBUF_REGION_PROGRAM, 1, index, None,
         ).unwrap();
         before.assert_preserved(&builder.paths, &builder.cuts, &builder.epathmaps);
         assert_eq!(builder.cuts.len(), observed.first_cut + observed.values.len());
