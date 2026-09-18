@@ -1,6 +1,6 @@
 # D-04 State-Preserving Finality and Effect Provenance
 
-**Status.** Proposed. Pending maintainer ratification.
+**Status.** Ratified with modifications 2026-09-16 by jeffrey-l-turner, with dylon and spreston8. Proof: [ratification meeting record](https://github.com/F1R3FLY-io/f1r3node-rust/pull/390#pullrequestreview-5227717933).
 
 **Kind.** Protocol.
 
@@ -11,6 +11,24 @@
 - PR #216 rules R-FLOOR, R-STATE-CERT, R-FLOOR-STATE, R-LFB-STATE, R-EFFECT-ID, R-EFFECT-WIRE, R-EFFECT-ACTIVE, R-STATE-PRESERVATION, R-UNIVERSAL-FRONTIER, and R-COVERAGE-EQUIVALENCE.
 - PR #216 rules R-FINALIZER-SNAPSHOT to R-FINALIZER-YIELD, R-FINALIZATION-CLOSURE, R-SHARD-FINALITY, R-REBASE, and R-VALIDITY-STABILITY, with invariants S24 to S31 and S41.
 - PR #216 models `StateEffectProvenance.v`, `CertifiedFloorPromotion.tla`, `FinalizerFloorMaterialization.tla`, and `LatestMessageCoverage`.
+
+## Decision (2026-09-16)
+
+**Ratified position.** The `dev` state containment gate, cooperative budgets, disagreement rules, and divergence telemetry are preserved. The finality threshold is inclusive, `FT >= θ`. No second state certificate and no universal certified advancement are added. Protocol 7 can add exact accounting effect identity. A failed body with verified settlement contributes an applied accounting effect.
+
+**Effect on this entry.**
+
+- Option C is adopted in substance.
+- Sub-decision 4.1 is not adopted in its state-certificate form. The containment gate stays the rule.
+- Sub-decision 4.2 is not adopted. The cooperative budgets and the hold states stay.
+- Sub-decision 4.3 is decided against the proposal. The threshold is inclusive. The finalized-floor specification, which states `>= θ`, is correct. The Consensus Protocol FT table row for 0.33, which says strict, is the text that needs the fix.
+- Sub-decision 4.4 is ratified. The divergence monitor stays as telemetry.
+- Sub-decision 4.5 is resolved. The `dev` two-sided disagreement rule stays.
+- Exact effect identity is an accounting fact at protocol 7. It is not a Casper consensus rule.
+- The applied-effect rule for a failed body with verified settlement is ratified. The settled-effect probe claim records it in its scope note.
+- Open questions 1 and 2 are moot. Open question 3 is answered by preservation. The `dev` probe stays the rule.
+
+**Edits that follow.** The Consensus Protocol FT table changes "strict >" to inclusive. The settled-effect probe claim gains the accounting scope note. Section 7 of the protocol and sections 2 and 2.2 of the floor specification stay.
 
 ## 1. Question
 

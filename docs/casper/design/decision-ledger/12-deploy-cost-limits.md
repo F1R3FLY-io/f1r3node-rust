@@ -1,6 +1,6 @@
 # D-12 Deploy Cost Limits: Removal of phloLimit and phloPrice
 
-**Status.** Proposed. Pending maintainer ratification.
+**Status.** Rejected 2026-09-16 by jeffrey-l-turner, with dylon and spreston8. Proof: [ratification meeting record](https://github.com/F1R3FLY-io/f1r3node-rust/pull/390#pullrequestreview-5227717933).
 
 **Kind.** Protocol and economics boundary. The removal changes a block-validity rule and the client deploy contract.
 
@@ -9,6 +9,21 @@
 - dev [Consensus Protocol](../../CONSENSUS_PROTOCOL.md) section 4 step 8, [cost model](../../../rholang/13-cost-model.md), [deployment workflow](../../../rholang/18-deployment-workflow.md), and `models/src/main/protobuf/CasperMessage.proto`.
 - PR #216 decision records DR-5, DR-9, DR-11, DR-13, DR-27, DR-28, and DR-31.
 - PR #216 `cost-accounting-impl/d3-replace-phlo-with-tokens.md`, `cost-accounting-impl/deploy-envelope-v6-1.md`, `cost-accounting-impl/wd-d2-acceptance-gate.md`, `cost-accounting-migration.md` sections 3.2 and 8.4, and `cost-accounting-linear-logic.md` section 3.3.
+
+## Decision (2026-09-16)
+
+**Decision.** The removal is rejected. Protocol 7 requires both `phloLimit` and `phloPrice`. Their signed consensus fields, prepayment, refund, exhaustion, minimum-price validation, protobuf tags, and APIs are preserved. Token accounting can add a FIP-approved validity layer. It cannot replace either field. Multi-wallet funding requires a separate normative mapping.
+
+**Effect on this entry.**
+
+- Option C is adopted. Options A and B are rejected.
+- The `dev` deploy contract in section 2 stays the rule. Validation step 8 keeps the minimum-price rule. Wire tags 7, 8, and 15 stay assigned.
+- Condition 1, multi-wallet funding, moves to the separate normative mapping. Condition 2, transfer of funding authority, stays unspecified and stays outside the deploy contract. Condition 3, client exposure, is answered. `phloLimit` bounds the loss.
+- Sub-decision 12.4 is not ratified. Any apportionment rule belongs to the separate mapping.
+- Open question 1 is answered by `phloLimit`. Open question 2 is moot. Open questions 3, 4, and 5 move to the separate mapping.
+- The review finding in section 4 stands as history.
+
+**Edits that follow.** No `dev` specification edit. On `feature/cost-accounted-rho`, the fields, the validation rule, and the client contract return before that branch merges into `dev`. The token validity layer needs its own FIP and its own row.
 
 ## 1. Question
 

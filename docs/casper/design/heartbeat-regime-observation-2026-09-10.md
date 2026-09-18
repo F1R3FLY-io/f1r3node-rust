@@ -1,6 +1,6 @@
 # Heartbeat-only shards alternate between a dense and a sparse block regime
 
-**Status.** Operational observation, recorded 2026-09-10. Evidence for ledger entries D-03 and D-06. Not a decision.
+**Status.** Operational observation, recorded 2026-09-10. Evidence for ledger entries D-03 and D-06. Not a decision. The meeting of 2026-09-16 ratified the D-03 repair and deferred the D-06 rule that this record supports.
 
 **Source.** Operator report from a heartbeat-only shard on `dev`, three validators and one bootstrap node, 2.5 days. Run identifiers were not supplied. This record was not reproduced by its author.
 
@@ -29,10 +29,12 @@ The switch is an emergent effect of three throttles in `defaults.conf`, not a de
 
 Any of these breaks the lock-step. Heights fall to one or two blocks, the ancestor walk finds a single-block height within one or two steps, and the cost drops. When finalization catches up, frontier-follow resumes and the dense regime returns.
 
+**Correction (2026-09-18).** The walk described above is `dev` before 2026-09-14. Commit `e32221581` bounds the walk and the scoring by the fork-choice floor when the fault-tolerance threshold is above zero. Commit `6e7e92eb3` keeps the approved block as the bound when the threshold is at or below zero. The observation has not been re-measured after the fix.
+
 Only the backpressure activation logs at info level, in `node/src/rust/instances/heartbeat_proposer.rs`. The lag-cap and cooldown throttles log their reason at debug level. A silent switch at info level points at those two throttles.
 
 ## Implications
 
-- [D-06](./decision-ledger/06-heartbeat-recovery-leadership.md) open question 2 asked whether removing the frontier-follow lane changes cadence on a shard with no deploys and no stall. It does. The dense cadence is that lane. PR #216 rule R-HEARTBEAT-WORK removes the lane, so the dense regime cannot form under that rule.
-- [D-03](./decision-ledger/03-fork-choice-certified-context.md) sub-decision 3.3 asks for a work bound on the LCA walk as a function of floor distance. This run shows the unbounded walk in production numbers. The PR #216 certified context uses the floor as the backstop, which bounds the walk to floor distance.
+- [D-06](./decision-ledger/06-heartbeat-recovery-leadership.md) open question 2 asked whether removing the frontier-follow lane changes cadence on a shard with no deploys and no stall. It does. The dense cadence is that lane. PR #216 rule R-HEARTBEAT-WORK removes the lane, so the dense regime cannot form under that rule. The meeting of 2026-09-16 preserved the lane and deferred its removal to a separate harness PR. This record is evidence for that PR.
+- [D-03](./decision-ledger/03-fork-choice-certified-context.md) sub-decision 3.3 asks for a work bound on the LCA walk as a function of floor distance. This run shows the unbounded walk in production numbers. The meeting of 2026-09-16 ratified the finalized floor as the traversal lower bound. That repair is on `dev` since 2026-09-14.
 - The regime switch is undocumented. Operators who tune cadence need to know that block cost, not only block count, depends on which throttle is active.

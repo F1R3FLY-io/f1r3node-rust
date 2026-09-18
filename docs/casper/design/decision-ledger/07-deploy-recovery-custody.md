@@ -1,6 +1,6 @@
 # D-07 Deploy Recovery, Custody, and Retry Packaging
 
-**Status.** Proposed. Pending maintainer ratification.
+**Status.** Ratified with a deferred experiment 2026-09-16 by jeffrey-l-turner, with dylon and spreston8. Proof: [ratification meeting record](https://github.com/F1R3FLY-io/f1r3node-rust/pull/390#pullrequestreview-5227717933).
 
 **Kind.** Mixed. Occurrence identity and record keys are protocol. Custody and packaging are proposer policy.
 
@@ -8,6 +8,20 @@
 
 - dev [Consensus Philosophy](../../CONSENSUS_PHILOSOPHY.md) sections 4, 5, and 8, [Casper glossary](../../GLOSSARY.md) entries retry gate, merged-frontier retry packaging, retry frontier lease, [Consensus Protocol](../../CONSENSUS_PROTOCOL.md) section 2 step 3, [`formal/tlaplus/deploy_recovery/`](../../../../formal/tlaplus/deploy_recovery).
 - PR #216 DR-33, DR-35, DR-55, DR-56, `deploy-occurrence-specification.md` obligations O1 to O14, rules R-REASON-CONFLUENCE, R-CARRIER-RETRY-CUSTODY, models `DeployRecovery.tla`, `StaleSiblingRecovery.tla`, `RecoveryFrontierCoverage.tla`, `RejectionReasonConfluence.tla`.
+
+## Decision (2026-09-16)
+
+**Ratified position.** The current `dev` exact occurrences, tombstones, reason joining, carrier custody, causal closure, indexing, lifespan, and one-parent coverage are preserved. Collective parent-set coverage and the other superseded PR #216 recovery policies are deferred. A separate harness PR tests those policies without protocol authority.
+
+**Effect on this entry.**
+
+- Sub-decision 7.4 is deferred. The one-parent B1 predicate stays. The 2026-08-20 B1 row keeps its pending liveness guarantee.
+- The record lists exact occurrences, tombstones, and reason joining as `dev` rules to preserve. Section 2 attributes them to PR #216, and `dev` code holds no occurrence store and no tombstone as of 2026-09-18. The ratifiers must confirm whether sub-decisions 7.1 and 7.2 are ratified as rules or preserved as absent. This entry does not flip those two sub-decisions until that confirmation.
+- Sub-decision 7.3 is ratified. Custody stays with the carrier owner.
+- The prior-rejection count keeps the signature as its owner until protocol 7. Entry D-10 records the identity.
+- Open question 1 is answered by D-10. Open question 2 moves to the harness PR.
+
+**Edits that follow.** The 2026-08-20 B1 row records the deferral. The glossary entries and the protocol step 3 rule stay until the harness PR reports.
 
 ## 1. Question
 

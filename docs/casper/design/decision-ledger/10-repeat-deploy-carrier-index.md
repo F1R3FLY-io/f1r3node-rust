@@ -1,6 +1,6 @@
 # D-10 Repeat-Deploy Carrier Index
 
-**Status.** Proposed. Pending maintainer ratification.
+**Status.** Ratified with conditions 2026-09-16 by jeffrey-l-turner, with dylon and spreston8. Proof: [ratification meeting record](https://github.com/F1R3FLY-io/f1r3node-rust/pull/390#pullrequestreview-5227717933).
 
 **Kind.** Protocol refinement. The predicate is unchanged. The evidence and the key are decided here.
 
@@ -9,6 +9,21 @@
 - dev [Consensus Philosophy](../../CONSENSUS_PHILOSOPHY.md) section 4.4 and the 2026-09-01 row.
 - PR #387 [`CLAIM-FINALITY-002`](../../../claims/repeat-deploy-carrier-index-equivalence.md), [`formal/tlaplus/carrier_index/`](../../../../formal/tlaplus/carrier_index), [CbC repair plan](../cbc-repair-plan.md).
 - PR #216 `deploy-occurrence-verification.md` carrier-index refinement, `CarrierIndexSoundness.tla`, `DeployIdentitySeparation.tla`, `DeployIdentitySeparation.v`, [CbC and FV reconciliation](../cost-accounting-cbc-fv-reconciliation.md) section 4.3.
+
+## Decision (2026-09-16)
+
+**Ratified position.** The dedicated carrier index, its watermark, retention, read-failure fallback, and narrow optimization role are preserved. Protocol 7 uses a domain-separated deploy lookup identity. Its exact envelope commitment requires the protocol 7 FIP. `CLAIM-FINALITY-002` remains pending until its differential and soak gates pass.
+
+**Effect on this entry.**
+
+- Option A is adopted with protocol 7 in place of protocol 6. The signature is the only key until protocol 7.
+- The PR #387 role wording is adopted. The index is a narrow fast path, not the remedy.
+- Both models gate under D-11.3. `MC_CarrierIndex` stays. `CarrierIndexSoundness.tla` joins when PR #216 lands.
+- The claim ledger states the predicate over a deploy identity function. The protocol 7 FIP defines the envelope-commitment domain of that function.
+- The 2026-09-01 row now records this decision. The 2026-09-03 row is ratified by the PR #387 approval and merge of 2026-09-06. Claim discharge stays pending, as this decision states.
+- Open question 1 is answered by D-11.7. The cache needs an attribute and a claim or a recorded waiver. Open question 2 waits for the protocol 7 FIP.
+
+**Edits that follow.** `CLAIM-FINALITY-002` states the identity function. The CbC repair plan keeps the differential and soak gates.
 
 ## 1. Question
 

@@ -1,6 +1,6 @@
 # D-03 Fork Choice over a Certified Context
 
-**Status.** Proposed. Pending maintainer ratification.
+**Status.** Ratified with modifications 2026-09-16 by jeffrey-l-turner, with dylon and spreston8. Proof: [ratification meeting record](https://github.com/F1R3FLY-io/f1r3node-rust/pull/390#pullrequestreview-5227717933).
 
 **Kind.** Protocol.
 
@@ -9,6 +9,21 @@
 - dev [fork-choice specification](../../theory/fork-choice/fork-choice-specification.md), [`formal/tlaplus/fork_choice/PromotionConvergence.tla`](../../../../formal/tlaplus/fork_choice/PromotionConvergence.tla), [fork-choice convergence claim](../../../claims/fork-choice-convergence.md).
 - PR #216 `fork-choice-specification.md` rules R-CONTEXT, R-CAUSAL-PROJECTION, R-RESTORE-HORIZON, R-LCA, R-SCORE, R-GHOST, R-TOTAL, R-PROPOSAL-PARENTS, R-EXTENSIONAL, R-COUNT, R-DEPTH, and R-NONEMPTY, with invariants S1 to S12.
 - PR #216 `causal_equivocation.rs` and the models `CertifiedConsensusContext.tla`, `ParentFrontierCapacity.tla`, `ParentDepthBounds.tla`, `GhostTerminalFrontier.tla`, and `RestoreHorizonCertifiedContext.tla`.
+
+## Decision (2026-09-16)
+
+**Ratified position.** The `dev` GHOST estimator, electorate, stake provenance, depth filtering, truncation, and progress policy are preserved. One repair is ratified. The confirmed unbounded-LCA defect is fixed by the finalized floor as the traversal lower bound. Differential tests must prove that the bound does not change valid `dev` head selection.
+
+**Effect on this entry.**
+
+- Option C is adopted in substance. The certified context, the two projections, the genesis placeholder, and the `Admit(F, P)` receiver check are not adopted.
+- Sub-decisions 3.1, 3.2, and 3.4 are not adopted. R-FILTER, the R-LCA depth filter, R-COUNT truncation, and the novel-signature gating rule stay. `PromotionConvergence.tla` stays in the gate under D-11.3.
+- Sub-decision 3.3 is decided as a repair, not a removal. The depth filter stays. The LCA walk and the scoring gain the finalized floor as a lower bound.
+- The repair landed on `dev` before the meeting. Commit `e32221581` (2026-09-14) scores fork choice from the latest messages' finalized floor when the fault-tolerance threshold is above zero. Commit `6e7e92eb3` (2026-09-16) keeps the approved block as the bound when the threshold is at or below zero. The [fork-choice specification](../../theory/fork-choice/fork-choice-specification.md) rule R-LCA names this fork-choice floor.
+- The differential proof that the decision requires is open. The tests in commit `e32221581` are the candidates. No record yet states that head selection is unchanged.
+- Open questions 1 and 2 are moot.
+
+**Edits that follow.** None beyond the R-LCA text already on `dev`. Ground truth 1 stays unchanged.
 
 ## 1. Question
 
@@ -94,3 +109,5 @@ A heartbeat-only shard with three validators and one bootstrap node ran for 2.5 
 The cause is the walk to the lowest universal common ancestor in `casper/src/rust/util/dag_operations.rs`. The walk stops at the lowest block through which every latest-message history passes. It is bounded by the approved block, not by the last finalized block. The `LATEST_MESSAGE_MAX_DEPTH` filter of 1000 in `casper/src/rust/estimator.rs` filters the latest messages and does not bound the walk. When no height holds a single block, the walk continues to the last single-block height, and that height recedes while the dense regime persists.
 
 This is the missing work bound that sub-decision 3.3 names. On dev the bound is the distance to the last single-block height, which is unbounded in the dense regime. The PR #216 certified context uses the floor as the backstop, which bounds the walk to floor distance. The full record is in [the observation record](../heartbeat-regime-observation-2026-09-10.md).
+
+**Correction (2026-09-18).** This section describes `dev` before 2026-09-14. Commit `e32221581` bounds the walk and the scoring by the fork-choice floor when the fault-tolerance threshold is above zero. The Decision section records the ratified repair. The observation has not been re-measured after the fix.

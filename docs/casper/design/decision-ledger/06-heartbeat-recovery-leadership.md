@@ -1,6 +1,6 @@
 # D-06 Heartbeat Intents and Recovery Leadership
 
-**Status.** Proposed. Pending maintainer ratification.
+**Status.** Ratified with deferrals 2026-09-16 by jeffrey-l-turner, with dylon and spreston8. Proof: [ratification meeting record](https://github.com/F1R3FLY-io/f1r3node-rust/pull/390#pullrequestreview-5227717933).
 
 **Kind.** Node-local liveness policy. It changes no block validity rule.
 
@@ -8,6 +8,21 @@
 
 - dev [Consensus Protocol](../../CONSENSUS_PROTOCOL.md) section 8, [Consensus Philosophy](../../CONSENSUS_PHILOSOPHY.md) ground truth 4, [heartbeat amplification claim](../../../claims/heartbeat-proposal-amplification-bound.md), [`formal/tlaplus/recovery_leader/`](../../../../formal/tlaplus/recovery_leader).
 - PR #216 `finalized-floor-specification.md` section 2.1.1 rules R-HEARTBEAT-SEPARATION to R-HEARTBEAT-ASYNC, R-PROPOSAL-INTENT, R-PROPOSER-COALESCING, invariants S34 and S39, liveness L13 and L15, models `HeartbeatRecoveryCadence.tla`, `RecoveryCommitteeTransition.tla`, `ProposerAdmissionCoalescing.tla`, `PendingDeployHeartbeatComposition.tla`.
+
+## Decision (2026-09-16)
+
+**Ratified position.** Typed intents, local coalescing, permit revalidation, and stale-work rejection are ratified. All-eligible stale recovery, the leader-only convergence lane, and the frontier-follow lane are preserved. Rotating stale leadership, frontier-follow removal, and clock replacement are deferred. A separate harness PR prepares comparative soak evidence.
+
+**Effect on this entry.**
+
+- Option C is adopted in substance. Option B is not the position to test. The soak comparison moves to the harness PR.
+- Section 6 names four items as ready to ratify. Three are ratified: the intent taxonomy, permit revalidation at execution, and single-flight coalescing. Stale-work rejection is ratified with them.
+- The fourth item, rule R-HEARTBEAT-WORK, is deferred. Section 9 says the observation supports ratifying it now. The meeting deferred it to the harness PR instead. The frontier-follow lane stays.
+- The never-leader-gated recovery rule and ground truth 4 stay unchanged. `RecoveryLeader.tla` stays in the gate under D-11.3.
+- The progress measure, an unchanged LFB hash over monotonic time, is the deferred clock replacement.
+- Open question 1 is deferred with rotation. Open question 2 is answered yes. The answer is evidence for the harness PR, not a ratification.
+
+**Edits that follow.** The Consensus Protocol section 8 records the intent taxonomy, coalescing, permit revalidation, and stale-work rejection. The decision tree stays.
 
 ## 1. Question
 
@@ -84,3 +99,5 @@ The shard switched to a regime of one or two blocks per height without an info-l
 The dense cadence carried a cost. Block processing time grew from 192 ms to 1107 ms over the run, and fell about fivefold in the sparse regime. Entry D-03 section 9 records the cause.
 
 Under rule R-HEARTBEAT-WORK, peer block arrival never authorizes a proposal, so the dense regime cannot form. This observation supports ratifying that rule now, as section 6 proposes. It does not decide the leader question. The full record is in [the observation record](../heartbeat-regime-observation-2026-09-10.md).
+
+**Correction (2026-09-18).** The meeting of 2026-09-16 deferred rule R-HEARTBEAT-WORK. This section is evidence for the harness PR. It does not ratify the rule.

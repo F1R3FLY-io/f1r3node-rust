@@ -1,6 +1,6 @@
 # D-11 CbC and FV Governance
 
-**Status.** Proposed. Pending maintainer ratification.
+**Status.** Ratified 2026-09-16 by jeffrey-l-turner, with dylon and spreston8. Proof: [ratification meeting record](https://github.com/F1R3FLY-io/f1r3node-rust/pull/390#pullrequestreview-5227717933).
 
 **Kind.** Governance.
 
@@ -8,6 +8,19 @@
 
 - [CbC and FV reconciliation](../cost-accounting-cbc-fv-reconciliation.md), [formal-verification.md](../../../formal-verification.md), [Consensus Philosophy](../../CONSENSUS_PHILOSOPHY.md) sections 4.2, 4.3, 7.1, and 8, [`scripts/ci/check-tla-invariants.sh`](../../../../scripts/ci/check-tla-invariants.sh).
 - PR #216 `cost-accounting-decision-records.md` preamble, `formal/README.md` completion criterion, `scripts/ci/check-tla-invariants.sh`, `scripts/ci/check-formal-invariants.sh`.
+
+## Decision (2026-09-16)
+
+**Ratified position.** The current `dev` CbC and formal-verification governance is preserved. The five practice rules, the named gate replacements, the negative controls, and the mandatory file scope stay. The property-test tiers are 2,000 cases on a pull request, 10,000 cases nightly, and 100,000 cases in an extended tier. The documented counts must match the counts that run. Rust-to-Scala bisimilarity stays the slashing anchor.
+
+**Effect on this entry.**
+
+- Sub-decisions 11.1, 11.2, 11.3, 11.5, 11.6, 11.7, 11.9, 11.10, and 11.11 are ratified as proposed.
+- Sub-decision 11.4 is decided. The pull-request tier is 2,000 cases, the nightly tier is 10,000 cases, and a new extended tier is 100,000 cases. The tier text in `docs/formal-verification.md` must state the counts that run.
+- Sub-decision 11.8 is decided. The bisimilarity theorems stay the anchor and stay in the gated assumption check. DR-8 is not adopted.
+- Open question 1 is answered by ledger section 2.1. Open question 2 stays open.
+
+**Edits that follow.** The 2026-08-22 rows for User Contract Concurrency and the scan benchmark now record sub-decisions 11.10 and 11.11. The integration branch restores rules 3 to 5, the sentence on violation configurations, and the three gate entries, and it states the tiers.
 
 ## 1. Question
 

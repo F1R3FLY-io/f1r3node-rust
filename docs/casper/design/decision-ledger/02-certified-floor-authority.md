@@ -1,6 +1,6 @@
 # D-02 Certified Finalized Floor and Authority Committee
 
-**Status.** Proposed. Pending maintainer ratification.
+**Status.** Ratified with modifications 2026-09-16 by jeffrey-l-turner, with dylon and spreston8. Proof: [ratification meeting record](https://github.com/F1R3FLY-io/f1r3node-rust/pull/390#pullrequestreview-5227717933).
 
 **Kind.** Protocol.
 
@@ -8,6 +8,19 @@
 
 - dev [finalized-floor specification](../../theory/finalized-floor/finalized-floor-specification.md) rules R-FLOOR, R-COMM, and S8, [Consensus Philosophy](../../CONSENSUS_PHILOSOPHY.md) ground truth 1, [Consensus Protocol](../../CONSENSUS_PROTOCOL.md) section 2 step 2.
 - PR #216 rules R-AUTHORITY, R-POST-STATE-BONDS, R-PROPOSAL-AUTHORITY, R-PARENT-FLOOR, R-CERTIFICATE-DEPENDENCY to R-CERTIFICATE-RESTART, R-CARRIER-EQUIVALENCE, R-CARRIER-PAIR, R-CARRIER-WAKE, invariants S8, S42, S44, models `CertifiedFloorCommitment.tla`, `FinalizationCertificateRetrieval.tla`, `WitnessEquivalentCarrier.tla`, `WitnessEquivalentCarrier.v`.
+
+## Decision (2026-09-16)
+
+**Ratified position.** The current `dev` committee and stake provenance remain authoritative. The block keeps exact justification-set equality, duplicate rejection, and validator block signatures. Signed-floor commitments, certificate sidecars, and certificate retrieval are not required. Coupled certificate code may be removed only after integration tests cover replay, settlement, restart, missing dependencies, and finalization.
+
+**Effect on this entry.**
+
+- Option C is adopted in substance. Option B is not adopted.
+- Rule R-COMM and ground truth 1 stay unchanged. Rules R-AUTHORITY, R-POST-STATE-BONDS, and R-PROPOSAL-AUTHORITY do not replace them.
+- The certificate rules in section 3 are not ratified at any protocol version.
+- Open questions 1 and 2 are moot.
+
+**Edits that follow.** No `dev` specification edit. On `feature/cost-accounted-rho`, the certificate rules leave the finalized-floor specification and the protocol document. The certificate code leaves after the five integration test areas are covered.
 
 ## 1. Question
 

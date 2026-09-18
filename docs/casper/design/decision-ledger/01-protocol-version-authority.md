@@ -1,6 +1,6 @@
 # D-01 Protocol-Version Authority and Activation
 
-**Status.** Proposed. Pending maintainer ratification.
+**Status.** Ratified with modifications 2026-09-16 by jeffrey-l-turner, with dylon and spreston8. Proof: [ratification meeting record](https://github.com/F1R3FLY-io/f1r3node-rust/pull/390#pullrequestreview-5227717933).
 
 **Kind.** Protocol.
 
@@ -8,6 +8,20 @@
 
 - dev [Consensus Protocol](../../CONSENSUS_PROTOCOL.md) section 10 and [`formal/tlaplus/deploy_recovery/`](../../../../formal/tlaplus/deploy_recovery).
 - PR #216 DR-34, DR-47, `finalized-floor-specification.md` section 5.2, `CONSENSUS_PROTOCOL.md` "Protocol-Version Authority", `ProtocolVersionLifecycle.tla`, `ProtocolVersionLifecycle.v`.
+
+## Decision (2026-09-16)
+
+**Ratified position.** Protocol 7 uses one authority chain from ceremony through reception. Protocol 7 activates through a fresh genesis after FIP approval. Accounting authority version 8 is independent of the protocol version. It belongs to a reusable node-level accounting module.
+
+**Effect on this entry.**
+
+- Option B is adopted for the authority chain. Rules R-GENESIS-VERSION to R-VERSION-RECEPTION become normative.
+- The supported set and the activation mode are a dated row per version. The first row states protocol 7, a fresh genesis, and FIP approval.
+- Sections 3 to 7 name protocol 6. That number was the PR #216 value at comparison time. Protocol 7 supersedes it.
+- Open question 1 is answered. The Casper protocol version is 7. The accounting authority version is 8, and it is not a Casper version.
+- Open question 2 stays open.
+
+**Edits that follow.** The DR file, the PR #216 protocol document, and the finalized-floor specification must agree on protocol 7 before the specification edit. The Consensus Protocol sections 1 and 10 and the Casper glossary then record the version meanings. The gate-list item in section 7 stands.
 
 ## 1. Question
 

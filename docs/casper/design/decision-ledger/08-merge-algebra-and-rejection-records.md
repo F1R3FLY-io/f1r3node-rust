@@ -1,6 +1,6 @@
 # D-08 Merge Algebra, Rejection Records, and Mergeable Evidence
 
-**Status.** Proposed. Pending maintainer ratification.
+**Status.** Ratified with an activation condition 2026-09-16 by jeffrey-l-turner, with dylon and spreston8. Proof: [ratification meeting record](https://github.com/F1R3FLY-io/f1r3node-rust/pull/390#pullrequestreview-5227717933).
 
 **Kind.** Protocol. Changes observable merge results.
 
@@ -8,6 +8,21 @@
 
 - dev [merge-algebra specification](../../theory/merge-algebra/merge-algebra-specification.md) rules R-ORDER, R-KEEP1, R-FOLD, R-NET, N-SEMANTICS, [Consensus Protocol](../../CONSENSUS_PROTOCOL.md) section 6.
 - PR #216 `merge-algebra-specification.md` rules R-ORDER, R-WITNESS, R-CAUSAL, R-CAUSAL-REJECT, R-FOLD, R-NUMERIC, R-NET, R-ACTIVATION, R-RECORD-VERSION, N-MAX, N-WHOLE, invariants S8 to S12, DR-51, DR-53, `mergeable-evidence-authentication.md`, `admission-effect-alignment.md`, `MergeableEvidenceAuthentication.tla`, `AdmissionEffectAlignment.tla`, `formal/z3/merge_algebra`.
+
+## Decision (2026-09-16)
+
+**Ratified position.** Exact effect identity, causal rejection closure, admission-effect alignment, checked arithmetic, and locally verified merge evidence are ratified. Additive multiset composition is selected for protocol 7. Activation requires FIP approval, a fresh genesis, differential tests, a compatibility analysis, and accounting-conservation evidence.
+
+**Effect on this entry.**
+
+- Option A is adopted at protocol 7.
+- Sub-decision 8.1 is decided. The additive fold is the protocol-7 semantics. Until activation, `dev` keeps max-union and rule N-SEMANTICS. At activation, N-SEMANTICS is re-scoped to forbid a silent change, which R-ACTIVATION satisfies.
+- Sub-decision 8.2 is ratified. Sub-decision 8.3 (DR-51) and sub-decision 8.4 (DR-53) are ratified now.
+- R-NUMERIC is ratified as checked arithmetic.
+- The five activation conditions are the ratification checklist for the boundary. The differential test in section 7 is one of them.
+- Open question 1 is the compatibility analysis. Open question 2 stays open for the activation change.
+
+**Edits that follow.** The merge-algebra specification sections 4 to 6 and the Consensus Protocol section 6 change only at activation. Before activation, the specification records the protocol-7 selection and the five conditions.
 
 ## 1. Question
 

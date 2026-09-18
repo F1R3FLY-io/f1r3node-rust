@@ -39,7 +39,7 @@ PR #387 extends the existing mechanisms without changing them.
 | Umbrella doc | Adds one row to the verified-areas table. |
 | Repair plan | Adds telemetry counters and a forced on and off differential. Adds the rule that a passing model for existing behavior is baseline evidence, not the RED test. |
 
-On PR #387, the decision table row dated 2026-09-03 labels the scope extension as ratified for `CLAIM-FINALITY-002`. The PR author wrote that row, and no maintainer has approved it. This branch changes the row to Proposed. It becomes Ratified only through the ledger workflow.
+On PR #387, the decision table row dated 2026-09-03 labels the scope extension as ratified for `CLAIM-FINALITY-002`. The PR author wrote that row. On 2026-09-05 this branch changed the row to Proposed because no maintainer had approved it. A maintainer approved and merged PR #387 on 2026-09-06, so that approval ratifies the row. This branch restores the ratified wording. Claim discharge stays pending under ledger entry [D-10](./decision-ledger/10-repeat-deploy-carrier-index.md).
 
 ## 4. PR #216 delta
 
@@ -167,3 +167,17 @@ The integration change must answer these questions before it edits any specifica
 5. Does the decision-records file become a Casper decision source, and how does a DR status map to a Consensus Philosophy table status?
 6. Does the property-test case reduction stand?
 7. Does `CLAIM-FINALITY-002` adopt the protocol-tagged key before or after integration?
+
+## 8. Decisions recorded 2026-09-16
+
+The ratification meeting of 2026-09-16 answered the section 7 questions through the ledger. The [meeting record](https://github.com/F1R3FLY-io/f1r3node-rust/pull/390#pullrequestreview-5227717933) is the proof.
+
+1. Each new consensus file receives a CbC attribute and a claim or a recorded waiver before merge (D-11.7).
+2. Practice rules 3 to 5 return (D-11.1).
+3. The three removed gate entries without replacements return. Both carrier-index models gate (D-11.3, D-10).
+4. A script that discharges a ratified claim runs in a workflow (D-11.9). The Rocq projects follow the same rule.
+5. The Consensus Philosophy table stays the single Casper decision record. A DR is cited evidence (D-11.5).
+6. The tiers are 2,000 cases on a pull request, 10,000 cases nightly, and 100,000 cases in an extended tier. The documented counts must match the counts that run (D-11.4).
+7. The claim states its predicate over a deploy identity function. The protocol 7 FIP defines the envelope-commitment domain. The claim stays pending until its differential and soak gates pass (D-10).
+
+The slashing anchor stays the Rust-to-Scala bisimilarity (D-11.8). Every section 5 row classified as a conflict or an unratified removal resolves to the `dev` position.

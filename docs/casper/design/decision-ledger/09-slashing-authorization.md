@@ -1,6 +1,6 @@
 # D-09 Slashing Authorization, Evidence Identity, and Neglect
 
-**Status.** Proposed. Pending maintainer ratification.
+**Status.** Ratified with modifications 2026-09-16 by jeffrey-l-turner, with dylon and spreston8. Proof: [ratification meeting record](https://github.com/F1R3FLY-io/f1r3node-rust/pull/390#pullrequestreview-5227717933).
 
 **Kind.** Protocol.
 
@@ -8,6 +8,21 @@
 
 - dev [Consensus Protocol](../../CONSENSUS_PROTOCOL.md) section 9, [slashing specification](../../theory/slashing/slashing-specification.md) sections 4, 8, and 9, [`formal/rocq/slashing/`](../../../../formal/rocq/slashing), [`formal/tlaplus/slashing/`](../../../../formal/tlaplus/slashing).
 - PR #216 DR-3, DR-7, DR-8, DR-18, `slashing-specification.md` sections 8, 9, and 15, `slashing_authorization.rs`, rules R-ADMISSION-CLOSURE, R-EVIDENCE-TRAVERSAL, R-EVIDENCE-CANONICAL, models `ObjectiveEquivocation.tla`, `ObjectiveEvidenceAuthorization.tla`, `CertifiedRejectionDependency.tla`, `TwoLevelSlashing.tla`, `SlashFlowProofs.tla`.
+
+## Decision (2026-09-16)
+
+**Ratified position.** The current `dev` slashing truth table, the rejected-slash recovery loop, activation-epoch protection, and the neglect policy are preserved. Canonical evidence reconstruction stays supplementary until its equivalence with the recovery loop is proved. Economic neglect slashing stays inactive. The Rust-to-Scala bisimilarity anchor is retained.
+
+**Effect on this entry.**
+
+- Option B is adopted in part. Option A is not adopted.
+- Sub-decision 9.1 is not adopted as authority. The rejected-slash loop stays the rule. The canonical scan is supplementary evidence until the equivalence in open question 1 is proved.
+- Sub-decision 9.2 is preserved as the `dev` activation-epoch rule. The `(key, bond generation)` lifetime identity and the pair-evidence wire form wait for protocol 7.
+- Sub-decision 9.3 is ratified. Level 2 stays inactive. The PR #216 protocol text still needs its correction.
+- Sub-decision 9.4 is decided under D-11.8. The bisimilarity theorems stay in the gated assumption check. DR-8 is not adopted. `MC_SlashFlow` stays in the gate under D-11.3.
+- Open question 1 is the required equivalence proof. Open question 2 waits for protocol 7.
+
+**Edits that follow.** No `dev` specification edit. On `feature/cost-accounted-rho`, `Bisimulation.v` and the two-theorem assumption check return, and the protocol document neglect sentence is corrected.
 
 ## 1. Question
 

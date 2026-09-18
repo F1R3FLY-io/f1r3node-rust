@@ -1,6 +1,6 @@
 # Casper Decision Ledger: Cost-Accounting Unification
 
-**Status.** Open. Every entry starts as Proposed.
+**Status.** Decided. Every entry received a decision on 2026-09-16. See section 2.2.
 
 **Opened.** 2026-09-05
 
@@ -32,6 +32,24 @@ The **proof** of a decision is the approving or rejecting review comment on the 
 
 This rule also answers the ownership question in entry D-11. The same ratifiers own sub-decisions 11.4 and 11.8.
 
+A ratification meeting record that a ratifier posts as a review comment, and that names the PR #216 author as a participant, records both approvals.
+
+### 2.2 Ratification record of 2026-09-16
+
+A ratification meeting on 2026-09-16 decided every entry. `jeffrey-l-turner` posted the [meeting record](https://github.com/F1R3FLY-io/f1r3node-rust/pull/390#pullrequestreview-5227717933) as a review comment on PR #390. The participants were `jeffrey-l-turner`, `dylon`, and `spreston8`. The record is the linked proof for each entry and for each table row.
+
+The meeting used current `dev` as the default Casper authority. PR #216 supplies a rule only for a demonstrated defect, a required accounting invariant, or an approved FIP.
+
+Three terms come from the record.
+
+- **Protocol 7.** The next Casper protocol version. It activates through a fresh genesis after FIP approval. The entries name protocol 6, which was the PR #216 value at comparison time. Protocol 7 supersedes it.
+- **Accounting authority version 8.** The version of the node-level accounting module. It is independent of the Casper protocol version.
+- **FIP.** A F1R3FLY Improvement Proposal, filed in the [FIPS repository](https://github.com/F1R3FLY-io/FIPS). FIP approval gates a protocol-7 activation and a token validity layer.
+
+Conformance and soak harness changes go to a separate branch and PR. They stay separate from this documentation PR. The harness must retain deterministic seeds, run identifiers, metrics, and artifacts.
+
+Each entry has a section named Decision (2026-09-16) after its sources. That section records the ratified position, its effect on the options and sub-decisions, and the edits that follow. Sections 1 to 8 of each entry stay as the comparison record.
+
 ## 3. Status vocabulary
 
 | Status | Meaning |
@@ -45,29 +63,29 @@ The statuses `accepted and implemented`, `superseded`, and `user-ratified` in th
 
 ## 4. Entries
 
-| ID | Entry | Kind | Conflict with a ratified dev position |
-|---|---|---|---|
-| [D-01](./01-protocol-version-authority.md) | Protocol-version authority and activation | Protocol | No. Dev has no normative rule. |
-| [D-02](./02-certified-floor-authority.md) | Certified finalized floor and authority committee | Protocol | Amends ground truth 1 and rule R-COMM. |
-| [D-03](./03-fork-choice-certified-context.md) | Fork choice over a certified context | Protocol | Replaces R-FILTER, R-LCA depth filter, and R-COUNT truncation. |
-| [D-04](./04-state-preserving-finality.md) | State-preserving finality and effect provenance | Protocol | Generalizes the containment gate. Removes hold states and budgets. |
-| [D-05](./05-finalization-publication.md) | Durable finalization publication and concurrency | Node-local | No. Architecture change. |
-| [D-06](./06-heartbeat-recovery-leadership.md) | Heartbeat intents and recovery leadership | Node-local policy | Yes. Dev says recovery is never leader-gated. |
-| [D-07](./07-deploy-recovery-custody.md) | Deploy recovery, custody, and retry packaging | Mixed | Amends the ratified B1 packaging predicate. |
-| [D-08](./08-merge-algebra-and-rejection-records.md) | Merge algebra, rejection records, and mergeable evidence | Protocol | Yes. Dev rule N-SEMANTICS forbids the PR #216 fold. |
-| [D-09](./09-slashing-authorization.md) | Slashing authorization, evidence identity, and neglect | Protocol | Replaces the rejected-slash recovery loop. Removes a gated proof. |
-| [D-10](./10-repeat-deploy-carrier-index.md) | Repeat-deploy carrier index | Protocol refinement | Amends the pending 2026-09-01 row. |
-| [D-11](./11-cbc-fv-governance.md) | CbC and FV governance | Governance | Yes. Rewrites two ratified rows in prose. |
-| [D-12](./12-deploy-cost-limits.md) | Deploy cost limits, removal of `phloLimit` and `phloPrice` | Protocol and economics boundary | Removes the minimum-price validation rule. |
+| ID | Entry | Kind | Proposed conflict with a ratified dev position | Decision (2026-09-16) |
+|---|---|---|---|---|
+| [D-01](./01-protocol-version-authority.md) | Protocol-version authority and activation | Protocol | No. Dev has no normative rule. | Ratified with modifications. Protocol 7, one authority chain, fresh genesis after FIP approval. |
+| [D-02](./02-certified-floor-authority.md) | Certified finalized floor and authority committee | Protocol | Amends ground truth 1 and rule R-COMM. | Ratified with modifications. The `dev` committee stays. No floor certificates. |
+| [D-03](./03-fork-choice-certified-context.md) | Fork choice over a certified context | Protocol | Replaces R-FILTER, R-LCA depth filter, and R-COUNT truncation. | Ratified with modifications. The `dev` fork choice stays. The finalized floor bounds the LCA walk. |
+| [D-04](./04-state-preserving-finality.md) | State-preserving finality and effect provenance | Protocol | Generalizes the containment gate. Removes hold states and budgets. | Ratified with modifications. The `dev` containment gate stays. The threshold is inclusive. |
+| [D-05](./05-finalization-publication.md) | Durable finalization publication and concurrency | Node-local | No. Architecture change. | Ratified with modifications. Five invariants. Single-flight stays the default. |
+| [D-06](./06-heartbeat-recovery-leadership.md) | Heartbeat intents and recovery leadership | Node-local policy | Yes. Dev says recovery is never leader-gated. | Ratified with deferrals. Intents, coalescing, and permits ratified. Rotation and frontier-follow removal deferred. |
+| [D-07](./07-deploy-recovery-custody.md) | Deploy recovery, custody, and retry packaging | Mixed | Amends the ratified B1 packaging predicate. | Ratified with a deferred experiment. One-parent coverage stays. Collective coverage deferred. |
+| [D-08](./08-merge-algebra-and-rejection-records.md) | Merge algebra, rejection records, and mergeable evidence | Protocol | Yes. Dev rule N-SEMANTICS forbids the PR #216 fold. | Ratified with an activation condition. Additive composition at protocol 7. |
+| [D-09](./09-slashing-authorization.md) | Slashing authorization, evidence identity, and neglect | Protocol | Replaces the rejected-slash recovery loop. Removes a gated proof. | Ratified with modifications. The `dev` slashing rules stay. The bisimilarity anchor stays. |
+| [D-10](./10-repeat-deploy-carrier-index.md) | Repeat-deploy carrier index | Protocol refinement | Amends the pending 2026-09-01 row. | Ratified with conditions. The index stays. Protocol 7 identity. The claim stays pending. |
+| [D-11](./11-cbc-fv-governance.md) | CbC and FV governance | Governance | Yes. Rewrites two ratified rows in prose. | Ratified. Tiers of 2,000, 10,000, and 100,000 cases. |
+| [D-12](./12-deploy-cost-limits.md) | Deploy cost limits, removal of `phloLimit` and `phloPrice` | Protocol and economics boundary | Removes the minimum-price validation rule. | Rejected. Both fields stay. |
 
 ## 5. Merge notes for `feature/cost-accounted-rho`
 
 This branch merges into PR #216's branch as well as into `dev`. Two files conflict textually with that branch.
 
-- `docs/casper/CONSENSUS_PHILOSOPHY.md`. Both branches edit the 2026-09-01 row. Keep the PR #216 wording for the mechanism and the PR #387 status text. Keep every 2026-09-05 row. Entry D-10 records the intended final wording.
+- `docs/casper/CONSENSUS_PHILOSOPHY.md`. Both branches edit the 2026-09-01 row. Keep the wording on this branch. It records the D-10 decision. Keep every 2026-09-05 row and the 2026-09-03 row from this branch.
 - `docs/formal-verification.md`. Both branches add a carrier-index row to the verified-areas table. Keep both rows. Entry D-10 says both models gate.
 
-The PR #216 protocol and theory documents already hold the positions this ledger records for that branch. The ledger does not edit them. A ratified entry is applied to those documents in a later change on whichever branch carries the ratified position.
+The meeting of 2026-09-16 preserved the `dev` position on most entries. The PR #216 protocol and theory documents hold positions that the decisions reject or defer. The ledger does not edit them. A follow-on change on `feature/cost-accounted-rho` must edit those documents to the ratified positions before that branch merges into `dev`. The Decision section of each entry lists the edits.
 
 ## 6. Entry template
 

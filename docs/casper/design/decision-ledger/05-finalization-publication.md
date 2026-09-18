@@ -1,6 +1,6 @@
 # D-05 Durable Finalization Publication and Concurrency
 
-**Status.** Proposed. Pending maintainer ratification.
+**Status.** Ratified with modifications 2026-09-16 by jeffrey-l-turner, with dylon and spreston8. Proof: [ratification meeting record](https://github.com/F1R3FLY-io/f1r3node-rust/pull/390#pullrequestreview-5227717933).
 
 **Kind.** Node-local architecture with three consensus-visible invariants.
 
@@ -11,6 +11,19 @@
 - PR #216 rules R-FINALIZATION-APPEND, R-FINALIZATION-BASE, R-FINALIZATION-LINEAGE, R-FINALIZATION-PROJECTION, R-FINALIZATION-EFFECTS, R-FINALIZATION-COMPACTION, R-FINALIZATION-SCHEDULER, and R-FINALIZATION-PROPOSAL-READINESS.
 - PR #216 rules R-VALIDATOR-LOCAL-TRANSACTION, R-LOCAL-ROOT-AUTHORITY, R-LOCAL-SUPPORT, R-ATOMIC-FLOOR-PUBLICATION, R-PARALLEL-FRAME, and R-VALIDATION-RESTART, with invariants S35 to S38.
 - PR #216 `finalization_ledger.rs`, `finalization-atomicity-and-recovery.md`, and `FinalizationAtomicity.tla`.
+
+## Decision (2026-09-16)
+
+**Ratified position.** Five invariants are ratified: atomic publication, stale-result refusal, restart atomicity, terminal-verdict eviction, and FT identity labeling. The complete ledger architecture stays optional. The `dev` single-flight finalization stays the default. Parallel evaluation requires publication-order, restart, and equivalence tests before use.
+
+**Effect on this entry.**
+
+- Option B is adopted with five invariants instead of the three in section 6. Publication atomicity splits into atomic publication and restart atomicity. Stale-result refusal is added. Eviction authority and FT identity stay.
+- The sequencer, the worker count, and the hash-chained ledger stay node-local and optional. A design document is still the acceptance path.
+- Single-flight is the default. `finalization_in_progress` stays a flag on `dev`.
+- Open question 1 is answered by the test condition. Open question 2 stays open.
+
+**Edits that follow.** The Consensus Protocol section 7 trigger text, its FT caching text, and the BFT propagation paragraph record the five invariants. They also record the single-flight default. The `FinalizationAtomicity.tla` gate item applies only when the ledger architecture is used.
 
 ## 1. Question
 
