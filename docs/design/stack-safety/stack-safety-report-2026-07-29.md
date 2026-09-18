@@ -8535,6 +8535,18 @@ required. No general linear-resource or full-substitution claim follows from thi
 See [J-176](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-176--2026-09-17-conditional-three-mode-region-emission-and-checked-planning)
 for commands, hashes, limitations and the next required proof bridge.
 
+The SRP publication bridge now derives those reference/cache/rank invariants for
+constructed arenas, conditional on local field certificates and an actual-frame
+partition. Its 21 obligations pass explicit kernel checking. A test-only observer
+captures the real builder's source region at publication; the final gate passes
+seven selected library tests (508 others filtered) and all 61 focused integration
+tests, with a reported 1.6 GiB peak under the 8 GiB hard cap and zero-swap limit.
+The universal cursor/inspector source-partition proof remains open; the tests are
+not a substitute for it. Instrumentation copies are excluded from performance
+claims, and no production or consensus behavior changes. See
+[J-177](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-177--2026-09-17-checked-region-publication-and-actual-source-observation)
+for the exact claim boundary and receipts. Task 5916 remains open.
+
 ---
 
 ### 5.29 ParBag family and count-domain completeness [SS-A13, SS-A14, SS-Y9]

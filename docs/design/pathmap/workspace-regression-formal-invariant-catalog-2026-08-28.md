@@ -460,6 +460,51 @@ including tags 15/16, 2047/2048, 262143/262144 and 33554431/33554432, where the 
 key actually changes width. It uses the same widened-arithmetic oracle as SRE-06 and
 allocates no payload buffers for its near-`usize::MAX` cases.
 
+## Checked region publication and constructed witnesses (SRP, task 5916)
+
+`SubstitutionRegionPublication.v` constructs SRE's reference, cache and rank witnesses
+through finite append-only publication. The model represents the arena by a count and
+indexed tables; unpublished slots have empty programs, whose invariant equations force
+empty views, zero cached lengths and unit node rank. A new node's view and rank are
+computed from earlier children; its caches come from the checked planner. Strict backward
+references keep existing views and ranks unchanged when the next index is filled.
+Source bytes and computed views are ghost specification data, not new runtime storage.
+
+The source certificate describes individual fields: an unchanged borrowed field; a
+canonical header and retained Par payload; a header and an earlier child's recorded
+payload; or an EPathMap header, prefix and ordered value frames. A constructed publication
+also requires that the supplied actual frame bytes equal the concatenation of those
+field bytes. This is a local decomposition premise, not the conclusion that emitted
+bytes equal input. The theorem derives that conclusion for the certified source.
+
+| ID | Printed obligations (21 total) | Native binding |
+|---|---|---|
+| SRP-01 | `empty_is_valid`, `publication_preserves_old_indices`, `publication_gives_exact_new_index`, `prior_piece_denotation_stable`, `publication_increases_count_once` | `every_published_node_preserves_source_caches_indices_and_prior_meaning`: captures contiguous publication indices and outputs at publication; compares them after later nodes are appended and after truncating the node arena back to the earlier prefix. |
+| SRP-02 | `append_establishes_all_arena_invariants`, `successful_checked_publication_establishes_invariants`, `constructed_arena_is_valid` | Same witness checks backward child references, existing cut/group indices, bounded group intervals, earlier path parents, and exact per-mode caches. Cut/group/path validity is native evidence here, not a formal consequence of the fixed external tables. |
+| SRP-03 | `certified_fields_reconstruct_original`, `valid_published_root_emits_its_original_input`, `constructed_published_root_reconstructs_certified_source` | Captured `Frame.region` bytes, not bytes reconstructed from pieces, are the oracle for each node's Original output. `generated_publications_preserve_actual_frame_bytes` adds property-generated EMap inputs. |
+| SRP-04 | `valid_arena_supplies_node_rank`, `valid_arena_supplies_piece_rank`, `constructed_root_emits_all_modes_with_exact_cached_length` | The native witness constructs a finite work count from already-published child counts and checks all three output lengths. Formal termination instantiates SRE with constructed ranks; no arena-size linearity claim follows. |
+| SRP-05 | `publication_checks_original_length`, `length_mismatch_refuses_publication`, `arithmetic_failure_refuses_publication` | Existing direct arithmetic-refusal tests remain bound. `late_framing_failure_never_publishes_the_root` observes an already-completed child followed by an error and no completed root; it does not claim rollback of earlier internal child publications. Original-length mismatch remains a formal defensive-branch obligation. |
+| SRP-06 | `two_node_publication_is_constructed`, `same_length_wrong_source_passes_only_the_length_check`, `self_reference_is_not_an_admissible_publication`, `unrepresentable_publication_is_refused` | Formal success/nonvacuity and negative witnesses. Wrong same-length source demonstrates that the numeric guard alone cannot prove source equality; the backward-reference premise excludes a self-reference that numeric planning alone need not reject. |
+
+**Actual-code observation.** The `cfg(test)` observer runs immediately after
+`builder.nodes.push(node)`, receiving the still-retained `frame.region` and the current
+builder. Only when a test explicitly enables capture does it retain source regions and
+emit the newly completed node in all modes. The test checks later output against these
+earlier outputs and independently checks Original output against the captured region.
+Every captured source, cut, borrowed field and EPathMap prefix is checked against the
+original backing slice and pointer. The existing shared exhaustive corpus is reused
+through a test-only crate alias. These capture allocations are test instrumentation,
+excluded from production and performance evidence.
+
+**Remaining boundary.** Construction is conditional on the field certificate and actual
+frame partition. The universal proof that the canonical cursor and EPM1 inspector supply
+that certificate—including gap-free source ranges, finite cut/group membership, physical
+tag/byte validity and provenance—remains required. The fixed external tables in this
+module do not establish those facts. Native corpus/properties give direct bounded
+evidence, not a proof over all accepted inputs. Parser errors, allocation failure and
+the exact order of arithmetic refusals are not modeled by this publication theorem.
+Full substitution semantics, work counters and scaling/lifecycle acceptance remain open.
+
 ## Original workspace-regression completion gates
 
 This checkpoint is complete only when all of the following hold:

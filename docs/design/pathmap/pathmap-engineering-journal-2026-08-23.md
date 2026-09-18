@@ -12970,6 +12970,65 @@ operation order, and abstract total lookups do not prove native indexing validit
 Full substitution continuation/binder/error/charge refinement, exact work counters,
 non-identity scaling/profiling and lifecycle gates remain required by task 5916.
 
+### J-177 — 2026-09-17 Checked region publication and actual-source observation
+
+**DERIVED.** Task 5916's publication bridge now constructs the emission model's
+reference views, cached lengths and termination ranks by append-only publication.
+`SubstitutionRegionPublication.v` derives arena validity inductively from an empty
+arena, backward child references, successful checked planning and local field
+certificates. A constructed publication explicitly requires that the actual frame
+is the ordered concatenation of its certified field bytes. For a published root,
+the resulting theorem establishes exact Original reconstruction and exact cached
+lengths in all three emission modes. This is not an assertion that equal lengths
+imply equal bytes: a negative witness shows a wrong same-length source passing the
+numeric check. Other witnesses cover successful two-node construction, forbidden
+self-reference and arithmetic refusal. The [SRP inventory](workspace-regression-formal-invariant-catalog-2026-08-28.md#checked-region-publication-and-constructed-witnesses-srp-task-5916)
+maps all 21 printed obligations to their native bindings and remaining premises.
+
+The formal check preceded the native capture tests. A test-only hook immediately
+after the real builder's node publication retains `Frame.region`, rather than
+deriving expected bytes from reconstructed output. Tests compare every completed
+node's Original emission with that source slice, check backing pointers, backward
+indices, cut/group/path validity and all three cached lengths, and compare output
+before and after later publications. Truncating later nodes must also preserve
+earlier output. The shared exhaustive corpus and generated EMap inputs exercise
+these checks. A late malformed frame demonstrates that completed children may
+exist internally while the failed root is never published. Capture is opt-in and
+absent from non-test builds; its deliberate arena copies are correctness
+instrumentation, not resource measurements of the production algorithm.
+
+**MEASURED (qualification).** Formal r10 passes 21 closed declarations and an
+explicit kernel check in 15.043 seconds, 14.489 CPU seconds and 411.4 MiB peak,
+under `MemoryMax=2G`, `MemorySwapMax=0`, `CPUQuota=100%` and a 120-second watchdog.
+The final native run passes seven selected library tests (508 other library tests
+filtered) and all 61 focused integration tests: 30 manifest, 14 cursor, eight
+region, seven range/emission and two registry tests. None are ignored. The service
+takes 64.592 seconds, 170.377 CPU seconds and a reported 1.6 GiB peak, under
+`MemoryHigh=6G`, `MemoryMax=8G`, `MemorySwapMax=0`, `CPUQuota=400%` and a
+1200-second watchdog. These build-plus-test timings are not benchmark results.
+The two native commands are unchanged from J-176; the formal commands are:
+
+```sh
+coqc -Q theories StackSafePDA theories/SubstitutionRegionPublication.v
+coqchk -silent -Q theories StackSafePDA StackSafePDA.SubstitutionRegionPublication
+```
+
+| Artifact | SHA-256 |
+|---|---|
+| `formal/rocq/stack_safe_pda/theories/SubstitutionRegionPublication.v` | `4def419ec3adaed14c7341fbcff6495cb280665f4ac518754b9bd5d6de34d815` |
+| `target/verification/substitution-5916-publication-formal-r10.log` | `e60efbe3681613570a3f225f8a33b94415f48062b6205b9e6bb5771256a3f6f6` |
+| `target/verification/substitution-5916-publication-final-r1.log` | `fb88719f53de439571c46cce7eddff4ba6e30ae9887b1694864a55bfb9b6b96c` |
+
+**DECISION and remaining boundary.** Independent review found no blocking mismatch
+between this model and the capture. The universal proof that the canonical cursor
+and EPM1 inspector establish field certificates, gap-free source partition,
+provenance and finite cut/group validity remains required. Native properties do
+not discharge those universal premises. Neither rank termination nor bounded
+capture demonstrates linear allocation or work. Full substitution semantics,
+error/charge ordering, work counters, non-identity scaling and lifecycle gates
+remain open. No production behavior, consensus format, dependency or PathMap
+implementation changes in this checkpoint; task 5916 is not complete.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

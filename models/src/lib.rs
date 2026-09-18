@@ -98,6 +98,9 @@ macro_rules! par_from_default {
     };
 }
 
+#[cfg(test)]
+extern crate self as models;
+
 pub mod rust;
 
 pub mod casper {

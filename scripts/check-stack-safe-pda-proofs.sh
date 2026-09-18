@@ -736,6 +736,10 @@ rocq_reject_placeholders theories/SubstitutionRegionEmission.v
 rocq_compile_with_closed_count theories/SubstitutionRegionEmission.v 35 \
   "conditional three-mode substitution region emission and checked lengths"
 rocq_check_modules "substitution region emission" StackSafePDA.SubstitutionRegionEmission
+rocq_reject_placeholders theories/SubstitutionRegionPublication.v
+rocq_compile_with_closed_count theories/SubstitutionRegionPublication.v 21 \
+  "postorder substitution region publication and certified source reconstruction"
+rocq_check_modules "substitution region publication" StackSafePDA.SubstitutionRegionPublication
 rmp2_rocq_output="$(
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/RMP2.v 2>&1
 )"

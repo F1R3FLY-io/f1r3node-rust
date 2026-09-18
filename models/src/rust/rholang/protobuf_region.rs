@@ -977,6 +977,8 @@ pub fn cut_at_par(
         }
         let node_index = builder.nodes.len();
         builder.nodes.push(node);
+        #[cfg(test)]
+        emission_tests::record_publication(node_index, &frame.region, &builder);
         builder.stats.message_nodes += 1;
         if let Some(tag) = return_tag {
             frames

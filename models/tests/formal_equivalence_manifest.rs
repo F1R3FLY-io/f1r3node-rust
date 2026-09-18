@@ -7,6 +7,63 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 #[test]
+fn substitution_region_publication_has_derived_invariants_and_native_capture() {
+    let theory =
+        read_repository_file("formal/rocq/stack_safe_pda/theories/SubstitutionRegionPublication.v");
+    for theorem in [
+        "empty_is_valid",
+        "publication_preserves_old_indices",
+        "publication_gives_exact_new_index",
+        "prior_piece_denotation_stable",
+        "certified_fields_reconstruct_original",
+        "append_establishes_all_arena_invariants",
+        "successful_checked_publication_establishes_invariants",
+        "publication_checks_original_length",
+        "length_mismatch_refuses_publication",
+        "arithmetic_failure_refuses_publication",
+        "valid_arena_supplies_node_rank",
+        "valid_arena_supplies_piece_rank",
+        "valid_published_root_emits_its_original_input",
+        "constructed_arena_is_valid",
+        "publication_increases_count_once",
+        "constructed_root_emits_all_modes_with_exact_cached_length",
+        "constructed_published_root_reconstructs_certified_source",
+        "two_node_publication_is_constructed",
+        "same_length_wrong_source_passes_only_the_length_check",
+        "self_reference_is_not_an_admissible_publication",
+        "unrepresentable_publication_is_refused",
+    ] {
+        assert!(theory.contains(&format!("Print Assumptions {theorem}.")));
+    }
+    let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
+    assert!(has_runner_command(&runner, &[
+        "rocq_compile_with_closed_count",
+        "theories/SubstitutionRegionPublication.v",
+        "21",
+    ]));
+    assert!(has_runner_kernel_check(&runner, &[
+        "StackSafePDA.SubstitutionRegionPublication"
+    ]));
+    assert!(
+        read_repository_file("formal/rocq/stack_safe_pda/_CoqProject")
+            .lines()
+            .any(|line| line == "theories/SubstitutionRegionPublication.v")
+    );
+    let native = read_repository_file("models/tests/support/substitution_region_emission.rs");
+    for witness in [
+        "every_published_node_preserves_source_caches_indices_and_prior_meaning",
+        "generated_publications_preserve_actual_frame_bytes",
+        "late_framing_failure_never_publishes_the_root",
+    ] {
+        assert!(native.contains(&format!("fn {witness}(")));
+    }
+    let source = read_repository_file("models/src/rust/rholang/protobuf_region.rs");
+    assert!(source.contains("builder.nodes.push(node);\n        #[cfg(test)]\n        emission_tests::record_publication(node_index, &frame.region, &builder);"));
+    assert!(read_repository_file("models/src/lib.rs")
+        .contains("#[cfg(test)]\nextern crate self as models;"));
+}
+
+#[test]
 fn substitution_region_emission_has_conditional_proof_and_native_bindings() {
     let arithmetic = read_repository_file("models/tests/support/substitution_region_emission.rs");
     for witness in [
