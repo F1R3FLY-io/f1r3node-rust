@@ -419,6 +419,8 @@ impl WebApi for WebApiImpl {
     }
 
     async fn deploy(&self, request: DeployRequest) -> Result<String> {
+        crate::rust::runtime::require_legacy_source_route("Signed deploy")
+            .map_err(eyre::Error::msg)?;
         // Multi-sig-aware decode. For legacy single-sig requests
         // (cosigners.is_empty()), this produces a one-element Cosigned
         // envelope; the downstream BlockAPI::deploy_cosigned routes it
@@ -594,6 +596,8 @@ impl WebApi for WebApiImpl {
         block_hash: Option<String>,
         use_pre_state_hash: bool,
     ) -> Result<RhoDataResponse> {
+        crate::rust::runtime::require_legacy_source_route("Exploratory deploy")
+            .map_err(eyre::Error::msg)?;
         let (pars, block, cost) = BlockAPI::exploratory_deploy(
             &self.engine_cell,
             term,
@@ -659,6 +663,8 @@ impl WebApi for WebApiImpl {
         address: String,
         block_hash: Option<String>,
     ) -> Result<BalanceResponse> {
+        crate::rust::runtime::require_legacy_source_route("Balance exploratory query")
+            .map_err(eyre::Error::msg)?;
         let term = format!(
             r#"new return, rl(`rho:registry:lookup`), systemVaultCh, vaultCh, balanceCh in {{
   rl!(`rho:vault:system`, *systemVaultCh) |
@@ -711,6 +717,8 @@ impl WebApi for WebApiImpl {
         uri: String,
         block_hash: Option<String>,
     ) -> Result<RegistryResponse> {
+        crate::rust::runtime::require_legacy_source_route("Registry exploratory query")
+            .map_err(eyre::Error::msg)?;
         let term = format!(
             r#"new return, rl(`rho:registry:lookup`), ch in {{
   rl!(`{uri}`, *ch) |
@@ -745,6 +753,8 @@ impl WebApi for WebApiImpl {
     }
 
     async fn get_validators(&self, block_hash: Option<String>) -> Result<ValidatorsResponse> {
+        crate::rust::runtime::require_legacy_source_route("Validator exploratory query")
+            .map_err(eyre::Error::msg)?;
         let term = r#"new return, rl(`rho:registry:lookup`), poSCh in {
   rl!(`rho:system:pos`, *poSCh) |
   for(@(_, PoS) <- poSCh) {
@@ -831,6 +841,8 @@ impl WebApi for WebApiImpl {
         term: String,
         block_hash: Option<String>,
     ) -> Result<EstimateCostResponse> {
+        crate::rust::runtime::require_legacy_source_route("Cost estimation")
+            .map_err(eyre::Error::msg)?;
         let (resolved_hash, block_number) = self.resolve_block(block_hash).await?;
 
         let (_pars, _block, cost) = BlockAPI::exploratory_deploy(
@@ -850,6 +862,8 @@ impl WebApi for WebApiImpl {
     }
 
     async fn get_epoch_rewards(&self, block_hash: Option<String>) -> Result<EpochRewardsResponse> {
+        crate::rust::runtime::require_legacy_source_route("Rewards exploratory query")
+            .map_err(eyre::Error::msg)?;
         let term = r#"new return, rl(`rho:registry:lookup`), poSCh in {
   rl!(`rho:system:pos`, *poSCh) |
   for(@(_, PoS) <- poSCh) {
@@ -887,6 +901,8 @@ impl WebApi for WebApiImpl {
         pubkey: String,
         block_hash: Option<String>,
     ) -> Result<ValidatorStatusResponse> {
+        crate::rust::runtime::require_legacy_source_route("Validator exploratory query")
+            .map_err(eyre::Error::msg)?;
         let term = r#"new return, rl(`rho:registry:lookup`), poSCh in {
   rl!(`rho:system:pos`, *poSCh) |
   for(@(_, PoS) <- poSCh) {
@@ -930,6 +946,8 @@ impl WebApi for WebApiImpl {
     }
 
     async fn get_bond_status(&self, pubkey: String) -> Result<BondStatusResponse> {
+        crate::rust::runtime::require_legacy_source_route("Bond-status runtime query")
+            .map_err(eyre::Error::msg)?;
         let pubkey_bytes =
             hex::decode(&pubkey).map_err(|e| eyre!("Invalid public key hex: {}", e))?;
 

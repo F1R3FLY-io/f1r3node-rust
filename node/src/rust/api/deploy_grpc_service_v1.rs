@@ -257,6 +257,8 @@ impl DeployService for DeployGrpcServiceV1Impl {
         &self,
         request: tonic::Request<DeployDataProto>,
     ) -> Result<tonic::Response<DeployResponse>, tonic::Status> {
+        crate::rust::runtime::require_legacy_source_route("Signed deploy")
+            .map_err(tonic::Status::failed_precondition)?;
         let cosigned_deploy =
             match models::rust::casper::protocol::casper_message::DeployData::from_proto_cosigned(
                 request.into_inner(),
@@ -738,6 +740,8 @@ impl DeployService for DeployGrpcServiceV1Impl {
         &self,
         request: tonic::Request<BondStatusQuery>,
     ) -> Result<tonic::Response<BondStatusResponse>, tonic::Status> {
+        crate::rust::runtime::require_legacy_source_route("Bond-status runtime query")
+            .map_err(tonic::Status::failed_precondition)?;
         let request = request.into_inner();
         match BlockAPI::bond_status(&self.engine_cell, &request.public_key.to_vec()).await {
             Ok(is_bonded) => Ok(tonic::Response::new(BondStatusResponse {
@@ -761,6 +765,8 @@ impl DeployService for DeployGrpcServiceV1Impl {
         &self,
         request: tonic::Request<ExploratoryDeployQuery>,
     ) -> Result<tonic::Response<ExploratoryDeployResponse>, tonic::Status> {
+        crate::rust::runtime::require_legacy_source_route("Exploratory deploy")
+            .map_err(tonic::Status::failed_precondition)?;
         let request = request.into_inner();
         let block_hash = if request.block_hash.is_empty() {
             None

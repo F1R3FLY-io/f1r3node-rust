@@ -91,6 +91,8 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
     ),
     CasperError,
 > {
+    #[cfg(feature = "mettail-frontend")]
+    super::f1r3lang::require_standalone(conf.standalone).map_err(CasperError::Other)?;
     info!(data_dir = ?conf.storage.data_dir, "Initializing key-value store manager");
 
     // RNode key-value store manager / manages LMDB databases
@@ -205,8 +207,13 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         ExternalServices::for_node_type(is_validator, &config, &ollama_config)
     };
 
+    #[cfg(feature = "mettail-frontend")]
+    let mut f1r3lang =
+        super::f1r3lang::F1r3langComposition::from_environment().map_err(CasperError::Other)?;
+
     // Runtime for `rnode eval`
     let eval_runtime = {
+        #[cfg(not(feature = "mettail-frontend"))]
         use rholang::rust::interpreter::matcher::r#match::Matcher;
         use rholang::rust::interpreter::rho_runtime;
         use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
@@ -216,12 +223,37 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             .await
             .map_err(|e| CasperError::Other(format!("Failed to get eval stores: {}", e)))?;
 
+        #[cfg(feature = "mettail-frontend")]
+        let matcher: Arc<
+            Box<
+                dyn rspace_plus_plus::rspace::r#match::Match<
+                    models::rhoapi::BindPattern,
+                    models::rhoapi::ListParWithRandom,
+                    models::rhoapi::TaggedContinuation,
+                >,
+            >,
+        > = Arc::new(Box::new(f1r3lang.evaluation.matcher.clone()));
+        #[cfg(not(feature = "mettail-frontend"))]
+        let matcher: Arc<
+            Box<
+                dyn rspace_plus_plus::rspace::r#match::Match<
+                    models::rhoapi::BindPattern,
+                    models::rhoapi::ListParWithRandom,
+                    models::rhoapi::TaggedContinuation,
+                >,
+            >,
+        > = Arc::new(Box::new(Matcher));
+        #[cfg(feature = "mettail-frontend")]
+        let definitions = &mut f1r3lang.definitions;
+        #[cfg(not(feature = "mettail-frontend"))]
+        let definitions = &mut Vec::new();
+
         rho_runtime::create_runtime_from_kv_store(
             eval_stores,
             Arc::new(casper::rust::genesis::genesis::Genesis::default_mergeable_tags()),
             false,
-            &mut Vec::new(),
-            Arc::new(Box::new(Matcher)),
+            definitions,
+            matcher,
             external_services.clone(),
         )
         .await
@@ -511,10 +543,15 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
     // Packet handler - handles incoming Casper protocol messages
     // Note: Scala has a commented-out fairDispatcher option (Setup.scala:268-277) that uses
     // round-robin dispatching with queue management. Currently using simple handler.
+    #[cfg(not(feature = "mettail-frontend"))]
     let packet_handler = casper::rust::util::comm::casper_packet_handler::CasperPacketHandler::new(
         engine_cell.clone(),
     );
+    #[cfg(not(feature = "mettail-frontend"))]
     let packet_handler: Arc<dyn PacketHandler> = Arc::new(packet_handler);
+    #[cfg(feature = "mettail-frontend")]
+    let packet_handler: Arc<dyn PacketHandler> =
+        Arc::new(super::f1r3lang::UnactivatedCasperPackets);
 
     // Reporting store - storage for block event reports with LZ4 compression
     let reporting_store =
@@ -609,6 +646,8 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
 
     let api_servers = APIServers::build(
         eval_runtime,
+        #[cfg(feature = "mettail-frontend")]
+        f1r3lang.evaluation,
         trigger_propose_f_opt,
         proposer_state_ref_opt,
         conf.api_server.max_blocks_limit as i32,

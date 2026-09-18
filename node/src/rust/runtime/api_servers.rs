@@ -64,6 +64,7 @@ impl APIServers {
     pub fn build(
         // REPL dependencies
         runtime: RhoRuntimeImpl,
+        #[cfg(feature = "mettail-frontend")] f1r3lang: super::f1r3lang::F1r3langEvaluation,
         // Propose dependencies
         trigger_propose_f_opt: Option<Arc<ProposeFunction>>,
         proposer_state_ref_opt: Option<Arc<RwLock<ProposerState>>>,
@@ -90,7 +91,10 @@ impl APIServers {
         is_ready: Arc<AtomicBool>,
     ) -> Self {
         // Create REPL service
+        #[cfg(not(feature = "mettail-frontend"))]
         let repl = ReplGrpcServiceImpl::new(runtime);
+        #[cfg(feature = "mettail-frontend")]
+        let repl = ReplGrpcServiceImpl::with_f1r3lang(runtime, f1r3lang);
 
         // Create Propose service
         let propose = ProposeGrpcServiceV1Impl::new(

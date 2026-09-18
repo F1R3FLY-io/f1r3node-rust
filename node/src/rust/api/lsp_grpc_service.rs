@@ -427,6 +427,13 @@ impl LspGrpcServiceImpl {
 
     /// Validate Rholang source code
     async fn validate_source(&self, source: &str) -> ValidateResponse {
+        if let Err(error) = crate::rust::runtime::require_legacy_source_route("LSP validation") {
+            return ValidateResponse {
+                result: Some(lsp::validate_response::Result::Success(DiagnosticList {
+                    diagnostics: self.default_validation(source, error),
+                })),
+            };
+        }
         // TODO: potentially Compiler::source_to_adt_with_normalizer_env should be wrapped in a tokio::task::spawn_blocking but better to prove it with benchmarks
         match Compiler::source_to_adt_with_normalizer_env(source, HashMap::new()) {
             Ok(_) => ValidateResponse {

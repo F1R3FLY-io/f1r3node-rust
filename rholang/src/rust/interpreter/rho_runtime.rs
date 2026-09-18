@@ -1139,6 +1139,86 @@ async fn setup_reducer(
     reducer
 }
 
+/// Reject extra definitions that would overwrite a real built-in or each other.
+/// This inspects the same constructors consumed by setup and dispatch; it does
+/// not maintain a second manually synchronized list of reserved IDs.
+pub fn validate_extra_system_processes(extra: &[Definition]) -> Result<(), String> {
+    let mut builtins = std_system_processes();
+    builtins.extend(std_rho_crypto_processes());
+    builtins.extend(std_rho_ai_processes());
+    builtins.extend(std_rho_chroma_processes());
+    let basic = basic_processes();
+    for (index, candidate) in extra.iter().enumerate() {
+        if basic.contains_key(&candidate.urn)
+            || basic.values().any(|channel| {
+                channel == &candidate.fixed_channel
+                    || channel
+                        .bundles
+                        .iter()
+                        .any(|bundle| bundle.body.as_ref() == Some(&candidate.fixed_channel))
+            })
+            || builtins
+                .iter()
+                .chain(extra[..index].iter())
+                .any(|existing| {
+                    candidate.urn == existing.urn
+                        || candidate.body_ref == existing.body_ref
+                        || candidate.fixed_channel == existing.fixed_channel
+                })
+        {
+            return Err(format!(
+                "Conflicting system process registration: {}",
+                candidate.urn
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod extra_registration_tests {
+    use super::*;
+
+    fn extra() -> Definition {
+        let mut definition = std_system_processes().pop().unwrap();
+        definition.urn = "rho:registration-test".into();
+        definition.body_ref = i64::MAX - 100;
+        definition.fixed_channel = models::rust::utils::new_gint_par(-987654, vec![], false);
+        definition
+    }
+
+    #[test]
+    fn collision_free_and_empty_extensions_are_admitted() {
+        assert!(validate_extra_system_processes(&[]).is_ok());
+        assert!(validate_extra_system_processes(&[extra()]).is_ok());
+    }
+
+    #[test]
+    fn actual_builtin_urn_body_ref_and_channel_are_independently_reserved() {
+        let builtin = std_system_processes().pop().unwrap();
+        let mut by_urn = extra();
+        by_urn.urn = builtin.urn.clone();
+        let mut by_ref = extra();
+        by_ref.body_ref = builtin.body_ref;
+        let mut by_channel = extra();
+        by_channel.fixed_channel = builtin.fixed_channel;
+        for candidate in [by_urn, by_ref, by_channel] {
+            assert!(validate_extra_system_processes(&[candidate]).is_err());
+        }
+    }
+
+    #[test]
+    fn extension_duplicates_and_basic_registry_channels_refuse() {
+        assert!(validate_extra_system_processes(&[extra(), extra()]).is_err());
+        let mut by_urn = extra();
+        by_urn.urn = "rho:registry:lookup".into();
+        assert!(validate_extra_system_processes(&[by_urn]).is_err());
+        let mut by_channel = extra();
+        by_channel.fixed_channel = FixedChannels::reg_lookup();
+        assert!(validate_extra_system_processes(&[by_channel]).is_err());
+    }
+}
+
 fn setup_maps_and_refs(
     extra_system_processes: &Vec<Definition>,
 ) -> (
