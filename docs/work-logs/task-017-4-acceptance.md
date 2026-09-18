@@ -51,3 +51,9 @@ Claims 002 through 008 and the other tasks retain their existing states. Shared 
 The strict claim audit and integrity check passed. The repository completion adapter marked TASK-017-4 complete with no completion gaps.
 
 The acceptance package records the completion result separately from verification and user approval. Git publication requires separate authorization.
+
+## Drift after acceptance (2026-09-18)
+
+The driver `scripts/run-merge-recovery-soak.sh` changed after this acceptance. The Python removal replaced its pidfd process control with bash, and a later fix made the owner-marked stop kill processes in numeric pid order. The accepted digest is `7f4ba9b1c907…` at commit `946743a77`. The current digest differs.
+
+The claim audit refuses a discharged record whose source differs, so CLAIM-CASPER-SOAK-001 and the driver's ledger record return to pending. The other 32 records keep their accepted digests, which still match. A new acceptance on the current driver restores the discharge. The acceptance package `casper-task-017-4-acceptance-01` stays as the record of the earlier acceptance.

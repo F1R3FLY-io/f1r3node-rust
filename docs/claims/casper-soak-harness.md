@@ -2,7 +2,7 @@
 
 ```yaml
 claim_id: CLAIM-CASPER-SOAK-001
-status: discharged
+status: pending
 adapter: embedded
 pre_merge_tasks: [TASK-017-2, TASK-017-4, TASK-017-12, TASK-017-13]
 post_merge_tasks: [TASK-018-1, TASK-018-2, TASK-018-5, TASK-018-6]
@@ -48,7 +48,7 @@ mechanization_plan: formal/tlaplus/casper_soak/verification-plan.jsonc
 refutation: bounded-safety-pass
 construction: not-applicable
 construction_assumptions: null
-binding: passed
+binding: pending
 soak: pending
 ```
 
@@ -181,6 +181,8 @@ The model checks safety only, not eventual termination. Its bounds are two candi
 The real-driver fixtures now cover lifecycle admission, history, terminal transitions, capture, and publication. The shared workflow runs the model and fixture gates.
 
 The user accepted the bounded H01–H10 [binding review](../work-logs/task-017-4-final-checks.md) for TASK-017-4.
+
+On 2026-09-18 the driver changed after that acceptance: the Python removal and the numeric kill-order fix. The accepted binding covers the driver at commit `946743a77`, not the current driver. The claim returns to pending until a new acceptance binds the current source. The [drift record](../work-logs/task-017-4-acceptance.md#drift-after-acceptance-2026-09-18) states the scope.
 
 The [acceptance record](../work-logs/task-017-4-acceptance.md) binds that approval to the verified source and retained evidence. Discharge covers bounded pre-merge harness behavior only.
 
