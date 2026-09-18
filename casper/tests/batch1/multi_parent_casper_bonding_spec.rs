@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use casper::rust::api::block_api::BlockAPI;
+use casper::rust::casper::MultiParentCasper;
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::engine::engine_with_casper::EngineWithCasper;
 use casper::rust::engine::multi_parent_casper::MultiParentCasperImpl;
@@ -111,6 +112,177 @@ async fn multi_parent_casper_should_allow_bonding() {
     assert!(
         bonded_status(&DEFAULT_PUB, &nodes[0]).await,
         "n4 must be BONDED after its bond block finalizes"
+    );
+}
+
+/// Issue #149: after a new bond finalizes and the DAG crosses an epoch
+/// boundary, the finalized block's `bonds` field (what `/api/last-finalized-block`
+/// exposes, `= floor_committee(floor_state) = compute_bonds ∩ getActiveValidators`)
+/// must include the newly bonded validator. The bond reaches `allBonds`
+/// immediately, but `activeValidators` is only refreshed by the epoch-boundary
+/// close-block; if that refresh is lost to merge adjudication of sibling
+/// close-block state, the new validator never enters the committee and never
+/// appears in the LFB `bonds` map, no matter how many epoch boundaries pass.
+///
+/// This is a deterministic guard, not a reproduction: on current `dev` this
+/// shape PASSES (the bond enters the committee), matching the #341 finding that
+/// the deterministic boundary shape alone does not trigger the #149 loss. It
+/// locks the happy path; a green run is not evidence that #149 cannot occur.
+#[tokio::test]
+async fn a_new_bond_enters_the_lfb_committee_after_an_epoch_boundary() {
+    const EPOCH_LENGTH: i32 = 4;
+    const MERGE_ROUNDS: i32 = 3;
+    const TAIL_ROUNDS: i32 = 4;
+    const SIBLING_DEPLOY_BASE: i32 = 100;
+    const TAIL_DEPLOY_BASE: i32 = 300;
+
+    let validator_key_pairs = vec![
+        DEFAULT_VALIDATOR_KEY_PAIRS[0].clone(),
+        DEFAULT_VALIDATOR_KEY_PAIRS[1].clone(),
+        DEFAULT_VALIDATOR_KEY_PAIRS[2].clone(),
+        (DEFAULT_SEC.clone(), DEFAULT_PUB.clone()),
+    ];
+    let validator_pks: Vec<PublicKey> = validator_key_pairs
+        .iter()
+        .map(|(_, pk)| pk.clone())
+        .collect();
+    let bonds: HashMap<PublicKey, i64> = validator_pks
+        .iter()
+        .take(3)
+        .enumerate()
+        .map(|(i, pk)| (pk.clone(), 2 * i as i64 + 1))
+        .collect();
+
+    let mut parameters = GenesisBuilder::build_genesis_parameters(validator_key_pairs, &bonds);
+    parameters.2.proof_of_stake.epoch_length = EPOCH_LENGTH;
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(parameters))
+        .await
+        .expect("Failed to build genesis");
+
+    let mut nodes = TestNode::create_network(genesis.clone(), 4, None, None, None, None)
+        .await
+        .expect("create 4-node network");
+    let shard_id = genesis.genesis_block.shard_id.clone();
+
+    let bond_deploy = bonding_util::bonding_deploy(1000, &DEFAULT_SEC, Some(shard_id.clone()))
+        .expect("bond deploy");
+    let _b1 = TestNode::propagate_block_at_index(&mut nodes, 0, &[bond_deploy])
+        .await
+        .expect("propagate the bond block");
+
+    // Drive the DAG past epoch boundaries #4 and #8, alternating sibling+merge
+    // rounds so a multi-parent merge must adjudicate sibling close-block epoch
+    // transitions at each boundary.
+    for round in 0..MERGE_ROUNDS {
+        let d1 = construct_deploy::basic_deploy_data(
+            SIBLING_DEPLOY_BASE + round * 3,
+            None,
+            Some(shard_id.clone()),
+        )
+        .expect("sibling deploy 1");
+        let d2 = construct_deploy::basic_deploy_data(
+            SIBLING_DEPLOY_BASE + 1 + round * 3,
+            None,
+            Some(shard_id.clone()),
+        )
+        .expect("sibling deploy 2");
+        let d3 = construct_deploy::basic_deploy_data(
+            SIBLING_DEPLOY_BASE + 2 + round * 3,
+            None,
+            Some(shard_id.clone()),
+        )
+        .expect("merge deploy");
+        let _s1 = nodes[0]
+            .add_block_from_deploys(&[d1])
+            .await
+            .expect("sibling block 1");
+        let _s2 = nodes[1]
+            .add_block_from_deploys(&[d2])
+            .await
+            .expect("sibling block 2");
+        {
+            let mut refs: Vec<&mut TestNode> = nodes.iter_mut().collect();
+            TestNode::propagate(&mut refs)
+                .await
+                .expect("propagate siblings");
+        }
+        let _m = TestNode::propagate_block_at_index(&mut nodes, 2, &[d3])
+            .await
+            .expect("propagate the merge block");
+    }
+
+    for round in 0..TAIL_ROUNDS {
+        let d = construct_deploy::basic_deploy_data(
+            TAIL_DEPLOY_BASE + round,
+            None,
+            Some(shard_id.clone()),
+        )
+        .expect("tail filler deploy");
+        let _ = TestNode::propagate_block_at_index(&mut nodes, (round as usize + 1) % 3, &[d])
+            .await
+            .expect("propagate a tail filler block");
+    }
+
+    let n4_pk = DEFAULT_PUB.bytes.to_vec();
+
+    // Sanity: the bond reached PoS `allBonds` (compute_bonds over the LFB state).
+    let lfb = nodes[0]
+        .casper
+        .last_finalized_block()
+        .await
+        .expect("last finalized block");
+    let lfb_state = &lfb.body.state.post_state_hash;
+    assert!(
+        lfb.body.state.block_number >= EPOCH_LENGTH as i64,
+        "precondition: LFB #{} must be past the first epoch boundary (#{})",
+        lfb.body.state.block_number,
+        EPOCH_LENGTH
+    );
+    let all_bonds = nodes[0]
+        .runtime_manager
+        .compute_bonds(lfb_state)
+        .await
+        .expect("compute_bonds");
+    assert!(
+        all_bonds.iter().any(|b| b.validator == n4_pk),
+        "precondition: n4's bond must be in PoS allBonds at the finalized state"
+    );
+    let active = nodes[0]
+        .runtime_manager
+        .get_active_validators(lfb_state)
+        .await
+        .expect("get_active_validators");
+    assert!(
+        active.iter().any(|v| v == &n4_pk),
+        "n4 must be in getActiveValidators at the finalized state after crossing \
+         epoch boundaries (LFB #{})",
+        lfb.body.state.block_number
+    );
+
+    // The actual issue-#149 assertion: the finalized block's `bonds` field
+    // (the LFB committee) must include n4.
+    assert!(
+        lfb.body.state.bonds.iter().any(|b| b.validator == n4_pk),
+        "issue #149: n4 must appear in the finalized block's bonds field \
+         after crossing epoch boundaries (LFB #{}, bonds has {} entries)",
+        lfb.body.state.block_number,
+        lfb.body.state.bonds.len()
+    );
+
+    // The merge proposer (node 2) must finalize the same committee view.
+    let lfb_n2 = nodes[2]
+        .casper
+        .last_finalized_block()
+        .await
+        .expect("last finalized block on node 2");
+    assert_eq!(
+        lfb.block_hash, lfb_n2.block_hash,
+        "LFB must converge across nodes: node 0 vs node 2 (merge proposer)"
+    );
+    assert!(
+        lfb_n2.body.state.bonds.iter().any(|b| b.validator == n4_pk),
+        "n4 must appear in the finalized block's bonds field on node 2"
     );
 }
 
