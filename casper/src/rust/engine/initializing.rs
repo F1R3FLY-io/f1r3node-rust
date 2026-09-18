@@ -153,6 +153,22 @@ fn apply_floor_cache_entries(
     Ok(written)
 }
 
+/// The lowest height above which the restore holds EVERY height — the only
+/// claim the carrier index may make. Walks down from the top while heights are
+/// contiguous, so a shipped genesis sitting at 0 behind the restore gap is not
+/// mistaken for the bottom of held history.
+fn contiguous_coverage_start(height_map: &BTreeMap<i64, HashSet<BlockHash>>) -> Option<i64> {
+    let mut heights = height_map.keys().rev();
+    let mut lowest = *heights.next()?;
+    for height in heights {
+        if *height != lowest - 1 {
+            break;
+        }
+        lowest = *height;
+    }
+    Some(lowest)
+}
+
 /// Land the shipped genesis block on a truncated node: verified against the
 /// learned register (claimed hash equals the register AND the content
 /// re-hashes to it), then stored and inserted finalized. Holding genesis
@@ -1271,10 +1287,18 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         // count is not this number — it counts downloads, and anything the
         // height map dropped never reaches the DAG. `min_height` is the
         // requester's bound, reported because the DAG now reaches below it.
+        let lowest_height = height_map.keys().next().copied();
+        let coverage_from = contiguous_coverage_start(&height_map);
+        if let Some(lowest_held) = coverage_from {
+            self.block_dag_storage
+                .record_carrier_coverage_from(lowest_held)?;
+        }
+
         tracing::info!(
             inserted,
             min_height,
-            lowest_height = height_map.keys().next(),
+            lowest_height,
+            coverage_from,
             "Blocks for approved state added to DAG."
         );
         Ok(())
@@ -2092,5 +2116,34 @@ mod tests {
                 "a refused copy leaves no trace in the block store"
             );
         });
+    }
+
+    /// A restore holding 156165-156241 also holds the shipped genesis at 0, so
+    /// the DAG minimum is 0; claiming coverage from there asserts completeness
+    /// over 156,000 heights the node never downloaded.
+    #[test]
+    fn coverage_starts_above_a_shipped_genesis_not_at_the_dag_minimum() {
+        use super::contiguous_coverage_start;
+
+        let band = |lo: i64, hi: i64| -> BTreeMap<i64, HashSet<BlockHash>> {
+            (lo..=hi)
+                .map(|h| (h, HashSet::from([BlockHash::from(vec![h as u8; 32])])))
+                .collect()
+        };
+
+        let mut restored = band(156_165, 156_241);
+        restored.insert(0, HashSet::from([BlockHash::from(vec![0xba; 32])]));
+        assert_eq!(
+            contiguous_coverage_start(&restored),
+            Some(156_165),
+            "the shipped genesis is not the bottom of held history"
+        );
+
+        assert_eq!(
+            contiguous_coverage_start(&band(0, 12)),
+            Some(0),
+            "a genesis-rooted node holds every height and claims from 0"
+        );
+        assert_eq!(contiguous_coverage_start(&BTreeMap::new()), None);
     }
 }
