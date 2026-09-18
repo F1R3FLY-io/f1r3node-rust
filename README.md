@@ -31,8 +31,11 @@ Install the packages in [Development Setup](#development-setup). Then build, tes
 ```bash
 cargo build
 cargo test
+export STANDALONE_PRIVATE_KEY=<validator key>   # see below
 just run-standalone
 ```
+
+`run-standalone` reads `STANDALONE_PRIVATE_KEY` from the environment and `just` resolves it before it builds, so without it the recipe aborts immediately. Use the key that funds your standalone genesis; `docker/.env.example` carries the development key the shipped Docker configs use.
 
 Use [`run-local/README.md`](run-local/README.md) for local-node options.
 Use [`docker/README.md`](docker/README.md) for Docker-based node and shard workflows.
@@ -254,6 +257,7 @@ cargo kani -p casper --harness <harness_name>
 [`just`](https://github.com/casey/just) is a command runner. The prerequisites above install it.
 
 ```bash
+export STANDALONE_PRIVATE_KEY=<validator key>   # required by both run recipes
 just run-standalone           # build + run standalone node
 just run-standalone-debug     # debug build (faster compile)
 just clean-standalone         # reset to genesis
@@ -275,26 +279,31 @@ See [`docker/README.md`](docker/README.md) for local image builds, the port map,
 
 #### Pull The Prebuilt Image
 
-CI publishes multi-arch images (`linux/amd64` and `linux/arm64`) to Oracle Container Registry (OCIR). It publishes on pushes to `master`, on release tags, and on a nightly schedule. The repository is public. **You do not need an Oracle Cloud account or `docker login` to pull.**
+CI publishes multi-arch images (`linux/amd64` and `linux/arm64`) to two registries: Oracle Container Registry (OCIR), which is canonical for candidate gates because the soak and OCI validation run inside OCI, and Docker Hub as `f1r3flyindustries/f1r3fly-rust`, which is the public mirror and the one to pull from. Both hold the same index; a mismatch fails the publish. The Docker Hub repository is public, so no `docker login` is needed.
 
 ```bash
-docker pull sjc.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest
+docker pull f1r3flyindustries/f1r3fly-rust:latest
 ```
 
 Tag conventions:
 
 | Tag | When it is published |
 | --- | --- |
-| `:latest` | Latest push to `master` |
+| `:latest` | Channel pointer for `master` |
+| `:dev` | Channel pointer for `dev` |
 | `:VERSION` (e.g. `:v0.4.12`) | Release tag push |
-| `:nightly` / `:nightly-YYYYMMDD` | Nightly scheduled build |
+| `:dev-VERSION-canary.N-g<sha>` | Each `dev` build, pinned to its commit |
 
-To use a pulled image with the compose files, set `F1R3FLY_IMAGE`:
+Prefer a pinned tag over a channel pointer for anything long-lived: `:dev` and `:latest` move under you, so a restart can silently change the binary.
+
+To use a pulled image with the compose files, set `F1R3FLY_RUST_IMAGE`:
 
 ```bash
-F1R3FLY_IMAGE=sjc.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest \
+F1R3FLY_RUST_IMAGE=f1r3flyindustries/f1r3fly-rust:latest \
     docker compose -f docker/standalone.yml up
 ```
+
+`docker/standalone.yml`, `shard.yml`, `observer.yml` and `validator4.yml` read `F1R3FLY_RUST_IMAGE`. The VPS files (`shard.vps1.yml`, `shard.vps2.yml`) read `F1R3FLY_IMAGE` instead, and default to a different registry. Setting the wrong one is silent: compose falls back to its default and you run an image you did not choose.
 
 To build a local image:
 

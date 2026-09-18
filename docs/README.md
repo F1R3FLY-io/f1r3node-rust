@@ -128,6 +128,7 @@ The native token's name, symbol, and decimals are configured before genesis and 
 
 | Document | Description |
 |----------|-------------|
+| [Joining an Existing Network](./node/joining-a-network.md) | Attaching a node to a shard it did not start with: bootstrap address, required flags, what a completed join looks like, and bonding it as a validator |
 | [API Reference](./node/api-reference.md) | Complete HTTP REST + gRPC endpoint reference with parameters and curl examples |
 | [WebSocket Events](./node/websocket-events.md) | `/ws/events` endpoint: 10 event types, startup replay, payload schemas |
 | [Docker Setup](../docker/README.md) | Docker compose for shard, standalone, monitoring |
