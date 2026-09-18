@@ -28,7 +28,8 @@ fi
 
 rocq_compile_with_closed_count() {
   local source="$1" expected="$2" description="$3" output actual
-  if ! output="$(tlc_bounded "$coqc_bin" -Q theories StackSafePDA "$source" 2>&1)"; then
+  local namespace="${4-StackSafePDA}"
+  if ! output="$(tlc_bounded "$coqc_bin" -Q theories "$namespace" "$source" 2>&1)"; then
     printf '%s\n' "$output"
     return 1
   fi
@@ -43,9 +44,13 @@ rocq_compile_with_closed_count() {
 }
 
 rocq_check_modules() {
-  local description="$1" output
-  shift
-  if ! output="$(tlc_bounded "$coqchk_bin" -Q theories StackSafePDA "$@" 2>&1)"; then
+  rocq_check_modules_at StackSafePDA "$@"
+}
+
+rocq_check_modules_at() {
+  local namespace="$1" description="$2" output
+  shift 2
+  if ! output="$(tlc_bounded "$coqchk_bin" -Q theories "$namespace" "$@" 2>&1)"; then
     printf '%s\n' "$output"
     return 1
   fi
@@ -937,6 +942,10 @@ TLC_MEMORY_HIGH=3G TLC_RSS=4G \
   tlc_bounded "$coqc_bin" -Q theories '' theories/Epm1ActConcreteV5Mutants.v
 tlc_bounded "$coqc_bin" -Q theories '' theories/Epm1PositionalAssociationV6.v
 tlc_bounded "$coqc_bin" -Q theories '' theories/Epm1PositionalAssociationV6Mutants.v
+rocq_reject_placeholders theories/Epm1ValueSummary.v
+rocq_compile_with_closed_count theories/Epm1ValueSummary.v 16 \
+  "ACT cached summary and source-preorder refinement" ''
+rocq_check_modules_at '' "ACT cached value summary" Epm1ValueSummary
 popd >/dev/null
 TLC_RSS="$previous_tlc_rss"
 

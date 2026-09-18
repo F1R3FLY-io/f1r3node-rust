@@ -842,6 +842,32 @@ it does not prove all native error strings, allocation behavior or compiler
 correctness. See [J-186](pathmap-engineering-journal-2026-08-23.md#j-186--2026-09-18-compose-epm-prefix-and-physical-value-selection)
 for receipts and the remaining ACT-summary/schema/semantic/resource boundaries.
 
+## ACT cached value summary (AVS, task 5916)
+
+The sixteen printed declarations in `actree03_completeness/theories/Epm1ValueSummary.v`
+connect the concrete accumulator to independent value inventories, existing
+source certificates and typed EPM mode decisions.
+
+| ID | Printed obligations | Native binding |
+|---|---|---|
+| AVS-01 | `accumulated_count_equals_valued_observation_count`, `value_inventory_is_node_bounded`, `bindings_append`, `certified_summary_count_fits_resident_image` | Independent legacy semantic-tree preorder inventory; valueless nodes are omitted, root and descendant values are retained. Count fits any host bound covering the resident image. |
+| AVS-02 | `first_nonzero_matches_independent_find`, `first_nonsequential_matches_value_ordinal_reference`, `concrete_summary_refines_independent_inventory` | Expected full tuples come from independent find/enumeration; a wrapped first offender requires the wrapper ID rather than node ID, and sequential checks use value ordinal rather than node index. |
+| AVS-03 | `latched_nonzero_diagnostic_is_retained`, `latched_nonsequential_diagnostic_is_retained`, `absent_nonzero_is_exactly_all_zero_markers` | Multiple offenders retain the first; sequential, all-zero and mixed-marker fixtures exercise positive and negative diagnostics. |
+| AVS-04 | `semantic_preorder_markers_match_writer_bindings`, `certified_summary_markers_are_source_writer_markers`, `admitted_canonical_image_summary_uses_forward_preorder` | Existing generated writer images plus independent parser inventory bind forward preorder; deterministic inputs differ from physical-offset order. V5's stored reversed list is explicitly reversed in the model. |
+| AVS-05 | `canonical_zero_writer_summary_has_exact_count_and_zero_markers`, `zero_summary_decides_exactly_all_zero_markers`, `typed_mode_decision_uses_derived_count_and_zero_markers` | Maintained ACT zero-marker fixtures and the existing deterministic/generated EPM mode matrices compare endpoint count, all-zero markers, logical emptiness and declared body count. |
+
+The strengthened native witnesses are
+`cached_value_summary_matches_independent_preorder_offsets_and_latches`,
+`arbitrary_pathmap_writer_images_are_accepted_with_exact_preorder_plans`
+and the existing `value_summary_retains_preorder_ordinal_diagnostics_without_an_event_prepass`
+under `rspace++/tests/support/pathmap_codec_validated_plan.rs`.
+Repeated getters additionally preserve the summary across traversal/rewind,
+perform no observed source reads and leave work counters unchanged. Those
+getter resource properties are native evidence, not a formal allocation theorem.
+The formal source bridge assumes the existing canonical-writer certificate
+domain; logical emptiness and universal Rust/native admission are not inferred
+from count alone. See [J-187](pathmap-engineering-journal-2026-08-23.md#j-187--2026-09-18-bind-cached-act-summaries-to-source-preorder).
+
 ## Original workspace-regression completion gates
 
 This checkpoint is complete only when all of the following hold:

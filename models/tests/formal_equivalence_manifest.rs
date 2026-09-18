@@ -8,6 +8,62 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 #[test]
+fn act_cached_summary_has_source_preorder_and_independent_inventory_bindings() {
+    let theory = read_repository_file("formal/rocq/actree03_completeness/theories/Epm1ValueSummary.v");
+    for theorem in [
+        "zero_summary_decides_exactly_all_zero_markers",
+        "typed_mode_decision_uses_derived_count_and_zero_markers",
+        "accumulated_count_equals_valued_observation_count",
+        "first_nonzero_matches_independent_find",
+        "first_nonsequential_matches_value_ordinal_reference",
+        "concrete_summary_refines_independent_inventory",
+        "latched_nonzero_diagnostic_is_retained",
+        "latched_nonsequential_diagnostic_is_retained",
+        "absent_nonzero_is_exactly_all_zero_markers",
+        "value_inventory_is_node_bounded",
+        "bindings_append",
+        "semantic_preorder_markers_match_writer_bindings",
+        "certified_summary_markers_are_source_writer_markers",
+        "certified_summary_count_fits_resident_image",
+        "canonical_zero_writer_summary_has_exact_count_and_zero_markers",
+        "admitted_canonical_image_summary_uses_forward_preorder",
+    ] {
+        assert!(theory.contains(&format!("Print Assumptions {theorem}.")));
+    }
+    for forbidden in ["Admitted.", "admit.", "Axiom ", "Parameter "] {
+        assert!(!theory.contains(forbidden));
+    }
+    let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
+    assert!(has_runner_command(&runner, &[
+        "rocq_compile_with_closed_count", "theories/Epm1ValueSummary.v", "16",
+    ]));
+    assert!(runner.contains("rocq_check_modules_at '' \"ACT cached value summary\" Epm1ValueSummary"));
+    assert!(read_repository_file("formal/rocq/actree03_completeness/_CoqProject")
+        .lines().any(|line| line == "theories/Epm1ValueSummary.v"));
+    let native = read_repository_file("rspace++/tests/support/pathmap_codec_validated_plan.rs");
+    for witness in [
+        "cached_value_summary_matches_independent_preorder_offsets_and_latches",
+        "arbitrary_pathmap_writer_images_are_accepted_with_exact_preorder_plans",
+        "value_summary_retains_preorder_ordinal_diagnostics_without_an_event_prepass",
+    ] {
+        assert!(native.contains(&format!("fn {witness}(")));
+    }
+    for binding in [
+        "node.wrapper.unwrap_or(id)",
+        "assert_eq!(actual.first_nonzero(), first_nonzero)",
+        "assert_eq!(actual.first_nonsequential(), first_nonsequential)",
+        "assert!(cursor.source().take_accesses().is_empty())",
+        "assert_eq!(cursor.work_counters(), before)",
+    ] {
+        assert!(native.contains(binding));
+    }
+    let modes = read_repository_file("models/tests/support/substitution_value_regions.rs");
+    assert!(modes.contains("fn mode_admission_uses_logical_topology_and_zero_endpoint_markers("));
+    assert!(modes.contains("fn generated_mode_admission_matches_independent_endpoint_inventory("));
+}
+
+
+#[test]
 fn substitution_snapshot_prefix_has_exact_offset_and_admission_bindings() {
     let theory = read_repository_file("formal/rocq/stack_safe_pda/theories/SubstitutionSnapshotPrefix.v");
     for theorem in [

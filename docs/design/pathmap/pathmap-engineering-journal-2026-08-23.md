@@ -13778,6 +13778,91 @@ another parser. Operational counters, non-identity scaling/profiling and lifecyc
 gates remain required for task 5916. Production source and format are unchanged;
 there is no new consensus-register entry, PathMap change or performance claim.
 
+### J-187 — 2026-09-18 Bind cached ACT summaries to source preorder
+
+**Question (task 5916).** EPM admission uses a value summary accumulated during
+ACT validation, avoiding a second traversal just to count endpoints or check
+zero markers. The remaining correspondence was between that accumulator and the
+already-proved semantic source traversal.
+
+**DERIVED result.** `Epm1ValueSummary.v` models the concrete count and first-error
+latches. Its independent specification filters valued observations, counts them,
+finds the first nonzero marker, and finds the first mismatch against value
+ordinals. Valueless semantic nodes do not advance the ordinal. Existing
+diagnostics remain latched. Diagnostic offsets select a wrapper when present;
+they are semantic value-bearing object locations, not necessarily marker-varint
+addresses.
+
+A new mutual-induction bridge equates markers in erased semantic preorder with
+writer bindings. Existing V5 certificate/reification lemmas then identify the
+original writer, and V6 supplies its zero sentinels and logical endpoint count.
+V5 stores discovered nodes in reverse order, so the composition explicitly
+reverses that list before accumulating. The count is bounded by resident image
+bytes. The final typed-mode theorem derives Set/Map acceptance from this count
+and all-zero predicate while retaining logical nonemptiness as a separate
+condition. This avoids treating an independently supplied count or zero flag as
+an ACT fact.
+
+**Independent native binding.** A test-only legacy-parser preorder inventory
+computes expected complete diagnostic tuples using iterator searches/enumeration,
+not a copy of the accumulator. Deterministic and generated images exercise root
+values, unvalued nodes, sequential/all-zero/nonsequential markers, and preorder
+that differs from physical-offset order. Review caught an insufficient wrapper
+fixture: the root latched both errors before the wrapper. The final fixture
+makes the first offending value wrapped and explicitly requires its wrapper ID,
+distinct from its node ID, in both diagnostics.
+
+After admission, repeated summary getters must perform no observed source
+access and leave work counters unchanged, before traversal, partway through,
+after exhaustion and after rewind. Traversal itself may read compressed line
+bytes; this is not a zero-read claim for traversal. Existing EPM mode matrices
+bind the typed decision. The [AVS inventory](workspace-regression-formal-invariant-catalog-2026-08-28.md#act-cached-value-summary-avs-task-5916)
+enumerates all sixteen declarations and native witnesses.
+
+**MEASURED formal qualification.** Final r8 passes sixteen closed declarations
+and explicit kernel checking: 33.330 seconds wall, 32.452 CPU seconds and
+429.5 MiB reported peak. Based on r6's measured footprint, the final hard cap was
+reduced from 4 GiB to 1536 MiB, with a 1 GiB soft threshold, zero swap, one-core
+quota and a 600-second watchdog. Initial proof-script failures are not passing
+evidence. The ACT project and mandatory proof runner require this unit, exact
+closed count and kernel check. The runner shares its existing checks across
+the two Rocq namespaces.
+
+**MEASURED native qualification.** Final r2 passes 133 focused release tests:
+23 ACT validated-plan tests, 11 EPM prefix/mode/range tests, 19 provenance tests,
+five varint tests and 75 integrations (40 manifest, 18 cursor, eight differential,
+seven region-range and two registry tests). Library filtered counts are 705,
+532, 524 and 538; no selected test fails or is ignored. The final wrapper-offset
+witness is included. The service takes 137.831 seconds wall and 374.637 CPU
+seconds, reporting 1.7 GiB peak with zero swap under the 8 GiB hard cap,
+6 GiB soft threshold, four-core quota, four build/test workers and an
+1800-second watchdog. Initial r1 also passed, but predates the final witness
+and final mode-composition binding; r2 is authoritative. These are correctness
+checks, not workspace-wide closure or throughput measurements.
+
+| Artifact | SHA-256 |
+|---|---|
+| `formal/rocq/actree03_completeness/theories/Epm1ValueSummary.v` | `b28830ecc17a25db5acead7ac1fad33ca16aae779bf7676cb3adba2077634276` |
+| `target/verification/substitution-5916-act-summary-formal-r8.log` | `bd30335f90f1a3e5eeae19e0ea7e99907a3cc9de16b905ae2fb7f957e410e60f` |
+| `target/verification/substitution-5916-act-summary-native-r2.log` | `ca75ec34573384d7dcae52e764e35e036b80f644f622ccb4130b4d3104236584` |
+
+**Boundary. The source capstone concerns canonical writer images admitted
+through V5; maintained native tests bind the actual Rust accumulator and cached
+getter. This is not a universal Rust extraction theorem or another arbitrary-byte
+ACT parser proof. Logical topology emptiness remains distinct from endpoint
+count; value-free nonempty topology is not an empty trie. No production code,
+serialization, PathMap dependency or consensus behavior changes. Task 5916's
+remaining schema/semantic and resource/lifecycle evidence is not closed by this
+summary result.
+
+**Next required work.** The bounded completion review identifies one integrated
+generated-dispatch/reassembly and substitution-worklist bridge, the current
+native semantic/representation matrix, scoped construction/copy/work counters,
+non-identity geometric scaling with the original upper-95% exponent at most
+1.20 and depth-4096/20-second gate, current uProf/headless Heaptrack attribution,
+then replay/consensus and acceptance lifecycle. It does not require another
+framing or ACT-helper model. Reuse the completed foundations unchanged.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

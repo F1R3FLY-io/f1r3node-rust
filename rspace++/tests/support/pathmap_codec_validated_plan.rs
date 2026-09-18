@@ -573,6 +573,7 @@ proptest! {
         prop_assert_eq!(planned_endpoints(&bytes), oracle_endpoints(&bytes));
         assert_forward_preorder_plan_is_exact(&bytes);
         assert_independent_source_access(&bytes);
+        assert_summary_inventory_and_cached_access(&bytes);
     }
 }
 
@@ -748,6 +749,120 @@ fn sparse_and_dense_branches_are_streamed_once_into_the_plan() {
     assert_eq!(dense_counters.node_reparses, 0);
     assert_eq!(dense_counters.event_metadata_source_reads, 0);
     assert_eq!(erase_ordinals(&new_topology(&dense)), old_topology(&dense));
+}
+
+fn legacy_value_inventory(bytes: &[u8]) -> Vec<(usize, u64)> {
+    let trie = CompactTrie::parse_canonical(bytes).unwrap();
+    let mut work = vec![trie.parsed.root_id];
+    let mut values = Vec::new();
+    while let Some(id) = work.pop() {
+        let node = &trie.parsed.semantic_nodes[&id];
+        if let Some(value) = node.value {
+            values.push((node.wrapper.unwrap_or(id), value));
+        }
+        work.extend(node.children.iter().rev().map(|(_, child)| *child));
+    }
+    values
+}
+
+fn assert_cached_summary<S: IndexedByteSource>(
+    cursor: &CanonicalCompactTrieIndexedTopologyCursor<ObservedSource<S>>,
+    values: &[(usize, u64)],
+) {
+    let first_nonzero = values.iter().copied().find(|(_, value)| *value != 0);
+    let first_nonsequential = values
+        .iter()
+        .enumerate()
+        .find(|(ordinal, (_, value))| *value != *ordinal as u64)
+        .map(|(ordinal, (offset, value))| (*offset, *value, ordinal as u64));
+    cursor.source().take_accesses();
+    let before = cursor.work_counters();
+    for _ in 0..3 {
+        let actual = cursor.value_summary();
+        assert_eq!(actual.value_count(), values.len());
+        assert_eq!(actual.first_nonzero(), first_nonzero);
+        assert_eq!(actual.first_nonsequential(), first_nonsequential);
+    }
+    assert!(cursor.source().take_accesses().is_empty());
+    assert_eq!(cursor.work_counters(), before);
+}
+
+fn assert_summary_inventory_and_cached_access(bytes: &[u8]) {
+    let values = legacy_value_inventory(bytes);
+    let contiguous = CanonicalCompactTrieTopologyCursor::new(bytes).unwrap();
+    let source = ObservedSource::new(FragmentedSource::new(bytes, 0x51a7_4131));
+    let mut indexed = CanonicalCompactTrieIndexedTopologyCursor::from_source(source).unwrap();
+    assert_eq!(contiguous.value_summary(), indexed.value_summary());
+    assert_cached_summary(&indexed, &values);
+    let mut event_count = 0usize;
+    while indexed.next_event().unwrap().is_some() {
+        event_count += 1;
+        if event_count % 7 == 0 {
+            assert_cached_summary(&indexed, &values);
+        }
+    }
+    assert_cached_summary(&indexed, &values);
+    indexed.rewind();
+    assert_cached_summary(&indexed, &values);
+    assert!(indexed.next_event().unwrap().is_some());
+    assert_cached_summary(&indexed, &values);
+}
+
+#[test]
+fn cached_value_summary_matches_independent_preorder_offsets_and_latches() {
+    for entries in [
+        vec![],
+        vec![(Vec::new(), 0)],
+        vec![(Vec::new(), 9), (b"a".to_vec(), 8), (b"b".to_vec(), 7)],
+        vec![(b"a".to_vec(), 0), (b"b".to_vec(), 1), (b"c".to_vec(), 2)],
+        vec![(b"a".to_vec(), 0), (b"b".to_vec(), 0), (b"c".to_vec(), 0)],
+        vec![(b"a".to_vec(), 0), (b"b".to_vec(), 1), (b"c".to_vec(), 7), (b"d".to_vec(), 8)],
+    ] {
+        assert_summary_inventory_and_cached_access(&canonical_image(entries));
+    }
+    let wrapped = canonical_image([
+        (Vec::new(), 9),
+        (b"a".to_vec(), 1),
+        (b"shared-prefix".to_vec(), 7),
+        (b"shared-prefix/a".to_vec(), 0),
+        (b"shared-prefix/b".to_vec(), 3),
+        (b"z".to_vec(), 99),
+    ]);
+    let oracle = CompactTrie::parse_canonical(&wrapped).unwrap();
+    assert!(oracle.parsed.semantic_nodes.iter().any(|(id, node)| {
+        node.value.is_some() &&
+            node.line.is_some() &&
+            !node.children.is_empty() &&
+            node.wrapper.is_some_and(|wrapper| wrapper != *id)
+    }));
+    let values = legacy_value_inventory(&wrapped);
+    assert!(values.windows(2).any(|pair| pair[0].0 > pair[1].0));
+    assert_summary_inventory_and_cached_access(&wrapped);
+    let first_wrapped = canonical_image([
+        (b"long-prefix".to_vec(), 7),
+        (b"long-prefix/a".to_vec(), 0),
+        (b"long-prefix/b".to_vec(), 8),
+        (b"z".to_vec(), 0),
+    ]);
+    let oracle = CompactTrie::parse_canonical(&first_wrapped).unwrap();
+    let (id, node) = oracle
+        .parsed
+        .semantic_nodes
+        .iter()
+        .find(|(_, node)| node.value == Some(7))
+        .unwrap();
+    let wrapper = node.wrapper.expect("first offending value must be wrapped");
+    assert_ne!(wrapper, *id);
+    let summary = CanonicalCompactTrieTopologyCursor::new(first_wrapped.as_slice())
+        .unwrap()
+        .value_summary();
+    assert_eq!(summary.first_nonzero(), Some((wrapper, 7)));
+    assert_eq!(summary.first_nonsequential(), Some((wrapper, 7, 0)));
+    assert_summary_inventory_and_cached_access(&first_wrapped);
+    assert_summary_inventory_and_cached_access(&writer_image_from_operations(&[
+        (b"unvalued-prefix/a".to_vec(), None),
+        (b"unvalued-prefix/b".to_vec(), None),
+    ]));
 }
 
 #[test]

@@ -8664,6 +8664,18 @@ schema dispatch or whole substitution verification. No production behavior or
 performance change is claimed. See
 [J-186](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-186--2026-09-18-compose-epm-prefix-and-physical-value-selection).
 
+The ACT value-summary bridge now links cached count and first-error diagnostics
+to semantic preorder, original writer markers and the typed EPM mode decision.
+Sixteen closed declarations pass kernel checking. Independent legacy-parser
+inventories compare complete diagnostic tuples, including an explicitly offending
+wrapped node; repeated getters preserve counts and perform no observed source
+reads before/during/after traversal and rewind. All 133 selected release tests
+pass, with 1.7 GiB reported peak under an 8 GiB cap and zero swap. The final proof
+run uses a reduced 1536 MiB cap and reports 429.5 MiB peak. This closes the stated
+cached-summary correspondence, not universal native-parser equivalence or the
+whole task. No production or performance change occurs. See
+[J-187](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-187--2026-09-18-bind-cached-act-summaries-to-source-preorder).
+
 ---
 
 ### 5.29 ParBag family and count-domain completeness [SS-A13, SS-A14, SS-Y9]
