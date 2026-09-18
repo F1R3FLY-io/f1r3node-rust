@@ -66,47 +66,58 @@ SH
     [[ ! -s evidence/output/host-guardian-breach.txt && ! -e evidence/output/summary.json ]]
     date -u +%FT%TZ >evidence/fault-at.txt
     read -r started _ </proc/uptime
-    python3 - "$MONITOR" "$DRIVER" "${readiness[0]%/ready}" >evidence/fault.txt <<'PY'
-import os
-import select
-import signal
-import sys
-import time
-
-pid, driver = map(int, sys.argv[1:3])
-fd = os.pidfd_open(pid, 0)
-expected = [b"python3", b"-", sys.argv[2].encode(), sys.argv[3].encode(), b"/case/evidence/output", b""]
-with open(f"/proc/{pid}/cmdline", "rb") as source:
-    assert source.read().split(b"\0") == expected
-assert os.stat(f"/proc/{pid}").st_uid == os.geteuid()
-assert os.getsid(pid) == pid
-with open(f"/proc/{pid}/stat") as source:
-    assert int(source.read().rsplit(") ", 1)[1].split()[1]) == driver
-poller = select.poll()
-poller.register(fd, select.POLLIN)
-assert not poller.poll(0)
-driver_fd = os.pidfd_open(driver, 0)
-assert os.stat(f"/proc/{driver}").st_uid == os.geteuid()
-assert os.getsid(driver) == driver
-with open(f"/proc/{driver}/cmdline", "rb") as source:
-    assert source.read().split(b"\0") == [b"bash", b"repo/scripts/run-merge-recovery-soak.sh", b""]
-for target, descriptor in [(driver, driver_fd), (pid, fd)]:
-    signal.pidfd_send_signal(descriptor, signal.SIGSTOP)
-    for _ in range(100):
-        with open(f"/proc/{target}/stat") as source:
-            state = source.read().rsplit(") ", 1)[1].split()[0]
-        if state == "T":
-            break
-        time.sleep(0.01)
-    assert state == "T"
-for descriptor in [driver_fd, fd]:
-    signal.pidfd_send_signal(descriptor, signal.SIGKILL)
-    dead = select.poll()
-    dead.register(descriptor, select.POLLIN)
-    assert dead.poll(2000)
-    os.close(descriptor)
-print("The fixture confirmed driver and monitor death through their pidfds.")
-PY
+    proc_identity() {
+        local stat
+        IFS= read -r stat 2>/dev/null <"/proc/$1/stat" || return 1
+        stat="${stat##*) }"
+        set -- $stat
+        [[ "$1" != Z ]] || return 1
+        printf '%s\n' "${20}"
+    }
+    proc_field() {
+        local stat field="$2"
+        IFS= read -r stat <"/proc/$1/stat"
+        stat="${stat##*) }"
+        set -- $stat
+        printf '%s\n' "${!field}"
+    }
+    proc_gone_within() {
+        local pid="$1" identity="$2" n
+        for n in $(seq 1 "$3"); do
+            [[ "$(proc_identity "$pid" || true)" == "$identity" ]] || return 0
+            sleep 0.05
+        done
+        return 1
+    }
+    monitor_check() {
+        local pid="$1" driver="$2" directory="$3"
+        local -a args
+        mapfile -d '' -t args <"/proc/$pid/cmdline"
+        [[ "${args[0]}" == bash && "${args[1]}" == -c && "${args[3]}" == soak-crash-monitor && "${args[4]}" == "$driver" && "${args[6]}" == "$directory" && "${args[7]}" == /case/evidence/output ]]
+        [[ "$(stat -c %u "/proc/$pid")" == "$(id -u)" ]]
+        [[ "$(proc_field "$pid" 4)" == "$pid" ]]
+        [[ "$(proc_field "$pid" 2)" == "$driver" ]]
+    }
+    {
+        monitor_check "$MONITOR" "$DRIVER" "${readiness[0]%/ready}"
+        monitor_identity="$(proc_identity "$MONITOR")"
+        driver_identity="$(proc_identity "$DRIVER")"
+        [[ "$(stat -c %u "/proc/$DRIVER")" == "$(id -u)" && "$(proc_field "$DRIVER" 4)" == "$DRIVER" ]]
+        mapfile -d '' -t driver_args <"/proc/$DRIVER/cmdline"
+        [[ "${driver_args[*]}" == "bash repo/scripts/run-merge-recovery-soak.sh" ]]
+        for target in "$DRIVER" "$MONITOR"; do
+            kill -STOP "$target"
+            for _ in $(seq 1 100); do
+                [[ "$(proc_field "$target" 1)" != T ]] || break
+                sleep 0.01
+            done
+            [[ "$(proc_field "$target" 1)" == T ]]
+        done
+        kill -KILL "$DRIVER" "$MONITOR"
+        proc_gone_within "$DRIVER" "$driver_identity" 40
+        proc_gone_within "$MONITOR" "$monitor_identity" 40
+        printf 'The fixture confirmed driver and monitor death through their process identities.\n'
+    } >evidence/fault.txt
     for _ in $(seq 1 120); do
         owned_state="$(ps -o stat= -p "$(<evidence/owned.pid)" || true)"
         if ! kill -0 "$DRIVER" 2>/dev/null && [[ -z "$owned_state" || "$owned_state" == Z* ]]; then
