@@ -2,30 +2,20 @@ diff --git a/scripts/casper-soak/src/host_control.rs b/scripts/casper-soak/src/h
 index 6d8db1996..56eeed227 100644
 --- a/scripts/casper-soak/src/host_control.rs
 +++ b/scripts/casper-soak/src/host_control.rs
-@@ -362,7 +362,7 @@ mod linux {
-     #[cfg(test)]
-     mod tests {
-         use std::os::unix::fs::{symlink, PermissionsExt};
+@@ -365 +365 @@ mod linux {
 -        use std::process::{Child, Command};
 +        use std::process::{Child, Command, Stdio};
-         use std::thread;
- 
-         use super::*;
-@@ -379,13 +379,25 @@ mod linux {
-                 Path::new("/.dockerenv").is_file(),
-                 "Run process fixtures in an isolated container."
-             );
+@@ -382,3 +382,3 @@ mod linux {
 -            Process(
 -                Command::new("sleep")
 -                    .arg("60")
 +            let mut child = Process(
 +                Command::new("/bin/sh")
 +                    .args(["-c", "printf 'ready\\n'; read -r _"])
-                     .env("SOAK_PROCESS_OWNER", owner)
+@@ -385,0 +386,2 @@ mod linux {
 +                    .stdin(Stdio::piped())
 +                    .stdout(Stdio::piped())
-                     .spawn()
-                     .unwrap(),
+@@ -388 +390,11 @@ mod linux {
 -            )
 +            );
 +            let mut receipt = [0; 6];
@@ -38,6 +28,3 @@ index 6d8db1996..56eeed227 100644
 +                .unwrap();
 +            assert_eq!(&receipt, b"ready\n");
 +            child
-         }
-         fn marker() -> String {
-             format!(
