@@ -73,6 +73,7 @@
 
 theories/PreparedProgramAdmission.v
 theories/LanguageProviderLifecycle.v
+theories/ProviderRegistration.v
 
 # Level 0: Foundation (no dependencies)
 theories/RhoSyntax.v
