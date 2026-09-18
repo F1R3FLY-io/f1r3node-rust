@@ -405,10 +405,11 @@ guardian_progress_fresh() {
 
 owned_host_processes() {
 	local marker="SOAK_PROCESS_OWNER=$1" entry pid identity item status=0
-	local -a environment
-	for entry in /proc/[0-9]*; do
+	local -a environment pids
+	mapfile -t pids < <(printf '%s\n' /proc/[0-9]* | sed 's|^/proc/||' | sort -n)
+	for pid in "${pids[@]}"; do
+		entry="/proc/$pid"
 		[[ -O "$entry" ]] || continue
-		pid="${entry#/proc/}"
 		identity="$(process_identity "$pid")" || continue
 		environment=()
 		if ! mapfile -d '' -t environment 2>/dev/null <"$entry/environ"; then
@@ -432,13 +433,10 @@ stop_owned_host_writers() {
 	while read -r pid identity; do
 		[ -n "$pid" ] || continue
 		process_gone "$pid" "$identity" && continue
-		if ! kill -KILL "$pid" 2>/dev/null; then
-			process_gone "$pid" "$identity" || status=1
-			continue
-		fi
 		pending_pids+=("$pid")
 		pending_identities+=("$identity")
 	done <<<"$listing"
+	[ "${#pending_pids[@]}" -eq 0 ] || kill -KILL "${pending_pids[@]}" 2>/dev/null || true
 	while :; do
 		all_gone=1
 		for index in "${!pending_pids[@]}"; do
