@@ -224,7 +224,8 @@ tasks:
     claimed_by: pi-casper-harness
     claimed_at: 2026-09-16T22:18:38Z
     execution_scope: "Authorized completion work: shared registration and real-driver bindings. No node dispatch, external repin, or claim waiver."
-    work_log: docs/work-logs/task-017-4-final-checks.md
+    work_log: docs/work-logs/task-017-4-acceptance.md
+    completion_evidence: docs/casper/cbc-evidence/runs/casper-task-017-4-acceptance-01/validation.json
     unit_tests:
       - scripts/casper-soak/tests/manifest.rs
       - scripts/casper-soak/tests/models.rs
@@ -247,7 +248,7 @@ tasks:
       - scripts/ci/check-casper-soak-bindings.sh
       - formal/tlaplus/casper_soak/verification-plan.jsonc
       - .github/workflows/slashing-tests.yml
-    completion_blocker: "Current source-bound fixture verification and claim auditing are implemented. Accepted semantic claim discharge remains required. No waiver or completion stamp is authorized."
+    completion_blocker: null
     blocked_by: []
     decisions: [D-11]
     acceptance:

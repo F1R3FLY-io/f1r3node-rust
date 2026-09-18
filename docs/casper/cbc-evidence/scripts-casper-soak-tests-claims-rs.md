@@ -1,20 +1,49 @@
 # CbC Evidence: scripts/casper-soak/tests/claims.rs
 
-The synthetic audit fixtures pass. These inputs do not discharge the real claim. Semantic discharge remains pending.
+The user accepted the bounded H01–H10 binding review. This record discharges only CLAIM-CASPER-SOAK-001 in the pre-merge phase.
+
+Profile verification, node soaks, post-merge work, and inherited containment limits remain separate. Earlier ledger bytes remain in the linked archive.
 
 ```json
 {
-  "artifact": {"path": "scripts/casper-soak/tests/claims.rs", "id": "scripts-casper-soak-tests-claims-rs", "commit": null, "sha256": "bacfc23b9b87dbab93d1eb172753087481419382f9dd29101e8b61e7cdc55f57"},
+  "artifact": {
+    "path": "scripts/casper-soak/tests/claims.rs",
+    "id": "scripts-casper-soak-tests-claims-rs",
+    "commit": "946743a7740e5dd3c0816263c3347e501f2d50d7",
+    "sha256": "8813eba982f56f4fd45e339e61f5ee4b70c29e67bc28b1b2e85c0633b5eeb7d2",
+    "commit_is_base": false
+  },
   "claim": "docs/claims/casper-soak-harness.md",
-  "claim_ids": ["CLAIM-CASPER-SOAK-001"],
-  "claim_digests": {"docs/claims/casper-soak-harness.md": "29709b0b86bcf1bc287582fa15410af0cc4d7381736c3d23576903db5ca66661"},
+  "claim_ids": [
+    "CLAIM-CASPER-SOAK-001"
+  ],
+  "claim_digests": {
+    "docs/claims/casper-soak-harness.md": "c711fdc42bfed34ce28a6cd5da407e27d2e4745037b0eb250d8e760bee24a071"
+  },
   "adapter": "embedded",
-  "status": "pending",
-  "scope": "harness-only",
-  "evidence": {"kind": "source-bound-fixture-verification", "ref": "docs/casper/cbc-evidence/runs/casper-task-017-4-checks-20260918-01/report.json", "sha256": "d0c11f742ae19e833df893cf7a77f18e7e5912a97ad39fcb03795ce147bd15b0"},
-  "tiers": {"refutation": "bounded-safety-pass", "construction": "not-applicable", "binding": "pending"},
-  "phase_status": {"pre_pr216_merge": "pending", "post_pr216_merge": "blocked"},
+  "status": "discharged",
+  "scope": "bounded-harness-only",
+  "evidence": {
+    "kind": "accepted-bounded-refutation-and-binding",
+    "ref": "docs/casper/cbc-evidence/runs/casper-task-017-4-acceptance-01/report.json",
+    "sha256": "c510e4e393daf52f5a3d2e3affa908897ab0a574484de807939354d5ad8c5ec1"
+  },
+  "previous_ledger": {
+    "ref": "docs/casper/cbc-evidence/runs/casper-task-017-4-acceptance-01/prior-ledgers.tar.gz",
+    "sha256": "4869ed3996b96dda70f84cc666ceb6f86d529f982f8c847b260287738d333e52",
+    "member": "docs/casper/cbc-evidence/scripts-casper-soak-tests-claims-rs.md"
+  },
+  "tiers": {
+    "refutation": "bounded-safety-pass",
+    "construction": "not-applicable",
+    "binding": "passed"
+  },
+  "phase_status": {
+    "pre_pr216_merge": "discharged",
+    "post_pr216_merge": "blocked"
+  },
+  "soak": "pending",
   "waiver": null,
-  "verified_at": null
+  "verified_at": "2026-09-18T04:31:12Z"
 }
 ```

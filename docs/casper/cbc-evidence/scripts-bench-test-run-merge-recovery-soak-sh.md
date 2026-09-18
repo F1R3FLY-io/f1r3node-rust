@@ -1,4 +1,4 @@
-# CbC Evidence: scripts/ci/check-casper-soak-bindings.sh
+# CbC Evidence: scripts/bench/test-run-merge-recovery-soak.sh
 
 The user accepted the bounded H01–H10 binding review. This record discharges only CLAIM-CASPER-SOAK-001 in the pre-merge phase.
 
@@ -7,11 +7,11 @@ Profile verification, node soaks, post-merge work, and inherited containment lim
 ```json
 {
   "artifact": {
-    "path": "scripts/ci/check-casper-soak-bindings.sh",
-    "id": "scripts-ci-check-casper-soak-bindings-sh",
+    "path": "scripts/bench/test-run-merge-recovery-soak.sh",
+    "id": "scripts-bench-test-run-merge-recovery-soak-sh",
     "commit": "946743a7740e5dd3c0816263c3347e501f2d50d7",
-    "sha256": "ead062ae9ce443ea503052b466c49d5706b243638dc77c6eca7590a1fba37137",
-    "commit_is_base": true
+    "sha256": "c5089c13fa8cf127cae071a515409e8d23c45c3441f2d973563e379d6406a030",
+    "commit_is_base": false
   },
   "claim": "docs/claims/casper-soak-harness.md",
   "claim_ids": [
@@ -28,11 +28,7 @@ Profile verification, node soaks, post-merge work, and inherited containment lim
     "ref": "docs/casper/cbc-evidence/runs/casper-task-017-4-acceptance-01/report.json",
     "sha256": "c510e4e393daf52f5a3d2e3affa908897ab0a574484de807939354d5ad8c5ec1"
   },
-  "previous_ledger": {
-    "ref": "docs/casper/cbc-evidence/runs/casper-task-017-4-acceptance-01/prior-ledgers.tar.gz",
-    "sha256": "4869ed3996b96dda70f84cc666ceb6f86d529f982f8c847b260287738d333e52",
-    "member": "docs/casper/cbc-evidence/scripts-ci-check-casper-soak-bindings-sh.md"
-  },
+  "previous_ledger": null,
   "tiers": {
     "refutation": "bounded-safety-pass",
     "construction": "not-applicable",
