@@ -8510,6 +8510,20 @@ stack enlargement, `stacker`, depth cap, decoded trie shadow, collection project
 fallback was introduced. The complete release workspace remains a separate gate and is not implied
 by the focused library result. **MEASURED (f).**
 
+**2026-09-17 qualification addendum (task 5916 remains open).** The new
+`SubstitutionRegionRanges.v` foundation has 18 closed obligations and an explicit passing
+kernel check. Native slice/cut properties cover relative and absolute bounds, backing
+retention, empty/duplicate cuts, and EPathMap value groups with preceding and following
+cuts. The focused release gate passes all 56 tests, including the existing depth-4096
+shared-backing witness, under an 8 GiB hard cap with zero swap (276.1 MiB reported peak
+in the final independently reviewed r4 test revision).
+This is not a complete substitution-refinement proof or a scaling measurement. The
+[SRR invariant inventory](../pathmap/workspace-regression-formal-invariant-catalog-2026-08-28.md#substitution-immutable-region-foundation-srr-task-5916)
+states the formal/native boundary, and [J-175](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-175--2026-09-17-substitution-region-ownership-and-cut-order-foundation)
+records exact receipts. Existing construction-escape repairs above remain valid; full
+continuation equivalence, operational counters and the original scaling/lifecycle gates
+are separate, still-required completion evidence.
+
 ---
 
 ### 5.29 ParBag family and count-domain completeness [SS-A13, SS-A14, SS-Y9]

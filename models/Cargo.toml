@@ -232,6 +232,10 @@ name = "protobuf_region_differential"
 path = "tests/protobuf_region_differential.rs"
 
 [[test]]
+name = "substitution_region_ranges"
+path = "tests/substitution_region_ranges.rs"
+
+[[test]]
 name = "rspace_path_spec"
 path = "tests/rspace_path_spec.rs"
 

@@ -728,6 +728,10 @@ rocq_reject_placeholders theories/SplitCarrierPrefilter.v
 rocq_compile_with_closed_count theories/SplitCarrierPrefilter.v 20 \
   "conditional split-carrier classification equivalence"
 rocq_check_modules "split-carrier prefilter" StackSafePDA.SplitCarrierPrefilter
+rocq_reject_placeholders theories/SubstitutionRegionRanges.v
+rocq_compile_with_closed_count theories/SubstitutionRegionRanges.v 18 \
+  "substitution immutable region bounds and ordered cut ordinals"
+rocq_check_modules "substitution region ranges" StackSafePDA.SubstitutionRegionRanges
 rmp2_rocq_output="$(
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/RMP2.v 2>&1
 )"

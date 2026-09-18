@@ -8,6 +8,57 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 #[test]
+fn substitution_region_ranges_have_proof_and_native_bindings() {
+    let theory =
+        read_repository_file("formal/rocq/stack_safe_pda/theories/SubstitutionRegionRanges.v");
+    for theorem in [
+        "subregion_success_exact",
+        "subregion_complete",
+        "successful_child_is_valid",
+        "successful_child_retains_owner",
+        "reversed_range_refused",
+        "beyond_parent_refused",
+        "absolute_end_overflow_refused",
+        "empty_at_end_is_valid",
+        "nested_child_composes",
+        "nested_local_bounds_compose",
+        "registered_cut_has_exact_ordinal",
+        "registration_preserves_previous_ordinals",
+        "value_group_has_exact_order",
+        "selected_group_preserves_owner",
+        "wrong_owner_is_observable",
+        "absolute_offset_mutant_is_observable",
+        "dropped_empty_cut_is_observable",
+        "swapped_value_ordinals_are_observable",
+    ] {
+        assert!(theory.contains(&format!("Print Assumptions {theorem}.")));
+    }
+    let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
+    assert!(has_runner_command(&runner, &[
+        "rocq_compile_with_closed_count",
+        "theories/SubstitutionRegionRanges.v",
+        "18",
+    ]));
+    assert!(has_runner_kernel_check(&runner, &[
+        "StackSafePDA.SubstitutionRegionRanges"
+    ]));
+    assert!(
+        read_repository_file("formal/rocq/stack_safe_pda/_CoqProject")
+            .lines()
+            .any(|line| line == "theories/SubstitutionRegionRanges.v")
+    );
+    let native = read_repository_file("models/tests/substitution_region_ranges.rs");
+    for witness in [
+        "checked_regions_match_native_slice_and_preserve_backing",
+        "ordered_cut_ordinals_preserve_empty_and_duplicate_children",
+        "impossible_and_reversed_ranges_refuse_without_mutation",
+        "epathmap_groups_preserve_value_order_with_surrounding_cuts",
+    ] {
+        assert!(native.contains(&format!("fn {witness}(")));
+    }
+}
+
+#[test]
 fn split_carrier_prefilter_has_conditional_proof_and_native_bindings() {
     let theory =
         read_repository_file("formal/rocq/stack_safe_pda/theories/SplitCarrierPrefilter.v");

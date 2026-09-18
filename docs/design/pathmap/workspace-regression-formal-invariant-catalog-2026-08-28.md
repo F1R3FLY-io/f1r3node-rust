@@ -361,6 +361,50 @@ empty-list case retains an observed 15.48 ns overhead, while legacy reconstructi
 validation retain their independent slopes. See J-173 for scope and raw evidence; this focused
 qualification does not close tasks 6444/5834 or the campaign.
 
+## Substitution immutable-region foundation (SRR, task 5916)
+
+`SubstitutionRegionRanges.v` models a region by an abstract backing-owner identity
+and half-open absolute bounds. A child retains that owner and adds relative offsets;
+a successful range check must stay inside the parent and the machine-word limit.
+Cut registration appends one region and returns its ordinal, including empty regions.
+An EPathMap value group selects a contiguous, ordered range of those ordinals.
+
+The following inventory covers all 18 printed proof obligations. Native witness names
+refer to `models/tests/substitution_region_ranges.rs`; the mechanical manifest checks
+their registration, theorem declarations, runner count and kernel-check command.
+
+| ID | Formal obligations | Native witness and scope |
+|---|---|---|
+| SRR-01 | `subregion_success_exact`, `subregion_complete`, `successful_child_is_valid` | `checked_regions_match_native_slice_and_preserve_backing`: arbitrary backing bytes and bounds compared with Rust slice admission. |
+| SRR-02 | `successful_child_retains_owner` | Same property checks pointer offsets and retained bytes after releasing the root handle; cut tests also release the root before reading retained cuts. |
+| SRR-03 | `reversed_range_refused`, `beyond_parent_refused`, `absolute_end_overflow_refused` | `impossible_and_reversed_ranges_refuse_without_mutation` and SRR-01 compare refusal and unchanged input. Actual absolute-add overflow is unreachable through valid public regions; its arithmetic obligation is formal-only. |
+| SRR-04 | `empty_at_end_is_valid`, `nested_child_composes`, `nested_local_bounds_compose` | SRR-01 compares nested and direct slices, absolute ranges, pointers and terminal empty regions. |
+| SRR-05 | `registered_cut_has_exact_ordinal`, `registration_preserves_previous_ordinals` | `ordered_cut_ordinals_preserve_empty_and_duplicate_children`: optional integer children include empty Pars and duplicates; every cut is compared with independent child encoding and its schema-path occurrence. |
+| SRR-06 | `value_group_has_exact_order`, `selected_group_preserves_owner` | `epathmap_groups_preserve_value_order_with_surrounding_cuts`: neutral, set and two map groups follow two Send cuts and precede a Bundle cut. A typed trie zipper supplies expected value bytes independently of cut grouping. One map value is empty. |
+| SRR-07 | `wrong_owner_is_observable`, `absolute_offset_mutant_is_observable` | Formal observability examples; SRR-01's pointer/range assertions check the corresponding native effects. These are not complete cutter mutation proofs. |
+| SRR-08 | `dropped_empty_cut_is_observable`, `swapped_value_ordinals_are_observable` | Formal observability examples; SRR-05/06 check native empty-cut retention and ordered distinct values. |
+
+**Boundary.** The limit denotes inclusive `usize::MAX`, not the number of possible
+machine-word values. The parent-validity premise is essential: natural-number
+subtraction alone does not describe an invalid Rust range. Nested composition is an
+algebraic equality; successful checked composition additionally uses the validity and
+completeness obligations. The abstract owner does not prove `Bytes` reference-counting,
+lifetime implementation or allocation behavior. Group-order equivalence requires the
+specified valid prefix/value/suffix decomposition; the model's truncated list selection
+does not model Rust's panic on an invalid indexing range.
+
+Path metadata, occurrence overflow, output-length arithmetic, the three shell/reassembly
+emit modes, EPathMap key/value association, binder shifts, early errors, charge order and
+full substitution equivalence are not proved by this foundation. Native checks provide
+bounded executable evidence for some of these boundaries, not a promoted formal claim.
+Task 5916 remains open for composition/refinement, operational counters, unchanged
+high-rung gates, scaling confidence bounds, profiles and lifecycle evidence.
+
+**Qualification (2026-09-17).** Rocq reports 18 closed obligations and explicit `coqchk`
+success. The focused release run passes 56 tests: 28 manifest, 14 cursor, eight region
+differentials (including depth 4096), four new range/group tests and two test-registration
+checks, with none ignored or filtered. See J-175 for capped-run receipts and hashes.
+
 ## Original workspace-regression completion gates
 
 This checkpoint is complete only when all of the following hold:

@@ -24,6 +24,7 @@ theories/UnaryEListConstruction.v
 theories/UnaryEListConstructionMutants.v
 theories/SingletonMapConstruction.v
 theories/SplitCarrierPrefilter.v
+theories/SubstitutionRegionRanges.v
 theories/PathMapPhysicalOwnership.v
 theories/PathMapPhysicalOwnershipMutants.v
 theories/PathMapReversePruneTeardown.v

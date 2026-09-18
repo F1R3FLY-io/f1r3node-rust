@@ -12828,6 +12828,68 @@ The consumer ledger now explicitly names both suites.
 | `fixture-6444-acceptance-proof-r1.log` | `3675c8b3ba7878bb13fc6f1475db482e75e16c602c6946e850306c43c88fdc0a` |
 | `fixture-6444-encoder-differentials-r1.log` | `ae9137bf95a7367f6a5f51c98f731759892d5e0065e4a9473fe47f7cc318a4e6` |
 
+**Acceptance disposition.** Subsequently, user-authorized amendment 342 (revision 2)
+preserved all five technical requirements while accepting independently audited local
+proof/test receipts. Review relay 343 accepted criteria 4764–4768. Completion receipt 71
+verifies task 6444; its snapshot hash is
+`e23892853e0971c23f8e700df94e8c569eda74fd1afb75e11eb5f85a276d4db1`.
+This supersedes the pending-review status above, not the experimental limitations.
+Scheduler revision 1204 selects required task 5916 next; task 5834 and the campaign remain
+open. Experiment 345's tracker `rejected` decision has no data-derived statistical test;
+the phase report preserves the discrepancy with its frozen observational criterion.
+
+### J-175 — 2026-09-17 Substitution region ownership and cut-order foundation
+
+**DERIVED.** The task-5916 source audit reuses region-PDA commits `0c27a7c87` and
+`d487d72e6`, plus the separately justified identity fast path at `1afd4791e`. It does not
+rewrite the existing traversal. Its remaining proof boundary needs immutable-region
+arithmetic and ordered cuts before composition with substitution continuations. The
+generic fold equivalence theorem is not sufficient evidence for this concrete machine.
+
+`SubstitutionRegionRanges.v` now proves the narrow range/owner/ordinal foundation first;
+the [SRR inventory](workspace-regression-formal-invariant-catalog-2026-08-28.md#substitution-immutable-region-foundation-srr-task-5916)
+lists every obligation, native witness and limitation. Native property tests then bind
+checked slicing and nested offsets to Rust slice behavior; list tests preserve empty and
+duplicate child ordinals; an EPathMap test places neutral, set and two map groups between
+other component cuts and compares values with the typed trie zipper. These test-only
+oracles may decode bounded fixtures; no production projection or serialization changed.
+
+**MEASURED (qualification, not performance).** The standalone proof compilation emits
+18 closed-assumption reports and the explicit kernel check exits successfully. Its
+capped service takes 14.035 seconds, 13.813 CPU seconds, 401.9 MiB reported peak and zero
+swap (`MemoryMax=2G`, one-core quota, 120-second watchdog). The release native gate passes
+56 tests with none ignored or filtered, including the unchanged depth-4096 region test.
+It takes 1.811 seconds, 4.329 CPU seconds, 285.8 MiB peak and zero swap (`MemoryHigh=6G`,
+`MemoryMax=8G`, four-core quota, 1200-second watchdog). These are focused correctness
+receipts; neither service timing estimates application throughput or scaling.
+
+| Artifact under `target/verification/` | SHA-256 |
+|---|---|
+| `substitution-5916-ranges-formal-r3.log` | `f849c328c5ed373a8ddf30a502ff680c212667c110db4f41302b74711692312a` |
+| `substitution-5916-ranges-native-r3.log` | `9223696baa1f448d8c6b863d8b8a60676c723c7c5a95d1829e69772a605e8be1` |
+| `substitution-5916-ranges-native-r4.log` | `d8d41ef7ea29bfb817ec931b6630820ced6656445c46223667c22e64aca6aedb` |
+
+The checked theory hash is `981edf195b1fff42631c29b44a8cd8a7a8192e7d6931d47eb5b49bd9c281cab8`.
+Earlier proof attempts failed on proof-script argument/lemma usage; native r1 lacked
+explicit Cargo target registration and r2 used a private field in the new test. Those
+attempts are not passing evidence. The successor registers the target and uses public
+EPathMap accessors; the registration gate passes. No runtime defect or performance
+improvement is inferred from these test-development corrections.
+
+Independent read-only review found no blocking model/source mismatch and identified
+two native-coverage improvements. The final test appends a fixed integer/empty/repeated-
+integer/distinct-integer sequence to every generated list case, making nonempty duplicate
+coverage certain; the nested-region property releases all sibling handles before its
+retained-child read. The final r4 run passes the same 56 tests under unchanged caps in
+1.731 seconds, with 4.261 CPU seconds, 276.1 MiB peak and zero swap. Manifest assertions
+establish artifact and executable-gate registration, not Rust semantic proof.
+
+**DECISION.** Continue task 5916 with cut/reassembly and substitution refinement, exact
+work/allocation counters, current non-identity scaling and profiling, unchanged public
+high-rung gates, and lifecycle evidence. The range foundation does not discharge any of
+those remaining obligations. This checkpoint changes proofs, tests and documentation,
+not production behavior, consensus bytes, dependencies or PathMap.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
