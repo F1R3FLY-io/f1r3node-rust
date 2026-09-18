@@ -119,6 +119,9 @@ pub struct ProduceCandidate<C, P: Clone, A: Clone, K: Clone> {
     pub continuation: WaitingContinuation<P, K>,
     pub continuation_index: i32,
     pub data_candidates: Vec<ConsumeCandidate<C, A>>,
+    /// None only for a read-only enumerated rendezvous, which must prepare
+    /// afresh before a caller explicitly fires it.
+    pub commit: Option<super::r#match::PreparedCommit>,
 }
 
 // Eq and PartialEq is needed here for reduce_spec tests

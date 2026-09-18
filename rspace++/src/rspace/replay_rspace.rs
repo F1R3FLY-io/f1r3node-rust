@@ -35,7 +35,7 @@ use super::metrics_constants::{
 };
 use super::rspace_interface::{
     ContResult, ISpace, MaybeConsumeResult, MaybeProduceCandidate, MaybeProduceResult,
-    ProduceCommitGuard, RSpaceResult, commit_produce,
+    ProduceCommitGuard, RSpaceResult,
 };
 use super::trace::Log;
 use super::trace::event::{COMM, Consume, Event, IOEvent, Produce};
@@ -341,8 +341,8 @@ where
         // ★★ THE SHARPER HALF OF THE PAIR. `RSpace::consume` and this function
         // must classify a malformed request IDENTICALLY, because a refusal that
         // happens during replay but not during play — or the reverse — is the
-        // divergence class itself, not a mere inconsistency: replay would report
-        // a mismatch against a play run that never saw one.
+        // divergence class itself, not a mere inconsistency: replay would
+        // report a mismatch against a play run that never saw one.
         //
         // Both now refuse, with the same variant and the same text, so the pair
         // is symmetric by construction. Before this change both panicked, which
@@ -350,8 +350,8 @@ where
         // and a dead node cannot report a rejection.
         //
         // The classification argument is `RSpace::consume`'s, verbatim: the two
-        // lengths are in the caller's own arguments, and `ConsumeParams` carries
-        // them in independent repeated fields.
+        // lengths are in the caller's own arguments, and `ConsumeParams`
+        // carries them in independent repeated fields.
         if channels.is_empty() {
             Err(RSpaceError::BugFoundError("RUST ERROR: channels can't be empty".to_string()))
         } else if channels.len() != patterns.len() {
@@ -692,11 +692,10 @@ where
         peeks: BTreeSet<i32>,
         consume_ref: Consume,
     ) -> Result<MaybeConsumeResult<C, P, A, K>, RSpaceError> {
-        // Span[F].traceI("locked-consume") from Scala - works because this is NOT async
+        // Span[F].traceI("locked-consume") from Scala - works because this is
+        // NOT async
         let _span = tracing::info_span!(target: "f1r3fly.rspace", "locked-consume").entered();
         event!(Level::DEBUG, mark = "started-locked-consume", "locked_consume");
-
-        self.log_consume(consume_ref.clone(), &channels, &patterns, &continuation, persist, &peeks);
 
         let wk = WaitingContinuation {
             patterns: Arc::new(patterns.clone()),
@@ -712,7 +711,17 @@ where
             .unwrap()
             .get_distinct_values_sorted(&IOEvent::Consume(consume_ref.clone()));
         match comms_option {
-            None => Ok(self.store_waiting_continuation(channels, wk)),
+            None => {
+                self.log_consume(
+                    consume_ref.clone(),
+                    &channels,
+                    &patterns,
+                    &wk.continuation,
+                    persist,
+                    &peeks,
+                );
+                Ok(self.store_waiting_continuation(channels, wk))
+            }
             Some(comms_list) => {
                 match self.get_comm_and_consume_candidates(
                     channels.clone(),
@@ -722,8 +731,18 @@ where
                     &wk.continuation,
                     comms_list.clone(),
                 ) {
-                    None => Ok(self.store_waiting_continuation(channels, wk)),
-                    Some((_, data_candidates)) => {
+                    None => {
+                        self.log_consume(
+                            consume_ref.clone(),
+                            &channels,
+                            &wk.patterns,
+                            &wk.continuation,
+                            persist,
+                            &peeks,
+                        );
+                        Ok(self.store_waiting_continuation(channels, wk))
+                    }
+                    Some((_, (data_candidates, permit))) => {
                         let produce_counters_closure =
                             |produces: &[Produce]| self.produce_counters(produces);
 
@@ -732,14 +751,6 @@ where
                             consume_ref.clone(),
                             peeks.clone(),
                             produce_counters_closure,
-                        );
-
-                        self.log_comm(
-                            &data_candidates,
-                            &channels,
-                            wk.clone(),
-                            comm_ref.clone(),
-                            "comm.consume",
                         );
 
                         assert!(
@@ -751,8 +762,25 @@ where
                             )
                         );
 
-                        let _ = self.store_persistent_data(data_candidates.clone(), &peeks);
-                        self.remove_bindings_for(comm_ref);
+                        permit.commit(|| {
+                            let _ = self.store_persistent_data(data_candidates.clone(), &peeks);
+                            self.remove_bindings_for(comm_ref.clone());
+                        })?;
+                        self.log_consume(
+                            consume_ref.clone(),
+                            &channels,
+                            &wk.patterns,
+                            &wk.continuation,
+                            persist,
+                            &peeks,
+                        );
+                        self.log_comm(
+                            &data_candidates,
+                            &channels,
+                            wk.clone(),
+                            comm_ref,
+                            "comm.consume",
+                        );
                         Ok(self.wrap_result(channels, wk, consume_ref, data_candidates))
                     }
                 }
@@ -787,8 +815,8 @@ where
         patterns: Vec<P>,
         continuation: &K,
         comms: Vec<COMM>,
-    ) -> Option<(COMM, Vec<ConsumeCandidate<C, A>>)> {
-        let run_matcher = |comm: COMM| -> Option<Vec<ConsumeCandidate<C, A>>> {
+    ) -> Option<(COMM, (Vec<ConsumeCandidate<C, A>>, super::r#match::PreparedCommit))> {
+        let run_matcher = |comm: COMM| {
             self.run_matcher_consume(channels.clone(), patterns.clone(), continuation, comm)
         };
 
@@ -824,7 +852,7 @@ where
         patterns: Vec<P>,
         continuation: &K,
         comm: COMM,
-    ) -> Option<Vec<ConsumeCandidate<C, A>>> {
+    ) -> Option<(Vec<ConsumeCandidate<C, A>>, super::r#match::PreparedCommit)> {
         let mut channel_to_indexed_data_list: Vec<(C, Vec<(Datum<A>, i32)>)> = Vec::new();
 
         for c in &channels {
@@ -842,7 +870,7 @@ where
         // Borrow-zip: no per-attempt channel/pattern clones.
         let pairs: Vec<(&C, &P)> = channels.iter().zip(patterns.iter()).collect();
 
-        self.extract_guarded_data_candidates(
+        self.extract_prepared_data_candidates(
             &self.matcher,
             &pairs,
             continuation,
@@ -906,7 +934,8 @@ where
         produce_ref: Produce,
         guard: Option<&dyn ProduceCommitGuard>,
     ) -> Result<Option<(ProduceCandidate<C, P, A, K>, COMM, Produce)>, RSpaceError> {
-        // Span[F].traceI("locked-produce") from Scala - works because this is NOT async
+        // Span[F].traceI("locked-produce") from Scala - works because this is
+        // NOT async
         let _span = tracing::info_span!(target: "f1r3fly.rspace", "locked-produce").entered();
         event!(Level::DEBUG, mark = "started-locked-produce", "locked_produce");
 
@@ -933,7 +962,11 @@ where
             )
             .map(|(comm, pc)| (comm, pc, comms))
         });
-        commit_produce(guard, || {
+        let permit = prepared
+            .as_ref()
+            .and_then(|(_, pc, _)| pc.commit.clone())
+            .unwrap_or_default();
+        permit.commit_with(guard, || {
             self.increment_produce_counter(&produce_ref, persist);
             match prepared {
                 Some((comm, pc, comms)) => {
@@ -1081,6 +1114,7 @@ where
             continuation,
             continuation_index,
             data_candidates,
+            ..
         } = pc;
 
         let WaitingContinuation {
@@ -1224,7 +1258,8 @@ where
 
     // This function may need to clear 'replay_data'
     pub fn spawn(&self) -> Result<Self, RSpaceError> {
-        // Span[F].withMarks("spawn") from Scala - works because this is NOT async
+        // Span[F].withMarks("spawn") from Scala - works because this is NOT
+        // async
         let _span = tracing::info_span!(target: "f1r3fly.rspace", "spawn").entered();
         event!(Level::DEBUG, mark = "started-spawn", "spawn");
 
@@ -1393,8 +1428,8 @@ where
 
     // The public result stays value-shaped — the single per-fired-COMM
     // materialization boundary (`Arc::unwrap_or_clone` takes the value when
-    // uniquely owned, clones otherwise — same semantics as the earlier value-shaped
-    // moves/clones).
+    // uniquely owned, clones otherwise — same semantics as the earlier
+    // value-shaped moves/clones).
     fn wrap_result(
         &self,
         channels: Vec<C>,

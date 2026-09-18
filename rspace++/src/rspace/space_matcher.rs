@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use serde::Serialize;
 
-use super::r#match::Match;
+use super::r#match::{Match, PreparedCommit};
 use super::rspace_interface::ISpace;
 use crate::rspace::candidate_order::order_candidates_with_index;
 use crate::rspace::hashing::stable_hash_provider::StableHashSerialize;
@@ -91,7 +91,7 @@ where
     P: Clone + Send + Sync,
     A: Clone + Send + Sync,
     K: Clone + Send + Sync,
-    OnAdmissible: FnMut(&[ConsumeCandidate<C, A>]) -> bool,
+    OnAdmissible: FnMut(&[ConsumeCandidate<C, A>], PreparedCommit) -> bool,
     OnBacktrack: FnMut(SelectionOutcome),
 {
     enum State {
@@ -108,8 +108,9 @@ where
                 if current_level == channel_pattern_pairs.len() {
                     let matched: Vec<&A> =
                         chosen.iter().map(|candidate| &*candidate.datum.a).collect();
-                    let stopped =
-                        matcher.check_commit(continuation, &matched) && on_admissible(chosen);
+                    let stopped = matcher
+                        .prepare_commit(continuation, &matched)
+                        .is_some_and(|permit| on_admissible(chosen, permit));
                     state = State::Return(CandidateWalkResult {
                         stopped,
                         any_leaf_reached: true,
@@ -258,8 +259,8 @@ where
             metrics::counter!("rspace.matcher.get_calls", "source" => "rspace").increment(1);
             // The matcher borrows the pattern and the Arc-shared datum
             // payload — a failing attempt copies nothing at this boundary
-            // (the earlier value-shaped path made one full pattern clone plus one full
-            // payload clone per candidate per attempt; the
+            // (the earlier value-shaped path made one full pattern clone plus
+            // one full payload clone per candidate per attempt; the
             // `rspace.matcher.clone_ns` timer that measured them is retired
             // with the clones).
             let t_match = std::time::Instant::now();
@@ -493,18 +494,38 @@ where
         continuation: &K,
         channel_to_indexed_data: &mut HashMap<C, Vec<(Datum<A>, i32)>>,
     ) -> Option<Vec<ConsumeCandidate<C, A>>> {
+        self.extract_prepared_data_candidates(
+            matcher,
+            channel_pattern_pairs,
+            continuation,
+            channel_to_indexed_data,
+        )
+        .map(|(chosen, _)| chosen)
+    }
+
+    fn extract_prepared_data_candidates(
+        &self,
+        matcher: &Box<dyn Match<P, A, K>>,
+        channel_pattern_pairs: &[(&C, &P)],
+        continuation: &K,
+        channel_to_indexed_data: &mut HashMap<C, Vec<(Datum<A>, i32)>>,
+    ) -> Option<(Vec<ConsumeCandidate<C, A>>, PreparedCommit)> {
         let mut chosen: Vec<ConsumeCandidate<C, A>> =
             Vec::with_capacity(channel_pattern_pairs.len());
+        let mut permit = None;
 
-        match self.search_candidate_selection(
+        match self.search_prepared_candidate_selection(
             matcher,
             channel_pattern_pairs,
             continuation,
             channel_to_indexed_data,
             0,
             &mut chosen,
+            &mut permit,
         ) {
-            SelectionOutcome::Admissible => Some(chosen),
+            SelectionOutcome::Admissible => {
+                Some((chosen, permit.expect("admissible prepared selection")))
+            }
             SelectionOutcome::GuardRejected | SelectionOutcome::NoSpatialMatch => None,
         }
     }
@@ -518,6 +539,27 @@ where
         level: usize,
         chosen: &mut Vec<ConsumeCandidate<C, A>>,
     ) -> SelectionOutcome {
+        self.search_prepared_candidate_selection(
+            matcher,
+            channel_pattern_pairs,
+            continuation,
+            channel_to_indexed_data,
+            level,
+            chosen,
+            &mut None,
+        )
+    }
+
+    fn search_prepared_candidate_selection(
+        &self,
+        matcher: &Box<dyn Match<P, A, K>>,
+        channel_pattern_pairs: &[(&C, &P)],
+        continuation: &K,
+        channel_to_indexed_data: &mut HashMap<C, Vec<(Datum<A>, i32)>>,
+        level: usize,
+        chosen: &mut Vec<ConsumeCandidate<C, A>>,
+        permit: &mut Option<PreparedCommit>,
+    ) -> SelectionOutcome {
         let result = walk_candidate_selections(
             self,
             matcher,
@@ -526,7 +568,10 @@ where
             channel_to_indexed_data,
             level,
             chosen,
-            |_| true,
+            |_, prepared| {
+                *permit = Some(prepared);
+                true
+            },
             |outcome| match outcome {
                 SelectionOutcome::GuardRejected => {
                     metrics::counter!(
@@ -564,9 +609,9 @@ where
         for (cont, index) in &match_candidates {
             metrics::counter!(RSPACE_MATCHER_EXTRACT_FIRST_MATCH_CANDIDATES_ITERATED_METRIC, "source" => RSPACE_METRICS_SOURCE)
                 .increment(1);
-            // Zip references; the earlier value-shaped path cloned every candidate
-            // continuation cloned every channel and every pattern into an owned
-            // pair list.
+            // Zip references; the earlier value-shaped path cloned every
+            // candidate continuation cloned every channel and every
+            // pattern into an owned pair list.
             let __pair_start = std::time::Instant::now();
             let channel_pattern_pairs: Vec<(&C, &P)> =
                 channels.iter().zip(cont.patterns.iter()).collect();
@@ -583,13 +628,13 @@ where
             // bind, asked the guard once, and on rejection `continue`d to the
             // next CONTINUATION — never to the next DATUM. A guarded receive
             // with a satisfying datum resting could therefore be left stuck.
-            match self.extract_guarded_data_candidates(
+            match self.extract_prepared_data_candidates(
                 matcher,
                 &channel_pattern_pairs,
                 &cont.continuation,
                 &mut channel_to_index_data,
             ) {
-                Some(data_candidates) => {
+                Some((data_candidates, commit)) => {
                     metrics::counter!(RSPACE_MATCHER_EXTRACT_FIRST_MATCH_SUCCESS_METRIC, "source" => RSPACE_METRICS_SOURCE)
                         .increment(1);
                     return Some(ProduceCandidate {
@@ -597,6 +642,7 @@ where
                         continuation: cont.clone(),
                         continuation_index: *index,
                         data_candidates,
+                        commit: Some(commit),
                     });
                 }
                 None => continue,
@@ -659,7 +705,7 @@ where
             channel_to_indexed_data,
             level,
             chosen,
-            |selection| {
+            |selection, _permit| {
                 out.push(selection.to_vec());
                 false
             },
@@ -794,6 +840,7 @@ where
                         continuation: cont.clone(),
                         continuation_index: *continuation_index,
                         data_candidates,
+                        commit: None,
                     });
                 }
             }

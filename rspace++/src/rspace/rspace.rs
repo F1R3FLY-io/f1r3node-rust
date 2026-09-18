@@ -36,7 +36,7 @@ use super::metrics_constants::{
 use super::replay_rspace::ReplayRSpace;
 use super::rspace_interface::{
     ContResult, ISpace, MaybeConsumeResult, MaybeProduceCandidate, MaybeProduceResult,
-    ProduceCommitGuard, RSpaceResult, commit_produce,
+    ProduceCommitGuard, RSpaceResult,
 };
 use super::trace::Log;
 use super::trace::event::{COMM, Consume, Event, IOEvent, Produce};
@@ -201,8 +201,8 @@ where
     K: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
 {
     async fn create_checkpoint(&self) -> Result<Checkpoint, RSpaceError> {
-        // Span[F].withMarks("create-checkpoint") from Scala - works because this is NOT
-        // async
+        // Span[F].withMarks("create-checkpoint") from Scala - works because
+        // this is NOT async
         let _span = tracing::info_span!(target: "f1r3fly.rspace", "create-checkpoint").entered();
         event!(Level::DEBUG, mark = "started-create-checkpoint", "create_checkpoint");
 
@@ -708,7 +708,6 @@ where
         event!(Level::DEBUG, mark = "started-locked-consume", "locked_consume");
 
         let t0 = Instant::now();
-        self.log_consume(consume_ref, channels, patterns, continuation, persist, peeks);
         metrics::counter!("rspace.consume.log_ns", "source" => RSPACE_METRICS_SOURCE)
             .increment(t0.elapsed().as_nanos() as u64);
 
@@ -728,7 +727,7 @@ where
         // of resting data satisfies both the spatial patterns and the guard —
         // and then the continuation is installed and the data left alone,
         // exactly as a spatial miss always did.
-        let options: Option<Vec<ConsumeCandidate<C, A>>> = self.extract_guarded_data_candidates(
+        let options = self.extract_prepared_data_candidates(
             &self.matcher,
             &zipped,
             continuation,
@@ -746,31 +745,31 @@ where
         };
 
         match options {
-            Some(data_candidates) => {
+            Some((data_candidates, permit)) => {
                 let t3 = Instant::now();
                 let produce_counters_closure =
                     |produces: &[Produce]| self.produce_counters(produces);
-
-                self.log_comm(
-                    channels,
-                    &wk,
+                let comm = COMM::new(
                     &data_candidates,
-                    COMM::new(
-                        &data_candidates,
-                        consume_ref.clone(),
-                        peeks.clone(),
-                        produce_counters_closure,
-                    ),
-                    "comm.consume",
+                    consume_ref.clone(),
+                    peeks.clone(),
+                    produce_counters_closure,
                 );
-                self.store_persistent_data(&data_candidates, peeks);
+                let result = permit.commit(|| {
+                    self.log_consume(consume_ref, channels, patterns, continuation, persist, peeks);
+                    self.record_comm(comm.clone(), "comm.consume");
+                    self.store_persistent_data(&data_candidates, peeks);
+                    self.wrap_result(channels, &wk, consume_ref, &data_candidates)
+                })?;
+                self.observe_comm(channels, &wk, &data_candidates, &comm, "comm.consume");
                 metrics::counter!("rspace.consume.process_match_ns", "source" => RSPACE_METRICS_SOURCE)
                     .increment(t3.elapsed().as_nanos() as u64);
                 event!(Level::DEBUG, mark = "finished-locked-consume", "locked_consume");
-                Ok(self.wrap_result(channels, &wk, consume_ref, &data_candidates))
+                Ok(result)
             }
             None => {
                 let t3 = Instant::now();
+                self.log_consume(consume_ref, channels, patterns, continuation, persist, peeks);
                 self.store_waiting_continuation(channels.to_vec(), wk);
                 metrics::counter!("rspace.consume.store_continuation_ns", "source" => RSPACE_METRICS_SOURCE)
                     .increment(t3.elapsed().as_nanos() as u64);
@@ -867,7 +866,11 @@ where
             .increment(t1.elapsed().as_nanos() as u64);
 
         let mut notification = None;
-        let result = commit_produce(guard, || {
+        let permit = extracted
+            .as_ref()
+            .and_then(|candidate| candidate.commit.clone())
+            .unwrap_or_default();
+        let result = permit.commit_with(guard, || {
             self.log_produce(produce_ref, &channel, &data, persist);
             match extracted {
                 Some(produce_candidate) => {
@@ -943,9 +946,9 @@ where
     /*
      * Find produce candidate
      *
-     * NOTE: On Rust side, we are NOT passing functions through. Instead just the
-     * data. And then in 'run_matcher_for_channels' we call the functions
-     * defined below
+     * NOTE: On Rust side, we are NOT passing functions through. Instead just
+     * the data. And then in 'run_matcher_for_channels' we call the
+     * functions defined below
      */
     fn extract_produce_candidate(
         &self,
@@ -965,10 +968,11 @@ where
          * speculative match is found, we can remove the matching datum from
          * the remaining data candidates in the cache.
          *
-         * Put another way, this allows us to speculatively remove matching data
-         * without affecting the actual store contents.
+         * Put another way, this allows us to speculatively remove matching
+         * data without affecting the actual store contents.
          *
-         * In this version, we also add the produced data directly to this cache.
+         * In this version, we also add the produced data directly to this
+         * cache.
          */
         let fetch_matching_data = |channel| -> (C, Vec<(Datum<A>, i32)>) {
             let data_vec = self.get_store().get_data(&channel);
@@ -1026,7 +1030,16 @@ where
         &self,
         pc: ProduceCandidate<C, P, A, K>,
     ) -> MaybeConsumeResult<C, P, A, K> {
-        let (result, comm) = self.process_match_found_deferred(&pc);
+        let matched: Vec<&A> = pc.data_candidates.iter().map(|c| &*c.datum.a).collect();
+        let Some(permit) = pc.commit.clone().or_else(|| {
+            self.matcher
+                .prepare_commit(&pc.continuation.continuation, &matched)
+        }) else {
+            return None;
+        };
+        let Ok((result, comm)) = permit.commit(|| self.process_match_found_deferred(&pc)) else {
+            return None;
+        };
         if let Some(comm) = comm {
             self.observe_comm(
                 &pc.channels,
@@ -1048,6 +1061,7 @@ where
             continuation,
             continuation_index,
             data_candidates,
+            ..
         } = pc;
 
         let WaitingContinuation {
@@ -1091,9 +1105,9 @@ where
     }
 
     fn record_comm(&self, comm: COMM, label: &str) {
-        // Increment counter FIRST (matching Scala) using constants to avoid memory
-        // leaks Labels are always "comm.consume" or "comm.produce" based on the
-        // RSpace implementation
+        // Increment counter FIRST (matching Scala) using constants to avoid
+        // memory leaks Labels are always "comm.consume" or
+        // "comm.produce" based on the RSpace implementation
         match label {
             "comm.consume" => {
                 metrics::counter!(CONSUME_COMM_LABEL, "source" => RSPACE_METRICS_SOURCE)
@@ -1123,11 +1137,12 @@ where
         comm: &COMM,
         label: &str,
     ) {
-        // Live single-step emit seam. `None` in production (one branch-predicted
-        // `is_none`, no alloc/vtable). When a StepCommObserver is installed,
-        // hand it the full COMM payload — the rendezvous channels, the consumed
-        // data, and the firing waiting-continuation (patterns + continuation) —
-        // extracted to slices so the observer can clone lock-free.
+        // Live single-step emit seam. `None` in production (one
+        // branch-predicted `is_none`, no alloc/vtable). When a
+        // StepCommObserver is installed, hand it the full COMM payload
+        // — the rendezvous channels, the consumed data, and the firing
+        // waiting-continuation (patterns + continuation) — extracted to
+        // slices so the observer can clone lock-free.
         if let Some(observer) = &self.step_observer {
             // Materialize through the Arc — observer-only path (None in
             // production), cost-identical to the earlier value-shaped clone.
@@ -1167,7 +1182,8 @@ where
     }
 
     pub fn spawn(&self) -> Result<Self, RSpaceError> {
-        // Span[F].withMarks("spawn") from Scala - works because this is NOT async
+        // Span[F].withMarks("spawn") from Scala - works because this is NOT
+        // async
         let _span = tracing::info_span!(target: "f1r3fly.rspace", "spawn").entered();
         event!(Level::DEBUG, mark = "started-spawn", "spawn");
 
@@ -1231,13 +1247,14 @@ where
         // indices into the same vector.
         //
         // The `.rev()` this replaces inverted the sort into ascending order and
-        // so removed exactly one datum of such a pair: the second `remove_datum`
-        // ran out of bounds, its `Err` was swallowed by `.ok()`, and the
-        // caller discards this function's `None`. The datum was therefore
-        // DELIVERED to the continuation and LEFT RESTING — available to be
-        // consumed a second time. Scala's `storePersistentData` sorts
-        // `_.datumIndex` with `Ordering[Int].reverse` and traverses in that
-        // order, i.e. descending; the port re-reversed it.
+        // so removed exactly one datum of such a pair: the second
+        // `remove_datum` ran out of bounds, its `Err` was swallowed by
+        // `.ok()`, and the caller discards this function's `None`. The
+        // datum was therefore DELIVERED to the continuation and LEFT
+        // RESTING — available to be consumed a second time. Scala's
+        // `storePersistentData` sorts `_.datumIndex` with
+        // `Ordering[Int].reverse` and traverses in that order, i.e.
+        // descending; the port re-reversed it.
         let mut sorted_candidates: Vec<_> = data_candidates.iter().collect();
         sorted_candidates.sort_by(|a, b| b.datum_index.cmp(&a.datum_index));
         let results: Vec<_> = sorted_candidates
@@ -1307,9 +1324,10 @@ where
         //
         // ⚠ THIS SITE IS WHY THE FOUR MOVE TOGETHER. Its ReplaySpace twin,
         // `ReplayRSpace::locked_install_internal`, ALREADY returned this exact
-        // `Err` with this exact message, so before this change `RSpace::install`
-        // aborted the process where `ReplayRSpace::install` refused — a
-        // play/replay asymmetry sitting in the tree, masked only because both of
+        // `Err` with this exact message, so before this change
+        // `RSpace::install` aborted the process where
+        // `ReplayRSpace::install` refused — a play/replay asymmetry
+        // sitting in the tree, masked only because both of
         // this function's in-tree callers turn the `Err` back into a panic.
         // Converting play here makes the two agree.
         if channels.len() != patterns.len() {
@@ -1369,10 +1387,11 @@ where
 
     // The public result stays value-shaped (`RSpaceResult<C, A>` /
     // `ContResult` unchanged) — this is the single per-fired-COMM
-    // materialization boundary, cost-identical to the earlier value-shaped clones.
-    // The multiplicative per-ATTEMPT copies died in the store/matcher hops; the
-    // dispatch-side copy into the continuation env is stage-L2 territory
-    // (the continuation-environment boundary is outside this transport change).
+    // materialization boundary, cost-identical to the earlier value-shaped
+    // clones. The multiplicative per-ATTEMPT copies died in the
+    // store/matcher hops; the dispatch-side copy into the continuation env
+    // is stage-L2 territory (the continuation-environment boundary is
+    // outside this transport change).
     fn wrap_result(
         &self,
         channels: &[C],
