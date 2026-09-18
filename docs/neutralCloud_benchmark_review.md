@@ -44,7 +44,7 @@ The branch also documents Docker workflows for:
 - Standalone single-node operation
 - Multi-validator shard operation: bootstrap + 3 validators + observer + Prometheus + Grafana
 - Pulling a prebuilt public registry image
-- Overriding the compose image through `F1R3FLY_IMAGE`
+- Overriding the compose image through `F1R3FLY_RUST_IMAGE`
 
 Security note: the upstream README states that the codebase has not completed a production security audit. Partner teams should treat these runs as benchmark / evaluation runs, not production-value deployments.
 
@@ -158,7 +158,7 @@ export F1R3FLY_NODE_IMAGE=<registry>/<repo>/f1r3fly-rust:neutral-cloud-benchmark
 If using the Rust node repo's compose setup directly, the image override is:
 
 ```bash
-export F1R3FLY_IMAGE=<registry>/<repo>/f1r3fly-rust:neutral-cloud-benchmark
+export F1R3FLY_RUST_IMAGE=<registry>/<repo>/f1r3fly-rust:neutral-cloud-benchmark
 ```
 
 Use one image tag per benchmark run. Record the exact image digest:
