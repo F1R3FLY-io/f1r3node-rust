@@ -160,8 +160,6 @@ impl TestContext {
         CasperSnapshot {
             dag,
             last_finalized_block: BlockHash::default(),
-            lca: BlockHash::default(),
-            tips: Vec::new(),
             parents: Vec::new(),
             justifications: HashSet::new(),
             invalid_blocks: HashMap::new(),

@@ -240,8 +240,6 @@ pub fn snapshot(
     CasperSnapshot {
         dag,
         last_finalized_block: Bytes::new(),
-        lca: Bytes::new(),
-        tips: vec![],
         parents: vec![],
         justifications: HashSet::new(),
         invalid_blocks: HashMap::new(),

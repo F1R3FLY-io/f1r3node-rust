@@ -11,6 +11,7 @@ use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::engine::engine_with_casper::EngineWithCasper;
 use casper::rust::estimator::Estimator;
 use models::rust::block_hash::BlockHash;
+use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::protocol::casper_message::{BlockMessage, Bond};
 use models::rust::validator::Validator;
 
@@ -281,8 +282,15 @@ async fn show_main_chain_should_return_only_blocks_in_the_main_chain() {
         .get_representation()
         .expect("dag representation");
 
+    let latest_messages = dag.latest_message_hashes().into_iter().collect();
     let tips = Estimator::apply()
-        .tips(&mut dag, &genesis, Estimator::UNLIMITED_PARENTS, None)
+        .tips_with_latest_messages(
+            &mut dag,
+            &BlockMetadata::from_block(&genesis, false, None, None),
+            latest_messages,
+            Estimator::UNLIMITED_PARENTS,
+            None,
+        )
         .await
         .unwrap();
 
@@ -330,8 +338,15 @@ async fn get_blocks_should_return_all_blocks() {
         .get_representation()
         .expect("dag representation");
 
+    let latest_messages = dag.latest_message_hashes().into_iter().collect();
     let tips = Estimator::apply()
-        .tips(&mut dag, &genesis, Estimator::UNLIMITED_PARENTS, None)
+        .tips_with_latest_messages(
+            &mut dag,
+            &BlockMetadata::from_block(&genesis, false, None, None),
+            latest_messages,
+            Estimator::UNLIMITED_PARENTS,
+            None,
+        )
         .await
         .unwrap();
 
@@ -377,8 +392,15 @@ async fn get_blocks_should_return_until_depth() {
         .get_representation()
         .expect("dag representation");
 
+    let latest_messages = dag.latest_message_hashes().into_iter().collect();
     let tips = Estimator::apply()
-        .tips(&mut dag, &genesis, Estimator::UNLIMITED_PARENTS, None)
+        .tips_with_latest_messages(
+            &mut dag,
+            &BlockMetadata::from_block(&genesis, false, None, None),
+            latest_messages,
+            Estimator::UNLIMITED_PARENTS,
+            None,
+        )
         .await
         .unwrap();
 
@@ -429,8 +451,15 @@ async fn get_blocks_by_heights_should_return_blocks_between_start_and_end() {
         .get_representation()
         .expect("dag representation");
 
+    let latest_messages = dag.latest_message_hashes().into_iter().collect();
     let tips = Estimator::apply()
-        .tips(&mut dag, &genesis, Estimator::UNLIMITED_PARENTS, None)
+        .tips_with_latest_messages(
+            &mut dag,
+            &BlockMetadata::from_block(&genesis, false, None, None),
+            latest_messages,
+            Estimator::UNLIMITED_PARENTS,
+            None,
+        )
         .await
         .unwrap();
 

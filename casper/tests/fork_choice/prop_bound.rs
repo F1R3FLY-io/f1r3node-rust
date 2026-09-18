@@ -42,6 +42,7 @@ use std::collections::HashMap;
 
 use casper::rust::estimator::Estimator;
 use models::rust::block_hash::BlockHash;
+use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::protocol::casper_message::{BlockMessage, Bond};
 use models::rust::validator::Validator;
 use proptest::prelude::*;
@@ -149,7 +150,13 @@ async fn b2_sentinel_and_positive_cap_usize_safe() {
 
         // Unlimited via i32::MAX sentinel.
         let full = Estimator::apply()
-            .tips_with_latest_messages(&mut dag, &genesis, latest.clone(), i32::MAX, None)
+            .tips_with_latest_messages(
+                &mut dag,
+                &BlockMetadata::from_block(&genesis, false, None, None),
+                latest.clone(),
+                i32::MAX,
+                None,
+            )
             .await
             .expect("full tips")
             .tips;
@@ -157,7 +164,13 @@ async fn b2_sentinel_and_positive_cap_usize_safe() {
 
         // Unlimited via the -1 config sentinel — must NOT wrap `-1 as usize`.
         let neg = Estimator::apply()
-            .tips_with_latest_messages(&mut dag, &genesis, latest.clone(), -1, None)
+            .tips_with_latest_messages(
+                &mut dag,
+                &BlockMetadata::from_block(&genesis, false, None, None),
+                latest.clone(),
+                -1,
+                None,
+            )
             .await
             .expect("neg-1 tips")
             .tips;
@@ -168,7 +181,13 @@ async fn b2_sentinel_and_positive_cap_usize_safe() {
 
         // Positive cap of 1 truncates to just the head.
         let cap1 = Estimator::apply()
-            .tips_with_latest_messages(&mut dag, &genesis, latest.clone(), 1, None)
+            .tips_with_latest_messages(
+                &mut dag,
+                &BlockMetadata::from_block(&genesis, false, None, None),
+                latest.clone(),
+                1,
+                None,
+            )
             .await
             .expect("cap-1 tips")
             .tips;
@@ -180,7 +199,13 @@ async fn b2_sentinel_and_positive_cap_usize_safe() {
 
         // Positive cap equal to the tip count keeps everything, in order.
         let cap2 = Estimator::apply()
-            .tips_with_latest_messages(&mut dag, &genesis, latest, 2, None)
+            .tips_with_latest_messages(
+                &mut dag,
+                &BlockMetadata::from_block(&genesis, false, None, None),
+                latest,
+                2,
+                None,
+            )
             .await
             .expect("cap-2 tips")
             .tips;
@@ -201,7 +226,13 @@ async fn b3_score_overflow_is_typed_err() {
             .expect("dag representation");
 
         let result = Estimator::apply()
-            .tips_with_latest_messages(&mut dag, &genesis, latest, i32::MAX, None)
+            .tips_with_latest_messages(
+                &mut dag,
+                &BlockMetadata::from_block(&genesis, false, None, None),
+                latest,
+                i32::MAX,
+                None,
+            )
             .await;
 
         match result {
@@ -247,7 +278,13 @@ async fn b4_some_depth_on_genesis_only_is_ok() {
         // Some(0) drives the `filter_deep_parents` depth branch; empty latest =>
         // LCA = genesis => ranked = [genesis] (non-empty) => Ok([genesis]).
         let forkchoice = Estimator::apply()
-            .tips_with_latest_messages(&mut dag, &genesis, HashMap::new(), i32::MAX, Some(0))
+            .tips_with_latest_messages(
+                &mut dag,
+                &BlockMetadata::from_block(&genesis, false, None, None),
+                HashMap::new(),
+                i32::MAX,
+                Some(0),
+            )
             .await
             .expect("Some(depth) on genesis-only DAG must return cleanly");
         assert_eq!(
@@ -317,13 +354,13 @@ proptest! {
                 .expect("dag representation");
 
             let full = Estimator::apply()
-                .tips_with_latest_messages(&mut dag, &genesis, latest.clone(), i32::MAX, None)
+                .tips_with_latest_messages(&mut dag, &BlockMetadata::from_block(&genesis, false, None, None), latest.clone(), i32::MAX, None)
                 .await
                 .expect("full tips")
                 .tips;
 
             let capped = Estimator::apply()
-                .tips_with_latest_messages(&mut dag, &genesis, latest, cap, None)
+                .tips_with_latest_messages(&mut dag, &BlockMetadata::from_block(&genesis, false, None, None), latest, cap, None)
                 .await
                 .expect("capped tips")
                 .tips;

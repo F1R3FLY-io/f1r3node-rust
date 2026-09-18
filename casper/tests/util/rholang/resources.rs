@@ -579,8 +579,6 @@ pub fn mk_dummy_casper_snapshot() -> CasperSnapshot {
     CasperSnapshot {
         dag,
         last_finalized_block: Bytes::new(),
-        lca: Bytes::new(),
-        tips: Vec::new(),
         parents: Vec::new(),
         justifications: HashSet::new(),
         invalid_blocks: HashMap::new(),

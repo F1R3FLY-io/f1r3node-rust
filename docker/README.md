@@ -62,11 +62,13 @@ docker compose -f standalone.yml down -v
 
 | File | Description |
 |------|-------------|
-| `shard.yml` | Full shard: bootstrap + 3 validators + observer |
+| `shard.yml` | Full shard: bootstrap + 3 validators + observer, plus Prometheus and Grafana |
 | `standalone.yml` | Single standalone node for development |
-| `validator4.yml` | Additional validator joining existing shard |
-| `observer.yml` | Additional read-only node joining existing shard |
-| `shard-monitoring.yml` | Prometheus + Grafana + cAdvisor overlay |
+| `validator4.yml` | Additional validator joining existing shard — see [Joining an Existing Network](../docs/node/joining-a-network.md) |
+| `observer.yml` | Additional read-only node joining existing shard — see [Joining an Existing Network](../docs/node/joining-a-network.md) |
+| `monitoring.yml` | Prometheus + Grafana + cAdvisor, for a topology that does not already include them |
+
+`shard.yml` already defines `prometheus` and `grafana`, so do not layer `monitoring.yml` on top of it — the container names collide. Use `monitoring.yml` with `standalone.yml`, or with a shard you assembled yourself.
 
 ## Configuration
 
@@ -110,6 +112,12 @@ logging {
 
 When `sink` includes `"file"`, logs are written to `<data-dir>/logs/node.log` — in Docker that is `/var/lib/rnode/logs/node.log` inside the container.
 
+Every compose file caps its container logs at `max-size: 100m`, `max-file: "3"`
+— 300 MB per container, after which the oldest file is discarded. Raising
+`RUST_LOG` to `debug` for a reproduction can burn through that window in
+minutes, so copy anything you need out of `docker logs` before it rotates, or
+raise the cap for the run.
+
 ## Environment Variables
 
 The Rust node reads a small set of environment variables. All other configuration is in HOCON config files (see [Configuration](#configuration) above). Env vars are used only for secrets and logging overrides.
@@ -139,11 +147,13 @@ See [`.env.example`](.env.example) for Docker defaults.
 
 ## Monitoring
 
-Start the monitoring stack after the shard is running:
+`shard.yml` starts Prometheus and Grafana itself, so a full shard needs nothing
+further. For a topology without them — `standalone.yml`, or a shard you
+assembled yourself — start the monitoring stack separately:
 
 ```bash
-docker compose -f shard-monitoring.yml up -d    # Start
-docker compose -f shard-monitoring.yml down      # Stop
+docker compose -f monitoring.yml up -d    # Start
+docker compose -f monitoring.yml down      # Stop
 ```
 
 | Component | URL | Description |
