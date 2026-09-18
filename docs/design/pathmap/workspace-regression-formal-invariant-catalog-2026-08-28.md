@@ -405,6 +405,61 @@ success. The focused release run passes 56 tests: 28 manifest, 14 cursor, eight 
 differentials (including depth 4096), four new range/group tests and two test-registration
 checks, with none ignored or filtered. See J-175 for capped-run receipts and hashes.
 
+## Conditional substitution-region emission (SRE, task 5916)
+
+`SubstitutionRegionEmission.v` models the existing indexed-node and piece worklist,
+not a new serializer. `Original` emits complete cut bodies; `Shallow` emits empty Par
+placeholders; `Compact` omits Par fields and only elides a child envelope if cutting
+emptied a previously nonempty, non-presence-sensitive child. Both shell modes preserve
+the EPathMap prefix and emit one zero-length value frame per retained map-value ordinal.
+The framing equation uses `EPM1.encode_varint` for the concrete protobuf key
+$`8t+2`$ and payload length, where $`t`$ is a valid field tag.
+
+The model separately computes planned lengths with inclusive machine-word and `u64`
+limits. A successful plan has exact per-mode lengths; a failed mode cannot publish
+the new length record. The ordered worklist invariant equates emitted bytes followed
+by pending bytes before and after every transition. Its termination theorem uses a
+decreasing natural-number work measure, without an execution fuel argument.
+
+| ID | Printed obligations (35 total) | Native evidence |
+|---|---|---|
+| SRE-01 | `emit_step_preserves_ordered_pending_bytes`, `execution_preserves_ordered_pending_bytes`, `worklist_emission_equals_mode_reference`, `reverse_push_visits_pieces_in_source_order` | `all_emission_modes_match_independent_typed_map_shells`, exact region reconstruction corpus and distinct ordered child witnesses. |
+| SRE-02 | `every_emit_step_decreases_rank`, `ranked_emission_terminates_without_fuel` | Existing depth-4096 region walk on a 256 KiB stack; this is bounded native evidence, not a universal runtime complexity theorem. |
+| SRE-03 | `compact_preserves_required_empty_envelopes`, `compact_retains_genuinely_empty_repeated_messages`, `compact_omits_only_cut_emptied_unrequired_envelopes`, `original_par_keeps_present_empty_header` | Typed-map-shell property guarantees absent/present fields and genuine empty entries; existing compact-shell and present-empty regression tests remain bound. |
+| SRE-04 | `epm_shallow_and_compact_preserve_value_count`, `epm_original_value_order` | `epathmap_shell_modes_preserve_keys_and_every_empty_value_slot` covers neutral/set/map storage and three map values, one empty; SRR's surrounding-cut witness checks group ranges. |
+| SRE-05 | `checked_add_success_exact`, `checked_add_refuses_overflow`, `checked_total_success_exact`, `checked_total_complete`, `checked_total_refuses_unrepresentable_nonempty` | `checked_add_matches_machine_word_arithmetic` and fixed `usize::MAX` boundaries; the list-total theorem is supporting mathematics, not a separately called Rust routine. |
+| SRE-06 | `checked_delimited_success_exact`, `checked_delimited_refuses_u64_overflow`, `checked_frames_success_exact` | `delimited_length_matches_widened_arithmetic`; `all_modes_preserve_unknown_bytes_across_varint_boundaries` uses 30 tag/length combinations through the maximum valid tag and payload length 16384. The separate `u64` overflow branch is formal-only on this 64-bit host. |
+| SRE-07 | `planned_piece_success_has_exact_mode_length`, `finished_node_success_has_exact_mode_length`, `finished_node_success_is_representable`, `failed_mode_does_not_publish` | Exact three-mode byte/length comparisons and `overflow_in_each_cached_mode_refuses_finished_node_publication`; the latter supplies synthetic lengths without allocating enormous buffers. |
+| SRE-08 | `dropping_genuine_empty_envelope_is_observable`, `ignoring_presence_flag_is_observable`, `reversed_value_order_is_observable`, `missing_empty_value_is_observable`, `unchecked_wrap_is_observable`, `reversed_neighbor_pieces_are_observable`, `stale_child_cache_is_observable` | Concrete formal negative witnesses; native presence, ordering, empty-value and arithmetic assertions detect the corresponding effects. These are not generated mutations of the complete Rust implementation. |
+| SRE-09 | `fixture_reference_is_sound`, `fixture_ranks_are_valid`, `fixture_emits_all_modes_without_fuel`, `fixture_planner_accepts_all_modes` | Concrete formal nonvacuity arena contains borrowed bytes, a nested child, present-empty Par and two framed values. Its opaque prefix is an emission fixture, not a proved valid ACT/EPM1 snapshot. Native EPathMap tests use actual admitted trie snapshots. |
+
+**Premises and remaining bridge.** The reference satisfies the arena's piece equations;
+child caches agree with that reference; the supplied work measure decreases on expansion.
+A concrete finite arena satisfies these premises, but the proof that the Rust builder
+establishes them for every accepted input remains required. Total lookup functions do
+not themselves establish index validity, contiguous group membership, valid region
+provenance or physical byte/tag ranges. Those belong to the postorder builder and SRR
+composition proof. Rank existence is not inferred merely from tests, and termination
+does not establish a linear allocation or runtime bound. A DAG could revisit a subtree.
+
+The model plans one entire mode at a time; Rust checks the three modes per piece.
+The current result covers successful lengths and all-or-nothing refusal, not the first
+failing arithmetic operation. All modeled arithmetic failures map to `SizeOverflow`.
+The emitter theorem's reference lengths correspond to Rust caches only under the cache
+premise. Most importantly, internal reference consistency and equal reconstructed lengths
+do not prove equality with the original input. A canonical decomposition certificate is
+still needed before claiming full cut/reassembly correctness or substitution equivalence.
+
+All 35 declarations are bound to the compile count and explicit kernel check in the
+manifest; native witnesses live under `models/tests/`. See J-176 for qualification.
+
+The unknown-field test proves unchanged borrowed fields across its named tag/payload
+sizes; it does not prove regenerated key-width transitions. The separate deterministic
+`delimited_length_covers_key_and_payload_width_transitions` adds 80 arithmetic cases,
+including tags 15/16, 2047/2048, 262143/262144 and 33554431/33554432, where the encoded
+key actually changes width. It uses the same widened-arithmetic oracle as SRE-06 and
+allocates no payload buffers for its near-`usize::MAX` cases.
+
 ## Original workspace-regression completion gates
 
 This checkpoint is complete only when all of the following hold:

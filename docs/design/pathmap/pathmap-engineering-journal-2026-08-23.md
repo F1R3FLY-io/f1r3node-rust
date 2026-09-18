@@ -12890,6 +12890,86 @@ high-rung gates, and lifecycle evidence. The range foundation does not discharge
 those remaining obligations. This checkpoint changes proofs, tests and documentation,
 not production behavior, consensus bytes, dependencies or PathMap.
 
+### J-176 — 2026-09-17 Conditional three-mode region emission and checked planning
+
+**DERIVED.** Continuing task 5916, `SubstitutionRegionEmission.v` describes the existing
+`Borrowed`, `Child`, `Par` and `EPathMap` pieces and `VisitNode`/`VisitPiece` worklist.
+It proves ordered byte preservation, rank-based termination without execution fuel,
+the exact compact-envelope predicate, ordered EPathMap value framing, checked addition
+and length planning, and failed-mode non-publication. A concrete finite arena jointly
+satisfies the reference, rank and cache premises for all three modes. Negative witnesses
+distinguish lost presence, reordered pieces/values, omitted empty values, stale caches
+and arithmetic wraparound. The [SRE invariant inventory](workspace-regression-formal-invariant-catalog-2026-08-28.md#conditional-substitution-region-emission-sre-task-5916)
+maps all 35 printed obligations to native evidence and explicit limitations.
+
+The proof was checked before adding the native bridges. Three-mode native properties
+compare original and shell bytes with independently constructed typed EMap shells;
+guaranteed fixtures exercise absent fields, presence-sensitive fields and genuinely empty
+repeated entries. Thirty tag/length boundary combinations check unknown-field copying,
+header reconstruction and neighboring cuts. Native neutral/set/map EPathMaps verify
+unchanged keys and exact empty-value framing. Test-only support under `models/tests/`
+compares checked arithmetic with machine-word and widened-integer oracles, and supplies
+synthetic overflowing cached lengths in each mode without allocating large buffers.
+
+**MEASURED (qualification).** Formal r11 reports 35 closed declarations and explicit
+kernel-check success in 15.118 seconds, with 14.730 CPU seconds, 415.9 MiB peak and zero
+swap under a 2 GiB cap, one-core quota and 120-second watchdog. Prior failed proof-script
+iterations are not passing evidence. The final native r2 passes all 60 focused tests:
+29 manifest, 14 cursor, eight region, seven range/emission and two registration tests;
+none are ignored or filtered, and the unchanged depth-4096 witness remains included.
+Its build-plus-test service takes 25.210 seconds, 66.575 CPU seconds and 1.1 GiB peak.
+The separate arithmetic run passes its three selected tests, explicitly filtering 508
+other library tests; it takes 39.943 seconds, 102.512 CPU seconds and 1.7 GiB peak.
+Both native services use `MemoryHigh=6G`, `MemoryMax=8G`, `MemorySwapMax=0`, a four-core
+quota and a 1200-second watchdog. These receipts are not benchmark or whole-workspace
+acceptance results. The earlier 60-test r1 integration run is retained separately.
+
+| Artifact under `target/verification/` | SHA-256 |
+|---|---|
+| `substitution-5916-emission-formal-r11.log` | `bf817d81df6950dd6e50ff042037859cfca60ce3e7a4991809d113f854750bbb` |
+| `substitution-5916-emission-native-r1.log` | `8d95f4d10b0c565c62bc3c84c0984c3f5e855dfa44aa754b71208c2572ac743d` |
+| `substitution-5916-emission-native-r2.log` | `4f1103e0fa9cfbbc1dd59cbcdf33845b745ad2f71259de53538731140b050ae4` |
+| `substitution-5916-emission-arithmetic-r1.log` | `534d1e69b058500991a5202077fc22ea86091e188200f622d29c24f0fb3b4087` |
+| `substitution-5916-emission-final-r1.log` | `a98a76c69025587227b7611af2c613ff406f3fd4c3a576853c3a2d549f1614bd` |
+
+The checked theory hash is `8056fdb6332f00d70a7efc4c3c8ee48c72eda477f779d5589cdc35a90204dc69`.
+Independent model/source review confirmed the mode equations and requested the concrete
+nonvacuity witnesses, which are included in the passing proof.
+
+Final native review identified that borrowed unknown-field coverage does not test
+regenerated key-width transitions. A fourth arithmetic test now deterministically checks
+80 combinations at the actual key/payload width transitions and machine-word limit,
+without allocating those payloads. The final combined run passes four selected library
+tests (508 others filtered) and all 60 integration tests, with none ignored. Under the
+same caps it takes 43.444 seconds, 107.525 CPU seconds, 1.6 GiB peak and zero swap.
+The final review found no blocking issue for this conditional foundation; its builder,
+cache and original-input obligations remain explicit rather than claimed complete.
+
+The native qualification commands, executed inside the capped service from the worktree
+root, are:
+
+```sh
+cargo test --release --locked -j4 -p models --lib emission_tests -- --test-threads=4
+cargo test --release --locked -j4 -p models --test substitution_region_ranges --test protobuf_cursor --test protobuf_region_differential --test formal_equivalence_manifest --test test_target_registry_gate -- --test-threads=4
+```
+
+The formal commands run from `formal/rocq/stack_safe_pda` inside the separate 2 GiB service:
+
+```sh
+coqc -Q theories StackSafePDA theories/SubstitutionRegionEmission.v
+coqchk -silent -Q theories StackSafePDA StackSafePDA.SubstitutionRegionEmission
+```
+
+**DECISION and next required bridge.** No production algorithm, codec, PathMap dependency
+or consensus behavior changes here; the only production-source edit is a `cfg(test)`
+module declaration. Next, prove that postorder builder publication establishes valid
+indices/ranges, the work measure and child caches, then connect its decomposition to
+the admitted original input bytes. Equal lengths alone do not prove byte equality.
+The model's mode-at-a-time planner also does not preserve Rust's first arithmetic-failure
+operation order, and abstract total lookups do not prove native indexing validity.
+Full substitution continuation/binder/error/charge refinement, exact work counters,
+non-identity scaling/profiling and lifecycle gates remain required by task 5916.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

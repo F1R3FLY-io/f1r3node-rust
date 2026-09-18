@@ -18,6 +18,10 @@
 //! No field tag, oneof encoding, child type, or traversal edge is restated here.
 
 use std::fmt;
+#[cfg(test)]
+#[path = "../../../tests/support/substitution_region_emission.rs"]
+mod emission_tests;
+
 use std::ops::Range;
 
 use prost::bytes::Bytes;

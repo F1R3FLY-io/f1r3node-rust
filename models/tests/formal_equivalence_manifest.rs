@@ -6,6 +6,93 @@
 //! that every named file, theorem, and oracle marker exists.
 
 use std::collections::{BTreeMap, BTreeSet};
+#[test]
+fn substitution_region_emission_has_conditional_proof_and_native_bindings() {
+    let arithmetic = read_repository_file("models/tests/support/substitution_region_emission.rs");
+    for witness in [
+        "checked_add_matches_machine_word_arithmetic",
+        "delimited_length_matches_widened_arithmetic",
+        "delimited_length_covers_key_and_payload_width_transitions",
+        "overflow_in_each_cached_mode_refuses_finished_node_publication",
+    ] {
+        assert!(arithmetic.contains(&format!("fn {witness}(")));
+    }
+    assert!(read_repository_file("models/src/rust/rholang/protobuf_region.rs").contains(
+        "#[cfg(test)]\n#[path = \"../../../tests/support/substitution_region_emission.rs\"]\nmod emission_tests;"
+    ));
+    let theory =
+        read_repository_file("formal/rocq/stack_safe_pda/theories/SubstitutionRegionEmission.v");
+    for theorem in [
+        "emit_step_preserves_ordered_pending_bytes",
+        "execution_preserves_ordered_pending_bytes",
+        "worklist_emission_equals_mode_reference",
+        "reverse_push_visits_pieces_in_source_order",
+        "every_emit_step_decreases_rank",
+        "ranked_emission_terminates_without_fuel",
+        "compact_preserves_required_empty_envelopes",
+        "compact_retains_genuinely_empty_repeated_messages",
+        "compact_omits_only_cut_emptied_unrequired_envelopes",
+        "original_par_keeps_present_empty_header",
+        "epm_shallow_and_compact_preserve_value_count",
+        "epm_original_value_order",
+        "checked_add_success_exact",
+        "checked_add_refuses_overflow",
+        "checked_total_success_exact",
+        "checked_total_complete",
+        "checked_total_refuses_unrepresentable_nonempty",
+        "dropping_genuine_empty_envelope_is_observable",
+        "ignoring_presence_flag_is_observable",
+        "reversed_value_order_is_observable",
+        "missing_empty_value_is_observable",
+        "unchecked_wrap_is_observable",
+        "checked_delimited_success_exact",
+        "checked_delimited_refuses_u64_overflow",
+        "checked_frames_success_exact",
+        "planned_piece_success_has_exact_mode_length",
+        "finished_node_success_has_exact_mode_length",
+        "finished_node_success_is_representable",
+        "failed_mode_does_not_publish",
+        "fixture_reference_is_sound",
+        "fixture_ranks_are_valid",
+        "fixture_emits_all_modes_without_fuel",
+        "fixture_planner_accepts_all_modes",
+        "reversed_neighbor_pieces_are_observable",
+        "stale_child_cache_is_observable",
+    ] {
+        assert!(theory.contains(&format!("Print Assumptions {theorem}.")));
+    }
+    let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
+    assert!(has_runner_command(&runner, &[
+        "rocq_compile_with_closed_count",
+        "theories/SubstitutionRegionEmission.v",
+        "35",
+    ]));
+    assert!(has_runner_kernel_check(&runner, &[
+        "StackSafePDA.SubstitutionRegionEmission"
+    ]));
+    assert!(
+        read_repository_file("formal/rocq/stack_safe_pda/_CoqProject")
+            .lines()
+            .any(|line| line == "theories/SubstitutionRegionEmission.v")
+    );
+    let native = read_repository_file("models/tests/substitution_region_ranges.rs");
+    for witness in [
+        "all_emission_modes_match_independent_typed_map_shells",
+        "all_modes_preserve_unknown_bytes_across_varint_boundaries",
+        "epathmap_shell_modes_preserve_keys_and_every_empty_value_slot",
+    ] {
+        assert!(native.contains(&format!("fn {witness}(")));
+    }
+    let existing = read_repository_file("models/tests/protobuf_region_differential.rs");
+    for witness in [
+        "compact_shell_retains_genuinely_empty_repeated_messages",
+        "compact_shell_elides_repeated_cut_only_message_envelopes",
+        "present_empty_par_fields_remain_distinct_from_absence",
+        "depth_4096_walk_reuses_one_backing_and_keeps_machine_depth_bounded",
+    ] {
+        assert!(existing.contains(&format!("fn {witness}(")));
+    }
+}
 
 #[test]
 fn substitution_region_ranges_have_proof_and_native_bindings() {

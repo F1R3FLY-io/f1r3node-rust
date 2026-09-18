@@ -13,6 +13,141 @@ use proptest::prelude::*;
 
 proptest! {
     #[test]
+    fn all_emission_modes_match_independent_typed_map_shells(
+        pairs in prop::collection::vec((prop::option::of(any::<i64>()), prop::option::of(any::<i64>())), 0..24),
+    ) {
+        use models::rhoapi::{EMap, KeyValuePair};
+        let pair = |(key, value): (Option<i64>, Option<i64>)| KeyValuePair {
+            key: key.map(|v| new_gint_par(v, Vec::new(), false)),
+            value: value.map(|v| new_gint_par(v, Vec::new(), false)),
+        };
+        let entries: Vec<_> = pairs.into_iter().chain([
+            (None, None), (Some(7), None), (None, Some(9)), (Some(11), Some(13)),
+        ]).map(pair).collect();
+        let expr = |kvs| Expr {
+            expr_instance: Some(ExprInstance::EMapBody(EMap {
+                kvs, locally_free: vec![5], connective_used: true, remainder: None,
+            })),
+        };
+        let original = expr(entries.clone());
+        let shallow = expr(entries.iter().map(|kv| KeyValuePair {
+            key: kv.key.as_ref().map(|_| Par::default()),
+            value: kv.value.as_ref().map(|_| Par::default()),
+        }).collect());
+        let compact = expr(entries.iter().filter(|kv| kv.key.is_none() && kv.value.is_none())
+            .map(|_| KeyValuePair::default()).collect());
+        let original_bytes = protobuf_encoder::encode_to_vec(&original);
+        let plan = cut_at_par(ProtobufRegion::from(original_bytes.clone()), &EXPR_RHO_MATCH_PROGRAM).unwrap();
+        for (actual, expected) in [
+            (plan.reconstructed_bytes(), original_bytes),
+            (plan.shallow_bytes(), protobuf_encoder::encode_to_vec(&shallow)),
+            (plan.compact_shell_bytes(), protobuf_encoder::encode_to_vec(&compact)),
+        ] {
+            prop_assert_eq!(actual.len(), expected.len());
+            prop_assert_eq!(actual.as_ref(), expected.as_slice());
+        }
+    }
+}
+
+#[test]
+fn all_modes_preserve_unknown_bytes_across_varint_boundaries() {
+    use models::rust::rholang::match_schema_tables::SEND_RHO_MATCH_PROGRAM;
+    use prost::encoding::{encode_key, encode_varint, WireType};
+    for tag in [127, 128, 16_383, 16_384, 536_870_911] {
+        for size in [0, 1, 127, 128, 16_383, 16_384] {
+            let child = Par::default().with_exprs(vec![Expr {
+                expr_instance: Some(ExprInstance::GByteArray(vec![42; size])),
+            }]);
+            let original = Send {
+                chan: Some(child),
+                data: vec![new_gint_par(17, Vec::new(), false), Par::default()],
+                persistent: true,
+                ..Send::default()
+            };
+            let shallow = Send {
+                chan: Some(Par::default()),
+                data: vec![Par::default(), Par::default()],
+                persistent: true,
+                ..Send::default()
+            };
+            let compact = Send {
+                persistent: true,
+                ..Send::default()
+            };
+            let mut unknown = Vec::new();
+            encode_key(tag, WireType::LengthDelimited, &mut unknown);
+            encode_varint(size as u64, &mut unknown);
+            unknown.extend(std::iter::repeat_n(91, size));
+            let encode = |send: &Send| {
+                let mut bytes = protobuf_encoder::encode_to_vec(send);
+                bytes.extend_from_slice(&unknown);
+                bytes
+            };
+            let encoded = encode(&original);
+            let plan = cut_at_par(
+                ProtobufRegion::from(encoded.clone()),
+                &SEND_RHO_MATCH_PROGRAM,
+            )
+            .unwrap();
+            assert_eq!(plan.reconstructed_bytes().as_ref(), encoded);
+            assert_eq!(plan.shallow_bytes().as_ref(), encode(&shallow));
+            assert_eq!(plan.compact_shell_bytes().as_ref(), encode(&compact));
+            assert_eq!(plan.cuts().len(), 3);
+        }
+    }
+}
+
+#[test]
+fn epathmap_shell_modes_preserve_keys_and_every_empty_value_slot() {
+    for mode in [EPathMapMode::Empty, EPathMapMode::Set, EPathMapMode::Map] {
+        let gint = |value| new_gint_par(value, Vec::new(), false);
+        let original = match mode {
+            EPathMapMode::Empty => EPathMap::default(),
+            EPathMapMode::Set => EPathMap::from_set_iter([gint(1), gint(2)], vec![3], true, None),
+            EPathMapMode::Map => EPathMap::new_map(
+                [
+                    (gint(1), Par::default()),
+                    (gint(2), gint(7)),
+                    (gint(3), gint(9)),
+                ],
+                vec![3],
+                true,
+                None,
+            ),
+        };
+        let shell = if mode == EPathMapMode::Map {
+            EPathMap::new_map(
+                [
+                    (gint(1), Par::default()),
+                    (gint(2), Par::default()),
+                    (gint(3), Par::default()),
+                ],
+                vec![3],
+                true,
+                None,
+            )
+        } else {
+            original.clone()
+        };
+        let expr = |map| Expr {
+            expr_instance: Some(ExprInstance::EPathmapBody(map)),
+        };
+        let bytes = protobuf_encoder::encode_to_vec(&expr(original));
+        let expected = protobuf_encoder::encode_to_vec(&expr(shell));
+        let plan =
+            cut_at_par(ProtobufRegion::from(bytes.clone()), &EXPR_RHO_MATCH_PROGRAM).unwrap();
+        assert_eq!(plan.reconstructed_bytes().as_ref(), bytes);
+        assert_eq!(plan.shallow_bytes().as_ref(), expected);
+        assert_eq!(plan.compact_shell_bytes(), plan.shallow_bytes());
+        assert_eq!(
+            plan.cuts().len(),
+            if mode == EPathMapMode::Map { 3 } else { 0 }
+        );
+    }
+}
+
+proptest! {
+    #[test]
     fn checked_regions_match_native_slice_and_preserve_backing(
         bytes in prop::collection::vec(any::<u8>(), 0..128),
         lo in 0usize..160,

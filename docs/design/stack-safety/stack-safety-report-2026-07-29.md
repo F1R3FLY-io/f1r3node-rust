@@ -8524,6 +8524,17 @@ records exact receipts. Existing construction-escape repairs above remain valid;
 continuation equivalence, operational counters and the original scaling/lifecycle gates
 are separate, still-required completion evidence.
 
+The subsequent SRE checkpoint adds 35 kernel-checked conditional emission/planning
+obligations and concrete nonvacuity examples. The final combined run passes all 60 focused
+integration tests and four selected arithmetic tests, with the other 508 library tests
+explicitly filtered in the library invocation. Its native memory peak is 1.6 GiB under
+the same 8 GiB hard cap and zero swap. The emission worklist preserves
+its reference bytes and terminates under the declared arena/rank/cache premises; proving
+the cutter establishes those premises and reconstructs its original input is still
+required. No general linear-resource or full-substitution claim follows from this result.
+See [J-176](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-176--2026-09-17-conditional-three-mode-region-emission-and-checked-planning)
+for commands, hashes, limitations and the next required proof bridge.
+
 ---
 
 ### 5.29 ParBag family and count-domain completeness [SS-A13, SS-A14, SS-Y9]
