@@ -11,6 +11,7 @@ enum Action {
     Admit,
     History,
     Run,
+    Stop,
     Finish,
     Publish,
     Models,
@@ -68,6 +69,7 @@ fn execute(args: Args) -> Result<i32> {
             );
         }
         Action::History => runtime::check_history(&output, args.iteration, args.failures)?,
+        Action::Stop => runtime::stop(&output)?,
         Action::Run => {
             return runtime::run(
                 &root,

@@ -25,6 +25,10 @@ name: Slashing test suite
 on:
   workflow_dispatch:
     inputs:
+      require_casper_discharge:
+        description: Require complete pre-merge Casper claim discharge, not an audit with pending claims.
+        type: boolean
+        default: false
       run_exhaustive:
         description: >-
           Also run the exhaustive TLA+ tier (RUN_EXHAUSTIVE_TLA=1): the
@@ -280,8 +284,13 @@ jobs:
         with:
           toolchain: nightly-2026-02-09
           targets: x86_64-unknown-linux-musl
-      - name: Check model result classification
-        run: cargo test --locked -p casper-soak --test models
+      - name: Check model, claim-audit, and interruption regressions
+        run: cargo test --locked -p casper-soak --test models --test claims --test interruption
+      - name: Audit Casper claim identities and discharge evidence
+        run: cargo run --locked -p casper-soak --bin check-casper-claims -- --output target/casper-claim-audit.json
+      - name: Require complete Casper claim discharge
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.require_casper_discharge }}
+        run: cargo run --locked -p casper-soak --bin check-casper-claims -- --strict --output target/casper-claim-strict.json
       - name: Check isolated driver bindings and actual case counts
         run: bash scripts/ci/check-casper-soak-bindings.sh --output target/casper-binding-evidence
       - name: Retain source-bound fixture evidence
@@ -292,6 +301,8 @@ jobs:
           path: |
             target/casper-binding-evidence/report.json
             target/casper-binding-evidence/evidence.tar.gz
+            target/casper-claim-audit.json
+            target/casper-claim-strict.json
           if-no-files-found: error
 
   rocq-build:

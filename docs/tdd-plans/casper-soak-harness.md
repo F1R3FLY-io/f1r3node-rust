@@ -1,6 +1,6 @@
 # Casper Soak Harness Verification Cycles
 
-**Status:** Bounded model controls pass. Real-driver fixture cycles, profile verification, and soaks remain pending.
+**Status:** Bounded models and the current driver suite pass. Claim acceptance, profile verification, and node soaks remain pending.
 
 **Owner:** TASK-017-4. Post-merge rebinding belongs to TASK-018-2.
 
@@ -10,16 +10,16 @@ The [claim](../claims/casper-soak-harness.md) defines the contract. The [formal 
 
 | Cycle | Behavior | Formal property | State |
 | --- | --- | --- | --- |
-| H01 | Reject changed candidate identity on resume. | IdentityPinned | Exact-byte resume slice passes. Full binding and per-invocation evidence remain pending |
-| H02 | Preserve iterations and failure history across segments. | ResumePreservesHistory | Pending |
-| H03 | Preserve product failures after resource termination. | ProductFailureMonotone | Pending |
-| H04 | Refuse passing reports with incomplete evidence. | PassRequiresEvidence | Pending |
-| H05 | Prevent workload launch after a terminal condition. | StopPreventsLaunch | Pending |
-| H06 | Capture durable evidence before cleanup. | EvidenceBeforeCleanup | Pending |
-| H07 | Keep deferred experiments outside baseline authority. | PolicyIsolation | Pending |
-| H08 | Keep missing measurements distinct from zero values. | MissingIsUnknown | Pending |
-| H09 | Require the actual merge for a post-#216 profile. | PostMergeGate | Pending |
-| H10 | Accept only the named negative-control violation. | ControlVerdictExact | Shared classification and registration pass. Publication binding remains pending |
+| H01 | Reject changed candidate identity on resume. | IdentityPinned | Driver fixtures pass. Discharge remains pending. |
+| H02 | Preserve iterations and failure history across segments. | ResumePreservesHistory | Driver fixtures pass. Discharge remains pending. |
+| H03 | Preserve product failures after resource termination. | ProductFailureMonotone | Driver fixtures pass. Discharge remains pending. |
+| H04 | Refuse passing reports with incomplete evidence. | PassRequiresEvidence | Driver fixtures pass. Discharge remains pending. |
+| H05 | Prevent workload launch after a terminal condition. | StopPreventsLaunch | Entry, transition, and drain fixtures pass. Discharge remains pending. |
+| H06 | Capture durable evidence before cleanup. | EvidenceBeforeCleanup | Capture and interruption fixtures pass. Containment limits remain. |
+| H07 | Keep deferred experiments outside baseline authority. | PolicyIsolation | Driver fixtures pass. Discharge remains pending. |
+| H08 | Keep missing measurements distinct from zero values. | MissingIsUnknown | Driver fixtures pass. Discharge remains pending. |
+| H09 | Require the actual merge for a post-#216 profile. | PostMergeGate | Open-merge refusal passes. No merged-node run occurred. |
+| H10 | Accept only the named negative-control violation. | ControlVerdictExact | Classification, publication, and audit fixtures pass. Discharge remains pending. |
 
 ## First bounded model result
 
@@ -88,6 +88,26 @@ The [gate continuation](../work-logs/task-017-4-binding-inventory-gate.md) recor
 Current host tests, three focused Linux tests, and eleven TLC controls pass. Two full-suite attempts remain incomplete or invalid.
 
 The complete current fixture suite, interrupted-container capture, and semantic binding review remain pending. No H01–H10 cycle receives full discharge from these partial checks.
+
+## Current terminal and claim checks
+
+The [final-check log](../work-logs/task-017-4-final-checks.md) maps H01–H10 to the current implementation and records its limits.
+
+Three more RED/GREEN cycles pass:
+
+- A terminal-transition lock excludes concurrent workload admission.
+- An active stop drains the current iteration without creating another iteration.
+- A changed ledger cannot reuse evidence for different source bytes.
+
+The current isolated suite passes 22 Rust tests and all 91 invocations across 48 registered cases. Claim auditing remains distinct from claim discharge.
+
+The current shared tier passes 14 positive configurations and 71 negative controls. The legacy driver suite and all 42 disk scenarios also pass.
+
+Interrupted-capture ordering now has a controlled Docker-boundary fixture. It does not verify the Docker daemon or resolve B44.
+
+The completion adapter accepts TASK-017-4 and checks its claim independently of structural links. Pending claim evidence still blocks completion.
+
+Earlier incomplete runs and invalid reports remain historical evidence. Their results do not describe the current source snapshot.
 
 ## Per-cycle record template
 

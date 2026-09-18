@@ -35,6 +35,8 @@ fn expected() -> BTreeMap<String, Vec<i64>> {
         ("resource", vec![1, 1]),
         ("terminal", vec![0, 0]),
         ("terminal-before-exec", vec![1]),
+        ("terminal-lock", vec![1]),
+        ("active-stop", vec![0]),
         ("timeout", vec![1, 1]),
         ("capability", vec![3]),
         ("executable", vec![2]),
@@ -120,7 +122,7 @@ fn check(evidence: &Path, output: &Path) -> Result<()> {
         actual_files.len() == expected_files.len(),
         "A required invocation is missing."
     );
-    for (suite, count) in [("manifest", 3), ("models", 4), ("driver", 7)] {
+    for (suite, count) in [("manifest", 3), ("models", 4), ("driver", 9)] {
         let log = String::from_utf8(regular(&evidence.join(format!("{suite}.txt")), MAX_BYTES)?)?;
         let pattern = format!(
             r"(?m)^test result: ok\. {count} passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in [0-9.]+s$"

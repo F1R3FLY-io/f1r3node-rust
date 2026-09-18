@@ -79,7 +79,8 @@ epic_id: EPIC-017
 title: "Ratified Casper Conformance and Soak Evidence"
 status: in_progress
 priority: p0
-user_story: null
+user_story: US-006
+user_flow: FLOW-001
 blocked_by: []
 created_at: 2026-09-16
 updated_at: 2026-09-17
@@ -154,6 +155,9 @@ files:
   - scripts/casper-soak/src/bin/check-casper-bindings.rs
   - scripts/casper-soak/tests/bindings.rs
   - scripts/casper-soak/tests/interruption.rs
+  - scripts/casper-soak/src/bin/check-casper-claims.rs
+  - scripts/casper-soak/tests/claims.rs
+  - scripts/casper-soak/task-complete.sh
 tasks:
   - id: TASK-017-1
     title: "Reconcile ratifications, existing epics, and source dependencies"
@@ -220,8 +224,30 @@ tasks:
     claimed_by: pi-casper-harness
     claimed_at: 2026-09-16T22:18:38Z
     execution_scope: "Authorized completion work: shared registration and real-driver bindings. No node dispatch, external repin, or claim waiver."
-    work_log: docs/work-logs/task-017-4-binding-inventory-gate.md
-    completion_blocker: "Full driver bindings and profile adapters remain incomplete. Approved profile implementation may proceed alongside this task. Dispatch and claim gates remain unchanged."
+    work_log: docs/work-logs/task-017-4-final-checks.md
+    unit_tests:
+      - scripts/casper-soak/tests/manifest.rs
+      - scripts/casper-soak/tests/models.rs
+      - scripts/casper-soak/tests/driver.rs
+      - scripts/casper-soak/tests/bindings.rs
+      - scripts/casper-soak/tests/interruption.rs
+      - scripts/casper-soak/tests/claims.rs
+    files:
+      - scripts/run-merge-recovery-soak.sh
+      - scripts/bench/fixtures/casper-lifecycle-executor.sh
+      - scripts/casper-soak/src/main.rs
+      - scripts/casper-soak/src/runtime.rs
+      - scripts/casper-soak/src/bin/check-casper-bindings.rs
+      - scripts/casper-soak/src/bin/check-casper-claims.rs
+      - scripts/casper-soak/tests/driver.rs
+      - scripts/casper-soak/tests/bindings.rs
+      - scripts/casper-soak/tests/interruption.rs
+      - scripts/casper-soak/tests/claims.rs
+      - scripts/casper-soak/task-complete.sh
+      - scripts/ci/check-casper-soak-bindings.sh
+      - formal/tlaplus/casper_soak/verification-plan.jsonc
+      - .github/workflows/slashing-tests.yml
+    completion_blocker: "Current source-bound fixture verification and claim auditing are implemented. Accepted semantic claim discharge remains required. No waiver or completion stamp is authorized."
     blocked_by: []
     decisions: [D-11]
     acceptance:
@@ -488,6 +514,9 @@ files:
   - scripts/casper-soak/src/bin/check-casper-bindings.rs
   - scripts/casper-soak/tests/bindings.rs
   - scripts/casper-soak/tests/interruption.rs
+  - scripts/casper-soak/src/bin/check-casper-claims.rs
+  - scripts/casper-soak/tests/claims.rs
+  - scripts/casper-soak/task-complete.sh
 tasks:
   - id: TASK-018-1
     title: "Verify the merge gate and establish the post-merge baseline"

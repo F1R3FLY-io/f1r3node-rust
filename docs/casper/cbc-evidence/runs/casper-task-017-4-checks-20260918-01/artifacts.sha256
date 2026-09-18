@@ -1,0 +1,8 @@
+2db0b91ffe5c94d163107d3b2b2978a35adaec4ff347b2c84b00a75f051db420  ./evidence.tar.gz
+3f044fd9340ffdf10713319e4842b94cfdf4fb64db04ca4fb88f79e8bf6f5972  ./sources.sha256
+8dc8b37599b5fad58d8085568b10d3dbbe24c8f4040313df1841d5ce9709d587  ./retained-files.sha256
+8e4c49e68b8961a2e0c939e070fd935a48202cd3c995ce4be058ba9ff947b0ab  ./source.tar.gz
+c5cf46fa2d87b391f0f18d448784b1b52fafc619f700dcb5e73fb6579de82ed9  ./implementation.patch.txt
+cacc43327271eafcf8ada23c536484c90f175eb39e9ffd61c39c4ed4866eaaf6  ./new-files.patch.txt
+d0c11f742ae19e833df893cf7a77f18e7e5912a97ad39fcb03795ce147bd15b0  ./report.json
+e9ac173e2ff2cf150e279f3d7077704523be1ce8ec747cd51fbd315c1a680add  ./redactions.tsv

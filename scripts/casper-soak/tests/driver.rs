@@ -408,10 +408,70 @@ mod linux {
         }
     }
     #[test]
+    fn active_stop_drains_without_another_iteration() {
+        let mut c = Case::new("active-stop", "stop-after-sample", 2);
+        c.m["runtime"]["iterations_per_segment"] = 2.into();
+        c.seal();
+        c.invoke(0);
+        assert_eq!(c.entry(1)["scenario_verdict"], "passed");
+        assert!(!c.output.join("casper-history/00000002.json").exists());
+        let result = record(&c.output.join("casper-result.json")).unwrap();
+        assert_eq!(result["termination"], "cancelled");
+        assert_eq!(result["soak_verdict"], "non_passing");
+    }
+
+    #[test]
+    fn terminal_transition_excludes_concurrent_launch() {
+        use std::os::fd::AsRawFd;
+        use std::time::{Duration, Instant};
+        let mut c = Case::new("terminal-lock", "complete", 1);
+        let entry = c.root.join("bin/transition-entry");
+        fs::write(&entry, "#!/usr/bin/env bash\nset -eu\nif [[ \"$1\" == run ]]; then touch \"$SOAK_OUTPUT_DIR/transition-ready\"; until [[ -e \"$SOAK_OUTPUT_DIR/transition-held\" ]]; do sleep 0.01; done; fi\nexec \"$SOAK_TEST_REAL_HARNESS_BIN\" \"$@\"\n").unwrap();
+        fs::set_permissions(&entry, fs::Permissions::from_mode(0o755)).unwrap();
+        c.env.insert(
+            "SOAK_TEST_REAL_HARNESS_BIN".into(),
+            binary().display().to_string(),
+        );
+        c.env
+            .insert("SOAK_HARNESS_BIN".into(), entry.display().to_string());
+        let output = c.output.clone();
+        let worker = std::thread::spawn(move || {
+            c.invoke(1);
+            c
+        });
+        let until = Instant::now() + Duration::from_secs(15);
+        while !output.join("transition-ready").exists() {
+            assert!(
+                Instant::now() < until,
+                "The runtime boundary was not reached."
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let lock = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(output.join(".casper-transition-lock"))
+            .unwrap();
+        assert_eq!(unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) }, 0);
+        fs::write(output.join("transition-held"), "held").unwrap();
+        std::thread::sleep(Duration::from_secs(1));
+        let premature = output.join("iteration-00001-docker/launch.json").exists();
+        fs::write(output.join("finalize-requested"), "cancelled\n").unwrap();
+        drop(lock);
+        let c = worker.join().unwrap();
+        assert!(
+            !premature,
+            "The workload launched during the terminal transition."
+        );
+        assert!(!c.output.join("iteration-00001-docker/sample.json").exists());
+    }
+
+    #[test]
     fn terminal_between_admission_and_executor() {
         let mut c = Case::new("terminal-before-exec", "complete", 1);
         let entry = c.root.join("bin/terminal-entry");
-        fs::write(&entry, "#!/usr/bin/env bash\nset -eu\nif [[ \"$1\" == run ]]; then printf 'cancelled\\n' >\"$SOAK_OUTPUT_DIR/finalize-requested\"; fi\nexec \"$SOAK_TEST_REAL_HARNESS_BIN\" \"$@\"\n").unwrap();
+        fs::write(&entry, "#!/usr/bin/env bash\nset -eu\nif [[ \"$1\" == run ]]; then \"$SOAK_TEST_REAL_HARNESS_BIN\" stop --output \"$SOAK_OUTPUT_DIR\"; fi\nexec \"$SOAK_TEST_REAL_HARNESS_BIN\" \"$@\"\n").unwrap();
         fs::set_permissions(&entry, fs::Permissions::from_mode(0o755)).unwrap();
         c.env.insert(
             "SOAK_TEST_REAL_HARNESS_BIN".into(),

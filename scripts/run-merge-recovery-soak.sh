@@ -1731,6 +1731,10 @@ fi
 
 while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 	if [ "$CASPER_RUNTIME" -eq 1 ]; then
+		if [ -e "$FINALIZE_MARKER" ] || [ -L "$FINALIZE_MARKER" ]; then
+			CASPER_TERMINATION=cancelled
+			break
+		fi
 		[ "$ITERATIONS" -lt "$CASPER_LIMIT" ] || break
 		[ "$((ITERATIONS - CASPER_SEGMENT_START))" -lt "$CASPER_SEGMENT_LIMIT" ] || break
 		casper_runtime history --iteration "$ITERATIONS" --failures "$FAILURES" || exit 2
@@ -1847,7 +1851,11 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 			;;
 		finalize)
 			printf 'finalize signalled after iteration %s; ending the run\n' "$ITERATIONS"
-			printf '%s\n' "finalize signalled after iteration $ITERATIONS" >"$FINALIZE_MARKER"
+			if [ "$CASPER_RUNTIME" -eq 1 ]; then
+				casper_runtime stop || exit 2
+			else
+				printf '%s\n' "finalize signalled after iteration $ITERATIONS" >"$FINALIZE_MARKER"
+			fi
 			break
 			;;
 		'')

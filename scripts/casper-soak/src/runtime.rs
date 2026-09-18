@@ -370,6 +370,45 @@ fn request_context(c: &Context, segment: u64, iteration: u64) -> Value {
     request["iteration"] = iteration.into();
     request
 }
+fn transition_lock(output: &Path) -> Result<File> {
+    use std::os::fd::AsRawFd;
+    use std::time::{Duration, Instant};
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(output.join(".casper-transition-lock"))?;
+    ensure!(
+        file.metadata()?.is_file(),
+        "The transition lock is not a regular file."
+    );
+    let until = Instant::now() + Duration::from_secs(2);
+    loop {
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            return Ok(file);
+        }
+        let error = std::io::Error::last_os_error();
+        ensure!(
+            error.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < until,
+            "The transition lock is unavailable."
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+pub fn stop(output: &Path) -> Result<()> {
+    let _transition = transition_lock(output)?;
+    let terminal = output.join("finalize-requested");
+    if terminal.try_exists()? || terminal.is_symlink() {
+        regular(&terminal, MAX_BYTES)?;
+    } else {
+        exclusive(&terminal, b"finalize requested\n", true)?;
+    }
+    Ok(())
+}
+
 pub fn run(
     root: &Path,
     output: &Path,
@@ -378,6 +417,7 @@ pub fn run(
     iteration: u64,
 ) -> Result<i32> {
     let c = admit(root, iteration)?;
+    let transition = transition_lock(output)?;
     let terminal = output.join("finalize-requested");
     ensure!(
         !terminal.try_exists()? && !terminal.is_symlink(),
@@ -417,13 +457,13 @@ pub fn run(
         "native" => {}
         _ => return Err(eyre!("The executor kind is unsupported.")),
     }
-    Ok(command
+    let mut child = command
         .arg(executor)
         .arg(directory.join("request.json"))
         .arg(directory)
-        .status()?
-        .code()
-        .unwrap_or(128))
+        .spawn()?;
+    drop(transition);
+    Ok(child.wait()?.code().unwrap_or(128))
 }
 #[derive(Default)]
 struct Observations {

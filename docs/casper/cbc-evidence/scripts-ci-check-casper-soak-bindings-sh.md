@@ -1,6 +1,6 @@
 # CbC Evidence: scripts/ci/check-casper-soak-bindings.sh
 
-Focused inventory and interruption checks pass. Complete fixture verification, interrupted capture, and the harness claim remain pending.
+All 22 isolated tests pass, including interrupted-capture ordering. Semantic claim discharge remains pending.
 
 ```json
 {
@@ -8,19 +8,24 @@ Focused inventory and interruption checks pass. Complete fixture verification, i
     "path": "scripts/ci/check-casper-soak-bindings.sh",
     "id": "scripts-ci-check-casper-soak-bindings-sh",
     "commit": null,
-    "sha256": "3b8000c2e85b27825ca493af665f3d3b6a1b67511bfd5e212daa7195ed470826"
+    "sha256": "060be41f2d7c9ce6a543edc02f9ceb10f07b84a5cc17e72e2335ecd12b18b8d7"
   },
   "claim": "docs/claims/casper-soak-harness.md",
   "claim_ids": [
     "CLAIM-CASPER-SOAK-001"
   ],
   "claim_digests": {
-    "docs/claims/casper-soak-harness.md": "8a0ccde7e3752aecdcd5d92527b6ddceefd733b551b1ee4bea9f2893802c9d27"
+    "docs/claims/casper-soak-harness.md": "29709b0b86bcf1bc287582fa15410af0cc4d7381736c3d23576903db5ca66661"
   },
   "adapter": "embedded",
   "status": "pending",
   "scope": "harness-only",
   "evidence": {
+    "kind": "source-bound-fixture-verification",
+    "ref": "docs/casper/cbc-evidence/runs/casper-task-017-4-checks-20260918-01/report.json",
+    "sha256": "d0c11f742ae19e833df893cf7a77f18e7e5912a97ad39fcb03795ce147bd15b0"
+  },
+  "previous_binding_evidence": {
     "kind": "partial-driver-binding",
     "ref": "docs/casper/cbc-evidence/runs/casper-binding-gates-20260918-01/report.json",
     "sha256": "f07c3f7955d7a098b3ce4e646d96bd4472d8f99f56bc43689693c2fb9ecb6039"

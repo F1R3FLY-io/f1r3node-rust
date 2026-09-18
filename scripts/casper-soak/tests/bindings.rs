@@ -60,9 +60,15 @@ fn required_case_cannot_be_replaced_by_an_unrelated_case() {
         fs::create_dir_all(destination.parent().unwrap()).unwrap();
         fs::write(destination, casper_soak::encoded(&serde_json::json!({"command":source["command"],"expected_exit":source["expected_exit"],"actual_exit":source["actual_exit"],"evidence_kind":"synthetic_fixture","purpose":"inventory-validator-input"})).unwrap()).unwrap();
     }
-    fs::create_dir(evidence.join("terminal-before-exec")).unwrap();
-    fs::write(evidence.join("terminal-before-exec/invocation-01.json"), casper_soak::encoded(&serde_json::json!({"command":["bash","scripts/run-merge-recovery-soak.sh"],"expected_exit":1,"actual_exit":1,"evidence_kind":"synthetic_fixture","purpose":"inventory-validator-input"})).unwrap()).unwrap();
-    for (suite, count) in [("manifest", 3), ("models", 4), ("driver", 7)] {
+    for (case, exit) in [
+        ("terminal-before-exec", 1),
+        ("terminal-lock", 1),
+        ("active-stop", 0),
+    ] {
+        fs::create_dir(evidence.join(case)).unwrap();
+        fs::write(evidence.join(case).join("invocation-01.json"), casper_soak::encoded(&serde_json::json!({"command":["bash","scripts/run-merge-recovery-soak.sh"],"expected_exit":exit,"actual_exit":exit,"evidence_kind":"synthetic_fixture","purpose":"inventory-validator-input"})).unwrap()).unwrap();
+    }
+    for (suite, count) in [("manifest", 3), ("models", 4), ("driver", 9)] {
         fs::write(evidence.join(format!("{suite}.txt")), format!("Synthetic inventory-validator input.\ntest result: ok. {count} passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n")).unwrap();
     }
     assert!(check(&evidence, &root.path().join("valid")));

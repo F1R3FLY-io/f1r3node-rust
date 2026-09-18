@@ -37,6 +37,7 @@ if [[ "$mode" == fault-* ]]; then
 	jq --slurpfile receipt "$output/receipt.json" --arg hash "$hash" --argjson size "$size" '.observations += [(.observations[0] + {event_kind:"fault_acknowledgment",record_id:"receipt-1",event_id:"fault-event-1",producer_sequence:"2",payload:$receipt[0],raw_reference:{path:"receipt.json",bytes:$size,sha256:$hash,producer:"fixture-executor",capture_state:"complete",observation_ids:["receipt-1"]}})]' "$output/transport.json" >"$output/transport.next"
 	mv "$output/transport.next" "$output/transport.json"
 fi
+if [[ "$mode" == stop-after-sample ]]; then "$SOAK_HARNESS_BIN" stop --output "$SOAK_OUTPUT_DIR"; fi
 if [[ "$mode" == timeout ]]; then sleep 3; fi
 if [[ "$mode" == failure-then-stop && "$iteration" == 2 ]]; then
 	printf 'Synthetic resource stop.\n' >"$SOAK_OUTPUT_DIR/host-guardian-breach.txt"

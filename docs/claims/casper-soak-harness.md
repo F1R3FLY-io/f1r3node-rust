@@ -26,6 +26,9 @@ artifacts:
   - scripts/casper-soak/src/bin/check-casper-bindings.rs
   - scripts/casper-soak/tests/bindings.rs
   - scripts/casper-soak/tests/interruption.rs
+  - scripts/casper-soak/src/bin/check-casper-claims.rs
+  - scripts/casper-soak/tests/claims.rs
+  - scripts/casper-soak/task-complete.sh
   - scripts/bench/casper-soak.sh
   - scripts/bench/fixtures/casper-lifecycle-executor.sh
   - .github/workflows/slashing-tests.yml
@@ -122,7 +125,7 @@ The interface contract records source-audited primitives at that pin. Each run m
 
 Fixtures must execute the real driver with controlled processes and storage responses. A model-only simulation does not satisfy the binding tier.
 
-The inventory gate requires all 46 registered case identities and all 89 invocation records. Each invocation must match its registered exit and command.
+The inventory gate requires all 48 registered case identities and all 91 invocation records. Each invocation must match its registered exit and command.
 
 Aggregate counts cannot replace case coverage. Inventory acceptance does not discharge this claim or establish semantic binding coverage.
 
@@ -161,9 +164,9 @@ A failing product observation and an infrastructure termination remain separate 
 
 - [x] TASK-017-4: Implement the finite model and ten defect knobs.
 - [x] TASK-017-4: Register clean and expected-violation configurations in the local runner.
-- [ ] TASK-017-4: Integrate those controls into the reviewed shared CI gate.
-- [ ] TASK-017-4: Bind each action to the real driver with deterministic fault fixtures.
-- [ ] TASK-017-4: Validate manifests and refuse missing required evidence in the workflow.
+- [x] TASK-017-4: Integrate those controls into the reviewed shared CI gate.
+- [x] TASK-017-4: Bind each action to the real driver with deterministic fault fixtures.
+- [x] TASK-017-4: Validate manifests and refuse missing required evidence in the workflow.
 - [ ] TASK-017-12: Run approved baseline profiles and retain all terminal outcomes.
 - [ ] TASK-017-13: Check every linked claim and artifact, not just one artifact-level status.
 - [ ] TASK-018-2: Rebind changed interfaces after the actual #216 merge.
@@ -175,11 +178,13 @@ The local bounded model and control runner are implemented. One clean configurat
 
 The model checks safety only, not eventual termination. Its bounds are two candidates, two segments, four total iterations, and one active child.
 
-Runner tests verify classification and error handling. They do not bind the Bash driver's behavior to the model.
+The real-driver fixtures now cover lifecycle admission, history, terminal transitions, capture, and publication. The shared workflow runs the model and fixture gates.
 
-Driver bindings, profile fixtures, shared CI checks, and soaks remain pending. Construction is not applicable.
+The [binding review](../work-logs/task-017-4-final-checks.md) records implementation boundaries and limits. Accepted semantic discharge remains separate from fixture execution.
 
-The [implementation log](../work-logs/task-017-4-harness-model-2026-09-16.md) records local evidence and limitations.
+Profile fixtures, candidate qualification, and node soaks remain pending. Construction is not applicable.
+
+The claim auditor checks exact identities, digests, phases, and declared tiers. It does not execute a prover or promote pending claims.
 
 PRs #431 and #432 supply prerequisite containment and disk models. This claim must compose with them, not replace or duplicate them.
 
