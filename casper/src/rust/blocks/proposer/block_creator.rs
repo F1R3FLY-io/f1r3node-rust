@@ -148,7 +148,6 @@ struct FinalityLagStats {
 /// for per-shard control — when that happens the rename target is
 /// already in place.
 const DEPLOY_SELECTION_RESERVE_TAIL_ENABLED: bool = true;
-const ORDINARY_DEPLOY_PROPOSAL_CAP: usize = 128;
 const USER_DEPLOY_BYTE_PROPOSAL_BUDGET: usize = 2 * 1024 * 1024;
 const USER_DEPLOY_BACKPRESSURE_BYTE_PROPOSAL_BUDGET: usize = 512 * 1024;
 const RETRY_DEPLOY_REPROPOSAL_CAP: usize = 32;
@@ -162,8 +161,11 @@ const DEPLOY_INCLUSION_LEASE_MILLIS: i64 = 30_000;
 const FRESH_DEPLOY_MAX_ADMISSION_DELAY_MILLIS: i64 = 60_000;
 const FRESH_DEPLOY_ESCALATED_ADMISSION_DELAY_MILLIS: i64 = 120_000;
 const FRESH_DEPLOY_MAX_ESCALATED_ADMISSION_DELAY_MILLIS: i64 = 300_000;
-const FINALITY_LAG_SOFT_BACKPRESSURE_BLOCKS: i64 = 4;
-const FINALITY_LAG_HARD_BACKPRESSURE_BLOCKS: i64 = 8;
+/// Public so startup validation can order the width cap against the hard tier.
+pub const FINALITY_LAG_SOFT_BACKPRESSURE_BLOCKS: i64 = 4;
+pub const FINALITY_LAG_HARD_BACKPRESSURE_BLOCKS: i64 = 8;
+const _: () =
+    assert!(FINALITY_LAG_SOFT_BACKPRESSURE_BLOCKS < FINALITY_LAG_HARD_BACKPRESSURE_BLOCKS);
 
 /// C15 / Smell-4: extract the deploy-signature pretty-print prefix
 /// used in operator-facing log messages. Previously inlined as
@@ -300,11 +302,10 @@ fn user_deploy_byte_budget(admission_policy: DeployAdmissionPolicy) -> usize {
 }
 
 fn normal_ordinary_deploy_cap(casper_snapshot: &CasperSnapshot) -> usize {
-    (casper_snapshot
+    casper_snapshot
         .on_chain_state
         .shard_conf
-        .max_user_deploys_per_block as usize)
-        .min(ORDINARY_DEPLOY_PROPOSAL_CAP)
+        .max_user_deploys_per_block as usize
 }
 
 fn is_retryable_single_value_batch_error(err: &CasperError) -> bool {
@@ -1711,20 +1712,21 @@ async fn prepare_slashing_deploys(
     let slash_candidates = authorized_slash_candidates(casper_snapshot)?;
 
     // `authorized_slash_candidates` documents an at-most-one-per-offender
-    // invariant via its `BTreeMap<Validator, …>` accumulator
-    // (slashing_authorization.rs:253-317). Pin the contract at the boundary
-    // so a future refactor of that helper can't silently produce duplicates.
-    debug_assert!(
-        {
-            let mut offenders: Vec<&prost::bytes::Bytes> =
-                slash_candidates.iter().map(|c| &c.offender).collect();
-            offenders.sort();
-            let original_len = offenders.len();
-            offenders.dedup();
-            offenders.len() == original_len
-        },
-        "authorized_slash_candidates must produce unique offenders; got duplicates"
-    );
+    // invariant via its `BTreeMap<Validator, …>` accumulator. Enforce the
+    // contract at the boundary — a duplicate would ship an invalid block, so
+    // it must fail this propose in every build, not only under debug.
+    {
+        let mut offenders: Vec<&prost::bytes::Bytes> =
+            slash_candidates.iter().map(|c| &c.offender).collect();
+        offenders.sort();
+        let original_len = offenders.len();
+        offenders.dedup();
+        if offenders.len() != original_len {
+            return Err(CasperError::RuntimeError(
+                "authorized slash candidates contain a duplicate offender".to_string(),
+            ));
+        }
+    }
 
     // Slash deploys are NOT persisted in `KeyValueDeployStorage` and
     // this is correct by design (not a TODO).
@@ -2593,8 +2595,9 @@ pub async fn create(
     rejected_deploy_buffer: Arc<Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>>,
     runtime_manager: &RuntimeManager,
     block_store: &mut KeyValueBlockStore,
-    allow_empty_blocks: bool,
+    selection: super::proposer::DeploySelection,
 ) -> Result<BlockCreatorResult, CasperError> {
+    let allow_empty_blocks = selection.allows_empty();
     use crate::rust::metrics_constants::{
         BLOCK_CREATOR_COMPUTE_DEPLOYS_CHECKPOINT_TIME_METRIC,
         BLOCK_CREATOR_COMPUTE_PARENTS_POST_STATE_TIME_METRIC,
@@ -2670,7 +2673,9 @@ pub async fn create(
     let floor_ctx = derive_floor_context(casper_snapshot, block_store).await?;
 
     // Prepare deploys
-    let (user_deploys, _, _) = {
+    let (user_deploys, _, _) = if selection == super::proposer::DeploySelection::RecoveryEmpty {
+        (HashSet::new(), 0usize, false)
+    } else {
         let t = std::time::Instant::now();
         let user_deploys_in_scope =
             scope_has_unfinalized_user_deploys(casper_snapshot, block_store)?;
@@ -2898,7 +2903,6 @@ pub async fn create(
         casper_snapshot,
         runtime_manager,
         &latest_messages,
-        None,
         Some(&rejected_deploy_buffer),
         floor_ctx.as_ref(),
         Some(&local_validator),
@@ -4940,7 +4944,7 @@ mod tests {
             false,
             DeployAdmissionPolicy {
                 allow_ordinary: true,
-                ordinary_cap: ORDINARY_DEPLOY_PROPOSAL_CAP,
+                ordinary_cap: normal_ordinary_deploy_cap(&snapshot),
                 allow_in_scope_recovery: false,
                 in_scope_recovery_cap: 0,
                 reserve_tail: false,
@@ -4953,7 +4957,7 @@ mod tests {
         .expect("prepare deploys");
 
         assert!(!prepared.deploys.is_empty());
-        assert!(prepared.deploys.len() < ORDINARY_DEPLOY_PROPOSAL_CAP);
+        assert!(prepared.deploys.len() < normal_ordinary_deploy_cap(&snapshot));
         assert!(prepared.byte_cap_hit);
         assert!(prepared.cap_hit);
         assert!(prepared.selected_user_deploy_bytes <= USER_DEPLOY_BYTE_PROPOSAL_BUDGET);
@@ -5754,7 +5758,7 @@ mod tests {
         let deploys = HashSet::from([deploy]);
         let selected = select_deploys_for_block(
             &deploys,
-            ORDINARY_DEPLOY_PROPOSAL_CAP,
+            128, // count cap irrelevant; the test exercises the byte budget
             false,
             USER_DEPLOY_BYTE_PROPOSAL_BUDGET,
         );

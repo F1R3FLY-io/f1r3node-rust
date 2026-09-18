@@ -177,7 +177,6 @@ fn create_snapshot(max_block_num: i64, validator_id: Bytes) -> CasperSnapshot {
         height_constraint_threshold: 0,
         deploy_lifespan: DEPLOY_LIFESPAN,
         casper_version: 1,
-        config_version: 1,
         bond_minimum: 0,
         bond_maximum: i64::MAX,
         epoch_length: 0,
@@ -185,7 +184,6 @@ fn create_snapshot(max_block_num: i64, validator_id: Bytes) -> CasperSnapshot {
         min_phlo_price: 0,
         enable_mergeable_channel_gc: false,
         mergeable_channels_gc_depth_buffer: 10,
-        disable_late_block_filtering: false,
         disable_validator_progress_check: false,
         ..CasperShardConf::new()
     };
@@ -209,8 +207,6 @@ fn create_snapshot(max_block_num: i64, validator_id: Bytes) -> CasperSnapshot {
     CasperSnapshot {
         dag,
         last_finalized_block: Bytes::new(),
-        lca: Bytes::new(),
-        tips: vec![],
         parents: vec![],
         justifications: HashSet::new(),
         invalid_blocks: HashMap::new(),
@@ -524,7 +520,7 @@ async fn ordinary_deploy_selection_uses_config_cap() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn ordinary_deploy_selection_is_bounded_when_config_is_huge() {
+async fn ordinary_deploy_selection_is_bounded_only_by_the_configured_cap() {
     crate::init_logger();
 
     let validator_sk = DEFAULT_VALIDATOR_SKS[0].clone();
@@ -545,10 +541,12 @@ async fn ordinary_deploy_selection_is_bounded_when_config_is_huge() {
         .await
         .expect("block store");
     let mut snapshot = create_snapshot(20, validator_id);
+    // Above the old compiled ceiling (128): the conf key is the single
+    // count bound, so 150 must be honored, not clamped.
     snapshot
         .on_chain_state
         .shard_conf
-        .max_user_deploys_per_block = 777_777;
+        .max_user_deploys_per_block = 150;
     snapshot.on_chain_state.shard_conf.deploy_lifespan = 10_000;
     let deploys: Vec<Signed<DeployData>> = (1..=160)
         .map(|n| create_deploy(n, None, &validator_sk))
@@ -574,8 +572,8 @@ async fn ordinary_deploy_selection_is_bounded_when_config_is_huge() {
 
     assert_eq!(
         prepared.deploys.len(),
-        128,
-        "ordinary deploy proposals must remain bounded when config is huge"
+        150,
+        "the configured cap is the single count bound — no hidden ceiling"
     );
     assert!(prepared.cap_hit);
 }
@@ -1113,7 +1111,7 @@ async fn should_remove_block_expired_deploys_while_keeping_valid_ones() {
         rejected_deploy_buffer.clone(),
         &runtime_manager,
         &mut block_store.clone(),
-        false,
+        casper::rust::blocks::proposer::proposer::DeploySelection::Standard,
     )
     .await;
 
@@ -1223,7 +1221,7 @@ async fn should_remove_both_block_expired_and_time_expired_deploys() {
         rejected_deploy_buffer.clone(),
         &runtime_manager,
         &mut block_store.clone(),
-        false,
+        casper::rust::blocks::proposer::proposer::DeploySelection::Standard,
     )
     .await;
 
@@ -1324,7 +1322,7 @@ async fn should_remove_expired_deploys_from_rejected_deploy_buffer() {
         rejected_deploy_buffer.clone(),
         &runtime_manager,
         &mut block_store.clone(),
-        false,
+        casper::rust::blocks::proposer::proposer::DeploySelection::Standard,
     )
     .await;
 

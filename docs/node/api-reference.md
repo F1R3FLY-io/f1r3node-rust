@@ -107,7 +107,7 @@ curl http://localhost:40403/api/status
 | `shardId` | string | Shard identifier |
 | `peers` | int | Connected peer count |
 | `nodes` | int | Discovered node count |
-| `minPhloPrice` | int | Minimum phlogiston price for deploys |
+| `minPhloPrice` | int | Minimum phlogiston price for deploys — the chain-adopted floor once casper is up; until then the local genesis-seed value. `isReady: false` marks every value in this payload provisional |
 | `peerList` | array | Detailed peer info with connection status |
 | `nativeTokenName` | string | Full token name from genesis |
 | `nativeTokenSymbol` | string | Token ticker symbol |

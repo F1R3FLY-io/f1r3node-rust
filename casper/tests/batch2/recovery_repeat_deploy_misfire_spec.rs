@@ -57,7 +57,6 @@ fn mk_casper_snapshot(
         height_constraint_threshold: 0,
         deploy_lifespan: 50,
         casper_version: 1,
-        config_version: 1,
         bond_minimum: 0,
         bond_maximum: i64::MAX,
         epoch_length: 0,
@@ -65,7 +64,6 @@ fn mk_casper_snapshot(
         min_phlo_price: 0,
         enable_mergeable_channel_gc: false,
         mergeable_channels_gc_depth_buffer: 10,
-        disable_late_block_filtering: false,
         disable_validator_progress_check: false,
         ..CasperShardConf::new()
     };

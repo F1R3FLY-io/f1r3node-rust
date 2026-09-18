@@ -170,6 +170,12 @@ env:
   #   #129 shard-port reservation. Verified: SI PR #127 CI green;
   #   f1r3node-rust run 32615164762 attempt 1 reproduced the timeout on the
   #   old pin.
+  # 2026-09-07: 3e5b5eb -> 5909b17 (system-integration PR #136 branch, NOT
+  #   yet main): test_observer_overload pins its own exploratory cap
+  #   (--api-exploratory-deploy-max-concurrent=1) instead of relying on the
+  #   shipped default, which node PR #384 makes core-derived. Verified by a
+  #   local docker-provider run of the test against the #384 image (1 passed,
+  #   63s). Re-pin to the merged main SHA once #136 lands.
   # 2026-08-24: 147da81 -> 5943837 (PR #126 branch, NOT yet main; supersedes
   # dev's 3e5b5eb on this branch until #126 folds main in):
   # per-shard docker isolation (the CI run 32588262605 pollution root),
@@ -238,7 +244,25 @@ env:
   # commit; the branch pin's content, now immutable on main). Verified:
   # descends from af0ab83 (merge-base --is-ancestor), and this PR's CI ran
   # full green on the af0ab83 content.
-  SYSTEM_INTEGRATION_REF: 0fb633729a22f600d2c2de4c8fdc3b1f57e9ecb6
+  # 2026-09-08: 5909b17 -> 962effd (system-integration MAIN — #136 landed;
+  #   the owed re-pin from 2026-09-07. Also carries #139 finalization-
+  #   evidence fail-closed test fixes). Verified: descends from 5909b17
+  #   (merge-base --is-ancestor).
+  # 2026-09-10: 962effd -> cffb055 (SI PR #142 branch, cut from main):
+  #   stale-recovery-min-interval 3s -> 6s in conf/rust.conf and
+  #   test_load.py — this branch makes the at-or-below-tick geometry a
+  #   hard config error, so the old conf refuses to boot (run
+  #   34494283638, every leg). Re-pin to the merged main SHA once #142
+  #   lands.
+  # 2026-09-13: cffb055 -> 7018213 (SI PR #142 branch head): the harness
+  #   and test_load drop their stale-recovery-min-interval overrides and
+  #   inherit the node's derived interval (1.5 x check-interval); the
+  #   epoch_transition budget is 90s. Verified: descends from cffb055
+  #   (merge-base --is-ancestor).
+  # 2026-09-15: 7018213 -> b3d14b2 (system-integration MAIN — the #142 merge
+  #   commit; the branch pin's content, now immutable on main). Verified:
+  #   descends from 7018213 (merge-base --is-ancestor).
+  SYSTEM_INTEGRATION_REF: b3d14b27e3c6276b1eb4ab9ccef04e02b0c4e283
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"

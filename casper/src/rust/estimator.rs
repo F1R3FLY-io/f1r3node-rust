@@ -27,7 +27,6 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
-use models::rust::casper::protocol::casper_message::BlockMessage;
 use models::rust::validator::Validator;
 use shared::rust::shared::list_ops::ListOps;
 use shared::rust::store::key_value_store::KvStoreError;
@@ -42,50 +41,31 @@ use crate::rust::util::proto_util;
 #[derive(Debug, Clone, PartialEq)]
 pub struct ForkChoice {
     pub tips: Vec<BlockHash>,
-    pub lca: BlockHash,
     pub scores: HashMap<BlockHash, i64>,
 }
 
+/// Stateless GHOST fork-choice. The parent-count and parent-depth bounds are
+/// per-call inputs from the caller's shard conf, so the estimator can never
+/// run on a stale copy of them.
 #[derive(Debug, Clone)]
-pub struct Estimator {
-    max_number_of_parents: i32,
-    max_parent_depth_opt: Option<i32>,
-}
+pub struct Estimator;
 
 impl Estimator {
     pub const UNLIMITED_PARENTS: i32 = i32::MAX;
     const LATEST_MESSAGE_MAX_DEPTH: i64 = 1000;
 
-    pub fn apply(max_number_of_parents: i32, max_parent_depth_opt: Option<i32>) -> Self {
-        Self {
-            max_number_of_parents,
-            max_parent_depth_opt,
-        }
-    }
+    pub fn apply() -> Self { Self }
 
-    #[tracing::instrument(name = "tips0", target = "f1r3fly.casper.estimator.tips0", skip_all)]
-    pub async fn tips(
-        &self,
-        dag: &mut KeyValueDagRepresentation,
-        genesis: &BlockMessage,
-    ) -> Result<ForkChoice, KvStoreError> {
-        // Phase 12 (PERF-5): `latest_message_hashes()` returns an owned
-        // `imbl::HashMap` (refcount-bump clone). Use `into_iter` to collect
-        // by ownership rather than re-cloning every key/value pair.
-        let latest_message_hashes: HashMap<Validator, BlockHash> =
-            dag.latest_message_hashes().into_iter().collect();
-        tracing::debug!(target: "f1r3fly.casper.estimator.tips_primary", "latest-message-hashes");
-        self.tips_with_latest_messages(dag, genesis, latest_message_hashes)
-            .await
-    }
-
-    /// When the BlockDag has an empty latestMessages, tips will return IndexedSeq(genesis.blockHash)
+    /// Fork choice scored from `floor`: no LCA walk or score descends below it.
+    /// With no latest messages the only tip is `floor`.
     #[tracing::instrument(name = "tips1", target = "f1r3fly.casper.estimator.tips1", skip_all)]
     pub async fn tips_with_latest_messages(
         &self,
         dag: &mut KeyValueDagRepresentation,
-        genesis: &BlockMessage,
+        floor: &BlockMetadata,
         latest_messages_hashes: HashMap<Validator, BlockHash>,
+        max_number_of_parents: i32,
+        max_parent_depth_opt: Option<i32>,
     ) -> Result<ForkChoice, KvStoreError> {
         let invalid_latest_messages =
             dag.invalid_latest_messages_from_hashes(&latest_messages_hashes)?;
@@ -112,11 +92,8 @@ impl Estimator {
             filtered_latest_messages_hashes.remove(&validator);
         }
 
-        let genesis_metadata = BlockMetadata::from_block(genesis, false, None, None);
-
         tracing::debug!(target: "f1r3fly.casper.estimator.tips_fallback", "lca");
-        let lca =
-            Self::calculate_lca(dag, &genesis_metadata, &filtered_latest_messages_hashes).await?;
+        let lca = Self::calculate_lca(dag, floor, &filtered_latest_messages_hashes).await?;
 
         tracing::debug!(target: "f1r3fly.casper.estimator.tips_fallback", "score-map");
         let scores_map =
@@ -132,30 +109,28 @@ impl Estimator {
 
         tracing::debug!(target: "f1r3fly.casper.estimator.tips_fallback", "filtered-deep-parents");
         let ranked_shallow_hashes = self
-            .filter_deep_parents(ranked_latest_messages_hashes, dag)
+            .filter_deep_parents(ranked_latest_messages_hashes, dag, max_parent_depth_opt)
             .await?;
 
         // B2: treat BOTH "unlimited" sentinels EXPLICITLY rather than relying on
         // `-1 as usize` wrapping to usize::MAX. The estimator's own sentinel is
         // `Self::UNLIMITED_PARENTS` (i32::MAX); the config wire convention
-        // (`casper::UNLIMITED_PARENTS`) is `-1`, and that config value reaches this
-        // field directly (node setup passes `conf.casper.max_number_of_parents`). A
-        // genuine positive cap truncates; any negative value or i32::MAX means
-        // unlimited (take all). Behaviour is unchanged; the cast is now cast-safe and
-        // the two conventions are no longer silently conflated by two's-complement.
-        let tips = if self.max_number_of_parents < 0
-            || self.max_number_of_parents == Self::UNLIMITED_PARENTS
+        // (`casper::UNLIMITED_PARENTS`) is `-1`, and that value arrives here
+        // straight from the caller's shard conf. A genuine positive cap
+        // truncates; any negative value or i32::MAX means unlimited (take
+        // all). The cast is cast-safe and the two conventions are not
+        // conflated by two's-complement.
+        let tips = if max_number_of_parents < 0 || max_number_of_parents == Self::UNLIMITED_PARENTS
         {
             ranked_shallow_hashes
         } else {
             ranked_shallow_hashes
                 .into_iter()
-                .take(self.max_number_of_parents as usize)
+                .take(max_number_of_parents as usize)
                 .collect()
         };
         Ok(ForkChoice {
             tips,
-            lca,
             scores: scores_map,
         })
     }
@@ -164,8 +139,9 @@ impl Estimator {
         &self,
         ranked_latest_hashes: Vec<BlockHash>,
         dag: &KeyValueDagRepresentation,
+        max_parent_depth_opt: Option<i32>,
     ) -> Result<Vec<BlockHash>, KvStoreError> {
-        match self.max_parent_depth_opt {
+        match max_parent_depth_opt {
             Some(max_parent_depth) => {
                 // P2-8: avoid `split_first().unwrap()` panic when
                 // `rank_forkchoices` returns an empty list (e.g.,
@@ -213,7 +189,7 @@ impl Estimator {
 
     async fn calculate_lca(
         block_dag: &KeyValueDagRepresentation,
-        genesis: &BlockMetadata,
+        floor: &BlockMetadata,
         latest_messages_hashes: &HashMap<Validator, BlockHash>,
     ) -> Result<BlockHash, KvStoreError> {
         let latest_messages: Vec<BlockMetadata> = latest_messages_hashes
@@ -232,9 +208,9 @@ impl Estimator {
             .collect();
 
         let result = if filtered_lm.is_empty() {
-            genesis.block_hash.clone()
+            floor.block_hash.clone()
         } else {
-            DagOperations::lowest_universal_common_ancestor_many(&filtered_lm, block_dag, genesis)
+            DagOperations::lowest_universal_common_ancestor_many(&filtered_lm, block_dag, floor)
                 .await?
                 .block_hash
         };
@@ -249,7 +225,7 @@ impl Estimator {
     ) -> Result<HashMap<BlockHash, i64>, KvStoreError> {
         fn hash_parents(
             hash: &BlockHash,
-            last_finalized_block_number: i64,
+            lca_block_number: i64,
             block_dag: &KeyValueDagRepresentation,
         ) -> Result<Vec<BlockHash>, KvStoreError> {
             // Phase 12 (PERF-1): one `lookup_unsafe` call per node, not two.
@@ -257,7 +233,7 @@ impl Estimator {
             // whole `BlockMetadata` for `parents` — doubling lock
             // acquisitions on the BFS-bound fork-choice path.
             let meta = block_dag.lookup_unsafe(hash)?;
-            if meta.block_number < last_finalized_block_number {
+            if meta.block_number < lca_block_number {
                 Ok(Vec::new())
             } else {
                 // MAIN parent only. Crediting a validator's weight to every DAG

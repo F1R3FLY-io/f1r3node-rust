@@ -18,6 +18,7 @@ use std::collections::HashMap;
 
 use casper::rust::estimator::Estimator;
 use models::rust::block_hash::BlockHash;
+use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::protocol::casper_message::{BlockMessage, Bond};
 use models::rust::validator::Validator;
 use proptest::prelude::*;
@@ -206,9 +207,15 @@ async fn the_head_must_not_leave_a_majority_branch_for_a_hash_earlier_rival() {
             let mut dag = block_dag_storage
                 .get_representation()
                 .expect("dag representation");
-            let estimator = Estimator::apply(i32::MAX, None);
+            let estimator = Estimator::apply();
             let head = estimator
-                .tips_with_latest_messages(&mut dag, &fork.genesis, fork.latest.clone())
+                .tips_with_latest_messages(
+                    &mut dag,
+                    &BlockMetadata::from_block(&fork.genesis, false, None, None),
+                    fork.latest.clone(),
+                    i32::MAX,
+                    None,
+                )
                 .await
                 .expect("tips")
                 .tips
@@ -347,9 +354,9 @@ proptest! {
             let mut dag = block_dag_storage
                 .get_representation()
                 .expect("dag representation");
-            let estimator = Estimator::apply(i32::MAX, None);
+            let estimator = Estimator::apply();
             let head = estimator
-                .tips_with_latest_messages(&mut dag, &genesis, latest)
+                .tips_with_latest_messages(&mut dag, &BlockMetadata::from_block(&genesis, false, None, None), latest, i32::MAX, None)
                 .await
                 .expect("tips")
                 .tips

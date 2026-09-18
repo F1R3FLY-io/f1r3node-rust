@@ -2020,10 +2020,6 @@ async fn representation_exposes_navigation_and_error_paths() {
         dag.self_justification(&sj.block_hash).unwrap(),
         Some(genesis.block_hash.clone())
     );
-    assert_eq!(
-        dag.self_justification_chain(sj.block_hash.clone()).unwrap(),
-        vec![genesis.block_hash.clone()]
-    );
 
     let descendants = dag.descendants(&genesis.block_hash).unwrap();
     for block in [&b1, &b2, &c1, &sj] {

@@ -5,11 +5,7 @@
 // buffer populate — a side effect of the merge, not part of the cached
 // value — is silently skipped, and a merge-rejected deploy never becomes
 // re-proposable. The cache key must therefore distinguish bufferless from
-// buffered computations.
-//
-// The collision is real under defaults: `disable_late_block_filtering`
-// defaults to true (casper.rs `CasperShardConf::new`) and the exploratory
-// path overrides it to Some(true), so the flag cannot separate the keys.
+// buffered computations — no other key component separates the two paths.
 
 use casper::rust::casper::Casper;
 use casper::rust::util::construct_deploy;
@@ -160,7 +156,6 @@ async fn bufferless_cache_seed_must_not_shadow_buffer_populate() {
             &snapshot,
             &nodes[1].runtime_manager,
             &latest_messages,
-            Some(true),
             None,
             None,
             None,
@@ -202,7 +197,6 @@ async fn bufferless_cache_seed_must_not_shadow_buffer_populate() {
             &snapshot,
             &nodes[1].runtime_manager,
             &latest_messages,
-            None,
             Some(&nodes[1].rejected_deploy_buffer),
             None,
             Some(&owner),

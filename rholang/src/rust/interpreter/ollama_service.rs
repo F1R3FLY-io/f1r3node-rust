@@ -6,6 +6,11 @@ use serde::{Deserialize, Serialize};
 
 use super::errors::InterpreterError;
 
+// In-binary fallbacks; the operator-facing defaults live in defaults.conf.
+const DEFAULT_BASE_URL: &str = "http://localhost:11434";
+const DEFAULT_MODEL: &str = "llama4:latest";
+const DEFAULT_TIMEOUT_SEC: u64 = 30;
+
 #[derive(Clone, Debug)]
 pub struct OllamaConfig {
     pub enabled: bool,
@@ -19,9 +24,9 @@ impl OllamaConfig {
     pub fn from_env() -> Self {
         Self::from_config_values(
             false,
-            "http://localhost:11434".to_string(),
-            "llama4:latest".to_string(),
-            30,
+            DEFAULT_BASE_URL.to_string(),
+            DEFAULT_MODEL.to_string(),
+            DEFAULT_TIMEOUT_SEC,
         )
     }
 
@@ -52,9 +57,9 @@ impl OllamaConfig {
     pub fn disabled() -> Self {
         Self {
             enabled: false,
-            base_url: "http://localhost:11434".to_string(),
-            model: "llama4:latest".to_string(),
-            timeout_sec: 30,
+            base_url: DEFAULT_BASE_URL.to_string(),
+            model: DEFAULT_MODEL.to_string(),
+            timeout_sec: DEFAULT_TIMEOUT_SEC,
             validate_connection: false,
         }
     }

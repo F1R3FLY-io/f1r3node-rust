@@ -48,13 +48,16 @@ fn is_private_ip_address(ip: &str) -> Option<bool> {
     })
 }
 
+/// Reliably reachable remote address used only to pick the outbound
+/// interface; no traffic is sent.
+const LOCAL_IP_PROBE_ADDR: &str = "8.8.8.8:80";
+const GATEWAY_SEARCH_TIMEOUT: Duration = Duration::from_secs(3);
+
 fn find_local_ip() -> Option<std::net::Ipv4Addr> {
     use std::net::UdpSocket;
 
-    // Connect to a remote address to determine local interface
-    // Using Google DNS as it's reliably reachable
     let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
-    socket.connect("8.8.8.8:80").ok()?;
+    socket.connect(LOCAL_IP_PROBE_ADDR).ok()?;
 
     match socket.local_addr().ok()?.ip() {
         std::net::IpAddr::V4(ipv4) if !ipv4.is_loopback() => Some(ipv4),
@@ -417,7 +420,7 @@ async fn discover() -> Result<UPnPDevices, CommError> {
     let mut gateways: Vec<Arc<Gateway<Tokio>>> = Vec::new();
     let mut valid_gateway: Option<Arc<Gateway<Tokio>>> = None;
 
-    let timeout = Duration::from_secs(3);
+    let timeout = GATEWAY_SEARCH_TIMEOUT;
 
     // Workaround: Perform multiple sequential searches since igd-next's search_gateway
     // returns after finding the first gateway, not all gateways like Java's GatewayDiscover

@@ -15,7 +15,7 @@ use casper::rust::casper::{Casper, CasperShardConf, MultiParentCasper};
 use casper::rust::engine::block_retriever::{BlockRetriever, RequestState, RequestedBlocks};
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::engine::multi_parent_casper::MultiParentCasperImpl;
-use casper::rust::engine::running::{Running, RunningRecoveryContext};
+use casper::rust::engine::running::Running;
 use casper::rust::errors::CasperError;
 use casper::rust::estimator::Estimator;
 use casper::rust::genesis::genesis::Genesis;
@@ -43,7 +43,6 @@ use models::rust::casper::protocol::casper_message::{
     ApprovedBlock, ApprovedBlockCandidate, BlockMessage, DeployData,
 };
 use rspace_plus_plus::rspace::history::Either;
-use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 use tokio::sync::mpsc;
 
@@ -124,7 +123,11 @@ impl TestNode {
             self.rejected_deploy_buffer.clone(),
             &self.runtime_manager.clone(),
             &mut self.block_store.clone(),
-            self.allow_empty_blocks,
+            if self.allow_empty_blocks {
+                casper::rust::blocks::proposer::proposer::DeploySelection::StandardAllowEmpty
+            } else {
+                casper::rust::blocks::proposer::proposer::DeploySelection::Standard
+            },
         )
         .await
     }
@@ -174,9 +177,9 @@ impl TestNode {
         block: BlockMessage,
     ) -> Result<ValidBlockProcessing, CasperError> {
         // Check if block is of interest
-        let is_of_interest = block_processor.check_if_of_interest(casper.clone(), &block)?;
+        let verdict = block_processor.check_if_of_interest(casper.clone(), &block)?;
 
-        if !is_of_interest {
+        if !verdict.is_fresh() {
             return Ok(Either::Left(BlockStatus::not_of_interest()));
         }
 
@@ -689,7 +692,9 @@ impl TestNode {
 
                             // Convert Node to PeerNode
                             let peer = PeerNode {
-                                id: NodeIdentifier::new(hex::encode(&sender_node.id)),
+                                id: NodeIdentifier {
+                                    key: sender_node.id.clone(),
+                                },
                                 endpoint: Endpoint::new(
                                     String::from_utf8_lossy(&sender_node.host).to_string(),
                                     sender_node.tcp_port,
@@ -1016,20 +1021,15 @@ impl TestNode {
             .await
             .unwrap();
         // Use create_with_history to ensure tests can reset to genesis state root hash
-        let (runtime_manager, rho_history_repository) = RuntimeManager::create_with_history(
+        let (runtime_manager, _) = RuntimeManager::create_with_history(
             rspace_store,
             mergeable_store,
             std::sync::Arc::new(Genesis::default_mergeable_tags()),
             rholang::rust::interpreter::external_services::ExternalServices::noop(),
         );
-        let rspace_state_manager = RSpaceStateManager::new(
-            rho_history_repository.exporter(),
-            rho_history_repository.importer(),
-        );
-
         let connections_cell = ConnectionsCell::new();
         let _clique_oracle = CliqueOracleImpl;
-        let estimator = Estimator::apply(max_number_of_parents, max_parent_depth);
+        let estimator = Estimator::apply();
         let mut rp_conf = create_rp_conf_ask(current_peer_node.clone(), None, None);
         if let Some(bootstrap_peer) = bootstrap_peer {
             rp_conf.bootstrap = Some(bootstrap_peer);
@@ -1107,8 +1107,6 @@ impl TestNode {
             floor_seed: None,
             sigs: vec![],
         };
-        let last_approved_block = Arc::new(Mutex::new(Some(_approved_block.clone())));
-
         let shard_conf = CasperShardConf {
             fault_tolerance_threshold: 0.0,
             shard_name: shard_id.clone(),
@@ -1126,13 +1124,11 @@ impl TestNode {
             // Required to enable protection from re-submitting duplicate deploys
             deploy_lifespan: deploy_lifespan.unwrap_or(50),
             casper_version: 1,
-            config_version: 1,
             bond_minimum: 0,
             bond_maximum: i64::MAX,
             epoch_length: 10000,
             quarantine_length: 20000,
             min_phlo_price: 1,
-            disable_late_block_filtering: true, // Disabled to prevent deploy loss
             deploy_heartbeat_wake_enabled: false, // Disabled to prevent deploy loss
             disable_validator_progress_check: false,
             enable_mergeable_channel_gc: false, // Keep mergeable data unless GC is explicitly enabled
@@ -1197,22 +1193,6 @@ impl TestNode {
             tle.clone(),                     // transport
             rp_conf.clone(),                 // conf
             block_retriever.clone(),         // block_retriever
-            Some(RunningRecoveryContext {
-                connections_cell: connections_cell.clone(),
-                last_approved_block: last_approved_block.clone(),
-                block_store: block_store.clone(),
-                block_dag_storage: block_dag_storage.clone(),
-                deploy_storage: deploy_storage.lock().clone(),
-                rejected_deploy_buffer: rejected_deploy_buffer.clone(),
-                casper_buffer_storage: casper_buffer_storage.clone(),
-                rspace_state_manager: rspace_state_manager.clone(),
-                event_publisher: event_publisher.clone(),
-                engine_cell: Arc::new(engine_cell.clone()),
-                runtime_manager: Arc::new(runtime_manager.clone()),
-                estimator: estimator.clone(),
-                casper_shard_conf: casper.casper_shard_conf.clone(),
-                heartbeat_signal_ref: casper.heartbeat_signal_ref.clone(),
-            }),
             None,
         );
         engine_cell.set(Arc::new(running_engine)).await;
@@ -1245,9 +1225,12 @@ impl TestNode {
 
     /// Creates a PeerNode with the given name and port
     fn peer_node(name: &str, port: u32) -> PeerNode {
-        // Convert name bytes to hex string for NodeIdentifier
-        let name_hex = hex::encode(name.as_bytes());
-        let node_id = NodeIdentifier::new(name_hex);
+        // Node IDs are a fixed 20 bytes; the name seeds the leading ones.
+        let mut key = [0u8; 20];
+        let seed = name.as_bytes();
+        let taken = seed.len().min(key.len());
+        key[..taken].copy_from_slice(&seed[..taken]);
+        let node_id = NodeIdentifier::new(&hex::encode(key)).expect("a padded name is a valid ID");
         let endpoint = Self::endpoint(port);
 
         PeerNode {

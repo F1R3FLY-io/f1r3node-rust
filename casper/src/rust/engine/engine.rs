@@ -3,7 +3,6 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use async_trait::async_trait;
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
@@ -50,12 +49,10 @@ pub trait Engine: Send + Sync {
 
     async fn handle(&self, peer: PeerNode, msg: CasperMessage) -> Result<(), CasperError>;
 
-    async fn recover_stuck_validator(
-        &self,
-        _delay_threshold: Duration,
-    ) -> Result<bool, CasperError> {
-        Ok(false)
-    }
+    /// Called by the casper loop on each tick while this engine has no
+    /// Casper instance, so an engine waiting on pushed ceremony messages
+    /// can pull when the push window was missed.
+    async fn on_no_casper_tick(&self) -> Result<(), CasperError> { Ok(()) }
 
     /// Returns the casper instance as an Arc if this engine wraps one.
     /// Returns None for engines that don't have casper (NoopEngine, Initializing, etc.)
@@ -215,7 +212,6 @@ pub async fn transition_to_running<U: TransportLayer + Send + Sync + Clone + 'st
     transport: Arc<U>,
     conf: RPConf,
     block_retriever: BlockRetriever<U>,
-    recovery_context: Option<crate::rust::engine::running::RunningRecoveryContext>,
     engine_cell: &EngineCell,
     event_log: &F1r3flyEvents,
     state_items_tx: Option<
@@ -250,7 +246,6 @@ pub async fn transition_to_running<U: TransportLayer + Send + Sync + Clone + 'st
         transport,
         conf,
         block_retriever,
-        recovery_context,
         state_items_tx,
     );
 

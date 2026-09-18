@@ -1,5 +1,4 @@
 pub mod dag;
-pub mod env;
 pub mod grpc;
 pub mod hashable_set;
 pub mod metrics_constants;

@@ -81,8 +81,6 @@ fn snapshot_from_fixture(
             .get_representation()
             .expect("dag representation"),
         last_finalized_block: prost::bytes::Bytes::new(),
-        lca: prost::bytes::Bytes::new(),
-        tips: vec![],
         parents: vec![],
         justifications: HashSet::new(),
         invalid_blocks: HashMap::new(),

@@ -12,6 +12,7 @@ use std::sync::Arc;
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use comm::rust::transport::transport_layer::TransportLayer;
 use models::rust::block_hash::BlockHash;
+use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{BlockMessage, Justification};
 use models::rust::validator::Validator;
@@ -140,7 +141,7 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
     // the consensus hot path. Bug #17 / T-9.20 hardened this contract
     // for crash-window drift; same discipline applies to general
     // storage I/O.
-    let mut valid_latest_metas: HashMap<Validator, models::rust::block_metadata::BlockMetadata> =
+    let mut valid_latest_metas: HashMap<Validator, BlockMetadata> =
         HashMap::with_capacity(valid_latest_msgs.len());
     // A latest message this node does not hold (a stale slot below an LFS
     // restore horizon) cannot be cited as a parent; abstain the validator
@@ -198,9 +199,25 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
     // anchored. A proposer-side parent filter cannot be a consensus-safety
     // mechanism (validators replay declared parents, not fork-choice), so it
     // was redundant. See docs/sealed-floor-merge-v2-status.md.
+    let fork_choice_floor = crate::rust::finality::floor::fork_choice_floor(
+        &dag,
+        &this.block_store,
+        valid_latest_msgs.values(),
+        BlockMetadata::from_block(&this.approved_block, false, None, None),
+        crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
+            this.casper_shard_conf.fault_tolerance_threshold_ppm,
+        ),
+    )
+    .await?;
     let fork_choice = this
         .estimator
-        .tips_with_latest_messages(&mut dag, &this.approved_block, valid_latest_msgs.clone())
+        .tips_with_latest_messages(
+            &mut dag,
+            &fork_choice_floor,
+            valid_latest_msgs.clone(),
+            this.casper_shard_conf.max_number_of_parents,
+            Some(this.casper_shard_conf.max_parent_depth),
+        )
         .await?;
     let ghost_main_parent = fork_choice.tips.into_iter().next();
     let mut sorted_parents_list = parent_blocks_list;
@@ -275,10 +292,8 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
         // `retain` on the vector. Eliminates one intermediate Vec
         // allocation per snapshot and a redundant `.iter()` walk for
         // the max computation.
-        let mut parents_with_meta: Vec<(
-            BlockMessage,
-            models::rust::block_metadata::BlockMetadata,
-        )> = Vec::with_capacity(parents_after_count_limit.len());
+        let mut parents_with_meta: Vec<(BlockMessage, BlockMetadata)> =
+            Vec::with_capacity(parents_after_count_limit.len());
         let mut max_block_num: i64 = 0;
         for b in parents_after_count_limit {
             let meta = dag.lookup_unsafe(&b.block_hash)?;
@@ -320,34 +335,8 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
         parents_after_count_limit
     };
 
-    // C13 / Perf-3: hoist the parent-metadata lookup. Previously this
-    // function performed two passes of `dag.lookup_unsafe` over the
-    // same `parents` set — one to build `parent_metas_for_lca` and
-    // another (via `lookups_unsafe`) to build `parent_metas`. The
-    // batched `lookups_unsafe` is cheaper per parent, so use it once
-    // up-front and borrow into the LCA call.
     let parent_hashes: Vec<BlockHash> = parents.iter().map(|b| b.block_hash.clone()).collect();
     let parent_metas = dag.lookups_unsafe(parent_hashes.clone())?;
-
-    let approved_meta = models::rust::block_metadata::BlockMetadata::from_block(
-        &this.approved_block,
-        false,
-        None,
-        None,
-    );
-    let lca = if parent_metas.is_empty() {
-        this.approved_block.block_hash.clone()
-    } else {
-        crate::rust::util::dag_operations::DagOperations::lowest_universal_common_ancestor_many(
-            &parent_metas,
-            &dag,
-            &approved_meta,
-        )
-        .await?
-        .block_hash
-    };
-
-    let tips: Vec<BlockHash> = parents.iter().map(|b| b.block_hash.clone()).collect();
 
     tracing::debug!(
         "Parent selection: {} validators, {} invalid, {} valid, {} unfiltered, {} parents",
@@ -396,17 +385,14 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
             .collect::<HashSet<_>>()
     };
 
-    // C13 / Perf-3: `parent_metas` is reused from the hoisted lookup
-    // above — no second pass of `dag.lookups_unsafe`.
     let max_block_num = proto_util::max_block_number_metadata(&parent_metas);
 
     let max_seq_nums = valid_latest_metas
         .iter()
         .map(
-            |(validator, block_metadata): (
-                &Validator,
-                &models::rust::block_metadata::BlockMetadata,
-            )| (validator.clone(), block_metadata.sequence_number as u64),
+            |(validator, block_metadata): (&Validator, &BlockMetadata)| {
+                (validator.clone(), block_metadata.sequence_number as u64)
+            },
         )
         .collect::<HashMap<_, _>>();
 
@@ -461,16 +447,15 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
             // single parent would shrink `deploys_in_scope`, which
             // could then admit a duplicate-signature deploy past
             // `InvalidRepeatDeploy` detection.
-            let neighbor_fn = |block_metadata: &models::rust::block_metadata::BlockMetadata| -> Result<
-                Vec<models::rust::block_metadata::BlockMetadata>,
-                CasperError,
-            > {
-                proto_util::get_parent_metadatas_above_block_number(
-                    block_metadata,
-                    earliest_block_number,
-                    &dag,
-                )
-            };
+            let neighbor_fn =
+                |block_metadata: &BlockMetadata| -> Result<Vec<BlockMetadata>, CasperError> {
+                    proto_util::parent_metadatas_above_block_number(
+                        block_metadata,
+                        earliest_block_number,
+                        &dag,
+                        proto_util::UnheldParent::SkipSettled,
+                    )
+                };
 
             let traversal_result = dag_ops::try_bf_traverse(parent_metas, neighbor_fn)?;
 
@@ -534,8 +519,6 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
     Ok(CasperSnapshot {
         dag,
         last_finalized_block,
-        lca,
-        tips,
         parents,
         justifications,
         invalid_blocks,

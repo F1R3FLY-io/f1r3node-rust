@@ -96,6 +96,7 @@ POST_FIX_CONFIGS=(
     recovery_leader/MC_RecoveryLeader
     replay_liveness/MC_ReplayHotLoop
     carrier_index/MC_CarrierIndex
+    deploy_storage/MC_DeployStorageBound
 )
 
 if [[ "${RUN_EXHAUSTIVE_TLA:-0}" == "1" ]]; then

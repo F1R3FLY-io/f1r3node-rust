@@ -821,7 +821,7 @@ casper {
 }
 ```
 
-Validators that accept deploys with prices below this threshold can be slashed. This prevents spam and ensures network sustainability.
+The configured value only seeds genesis: it is baked into the PoS contract, and every node adopts the on-chain value at startup regardless of local configuration. A block carrying a deploy priced below the floor is rejected as invalid (`LowDeployCost`). The verdict is deliberately not slashable — the floor is an admission rule, so an underpriced block is dropped without penalizing its sender's stake. This prevents spam and ensures network sustainability.
 
 ---
 

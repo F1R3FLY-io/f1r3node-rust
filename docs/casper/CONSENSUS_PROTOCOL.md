@@ -515,6 +515,7 @@ Operator config files are minimal overrides — HOCON's fallback semantics merge
 
 **Genesis-locked parameters** (cannot change after network creation):
 - `fault-tolerance-threshold` and `synchrony-constraint-threshold` — written into the genesis block's on-chain state
+- `max-parent-depth`, `deploy-lifespan`, `min-phlo-price` — baked into the PoS contract and exposed via its `getConsensusParameters` getter. Validity rules (parent spread, expiry, repeat-deploy, phlo floor) fork on these, so every node reads them back at casper construction and adopts the on-chain values unconditionally over local configuration; a chain whose values are absent or out of range fails startup rather than falling back. Immutable until an on-chain parameter-upgrade mechanism exists.
 - `native-token-name`, `native-token-symbol`, `native-token-decimals` — baked into the `TokenMetadata` Rholang contract at `rho:system:tokenMetadata` with nonce `i64::MAX`, making them immutable via the registry's `insertSigned` protocol
 
 Changing any of these requires a new genesis (new network).

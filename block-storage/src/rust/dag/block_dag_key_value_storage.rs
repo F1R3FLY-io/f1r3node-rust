@@ -54,7 +54,7 @@ use models::rust::validator::{self, Validator, ValidatorSerde};
 use parking_lot::RwLock as PlRwLock;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
-use shared::rust::store::key_value_store::KvStoreError;
+use shared::rust::store::key_value_store::{KvStoreError, MissingBlockContext};
 use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 
@@ -496,26 +496,6 @@ impl KeyValueDagRepresentation {
             }
         }
         Ok(invalid_block_hashes)
-    }
-
-    pub fn self_justification_chain(
-        &self,
-        block_hash: BlockHash,
-    ) -> Result<Vec<BlockHash>, KvStoreError> {
-        let mut result = Vec::new();
-        let mut current_hash = block_hash;
-
-        loop {
-            match self.self_justification(&current_hash)? {
-                Some(next_hash) => {
-                    result.push(next_hash.clone());
-                    current_hash = next_hash;
-                }
-                None => break,
-            }
-        }
-
-        Ok(result)
     }
 
     pub fn self_justification(
@@ -1452,10 +1432,9 @@ impl BlockDagKeyValueStorage {
         &self,
         f: impl FnOnce(&EquivocationTrackerStore) -> Result<A, KvStoreError>,
     ) -> Result<A, KvStoreError> {
-        // P2-12: RMW path — acquire exclusive write lock. Bug #2 / T-9.2
-        // atomicity contract: the closure observes the equivocation index
-        // under exclusive access; no concurrent reader or writer may
-        // observe a partial mutation.
+        // Exclusive access only, not a transaction: no concurrent reader or
+        // writer interleaves with the closure, but writes it makes before
+        // returning `Err` persist.
         //
         // SAFETY/CONTRACT (P2-13): non-reentrant. The closure `f` MUST NOT
         // recursively call `access_equivocations_tracker`, nor any
@@ -1663,13 +1642,9 @@ impl super::equivocations_access::EquivocationsAccess for BlockDagKeyValueStorag
 /// run, escalating into propose failures). Captured only on the error path, and
 /// with `force_capture` so it does not depend on RUST_BACKTRACE being set in the
 /// shard's environment.
-fn missing_block(block_hash: &BlockHash, method: &str) -> KvStoreError {
+fn missing_block(block_hash: &BlockHash, method: &'static str) -> KvStoreError {
     KvStoreError::MissingBlock {
         hash: block_hash.clone(),
-        context: format!(
-            " [{}]\n  caller backtrace:\n{}",
-            method,
-            std::backtrace::Backtrace::force_capture()
-        ),
+        context: MissingBlockContext::with_backtrace(method),
     }
 }

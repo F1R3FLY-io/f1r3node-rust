@@ -31,6 +31,11 @@ pub struct CasperConf {
     pub max_number_of_parents: i32,
     #[serde(rename = "max-parent-depth")]
     pub max_parent_depth: i32,
+    /// Deploy validity window in blocks. Consensus-bearing (expiry and
+    /// repeat-deploy validity rules read it), so the genesis value is baked
+    /// into the PoS contract and adopted from chain at startup.
+    #[serde(rename = "deploy-lifespan", default = "default_deploy_lifespan")]
+    pub deploy_lifespan: i64,
     /// Wall-clock ceiling on user-deploy execution per proposed block.
     /// Zero means derived: `max-parent-depth * heartbeat.check-interval / 5`,
     /// resolved at launch — see `deploy_play_budget` on `CasperShardConf`
@@ -105,15 +110,6 @@ pub struct CasperConf {
     )]
     pub max_user_deploys_per_block: u32,
 
-    /// Disable late block filtering in DagMerger.
-    /// When true (default), all blocks are included in merged state regardless of when
-    /// they were observed. This prevents deploy loss during network partitions.
-    #[serde(
-        rename = "disable-late-block-filtering",
-        default = "default_disable_late_block_filtering"
-    )]
-    pub disable_late_block_filtering: bool,
-
     /// Enable background garbage collection for mergeable channels.
     /// When enabled, uses safe reachability-based GC (required for multi-parent mode).
     /// When disabled (default), mergeable data is retained.
@@ -143,6 +139,8 @@ pub struct CasperConf {
 
 fn default_deploy_play_budget() -> Duration { Duration::ZERO }
 
+fn default_deploy_lifespan() -> i64 { 50 }
+
 fn default_synchrony_recovery_stall_window() -> Duration { Duration::from_secs(60) }
 
 fn default_synchrony_recovery_cooldown() -> Duration { Duration::from_secs(20) }
@@ -155,9 +153,10 @@ fn default_synchrony_finalized_baseline_max_distance() -> u64 { 2048 }
 
 fn default_max_user_deploys_per_block() -> u32 { 128 }
 
-fn default_disable_late_block_filtering() -> bool { true }
-
-fn default_enable_mergeable_channel_gc() -> bool { false }
+/// Matches the shipped defaults.conf value: a sparse operator conf that omits
+/// the key must not silently disable GC. Public so the node's config tests
+/// pin shipped-vs-fallback agreement.
+pub fn default_enable_mergeable_channel_gc() -> bool { true }
 
 fn default_mergeable_channels_gc_interval() -> Duration {
     Duration::from_secs(5 * 60) // 5 minutes
@@ -300,15 +299,15 @@ pub struct HeartbeatConf {
         default = "default_self_propose_cooldown"
     )]
     pub self_propose_cooldown: Duration,
-    /// Minimum age of LFB/frontier before stale-recovery, leader-recovery,
-    /// and pending-deploy backstop are allowed to fire. Debounces empty-block
-    /// churn when the cluster is healthy.
+    /// Explicit override for the stale-recovery pacing interval; `None`
+    /// derives it from `check_interval`. Read it only through
+    /// [`HeartbeatConf::resolved_stale_recovery_min_interval`].
     #[serde(
         rename = "stale-recovery-min-interval",
-        deserialize_with = "de_duration",
-        default = "default_stale_recovery_min_interval"
+        deserialize_with = "de_opt_duration",
+        default
     )]
-    pub stale_recovery_min_interval: Duration,
+    pub stale_recovery_min_interval: Option<Duration>,
     /// Time without a new finalized block before one additional, deterministic
     /// convergence proposal is allowed. This does not delay or replace the
     /// routine stale-LFB recovery governed by `max_lfb_age`.
@@ -339,7 +338,7 @@ impl Default for HeartbeatConf {
             check_interval: Duration::from_secs(5),
             max_lfb_age: Duration::from_secs(5),
             self_propose_cooldown: default_self_propose_cooldown(),
-            stale_recovery_min_interval: default_stale_recovery_min_interval(),
+            stale_recovery_min_interval: None,
             finality_progress_timeout: default_finality_progress_timeout(),
             deploy_finalization_grace: default_deploy_finalization_grace(),
             advanced: HeartbeatAdvancedConf::default(),
@@ -347,12 +346,22 @@ impl Default for HeartbeatConf {
     }
 }
 
+impl HeartbeatConf {
+    /// The pacing interval for stale-LFB recovery, the pending-deploy
+    /// backstop, and the empty-frontier cap exemption. Derived as 1.5 ticks:
+    /// the gate is evaluated on heartbeat ticks, so this fires on the second
+    /// tick after a validator's own block, with half a tick of margin against
+    /// timing jitter in both directions.
+    pub fn resolved_stale_recovery_min_interval(&self) -> Duration {
+        self.stale_recovery_min_interval
+            .unwrap_or(self.check_interval * 3 / 2)
+    }
+}
+
 // Code fallbacks MUST equal the shipped defaults.conf values (pinned by the
 // embedded-defaults test): a sparse operator conf omitting a key must get
 // the same behavior every tested deployment runs, not an untested stranger.
 fn default_self_propose_cooldown() -> Duration { Duration::from_secs(3) }
-
-fn default_stale_recovery_min_interval() -> Duration { Duration::from_secs(3) }
 
 fn default_finality_progress_timeout() -> Duration { Duration::from_secs(30) }
 
@@ -406,6 +415,9 @@ pub struct HeartbeatAdvancedConf {
         default = "default_deploy_recovery_max_lag"
     )]
     pub deploy_recovery_max_lag: i64,
+    /// Width cap on empty-frontier (heartbeat) proposals. Must satisfy
+    /// hard finality-lag backpressure (8) < cap <= max-parent-depth
+    /// (validated at startup).
     #[serde(
         rename = "empty-frontier-max-unfinalized-blocks",
         deserialize_with = "de_non_negative_i64",
@@ -431,7 +443,7 @@ fn default_pending_deploy_max_lag() -> i64 { 20 }
 
 fn default_deploy_recovery_max_lag() -> i64 { 64 }
 
-fn default_empty_frontier_max_unfinalized_blocks() -> i64 { 64 }
+fn default_empty_frontier_max_unfinalized_blocks() -> i64 { 12 }
 
 pub fn de_duration<'de, D>(deserializer: D) -> Result<Duration, D::Error>
 where D: serde::Deserializer<'de> {
@@ -455,6 +467,11 @@ where D: serde::Deserializer<'de> {
             Ok(Duration::from_secs_f64(f))
         }
     }
+}
+
+fn de_opt_duration<'de, D>(deserializer: D) -> Result<Option<Duration>, D::Error>
+where D: serde::Deserializer<'de> {
+    de_duration(deserializer).map(Some)
 }
 
 /// Reject negative `i64` values at deserialization time. The lag-cap

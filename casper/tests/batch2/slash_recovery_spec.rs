@@ -540,10 +540,6 @@ async fn e1c_re_issues_merge_rejected_slash() {
         sorted_parent_hashes,
         snapshot_lfb_hash: snapshot.last_finalized_block.clone(),
         sorted_latest_messages: key_latest_messages.into_iter().collect(),
-        disable_late_block_filtering: snapshot
-            .on_chain_state
-            .shard_conf
-            .disable_late_block_filtering,
         buffer_populated: true,
     };
 
@@ -558,7 +554,6 @@ async fn e1c_re_issues_merge_rejected_slash() {
         &snapshot,
         &nodes[1].runtime_manager,
         &latest_messages,
-        None,
         Some(&nodes[1].rejected_deploy_buffer),
         None,
         None,
@@ -721,10 +716,6 @@ async fn rejected_slash_recovery_keeps_empty_proposer_alive() {
         sorted_parent_hashes,
         snapshot_lfb_hash: snapshot.last_finalized_block.clone(),
         sorted_latest_messages: key_latest_messages.into_iter().collect(),
-        disable_late_block_filtering: snapshot
-            .on_chain_state
-            .shard_conf
-            .disable_late_block_filtering,
         buffer_populated: true,
     };
 
@@ -739,7 +730,6 @@ async fn rejected_slash_recovery_keeps_empty_proposer_alive() {
         &snapshot,
         &nodes[1].runtime_manager,
         &latest_messages,
-        None,
         Some(&nodes[1].rejected_deploy_buffer),
         None,
         None,
