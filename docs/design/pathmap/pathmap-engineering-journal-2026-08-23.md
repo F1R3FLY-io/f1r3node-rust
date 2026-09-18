@@ -13705,6 +13705,79 @@ prefix/topology composition, generated schema dispatch, full substitution
 semantics and the outstanding resource/lifecycle evidence. Scheduler revision
 1208 retains this leaf; this checkpoint is not campaign completion.
 
+### J-186 — 2026-09-18 Compose EPM prefix and physical value selection
+
+**Question (task 5916).** SVI begins at a supplied value-table boundary.
+The next obligation is to derive that boundary from the same immutable source,
+rather than assume that prefix parsing selected the intended bytes.
+
+**DERIVED composition.** `SubstitutionSnapshotPrefix.v` (SSP) selects the fixed
+six-byte magic/version/mode header, reuses SVI's bounded arena-frame scanner,
+reads the canonical count, and enforces the one-byte-per-value lower bound before
+value traversal. Twelve closed obligations establish exact fixed-header bytes,
+arena start/end, count-header end, resident-input bounds, decoder correspondence
+and prefix reconstruction. Composing with SVI then reconstructs the **complete
+EPM1 envelope**, including every framed value, from its original physical slices.
+The model does not decode any Par or reconstruct any production PathMap.
+
+Successful prefix parsing reconstructs the input by concatenating the fixed
+mode header, framed arena, canonical value-count header and remaining suffix.
+Successful SVI framing identifies that suffix with exactly the declared number
+of framed bodies and EOF. The count is serialized cardinality, not an artificial
+traversal-depth bound. Under a representable resident input length, successful
+offsets, arena length and count fit the host limit. A route-prefix example
+succeeds even though its value suffix is truncated; prefix success is deliberately
+not a complete admission certificate.
+
+**Independent native binding.** The test constructor records arena and count
+positions while appending bytes, before calling the parser. It checks exact
+arena bytes, borrowed pointer, arena start, count and value-table start. Arena
+lengths and counts independently cross 127/128 and 16383/16384. A literal
+neutral-empty golden image and numeric mode-code checks prevent shared production
+constants from masking a format mismatch. Generated opaque arena bytes exercise
+prefix framing only; these fixtures do not claim canonical ACT validity.
+
+Refusal tests cover fixed-header truncation and corruption, arena/count header
+truncation, noncanonical encodings, overflow, oversized arena length without
+allocation, short arena bodies and impossible counts. Paired faults check native
+stage precedence: header, arena, count, value framing/EOF, then topology.
+Three hint controls distinguish truncated values, malformed ACT after complete
+framing, and trailing bytes. Existing maintained-ACT mode fixtures continue to
+cover full-inspector acceptance. The
+[SSP inventory](workspace-regression-formal-invariant-catalog-2026-08-28.md#epm-prefix-and-framing-composition-ssp-task-5916)
+enumerates all twelve proof obligations and native bindings.
+
+**MEASURED qualification.** Formal r4 passes the twelve closed declarations and
+explicit kernel checking before native edits: 14.772 seconds wall, 14.620 CPU
+seconds and 414.4 MiB reported peak, under a 2 GiB cap, zero swap, one-core quota
+and a 600-second watchdog. Intermediate r1–r3 proof-script failures are not passing
+evidence. The project, mandatory runner and native manifest include the new unit.
+
+Native r1 passes **109 focused release tests**: 11 prefix/value-region/mode tests,
+19 provenance tests, five varint tests and 74 integrations (39 manifest,
+18 cursor, eight differential, seven region-range and two registry tests).
+Library filtered counts are 532, 524 and 538; none of the selected tests fails
+or is ignored. Wall time is 43.909 seconds, CPU time 112.943 seconds, reported
+peak 1.6 GiB with zero swap, under the established 8 GiB cap/6 GiB soft threshold,
+four-core quota, four workers and 1800-second watchdog. Shell syntax and patch
+whitespace checks pass. These are correctness receipts, not benchmark results.
+
+| Artifact | SHA-256 |
+|---|---|
+| `formal/rocq/stack_safe_pda/theories/SubstitutionSnapshotPrefix.v` | `7c240d4351274efea877840bfe03d86cf976b08b3ee762dfe809a061f912642a` |
+| `target/verification/substitution-5916-snapshot-prefix-formal-r4.log` | `88058c580719145ab7d9ae4f663c7f2495981d70acc426e8acdf4736df959ac6` |
+| `target/verification/substitution-5916-snapshot-prefix-native-r1.log` | `ea55f5fc3b91a5284e01d315c7de128d38461b8cf0080559a981dc3f2b4937d2` |
+
+**Boundary and next action.** This is successful-selection refinement and exact
+byte reconstruction, not compiler verification or unrestricted decoder-acceptance
+equivalence. Fixed-header equality abstracts the native staged comparisons;
+their error precedence is tested, not formally modeled. ACT canonical admission,
+cached-summary correspondence, schema dispatch and whole substitution semantics
+remain distinct obligations; reuse V5/V6 ACT authority rather than implement
+another parser. Operational counters, non-identity scaling/profiling and lifecycle
+gates remain required for task 5916. Production source and format are unchanged;
+there is no new consensus-register entry, PathMap change or performance claim.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

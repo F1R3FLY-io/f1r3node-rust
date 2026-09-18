@@ -817,6 +817,31 @@ substitution semantics are separate obligations. See
 [J-185](pathmap-engineering-journal-2026-08-23.md#j-185--2026-09-18-correct-epm-mode-model-drift)
 for provenance, measured receipts and limits.
 
+## EPM prefix and framing composition (SSP, task 5916)
+
+`SubstitutionSnapshotPrefix.v` derives the value-table boundary from fixed
+header bytes, an arena frame and a count header, then composes SVI selection.
+All twelve printed declarations are required by the manifest and proof runner.
+
+| ID | Printed obligations | Native binding |
+|---|---|---|
+| SSP-01 | `fixed_header_has_six_bytes`, `successful_mode_selects_exact_fixed_header` | Literal neutral-empty golden bytes, numeric 0/1/2 mode assertions, fixed-header truncation/corruption controls. |
+| SSP-02 | `successful_count_selects_exact_boundary`, `successful_prefix_has_exact_source_certificate`, `prefix_offsets_and_count_fit_resident_input` | Independent append-time arena/count offsets and borrowed arena pointer; arena/count widths at 127/128 and 16383/16384; canonical oversized length refusal without allocation. |
+| SSP-03 | `prefix_reconstructs_exact_envelope_without_value_decode`, `successful_framing_retains_prefix_and_value_selections`, `complete_framing_reconstructs_exact_epm1_bytes` | Deterministic/generated opaque-arena prefix fixtures and exact empty-frame ranges; existing SVI arbitrary-body and maintained-ACT controls supply value and full-inspector coverage. |
+| SSP-04 | `malformed_prefix_never_publishes_framing`, `malformed_value_suffix_never_publishes_framing`, `impossible_count_is_rejected_before_framing` | Malformed magic/version/mode, arena/count varints, truncated arena, count lower bound and native paired-fault precedence checks. |
+| SSP-05 | `route_prefix_does_not_validate_topology_or_value_suffix` | Route hint succeeds while the full inspector rejects a truncated value header, malformed ACT or trailing bytes. |
+
+The four new witnesses in `models/tests/support/substitution_value_regions.rs`
+are `prefix_offsets_follow_append_time_oracle_across_varint_widths`,
+`malformed_prefixes_fail_before_value_range_publication`,
+`route_hints_do_not_bypass_framing_or_topology_validation` and
+`generated_prefix_offsets_match_independent_construction`. Prefix-only fixtures
+may contain opaque invalid ACT bytes: success is not topology admission.
+The successful-selection proof bounds native lengths by resident input length;
+it does not prove all native error strings, allocation behavior or compiler
+correctness. See [J-186](pathmap-engineering-journal-2026-08-23.md#j-186--2026-09-18-compose-epm-prefix-and-physical-value-selection)
+for receipts and the remaining ACT-summary/schema/semantic/resource boundaries.
+
 ## Original workspace-regression completion gates
 
 This checkpoint is complete only when all of the following hold:

@@ -34,6 +34,7 @@ theories/SubstitutionRegionTables.v
 theories/SubstitutionRegionOrdinals.v
 theories/SubstitutionRegionProvenance.v
 theories/SubstitutionValueRegions.v
+theories/SubstitutionSnapshotPrefix.v
 theories/PathMapPhysicalOwnership.v
 theories/PathMapPhysicalOwnershipMutants.v
 theories/PathMapReversePruneTeardown.v

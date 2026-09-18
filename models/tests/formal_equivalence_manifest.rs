@@ -8,6 +8,47 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 #[test]
+fn substitution_snapshot_prefix_has_exact_offset_and_admission_bindings() {
+    let theory = read_repository_file("formal/rocq/stack_safe_pda/theories/SubstitutionSnapshotPrefix.v");
+    for theorem in [
+        "fixed_header_has_six_bytes",
+        "successful_mode_selects_exact_fixed_header",
+        "successful_count_selects_exact_boundary",
+        "successful_prefix_has_exact_source_certificate",
+        "prefix_reconstructs_exact_envelope_without_value_decode",
+        "prefix_offsets_and_count_fit_resident_input",
+        "successful_framing_retains_prefix_and_value_selections",
+        "complete_framing_reconstructs_exact_epm1_bytes",
+        "malformed_prefix_never_publishes_framing",
+        "malformed_value_suffix_never_publishes_framing",
+        "route_prefix_does_not_validate_topology_or_value_suffix",
+        "impossible_count_is_rejected_before_framing",
+    ] {
+        assert!(theory.contains(&format!("Print Assumptions {theorem}.")));
+    }
+    for forbidden in ["Admitted.", "admit.", "Axiom ", "Parameter "] {
+        assert!(!theory.contains(forbidden));
+    }
+    let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
+    assert!(has_runner_command(&runner, &[
+        "rocq_compile_with_closed_count", "theories/SubstitutionSnapshotPrefix.v", "12",
+    ]));
+    assert!(has_runner_kernel_check(&runner, &["StackSafePDA.SubstitutionSnapshotPrefix"]));
+    assert!(read_repository_file("formal/rocq/stack_safe_pda/_CoqProject")
+        .lines().any(|line| line == "theories/SubstitutionSnapshotPrefix.v"));
+    let native = read_repository_file("models/tests/support/substitution_value_regions.rs");
+    for witness in [
+        "prefix_offsets_follow_append_time_oracle_across_varint_widths",
+        "malformed_prefixes_fail_before_value_range_publication",
+        "route_hints_do_not_bypass_framing_or_topology_validation",
+        "generated_prefix_offsets_match_independent_construction",
+    ] {
+        assert!(native.contains(&format!("fn {witness}(")));
+    }
+}
+
+
+#[test]
 fn epm_mode_model_has_value_free_map_and_set_marker_regressions() {
     let theory = read_repository_file("formal/rocq/stack_safe_pda/theories/EPM1.v");
     for theorem in [

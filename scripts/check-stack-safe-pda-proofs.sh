@@ -772,6 +772,10 @@ rocq_reject_placeholders theories/SubstitutionValueRegions.v
 rocq_compile_with_closed_count theories/SubstitutionValueRegions.v 22 \
   "exact physical EPM1 value-range selection and retained provenance"
 rocq_check_modules "substitution value regions" StackSafePDA.SubstitutionValueRegions
+rocq_reject_placeholders theories/SubstitutionSnapshotPrefix.v
+rocq_compile_with_closed_count theories/SubstitutionSnapshotPrefix.v 12 \
+  "EPM1 prefix offsets and complete framing reconstruction"
+rocq_check_modules "substitution snapshot prefix" StackSafePDA.SubstitutionSnapshotPrefix
 rmp2_rocq_output="$(
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/RMP2.v 2>&1
 )"

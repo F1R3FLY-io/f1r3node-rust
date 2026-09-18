@@ -8653,6 +8653,17 @@ do not substitute for ACT parser correctness or close task 5916. See
 [J-185](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-185--2026-09-18-correct-epm-mode-model-drift)
 for the complete evidence boundary.
 
+The SSP bridge now derives the EPM value-table boundary from the same immutable
+input: fixed magic/version/mode, arena frame and canonical count header. Twelve
+closed obligations compose with SVI to reconstruct the complete EPM1 envelope.
+Independent append-time offsets, literal golden bytes, malformed-prefix controls
+and route-hint/validation separation pass with the existing gates: 109 focused
+release tests, 1.6 GiB reported peak under the 8 GiB cap, zero swap. This closes
+the modeled successful-prefix/complete-framing composition, not ACT admission,
+schema dispatch or whole substitution verification. No production behavior or
+performance change is claimed. See
+[J-186](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-186--2026-09-18-compose-epm-prefix-and-physical-value-selection).
+
 ---
 
 ### 5.29 ParBag family and count-domain completeness [SS-A13, SS-A14, SS-Y9]

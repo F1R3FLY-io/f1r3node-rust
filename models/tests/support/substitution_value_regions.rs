@@ -5,8 +5,8 @@ use pathmap::PathMap;
 use proptest::prelude::*;
 
 use super::{
-    inspect_canonical_snapshot_value_regions, parse_canonical_snapshot_framing, EPathMapMode,
-    EPM_MAGIC, EPM_VERSION,
+    inspect_canonical_snapshot_value_regions, parse_canonical_snapshot_framing,
+    parse_canonical_snapshot_prefix, snapshot_route_hint, EPathMapMode, EPM_MAGIC, EPM_VERSION,
 };
 use crate::rust::rholang::protobuf_cursor::{CanonicalByteRange, ProtobufRegion};
 
@@ -169,6 +169,175 @@ fn topology_validation_remains_a_separate_post_framing_gate() {
     assert!(error
         .to_string()
         .contains("set EPathMap carries map values"));
+}
+
+struct RecordedPrefix {
+    bytes: Vec<u8>,
+    arena: Range<usize>,
+    count_header: Range<usize>,
+}
+
+fn record_prefix(mode: EPathMapMode, arena: &[u8], count: usize) -> RecordedPrefix {
+    let mut bytes = vec![69, 80, 77, 49, 1, mode as u8];
+    append_length(&mut bytes, arena.len() as u64);
+    let arena_start = bytes.len();
+    bytes.extend_from_slice(arena);
+    let arena = arena_start..bytes.len();
+    let count_start = bytes.len();
+    append_length(&mut bytes, count as u64);
+    let count_header = count_start..bytes.len();
+    bytes.resize(bytes.len() + count, 0);
+    RecordedPrefix {
+        bytes,
+        arena,
+        count_header,
+    }
+}
+
+fn assert_prefix_positions(mode: EPathMapMode, arena: &[u8], count: usize) {
+    let recorded = record_prefix(mode, arena, count);
+    let parsed = parse_canonical_snapshot_prefix(&recorded.bytes).unwrap();
+    assert_eq!(parsed.mode, mode);
+    assert_eq!(parsed.arena_start, recorded.arena.start);
+    assert_eq!(parsed.arena, arena);
+    assert_eq!(
+        parsed.arena.as_ptr(),
+        recorded.bytes[recorded.arena.clone()].as_ptr()
+    );
+    assert_eq!(parsed.value_count, count);
+    assert_eq!(parsed.value_table_start, recorded.count_header.end);
+    assert_eq!(recorded.arena.end, recorded.count_header.start);
+    let framing = parse_canonical_snapshot_framing(&recorded.bytes).unwrap();
+    assert_eq!(framing.value_table_start, recorded.count_header.end);
+    assert_eq!(framing.value_count, count);
+    for (index, range) in framing.value_bodies.iter().enumerate() {
+        let end = recorded.count_header.end + index + 1;
+        assert_eq!(range, &(end..end));
+    }
+    assert_eq!(framing.value_bodies.len(), count);
+}
+
+#[test]
+fn prefix_offsets_follow_append_time_oracle_across_varint_widths() {
+    assert_eq!(
+        (
+            EPathMapMode::Empty as u8,
+            EPathMapMode::Set as u8,
+            EPathMapMode::Map as u8
+        ),
+        (0, 1, 2)
+    );
+    let golden = [69, 80, 77, 49, 1, 0, 0, 0];
+    let empty = inspect_canonical_snapshot_value_regions(&golden).unwrap();
+    assert_eq!(empty.mode, EPathMapMode::Empty);
+    assert_eq!(empty.prefix, 0..8);
+    assert!(empty.value_bodies.is_empty());
+    for size in [0, 1, 127, 128, 16383, 16384] {
+        assert_prefix_positions(EPathMapMode::Map, &vec![42; size], 0);
+        assert_prefix_positions(EPathMapMode::Map, &[], size);
+    }
+}
+
+fn prefix_error(bytes: &[u8]) -> String {
+    match parse_canonical_snapshot_prefix(bytes) {
+        Ok(_) => panic!("malformed prefix unexpectedly accepted"),
+        Err(error) => error.to_string(),
+    }
+}
+
+#[test]
+fn malformed_prefixes_fail_before_value_range_publication() {
+    let fixed = [69, 80, 77, 49, 1, 2];
+    for len in 0..fixed.len() {
+        let stage = if len < 4 {
+            "magic"
+        } else if len == 4 {
+            "version"
+        } else {
+            "mode"
+        };
+        assert!(prefix_error(&fixed[..len]).contains(stage));
+    }
+    for (suffix, stage) in [
+        (vec![128], "truncated ACTree03 length"),
+        (vec![128, 0], "non-canonical ACTree03 length"),
+        (vec![255; 10], "overflowing ACTree03 length"),
+        (vec![2, 42], "truncated ACTree03 payload"),
+        (vec![0], "truncated map value count"),
+        (vec![0, 128, 0], "non-canonical map value count"),
+        (
+            [&[0][..], &[255; 10][..]].concat(),
+            "overflowing map value count",
+        ),
+        (vec![0, 2, 0], "payload lower bound"),
+    ] {
+        let bytes = [&fixed[..], &suffix].concat();
+        let error = prefix_error(&bytes);
+        assert!(error.contains(stage), "{stage}: {error}");
+        assert!(parse_canonical_snapshot_framing(&bytes).is_err());
+        assert!(inspect_canonical_snapshot_value_regions(&bytes).is_err());
+    }
+    let mut huge = fixed.to_vec();
+    append_length(&mut huge, u64::MAX);
+    let expected = if usize::BITS == 64 {
+        "length overflow"
+    } else {
+        "overflows usize"
+    };
+    assert!(prefix_error(&huge).contains(expected));
+    let mut wrong_magic = fixed.to_vec();
+    wrong_magic[0] = 0;
+    wrong_magic[4] = 9;
+    wrong_magic[5] = 9;
+    assert!(prefix_error(&wrong_magic).contains("invalid EPM1 magic"));
+    let mut wrong_version = fixed.to_vec();
+    wrong_version[4] = 9;
+    wrong_version[5] = 9;
+    assert!(prefix_error(&wrong_version).contains("unsupported EPM1 version"));
+    let mut wrong_mode = fixed.to_vec();
+    wrong_mode[5] = 9;
+    assert!(prefix_error(&wrong_mode).contains("unknown EPathMap mode"));
+}
+
+#[test]
+fn route_hints_do_not_bypass_framing_or_topology_validation() {
+    for bytes in [
+        vec![69, 80, 77, 49, 1, 2, 0, 1, 128],
+        vec![69, 80, 77, 49, 1, 2, 1, 42, 0],
+        vec![69, 80, 77, 49, 1, 0, 0, 0, 99],
+    ] {
+        assert!(snapshot_route_hint(&bytes).is_ok());
+        assert!(inspect_canonical_snapshot_value_regions(&bytes).is_err());
+    }
+    assert!(parse_canonical_snapshot_framing(&[69, 80, 77, 49, 1, 2, 1, 42, 0]).is_ok());
+    for (bytes, stage) in [
+        (
+            vec![69, 80, 77, 49, 1, 2, 1, 42, 2, 0],
+            "payload lower bound",
+        ),
+        (
+            vec![69, 80, 77, 49, 1, 2, 1, 42, 1, 128],
+            "truncated map value length",
+        ),
+        (vec![69, 80, 77, 49, 1, 2, 1, 42, 0, 99], "trailing bytes"),
+    ] {
+        let error = match inspect_canonical_snapshot_value_regions(&bytes) {
+            Ok(_) => panic!("paired faults unexpectedly accepted"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains(stage), "{stage}: {error}");
+    }
+}
+
+proptest! {
+    #[test]
+    fn generated_prefix_offsets_match_independent_construction(
+        arena in prop::collection::vec(any::<u8>(), 0..256),
+        count in 0usize..256,
+        mode in 0u8..3,
+    ) {
+        assert_prefix_positions(EPathMapMode::try_from(mode).unwrap(), &arena, count);
+    }
 }
 
 fn framed_arena(mode: EPathMapMode, arena: &[u8], value_count: usize) -> Vec<u8> {
