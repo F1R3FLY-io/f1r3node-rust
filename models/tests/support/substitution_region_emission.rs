@@ -115,6 +115,76 @@ fn capture_build(
 }
 
 fn verify_publication(bytes: Vec<u8>) -> usize {
+    verify_publication_with_piece_counts(bytes).0
+}
+
+
+fn verify_node_field_certificates(
+    index: usize,
+    plan: &ProtobufCutPlan,
+    observations: &[PublishedNode],
+) -> [usize; 4] {
+    use crate::rust::rholang::protobuf_cursor::{CanonicalFieldCursor, CanonicalWireType};
+    let source = &observations[index].source;
+    let base = source.absolute_range().start;
+    let mut fields = CanonicalFieldCursor::in_prost_slot_order(source.as_bytes());
+    let mut counts = [0; 4];
+    let mut end = 0;
+    for piece in &plan.nodes[index].pieces {
+        let field = fields.next_field().unwrap().expect("one source field per piece");
+        assert_eq!(field.encoded_range.start, end);
+        end = field.encoded_range.end;
+        let encoded = &source.as_bytes()[field.encoded_range.start..end];
+        let payload = &source.as_bytes()[field.payload_range.start..field.payload_range.end];
+        let payload_range = base + field.payload_range.start..base + field.payload_range.end;
+        if let Piece::Borrowed(region) = piece {
+            counts[0] += 1;
+            assert_eq!(region.as_bytes(), encoded);
+            assert_eq!(region.absolute_range(), base + field.encoded_range.start..base + end);
+            continue;
+        }
+        assert_eq!(field.wire_type, CanonicalWireType::LengthDelimited);
+        let (tag, body) = match piece {
+            Piece::Child { tag, node, .. } => {
+                counts[1] += 1;
+                assert!(*node < index);
+                let child = &observations[*node].source;
+                assert_eq!(child.absolute_range(), payload_range);
+                (*tag, child.as_bytes().to_vec())
+            }
+            Piece::Par { tag, cut } => {
+                counts[2] += 1;
+                let cut = &plan.cuts[*cut];
+                assert_eq!(cut.region.absolute_range(), payload_range);
+                (*tag, cut.region.as_bytes().to_vec())
+            }
+            Piece::EPathMap { tag, group } => {
+                counts[3] += 1;
+                let group = &plan.epathmaps[*group];
+                assert_eq!(group.prefix.absolute_range().start, payload_range.start);
+                let mut body = group.prefix.as_bytes().to_vec();
+                for cut in &plan.cuts[group.cuts.clone()] {
+                    prost::encoding::encode_varint(cut.region.len() as u64, &mut body);
+                    body.extend_from_slice(cut.region.as_bytes());
+                }
+                (*tag, body)
+            }
+            Piece::Borrowed(_) => unreachable!(),
+        };
+        assert_eq!(tag, field.number);
+        assert_eq!(body, payload);
+        let mut rebuilt = Vec::new();
+        prost::encoding::encode_varint(u64::from(tag) << 3 | 2, &mut rebuilt);
+        prost::encoding::encode_varint(body.len() as u64, &mut rebuilt);
+        rebuilt.extend_from_slice(&body);
+        assert_eq!(rebuilt, encoded);
+    }
+    assert!(fields.next_field().unwrap().is_none());
+    assert_eq!(end, source.len());
+    counts
+}
+
+fn verify_publication_with_piece_counts(bytes: Vec<u8>) -> (usize, [usize; 4]) {
     let root = ProtobufRegion::from(bytes);
     let (result, observations) = capture_build(root.clone(), &PAR_PROTOBUF_REGION_PROGRAM);
     let plan = result.unwrap();
@@ -144,8 +214,14 @@ fn verify_publication(bytes: Vec<u8>) -> usize {
         );
     }
     let value_frames = verify_epathmap_value_frame_partition(&root, &plan, &observations);
+    let mut piece_counts = [0; 4];
     let mut ranks = Vec::new();
     for (index, (node, observed)) in plan.nodes.iter().zip(&observations).enumerate() {
+        for (total, count) in piece_counts.iter_mut().zip(
+            verify_node_field_certificates(index, &plan, &observations)
+        ) {
+            *total += count;
+        }
         let range = observed.source.absolute_range();
         assert_eq!(observed.source.as_bytes(), &root.as_bytes()[range.clone()]);
         assert_eq!(
@@ -207,7 +283,7 @@ fn verify_publication(bytes: Vec<u8>) -> usize {
         );
     }
     assert_eq!(plan.reconstructed_bytes().as_ref(), root.as_bytes());
-    value_frames
+    (value_frames, piece_counts)
 }
 
 #[test]
@@ -233,9 +309,15 @@ fn epathmap_publication_frames_include_empty_and_distinct_map_values() {
 fn every_published_node_preserves_source_caches_indices_and_prior_meaning() {
     let corpus = par_corpus::par_corpus();
     assert!(corpus.len() >= 40);
+    let mut piece_counts = [0; 4];
     for (_, par) in corpus {
-        verify_publication(protobuf_encoder::encode_to_vec(&par));
+        for (total, count) in piece_counts.iter_mut().zip(
+            verify_publication_with_piece_counts(protobuf_encoder::encode_to_vec(&par)).1
+        ) {
+            *total += count;
+        }
     }
+    assert!(piece_counts.iter().all(|count| *count > 0), "all four piece kinds must be exercised");
     verify_publication(protobuf_encoder::encode_to_vec(
         &par_corpus::all_par_fields(),
     ));
@@ -266,6 +348,36 @@ fn late_framing_failure_never_publishes_the_root() {
     assert!(matches!(result, Err(ProtobufRegionError::Framing(_))));
     assert_eq!(observations.len(), 1);
     assert!(observations[0].source.is_empty());
+}
+
+
+#[test]
+fn field_certificate_rejects_swapped_same_tag_par_cuts() {
+    let input = ProtobufRegion::from(protobuf_encoder::encode_to_vec(&par_corpus::all_par_fields()));
+    let (result, observations) = capture_build(input, &PAR_PROTOBUF_REGION_PROGRAM);
+    let plan = result.unwrap();
+    let mut mutation = None;
+    for (index, node) in plan.nodes.iter().enumerate() {
+        for (left, a) in node.pieces.iter().enumerate() {
+            for (right, b) in node.pieces.iter().enumerate().skip(left + 1) {
+                if let (Piece::Par { tag: a_tag, cut: a_cut }, Piece::Par { tag: b_tag, cut: b_cut }) = (a, b) {
+                    if a_tag == b_tag && a_cut != b_cut {
+                        mutation = Some((index, left, right));
+                        break;
+                    }
+                }
+            }
+            if mutation.is_some() { break; }
+        }
+        if mutation.is_some() { break; }
+    }
+    let (index, left, right) = mutation.expect("fixture includes distinct same-tag Par cuts");
+    verify_node_field_certificates(index, &plan, &observations);
+    let mut mutant = plan.clone();
+    mutant.nodes[index].pieces.swap(left, right);
+    assert!(std::panic::catch_unwind(|| {
+        verify_node_field_certificates(index, &mutant, &observations)
+    }).is_err());
 }
 
 fn widened_delimited_length(tag: u32, body: usize) -> Result<usize, ProtobufRegionError> {

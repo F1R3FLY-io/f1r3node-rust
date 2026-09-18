@@ -8,6 +8,53 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 #[test]
+fn substitution_region_decomposition_has_source_certificate_bindings() {
+    let theory = read_repository_file("formal/rocq/stack_safe_pda/theories/SubstitutionRegionDecomposition.v");
+    for theorem in [
+        "taken_body_splits_source",
+        "successful_body_scan_reconstructs_source",
+        "successful_field_scan_reconstructs_source",
+        "successful_delimited_field_has_exact_header",
+        "initial_frame_has_source_invariant",
+        "borrowed_field_establishes_certificate",
+        "par_field_establishes_certificate",
+        "ready_field_consumption_preserves_source",
+        "child_descent_preserves_source",
+        "published_child_closes_suspended_field",
+        "completed_frame_supplies_publication_certificate",
+        "completed_frame_reconstructs_original",
+        "original_value_frames_are_encoded_frames",
+        "epathmap_field_establishes_certificate",
+        "prior_piece_source_survives_publication",
+        "prior_certificate_survives_publication",
+        "suspended_parent_survives_child_publication",
+        "completed_frame_publishes_valid_arena",
+        "empty_delimited_field_is_present",
+        "truncated_delimited_field_is_refused",
+        "unknown_wire_kind_is_refused",
+    ] {
+        assert!(theory.contains(&format!("Print Assumptions {theorem}.")));
+    }
+    let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
+    assert!(has_runner_command(&runner, &[
+        "rocq_compile_with_closed_count", "theories/SubstitutionRegionDecomposition.v", "21",
+    ]));
+    assert!(has_runner_kernel_check(&runner, &["StackSafePDA.SubstitutionRegionDecomposition"]));
+    assert!(read_repository_file("formal/rocq/stack_safe_pda/_CoqProject")
+        .lines().any(|line| line == "theories/SubstitutionRegionDecomposition.v"));
+    let native = read_repository_file("models/tests/support/substitution_region_emission.rs");
+    for witness in [
+        "verify_node_field_certificates",
+        "every_published_node_preserves_source_caches_indices_and_prior_meaning",
+        "epathmap_publication_frames_include_empty_and_distinct_map_values",
+        "field_certificate_rejects_swapped_same_tag_par_cuts",
+    ] {
+        assert!(native.contains(&format!("fn {witness}(")));
+    }
+}
+
+
+#[test]
 fn substitution_region_framing_has_reconstruction_proof_and_native_bindings() {
     let theory = read_repository_file("formal/rocq/stack_safe_pda/theories/SubstitutionRegionFraming.v");
     for theorem in [

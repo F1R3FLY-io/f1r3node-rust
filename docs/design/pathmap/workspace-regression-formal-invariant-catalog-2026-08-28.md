@@ -530,6 +530,40 @@ properties constitute a universal proof of the Rust parser or full substitution.
 No new parser is introduced into production, and no generated schema, ACT
 topology, field order or consensus encoding changes.
 
+## Field decomposition and suspended-parent certificates (SRD, task 5916)
+
+`SubstitutionRegionDecomposition.v` composes SRF framing with SRP publication.
+Its successful field scanner handles the four supported wire kinds, bounds tags
+by a supplied format limit, rejects unsupported kinds and truncated bodies, and
+derives exact encoded-prefix and length-delimited-header equations from scanning.
+It does not assume the complete source is the concatenation it seeks to prove.
+
+A `Ready` state carries completed field/piece pairs and remaining bytes. A
+`Suspended` state additionally carries the field whose child is being visited.
+The invariant says that completed pieces have their source certificates and that
+completed bytes, the suspended field when present, and remaining bytes partition
+the input in order. Child publication preserves earlier certificates under the
+backward-reference condition; returning the child closes its suspended field.
+
+| ID | Printed obligations (21 total) | Native binding |
+|---|---|---|
+| SRD-01 | `taken_body_splits_source`, `successful_body_scan_reconstructs_source`, `successful_field_scan_reconstructs_source`, `successful_delimited_field_has_exact_header` | Existing exact cursor reconstruction and new `verify_node_field_certificates` check original encoded fields, tags, payloads, adjacent intervals and final exhaustion. |
+| SRD-02 | `initial_frame_has_source_invariant`, `borrowed_field_establishes_certificate`, `par_field_establishes_certificate`, `ready_field_consumption_preserves_source` | Every actual stored piece is paired with its captured source field; Borrowed and Par pieces require exact absolute ranges as well as bytes. |
+| SRD-03 | `child_descent_preserves_source`, `published_child_closes_suspended_field`, `prior_piece_source_survives_publication`, `prior_certificate_survives_publication`, `suspended_parent_survives_child_publication` | Child sources come from actual publication capture and require exact payload ranges and backward node indices. Earlier-node emission remains stable after later appends. |
+| SRD-04 | `original_value_frames_are_encoded_frames`, `epathmap_field_establishes_certificate` | EPathMap piece bodies reconstruct the complete captured field payload from the unchanged prefix and ordered value frames. The exact-three-value map fixture makes this nonvacuous. |
+| SRD-05 | `completed_frame_supplies_publication_certificate`, `completed_frame_reconstructs_original`, `completed_frame_publishes_valid_arena` | All fields must be exhausted after exactly one piece per field, with exact source length. The shared corpus asserts positive counts for all four piece kinds. |
+| SRD-06 | `empty_delimited_field_is_present`, `truncated_delimited_field_is_refused`, `unknown_wire_kind_is_refused` | Formal success/refusal controls, native malformed/presence cases, and `field_certificate_rejects_swapped_same_tag_par_cuts`, which first checks the original node then requires the swapped association to fail. |
+
+**Boundary.** The model uses natural-number lengths and SRF's mathematical group
+scanner. It does not establish concrete shift/OR accumulation, `usize` conversion,
+error diagnostics or schema/field-order acceptance. Correct schema action and
+presence-flag selection remain external; cuts and groups remain fixed tables
+whose construction and provenance need their own refinement. Child return uses
+the child-source equality supplied by the composed publication boundary. Native
+rescanning uses the same real cursor, so it independently checks piece/source
+association but is not a second parser oracle. Full substitution semantics and
+operational-resource acceptance remain open.
+
 ## Original workspace-regression completion gates
 
 This checkpoint is complete only when all of the following hold:

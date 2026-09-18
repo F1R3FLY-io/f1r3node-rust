@@ -28,6 +28,7 @@ theories/SubstitutionRegionRanges.v
 theories/SubstitutionRegionEmission.v
 theories/SubstitutionRegionPublication.v
 theories/SubstitutionRegionFraming.v
+theories/SubstitutionRegionDecomposition.v
 theories/PathMapPhysicalOwnership.v
 theories/PathMapPhysicalOwnershipMutants.v
 theories/PathMapReversePruneTeardown.v

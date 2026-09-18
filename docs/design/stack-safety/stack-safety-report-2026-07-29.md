@@ -8559,6 +8559,18 @@ follows. Loop/bitwise, concrete-cursor and suspended-parent refinement remain
 open, as do full substitution and resource/lifecycle gates. See
 [J-178](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-178--2026-09-18-canonical-framing-reconstruction-and-nonvacuous-map-value-binding).
 
+The SRD decomposition checkpoint now derives those frame-source certificates
+through successful modeled field consumption and suspended-parent transitions;
+its 21 obligations pass explicit kernel checking. Native checks bind every piece
+to its actual captured source field, cover all four piece kinds and reject a
+same-tag Par-cut swap. Nine selected library tests (508 filtered) and 67 focused
+integration tests pass, at a reported 1.5 GiB peak under the 8 GiB cap and zero-swap
+limit. Concrete scanner arithmetic, table construction/provenance, schema/order
+selection and full substitution/resource/lifecycle obligations remain distinct
+and open. No production behavior or performance comparison changes. Exact
+receipts and boundaries are in
+[J-179](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-179--2026-09-18-field-decomposition-establishes-publication-certificates).
+
 ---
 
 ### 5.29 ParBag family and count-domain completeness [SS-A13, SS-A14, SS-Y9]

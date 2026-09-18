@@ -744,6 +744,10 @@ rocq_reject_placeholders theories/SubstitutionRegionFraming.v
 rocq_compile_with_closed_count theories/SubstitutionRegionFraming.v 19 \
   "canonical substitution field framing and exact source partition"
 rocq_check_modules "substitution region framing" StackSafePDA.SubstitutionRegionFraming
+rocq_reject_placeholders theories/SubstitutionRegionDecomposition.v
+rocq_compile_with_closed_count theories/SubstitutionRegionDecomposition.v 21 \
+  "substitution field decomposition and suspended-parent source certificates"
+rocq_check_modules "substitution region decomposition" StackSafePDA.SubstitutionRegionDecomposition
 rmp2_rocq_output="$(
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/RMP2.v 2>&1
 )"

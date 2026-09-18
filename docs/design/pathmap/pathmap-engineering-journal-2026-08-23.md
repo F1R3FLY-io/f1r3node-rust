@@ -13105,6 +13105,73 @@ non-identity scaling and lifecycle evidence remain required. Scheduler revision
 1206 reselected the same incumbent after its claim expired; no priority switch
 or task closure occurred.
 
+### J-179 — 2026-09-18 Field decomposition establishes publication certificates
+
+**DERIVED.** Task 5916's new `SubstitutionRegionDecomposition.v` connects SRF's
+successful framing equations to SRP's field certificates. It models the four
+supported wire kinds and exact retained/length-delimited field bodies. Ready and
+suspended-parent states track completed field/piece pairs, the child-owning field
+while descent is active, and remaining input. Their source invariant is preserved
+by immediate field consumption, child descent, child return and child publication
+with backward references. Completion derives the full frame partition and source
+certificate needed by checked publication. EPathMap's certificate follows from
+the unchanged prefix and the ordered value-frame reconstruction lemma; there is
+no decoded key or process collection in this argument. See the
+[SRD inventory](workspace-regression-formal-invariant-catalog-2026-08-28.md#field-decomposition-and-suspended-parent-certificates-srd-task-5916)
+for the exhaustive 21 printed obligations and native bindings.
+
+Formal checking precedes the new native bindings. Each real node piece is now
+paired with the corresponding field in its captured original `Frame.region`.
+Borrowed fields and Child/Par payloads must match exact absolute source ranges;
+length-delimited tags, payloads and complete encoded fields must match byte for
+byte. EPathMap bodies are rebuilt from the original prefix and ordered retained
+value frames and compared with the complete source payload. Exactly one field
+must exist per piece, and no field or source suffix may remain. The shared corpus
+asserts positive counts for all four piece kinds; the separate exact-three-value
+map fixture from J-178 remains active. A causal negative control first checks an
+unaltered node, swaps two distinct same-tag Par cuts, then requires the source
+certificate check to fail. These are bounded test observations, not new runtime
+copies or traversal requirements.
+
+**MEASURED (qualification).** Formal r6 passes 21 closed declarations plus explicit
+kernel checking in 15.598 seconds, 15.365 CPU seconds and 419.5 MiB peak under a
+2 GiB hard cap, zero swap, one-core quota and 120-second watchdog. Earlier failed
+proof-script iterations are retained but are not passing evidence. Native r1
+passes nine selected library tests (508 others filtered) and all 67 integration
+tests: 32 manifest, 18 cursor, eight region, seven range/emission and two registry
+tests. None are ignored. The service takes 43.966 seconds, 110.048 CPU seconds and
+a reported 1.5 GiB peak under `MemoryHigh=6G`, `MemoryMax=8G`, `MemorySwapMax=0`,
+`CPUQuota=400%` and a 1200-second watchdog. These build-plus-test receipts are not
+performance comparisons. Independent model/source review found no blocking
+mismatch or coverage vacuity, conditional on the now-passing native gate.
+
+| Artifact | SHA-256 |
+|---|---|
+| `formal/rocq/stack_safe_pda/theories/SubstitutionRegionDecomposition.v` | `c59febe363c45eebbd8161063fe8b82a47a0c8796744257b46751f7f78997eab` |
+| `target/verification/substitution-5916-decomposition-formal-r6.log` | `8532bd468f9111c249397575c726ab1e322282f1cfab3e5194c88b0068b8d58c` |
+| `target/verification/substitution-5916-decomposition-native-r1.log` | `2265867216e6df1231488f9faa36a326f3a9073ed60ab853d3f2477e8fdf71c7` |
+
+Formal commands run from `formal/rocq/stack_safe_pda` within the capped service:
+
+```sh
+coqc -Q theories StackSafePDA theories/SubstitutionRegionDecomposition.v
+coqchk -silent -Q theories StackSafePDA StackSafePDA.SubstitutionRegionDecomposition
+```
+
+The native commands are the same two Cargo invocations as J-178. **DECISION:**
+no production implementation, dependency, PathMap representation or consensus
+bytes change. This establishes successful modeled transitions, not concrete Rust
+shift/OR accumulation, machine arithmetic, diagnostics or schema/order acceptance.
+Correct schema action and presence flags remain external. Fixed cut/group tables
+still need construction/provenance refinement, and child-return source equality
+comes from the composed publication boundary. Native rescanning uses the real
+cursor, not an independent parser implementation. Full substitution semantics,
+error/charge ordering, counters, non-identity scaling and lifecycle gates remain
+open. The next concrete scanner refinement is bounded and recorded in pgmcp:
+prove disjoint-bit radix accumulation, the tenth-group `u64` bound and terminal
+width/minimality equivalence, reusing existing varint lemmas rather than building
+a general parser.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
