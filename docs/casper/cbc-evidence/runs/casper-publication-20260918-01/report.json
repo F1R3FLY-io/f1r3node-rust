@@ -1,0 +1,114 @@
+{
+  "schema_version": 1,
+  "run_id": "casper-publication-20260918-01",
+  "claim_ids": [
+    "CLAIM-CASPER-SOAK-003"
+  ],
+  "status": "verification-passed-claim-pending",
+  "phase": "pre_pr216_merge",
+  "implementation_base": "b5c24da0217465eeef5fb07e3d9126fb759a5b59",
+  "commit_is_base": true,
+  "worktree_dirty": true,
+  "verified_at": "2026-09-18T15:31:59Z",
+  "scope": "controlled-transcript-profile-and-bounded-refutation",
+  "node_execution": false,
+  "proof_execution": false,
+  "unbounded_proof": false,
+  "refutation_executed": true,
+  "source_digests": {
+    ".github/workflows/casper-publication.yml": "91c25c33c997588985913a9fc511b9b35b79f0e1a03abf733c0c5aac53f20421",
+    "formal/tlaplus/casper_soak/profiles/publication/README.md": "4ce28907d9dc19e64627ce01cccb05d726d2e268513fe28861bef4547bf03cd0",
+    "scripts/casper-soak/src/bin/casper-publication.rs": "2f0e7767e52c0d9decdf1572ddfb38ae41849088aadeed643e7d6ec9b02fb687",
+    "scripts/casper-soak/src/profiles/publication.rs": "23fda6085a32c86ac69108ee437a92af92cc4a298bf6ecbd66e60454896c078b",
+    "scripts/casper-soak/tests/publication.rs": "20ed2f8529300192d87c4fc88922b35e28ba1ffbfd5622fc59cf8943dfb07dd6",
+    "scripts/casper-soak/check-publication.sh": "fc5bd24c875020a5d29e490619a8179a5680fadc514297b7fefd3cc31e8dd794",
+    "scripts/casper-soak/src/lib.rs": "2dc948c0a4450b0ba3bd994af7b676e4874992f46dbe5653f7eeb0e27c99c6fe",
+    "scripts/casper-soak/src/manifest.rs": "d9606d542cfb9bc058f691196244ae2e6055e6c84c02b5c2581ee07e70c03000",
+    "scripts/casper-soak/src/models.rs": "99e3f736aa9e753b73edced77049ab206f993d612870bb1d866f6d5c0655983f",
+    "scripts/casper-soak/Cargo.toml": "f6082e839d8bb20e5b2988a9ed92ffe5d1cd79a0e578e10d68582593ea3d13cb",
+    "Cargo.toml": "7c5397136932d04c6e72a04a593249dea347a0f13c4cbd2d7e04c7d6a69f9e88",
+    "Cargo.lock": "318659f6c97ee6030ac0b128b6e2ba0a6a86e07314c2761ecd73052830bb0c4e",
+    "rust-toolchain.toml": "cef5cc010fbd237ab34a4d07129372406e11ff8595c2efc1126d9c93e039aed4",
+    ".cargo/config.toml": "da7e626941c437575405e8eade493a1994483236d0f775c39800b2b2e93f230f",
+    "docs/claims/casper-soak-publication.md": "f894b0908290bafa98ff3ed7e17cbe47a8ff3d01844fe139f0b56a41f74c55a7",
+    "formal/tlaplus/casper_soak/profiles/publication/Publication.tla": "4b51f9c8aee88ac6526b686edfb2a985fb6e6de0230639ca81567eda9543f287",
+    "formal/tlaplus/casper_soak/profiles/publication/MC_Publication_fault_unsafe.cfg": "23fb485a1e05a87d00fb729b3eb7218b8827806483bea035c6d09f15efb8734d",
+    "formal/tlaplus/casper_soak/profiles/publication/MC_Publication_restart_unsafe.cfg": "2704be696f8201d2d3d923c656fb84f0c1f7f788fd86d830273c2bd61aa61b22",
+    "formal/tlaplus/casper_soak/profiles/publication/MC_Publication_tuple_unsafe.cfg": "3962256d6702962ae564601e9286413423344ae481e029897266ae61c8122c8f",
+    "formal/tlaplus/casper_soak/profiles/publication/MC_Publication.cfg": "7b46739bfcf7672c272ee1f60a3de9d3dc15bdf5fb6d2fc40410739a0bd1eca9",
+    "formal/tlaplus/casper_soak/profiles/publication/verification-plan.jsonc": "2eb8b4faa67a7e511d0d71da35edf45f61419816a9ec14c4d9ec80bbd2b44799",
+    "docs/work-logs/task-017-6-publication.md": "0501dc488643fddeeb07f2251258359f1f8eff02ce39be82c7109e7e8a15ff4f"
+  },
+  "claim_digests": {
+    "docs/claims/casper-soak-publication.md": "f894b0908290bafa98ff3ed7e17cbe47a8ff3d01844fe139f0b56a41f74c55a7"
+  },
+  "executables": {
+    "native_sha256": "83abcc07a1942d3f0d5eb0d7372abee0edc52499f9173303fee7b101db8e62eb",
+    "linux_musl_sha256": "6e23b7742d515e094f09caedd78fe123cfdff55ad48a6c438f8f61b170ef8cdf"
+  },
+  "archives": {
+    "source.tar.gz": "04a304375aaafdb63cc8508b28464a32ec5bb668949c7068c5d95d54b28f08fd",
+    "evidence.tar.gz": "9b901c173f2cbfb55a24ca4f2b7bcf3cfec2dbc6354c9291d7b194285fe43257",
+    "support.tar.gz": "4bdc63de4433d634a7f6c56ad75d548c6ef2f72242c38fde6023fc98716bed9b"
+  },
+  "tiers": {
+    "refutation": "bounded-safety-pass",
+    "construction": "not-applicable",
+    "binding": "pending-review",
+    "soak": "pending"
+  },
+  "checks": {
+    "rust_tests": 6,
+    "fixture_cases": 57,
+    "profile_invocations": 61,
+    "tuple_combinations": 16,
+    "clean_distinct_states": 1681,
+    "clean_generated_states": 3281,
+    "negative_controls": 3,
+    "existing_profile_tests": 8,
+    "shared_host_regressions": 11,
+    "linux_cross_build": "passed",
+    "linux_execution": "not-run-docker-unavailable",
+    "native_test_optimization": 0,
+    "linux_test_optimization": 1,
+    "java": "26.0.2.1",
+    "tlc": "2.19",
+    "tlc_jar_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+    "rustfmt": "passed",
+    "bash_syntax": "passed",
+    "ste_check": "passed",
+    "strict_claim_001_exit": 0,
+    "strict_claim_003_exit": 4
+  },
+  "final_evidence": "evidence.tar.gz:final-source",
+  "failure_history": [
+    "initial-red: compilation failure, exit 101",
+    "receipt-red: wrong predecessor passed, exit 101",
+    "work-red: unknown inventory hid an observed loss, exit 101",
+    "qualification-red: wrong node binary qualification passed, exit 101",
+    "initial claim audit commands: unsupported flag, exit 2",
+    "Docker socket unavailable"
+  ],
+  "red_source_snapshots": [
+    "initial-source.tar.gz",
+    "receipt-red-source.tar.gz",
+    "work-red-source.tar.gz",
+    "qualification-red-source.tar.gz"
+  ],
+  "retention_transformations": [
+    "Exact workspace and home prefixes replaced in text with recorded before/after hashes.",
+    "Numeric archive owners, no xattrs, and no ACLs.",
+    "Evidence staging files have owner-write permission. Original filesystem modes are not claimed."
+  ],
+  "limits": [
+    "Human binding acceptance remains pending.",
+    "The new workflow mandatory tag remains unratified and unapplied.",
+    "Linux execution and hosted CI execution remain unverified.",
+    "All live, parallel-policy, and post-merge requests remain blocked.",
+    "The model abstracts valid auxiliary fields and excludes independent earlier failures.",
+    "Controlled transcripts do not prove process containment or node storage atomicity.",
+    "One informational Rust 2024 suggestion remains deferred for this Rust 2021 crate.",
+    "The index changed outside assistant commands and was preserved."
+  ],
+  "waiver": null
+}

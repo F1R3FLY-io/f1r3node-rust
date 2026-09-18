@@ -316,8 +316,29 @@ tasks:
     title: "Verify publication and restart fault profiles and observations"
     claims: [CLAIM-CASPER-SOAK-003]
     claim_spec: docs/claims/casper-soak-publication.md
-    status: pending
-    claimed_by: null
+    status: in_progress
+    claimed_by: pi-casper-publication
+    claimed_at: 2026-09-18T14:39:27Z
+    work_log: docs/work-logs/task-017-6-publication.md
+    implementation_status: controlled-transcript-implemented
+    validation_evidence: docs/casper/cbc-evidence/runs/casper-publication-20260918-01/report.json
+    completion_blocker: "Claim acceptance and the proposed workflow tag remain pending. Live adapters remain unqualified."
+    tests:
+      - scripts/casper-soak/tests/publication.rs
+      - scripts/casper-soak/check-publication.sh
+    files:
+      - scripts/casper-soak/src/profiles/publication.rs
+      - scripts/casper-soak/src/bin/casper-publication.rs
+      - scripts/casper-soak/tests/publication.rs
+      - scripts/casper-soak/check-publication.sh
+      - .github/workflows/casper-publication.yml
+      - formal/tlaplus/casper_soak/profiles/publication/Publication.tla
+      - formal/tlaplus/casper_soak/profiles/publication/MC_Publication.cfg
+      - formal/tlaplus/casper_soak/profiles/publication/MC_Publication_fault_unsafe.cfg
+      - formal/tlaplus/casper_soak/profiles/publication/MC_Publication_restart_unsafe.cfg
+      - formal/tlaplus/casper_soak/profiles/publication/MC_Publication_tuple_unsafe.cfg
+      - formal/tlaplus/casper_soak/profiles/publication/verification-plan.jsonc
+      - formal/tlaplus/casper_soak/profiles/publication/README.md
     blocked_by: []
     decisions: [D-05]
     acceptance:
