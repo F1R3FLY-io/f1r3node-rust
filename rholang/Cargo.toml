@@ -60,6 +60,7 @@ num-traits = { workspace = true }
 num-integer = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+tokio-stream = { workspace = true, features = ["io-util"] }
 metrics = { workspace = true }
 stacker = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
