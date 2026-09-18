@@ -1,50 +1,49 @@
 # CbC Evidence: scripts/ci/check-casper-soak-bindings.sh
 
-All 22 isolated tests pass, including interrupted-capture ordering. Semantic claim discharge remains pending.
+The user accepted the bounded H01–H10 binding review. This record discharges only CLAIM-CASPER-SOAK-001 in the pre-merge phase.
+
+Profile verification, node soaks, post-merge work, and inherited containment limits remain separate. Earlier ledger bytes remain in the linked archive.
 
 ```json
 {
   "artifact": {
     "path": "scripts/ci/check-casper-soak-bindings.sh",
     "id": "scripts-ci-check-casper-soak-bindings-sh",
-    "commit": null,
-    "sha256": "060be41f2d7c9ce6a543edc02f9ceb10f07b84a5cc17e72e2335ecd12b18b8d7"
+    "commit": "946743a7740e5dd3c0816263c3347e501f2d50d7",
+    "sha256": "ead062ae9ce443ea503052b466c49d5706b243638dc77c6eca7590a1fba37137",
+    "commit_is_base": true
   },
   "claim": "docs/claims/casper-soak-harness.md",
   "claim_ids": [
     "CLAIM-CASPER-SOAK-001"
   ],
   "claim_digests": {
-    "docs/claims/casper-soak-harness.md": "29709b0b86bcf1bc287582fa15410af0cc4d7381736c3d23576903db5ca66661"
+    "docs/claims/casper-soak-harness.md": "c711fdc42bfed34ce28a6cd5da407e27d2e4745037b0eb250d8e760bee24a071"
   },
   "adapter": "embedded",
-  "status": "pending",
-  "scope": "harness-only",
+  "status": "discharged",
+  "scope": "bounded-harness-only",
   "evidence": {
-    "kind": "source-bound-fixture-verification",
-    "ref": "docs/casper/cbc-evidence/runs/casper-task-017-4-checks-20260918-01/report.json",
-    "sha256": "d0c11f742ae19e833df893cf7a77f18e7e5912a97ad39fcb03795ce147bd15b0"
+    "kind": "accepted-bounded-refutation-and-binding",
+    "ref": "docs/casper/cbc-evidence/runs/casper-task-017-4-acceptance-01/report.json",
+    "sha256": "c510e4e393daf52f5a3d2e3affa908897ab0a574484de807939354d5ad8c5ec1"
   },
-  "previous_binding_evidence": {
-    "kind": "partial-driver-binding",
-    "ref": "docs/casper/cbc-evidence/runs/casper-binding-gates-20260918-01/report.json",
-    "sha256": "f07c3f7955d7a098b3ce4e646d96bd4472d8f99f56bc43689693c2fb9ecb6039"
-  },
-  "previous_evidence": {
-    "kind": "language-migration-verification",
-    "ref": "docs/casper/cbc-evidence/runs/casper-rust-migration-20260917-01/report.json",
-    "sha256": "6696a0659bb58fa72b27542a414ef4598c3a649bc638136d810d1796c98b2555"
+  "previous_ledger": {
+    "ref": "docs/casper/cbc-evidence/runs/casper-task-017-4-acceptance-01/prior-ledgers.tar.gz",
+    "sha256": "4869ed3996b96dda70f84cc666ceb6f86d529f982f8c847b260287738d333e52",
+    "member": "docs/casper/cbc-evidence/scripts-ci-check-casper-soak-bindings-sh.md"
   },
   "tiers": {
     "refutation": "bounded-safety-pass",
     "construction": "not-applicable",
-    "binding": "pending"
+    "binding": "passed"
   },
   "phase_status": {
-    "pre_pr216_merge": "pending",
+    "pre_pr216_merge": "discharged",
     "post_pr216_merge": "blocked"
   },
+  "soak": "pending",
   "waiver": null,
-  "verified_at": null
+  "verified_at": "2026-09-18T04:31:12Z"
 }
 ```

@@ -158,6 +158,18 @@ files:
   - scripts/casper-soak/src/bin/check-casper-claims.rs
   - scripts/casper-soak/tests/claims.rs
   - scripts/casper-soak/task-complete.sh
+  - scripts/casper-soak/src/profiles/authority_finality.rs
+  - scripts/casper-soak/src/bin/casper-authority-finality.rs
+  - scripts/casper-soak/tests/authority_finality.rs
+  - scripts/casper-soak/check-authority-finality.sh
+  - .github/workflows/casper-authority-finality.yml
+  - formal/tlaplus/casper_soak/profiles/authority_finality/AuthorityFinality.tla
+  - formal/tlaplus/casper_soak/profiles/authority_finality/MC_AuthorityFinality.cfg
+  - formal/tlaplus/casper_soak/profiles/authority_finality/MC_AuthorityFinality_pair_unsafe.cfg
+  - formal/tlaplus/casper_soak/profiles/authority_finality/MC_AuthorityFinality_finality_unsafe.cfg
+  - formal/tlaplus/casper_soak/profiles/authority_finality/MC_AuthorityFinality_head_unsafe.cfg
+  - formal/tlaplus/casper_soak/profiles/authority_finality/verification-plan.jsonc
+  - formal/tlaplus/casper_soak/profiles/authority_finality/README.md
 tasks:
   - id: TASK-017-1
     title: "Reconcile ratifications, existing epics, and source dependencies"
@@ -220,11 +232,12 @@ tasks:
     claim_spec: docs/claims/casper-soak-harness.md
     formal_plan: formal/tlaplus/casper_soak/verification-plan.jsonc
     cycle_plan: docs/tdd-plans/casper-soak-harness.md
-    status: in_progress
+    status: complete
     claimed_by: pi-casper-harness
     claimed_at: 2026-09-16T22:18:38Z
     execution_scope: "Authorized completion work: shared registration and real-driver bindings. No node dispatch, external repin, or claim waiver."
-    work_log: docs/work-logs/task-017-4-final-checks.md
+    work_log: docs/work-logs/task-017-4-acceptance.md
+    completion_evidence: docs/casper/cbc-evidence/runs/casper-task-017-4-acceptance-01/validation.json
     unit_tests:
       - scripts/casper-soak/tests/manifest.rs
       - scripts/casper-soak/tests/models.rs
@@ -247,7 +260,7 @@ tasks:
       - scripts/ci/check-casper-soak-bindings.sh
       - formal/tlaplus/casper_soak/verification-plan.jsonc
       - .github/workflows/slashing-tests.yml
-    completion_blocker: "Current source-bound fixture verification and claim auditing are implemented. Accepted semantic claim discharge remains required. No waiver or completion stamp is authorized."
+    completion_blocker: null
     blocked_by: []
     decisions: [D-11]
     acceptance:
@@ -260,12 +273,35 @@ tasks:
       - "Implement H01 through H10 with a clean TLC configuration, named negative controls, and real-driver fixtures."
       - "Construction is not applicable to these harness and profile claims. Runtime proofs remain outside these epics."
 
+    completion_gaps: []
+    completed_date: 2026-09-18
   - id: TASK-017-5
     title: "Verify authority and finality profile generation and verdicts"
     claims: [CLAIM-CASPER-SOAK-002]
     claim_spec: docs/claims/casper-soak-authority-finality.md
-    status: pending
-    claimed_by: null
+    status: in_progress
+    claimed_by: pi-casper-authority-finality
+    claimed_at: 2026-09-18T13:08:20Z
+    work_log: docs/work-logs/task-017-5-authority-finality.md
+    implementation_status: controlled-transcript-implemented
+    validation_evidence: docs/casper/cbc-evidence/runs/casper-authority-finality-20260918-01/report.json
+    completion_blocker: "Claim acceptance and the proposed workflow tag remain pending. Live adapters remain unqualified."
+    tests:
+      - scripts/casper-soak/tests/authority_finality.rs
+      - scripts/casper-soak/check-authority-finality.sh
+    files:
+      - scripts/casper-soak/src/profiles/authority_finality.rs
+      - scripts/casper-soak/src/bin/casper-authority-finality.rs
+      - scripts/casper-soak/tests/authority_finality.rs
+      - scripts/casper-soak/check-authority-finality.sh
+      - .github/workflows/casper-authority-finality.yml
+      - formal/tlaplus/casper_soak/profiles/authority_finality/AuthorityFinality.tla
+      - formal/tlaplus/casper_soak/profiles/authority_finality/MC_AuthorityFinality.cfg
+      - formal/tlaplus/casper_soak/profiles/authority_finality/MC_AuthorityFinality_pair_unsafe.cfg
+      - formal/tlaplus/casper_soak/profiles/authority_finality/MC_AuthorityFinality_finality_unsafe.cfg
+      - formal/tlaplus/casper_soak/profiles/authority_finality/MC_AuthorityFinality_head_unsafe.cfg
+      - formal/tlaplus/casper_soak/profiles/authority_finality/verification-plan.jsonc
+      - formal/tlaplus/casper_soak/profiles/authority_finality/README.md
     blocked_by: []
     decisions: [D-02, D-03, D-04]
     related_tasks: [TASK-012-19, TASK-012-20, TASK-015-1]

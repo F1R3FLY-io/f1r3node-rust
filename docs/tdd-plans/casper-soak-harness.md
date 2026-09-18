@@ -1,6 +1,8 @@
 # Casper Soak Harness Verification Cycles
 
-**Status:** Bounded models and the current driver suite pass. Claim acceptance, profile verification, and node soaks remain pending.
+**Status:** The user accepted bounded H01–H10 harness binding. CLAIM-CASPER-SOAK-001 is discharged for that scope. Profile verification and node soaks remain pending.
+
+The [acceptance record](../work-logs/task-017-4-acceptance.md) supersedes the historical pending labels below. It preserves all stated containment limits.
 
 **Owner:** TASK-017-4. Post-merge rebinding belongs to TASK-018-2.
 
@@ -10,16 +12,16 @@ The [claim](../claims/casper-soak-harness.md) defines the contract. The [formal 
 
 | Cycle | Behavior | Formal property | State |
 | --- | --- | --- | --- |
-| H01 | Reject changed candidate identity on resume. | IdentityPinned | Driver fixtures pass. Discharge remains pending. |
-| H02 | Preserve iterations and failure history across segments. | ResumePreservesHistory | Driver fixtures pass. Discharge remains pending. |
-| H03 | Preserve product failures after resource termination. | ProductFailureMonotone | Driver fixtures pass. Discharge remains pending. |
-| H04 | Refuse passing reports with incomplete evidence. | PassRequiresEvidence | Driver fixtures pass. Discharge remains pending. |
-| H05 | Prevent workload launch after a terminal condition. | StopPreventsLaunch | Entry, transition, and drain fixtures pass. Discharge remains pending. |
-| H06 | Capture durable evidence before cleanup. | EvidenceBeforeCleanup | Capture and interruption fixtures pass. Containment limits remain. |
-| H07 | Keep deferred experiments outside baseline authority. | PolicyIsolation | Driver fixtures pass. Discharge remains pending. |
-| H08 | Keep missing measurements distinct from zero values. | MissingIsUnknown | Driver fixtures pass. Discharge remains pending. |
-| H09 | Require the actual merge for a post-#216 profile. | PostMergeGate | Open-merge refusal passes. No merged-node run occurred. |
-| H10 | Accept only the named negative-control violation. | ControlVerdictExact | Classification, publication, and audit fixtures pass. Discharge remains pending. |
+| H01 | Reject changed candidate identity on resume. | IdentityPinned | Bounded binding is accepted. |
+| H02 | Preserve iterations and failure history across segments. | ResumePreservesHistory | Bounded binding is accepted. |
+| H03 | Preserve product failures after resource termination. | ProductFailureMonotone | Bounded binding is accepted. |
+| H04 | Refuse passing reports with incomplete evidence. | PassRequiresEvidence | Bounded binding is accepted. |
+| H05 | Prevent workload launch after a terminal condition. | StopPreventsLaunch | Bounded binding is accepted. The lock protocol remains required. |
+| H06 | Capture durable evidence before cleanup. | EvidenceBeforeCleanup | Bounded binding is accepted. Containment limits remain. |
+| H07 | Keep deferred experiments outside baseline authority. | PolicyIsolation | Bounded binding is accepted. |
+| H08 | Keep missing measurements distinct from zero values. | MissingIsUnknown | Bounded binding is accepted. |
+| H09 | Require the actual merge for a post-#216 profile. | PostMergeGate | Bounded gate binding is accepted. No merged-node run occurred. |
+| H10 | Accept only the named negative-control violation. | ControlVerdictExact | Bounded binding is accepted. |
 
 ## First bounded model result
 

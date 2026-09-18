@@ -5,16 +5,24 @@ claim_id: CLAIM-CASPER-SOAK-002
 status: pending
 adapter: embedded
 scope: harness-profile
-profile_implementation: not-implemented
+profile_implementation: controlled-transcript-implemented
 decisions: [D-02, D-03, D-04]
 pre_merge_tasks: [TASK-017-5]
 post_merge_tasks: [TASK-018-3, TASK-018-5]
 artifacts:
-  - scripts/run-merge-recovery-soak.sh
-  - scripts/bench/test-run-merge-recovery-soak.sh
-  - scripts/bench/write-soak-summary.sh
-  - formal/tlaplus/casper_soak/verification-plan.jsonc
-refutation: pending
+  - scripts/casper-soak/src/profiles/authority_finality.rs
+  - scripts/casper-soak/src/bin/casper-authority-finality.rs
+  - scripts/casper-soak/tests/authority_finality.rs
+  - scripts/casper-soak/check-authority-finality.sh
+  - .github/workflows/casper-authority-finality.yml
+  - formal/tlaplus/casper_soak/profiles/authority_finality/AuthorityFinality.tla
+  - formal/tlaplus/casper_soak/profiles/authority_finality/MC_AuthorityFinality.cfg
+  - formal/tlaplus/casper_soak/profiles/authority_finality/MC_AuthorityFinality_pair_unsafe.cfg
+  - formal/tlaplus/casper_soak/profiles/authority_finality/MC_AuthorityFinality_finality_unsafe.cfg
+  - formal/tlaplus/casper_soak/profiles/authority_finality/MC_AuthorityFinality_head_unsafe.cfg
+  - formal/tlaplus/casper_soak/profiles/authority_finality/verification-plan.jsonc
+  - formal/tlaplus/casper_soak/profiles/authority_finality/README.md
+refutation: bounded-safety-pass
 construction: not-applicable
 construction_assumptions: null
 binding: pending
@@ -69,7 +77,7 @@ Unavailable test interfaces produce a blocked scenario, not a passing result. Ad
 
 ## Formal controls and executable fixtures
 
-| Proposed property | Defect knob | Fixture ID | Required fixture result |
+| Property | Defect knob | Fixture ID | Required fixture result |
 | --- | --- | --- | --- |
 | MismatchedInputDetected | PairDifferentDags | authority_pair_mismatch | Change one paired DAG digest. Expect `invalid_input`, not a head-equivalence result. |
 | MissingFinalityDetected | AcceptMissingFinality | authority_finality_missing | Remove one required finality observation. Expect `incomplete`, not hold or pass. |
@@ -81,7 +89,9 @@ TLC explores bounded scenario, event, and outcome states. Real harness fixtures 
 
 Construction is not applicable under PR #433's harness approach. No Rocq theorem or node-code discharge is required by this claim.
 
-The bound is two scenarios and three observations per scenario for the initial model. This is proposed coverage, not completed verification.
+The initial model uses two scenarios and three collection slots per scenario. Its clean search and three named negative controls pass.
+
+Other required fields and applied-step receipts are assumed valid in this abstraction. Executable fixtures check the concrete record handling separately.
 
 ## Interface qualification and phase obligations
 
@@ -102,3 +112,15 @@ After PR #216 merges, adapt the profile interfaces and rerun its model controls,
 A correct harness can report a failed product scenario. Passing harness verification does not convert that product failure into a passing soak.
 
 The [harness contract](./casper-soak-harness.md) defines provenance and outcome rules. Deferred policies still require separate approval before activation.
+
+## Implementation and review status
+
+The [profile guide](../../formal/tlaplus/casper_soak/profiles/authority_finality/README.md) defines the concrete records, commands, bounds, and model mapping.
+
+The implementation uses a separate binary. Existing lifecycle code, its workflow, and accepted CLAIM-CASPER-SOAK-001 evidence remain unchanged.
+
+The profile records compiled helper hashes. Shared helpers retain their separate obligations. Their prior acceptance does not discharge this profile claim.
+
+The [work log](../work-logs/task-017-5-authority-finality.md) records executable fixtures, failure history, and retained verification evidence.
+
+Claim discharge remains pending. The bounded binding review and proposed mandatory workflow tag require human acceptance. Live adapters remain unqualified.

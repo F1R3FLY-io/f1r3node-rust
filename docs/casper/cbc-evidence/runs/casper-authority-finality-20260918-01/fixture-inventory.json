@@ -1,0 +1,27 @@
+{
+  "scope": "fixture-inventory-only",
+  "invocations": 65,
+  "expected_exits": true,
+  "outcomes": [
+    {
+      "verdict": "blocked",
+      "count": 3
+    },
+    {
+      "verdict": "incomplete",
+      "count": 8
+    },
+    {
+      "verdict": "invalid_input",
+      "count": 34
+    },
+    {
+      "verdict": "passed",
+      "count": 17
+    },
+    {
+      "verdict": "product_failure",
+      "count": 3
+    }
+  ]
+}

@@ -1,48 +1,49 @@
 # CbC Evidence: formal/tlaplus/casper_soak/MC_CasperSoakHarness_identity_unsafe.cfg
 
-**Status:** Pending. The bounded model result does not discharge the full harness/profile claim.
+The user accepted the bounded H01–H10 binding review. This record discharges only CLAIM-CASPER-SOAK-001 in the pre-merge phase.
 
-- CLAIM-CASPER-SOAK-001 (`docs/claims/casper-soak-harness.md`)
-
-The evidence package contains partial results only. No node correctness claim or construction proof belongs to this scope.
+Profile verification, node soaks, post-merge work, and inherited containment limits remain separate. Earlier ledger bytes remain in the linked archive.
 
 ```json
 {
   "artifact": {
     "path": "formal/tlaplus/casper_soak/MC_CasperSoakHarness_identity_unsafe.cfg",
-    "commit": null,
     "id": "formal-tlaplus-casper-soak-MC-CasperSoakHarness-identity-unsafe-cfg",
-    "sha256": "25c5689dee8138b46406741b6f4a74ed41dddc2c43824c810c7670bc9af3186e"
+    "commit": "946743a7740e5dd3c0816263c3347e501f2d50d7",
+    "sha256": "25c5689dee8138b46406741b6f4a74ed41dddc2c43824c810c7670bc9af3186e",
+    "commit_is_base": false
   },
   "claim": "docs/claims/casper-soak-harness.md",
   "claim_ids": [
     "CLAIM-CASPER-SOAK-001"
   ],
   "claim_digests": {
-    "docs/claims/casper-soak-harness.md": "636bdd0681096a3fb054a88f114641e4b23812001bff02d873dce5f6d52aa4c5"
+    "docs/claims/casper-soak-harness.md": "c711fdc42bfed34ce28a6cd5da407e27d2e4745037b0eb250d8e760bee24a071"
   },
   "adapter": "embedded",
-  "status": "pending",
-  "scope": "harness-and-profiles-only",
+  "status": "discharged",
+  "scope": "bounded-harness-only",
   "evidence": {
-    "kind": "partial-verification",
-    "ref": "docs/casper/cbc-evidence/runs/casper-harness-controls-20260916-01/report.json",
-    "sha256": "b192d4c2152081f3d47c26fa951a98d14d96aaeeed74d55818c14457134346c7",
-    "counterexample": null,
-    "detail": "Bounded lifecycle controls and runner unit tests pass. Driver/profile bindings, shared CI integration, and soaks remain pending."
+    "kind": "accepted-bounded-refutation-and-binding",
+    "ref": "docs/casper/cbc-evidence/runs/casper-task-017-4-acceptance-01/report.json",
+    "sha256": "c510e4e393daf52f5a3d2e3affa908897ab0a574484de807939354d5ad8c5ec1"
+  },
+  "previous_ledger": {
+    "ref": "docs/casper/cbc-evidence/runs/casper-task-017-4-acceptance-01/prior-ledgers.tar.gz",
+    "sha256": "4869ed3996b96dda70f84cc666ceb6f86d529f982f8c847b260287738d333e52",
+    "member": "docs/casper/cbc-evidence/formal-tlaplus-casper-soak-MC-CasperSoakHarness-identity-unsafe-cfg.md"
   },
   "tiers": {
-    "refutation": "bounded-pass",
+    "refutation": "bounded-safety-pass",
     "construction": "not-applicable",
-    "construction_assumptions": null,
-    "binding": "pending"
+    "binding": "passed"
   },
   "phase_status": {
-    "pre_pr216_merge": "pending",
+    "pre_pr216_merge": "discharged",
     "post_pr216_merge": "blocked"
   },
-  "scaffold_base_commit": "cc7e84b482887f0647277ccbacd6f65ae3cf749d",
+  "soak": "pending",
   "waiver": null,
-  "verified_at": null
+  "verified_at": "2026-09-18T04:31:12Z"
 }
 ```
