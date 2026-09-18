@@ -8,6 +8,58 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 #[test]
+fn substitution_value_regions_have_physical_position_and_refusal_bindings() {
+    let theory = read_repository_file("formal/rocq/stack_safe_pda/theories/SubstitutionValueRegions.v");
+    for theorem in [
+        "suffix_split_gives_exact_offset",
+        "single_frame_selects_exact_physical_range",
+        "successful_loop_refines_decoder_and_partition",
+        "partition_has_exact_count_bound",
+        "partition_retains_ordered_in_bounds_spans",
+        "span_body_length",
+        "partition_has_exact_physical_positions",
+        "successful_inspection_decodes_complete_suffix",
+        "successful_selection_is_machine_representable",
+        "trailing_bytes_refuse_publication",
+        "impossible_count_refuses_before_loop",
+        "failed_frame_cannot_publish_range_list",
+        "duplicate_empty_bodies_have_distinct_positions",
+        "truncated_payload_does_not_publish",
+        "inspected_prefix_is_in_bounds",
+        "completed_loop_satisfies_admission_guard",
+        "region_interpretation_has_exact_length",
+        "successful_selection_lifts_owned_regions",
+        "selected_physical_ranges_establish_region_field_certificate",
+        "selected_physical_ranges_preserve_all_retained_provenance",
+        "unrepresentable_payload_cannot_be_selected",
+        "selected_headers_and_bodies_reconstruct_whole_input",
+    ] {
+        assert!(theory.contains(&format!("Print Assumptions {theorem}.")));
+    }
+    let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
+    assert!(has_runner_command(&runner, &[
+        "rocq_compile_with_closed_count", "theories/SubstitutionValueRegions.v", "22",
+    ]));
+    assert!(has_runner_kernel_check(&runner, &["StackSafePDA.SubstitutionValueRegions"]));
+    assert!(read_repository_file("formal/rocq/stack_safe_pda/_CoqProject")
+        .lines().any(|line| line == "theories/SubstitutionValueRegions.v"));
+    let native = read_repository_file("models/tests/support/substitution_value_regions.rs");
+    for witness in [
+        "value_region_positions_match_construction_across_header_widths_and_duplicates",
+        "value_region_zero_count_preserves_empty_set_and_value_free_map_modes",
+        "malformed_value_framing_never_publishes_a_partial_range_list",
+        "topology_validation_remains_a_separate_post_framing_gate",
+        "generated_value_regions_equal_independently_recorded_positions",
+    ] {
+        assert!(native.contains(&format!("fn {witness}(")));
+    }
+    assert!(native.contains("expected.push(start..bytes.len())"));
+    assert!(native.contains("assert_eq!(inspection.value_bodies, expected)"));
+    let codec = read_repository_file("models/src/rust/epathmap_trie_codec.rs");
+    assert!(codec.contains("#[path = \"../../tests/support/substitution_value_regions.rs\"]"));
+}
+
+#[test]
 fn substitution_region_provenance_has_region_path_and_decoder_bindings() {
     let theory = read_repository_file("formal/rocq/stack_safe_pda/theories/SubstitutionRegionProvenance.v");
     for theorem in [

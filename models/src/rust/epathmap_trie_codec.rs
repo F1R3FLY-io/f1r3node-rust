@@ -2235,6 +2235,10 @@ mod line_batch_tests;
 mod substitution_varint_tests;
 
 #[cfg(test)]
+#[path = "../../tests/support/substitution_value_regions.rs"]
+mod substitution_value_regions_tests;
+
+#[cfg(test)]
 mod tests {
     use std::hint::black_box;
     use std::time::{Duration, Instant};

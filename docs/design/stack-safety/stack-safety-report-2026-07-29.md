@@ -8628,6 +8628,20 @@ whole-substitution semantics and resource/lifecycle acceptance remain required.
 [J-183](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-183--2026-09-18-region-backed-registration-and-frame-provenance)
 records the model assumptions, exact receipts and native-binding limits.
 
+The SVI physical-value-range bridge now derives exact EPM body positions from
+consumed canonical headers, including duplicate and empty bodies, and composes
+selected intervals with SRV's ownership and field-certificate proofs. Twenty-two
+closed obligations and kernel checking pass before native edits. An independent
+append-time offset oracle, nonzero-offset backing checks and malformed/count/
+trailing/topology controls pass with the existing varint/provenance gates:
+101 focused tests, 1.5 GiB reported peak under an 8 GiB cap with zero swap.
+The canonical oversized-length control allocates no large body. This is
+proof/test evidence, not a production or performance change. Full prefix/topology
+admission and schema dispatch remain separate from successful value framing;
+full substitution and resource/lifecycle gates remain open. See
+[J-184](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-184--2026-09-18-exact-physical-epm-value-selection)
+for the exact scope, invariants and receipts.
+
 ---
 
 ### 5.29 ParBag family and count-domain completeness [SS-A13, SS-A14, SS-Y9]

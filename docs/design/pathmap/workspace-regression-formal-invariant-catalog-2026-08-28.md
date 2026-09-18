@@ -744,6 +744,56 @@ All these latter campaign obligations remain explicit. See
 [J-183](pathmap-engineering-journal-2026-08-23.md#j-183--2026-09-18-region-backed-registration-and-frame-provenance)
 for evidence and remaining boundaries.
 
+## Physical EPM value-range selection (SVI, task 5916)
+
+`SubstitutionValueRegions.v` models the value-framing loop after a known EPM1
+prefix boundary. It uses the existing canonical ten-group length scanner;
+the consumed suffix determines header advancement. Each range begins after that
+header and ends after its declared payload. The loop keeps the original input
+and an absolute cursor, records every range, and requires EOF after the declared
+count. The count is a serialized cardinality, not an artificial traversal fuel.
+
+| ID | Printed obligations (22 total) | Executable binding |
+|---|---|---|
+| SVI-01 | `suffix_split_gives_exact_offset`, `single_frame_selects_exact_physical_range`, `span_body_length`, `partition_has_exact_physical_positions` | Independent append-time oracle checks exact starts/ends at body lengths 0, 1, 127, 128, 16383 and 16384; duplicate and empty bodies cannot be substituted merely because their bytes agree. |
+| SVI-02 | `successful_loop_refines_decoder_and_partition`, `partition_has_exact_count_bound`, `partition_retains_ordered_in_bounds_spans`, `successful_inspection_decodes_complete_suffix`, `completed_loop_satisfies_admission_guard`, `selected_headers_and_bodies_reconstruct_whole_input` | Generated bounded arbitrary-body suffixes compare all recorded positions, count and EOF; headers plus bodies reconstruct the consumed suffix. Existing provenance tests retain the resulting fields. |
+| SVI-03 | `successful_selection_is_machine_representable`, `unrepresentable_payload_cannot_be_selected` | Canonical u64::MAX header with no body tests checked endpoint overflow on 64-bit or length-conversion refusal on 32-bit, without allocating the claimed payload; successful intervals remain within the actual source. |
+| SVI-04 | `trailing_bytes_refuse_publication`, `impossible_count_refuses_before_loop`, `failed_frame_cannot_publish_range_list`, `truncated_payload_does_not_publish`, `inspected_prefix_is_in_bounds` | Noncanonical/truncated headers, short payloads, count mismatch, impossible count and trailing bytes must return errors rather than completed partial range lists. |
+| SVI-05 | `duplicate_empty_bodies_have_distinct_positions` | Two empty frames retain distinct offsets; repeated nonempty payloads at different positions retain different ranges. |
+| SVI-06 | `region_interpretation_has_exact_length`, `successful_selection_lifts_owned_regions`, `selected_physical_ranges_establish_region_field_certificate`, `selected_physical_ranges_preserve_all_retained_provenance` | Selected local intervals are lifted through a nonzero-offset shared backing with exact owner/range/pointer checks; formal composition derives SRV field certificates and retained provenance. |
+
+For zero-based ordinal $`i`$, the physical-position theorem establishes:
+
+```math
+\begin{aligned}
+\operatorname{start}_i &=
+p + \sum_{j<i}\lvert\operatorname{frame}(b_j)\rvert
+  + \lvert\operatorname{varint}(\lvert b_i\rvert)\rvert,\\
+\operatorname{end}_i &= \operatorname{start}_i + \lvert b_i\rvert .
+\end{aligned}
+```
+
+Here $`p`$ is the already identified value-table boundary and $`b_i`$
+is the body at ordinal $`i`$. Every header is nonempty, including for an
+empty body, so successive occurrences remain physically distinct.
+
+**Independent oracle and limits.** Native expected offsets and prefix end are
+recorded while constructing bytes, never read from an inspector. The test uses
+PathMap's maintained ACT writer with zero markers and a count-matching topology;
+zero-count cases explicitly cover neutral empty, a set and a nonempty value-free
+map. Arbitrary body bytes test framing, not their validity as serialized Par.
+A separate control passes framing and then fails full-inspector topology
+validation, preserving the distinction between those acceptance stages.
+
+The model proves successful-selection refinement to the existing frame decoder,
+not unrestricted acceptance equivalence with its unbounded mathematical form.
+The machine-bound theorem assumes resident input length fits the host limit;
+diagnostic strings/cursor side effects and allocation failure are not modeled.
+EPM magic/version/mode/arena-prefix admission, ACT topology and schema dispatch
+remain separate refinement boundaries. See
+[J-184](pathmap-engineering-journal-2026-08-23.md#j-184--2026-09-18-exact-physical-epm-value-selection)
+for receipts and remaining scope.
+
 ## Original workspace-regression completion gates
 
 This checkpoint is complete only when all of the following hold:

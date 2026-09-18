@@ -13530,6 +13530,110 @@ entry is warranted for this checkpoint. No benchmark or allocation/speedup claim
 follows. Task 5916 remains open for those selection/semantic boundaries,
 operational counters, non-identity scaling/profiling and lifecycle/replay gates.
 
+### J-184 — 2026-09-18 Exact physical EPM value selection
+
+**Question (task 5916).** The region-registration proof assumes that supplied
+value ranges refer to the intended physical bodies. Comparing two consumers
+that share `parse_canonical_snapshot_framing` cannot independently establish
+that fact, especially when distinct bodies have equal bytes. The hypothesis is
+that consumed-header offsets and the existing decoder's suffix relation suffice
+to derive exact selection without another production parser.
+
+**DERIVED model.** `SubstitutionValueRegions.v` (SVI) retains one immutable
+input and an absolute cursor. It reuses SRF's canonical ten-group length scanner
+and consumed-prefix theorem (already linked to native accumulation by SVA).
+The cursor after the length header determines body start; declared body length
+determines its end. The next frame starts at that end. The declared value count
+controls this specification loop; it is not a new traversal-depth limit.
+
+Twenty-two printed declarations prove single-frame range correctness,
+strict header progress, exact count and order, physical positions as sums of
+preceding frame lengths, in-bounds intervals, EOF closure, count/refusal controls
+and complete header/body reconstruction. Under a representable input-length
+bound, successful selected lengths and endpoints are machine-representable.
+A separate theorem excludes a payload length exceeding that limit.
+
+The final two composition theorems lift these intervals with SRR's owner-preserving
+child operation and derive both SRV's field certificate and its retained
+path/cut/group provenance capstone. Equal bytes alone no longer stand in for
+the selected physical position. The
+[SVI inventory](workspace-regression-formal-invariant-catalog-2026-08-28.md#physical-epm-value-range-selection-svi-task-5916)
+enumerates every obligation and its native binding.
+
+**Independent native evidence.** The new test-only constructor writes an EPM
+prefix, obtains a valid arena from PathMap's maintained ACT writer, and appends
+independently encoded length headers and arbitrary body bytes. It records prefix
+end and every body range while appending, before invoking either inspector.
+Returned ranges must equal these exact recorded positions. Fixtures include
+empty/duplicate values and lengths 127/128 and 16383/16384. Generated bounded
+bodies add repeated empty and duplicate occurrences. Every selected interval is
+also lifted through a nonzero-offset backing and checked for exact absolute
+range, bytes and shared pointer.
+
+Zero-count fixtures deliberately include neutral-empty, set and nonempty
+value-free map topology; an empty arena labeled Map would not be a valid positive
+case. Refusal controls cover truncated/noncanonical lengths, short bodies, count
+mismatch, impossible count and trailing bytes. Review distinguished varint
+overflow from payload-end overflow: a canonical u64::MAX length with no body
+now exercises checked addition on this 64-bit host; its 32-bit branch expects
+length conversion failure. No huge payload allocation occurs. This host run
+does not claim execution of the 32-bit branch.
+
+A separate control has valid framing but is rejected by subsequent topology
+validation. Arbitrary body bytes are intentional framing data; their acceptance
+does not establish that they decode as Par. Production codecs, representation
+and acceptance behavior are unchanged; the only codec edit mounts a cfg(test)
+module under the test-source directory.
+
+**MEASURED qualification.** Formal r13 passes all 22 closed declarations and
+explicit kernel checking before native edits: 16.521 seconds wall, 16.134 CPU
+seconds and 447.9 MiB peak, under a 2 GiB hard cap, zero swap, one-core quota and
+120-second watchdog. Failed intermediate proof scripts are not passing evidence.
+
+Final native r2 passes 101 tests: five value-region tests, 19 provenance tests,
+five varint tests and 72 integrations (37 manifest, 18 cursor, eight differential,
+seven region-range and two test-registry). The library filtered counts are 532,
+518 and 532 respectively; no selected test fails or is ignored. The service takes
+42.333 seconds wall, 109.665 CPU seconds and reports 1.5 GiB peak with zero swap.
+It uses `MemoryHigh=6G`, `MemoryMax=8G`, `MemorySwapMax=0`, `CPUQuota=400%`,
+four build/test workers and a 1800-second watchdog. Initial r1 also passed before
+the additional canonical oversized-length control; r2 is the final receipt.
+These are focused correctness checks, not workspace-wide validation or benchmarks.
+
+| Artifact | SHA-256 |
+|---|---|
+| `formal/rocq/stack_safe_pda/theories/SubstitutionValueRegions.v` | `aac95af72aa3e885887a47254169cf218b7b19526a7c6090651c25a2b25e4756` |
+| `target/verification/substitution-5916-value-regions-formal-r13.log` | `05de1c084ef407ce21cb9a252812e87c7543ed73fadff2d738d9741456a387b7` |
+| `target/verification/substitution-5916-value-regions-native-r2.log` | `1bb37584d55e26e777886b663971e66a9b415a9d4415369dd354174577a2d8c2` |
+
+Commands run within the capped services, from the proof directory for formal
+verification and the worktree root for native checks:
+
+```sh
+coqc -Q theories StackSafePDA theories/SubstitutionValueRegions.v
+coqchk -silent -Q theories StackSafePDA StackSafePDA.SubstitutionValueRegions
+cargo test --release --locked -j4 -p models --lib substitution_value_regions_tests -- --test-threads=4
+cargo test --release --locked -j4 -p models --lib emission_tests -- --test-threads=4
+cargo test --release --locked -j4 -p models --lib substitution_varint_tests -- --test-threads=4
+cargo test --release --locked -j4 -p models --test protobuf_cursor --test substitution_region_ranges --test protobuf_region_differential --test formal_equivalence_manifest --test test_target_registry_gate -- --test-threads=4
+```
+
+**Decision and remaining boundaries.** This closes successful physical
+value-range selection in the mathematical model and adds an independent native
+offset oracle. It starts at an already identified value-table boundary.
+EPM magic/version/mode/arena-prefix admission, ACT topology and schema dispatch
+remain separate obligations; successful framing alone is not full EPM admission.
+The decoder theorem is successful-selection refinement, not unrestricted
+acceptance equivalence with an unbounded mathematical decoder. Exact native
+diagnostics, cursor side effects, allocation failure and compiler correctness
+are not claimed by the formal model.
+
+Task 5916 remains in progress for those admission/dispatch boundaries, full
+substitution/binder/error/charge semantics, operational counters, non-identity
+scaling/profiling and lifecycle/replay gates. Scheduler revision 1208 retained
+this incumbent. No production/consensus change or new consensus-register entry,
+performance result, new dependency or PathMap modification is introduced.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

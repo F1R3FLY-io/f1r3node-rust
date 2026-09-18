@@ -764,6 +764,10 @@ rocq_reject_placeholders theories/SubstitutionRegionProvenance.v
 rocq_compile_with_closed_count theories/SubstitutionRegionProvenance.v 42 \
   "region-backed path and table registration provenance"
 rocq_check_modules "substitution region provenance" StackSafePDA.SubstitutionRegionProvenance
+rocq_reject_placeholders theories/SubstitutionValueRegions.v
+rocq_compile_with_closed_count theories/SubstitutionValueRegions.v 22 \
+  "exact physical EPM1 value-range selection and retained provenance"
+rocq_check_modules "substitution value regions" StackSafePDA.SubstitutionValueRegions
 rmp2_rocq_output="$(
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/RMP2.v 2>&1
 )"
