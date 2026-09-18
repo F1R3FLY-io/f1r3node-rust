@@ -15,6 +15,207 @@ use crate::rust::rholang::protobuf_encoder;
 struct PublishedNode {
     source: ProtobufRegion,
     output: [prost::bytes::Bytes; 3],
+    tables: RegisteredTables,
+}
+
+#[derive(Clone)]
+struct RegisteredTables {
+    paths: Vec<super::PathNode>,
+    cuts: Vec<super::ProtobufParCut>,
+    groups: Vec<super::ProtobufEPathMapRegion>,
+}
+
+fn assert_same_region(before: &ProtobufRegion, after: &ProtobufRegion) {
+    assert_eq!(before.absolute_range(), after.absolute_range());
+    assert_eq!(before.as_bytes(), after.as_bytes());
+    assert_eq!(before.as_bytes().as_ptr(), after.as_bytes().as_ptr());
+}
+
+impl RegisteredTables {
+    fn capture(builder: &Builder) -> Self {
+        Self {
+            paths: builder.paths.clone(),
+            cuts: builder.cuts.clone(),
+            groups: builder.epathmaps.clone(),
+        }
+    }
+
+    fn assert_preserved(
+        &self,
+        paths: &[super::PathNode],
+        cuts: &[super::ProtobufParCut],
+        groups: &[super::ProtobufEPathMapRegion],
+    ) {
+        assert!(paths.len() >= self.paths.len());
+        assert!(cuts.len() >= self.cuts.len());
+        assert!(groups.len() >= self.groups.len());
+        for (old, new) in self.paths.iter().zip(paths) {
+            assert_eq!(old.parent, new.parent);
+            assert_eq!(old.step, new.step);
+        }
+        for (old, new) in self.cuts.iter().zip(cuts) {
+            assert_same_region(&old.region, &new.region);
+            assert_eq!(old.path_leaf, new.path_leaf);
+        }
+        for (old, new) in self.groups.iter().zip(groups) {
+            assert_same_region(&old.prefix, &new.prefix);
+            assert_eq!(old.mode, new.mode);
+            assert_eq!(old.cuts, new.cuts);
+            assert_eq!(old.path_leaf, new.path_leaf);
+        }
+    }
+}
+
+struct RegisteredGroup {
+    index: usize,
+    first_cut: usize,
+    first_path: usize,
+    payload: ProtobufRegion,
+    values: Vec<Vec<u8>>,
+    mode: crate::rust::epathmap_trie_codec::EPathMapMode,
+}
+
+fn verify_registered_group(builder: &Builder, observed: &RegisteredGroup) {
+    use super::ProtobufRegionStepKind;
+    let group = &builder.epathmaps[observed.index];
+    assert_eq!(group.mode, observed.mode);
+    assert_eq!(group.cuts, observed.first_cut..observed.first_cut + observed.values.len());
+    assert_eq!(group.path_leaf, observed.first_path);
+    let path = &builder.paths[group.path_leaf];
+    assert_eq!(path.parent, None);
+    assert_eq!(path.step.kind, ProtobufRegionStepKind::EPathMapSnapshot);
+    assert_eq!(path.step.owner_type_id, PAR_PROTOBUF_REGION_PROGRAM.type_id);
+    assert_eq!(path.step.field_tag, 1);
+    assert_eq!(path.step.occurrence, observed.index as u32);
+    let mut rebuilt = group.prefix.as_bytes().to_vec();
+    assert_eq!(group.prefix.absolute_range().start, observed.payload.absolute_range().start);
+    assert_eq!(group.prefix.as_bytes().as_ptr(), observed.payload.as_bytes().as_ptr());
+    for (ordinal, expected) in observed.values.iter().enumerate() {
+        let cut = &builder.cuts[group.cuts.start + ordinal];
+        assert_eq!(cut.path_leaf, observed.first_path + 1 + ordinal);
+        let path = &builder.paths[cut.path_leaf];
+        assert_eq!(path.parent, Some(group.path_leaf));
+        assert_eq!(path.step.kind, ProtobufRegionStepKind::EPathMapValue);
+        assert_eq!(path.step.owner_type_id, PAR_PROTOBUF_REGION_PROGRAM.type_id);
+        assert_eq!(path.step.field_tag, 1);
+        assert_eq!(path.step.occurrence, ordinal as u32);
+        prost::encoding::encode_varint(expected.len() as u64, &mut rebuilt);
+        let start = rebuilt.len();
+        let end = start + expected.len();
+        assert_eq!(cut.region.as_bytes(), expected);
+        assert_eq!(cut.region.absolute_range(), observed.payload.absolute_range().start + start..observed.payload.absolute_range().start + end);
+        assert_eq!(cut.region.as_bytes().as_ptr(), observed.payload.as_bytes()[start..].as_ptr());
+        rebuilt.extend_from_slice(expected);
+    }
+    assert_eq!(rebuilt, observed.payload.as_bytes());
+}
+
+fn build_registration_sequence(values: &[Option<i64>]) -> (Builder, Vec<RegisteredGroup>) {
+    use super::{Frame, FrameSchema, ProtobufRegionStepKind};
+    use crate::rhoapi::Par;
+    use crate::rust::rhoapi_ext::EPathMap;
+    use crate::rust::epathmap_trie_codec::EPathMapMode;
+    let make_map = || EPathMap::new_map(
+        values.iter().enumerate().map(|(key, value)| (
+            par_corpus::gint(key as i64),
+            value.map(par_corpus::gint).unwrap_or_default(),
+        )),
+        Vec::new(), false, None,
+    );
+    let groups = [
+        make_map(),
+        EPathMap::from_set_iter([par_corpus::gint(99)], Vec::new(), false, None),
+        EPathMap::from_set_iter(std::iter::empty::<Par>(), Vec::new(), false, None),
+        make_map(),
+    ];
+    let mut builder = Builder::new();
+    let mut frames = vec![Frame::new(
+        ProtobufRegion::from(Vec::new()), FrameSchema::Message(&PAR_PROTOBUF_REGION_PROGRAM),
+        None, None, true,
+    )];
+    let mut observations = Vec::new();
+    for (index, map) in groups.into_iter().enumerate() {
+        let before = RegisteredTables::capture(&builder);
+        let ordinary = ProtobufRegion::from(protobuf_encoder::encode_to_vec(&par_corpus::gint(index as i64)));
+        builder.add_child(
+            &mut frames, ordinary.clone(), &PAR_PROTOBUF_REGION_PROGRAM,
+            1, 1, index as u32, ProtobufRegionStepKind::Message,
+            PAR_PROTOBUF_REGION_PROGRAM.type_id, None, true,
+        ).unwrap();
+        before.assert_preserved(&builder.paths, &builder.cuts, &builder.epathmaps);
+        assert_eq!(builder.cuts.len(), before.cuts.len() + 1);
+        assert_eq!(builder.paths.len(), before.paths.len() + 1);
+        assert_same_region(&ordinary, &builder.cuts[before.cuts.len()].region);
+        assert_eq!(builder.cuts[before.cuts.len()].path_leaf, before.paths.len());
+        assert!(matches!(frames[0].pieces.last(), Some(Piece::Par { tag: 1, cut }) if *cut == before.cuts.len()));
+
+        let mut expected = Vec::new();
+        if map.mode() == EPathMapMode::Map {
+            map.for_each_map_entry(|_, value| expected.push(protobuf_encoder::encode_to_vec(value))).unwrap();
+        }
+        let snapshot = map.trie_snapshot();
+        let backing = ProtobufRegion::from([&[99, 42][..], snapshot, &[88][..]].concat());
+        let payload = backing.subregion(super::CanonicalByteRange { start: 2, end: 2 + snapshot.len() }).unwrap();
+        let before = RegisteredTables::capture(&builder);
+        let observed = RegisteredGroup {
+            index, first_cut: builder.cuts.len(), first_path: builder.paths.len(),
+            payload: payload.clone(), values: expected, mode: map.mode(),
+        };
+        builder.add_epathmap(
+            &mut frames, payload, &PAR_PROTOBUF_REGION_PROGRAM, 1, index as u32, None,
+        ).unwrap();
+        before.assert_preserved(&builder.paths, &builder.cuts, &builder.epathmaps);
+        assert_eq!(builder.cuts.len(), observed.first_cut + observed.values.len());
+        assert_eq!(builder.paths.len(), observed.first_path + 1 + observed.values.len());
+        assert_eq!(builder.epathmaps.len(), index + 1);
+        assert!(matches!(frames[0].pieces.last(), Some(Piece::EPathMap { tag: 1, group }) if *group == index));
+        verify_registered_group(&builder, &observed);
+        for prior in &observations {
+            verify_registered_group(&builder, prior);
+        }
+        observations.push(observed);
+    }
+    (builder, observations)
+}
+
+#[test]
+fn registration_preserves_tables_between_map_set_empty_and_ordinary_cuts() {
+    let (builder, observations) = build_registration_sequence(&[None, Some(7), Some(7), Some(9)]);
+    assert_eq!(observations.iter().map(|g| g.values.len()).collect::<Vec<_>>(), [4, 0, 0, 4]);
+    assert_eq!(builder.cuts.len(), 12);
+    for observed in &observations {
+        verify_registered_group(&builder, observed);
+    }
+}
+
+#[test]
+fn registration_controls_reject_shifted_ranges_and_wrong_value_paths() {
+    let (mut builder, observations) = build_registration_sequence(&[None, Some(7), Some(9)]);
+    let observed = &observations[0];
+    verify_registered_group(&builder, observed);
+    builder.epathmaps[0].cuts.start += 1;
+    assert!(std::panic::catch_unwind(|| verify_registered_group(&builder, observed)).is_err());
+    builder.epathmaps[0].cuts.start -= 1;
+    let left = builder.cuts[observed.first_cut].path_leaf;
+    let right = builder.cuts[observed.first_cut + 1].path_leaf;
+    builder.paths[left].step.occurrence = 1;
+    builder.paths[right].step.occurrence = 0;
+    assert!(std::panic::catch_unwind(|| verify_registered_group(&builder, observed)).is_err());
+    builder.paths[left].step.occurrence = 0;
+    builder.paths[right].step.occurrence = 1;
+    let parent = builder.paths[left].parent.take();
+    assert!(std::panic::catch_unwind(|| verify_registered_group(&builder, observed)).is_err());
+    builder.paths[left].parent = parent;
+    verify_registered_group(&builder, observed);
+}
+
+proptest! {
+    #[test]
+    fn generated_registration_retains_every_value_and_prior_group(
+        values in prop::collection::vec(prop::option::of(any::<i64>()), 0..24),
+    ) {
+        build_registration_sequence(&values);
+    }
 }
 
 fn verify_epathmap_value_frame_partition(
@@ -78,6 +279,7 @@ pub(super) fn record_publication(index: usize, source: &ProtobufRegion, builder:
         };
         observations.push(PublishedNode {
             source: source.clone(),
+            tables: RegisteredTables::capture(builder),
             output: [
                 plan.reconstructed_bytes(),
                 plan.shallow_bytes(),
@@ -217,6 +419,7 @@ fn verify_publication_with_piece_counts(bytes: Vec<u8>) -> (usize, [usize; 4]) {
     let mut piece_counts = [0; 4];
     let mut ranks = Vec::new();
     for (index, (node, observed)) in plan.nodes.iter().zip(&observations).enumerate() {
+        observed.tables.assert_preserved(&plan.paths, &plan.cuts, &plan.epathmaps);
         for (total, count) in piece_counts.iter_mut().zip(
             verify_node_field_certificates(index, &plan, &observations)
         ) {

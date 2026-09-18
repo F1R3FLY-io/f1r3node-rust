@@ -602,6 +602,53 @@ format is changed. Full substitution semantics, schema/table construction and
 resource/lifecycle acceptance remain separate obligations.
 
 
+## Append-only table and publication invariants (SRT, task 5916)
+
+`SubstitutionRegionTables.v` replaces the emission/publication models' fixed
+byte-table assumption with finite append-only cut and group tables. A group
+stores its retained prefix and a contiguous cut interval. A well-formed table
+bounds every group interval. A supported piece refers only to existing cuts or
+groups; Child references remain governed by SRP's backward-node invariant.
+
+The combined `table_arena_valid` predicate requires well-formed tables,
+supported pieces in every node and SRP's original arena invariant. Empty
+initialization, cut registration, group registration and successful checked
+publication preserve this package. A separate fold theorem equates sequential
+cut appends followed by group publication with the batch specification.
+
+| ID | Printed obligations (30 total) | Native binding |
+|---|---|---|
+| SRT-01 | `extension_preserves_cut_lookup`, `extension_preserves_group_lookup`, `extension_preserves_support`, `group_range_bounded` | Snapshots compare all earlier cut/group entries; bounded group intervals and path references are checked at each direct registration. |
+| SRT-02 | `extension_preserves_group_body`, `extension_preserves_piece_bytes`, `extension_preserves_source_piece`, `extension_preserves_field_certificates`, `extension_preserves_arena_validity` | Publication-time tables remain exact prefixes of final tables; original/shallow/compact outputs and cached lengths remain unchanged. |
+| SRT-03 | `cut_registration_extends`, `cut_registration_preserves_well_formed`, `cut_registration_has_exact_new_ordinal`, `group_registration_extends`, `group_registration_preserves_well_formed`, `group_registration_has_exact_descriptor` | Real `add_child` and `add_epathmap` calls check returned piece indices, exact table length increments and group start/end. |
+| SRT-04 | `suffix_indices_select_values`, `group_registration_preserves_exact_value_order`, `group_registration_reconstructs_original_payload`, `registration_establishes_piece_support`, `cut_registration_establishes_field_certificate`, `group_registration_establishes_field_certificate` | Typed PathMap traversal supplies expected values in trie order; exact encoded frames, empty/duplicate values, offsets and backing pointers must match. |
+| SRT-05 | `empty_tables_are_well_formed`, `sequential_cuts_equal_batch`, `publication_preserves_piece_support` | The fixture begins with `Builder::new`, interleaves ordinary cuts with map/set/empty groups, and checks every old group after each new one. |
+| SRT-06 | `sequential_group_publication_equals_registration`, `empty_table_arena_is_valid`, `extension_transports_table_arena`, `cut_registration_transports_table_arena`, `group_registration_transports_table_arena`, `checked_publication_preserves_table_arena` | The existing real-node publication corpus checks source fields and all emission modes while retaining every publication-time table snapshot. |
+
+The native transition fixture has two map groups separated by ordinary Par cuts
+and set/neutral-empty groups. Its deterministic case includes empty and duplicate
+value bodies; the generated case varies optional integer values. It starts each
+snapshot at a nonzero backing offset. The three negative controls perturb a
+group's start, exchange value ordinals and remove a value's group parent, and each
+must fail its corresponding native assertion. These are native controls, not
+formal path-provenance theorems.
+
+**Boundary.** The finite model retains bytes, not backing identities or region
+offsets, path metadata, storage modes or machine-width ordinals. SRR establishes
+region arithmetic separately; a universal composition of path/region
+registration with this byte-table model remains required. Actual-field
+certificates still come from SRD's successful framing equations. The extension
+relation alone does not validate new groups; the concrete registration lemmas
+supply that obligation. Native snapshot/path checks are bounded observations,
+not a proof of every Rust execution. Private builder mutation before an error
+is not claimed to be rolled back; unsuccessful cutting returns no plan.
+
+The existing `u32` occurrence/ordinal representation also requires resolution:
+an input-length bound alone does not establish `u32` representability on a
+64-bit host. No new limit or waiver is introduced here. Full schema/action,
+substitution, charge/error-order and operational-resource gates remain open.
+
+
 ## Original workspace-regression completion gates
 
 This checkpoint is complete only when all of the following hold:

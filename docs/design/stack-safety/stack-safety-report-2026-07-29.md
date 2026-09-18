@@ -8584,6 +8584,20 @@ separate; task 5916 remains open. See
 [J-180](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-180--2026-09-18-native-varint-accumulator-and-width-check-refinement)
 for exact receipts and formal/native limitations.
 
+The SRT table-construction bridge now removes the fixed-byte-table assumption:
+append-only registration preserves old lookups, group bodies, field certificates
+and published-node meaning. Its combined table/arena invariant survives empty
+initialization, sequential cut/group registration and checked publication.
+Thirty closed obligations and explicit kernel checking pass. Twelve selected
+library tests (513 filtered) and 69 focused integration tests pass under the
+8 GiB hard cap with zero swap; the native service reports a 1.7 GiB peak. Exact
+table-prefix, backing, range and path assertions extend the existing test-only
+capture. There is no production or consensus change or performance claim.
+Formal path/region provenance composition and ordinal representability remain
+open alongside the semantic/resource/lifecycle gates. See
+[J-181](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-181--2026-09-18-append-only-cut-tables-preserve-published-node-meaning)
+for receipts and boundaries.
+
 ---
 
 ### 5.29 ParBag family and count-domain completeness [SS-A13, SS-A14, SS-Y9]

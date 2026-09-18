@@ -13245,6 +13245,85 @@ Task 5916 is still in progress; this closes its named accumulator/width bridge,
 not its end-to-end acceptance boundary.
 
 
+### J-181 — 2026-09-18 Append-only cut tables preserve published-node meaning
+
+**DERIVED.** Task 5916 now has a finite table-construction bridge in
+`SubstitutionRegionTables.v`. The prior SRP proof established node publication
+against fixed external cut/group functions. The real builder instead appends
+cuts while descending and publishes each EPathMap group's contiguous value range
+after its value loop. The new model proves old lookup stability under extension,
+exact new indices/ranges and value order, source-certificate transport, and
+preservation of previously published node meanings and caches.
+
+A combined table/arena invariant composes well-formed groups, supported
+references and SRP validity. It holds initially and survives cut registration,
+group registration and checked publication. Sequential cut appends followed by
+group publication equal the batch model. The
+[SRT inventory](workspace-regression-formal-invariant-catalog-2026-08-28.md#append-only-table-and-publication-invariants-srt-task-5916)
+lists all 30 checked obligations and native bindings. Independent plan/review
+identified the missing piece-support premise and the sequential-loop composition;
+both are included, without a new parser or schema framework.
+
+Formal checking preceded native changes. The existing test-only publication
+capture now retains exact tables at each real node publication and verifies they
+remain prefixes of the final tables, including ranges, backing pointers and path
+metadata. Direct tests drive the actual `add_child` and `add_epathmap` helpers
+through two map groups interleaved with ordinary Par cuts, a set group and a
+neutral-empty group. Typed PathMap traversal supplies expected map-value order;
+empty and duplicate values remain distinct cuts. Exact append counts, cut and
+group indices, nonzero backing offsets, reconstructed payloads, value-path
+parents and ordinals are asserted. Negative controls first establish the valid
+fixture, then independently shift a group start, swap value ordinals or remove
+a path parent; each must be rejected and the restored fixture must pass.
+
+**MEASURED (qualification, not a benchmark).** Formal r6 passes 30 closed
+declarations and explicit kernel checking in 16.382 seconds wall, 16.132 CPU
+seconds and 424 MiB peak, under a 2 GiB hard cap, zero swap, one-core quota and
+120-second watchdog. Earlier proof-script failures are retained as negative
+development evidence, not successful receipts. Native r1 passes 12 selected
+library tests (513 filtered) and all 69 focused integration tests: 34 manifest,
+18 cursor, eight region, seven ranges and two registry. No selected test is
+ignored. The service takes 42.273 seconds wall, 108.091 CPU seconds and a
+reported 1.7 GiB peak under `MemoryHigh=6G`, `MemoryMax=8G`,
+`MemorySwapMax=0`, `CPUQuota=400%` and a 1200-second watchdog. These 81 passing
+tests do not establish a full-workspace pass or a performance improvement.
+Independent final review found no blocker after the passing native run. The
+direct helper fixture is a registration test, not an independent schema-dispatch
+test; the existing full-corpus publication witnesses provide complementary
+end-to-end builder observations.
+
+| Artifact | SHA-256 |
+|---|---|
+| `formal/rocq/stack_safe_pda/theories/SubstitutionRegionTables.v` | `357f038e0abe22caa9536bd605ece76a4e5e64aaf029bfb096b94dfe5ec36d92` |
+| `target/verification/substitution-5916-tables-formal-r6.log` | `788ce9e7e0418af98eaf71f0a56b203753674356b11d09a5e8e1e4c8ac4ad274` |
+| `target/verification/substitution-5916-tables-native-r1.log` | `50e59e678bc3daf8885c4933195f0f88c1f2a2cfe228314789ee0b10017211bb` |
+
+Commands within the capped services (formal commands from
+`formal/rocq/stack_safe_pda`, Cargo from the worktree root):
+
+```sh
+coqc -Q theories StackSafePDA theories/SubstitutionRegionTables.v
+coqchk -silent -Q theories StackSafePDA StackSafePDA.SubstitutionRegionTables
+cargo test --release --locked -j4 -p models --lib emission_tests -- --test-threads=4
+cargo test --release --locked -j4 -p models --test protobuf_cursor --test substitution_region_ranges --test protobuf_region_differential --test formal_equivalence_manifest --test test_target_registry_gate -- --test-threads=4
+```
+
+**DECISION and limits.** No production implementation, dependency, PathMap
+representation or consensus encoding changes. This closes append-only
+byte-table construction/transport, not all native provenance. The model erases
+backing identity, path metadata, storage mode and machine-width ordinals;
+universal composition with SRR region ownership and path construction remains
+required. Actual-source linkage still uses SRD's framing certificates. The
+existing `u32` field-occurrence and EPathMap-ordinal conversions need an explicit
+representability argument or an appropriate implementation repair: an
+input-length bound is insufficient on a 64-bit host. This is recorded as
+remaining work within 5916, not waived or deferred outside the campaign.
+Schema/action selection, full substitution semantics, error/charge ordering,
+counters, non-identity scaling, profiling and lifecycle/replay gates also remain
+required. Scheduler revision 1208 retained 5916 as the incumbent; no priority
+switch or completion claim occurred.
+
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

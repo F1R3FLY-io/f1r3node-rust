@@ -8,6 +8,63 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 #[test]
+fn substitution_region_tables_have_registration_and_publication_bindings() {
+    let theory = read_repository_file("formal/rocq/stack_safe_pda/theories/SubstitutionRegionTables.v");
+    for theorem in [
+        "extension_preserves_cut_lookup",
+        "extension_preserves_group_lookup",
+        "extension_preserves_support",
+        "group_range_bounded",
+        "extension_preserves_group_body",
+        "extension_preserves_piece_bytes",
+        "extension_preserves_source_piece",
+        "extension_preserves_field_certificates",
+        "extension_preserves_arena_validity",
+        "cut_registration_extends",
+        "cut_registration_preserves_well_formed",
+        "cut_registration_has_exact_new_ordinal",
+        "group_registration_extends",
+        "group_registration_preserves_well_formed",
+        "group_registration_has_exact_descriptor",
+        "suffix_indices_select_values",
+        "group_registration_preserves_exact_value_order",
+        "group_registration_reconstructs_original_payload",
+        "registration_establishes_piece_support",
+        "cut_registration_establishes_field_certificate",
+        "group_registration_establishes_field_certificate",
+        "empty_tables_are_well_formed",
+        "sequential_cuts_equal_batch",
+        "publication_preserves_piece_support",
+        "sequential_group_publication_equals_registration",
+        "empty_table_arena_is_valid",
+        "extension_transports_table_arena",
+        "cut_registration_transports_table_arena",
+        "group_registration_transports_table_arena",
+        "checked_publication_preserves_table_arena",
+    ] {
+        assert!(theory.contains(&format!("Print Assumptions {theorem}.")));
+    }
+    let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
+    assert!(has_runner_command(&runner, &[
+        "rocq_compile_with_closed_count", "theories/SubstitutionRegionTables.v", "30",
+    ]));
+    assert!(has_runner_kernel_check(&runner, &["StackSafePDA.SubstitutionRegionTables"]));
+    assert!(read_repository_file("formal/rocq/stack_safe_pda/_CoqProject")
+        .lines().any(|line| line == "theories/SubstitutionRegionTables.v"));
+    let native = read_repository_file("models/tests/support/substitution_region_emission.rs");
+    for witness in [
+        "registration_preserves_tables_between_map_set_empty_and_ordinary_cuts",
+        "registration_controls_reject_shifted_ranges_and_wrong_value_paths",
+        "generated_registration_retains_every_value_and_prior_group",
+        "every_published_node_preserves_source_caches_indices_and_prior_meaning",
+    ] {
+        assert!(native.contains(&format!("fn {witness}(")));
+    }
+    assert!(native.contains("tables: RegisteredTables::capture(builder)"));
+    assert!(native.contains("observed.tables.assert_preserved(&plan.paths, &plan.cuts, &plan.epathmaps)"));
+}
+
+#[test]
 fn substitution_varint_accumulator_has_bitwise_proof_and_native_bindings() {
     let theory = read_repository_file("formal/rocq/stack_safe_pda/theories/SubstitutionVarintAccumulator.v");
     for theorem in [

@@ -752,6 +752,10 @@ rocq_reject_placeholders theories/SubstitutionRegionDecomposition.v
 rocq_compile_with_closed_count theories/SubstitutionRegionDecomposition.v 21 \
   "substitution field decomposition and suspended-parent source certificates"
 rocq_check_modules "substitution region decomposition" StackSafePDA.SubstitutionRegionDecomposition
+rocq_reject_placeholders theories/SubstitutionRegionTables.v
+rocq_compile_with_closed_count theories/SubstitutionRegionTables.v 30 \
+  "append-only substitution tables and supported publication transport"
+rocq_check_modules "substitution region tables" StackSafePDA.SubstitutionRegionTables
 rmp2_rocq_output="$(
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/RMP2.v 2>&1
 )"

@@ -30,6 +30,7 @@ theories/SubstitutionRegionPublication.v
 theories/SubstitutionRegionFraming.v
 theories/SubstitutionVarintAccumulator.v
 theories/SubstitutionRegionDecomposition.v
+theories/SubstitutionRegionTables.v
 theories/PathMapPhysicalOwnership.v
 theories/PathMapPhysicalOwnershipMutants.v
 theories/PathMapReversePruneTeardown.v
