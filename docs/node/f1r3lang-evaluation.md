@@ -78,6 +78,22 @@ cargo +nightly-2026-09-03 build --locked -p node --features mettail-frontend
 ```
 
 Use that binary's existing `run --standalone`, `eval`, and REPL commands.
+For the complete Regex application, allow a longer client wait explicitly:
+
+```sh
+target/debug/node --grpc-host=127.0.0.1 --grpc-port=40402 eval --timeout 5m \
+  ../mettail-module-dev/mettail-rust/rholang-runtime/tests/fixtures/regex_gslt_application.rho
+```
+
+`eval --timeout` accepts a positive duration such as `30s`, `1500ms`, or `5m`.
+Its default remains `30s`; durations outside the platform clock range refuse
+before connection. The limit applies separately to each evaluation RPC,
+including server preparation and execution, not to the entire batch of files.
+File reading is outside this RPC limit, and the connection timeout remains
+five seconds. Increasing the wait does not change host funding, preparation,
+or semantic-work limits. Expiration stops the client's wait; it does not
+guarantee cancellation or rollback of work already running on the node.
+
 Non-standalone startup explicitly refuses. The generated source parser keeps
 its existing canonical generalized-LL and ambiguity-realization limits.
 Source-byte and preparation limits do not substitute for those parser limits.

@@ -103,10 +103,15 @@ fn run_cli(options: Options, rt: &Runtime) -> Result<()> {
     };
 
     let (repl_client, mut deploy_client, propose_client) = rt.block_on(async {
-        let repl_client = GrpcReplClient::new(
+        let request_timeout = match &options.subcommand {
+            Some(OptionsSubCommand::Eval(eval)) => eval.timeout,
+            _ => node::rust::effects::repl_client::DEFAULT_REQUEST_TIMEOUT,
+        };
+        let repl_client = GrpcReplClient::with_timeout(
             options.grpc_host.clone(),
             grpc_port,
             options.grpc_max_recv_message_size as usize,
+            request_timeout,
         )
         .await
         .map_err(|e| eyre::eyre!("Failed to create REPL client: {}", e))?;

@@ -584,6 +584,54 @@ pub struct EvalOptions {
     /// Language to use
     #[arg(long = "language", default_value = "rholang")]
     pub language: String,
+
+    #[arg(long, default_value = "30s", value_parser = parse_eval_timeout,
+        help = "Client wait limit per evaluation RPC (e.g. 30s, 5m); does not change server budgets or guarantee cancellation")]
+    pub timeout: Duration,
+}
+
+fn parse_eval_timeout(input: &str) -> Result<Duration, String> {
+    let timeout = parse_duration(input).map_err(|error| error.to_string())?;
+    crate::rust::effects::repl_client::validate_request_timeout(timeout).map_err(str::to_owned)
+}
+
+#[cfg(test)]
+mod eval_timeout_tests {
+    use super::*;
+
+    #[test]
+    fn default_and_explicit_eval_timeout_preserve_other_arguments() {
+        for (args, expected) in [
+            (vec!["node", "eval", "input.rho"], Duration::from_secs(30)),
+            (
+                vec!["node", "eval", "--timeout", "5m", "input.rho"],
+                Duration::from_secs(300),
+            ),
+            (
+                vec!["node", "eval", "input.rho", "--timeout=1500ms"],
+                Duration::from_millis(1500),
+            ),
+        ] {
+            let parsed = Options::try_parse_from(args).expect("valid eval options");
+            let Some(OptionsSubCommand::Eval(eval)) = parsed.subcommand else {
+                panic!("expected eval subcommand");
+            };
+            assert_eq!(eval.timeout, expected);
+            assert_eq!(eval.file_names, ["input.rho"]);
+            assert_eq!(eval.language, "rholang");
+            assert!(!eval.print_unmatched_sends_only);
+        }
+    }
+
+    #[test]
+    fn invalid_eval_deadlines_refuse_and_other_commands_do_not_accept_the_flag() {
+        for value in ["0s", "-1s", "never", "18446744073709551615s"] {
+            assert!(
+                Options::try_parse_from(["node", "eval", "--timeout", value, "input.rho"]).is_err()
+            );
+        }
+        assert!(Options::try_parse_from(["node", "repl", "--timeout", "5m"]).is_err());
+    }
 }
 
 /// Deploy subcommand - Deploy a Rholang source file to Casper on an existing running node
