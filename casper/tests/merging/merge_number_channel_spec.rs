@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 
+use casper::rust::merging::conflict_set_merger::Branch;
 use casper::rust::merging::deploy_chain_index::DeployChainIndex;
 use casper::rust::merging::deploy_index::DeployIndex;
 use casper::rust::merging::{block_index, conflict_set_merger, dag_merger};
@@ -376,10 +377,10 @@ async fn test_case(
         // `EventLogIndex` per branch, then run the event-indexed conflict
         // map and union with the test helper's `branches_are_conflicting`
         // structural check.
-        |branches_set: &HashableSet<std::sync::Arc<HashableSet<DeployChainIndex>>>| {
-            let branches_refs: Vec<&std::sync::Arc<HashableSet<DeployChainIndex>>> =
+        |branches_set: &HashableSet<Branch<DeployChainIndex>>| {
+            let branches_refs: Vec<&Branch<DeployChainIndex>> =
                 branches_set.0.iter().collect();
-            let branches_owned: Vec<std::sync::Arc<HashableSet<DeployChainIndex>>> =
+            let branches_owned: Vec<Branch<DeployChainIndex>> =
                 branches_refs.iter().map(|b| (*b).clone()).collect();
 
             let combined_logs: Vec<rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex> =
