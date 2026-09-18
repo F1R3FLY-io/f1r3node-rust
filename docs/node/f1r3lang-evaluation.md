@@ -81,7 +81,8 @@ Use that binary's existing `run --standalone`, `eval`, and REPL commands.
 For the complete Regex application, allow a longer client wait explicitly:
 
 ```sh
-target/debug/node --grpc-host=127.0.0.1 --grpc-port=40402 eval --timeout 5m \
+target/debug/node --grpc-host=127.0.0.1 --grpc-port=40402 \
+  --grpc-max-recv-message-size=33554432 eval --timeout 5m \
   ../mettail-module-dev/mettail-rust/rholang-runtime/tests/fixtures/regex_gslt_application.rho
 ```
 
@@ -93,6 +94,10 @@ File reading is outside this RPC limit, and the connection timeout remains
 five seconds. Increasing the wait does not change host funding, preparation,
 or semantic-work limits. Expiration stops the client's wait; it does not
 guarantee cancellation or rollback of work already running on the node.
+The example also explicitly permits a response of up to 32 MiB using the
+existing receive-size option: the complete application's verbose storage dump
+can exceed the client's default 16 MiB limit. This is a client response-decoding
+limit, not a change to server execution budgets.
 
 Non-standalone startup explicitly refuses. The generated source parser keeps
 its existing canonical generalized-LL and ambiguity-realization limits.
