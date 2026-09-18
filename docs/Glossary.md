@@ -457,13 +457,15 @@ The label key is `io.f1r3fly.soak.owner`.
 Do not use a name prefix or fixture label as a substitute.
 The label is not authorization against an actor who can control Docker or forge metadata.
 
-## Process descriptor
+### Process identity
 
-A **process descriptor** is a Linux kernel handle that identifies one process independently of numeric process identifier reuse.
-Linux exposes this handle as a `pidfd`.
+A **process identity** is a numeric process identifier paired with the start time that the proc filesystem reports for it.
+A reused identifier carries a later start time, so a check against the recorded identity does not pass for a replacement process.
+The soak driver and its fixtures use it in bash in place of a kernel process handle (`pidfd`), which bash cannot open.
 
-**Preferred usage:** Use this term when the stop helper signals or observes a process through its kernel handle.
+**Preferred usage:** Use this term when the stop helper, the crash monitor, or a fixture signals a process or confirms that it is gone.
 Do not treat a process name or numeric identifier alone as equivalent ownership evidence.
+A signal after an identity check is a check-then-act, not a handle operation, and the driver records that limit.
 
 ### Crash monitor
 

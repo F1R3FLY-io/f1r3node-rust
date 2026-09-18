@@ -72,8 +72,7 @@ Whole files:
 - `scripts/bench/test-soak-disk-emergency.sh` and the 34 `scripts/bench/test-soak-*.sh` host fixtures it runs
 - `scripts/bench/test-soak-real-*.sh`, the eight real-daemon checks
 - `scripts/bench/collect-soak-metrics.sh` and `scripts/bench/write-soak-summary.sh`
-- `scripts/bench/run-soak-contained.sh`, `scripts/bench/soak-containment.py`, and `scripts/bench/test-soak-native-containment.py`, the B44 launcher prototype and its fixture, flagged as a prototype the normal workflow does not use
-- `scripts/bench/test-soak-native-admission.py` and `scripts/bench/test-soak-native-control-path.py`, the second source session's launcher fixtures, which no gate runs, flagged with the prototype
+- The B44 launcher prototype, its Python module, and the three native Python fixtures left PR 2 on 2026-09-18. The repository ships Rust and bash only. They stay on the source branch, and B44 stays open.
 - `docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md`, the driver evidence record with the B1 to B51 rows and the digest table
 - `docs/cbc-evidence/github-workflows-slashing-tests-yml.md`
 - `docs/work-logs/task-soak-disk-hygiene-parsimonious-2026-09-09.md`
@@ -85,7 +84,7 @@ Split files:
 - `docs/ToDos.md`: the three soak bullets.
 - `.github/workflows/merge-recovery-soak.yml`: the `SOAK_EMERGENCY_DEADLINE_SECONDS` setting of 10 seconds with its comment. The driver default is 60, and the incident runners vanished 18 to 23 seconds after the guardian stamp. The four legacy comment lines add no behavior and can be dropped.
 
-Verification: the host suite on Linux, since the driver needs pidfd and Python 3. Also the Docker harness in CI, the workflow invariants, and the release workflow tests. The evidence record's digest table binds manifests that PR 2 does not carry. Section 6 records that decision.
+Verification: the host suite on Linux, since the driver needs the proc filesystem. Also the Docker harness in CI, the workflow invariants, and the release workflow tests. The evidence record's digest table binds manifests that PR 2 does not carry. Section 6 records that decision.
 
 ### PR 3: control registry and soak formal models
 
@@ -196,13 +195,13 @@ The maintainer took these decisions on 2026-09-11:
 | Source cycles that land after the cut starts | Merge them into the staging branch as before, then port the delta to the affected PR branch by path. |
 | This plan file | PR 1 carries it, and PR 4 deletes it. |
 | The stigmergic artifacts the stack carries: this plan, the work log, and the three coordination bullets (maintainer, 2026-09-16) | PR 4 removes all three on the final merge. Git history keeps them. EPIC-017 is not carried and stays on the staging branch as the record of the cut. |
-| The B44 launcher prototype: the containment launcher, its Python module, and its fixture | Carried in PR 2, flagged as a prototype the normal workflow does not use. The guardian model's `ManagedContainment` control then describes code that is in the tree. B44 stays open. |
+| The B44 launcher prototype: the containment launcher, its Python module, and its fixture | Removed from PR 2 on 2026-09-18. The repository ships Rust and bash only, and the prototype stays on the source branch. The guardian model's `ManagedContainment` control describes the launcher contract, not code in the tree. B44 stays open. |
 
 ## 7. Risks
 
 - **Dev drift.** Each PR rebases on the merged one below it. A conflict at that point is resolved on the PR branch, not on the staging branch.
 - **The gate on PR 1.** Dev's TLA+ job runs only on schedule, so PR 1's CI does not run TLC. The local TLC run is the evidence until PR 3 lands.
-- **Docker in CI for PR 2.** The harness step needs the slim fixture image with Python 3. PR 2 carries the Dockerfile that provides it.
+- **Docker in CI for PR 2.** The harness step needs the slim fixture image. PR 2 carries the Dockerfile that provides it.
 - **The staging branch stays open** until PR 4 merges. Any source cycle in that window goes through section 6's last row.
 
 ## 8. Open decisions
