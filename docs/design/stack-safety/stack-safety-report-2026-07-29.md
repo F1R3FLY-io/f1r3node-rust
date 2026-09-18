@@ -8690,6 +8690,23 @@ takes 180.76 seconds. No runtime or performance change is claimed. See
 [J-188](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-188--2026-09-18-verify-dispatch-actions-and-retained-slot-selection)
 for receipts and the precise formal/native boundary. Task 5916 remains open.
 
+The binder-family continuation (J-189) kernel-checks 21 schedule and conditional
+opaque-preservation obligations. It also exposes and repairs a concrete admitted
+input discrepancy: incomplete components inside identity-only New injections
+must retain their original bytes and nonsemantic score, not evaluate missing
+slots. The repair uses a shared-byte arena leaf without decoding descendant
+Pars; enclosing metadata and multiplicities remain exact. Zipper cursor-kind
+scanning now matches the existing uint32 schema. Final qualification passes 70
+checks, including 17 recursive-oracle cases and nine actual scheduler/combine
+tests: 328.285 seconds wall, 762.902 CPU seconds and 1.8 GiB peak under the
+8 GiB cap with zero swap. The oracle portion takes 176.58 seconds including
+fixture construction, not an isolated substitution performance measurement. The
+complete 21-test construction-arena group also passes, including depth 16,384
+on a 256 KiB stack; it reports 1.7 GiB peak and brings distinct coverage to 89
+tests after excluding repeated shared-leaf cases. See
+[J-189](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-189--2026-09-18-bind-substitution-schedules-and-preserve-incomplete-injections).
+No scaling, allocation-rate or campaign-completion claim follows from this repair.
+
 ---
 
 ### 5.29 ParBag family and count-domain completeness [SS-A13, SS-A14, SS-Y9]

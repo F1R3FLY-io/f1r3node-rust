@@ -9,7 +9,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 #[test]
 fn act_cached_summary_has_source_preorder_and_independent_inventory_bindings() {
-    let theory = read_repository_file("formal/rocq/actree03_completeness/theories/Epm1ValueSummary.v");
+    let theory =
+        read_repository_file("formal/rocq/actree03_completeness/theories/Epm1ValueSummary.v");
     for theorem in [
         "zero_summary_decides_exactly_all_zero_markers",
         "typed_mode_decision_uses_derived_count_and_zero_markers",
@@ -35,11 +36,18 @@ fn act_cached_summary_has_source_preorder_and_independent_inventory_bindings() {
     }
     let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
     assert!(has_runner_command(&runner, &[
-        "rocq_compile_with_closed_count", "theories/Epm1ValueSummary.v", "16",
+        "rocq_compile_with_closed_count",
+        "theories/Epm1ValueSummary.v",
+        "16",
     ]));
-    assert!(runner.contains("rocq_check_modules_at '' \"ACT cached value summary\" Epm1ValueSummary"));
-    assert!(read_repository_file("formal/rocq/actree03_completeness/_CoqProject")
-        .lines().any(|line| line == "theories/Epm1ValueSummary.v"));
+    assert!(
+        runner.contains("rocq_check_modules_at '' \"ACT cached value summary\" Epm1ValueSummary")
+    );
+    assert!(
+        read_repository_file("formal/rocq/actree03_completeness/_CoqProject")
+            .lines()
+            .any(|line| line == "theories/Epm1ValueSummary.v")
+    );
     let native = read_repository_file("rspace++/tests/support/pathmap_codec_validated_plan.rs");
     for witness in [
         "cached_value_summary_matches_independent_preorder_offsets_and_latches",
@@ -62,10 +70,10 @@ fn act_cached_summary_has_source_preorder_and_independent_inventory_bindings() {
     assert!(modes.contains("fn generated_mode_admission_matches_independent_endpoint_inventory("));
 }
 
-
 #[test]
 fn substitution_snapshot_prefix_has_exact_offset_and_admission_bindings() {
-    let theory = read_repository_file("formal/rocq/stack_safe_pda/theories/SubstitutionSnapshotPrefix.v");
+    let theory =
+        read_repository_file("formal/rocq/stack_safe_pda/theories/SubstitutionSnapshotPrefix.v");
     for theorem in [
         "fixed_header_has_six_bytes",
         "successful_mode_selects_exact_fixed_header",
@@ -87,11 +95,18 @@ fn substitution_snapshot_prefix_has_exact_offset_and_admission_bindings() {
     }
     let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
     assert!(has_runner_command(&runner, &[
-        "rocq_compile_with_closed_count", "theories/SubstitutionSnapshotPrefix.v", "12",
+        "rocq_compile_with_closed_count",
+        "theories/SubstitutionSnapshotPrefix.v",
+        "12",
     ]));
-    assert!(has_runner_kernel_check(&runner, &["StackSafePDA.SubstitutionSnapshotPrefix"]));
-    assert!(read_repository_file("formal/rocq/stack_safe_pda/_CoqProject")
-        .lines().any(|line| line == "theories/SubstitutionSnapshotPrefix.v"));
+    assert!(has_runner_kernel_check(&runner, &[
+        "StackSafePDA.SubstitutionSnapshotPrefix"
+    ]));
+    assert!(
+        read_repository_file("formal/rocq/stack_safe_pda/_CoqProject")
+            .lines()
+            .any(|line| line == "theories/SubstitutionSnapshotPrefix.v")
+    );
     let native = read_repository_file("models/tests/support/substitution_value_regions.rs");
     for witness in [
         "prefix_offsets_follow_append_time_oracle_across_varint_widths",
@@ -102,7 +117,6 @@ fn substitution_snapshot_prefix_has_exact_offset_and_admission_bindings() {
         assert!(native.contains(&format!("fn {witness}(")));
     }
 }
-
 
 #[test]
 fn epm_mode_model_has_value_free_map_and_set_marker_regressions() {
@@ -120,7 +134,9 @@ fn epm_mode_model_has_value_free_map_and_set_marker_regressions() {
     }
     let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
     assert!(has_runner_command(&runner, &[
-        "rocq_compile_with_closed_count", "theories/EPM1.v", "7",
+        "rocq_compile_with_closed_count",
+        "theories/EPM1.v",
+        "7",
     ]));
     assert!(has_runner_kernel_check(&runner, &["StackSafePDA.EPM1"]));
     let native = read_repository_file("models/tests/support/substitution_value_regions.rs");
@@ -133,10 +149,10 @@ fn epm_mode_model_has_value_free_map_and_set_marker_regressions() {
     }
 }
 
-
 #[test]
 fn substitution_value_regions_have_physical_position_and_refusal_bindings() {
-    let theory = read_repository_file("formal/rocq/stack_safe_pda/theories/SubstitutionValueRegions.v");
+    let theory =
+        read_repository_file("formal/rocq/stack_safe_pda/theories/SubstitutionValueRegions.v");
     for theorem in [
         "suffix_split_gives_exact_offset",
         "single_frame_selects_exact_physical_range",
@@ -165,11 +181,18 @@ fn substitution_value_regions_have_physical_position_and_refusal_bindings() {
     }
     let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
     assert!(has_runner_command(&runner, &[
-        "rocq_compile_with_closed_count", "theories/SubstitutionValueRegions.v", "22",
+        "rocq_compile_with_closed_count",
+        "theories/SubstitutionValueRegions.v",
+        "22",
     ]));
-    assert!(has_runner_kernel_check(&runner, &["StackSafePDA.SubstitutionValueRegions"]));
-    assert!(read_repository_file("formal/rocq/stack_safe_pda/_CoqProject")
-        .lines().any(|line| line == "theories/SubstitutionValueRegions.v"));
+    assert!(has_runner_kernel_check(&runner, &[
+        "StackSafePDA.SubstitutionValueRegions"
+    ]));
+    assert!(
+        read_repository_file("formal/rocq/stack_safe_pda/_CoqProject")
+            .lines()
+            .any(|line| line == "theories/SubstitutionValueRegions.v")
+    );
     let native = read_repository_file("models/tests/support/substitution_value_regions.rs");
     for witness in [
         "value_region_positions_match_construction_across_header_widths_and_duplicates",
@@ -188,7 +211,8 @@ fn substitution_value_regions_have_physical_position_and_refusal_bindings() {
 
 #[test]
 fn substitution_region_provenance_has_region_path_and_decoder_bindings() {
-    let theory = read_repository_file("formal/rocq/stack_safe_pda/theories/SubstitutionRegionProvenance.v");
+    let theory =
+        read_repository_file("formal/rocq/stack_safe_pda/theories/SubstitutionRegionProvenance.v");
     for theorem in [
         "containment_is_transitive",
         "containment_preserves_region_validity",
@@ -237,11 +261,18 @@ fn substitution_region_provenance_has_region_path_and_decoder_bindings() {
     }
     let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
     assert!(has_runner_command(&runner, &[
-        "rocq_compile_with_closed_count", "theories/SubstitutionRegionProvenance.v", "42",
+        "rocq_compile_with_closed_count",
+        "theories/SubstitutionRegionProvenance.v",
+        "42",
     ]));
-    assert!(has_runner_kernel_check(&runner, &["StackSafePDA.SubstitutionRegionProvenance"]));
-    assert!(read_repository_file("formal/rocq/stack_safe_pda/_CoqProject")
-        .lines().any(|line| line == "theories/SubstitutionRegionProvenance.v"));
+    assert!(has_runner_kernel_check(&runner, &[
+        "StackSafePDA.SubstitutionRegionProvenance"
+    ]));
+    assert!(
+        read_repository_file("formal/rocq/stack_safe_pda/_CoqProject")
+            .lines()
+            .any(|line| line == "theories/SubstitutionRegionProvenance.v")
+    );
     let native = read_repository_file("models/tests/support/substitution_region_emission.rs");
     for witness in [
         "captured_frame_provenance_covers_dedicated_and_inherited_paths",
@@ -261,7 +292,8 @@ fn substitution_region_provenance_has_region_path_and_decoder_bindings() {
 
 #[test]
 fn substitution_region_ordinals_have_machine_bound_and_consumer_bindings() {
-    let theory = read_repository_file("formal/rocq/stack_safe_pda/theories/SubstitutionRegionOrdinals.v");
+    let theory =
+        read_repository_file("formal/rocq/stack_safe_pda/theories/SubstitutionRegionOrdinals.v");
     for theorem in [
         "initial_state_is_counted",
         "next_ordinal_is_bounded_by_seen_fields",
@@ -284,11 +316,18 @@ fn substitution_region_ordinals_have_machine_bound_and_consumer_bindings() {
     }
     let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
     assert!(has_runner_command(&runner, &[
-        "rocq_compile_with_closed_count", "theories/SubstitutionRegionOrdinals.v", "16",
+        "rocq_compile_with_closed_count",
+        "theories/SubstitutionRegionOrdinals.v",
+        "16",
     ]));
-    assert!(has_runner_kernel_check(&runner, &["StackSafePDA.SubstitutionRegionOrdinals"]));
-    assert!(read_repository_file("formal/rocq/stack_safe_pda/_CoqProject")
-        .lines().any(|line| line == "theories/SubstitutionRegionOrdinals.v"));
+    assert!(has_runner_kernel_check(&runner, &[
+        "StackSafePDA.SubstitutionRegionOrdinals"
+    ]));
+    assert!(
+        read_repository_file("formal/rocq/stack_safe_pda/_CoqProject")
+            .lines()
+            .any(|line| line == "theories/SubstitutionRegionOrdinals.v")
+    );
     let native = read_repository_file("models/tests/support/substitution_region_emission.rs");
     for witness in [
         "native_occurrence_counter_crosses_u32_boundary_and_resets",
@@ -303,10 +342,16 @@ fn substitution_region_ordinals_have_machine_bound_and_consumer_bindings() {
     assert!(!region.contains("occurrence: u32"));
     assert!(!region.contains("u32::try_from(ordinal)"));
     let printer = read_repository_file("rholang/src/rust/interpreter/pretty_printer.rs");
-    let sequences = printer.split("fn direct_cut_sequence(").nth(1).unwrap()
-        .split("fn descend_encoded_expr").next().unwrap();
+    let sequences = printer
+        .split("fn direct_cut_sequence(")
+        .nth(1)
+        .unwrap()
+        .split("fn descend_encoded_expr")
+        .next()
+        .unwrap();
     assert!(!sequences.contains("u32::try_from"));
-    let matcher = read_repository_file("rholang/src/rust/interpreter/matcher/spatial_matcher_pda.rs");
+    let matcher =
+        read_repository_file("rholang/src/rust/interpreter/matcher/spatial_matcher_pda.rs");
     assert!(matcher.contains("bind: usize"));
     assert!(matcher.contains("occurrence: usize"));
     assert!(matcher.contains("#[path = \"../../../../tests/support/region_occurrence.rs\"]"));
@@ -321,7 +366,8 @@ fn substitution_region_ordinals_have_machine_bound_and_consumer_bindings() {
 
 #[test]
 fn substitution_region_tables_have_registration_and_publication_bindings() {
-    let theory = read_repository_file("formal/rocq/stack_safe_pda/theories/SubstitutionRegionTables.v");
+    let theory =
+        read_repository_file("formal/rocq/stack_safe_pda/theories/SubstitutionRegionTables.v");
     for theorem in [
         "extension_preserves_cut_lookup",
         "extension_preserves_group_lookup",
@@ -358,11 +404,18 @@ fn substitution_region_tables_have_registration_and_publication_bindings() {
     }
     let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
     assert!(has_runner_command(&runner, &[
-        "rocq_compile_with_closed_count", "theories/SubstitutionRegionTables.v", "30",
+        "rocq_compile_with_closed_count",
+        "theories/SubstitutionRegionTables.v",
+        "30",
     ]));
-    assert!(has_runner_kernel_check(&runner, &["StackSafePDA.SubstitutionRegionTables"]));
-    assert!(read_repository_file("formal/rocq/stack_safe_pda/_CoqProject")
-        .lines().any(|line| line == "theories/SubstitutionRegionTables.v"));
+    assert!(has_runner_kernel_check(&runner, &[
+        "StackSafePDA.SubstitutionRegionTables"
+    ]));
+    assert!(
+        read_repository_file("formal/rocq/stack_safe_pda/_CoqProject")
+            .lines()
+            .any(|line| line == "theories/SubstitutionRegionTables.v")
+    );
     let native = read_repository_file("models/tests/support/substitution_region_emission.rs");
     for witness in [
         "registration_preserves_tables_between_map_set_empty_and_ordinary_cuts",
@@ -373,12 +426,14 @@ fn substitution_region_tables_have_registration_and_publication_bindings() {
         assert!(native.contains(&format!("fn {witness}(")));
     }
     assert!(native.contains("tables: RegisteredTables::capture(builder)"));
-    assert!(native.contains("observed.tables.assert_preserved(&plan.paths, &plan.cuts, &plan.epathmaps)"));
+    assert!(native
+        .contains("observed.tables.assert_preserved(&plan.paths, &plan.cuts, &plan.epathmaps)"));
 }
 
 #[test]
 fn substitution_varint_accumulator_has_bitwise_proof_and_native_bindings() {
-    let theory = read_repository_file("formal/rocq/stack_safe_pda/theories/SubstitutionVarintAccumulator.v");
+    let theory =
+        read_repository_file("formal/rocq/stack_safe_pda/theories/SubstitutionVarintAccumulator.v");
     for theorem in [
         "low_accumulator_and_shifted_digit_are_disjoint",
         "masked_shift_or_equals_radix_accumulation",
@@ -405,11 +460,18 @@ fn substitution_varint_accumulator_has_bitwise_proof_and_native_bindings() {
     }
     let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
     assert!(has_runner_command(&runner, &[
-        "rocq_compile_with_closed_count", "theories/SubstitutionVarintAccumulator.v", "20",
+        "rocq_compile_with_closed_count",
+        "theories/SubstitutionVarintAccumulator.v",
+        "20",
     ]));
-    assert!(has_runner_kernel_check(&runner, &["StackSafePDA.SubstitutionVarintAccumulator"]));
-    assert!(read_repository_file("formal/rocq/stack_safe_pda/_CoqProject")
-        .lines().any(|line| line == "theories/SubstitutionVarintAccumulator.v"));
+    assert!(has_runner_kernel_check(&runner, &[
+        "StackSafePDA.SubstitutionVarintAccumulator"
+    ]));
+    assert!(
+        read_repository_file("formal/rocq/stack_safe_pda/_CoqProject")
+            .lines()
+            .any(|line| line == "theories/SubstitutionVarintAccumulator.v")
+    );
     let native = read_repository_file("models/tests/support/substitution_varint.rs");
     for witness in [
         "both_varint_scanners_cover_every_terminal_byte_and_group_position",
@@ -438,7 +500,9 @@ fn substitution_region_decomposition_has_source_certificate_bindings() {
     }
     assert!(read_repository_file("rholang/src/rust/interpreter/substitute_drive.rs")
         .contains("#[cfg(test)]\n#[path = \"../../../tests/support/substitution_region_slots.rs\"]\nmod region_slot_tests;"));
-    let theory = read_repository_file("formal/rocq/stack_safe_pda/theories/SubstitutionRegionDecomposition.v");
+    let theory = read_repository_file(
+        "formal/rocq/stack_safe_pda/theories/SubstitutionRegionDecomposition.v",
+    );
     for theorem in [
         "taken_body_splits_source",
         "successful_body_scan_reconstructs_source",
@@ -479,18 +543,36 @@ fn substitution_region_decomposition_has_source_certificate_bindings() {
     }
     let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
     assert!(has_runner_command(&runner, &[
-        "rocq_compile_with_closed_count", "theories/SubstitutionRegionDecomposition.v", "34",
+        "rocq_compile_with_closed_count",
+        "theories/SubstitutionRegionDecomposition.v",
+        "34",
     ]));
-    assert!(has_runner_kernel_check(&runner, &["StackSafePDA.SubstitutionRegionDecomposition"]));
+    assert!(has_runner_kernel_check(&runner, &[
+        "StackSafePDA.SubstitutionRegionDecomposition"
+    ]));
     assert!(has_runner_command(&runner, &[
-        "TLC_MEMORY_HIGH=4G", "TLC_RSS=6G", "TLC_CPU_QUOTA=400%", "TLC_TASKS_MAX=512",
-        "rpb3_run_tests", "23", "--release", "-j4", "--lib", "emission_tests",
+        "TLC_MEMORY_HIGH=4G",
+        "TLC_RSS=6G",
+        "TLC_CPU_QUOTA=400%",
+        "TLC_TASKS_MAX=512",
+        "rpb3_run_tests",
+        "23",
+        "--release",
+        "-j4",
+        "--lib",
+        "emission_tests",
     ]));
     assert!(has_runner_command(&runner, &[
-        "rholang_run_tests", "3", "--lib", "region_slot_tests",
+        "rholang_run_tests",
+        "9",
+        "--lib",
+        "region_slot_tests",
     ]));
-    assert!(read_repository_file("formal/rocq/stack_safe_pda/_CoqProject")
-        .lines().any(|line| line == "theories/SubstitutionRegionDecomposition.v"));
+    assert!(
+        read_repository_file("formal/rocq/stack_safe_pda/_CoqProject")
+            .lines()
+            .any(|line| line == "theories/SubstitutionRegionDecomposition.v")
+    );
     let native = read_repository_file("models/tests/support/substitution_region_emission.rs");
     for witness in [
         "verify_node_field_certificates",
@@ -506,10 +588,10 @@ fn substitution_region_decomposition_has_source_certificate_bindings() {
     }
 }
 
-
 #[test]
 fn substitution_region_framing_has_reconstruction_proof_and_native_bindings() {
-    let theory = read_repository_file("formal/rocq/stack_safe_pda/theories/SubstitutionRegionFraming.v");
+    let theory =
+        read_repository_file("formal/rocq/stack_safe_pda/theories/SubstitutionRegionFraming.v");
     for theorem in [
         "successful_varint_reencodes_consumed_prefix",
         "successful_frame_reencodes_consumed_prefix",
@@ -535,11 +617,18 @@ fn substitution_region_framing_has_reconstruction_proof_and_native_bindings() {
     }
     let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
     assert!(has_runner_command(&runner, &[
-        "rocq_compile_with_closed_count", "theories/SubstitutionRegionFraming.v", "19",
+        "rocq_compile_with_closed_count",
+        "theories/SubstitutionRegionFraming.v",
+        "19",
     ]));
-    assert!(has_runner_kernel_check(&runner, &["StackSafePDA.SubstitutionRegionFraming"]));
-    assert!(read_repository_file("formal/rocq/stack_safe_pda/_CoqProject")
-        .lines().any(|line| line == "theories/SubstitutionRegionFraming.v"));
+    assert!(has_runner_kernel_check(&runner, &[
+        "StackSafePDA.SubstitutionRegionFraming"
+    ]));
+    assert!(
+        read_repository_file("formal/rocq/stack_safe_pda/_CoqProject")
+            .lines()
+            .any(|line| line == "theories/SubstitutionRegionFraming.v")
+    );
     let native = read_repository_file("models/tests/protobuf_cursor.rs");
     for witness in [
         "canonical_varint_boundaries_reconstruct_exact_field_bytes",
@@ -549,10 +638,14 @@ fn substitution_region_framing_has_reconstruction_proof_and_native_bindings() {
     ] {
         assert!(native.contains(&format!("fn {witness}(")));
     }
-    assert!(read_repository_file("models/tests/support/substitution_region_emission.rs")
-        .contains("fn verify_epathmap_value_frame_partition("));
-    assert!(read_repository_file("models/tests/support/substitution_region_emission.rs")
-        .contains("fn epathmap_publication_frames_include_empty_and_distinct_map_values("));
+    assert!(
+        read_repository_file("models/tests/support/substitution_region_emission.rs")
+            .contains("fn verify_epathmap_value_frame_partition(")
+    );
+    assert!(
+        read_repository_file("models/tests/support/substitution_region_emission.rs")
+            .contains("fn epathmap_publication_frames_include_empty_and_distinct_map_values(")
+    );
 }
 
 #[test]
@@ -837,6 +930,84 @@ fn repository_root() -> PathBuf {
         .parent()
         .expect("models has a repository parent")
         .to_path_buf()
+}
+
+#[test]
+fn substitution_family_schedules_bind_actual_dispatch_and_combine() {
+    let theory = read_repository_file("formal/rocq/stack_safe_pda/theories/SubstitutionSchedule.v");
+    for theorem in [
+        "binder_shift_composes",
+        "pattern_depth_and_binder_shift_commute",
+        "borrowed_environment_key_equals_owned_shift",
+        "identity_order_restores_every_value",
+        "append_plan_preserves_wire_association",
+        "source_first_restores_patterns_then_source",
+        "case_source_first_restores_pattern_source_guard",
+        "appended_blocks_preserve_each_wire_association",
+        "restoration_preserves_result_mapping",
+        "method_rotation_restores_target_and_arguments",
+        "receive_plan_restores_each_bind_and_shifted_tail",
+        "match_case_plan_restores_only_retained_cases",
+        "match_plan_restores_target_and_retained_case_slots",
+        "new_plan_preserves_injections_without_substituting_them",
+        "accumulated_evaluation_preserves_results_and_first_error",
+        "scheduled_evaluation_equals_recursive_job_evaluation",
+        "first_job_error_prevents_suffix_evaluation",
+        "incomplete_preservation_keeps_exact_body",
+        "incomplete_preservation_keeps_family_count_and_metadata",
+        "incomplete_preservation_has_no_required_child_jobs",
+        "incomplete_preservation_uses_admission_nonsemantic_score",
+    ] {
+        assert!(theory.contains(&format!("Print Assumptions {theorem}.")));
+    }
+    let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
+    assert!(has_runner_command(&runner, &[
+        "rocq_compile_with_closed_count",
+        "theories/SubstitutionSchedule.v",
+        "21",
+    ]));
+    assert!(has_runner_kernel_check(&runner, &[
+        "StackSafePDA.SubstitutionSchedule"
+    ]));
+    assert!(
+        read_repository_file("formal/rocq/stack_safe_pda/_CoqProject")
+            .lines()
+            .any(|line| line == "theories/SubstitutionSchedule.v")
+    );
+    let native = read_repository_file("rholang/tests/support/substitution_region_slots.rs");
+    for witness in [
+        "binder_family_dispatch_and_combine_preserve_semantic_and_wire_orders",
+        "method_constructor_rotation_preserves_target_and_each_argument",
+        "map_and_pattern_slots_preserve_pairing_and_pattern_depth",
+        "identity_order_families_preserve_each_positional_result",
+        "generated_receive_schedules_bind_contexts_and_result_indices",
+        "generated_match_schedules_bind_dropped_cases_and_result_indices",
+    ] {
+        assert!(native.contains(&format!("fn {witness}(")));
+    }
+}
+
+#[test]
+fn admitted_incomplete_preservation_binds_shared_bytes_and_recursive_oracle() {
+    let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
+    let oracle = read_repository_file("rholang/tests/support/substitute_oracle.rs");
+    assert!(oracle.contains("fn new_injection_preserves_admitted_incomplete_match_cases("));
+    assert!(oracle.contains("fn new_injection_preserves_all_admitted_incomplete_families("));
+    assert!(has_runner_command(&runner, &[
+        "rholang_run_tests",
+        "3",
+        "--lib",
+        "new_injection_preserves_"
+    ]));
+    assert!(has_runner_command(&runner, &[
+        "rpb3_run_tests",
+        "2",
+        "--lib",
+        "incomplete_preservation_tests"
+    ]));
+    let native = read_repository_file("models/tests/support/incomplete_component_preservation.rs");
+    assert!(native.contains("fn incomplete_import_shares_body_and_preserves_canonical_image("));
+    assert!(native.contains("fn complete_shell_declines_opaque_import_without_arena_mutation("));
 }
 
 fn read_repository_file(relative: &str) -> String {

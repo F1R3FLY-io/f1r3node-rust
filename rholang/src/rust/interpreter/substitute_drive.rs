@@ -1152,6 +1152,32 @@ fn component_contribution(
     Ok(construction.par([(component, multiplicity)], locally_free, connective_used)?)
 }
 
+fn preserve_incomplete_region<T: ParBagComponent>(
+    shell: &T,
+    occurrence: &EncodedOccurrence,
+    preserve: bool,
+    construction: &mut ParConstruction,
+    vals: &mut Vec<PlannedSubVal>,
+) -> Result<bool, InterpreterError> {
+    if !preserve {
+        return Ok(false);
+    }
+    let region = occurrence.region.as_ref().expect("region occurrence");
+    let Some(component) =
+        construction.import_admitted_incomplete_component_region(shell, region.clone())?
+    else {
+        return Ok(false);
+    };
+    vals.push(PlannedSubVal::Par(component_contribution(
+        construction,
+        component,
+        occurrence.multiplicity,
+        Vec::new(),
+        false,
+    )?));
+    Ok(true)
+}
+
 fn scale_contribution(
     construction: &mut ParConstruction,
     par: PlannedPar,
@@ -1264,16 +1290,22 @@ fn descend_region_component(
         // `descend_preserved_par_region`), so derive the exact score from the
         // embedded EPM1 bytes and retain the original protobuf body without
         // decoding either structure.
-        let (component, locally_free, connective_used) =
-            construction.import_canonical_ezipper_region(region.as_bytes())?;
-        vals.push(PlannedSubVal::Par(component_contribution(
-            construction,
-            component,
-            occurrence.multiplicity,
-            locally_free,
-            connective_used,
-        )?));
-        return Ok(());
+        match construction.import_canonical_ezipper_region(region.as_bytes()) {
+            Ok((component, locally_free, connective_used)) => {
+                vals.push(PlannedSubVal::Par(component_contribution(
+                    construction,
+                    component,
+                    occurrence.multiplicity,
+                    locally_free,
+                    connective_used,
+                )?));
+                return Ok(());
+            }
+            Err(
+                models::rust::par_construction::ParConstructionError::InvalidCanonicalEzipperRegion,
+            ) if preserve => {}
+            Err(error) => return Err(error.into()),
+        }
     }
 
     let program = match occurrence.family {
@@ -1293,6 +1325,9 @@ fn descend_region_component(
     match occurrence.family {
         EncodedFamily::Send => {
             let mut shell = protobuf_decoder::decode_send(shallow).map_err(region_decode_error)?;
+            if preserve_incomplete_region(&shell, &occurrence, preserve, construction, vals)? {
+                return Ok(());
+            }
             if !preserve {
                 shell.locally_free = set_bits_until(shell.locally_free, view.shift(ctx));
             }
@@ -1314,6 +1349,9 @@ fn descend_region_component(
         }
         EncodedFamily::Bundle => {
             let shell = protobuf_decoder::decode_bundle(shallow).map_err(region_decode_error)?;
+            if preserve_incomplete_region(&shell, &occurrence, preserve, construction, vals)? {
+                return Ok(());
+            }
             let mut cuts = RegionCutCursor::new(&plan);
             let children = vec![cuts.required_mode(shell.body.is_some(), ctx, preserve)?];
             cuts.finish()?;
@@ -1328,6 +1366,9 @@ fn descend_region_component(
         }
         EncodedFamily::If => {
             let mut shell = protobuf_decoder::decode_if(shallow).map_err(region_decode_error)?;
+            if preserve_incomplete_region(&shell, &occurrence, preserve, construction, vals)? {
+                return Ok(());
+            }
             if !preserve {
                 shell.locally_free = set_bits_until(shell.locally_free, view.shift(ctx));
             }
@@ -1349,6 +1390,9 @@ fn descend_region_component(
         }
         EncodedFamily::New => {
             let mut shell = protobuf_decoder::decode_new(shallow).map_err(region_decode_error)?;
+            if preserve_incomplete_region(&shell, &occurrence, preserve, construction, vals)? {
+                return Ok(());
+            }
             if !preserve {
                 shell.locally_free = set_bits_until(shell.locally_free, view.shift(ctx));
             }
@@ -1380,6 +1424,9 @@ fn descend_region_component(
         EncodedFamily::Receive => {
             let mut shell =
                 protobuf_decoder::decode_receive(shallow).map_err(region_decode_error)?;
+            if preserve_incomplete_region(&shell, &occurrence, preserve, construction, vals)? {
+                return Ok(());
+            }
             if !preserve {
                 shell.locally_free = set_bits_until(shell.locally_free, view.shift(ctx));
             }
@@ -1424,6 +1471,9 @@ fn descend_region_component(
         }
         EncodedFamily::Match => {
             let mut shell = protobuf_decoder::decode_match(shallow).map_err(region_decode_error)?;
+            if preserve_incomplete_region(&shell, &occurrence, preserve, construction, vals)? {
+                return Ok(());
+            }
             if !preserve {
                 shell.locally_free = set_bits_until(shell.locally_free, view.shift(ctx));
             }
@@ -1479,6 +1529,20 @@ fn descend_region_component(
         }
         EncodedFamily::Expr => {
             let expr = protobuf_decoder::decode_expr(shallow).map_err(region_decode_error)?;
+            if preserve_incomplete_region(&expr, &occurrence, preserve, construction, vals)? {
+                return Ok(());
+            }
+            if preserve && expr.expr_instance.is_none() {
+                let component = construction.expr_component(&expr, &[], false)?;
+                vals.push(PlannedSubVal::Par(component_contribution(
+                    construction,
+                    component,
+                    occurrence.multiplicity,
+                    Vec::new(),
+                    false,
+                )?));
+                return Ok(());
+            }
             let preserve_shell = preserve.then(|| expr.clone());
             let instance = super::unwrap_option_safe(expr.expr_instance)?;
             match instance {
@@ -1487,8 +1551,8 @@ fn descend_region_component(
                         pathmap, plan, occurrence, ctx, preserve, view, work,
                     );
                 }
-                ExprInstance::EZipperBody(_) => unreachable!(
-                    "the canonical Expr tag look-ahead handles opaque EZipper before cutting"
+                ExprInstance::EZipperBody(_) => return Err(
+                    models::rust::par_construction::ParConstructionError::InvalidCanonicalEzipperRegion.into()
                 ),
                 ExprInstance::EVarBody(evar) => {
                     let contribution = if preserve {

@@ -5193,6 +5193,19 @@ retain the proof/native boundary, targeted resource results and still-open legac
 costs. This supporting refinement does not open a new consensus-change axis
 or close the broader CBR-044/campaign obligations.
 
+**CBR-044 implementation qualification (2026-09-18, task 5916, incomplete injection
+preservation).** The region substitution machine previously rejected admitted
+incomplete components inside identity-only New injections, unlike its recursive
+oracle. The repair preserves their original protobuf body, nonsemantic score,
+multiplicity and metadata without evaluating absent required fields. Absent Expr
+is preserved, and opaque zipper scanning accepts the existing uint32 cursor-kind
+domain rather than only the two currently named nonzero kinds. These are repairs
+to the campaign implementation, not new language, admission, schema or metering
+rules. Ordinary substitution retains its required-field errors and case filtering.
+J-189 records formal/native boundaries and the before/after regression receipts;
+broader replay qualification remains open. This supporting qualification does not
+retire CBR-044 or claim whole-interpreter equivalence.
+
 **CBR-044 living implementation continuation (2026-08-25, descriptor-complete codec/admission
 equivalence; pgmcp #6019).** The one descriptor pass now emits a test-only seventh artifact that
 constructs 329 canonical witnesses over all 56 generated messages, every field, five oneofs and all

@@ -1,5 +1,54 @@
 # Workspace-regression formal invariant catalog — 2026-08-28
 
+
+## Binder-family substitution schedules (SBS, task 5916)
+
+`SubstitutionSchedule.v` has 21 closed obligations, kernel-checked before
+native witness changes. It composes offset reconstruction maps over semantic
+child lists and instantiates Receive, Match and New. EMethod's target-last
+constructor convention has a separate round-trip. Context arithmetic uses mathematical
+integers: native correspondence requires the relevant signed-32-bit calculations
+to remain representable. This is not an overflow proof. Descendant evaluation is
+an abstract function; its own semantic refinement is not assumed proven by this model.
+
+| ID | Closed declaration | Native binding obligation |
+|---|---|---|
+| SBS-01 | `binder_shift_composes` | Repeated ctx.shifted vs mathematical shift composition |
+| SBS-02 | `pattern_depth_and_binder_shift_commute` | Actual per-slot depth/shift in Receive/Match |
+| SBS-03 | `borrowed_environment_key_equals_owned_shift` | Owned Env shifts vs borrowed EnvView representation guard |
+| SBS-04 | `identity_order_restores_every_value` | Identity-order families and New result placement |
+| SBS-05 | `append_plan_preserves_wire_association` | Multiple unequal Receive bind blocks and Match blocks |
+| SBS-06 | `source_first_restores_patterns_then_source` | Source-first Receive jobs reconstructed patterns-first |
+| SBS-07 | `case_source_first_restores_pattern_source_guard` | Match source/pattern/guard job and result order |
+| SBS-08 | `appended_blocks_preserve_each_wire_association` | Repeated blocks retain indices across differing arities |
+| SBS-09 | `restoration_preserves_result_mapping` | Distinct child-result labels retain their associations |
+| SBS-10 | `method_rotation_restores_target_and_arguments` | EMethod target/arguments checked after actual combine |
+| SBS-11 | `receive_plan_restores_each_bind_and_shifted_tail` | Generated Receive masks, contexts, work order and wire map |
+| SBS-12 | `match_case_plan_restores_only_retained_cases` | All eight Match presence masks in both modes |
+| SBS-13 | `match_plan_restores_target_and_retained_case_slots` | Target and retained cases retain association |
+| SBS-14 | `new_plan_preserves_injections_without_substituting_them` | New body shifts and lexical injections remain Preserve |
+| SBS-15 | `accumulated_evaluation_preserves_results_and_first_error` | Child evaluator first-error rule; native recursive oracle |
+| SBS-16 | `scheduled_evaluation_equals_recursive_job_evaluation` | Actual work sequence and existing recursive-oracle equivalence |
+| SBS-17 | `first_job_error_prevents_suffix_evaluation` | First semantic failure compared with recursive oracle |
+| SBS-18 | `incomplete_preservation_keeps_exact_body` | Original protobuf and compact RPB3 images remain exact |
+| SBS-19 | `incomplete_preservation_keeps_family_count_and_metadata` | Cross-family injection matrix with count three and root metadata |
+| SBS-20 | `incomplete_preservation_has_no_required_child_jobs` | Actual incomplete-preserve dispatch emits a result without child jobs |
+| SBS-21 | `incomplete_preservation_uses_admission_nonsemantic_score` | Compact-image comparison with typed key compilation |
+
+The native extension inspects jobs and continuations from actual
+`descend_region_component`, then supply distinctly labeled child results to
+actual `combine` for successful slots. Incomplete preservation instead requires
+an immediate byte-exact result with no scheduled children. Those labels isolate result placement;
+they are not claimed to implement recursive substitution. Existing recursive
+oracle tests retain authority for terminal behavior and ordered charge traces.
+Missing jobs are not manufactured into successful results. All 70 final selected
+checks pass; [J-189](pathmap-engineering-journal-2026-08-23.md#j-189--2026-09-18-bind-substitution-schedules-and-preserve-incomplete-injections)
+records the capped evidence. Formal identity orders are
+explicit index lists; native empty `wire_order` denotes identity. Pure evaluator
+theorems do not independently establish side effects or charges. Opaque-preservation
+theorems assume admission, faithful shallow classification and the nonsemantic
+score; native typed admission/compact-image checks bind those assumptions.
+
 ## Dispatch and retained-slot refinement (DSR, task 5916)
 
 This extension of `SubstitutionRegionDecomposition.v::DispatchAndSlots` reuses the

@@ -30,6 +30,7 @@ theories/SubstitutionRegionPublication.v
 theories/SubstitutionRegionFraming.v
 theories/SubstitutionVarintAccumulator.v
 theories/SubstitutionRegionDecomposition.v
+theories/SubstitutionSchedule.v
 theories/SubstitutionRegionTables.v
 theories/SubstitutionRegionOrdinals.v
 theories/SubstitutionRegionProvenance.v

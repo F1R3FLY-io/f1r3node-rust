@@ -310,8 +310,13 @@ struct ScoreNode {
     encoded_len: usize,
 }
 
+#[cfg(test)]
+#[path = "../../tests/support/incomplete_component_preservation.rs"]
+mod incomplete_preservation_tests;
+
 enum ProtoPiece {
     Bytes(Box<[u8]>),
+    SharedBytes(Box<prost::bytes::Bytes>),
     Node { tag: u32, node: usize },
     Par { tag: u32, par: PlannedPar },
     EPathMapSnapshot { tag: u32, map: PlannedEPathMap },
@@ -494,6 +499,9 @@ impl Iterator for WireByteCursor<'_> {
                         });
                         self.work.push(match piece {
                             ProtoPiece::Bytes(bytes) => WireCursorOp::Bytes { bytes, offset: 0 },
+                            ProtoPiece::SharedBytes(bytes) => {
+                                WireCursorOp::Bytes { bytes, offset: 0 }
+                            }
                             ProtoPiece::Node { tag, node } => WireCursorOp::Nested {
                                 tag: *tag,
                                 node: *node,
@@ -1425,18 +1433,24 @@ impl ParConstruction {
         let mut encoded_len = 0usize;
         let mut zero_count = 0usize;
         for piece in &pieces {
+            let opaque_bytes: Option<&[u8]> = match piece {
+                ProtoPiece::Bytes(bytes) => Some(bytes),
+                ProtoPiece::SharedBytes(bytes) => Some(bytes),
+                _ => None,
+            };
+            if let Some(bytes) = opaque_bytes {
+                encoded_len = encoded_len
+                    .checked_add(bytes.len())
+                    .ok_or(ParConstructionError::LengthOverflow("protobuf node"))?;
+                zero_count = zero_count
+                    .checked_add(bytes.iter().filter(|&&byte| byte == 0).count())
+                    .ok_or(ParConstructionError::LengthOverflow(
+                        "protobuf zero-byte count",
+                    ))?;
+                continue;
+            }
             let (child_len, child_zeroes, prefix) = match piece {
-                ProtoPiece::Bytes(bytes) => {
-                    encoded_len = encoded_len
-                        .checked_add(bytes.len())
-                        .ok_or(ParConstructionError::LengthOverflow("protobuf node"))?;
-                    zero_count = zero_count
-                        .checked_add(bytes.iter().filter(|&&byte| byte == 0).count())
-                        .ok_or(ParConstructionError::LengthOverflow(
-                            "protobuf zero-byte count",
-                        ))?;
-                    continue;
-                }
+                ProtoPiece::Bytes(_) | ProtoPiece::SharedBytes(_) => unreachable!(),
                 ProtoPiece::Node { tag, node } => (
                     self.protobuf_nodes[*node].encoded_len,
                     self.protobuf_nodes[*node].zero_count,
@@ -1865,6 +1879,30 @@ impl ParConstruction {
             locally_free,
             connective_used,
         ))
+    }
+
+    pub fn import_admitted_incomplete_component_region<T: ParBagComponent>(
+        &mut self,
+        shallow_shell: &T,
+        region: super::rholang::protobuf_cursor::ProtobufRegion,
+    ) -> Result<Option<PlannedComponent>, ParConstructionError> {
+        if T::semantic_shape_is_complete(shallow_shell) {
+            return Ok(None);
+        }
+        let score = semantics::nonsemantic_score(self)?;
+        let encoded_protobuf = region.into_bytes();
+        let protobuf = self.push_proto_node(if encoded_protobuf.is_empty() {
+            Vec::new()
+        } else {
+            vec![ProtoPiece::SharedBytes(Box::new(encoded_protobuf))]
+        })?;
+        Ok(Some(self.component_from_proto(
+            T::TAG,
+            score,
+            protobuf,
+            false,
+            None,
+        )))
     }
 
     fn require_arity(
@@ -3632,6 +3670,9 @@ impl ParConstruction {
             for piece in &self.protobuf_nodes[id].pieces {
                 let (add, add_zeroes) = match piece {
                     ProtoPiece::Bytes(bytes) => {
+                        (bytes.len(), bytes.iter().filter(|&&byte| byte == 0).count())
+                    }
+                    ProtoPiece::SharedBytes(bytes) => {
                         (bytes.len(), bytes.iter().filter(|&&byte| byte == 0).count())
                     }
                     ProtoPiece::Node { tag, node } => {

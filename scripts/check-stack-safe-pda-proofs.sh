@@ -761,6 +761,10 @@ rocq_reject_placeholders theories/SubstitutionRegionDecomposition.v
 rocq_compile_with_closed_count theories/SubstitutionRegionDecomposition.v 34 \
   "substitution field decomposition and suspended-parent source certificates"
 rocq_check_modules "substitution region decomposition" StackSafePDA.SubstitutionRegionDecomposition
+rocq_reject_placeholders theories/SubstitutionSchedule.v
+rocq_compile_with_closed_count theories/SubstitutionSchedule.v 21 \
+  "substitution binder-family schedules and result placement"
+rocq_check_modules "substitution binder-family schedules" StackSafePDA.SubstitutionSchedule
 rocq_reject_placeholders theories/SubstitutionRegionTables.v
 rocq_compile_with_closed_count theories/SubstitutionRegionTables.v 30 \
   "append-only substitution tables and supported publication transport"
@@ -989,7 +993,9 @@ rpb3_run_tests 1 --lib \
 rpb3_run_tests 3 --test par_bag admitted_
 TLC_MEMORY_HIGH=4G TLC_RSS=6G TLC_CPU_QUOTA=400% TLC_TASKS_MAX=512 \
   rpb3_run_tests 23 --release -j4 --lib emission_tests
-rholang_run_tests 3 --lib region_slot_tests
+rholang_run_tests 9 --lib region_slot_tests
+rholang_run_tests 3 --lib new_injection_preserves_
+rpb3_run_tests 2 --lib incomplete_preservation_tests
 rholang_run_tests 4 --lib scalar_projection
 rholang_run_tests 1 --features epathmap-fusion-differential \
   --test epathmap_fusion_equivalence_spec \

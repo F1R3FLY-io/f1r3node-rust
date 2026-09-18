@@ -520,6 +520,200 @@ mod differential_substitute_worklist {
         empty_env, gint, nested_list, populated_env, substitution_corpus, SubstitutionCase,
     };
 
+    #[test]
+    fn new_injection_preserves_admitted_incomplete_match_cases() {
+        use models::rust::par_bag::ParBag;
+        use models::rust::pathmap_crate_type_mapper::substitution_identity;
+        use models::rust::utils::new_boundvar_par;
+        for mask in 0..3 {
+            let injected = Par::default().with_matches(vec![Match {
+                target: Some(gint(1)),
+                cases: vec![MatchCase {
+                    pattern: (mask & 1 != 0).then(|| gint(2)),
+                    source: (mask & 2 != 0).then(|| gint(3)),
+                    guard: Some(gint(4)),
+                    free_count: 0,
+                }],
+                ..Match::default()
+            }]);
+            let retained = injected.first::<Match>().unwrap().unwrap().0;
+            assert_eq!(retained.cases.len(), 1);
+            assert_eq!(retained.cases[0].pattern.is_some(), mask & 1 != 0);
+            assert_eq!(retained.cases[0].source.is_some(), mask & 2 != 0);
+            ParBag::from_compact_bytes(&injected.components().compact_bytes())
+                .expect("incomplete injected component is admitted RPB3");
+            let injected_bytes = injected.encode_to_vec();
+            let term = Par::default().with_news(vec![New {
+                p: Some(new_boundvar_par(0, vec![1], false)),
+                injections: std::collections::BTreeMap::from([("incomplete".to_owned(), injected)]),
+                ..New::default()
+            }]);
+            assert!(!substitution_identity(&term));
+            assert_eq!(
+                term.first::<New>().unwrap().unwrap().0.injections["incomplete"].encode_to_vec(),
+                injected_bytes
+            );
+            let env = Env::new().put(gint(99));
+            let expected = par_recursive(term.clone(), SubCtx::root(0), EnvView::new(&env))
+                .expect("recursive New preserves admitted injections without traversal");
+            let actual = subject().substitute_no_sort(term, 0, &env);
+            assert_eq!(
+                result_bytes(actual),
+                Ok(expected.encode_to_vec()),
+                "incomplete mask {mask}"
+            );
+        }
+    }
+
+    #[test]
+    fn new_injection_preserves_all_admitted_incomplete_families() {
+        use models::rhoapi::{
+            EMap, EMatches, EMethod, ENeg, EPlus, EVar, EZipper, KeyValuePair, ReceiveBind,
+        };
+        use models::rust::par_bag::{Multiplicity, ParBag, ParBagComponent};
+        use models::rust::pathmap_crate_type_mapper::substitution_identity;
+        use models::rust::utils::new_boundvar_par;
+
+        fn check<T: ParBagComponent>(name: &str, component: T) {
+            let mut injected = Par::default();
+            injected
+                .insert_component_many(&component, Multiplicity::new(3).unwrap(), vec![5], true)
+                .unwrap();
+            ParBag::from_compact_bytes(&injected.components().compact_bytes())
+                .unwrap_or_else(|error| panic!("{name}: admission: {error:?}"));
+            let original = injected.encode_to_vec();
+            let original_compact = injected.components().compact_bytes();
+            let term = Par::default().with_news(vec![New {
+                p: Some(new_boundvar_par(0, vec![1], false)),
+                injections: std::collections::BTreeMap::from([("incomplete".to_owned(), injected)]),
+                ..New::default()
+            }]);
+            assert!(!substitution_identity(&term), "{name}: force traversal");
+            let env = Env::new().put(gint(99));
+            let expected = par_recursive(term.clone(), SubCtx::root(0), EnvView::new(&env))
+                .unwrap_or_else(|error| panic!("{name}: oracle: {error:?}"));
+            let actual = subject()
+                .substitute_no_sort(term, 0, &env)
+                .unwrap_or_else(|error| panic!("{name}: iterative: {error:?}"));
+            assert_eq!(
+                actual.encode_to_vec(),
+                expected.encode_to_vec(),
+                "{name}: oracle bytes"
+            );
+            assert_eq!(
+                actual.first::<New>().unwrap().unwrap().0.injections["incomplete"].encode_to_vec(),
+                original,
+                "{name}: exact injection"
+            );
+            assert_eq!(
+                actual.first::<New>().unwrap().unwrap().0.injections["incomplete"]
+                    .components()
+                    .compact_bytes(),
+                original_compact,
+                "{name}: exact RPB3 score/body/count image"
+            );
+        }
+
+        check("Send", Send {
+            data: vec![Par::default(), gint(1)],
+            ..Send::default()
+        });
+        check("Receive body", Receive {
+            binds: vec![ReceiveBind {
+                source: Some(gint(1)),
+                ..ReceiveBind::default()
+            }],
+            ..Receive::default()
+        });
+        check("Receive source", Receive {
+            body: Some(Par::default()),
+            binds: vec![ReceiveBind {
+                patterns: vec![gint(2)],
+                ..ReceiveBind::default()
+            }],
+            ..Receive::default()
+        });
+        check("New", New {
+            uri: vec!["z".to_owned(), "a".to_owned()],
+            injections: std::collections::BTreeMap::from([("x".to_owned(), gint(3))]),
+            ..New::default()
+        });
+        check("Match target", Match {
+            cases: vec![MatchCase {
+                pattern: Some(gint(1)),
+                source: Some(gint(2)),
+                guard: Some(Par::default()),
+                ..MatchCase::default()
+            }],
+            ..Match::default()
+        });
+        check("Match case", Match {
+            target: Some(gint(1)),
+            cases: vec![MatchCase {
+                pattern: Some(Par::default()),
+                guard: Some(Par::default()),
+                ..MatchCase::default()
+            }],
+            ..Match::default()
+        });
+        check("Bundle", Bundle::default());
+        for mask in 0..7 {
+            check("If", If {
+                condition: (mask & 1 != 0).then(|| gint(1)),
+                if_true: (mask & 2 != 0).then(Par::default),
+                if_false: (mask & 4 != 0).then(|| gint(3)),
+                ..If::default()
+            });
+        }
+        let mut expressions = vec![
+            ExprInstance::EVarBody(EVar::default()),
+            ExprInstance::ENegBody(ENeg::default()),
+            ExprInstance::EMethodBody(EMethod {
+                arguments: vec![gint(1), Par::default()],
+                ..EMethod::default()
+            }),
+            ExprInstance::EZipperBody(EZipper::default()),
+        ];
+        for mask in 0..3 {
+            expressions.push(ExprInstance::EPlusBody(EPlus {
+                p1: (mask & 1 != 0).then(|| gint(1)),
+                p2: (mask & 2 != 0).then(Par::default),
+            }));
+            expressions.push(ExprInstance::EMatchesBody(EMatches {
+                target: (mask & 1 != 0).then(|| gint(1)),
+                pattern: (mask & 2 != 0).then(Par::default),
+            }));
+            expressions.push(ExprInstance::EMapBody(EMap {
+                kvs: vec![
+                    KeyValuePair {
+                        key: (mask & 1 != 0).then(|| gint(1)),
+                        value: (mask & 2 != 0).then(Par::default),
+                    },
+                    KeyValuePair {
+                        key: Some(gint(3)),
+                        value: Some(gint(4)),
+                    },
+                ],
+                ..EMap::default()
+            }));
+        }
+        for expression in expressions {
+            check("Expr", Expr {
+                expr_instance: Some(expression),
+            });
+        }
+        check("absent Expr", Expr::default());
+        for cursor_kind in [0, 1, 2, 3, u32::MAX] {
+            check("opaque zipper cursor kind", Expr {
+                expr_instance: Some(ExprInstance::EZipperBody(EZipper {
+                    pathmap: Some(models::rhoapi::EPathMap::default()),
+                    cursor_kind,
+                    ..EZipper::default()
+                })),
+            });
+        }
+    }
+
     fn subject() -> Substitute {
         Substitute {
             metering: MeteredMachine::new(RuntimeBudget::new(Cost::create(

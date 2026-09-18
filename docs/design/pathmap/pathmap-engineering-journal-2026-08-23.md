@@ -13946,6 +13946,104 @@ counters, current non-identity scaling/profile evidence, replay and lifecycle ga
 The [DSR inventory](workspace-regression-formal-invariant-catalog-2026-08-28.md#dispatch-and-retained-slot-refinement-dsr-task-5916)
 enumerates all thirteen obligations and their native observations.
 
+### J-189 — 2026-09-18 Bind substitution schedules and preserve incomplete injections
+
+**Question (task 5916).** Does the region machine preserve the recursive
+implementation's binder contexts, child execution order, result-to-field mapping,
+and identity-only `New` injections for every admitted component shape?
+
+**Formal-first design.** `SubstitutionSchedule.v` supplies seventeen closed
+schedule obligations: shift composition, pattern depth, environment-key arithmetic,
+offset result maps, source-first Receive/Match jobs, retained-case filtering,
+New injection preservation, EMethod target rotation, and abstract first-error
+evaluation. Four subsequent closed obligations specify an opaque incomplete
+component's unchanged body, family/count/metadata, empty child-job list and
+nonsemantic score. Final r8 kernel-checks all 21 declarations before the runtime
+repair: 15.345 seconds wall, 15.035 CPU seconds, 409.3 MiB peak, a 1536 MiB
+hard cap/1 GiB soft threshold, zero swap, one-core quota and 600-second watchdog.
+
+These are conditional refinements, not an extracted or fully verified Rust
+interpreter. Context arithmetic uses mathematical integers and requires native
+signed-32-bit calculations to remain representable. The child evaluator is pure
+and abstract; its first-error theorem does not independently prove charge effects
+or the absence of native suffix execution. Formal identity maps explicitly list
+indices; native empty `wire_order` means identity. Opaque preservation assumes
+the existing admission predicate and its nonsemantic score; native bindings must
+establish classifier fidelity and shell/source correspondence.
+
+**Confirmed defect and correction.** A compact-RPB3-admitted Match with missing
+pattern/source inside a New injection succeeded in the recursive oracle but
+raised `UndefinedRequiredProtobufFieldError` in the region machine. Test r1
+preserves the failing receipt. Incompleteness is not invalid protobuf: the
+existing typed key compiler deliberately preserves such bodies with the common
+nonsemantic score. Identity import must not reinterpret a missing field as a
+substitution requirement or replace it with a present empty Par.
+
+The repair classifies the bounded, presence-preserving shallow shell with the
+existing family predicate. In preserve mode, incomplete components become one
+opaque construction leaf with their original byte region and the existing
+nonsemantic score; no descendant jobs are scheduled. The shared byte handle is
+boxed so its extra ownership words do not enlarge every `ProtoPiece`; the body
+is not copied on import. Emission and zero-byte accounting consume the same
+byte slice. The enclosing preserved Par restores its original metadata, while
+component-local metadata remains in the unchanged body. Complete components
+retain their ordinary schedule, and absent Expr uses its existing zero-child
+constructor. Ordinary substitution's required-field errors and case filtering
+are unchanged. There remains one final root construction finish in production.
+
+`import_admitted_incomplete_component_region` is a trusted integration entry
+point, not an admission validator. Its caller must supply a region descended
+from an admitted typed RPB3 component and that same region's presence-preserving
+shallow shell, with matching family. The method checks shell incompleteness but
+does not prove admission or byte/shell correspondence. The sole production
+caller obtains both from the same cut plan. No caller-supplied score is accepted.
+
+**Review-driven adjacent correction.** The opaque zipper cursor accepted only
+cursor kinds 1 and 2 although the protobuf field is deliberately `uint32`, and
+typed admission accepts the remaining values. The byte cursor now accepts the
+nonzero uint32 domain; zero remains canonically omitted. It still rejects
+out-of-domain framing. The fallback no longer reaches an unreachable branch
+when a complete zipper cannot be recognized. Native fixtures include kinds
+0, 1, 2, 3 and `u32::MAX`; no cursor interpretation or external schema changes.
+
+**Native qualification.** Three injection regressions pass in r4, including the
+original failing Match, the incomplete-family matrix and the existing EPathMap/
+zipper identity test: 64.319 seconds wall, 180.593 CPU seconds, 1.4 GiB peak.
+The matrix uses multiplicity three and nonempty root metadata. The final r5
+qualification adds exact compact score/body/count-image comparisons, shared
+backing/lifetime and arena-size checks, actual scheduler/combine witnesses,
+the proof manifest and the full recursive oracle. All 70 selected tests pass:
+two shared-leaf checks, 42 manifest tests, nine scheduler/combine tests and
+17 recursive-oracle tests. Total wall time is 328.285 seconds, CPU time
+762.902 seconds and reported peak 1.8 GiB. The oracle portion takes 176.58
+seconds including deep fixture construction; it is not the 20-second isolated
+substitution gate. The original failing input and all added exact compact-image
+assertions pass. The complete construction-arena r6 group then passes all 21
+tests, including the depth-16,384/256-KiB-stack constructor: 57.296 seconds wall,
+144.772 CPU seconds, 1.7 GiB peak and 0.60 seconds of test execution. Its two
+shared-leaf cases overlap r5, giving 89 distinct passing tests across both runs.
+Native runs use an 8 GiB hard cap/6 GiB soft threshold, zero swap, four-core
+quota, four workers and an 1800-second watchdog. These are correctness tests,
+not isolated performance measurements.
+
+An earlier r2 command accidentally selected zero tests and is explicitly not
+qualification. An r3 compile failure exposed a Box-versus-shared-Bytes mismatch;
+the final shared leaf fixes ownership without copying the body. These failures
+and the original behavioral regression remain in the verification logs.
+
+**Remaining acceptance.** This checkpoint does not close task 5916. Scoped
+construction/copy/work counters, non-identity geometric scaling (upper-95%
+exponent at most 1.20), depth-4096/20-second qualification, current uProf/headless
+Heaptrack attribution and replay/lifecycle gates remain. No performance gain
+or full-campaign completion is inferred from these correctness receipts.
+
+| Artifact | SHA-256 |
+|---|---|
+| `formal/rocq/stack_safe_pda/theories/SubstitutionSchedule.v` | `d1aa8c74b37a689e78b90a9498a162921511e52be946011dd8942c2d5fc0a8d6` |
+| `target/verification/substitution-5916-binder-schedule-formal-r8.log` | `b2288f48f5af924ab7277b03ecd8b7193ce6bfea195575f62a7db01a6d853f7b` |
+| `target/verification/substitution-5916-binder-preservation-native-r5.log` | `c3fd723ebafd79c77cd0499f322e760cd02d7b5ec8a4ae3c773f5e4fd5d1b8e6` |
+| `target/verification/substitution-5916-construction-preservation-native-r6.log` | `8881293a1bda6878099fc3c4df4e3910327bc6c3e926763e0e47156d36c4b6c2` |
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
