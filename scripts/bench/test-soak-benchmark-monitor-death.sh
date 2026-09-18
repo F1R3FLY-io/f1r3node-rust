@@ -73,29 +73,45 @@ SH
     [[ ! -s evidence/output/host-guardian-breach.txt && ! -e evidence/output/summary.json ]]
     date -u +%FT%TZ >evidence/fault-at.txt
     read -r started _ </proc/uptime
-    python3 - "$MONITOR" "$DRIVER" "${readiness[0]%/ready}" >evidence/fault.txt <<'PY'
-import os
-import select
-import signal
-import sys
-
-pid, driver = map(int, sys.argv[1:3])
-fd = os.pidfd_open(pid, 0)
-expected = [b"python3", b"-", sys.argv[2].encode(), sys.argv[3].encode(), b"/case/evidence/output", b""]
-with open(f"/proc/{pid}/cmdline", "rb") as source:
-    assert source.read().split(b"\0") == expected
-assert os.stat(f"/proc/{pid}").st_uid == os.geteuid()
-assert os.getsid(pid) == pid
-with open(f"/proc/{pid}/stat") as source:
-    assert int(source.read().rsplit(") ", 1)[1].split()[1]) == driver
-poller = select.poll()
-poller.register(fd, select.POLLIN)
-assert not poller.poll(0)
-signal.pidfd_send_signal(fd, signal.SIGKILL)
-assert poller.poll(2000)
-os.close(fd)
-print("The fixture confirmed monitor death through its pidfd.")
-PY
+    proc_identity() {
+        local stat
+        IFS= read -r stat 2>/dev/null <"/proc/$1/stat" || return 1
+        stat="${stat##*) }"
+        set -- $stat
+        [[ "$1" != Z ]] || return 1
+        printf '%s\n' "${20}"
+    }
+    proc_field() {
+        local stat field="$2"
+        IFS= read -r stat <"/proc/$1/stat"
+        stat="${stat##*) }"
+        set -- $stat
+        printf '%s\n' "${!field}"
+    }
+    proc_gone_within() {
+        local pid="$1" identity="$2" n
+        for n in $(seq 1 "$3"); do
+            [[ "$(proc_identity "$pid" || true)" == "$identity" ]] || return 0
+            sleep 0.05
+        done
+        return 1
+    }
+    monitor_check() {
+        local pid="$1" driver="$2" directory="$3"
+        local -a args
+        mapfile -d '' -t args <"/proc/$pid/cmdline"
+        [[ "${args[0]}" == bash && "${args[1]}" == -c && "${args[3]}" == soak-crash-monitor && "${args[4]}" == "$driver" && "${args[6]}" == "$directory" && "${args[7]}" == /case/evidence/output ]]
+        [[ "$(stat -c %u "/proc/$pid")" == "$(id -u)" ]]
+        [[ "$(proc_field "$pid" 4)" == "$pid" ]]
+        [[ "$(proc_field "$pid" 2)" == "$driver" ]]
+    }
+    {
+        monitor_check "$MONITOR" "$DRIVER" "${readiness[0]%/ready}"
+        monitor_identity="$(proc_identity "$MONITOR")"
+        kill -KILL "$MONITOR"
+        proc_gone_within "$MONITOR" "$monitor_identity" 40
+        printf 'The fixture confirmed monitor death through its process identity.\n'
+    } >evidence/fault.txt
     for _ in $(seq 1 120); do
         kill -0 "$DRIVER" 2>/dev/null || break
         sleep 0.1

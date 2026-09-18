@@ -317,71 +317,53 @@ reap_publication() {
 	fi
 	wait "$sp" 2>/dev/null || true
 }
+process_identity() {
+	local stat
+	IFS= read -r stat 2>/dev/null <"/proc/$1/stat" || return 1
+	stat="${stat##*) }"
+	# shellcheck disable=SC2086
+	set -- $stat
+	[ "$1" != Z ] || return 1
+	[[ "${20}" =~ ^[0-9]+$ ]] || return 1
+	printf '%s\n' "${20}"
+}
+process_gone() {
+	local current
+	current="$(process_identity "$1")" || return 0
+	[ "$current" != "$2" ]
+}
+record_entry_trusted() {
+	local uid mode kind
+	read -r uid mode kind < <(stat -c '%u %a %F' -- "$1" 2>/dev/null) || return 1
+	[ "$kind" = "$2" ] && [ "$uid" = 0 ] && [ $((8#$mode & 8#022)) -eq 0 ]
+}
 run_domain_verified() {
 	[ "$CONTAINMENT" = required ] || return 0
-	python3 - "$RUN_DOMAIN_RECORD" <<'PY'
-import json
-import os
-import stat
-import sys
-
-BOUND = 65536
-
-
-def trusted(descriptor, directory):
-    status = os.fstat(descriptor)
-    expected = stat.S_ISDIR(status.st_mode) if directory else stat.S_ISREG(status.st_mode)
-    return expected and status.st_uid == 0 and not status.st_mode & 0o022
-
-
-def open_record(path):
-    parts = [part for part in path.split("/") if part]
-    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
-    descriptor = os.open("/", flags | os.O_DIRECTORY)
-    try:
-        if not trusted(descriptor, True):
-            return None
-        for index, part in enumerate(parts):
-            last = index == len(parts) - 1
-            child = os.open(part, flags | (0 if last else os.O_DIRECTORY), dir_fd=descriptor)
-            os.close(descriptor)
-            descriptor = child
-            if not trusted(descriptor, not last):
-                return None
-        payload = b""
-        while len(payload) <= BOUND:
-            chunk = os.read(descriptor, BOUND + 1 - len(payload))
-            if not chunk:
-                return payload
-            payload += chunk
-        return None
-    finally:
-        os.close(descriptor)
-
-
-path = sys.argv[1]
-if not path or not os.path.isabs(path) or "/." in path or path.endswith("/"):
-    sys.exit(1)
-try:
-    payload = open_record(path)
-    if payload is None:
-        sys.exit(1)
-    data = json.loads(payload)
-    with open("/proc/self/cgroup", encoding="utf-8") as source:
-        cgroup = source.read().splitlines()
-except (OSError, ValueError):
-    sys.exit(1)
-if not isinstance(data, dict) or data.get("uid") != os.getuid():
-    sys.exit(1)
-unit = data.get("unit")
-expected = data.get("cgroup")
-if not isinstance(unit, str) or not unit or "/" in unit:
-    sys.exit(1)
-if not isinstance(expected, str) or not expected.startswith("/"):
-    sys.exit(1)
-if cgroup != ["0::" + expected]:
-    sys.exit(1)
-PY
+	local path="$RUN_DOMAIN_RECORD" prefix="" rest part size cgroup
+	[ -n "$path" ] && [[ "$path" == /* && "$path" != *"/."* && "$path" != */ ]] || return 1
+	record_entry_trusted / directory || return 1
+	rest="${path#/}"
+	while [ -n "$rest" ]; do
+		part="${rest%%/*}"
+		if [ "$part" = "$rest" ]; then rest=""; else rest="${rest#*/}"; fi
+		[ -n "$part" ] || return 1
+		prefix="$prefix/$part"
+		if [ -n "$rest" ]; then
+			record_entry_trusted "$prefix" directory || return 1
+		else
+			record_entry_trusted "$prefix" "regular file" || return 1
+		fi
+	done
+	size="$(stat -c %s -- "$path" 2>/dev/null)" || return 1
+	[[ "$size" =~ ^[0-9]+$ ]] && [ "$size" -le 65536 ] || return 1
+	[ "$(wc -l </proc/self/cgroup)" -eq 1 ] || return 1
+	IFS= read -r cgroup </proc/self/cgroup || return 1
+	jq -es --arg uid "$(id -ur)" --arg cgroup "$cgroup" '
+		length == 1 and (.[0] | type == "object"
+			and .uid == ($uid | tonumber)
+			and (.unit | type == "string" and length > 0 and (contains("/") | not))
+			and (.cgroup | type == "string" and startswith("/"))
+			and $cgroup == ("0::" + .cgroup))' "$path" >/dev/null 2>&1
 }
 
 # Free MB on the filesystem the soak actually fills. OUTPUT_DIR, the harness
@@ -421,64 +403,71 @@ guardian_progress_fresh() {
 	[ "$last" -le "$now" ] && [ "$((now - last))" -le "$GUARDIAN_MAX_SILENCE_SECONDS" ]
 }
 
-stop_owned_host_writers() {
-	python3 - "$SOAK_WRITER_OWNER" <<'PY'
-import os
-import select
-import signal
-import sys
-import time
+owned_host_processes() {
+	local marker="SOAK_PROCESS_OWNER=$1" entry pid identity item status=0
+	local -a environment
+	for entry in /proc/[0-9]*; do
+		[[ -O "$entry" ]] || continue
+		pid="${entry#/proc/}"
+		identity="$(process_identity "$pid")" || continue
+		environment=()
+		if ! mapfile -d '' -t environment 2>/dev/null <"$entry/environ"; then
+			[ ! -d "$entry" ] || status=1
+			continue
+		fi
+		for item in "${environment[@]}"; do
+			if [ "$item" = "$marker" ]; then
+				printf '%s %s\n' "$pid" "$identity"
+				break
+			fi
+		done
+	done
+	return "$status"
+}
 
-marker = ("SOAK_PROCESS_OWNER=" + sys.argv[1]).encode()
-owned = []
-status = 0
-for name in os.listdir("/proc"):
-    if not name.isdecimal():
-        continue
-    fd = None
-    try:
-        if os.stat("/proc/" + name).st_uid != os.geteuid():
-            continue
-        fd = os.pidfd_open(int(name), 0)
-        with open("/proc/" + name + "/environ", "rb") as source:
-            matches = marker in source.read().split(b"\0")
-        if matches:
-            owned.append(fd)
-            fd = None
-    except (FileNotFoundError, ProcessLookupError):
-        pass
-    except OSError:
-        status = 1
-    finally:
-        if fd is not None:
-            os.close(fd)
-pending = set()
-poller = select.poll()
-for fd in owned:
-    try:
-        signal.pidfd_send_signal(fd, signal.SIGKILL)
-        poller.register(fd, select.POLLIN)
-        pending.add(fd)
-    except ProcessLookupError:
-        pass
-    except OSError:
-        status = 1
-deadline = time.monotonic() + 0.75
-while pending:
-    remaining = max(0, int((deadline - time.monotonic()) * 1000))
-    events = poller.poll(remaining)
-    if not events:
-        status = 1
-        break
-    for fd, event in events:
-        if not event & select.POLLIN:
-            status = 1
-        poller.unregister(fd)
-        pending.discard(fd)
-for fd in owned:
-    os.close(fd)
-sys.exit(status)
-PY
+stop_owned_host_writers() {
+	local listing pid identity index waited=0 all_gone status=0
+	local -a pending_pids=() pending_identities=()
+	listing="$(owned_host_processes "$SOAK_WRITER_OWNER")" || status=1
+	while read -r pid identity; do
+		[ -n "$pid" ] || continue
+		process_gone "$pid" "$identity" && continue
+		if ! kill -KILL "$pid" 2>/dev/null; then
+			process_gone "$pid" "$identity" || status=1
+			continue
+		fi
+		pending_pids+=("$pid")
+		pending_identities+=("$identity")
+	done <<<"$listing"
+	while :; do
+		all_gone=1
+		for index in "${!pending_pids[@]}"; do
+			process_gone "${pending_pids[index]}" "${pending_identities[index]}" || {
+				all_gone=0
+				break
+			}
+		done
+		[ "$all_gone" -eq 0 ] || break
+		if [ "$waited" -ge 750 ]; then
+			status=1
+			break
+		fi
+		sleep 0.05
+		waited=$((waited + 50))
+	done
+	return "$status"
+}
+
+mark_owned_oom_preferred() {
+	local listing pid identity status=0
+	listing="$(owned_host_processes "$SOAK_WRITER_OWNER")" || status=1
+	while read -r pid identity; do
+		[ -n "$pid" ] || continue
+		if ! printf '1000\n' 2>/dev/null >"/proc/$pid/oom_score_adj"; then
+			process_gone "$pid" "$identity" || status=1
+		fi
+	done <<<"$listing"
+	return "$status"
 }
 
 stop_node_writer_commands() {
@@ -508,51 +497,34 @@ stop_node_writer_commands() {
 
 stop_node_writers() (
 	export SOAK_WRITER_OWNER
-	export -f stop_owned_host_writers stop_node_writer_commands
+	export -f process_identity process_gone owned_host_processes stop_owned_host_writers stop_node_writer_commands
 	timeout --signal=TERM --kill-after=1 "$DISK_STOP_SECONDS" \
 		bash -c 'trap "" TERM; stop_node_writer_commands "$@"' bash "$@"
 )
 
+crash_monitor() {
+	local driver="$1" identity="$2" directory="$3" output="$4" status=0 marker
+	printf '%s\n' "$$" >"$directory/ready"
+	until process_gone "$driver" "$identity"; do sleep 0.1; done
+	marker="$(head -c 8 "$directory/handled-exit" 2>/dev/null; printf x)"
+	[ "$marker" != $'handled\nx' ] || exit 0
+	stop_node_writers -q kill || status=$?
+	if [ "$status" -ne 0 ]; then
+		printf 'Writer termination is unconfirmed after the driver exited.\n' >"$output/writer-stop-failure.txt" 2>/dev/null || true
+	fi
+	printf '%s\n' "$status" >"$directory/exit-code.txt"
+	exit "$status"
+}
+
 start_crash_monitor() {
-	local directory monitor _attempt
+	local directory monitor identity _attempt
+	identity="$(process_identity "$$")" || return 1
 	directory="$(mktemp -d "$OUTPUT_DIR/.crash-monitor.XXXXXXXX")" || return 1
 	CRASH_MONITOR_DIR="$directory"
 	(
 		export SOAK_WRITER_OWNER DISK_STOP_SECONDS
-		export -f stop_owned_host_writers stop_node_writer_commands stop_node_writers
-		exec python3 - "$$" "$directory" "$OUTPUT_DIR" <<'PY'
-import os
-from pathlib import Path
-import select
-import subprocess
-import sys
-
-os.setsid()
-parent = os.pidfd_open(int(sys.argv[1]), 0)
-poller = select.poll()
-poller.register(parent, select.POLLIN)
-directory = Path(sys.argv[2])
-(directory / "ready").write_text(str(os.getpid()) + "\n")
-poller.poll()
-os.close(parent)
-try:
-    with (directory / "handled-exit").open("rb") as source:
-        handled = source.read(9) == b"handled\n"
-except OSError:
-    handled = False
-if handled:
-    sys.exit(0)
-status = subprocess.run(["bash", "-c", "stop_node_writers -q kill"]).returncode
-if status != 0:
-    try:
-        (Path(sys.argv[3]) / "writer-stop-failure.txt").write_text(
-            "Writer termination is unconfirmed after the driver exited.\n"
-        )
-    except OSError:
-        pass
-(directory / "exit-code.txt").write_text(str(status) + "\n")
-sys.exit(status)
-PY
+		export -f process_identity process_gone owned_host_processes stop_owned_host_writers stop_node_writer_commands stop_node_writers crash_monitor
+		exec setsid bash -c 'crash_monitor "$@"' soak-crash-monitor "$$" "$identity" "$directory" "$OUTPUT_DIR"
 	) >"$directory/monitor.log" 2>&1 &
 	monitor=$!
 	CRASH_MONITOR_PID="$monitor"
@@ -1343,8 +1315,8 @@ if [ -s "$HOST_GUARDIAN_BREACH" ]; then
 	persist_soak_state
 	printf 'The previous guardian breach prevents this segment from starting work.\n'
 fi
-if ! python3 -c 'import os, signal; assert callable(signal.pidfd_send_signal); os.close(os.pidfd_open(os.getpid(), 0))'; then
-	printf 'Host writer ownership requires Linux pidfd support. The driver refused work.\n' >&2
+if ! process_identity "$$" >/dev/null; then
+	printf 'Host writer ownership requires a readable Linux proc filesystem. The driver refused work.\n' >&2
 	exit 2
 fi
 read -r SOAK_WRITER_OWNER </proc/sys/kernel/random/uuid || exit 2
@@ -1487,34 +1459,9 @@ if { [ "$HOST_FREE_FLOOR_MB" -gt 0 ] && [ -r /proc/meminfo ]; } || [ "$DISK_FREE
 		guardian_oom_mark_warned=0
 		guardian_mark_workload_oom_preferred() {
 			local failed=0
-			if ! timeout --signal=TERM --kill-after=1 "$DISK_STOP_SECONDS" python3 - "$SOAK_WRITER_OWNER" <<'PY'; then
-import os
-import sys
-
-marker = ("SOAK_PROCESS_OWNER=" + sys.argv[1]).encode()
-status = 0
-for name in os.listdir("/proc"):
-    if not name.isdigit():
-        continue
-    directory = None
-    try:
-        directory = os.open("/proc/" + name, os.O_RDONLY | os.O_DIRECTORY)
-        if os.fstat(directory).st_uid != os.geteuid():
-            continue
-        with os.fdopen(os.open("environ", os.O_RDONLY, dir_fd=directory), "rb") as environment:
-            if marker not in environment.read().split(b"\0"):
-                continue
-        with os.fdopen(os.open("oom_score_adj", os.O_WRONLY, dir_fd=directory), "w") as preference:
-            preference.write("1000\n")
-    except (FileNotFoundError, ProcessLookupError):
-        pass
-    except OSError:
-        status = 1
-    finally:
-        if directory is not None:
-            os.close(directory)
-sys.exit(status)
-PY
+			export SOAK_WRITER_OWNER
+			export -f process_identity process_gone owned_host_processes mark_owned_oom_preferred
+			if ! timeout --signal=TERM --kill-after=1 "$DISK_STOP_SECONDS" bash -c 'mark_owned_oom_preferred'; then
 				failed=1
 			fi
 			# One line for the whole guardian lifetime: a per-sample failure
@@ -1539,12 +1486,9 @@ PY
 				--output json 2>/dev/null)" || return 0
 			# An OCI freeform tag value holds 256 chars; the attribution detail
 			# is optional and trimmed to whatever fits after the last words.
-			tags="$(printf '%s' "$tags" | python3 -c '
-import json, sys
-tags = json.load(sys.stdin) or {}
-tags["soak-health"] = sys.argv[1][:256]
-print(json.dumps(tags))
-' "$state:$(date +%s):avail=${avail}MB${detail:+:$detail}")" || return 0
+			tags="$(printf '%s' "$tags" | jq -c --arg health "$state:$(date +%s):avail=${avail}MB${detail:+:$detail}" \
+				'(. // {}) + {"soak-health": $health[:256]}')" || return 0
+			[ -n "$tags" ] || return 0
 			timeout --foreground 15 oci --auth instance_principal compute instance update \
 				--instance-id "$iid" --freeform-tags "$tags" --force \
 				>/dev/null 2>&1 || true
