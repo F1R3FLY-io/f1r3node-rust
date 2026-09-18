@@ -17,7 +17,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=oci-common.sh
 source "${SCRIPT_DIR}/oci-common.sh"
 
-DEFAULT_IMAGE="sjc.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest"
+DEFAULT_IMAGE="us-sanjose-1.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest"
 SSH_USER="${SSH_USER:-opc}"
 SSH_OPTS=(-i "$KEY_FILE" -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR)
 REMOTE_TAR="/tmp/f1r3fly-image.tar.gz"

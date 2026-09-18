@@ -968,6 +968,16 @@ mod embedded_defaults_tests {
         );
     }
 
+    #[test]
+    fn shipped_defaults_name_no_bootstrap_peer() {
+        let cfg: NodeConf = hocon::HoconLoader::new()
+            .load_str(EMBEDDED_DEFAULTS)
+            .expect("load defaults.conf")
+            .resolve()
+            .expect("deserialize NodeConf");
+        assert_eq!(cfg.protocol_client.bootstrap, "");
+    }
+
     /// The full heartbeat block, pinned twice over: the SHIPPED defaults.conf
     /// values, and the serde fallbacks a sparse operator conf (omitting every
     /// optional heartbeat key) lands on. The two must be identical — a

@@ -5,9 +5,6 @@ pub const RUNNING_METRICS_SOURCE: &str = "f1r3fly.casper.running";
 pub const BLOCK_RETRIEVER_METRICS_SOURCE: &str = "f1r3fly.casper.block-retriever";
 pub const APPROVE_BLOCK_METRICS_SOURCE: &str = "f1r3fly.casper.approve-block";
 pub const REPORT_REPLAY_METRICS_SOURCE: &str = "f1r3fly.casper.report-replay";
-pub const ESTIMATOR_METRICS_SOURCE: &str = "f1r3fly.casper.estimator";
-pub const TIPS0_METRICS_SOURCE: &str = "f1r3fly.casper.estimator.tips0";
-pub const TIPS1_METRICS_SOURCE: &str = "f1r3fly.casper.estimator.tips1";
 pub const VALIDATOR_METRICS_SOURCE: &str = "f1r3fly.casper.validator";
 pub const RHO_RUNTIME_METRICS_SOURCE: &str = "f1r3fly.casper.rho-runtime";
 pub const REPLAY_RHO_RUNTIME_METRICS_SOURCE: &str = "f1r3fly.casper.replay-rho-runtime";
@@ -96,6 +93,8 @@ pub const CASPER_INIT_TIME_TO_RUNNING_METRIC: &str = "casper.init.time-to-runnin
 
 // Casper record/histogram metrics
 pub const BLOCK_SIZE_METRIC: &str = "block.size";
+pub const BLOCK_ARRIVAL_DEPTH_METRIC: &str = "block.arrival.depth";
+pub const BLOCK_ARRIVED_UNCITABLE_METRIC: &str = "block.arrived-uncitable";
 pub const BLOCK_DOWNLOAD_END_TO_END_TIME_METRIC: &str = "block.download.end-to-end-time";
 pub const BLOCK_REPLAY_PHASE_RESET_TIME_METRIC: &str = "block.replay.phase.reset.time";
 pub const BLOCK_REPLAY_PHASE_USER_DEPLOYS_TIME_METRIC: &str =
@@ -229,7 +228,6 @@ pub const DAG_MERGE_REJECTION_EXPANSION_FIRED_METRIC: &str = "dag.merge.rejectio
 // `compute_parents_post_state` internal breakdown.
 pub const COMPUTE_PARENTS_POST_STATE_FETCH_TIME_METRIC: &str =
     "compute-parents-post-state.fetch.time";
-pub const COMPUTE_PARENTS_POST_STATE_LCA_TIME_METRIC: &str = "compute-parents-post-state.lca.time";
 pub const COMPUTE_PARENTS_POST_STATE_BUFFER_ADMITS_TIME_METRIC: &str =
     "compute-parents-post-state.buffer-admits.time";
 
@@ -409,8 +407,6 @@ pub const BLOCK_RECEIVE_BUFFER_TIME_METRIC: &str = "block.receive-buffer.time";
 pub const MERGEABLE_CHANNELS_GC_TIME_METRIC: &str = "mergeable-channels.gc.time";
 
 // Casper tracing span names
-pub const TIPS0_SPAN: &str = "tips0";
-pub const TIPS1_SPAN: &str = "tips1";
 pub const DEPLOY_SPAN: &str = "deploy";
 pub const GET_BLOCK_SPAN: &str = "get-block";
 pub const CREATE_BLOCK_SPAN: &str = "create-block";

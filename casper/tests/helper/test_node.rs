@@ -692,7 +692,9 @@ impl TestNode {
 
                             // Convert Node to PeerNode
                             let peer = PeerNode {
-                                id: NodeIdentifier::new(hex::encode(&sender_node.id)),
+                                id: NodeIdentifier {
+                                    key: sender_node.id.clone(),
+                                },
                                 endpoint: Endpoint::new(
                                     String::from_utf8_lossy(&sender_node.host).to_string(),
                                     sender_node.tcp_port,
@@ -1223,9 +1225,12 @@ impl TestNode {
 
     /// Creates a PeerNode with the given name and port
     fn peer_node(name: &str, port: u32) -> PeerNode {
-        // Convert name bytes to hex string for NodeIdentifier
-        let name_hex = hex::encode(name.as_bytes());
-        let node_id = NodeIdentifier::new(name_hex);
+        // Node IDs are a fixed 20 bytes; the name seeds the leading ones.
+        let mut key = [0u8; 20];
+        let seed = name.as_bytes();
+        let taken = seed.len().min(key.len());
+        key[..taken].copy_from_slice(&seed[..taken]);
+        let node_id = NodeIdentifier::new(&hex::encode(key)).expect("a padded name is a valid ID");
         let endpoint = Self::endpoint(port);
 
         PeerNode {

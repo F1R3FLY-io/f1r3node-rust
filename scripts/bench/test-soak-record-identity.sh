@@ -17,14 +17,13 @@ if [[ "${1:-}" == --inside ]]; then
     ln -s /run/soak-run-domain /run/soak-link
     mkdir -m 0755 /run/soak-run-domain/nested
     printf '%s\n' "$record" >/run/soak-run-domain/nested/symlink-ancestor.json
-    python3 - "$record" <<'PY'
-import sys
-record = sys.argv[1].encode()
-padded = record + b" " * (65536 - len(record))
-assert len(padded) == 65536
-with open("/run/soak-run-domain/oversized.json", "wb") as target:
-    target.write(padded + b"\n" + b"x" * 4096 + b"\n")
-PY
+    {
+        printf '%s' "$record"
+        head -c "$((65536 - ${#record}))" /dev/zero | tr '\0' ' '
+        printf '\n'
+        head -c 4096 /dev/zero | tr '\0' x
+        printf '\n'
+    } >/run/soak-run-domain/oversized.json
     chmod 0644 /run/soak-run-domain/*.json /run/soak-run-domain/nested/*.json /run/soak-untrusted/workload-owned/run-domain/*.json /run/soak-run-domain/fixture-cgroup.txt
     exec setpriv --reuid 65534 --regid 65534 --clear-groups -- bash /case/test.sh --inside-worker
 fi

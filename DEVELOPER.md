@@ -186,12 +186,18 @@ just coverage casper     # enforce 80% for one crate
 Requires [`just`](https://github.com/casey/just) — a command runner installed with the tooling above.
 
 ```bash
+export STANDALONE_PRIVATE_KEY=<validator key>   # required by both run recipes
 just run-standalone           # Build release binary + run standalone node
 just run-standalone-debug     # Debug build (faster compile, slower runtime)
 just clean-standalone         # Reset node data to genesis
 just help                     # Show node CLI help
 just run-help                 # Show `run` subcommand options
 ```
+
+Both run recipes take the key from `STANDALONE_PRIVATE_KEY`, and `just`
+resolves it before the build step, so an unset variable aborts the recipe
+before anything compiles. `docker/.env.example` carries the development key the
+shipped Docker configs use.
 
 The node listens on ports 40400-40405 (protocol, gRPC external/internal, HTTP API, discovery, admin). Configuration and genesis data live in [`run-local/`](run-local/README.md).
 
@@ -222,7 +228,7 @@ docker compose -f docker/standalone.yml up
 docker compose -f docker/shard.yml up
 
 # Use a locally built image instead of the published one
-F1R3FLY_IMAGE=f1r3fly-rust:local docker compose -f docker/standalone.yml up
+F1R3FLY_RUST_IMAGE=f1r3fly-rust:local docker compose -f docker/standalone.yml up
 
 # Reset to genesis
 docker compose -f docker/standalone.yml down -v
