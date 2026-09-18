@@ -324,6 +324,12 @@ impl HeartbeatProposer {
                                 "Heartbeat: check needs a block this node does not \
                                  hold; requesting it from peers and skipping this cycle"
                             );
+                            tracing::debug!(
+                                target: "f1r3.trace.absence",
+                                missing = %hex::encode(&missing[..8.min(missing.len())]),
+                                site = %site,
+                                "heartbeat check: absence origin"
+                            );
                             if let Err(req_err) = casper.request_block_from_peers(missing).await {
                                 tracing::warn!(
                                     error = %req_err,

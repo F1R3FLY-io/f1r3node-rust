@@ -372,23 +372,17 @@ pub async fn floor_of_view(
     // clock, not a consensus-visible derivation.
     let mut testimony: Vec<(Validator, BlockHash)> = Vec::new();
     for (validator, hash) in dag.latest_message_hashes() {
-        match dag.lookup(&hash).map_err(CasperError::from)? {
-            Some(metadata) if metadata.sender != validator => continue,
-            Some(_) => {}
-            // An unheld slot names a block below the restore horizon —
-            // catch-up can never deliver it, so keeping the slot turns
-            // the absence hold below into a permanent, silent LFB freeze.
-            // Skipping it abstains the validator from this node's clock,
-            // sound by the same node-local argument as the seed filter.
-            None => {
-                tracing::debug!(
-                    target: "f1r3fly.finalizer",
-                    validator = %PrettyPrinter::build_string_bytes(&validator),
-                    lm = %PrettyPrinter::build_string_bytes(&hash),
-                    "abstaining unheld latest-message slot from the floor derivation"
-                );
-                continue;
-            }
+        if !dag
+            .slot_is_own_testimony(&validator, &hash)
+            .map_err(CasperError::from)?
+        {
+            tracing::debug!(
+                target: "f1r3fly.finalizer",
+                validator = %PrettyPrinter::build_string_bytes(&validator),
+                lm = %PrettyPrinter::build_string_bytes(&hash),
+                "abstaining unheld or unsigned latest-message slot from the floor derivation"
+            );
+            continue;
         }
         testimony.push((validator, hash));
     }
