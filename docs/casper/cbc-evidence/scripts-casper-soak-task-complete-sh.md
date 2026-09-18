@@ -1,37 +1,32 @@
 # CbC Evidence: scripts/casper-soak/task-complete.sh
 
-The user accepted the bounded H01–H10 binding review. This record discharges only CLAIM-CASPER-SOAK-001 in the pre-merge phase.
+The user accepted the repaired bounded H01–H10 binding review. This record discharges only CLAIM-CASPER-SOAK-001 in the pre-merge phase.
 
-Profile verification, node soaks, post-merge work, and inherited containment limits remain separate. Earlier ledger bytes remain in the linked archive.
+Profile claims, node soaks, post-merge work, and inherited containment limits remain separate. The linked archive preserves the previous acceptance records.
 
 ```json
 {
   "artifact": {
     "path": "scripts/casper-soak/task-complete.sh",
     "id": "scripts-casper-soak-task-complete-sh",
-    "commit": "946743a7740e5dd3c0816263c3347e501f2d50d7",
-    "sha256": "89245a31460c48bf066e58c1329538baa57791ced13a01c4761aa2c62afdb912",
-    "commit_is_base": false
+    "commit": "f9273621c8887947b56d0093a71486338312138e",
+    "commit_is_base": false,
+    "sha256": "89245a31460c48bf066e58c1329538baa57791ced13a01c4761aa2c62afdb912"
   },
   "claim": "docs/claims/casper-soak-harness.md",
   "claim_ids": [
     "CLAIM-CASPER-SOAK-001"
   ],
   "claim_digests": {
-    "docs/claims/casper-soak-harness.md": "c711fdc42bfed34ce28a6cd5da407e27d2e4745037b0eb250d8e760bee24a071"
+    "docs/claims/casper-soak-harness.md": "51a863feac95f73d06aab10b45ef05ff01b07d5ebb91d1a4fb4879f5776c0134"
   },
   "adapter": "embedded",
   "status": "discharged",
   "scope": "bounded-harness-only",
   "evidence": {
     "kind": "accepted-bounded-refutation-and-binding",
-    "ref": "docs/casper/cbc-evidence/runs/casper-task-017-4-acceptance-01/report.json",
-    "sha256": "c510e4e393daf52f5a3d2e3affa908897ab0a574484de807939354d5ad8c5ec1"
-  },
-  "previous_ledger": {
-    "ref": "docs/casper/cbc-evidence/runs/casper-task-017-4-acceptance-01/prior-ledgers.tar.gz",
-    "sha256": "4869ed3996b96dda70f84cc666ceb6f86d529f982f8c847b260287738d333e52",
-    "member": "docs/casper/cbc-evidence/scripts-casper-soak-task-complete-sh.md"
+    "ref": "docs/casper/cbc-evidence/runs/casper-driver-rebind-acceptance-20260918-01/report.json",
+    "sha256": "d5cc58da34bb33dce627c3c40bf055e61fef817657698921359f06a4f8a301b1"
   },
   "tiers": {
     "refutation": "bounded-safety-pass",
@@ -44,6 +39,12 @@ Profile verification, node soaks, post-merge work, and inherited containment lim
   },
   "soak": "pending",
   "waiver": null,
-  "verified_at": "2026-09-18T04:31:12Z"
+  "verified_at": "2026-09-18T20:44:50Z",
+  "previous_ledger": {
+    "ref": "docs/casper/cbc-evidence/runs/casper-driver-rebind-20260918-01/previous.tar.gz",
+    "sha256": "690412e55d4e43d92980f9ba069237e1136d89730375dde24ab5724c4eeb1084",
+    "member": "./docs/casper/cbc-evidence/scripts-casper-soak-task-complete-sh.md"
+  },
+  "review_candidate": "docs/casper/cbc-evidence/runs/casper-driver-rebind-20260918-01/candidate-ledgers/scripts-casper-soak-task-complete-sh.md"
 }
 ```

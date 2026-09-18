@@ -1,5 +1,11 @@
 # Casper Driver Source Repair
 
+## Current status
+
+The user has accepted this bounded binding review. The [acceptance record](./casper-driver-rebind-acceptance.md) records the source-specific discharge.
+
+The sections below retain the pre-acceptance review and its pending results. The original evidence package remains unchanged.
+
 ## Scope
 
 The user requested a proper repair of the stale CLAIM-CASPER-SOAK-001 binding.

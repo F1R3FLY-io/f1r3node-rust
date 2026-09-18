@@ -362,7 +362,7 @@ mod linux {
     #[cfg(test)]
     mod tests {
         use std::os::unix::fs::{symlink, PermissionsExt};
-        use std::process::{Child, Command};
+        use std::process::{Child, Command, Stdio};
         use std::thread;
 
         use super::*;
@@ -379,13 +379,25 @@ mod linux {
                 Path::new("/.dockerenv").is_file(),
                 "Run process fixtures in an isolated container."
             );
-            Process(
-                Command::new("sleep")
-                    .arg("60")
+            let mut child = Process(
+                Command::new("/bin/sh")
+                    .args(["-c", "printf 'ready\\n'; read -r _"])
                     .env("SOAK_PROCESS_OWNER", owner)
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
                     .spawn()
                     .unwrap(),
-            )
+            );
+            let mut receipt = [0; 6];
+            child
+                .0
+                .stdout
+                .take()
+                .unwrap()
+                .read_exact(&mut receipt)
+                .unwrap();
+            assert_eq!(&receipt, b"ready\n");
+            child
         }
         fn marker() -> String {
             format!(

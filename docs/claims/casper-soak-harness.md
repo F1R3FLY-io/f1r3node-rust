@@ -2,7 +2,7 @@
 
 ```yaml
 claim_id: CLAIM-CASPER-SOAK-001
-status: pending
+status: discharged
 adapter: embedded
 pre_merge_tasks: [TASK-017-2, TASK-017-4, TASK-017-12, TASK-017-13]
 post_merge_tasks: [TASK-018-1, TASK-018-2, TASK-018-5, TASK-018-6]
@@ -50,7 +50,7 @@ mechanization_plan: formal/tlaplus/casper_soak/verification-plan.jsonc
 refutation: bounded-safety-pass
 construction: not-applicable
 construction_assumptions: null
-binding: pending
+binding: passed
 soak: pending
 ```
 
@@ -186,9 +186,9 @@ The user accepted the bounded H01–H10 [binding review](../work-logs/task-017-4
 
 The [acceptance record](../work-logs/task-017-4-acceptance.md) binds that approval to the earlier verified source and retained evidence.
 
-The current driver repair requires a new binding review. Its [verification record](../work-logs/casper-driver-source-rebind.md) preserves the earlier acceptance separately.
+The user accepted the repaired driver's bounded binding review. Its [acceptance record](../work-logs/casper-driver-rebind-acceptance.md) identifies the approved source and preserves earlier evidence.
 
-The current claim is pending. TASK-017-4 remains complete for its accepted source. The strict audit must refuse discharge until the new review is accepted.
+CLAIM-CASPER-SOAK-001 is discharged for the repaired pre-merge harness. TASK-017-4 remains complete. The source-specific ledger records control this discharge.
 
 B44, containment assumptions, and the stated model bounds remain unchanged. This acceptance does not discharge profile claims, node correctness, or post-merge work.
 

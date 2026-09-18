@@ -358,7 +358,7 @@ tasks:
     work_log: docs/work-logs/task-017-7-recovery.md
     implementation_status: controlled-transcript-implemented
     validation_evidence: docs/casper/cbc-evidence/runs/casper-recovery-20260918-01/report.json
-    completion_blocker: "Binding acceptance and workflow-tag ratification remain pending. The shared driver repair awaits binding acceptance. Live adapters remain unqualified."
+    completion_blocker: "Recovery binding acceptance and workflow-tag ratification remain pending. Live adapters remain unqualified."
     tests:
       - scripts/casper-soak/tests/recovery.rs
       - scripts/casper-soak/check-recovery.sh
