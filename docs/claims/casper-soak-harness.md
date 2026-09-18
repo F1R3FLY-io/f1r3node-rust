@@ -23,6 +23,9 @@ artifacts:
   - scripts/casper-soak/src/runtime.rs
   - scripts/casper-soak/tests/models.rs
   - scripts/casper-soak/tests/driver.rs
+  - scripts/casper-soak/src/bin/check-casper-bindings.rs
+  - scripts/casper-soak/tests/bindings.rs
+  - scripts/casper-soak/tests/interruption.rs
   - scripts/bench/casper-soak.sh
   - scripts/bench/fixtures/casper-lifecycle-executor.sh
   - .github/workflows/slashing-tests.yml
@@ -118,6 +121,10 @@ The driver currently consumes the external system-integration harness at `b3d14b
 The interface contract records source-audited primitives at that pin. Each run must qualify its exact adapter and candidate before claiming binding coverage.
 
 Fixtures must execute the real driver with controlled processes and storage responses. A model-only simulation does not satisfy the binding tier.
+
+The inventory gate requires all 46 registered case identities and all 89 invocation records. Each invocation must match its registered exit and command.
+
+Aggregate counts cannot replace case coverage. Inventory acceptance does not discharge this claim or establish semantic binding coverage.
 
 ## Evidence package
 

@@ -378,6 +378,11 @@ pub fn run(
     iteration: u64,
 ) -> Result<i32> {
     let c = admit(root, iteration)?;
+    let terminal = output.join("finalize-requested");
+    ensure!(
+        !terminal.try_exists()? && !terminal.is_symlink(),
+        "A terminal marker prevents workload launch."
+    );
     ensure!(
         iteration == history(output)?.len() as u64 + 1,
         "The iteration would overwrite history."

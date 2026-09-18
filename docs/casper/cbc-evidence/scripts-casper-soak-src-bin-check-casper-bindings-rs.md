@@ -1,14 +1,14 @@
-# CbC Evidence: scripts/casper-soak/src/runtime.rs
+# CbC Evidence: scripts/casper-soak/src/bin/check-casper-bindings.rs
 
-Focused checks pass for the terminal-entry guard. Complete fixture verification and the harness claim remain pending.
+Focused checks pass. The complete fixture suite and harness claim remain pending.
 
 ```json
 {
   "artifact": {
-    "path": "scripts/casper-soak/src/runtime.rs",
-    "id": "scripts-casper-soak-src-runtime-rs",
+    "path": "scripts/casper-soak/src/bin/check-casper-bindings.rs",
+    "id": "scripts-casper-soak-src-bin-check-casper-bindings-rs",
     "commit": null,
-    "sha256": "6680cb368147c2ab0fd16400786e371ddbae53f8793de1cdfaa25a23d379b207"
+    "sha256": "aca91276eb0fafacb34193082abc4c02de5e1562f1a6eeccf3d5f51f0a057859"
   },
   "claim": "docs/claims/casper-soak-harness.md",
   "claim_ids": [
@@ -24,11 +24,6 @@ Focused checks pass for the terminal-entry guard. Complete fixture verification 
     "kind": "partial-driver-binding",
     "ref": "docs/casper/cbc-evidence/runs/casper-binding-gates-20260918-01/report.json",
     "sha256": "f07c3f7955d7a098b3ce4e646d96bd4472d8f99f56bc43689693c2fb9ecb6039"
-  },
-  "previous_evidence": {
-    "kind": "language-migration-verification",
-    "ref": "docs/casper/cbc-evidence/runs/casper-rust-migration-20260917-01/report.json",
-    "sha256": "6696a0659bb58fa72b27542a414ef4598c3a649bc638136d810d1796c98b2555"
   },
   "tiers": {
     "refutation": "bounded-safety-pass",

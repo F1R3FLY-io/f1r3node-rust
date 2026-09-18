@@ -151,6 +151,9 @@ files:
   - scripts/bench/casper-soak.sh
   - scripts/bench/fixtures/casper-lifecycle-executor.sh
   - .github/workflows/slashing-tests.yml
+  - scripts/casper-soak/src/bin/check-casper-bindings.rs
+  - scripts/casper-soak/tests/bindings.rs
+  - scripts/casper-soak/tests/interruption.rs
 tasks:
   - id: TASK-017-1
     title: "Reconcile ratifications, existing epics, and source dependencies"
@@ -217,7 +220,7 @@ tasks:
     claimed_by: pi-casper-harness
     claimed_at: 2026-09-16T22:18:38Z
     execution_scope: "Authorized completion work: shared registration and real-driver bindings. No node dispatch, external repin, or claim waiver."
-    work_log: docs/work-logs/task-017-4-driver-integration-2026-09-17.md
+    work_log: docs/work-logs/task-017-4-binding-inventory-gate.md
     completion_blocker: "Full driver bindings and profile adapters remain incomplete. Approved profile implementation may proceed alongside this task. Dispatch and claim gates remain unchanged."
     blocked_by: []
     decisions: [D-11]
@@ -482,6 +485,9 @@ files:
   - scripts/bench/casper-soak.sh
   - scripts/bench/fixtures/casper-lifecycle-executor.sh
   - .github/workflows/slashing-tests.yml
+  - scripts/casper-soak/src/bin/check-casper-bindings.rs
+  - scripts/casper-soak/tests/bindings.rs
+  - scripts/casper-soak/tests/interruption.rs
 tasks:
   - id: TASK-018-1
     title: "Verify the merge gate and establish the post-merge baseline"

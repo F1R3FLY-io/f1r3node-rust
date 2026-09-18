@@ -77,6 +77,18 @@ The [resume report](../casper/cbc-evidence/runs/casper-manifest-resume-20260917-
 
 The helper and fixture are mandatory-scope additions. No task, claim, or full verification cycle is marked complete.
 
+## Binding inventory and terminal entry
+
+The [gate continuation](../work-logs/task-017-4-binding-inventory-gate.md) records three additional RED/GREEN checks.
+
+- The inventory gate rejects unrelated replacements for required cases.
+- The execution entry point rejects a terminal marker set after Bash admission.
+- The wrapper cannot publish success after an interrupted build.
+
+Current host tests, three focused Linux tests, and eleven TLC controls pass. Two full-suite attempts remain incomplete or invalid.
+
+The complete current fixture suite, interrupted-container capture, and semantic binding review remain pending. No H01–H10 cycle receives full discharge from these partial checks.
+
 ## Per-cycle record template
 
 ```yaml

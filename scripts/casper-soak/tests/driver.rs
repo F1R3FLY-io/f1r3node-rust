@@ -408,6 +408,28 @@ mod linux {
         }
     }
     #[test]
+    fn terminal_between_admission_and_executor() {
+        let mut c = Case::new("terminal-before-exec", "complete", 1);
+        let entry = c.root.join("bin/terminal-entry");
+        fs::write(&entry, "#!/usr/bin/env bash\nset -eu\nif [[ \"$1\" == run ]]; then printf 'cancelled\\n' >\"$SOAK_OUTPUT_DIR/finalize-requested\"; fi\nexec \"$SOAK_TEST_REAL_HARNESS_BIN\" \"$@\"\n").unwrap();
+        fs::set_permissions(&entry, fs::Permissions::from_mode(0o755)).unwrap();
+        c.env.insert(
+            "SOAK_TEST_REAL_HARNESS_BIN".into(),
+            binary().display().to_string(),
+        );
+        c.env
+            .insert("SOAK_HARNESS_BIN".into(), entry.display().to_string());
+        c.invoke(1);
+        let iteration = c.output.join("iteration-00001-docker");
+        assert!(!iteration.join("launch.json").exists());
+        assert!(!iteration.join("sample.json").exists());
+        assert_eq!(
+            record(&c.output.join("casper-result.json")).unwrap()["soak_verdict"],
+            "non_passing"
+        );
+    }
+
+    #[test]
     fn invalid_manifests_through_driver() {
         for kind in [
             "missing",

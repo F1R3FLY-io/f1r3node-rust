@@ -1,0 +1,294 @@
+diff --git a/scripts/casper-soak/src/bin/check-casper-bindings.rs b/scripts/casper-soak/src/bin/check-casper-bindings.rs
+new file mode 100644
+index 000000000..184edbcfc
+--- /dev/null
++++ b/scripts/casper-soak/src/bin/check-casper-bindings.rs
+@@ -0,0 +1,149 @@
++use std::collections::{BTreeMap, BTreeSet};
++use std::path::{Path, PathBuf};
++
++use casper_soak::{encoded, exclusive, manifest, record, regular, walk, MAX_BYTES};
++use clap::Parser;
++use eyre::{ensure, eyre, Result};
++use serde_json::json;
++
++#[derive(Parser)]
++struct Args {
++    #[arg(long)]
++    evidence: PathBuf,
++    #[arg(long)]
++    output: PathBuf,
++}
++
++fn expected() -> BTreeMap<String, Vec<i64>> {
++    let mut cases = BTreeMap::new();
++    for (name, exits) in [
++        ("complete", vec![0]),
++        ("duplicate", vec![0]),
++        ("missing", vec![1]),
++        ("missing-zero", vec![1]),
++        ("wrong-identity", vec![1]),
++        ("missing-artifact", vec![1]),
++        ("boolean-counter", vec![1]),
++        ("mismatch", vec![1]),
++        ("fault-applied", vec![0]),
++        ("fault-not-applied", vec![1]),
++        ("fault-restart-applied", vec![0]),
++        ("fault-restart-unready", vec![1]),
++        ("history", vec![0, 0, 0]),
++        ("rollback", vec![0, 2]),
++        ("failure-counter", vec![1, 2]),
++        ("resource", vec![1, 1]),
++        ("terminal", vec![0, 0]),
++        ("terminal-before-exec", vec![1]),
++        ("timeout", vec![1, 1]),
++        ("capability", vec![3]),
++        ("executable", vec![2]),
++        ("configuration", vec![2]),
++        ("policy", vec![2]),
++        ("node-kind", vec![2]),
++        ("pending-verification", vec![0]),
++        ("missing-binding", vec![2]),
++        ("open-merge", vec![2]),
++        ("corrupt-capture", vec![0, 2]),
++        ("empty-inventory", vec![0, 2]),
++        ("cached-success", vec![1, 2]),
++        ("incomplete-capture", vec![1, 2]),
++    ] {
++        cases.insert(name.to_owned(), exits);
++    }
++    for name in [
++        "missing",
++        "array",
++        "duplicate",
++        "nested-duplicate",
++        "nan",
++        "overflow",
++        "utf8",
++        "oversize",
++        "boolean-schema",
++        "traversal",
++        "duplicate-scenarios",
++        "symbolic-link",
++        "fifo",
++        "directory",
++    ] {
++        cases.insert(format!("invalid-{name}"), vec![2]);
++    }
++    let mut resume = vec![0, 0];
++    resume.extend(vec![2; manifest::FIELDS.len() + 4]);
++    cases.insert("manifest-resume".to_owned(), resume);
++    cases
++}
++
++fn check(evidence: &Path, output: &Path) -> Result<()> {
++    let cases = expected();
++    let expected_files: BTreeMap<_, _> = cases
++        .iter()
++        .flat_map(|(case, exits)| {
++            exits.iter().enumerate().map(move |(index, code)| {
++                (format!("{case}/invocation-{:02}.json", index + 1), *code)
++            })
++        })
++        .collect();
++    let mut actual_files = BTreeSet::new();
++    for path in walk(evidence)? {
++        let name = path
++            .file_name()
++            .and_then(|name| name.to_str())
++            .ok_or_else(|| eyre!("The evidence path is invalid."))?;
++        if !name.starts_with("invocation-") {
++            continue;
++        }
++        let relative = path
++            .strip_prefix(evidence)?
++            .to_str()
++            .ok_or_else(|| eyre!("The evidence path is invalid."))?;
++        let expected = expected_files
++            .get(relative)
++            .ok_or_else(|| eyre!("An invocation is not registered."))?;
++        let report = record(&path)?;
++        ensure!(
++            report["command"] == json!(["bash", "scripts/run-merge-recovery-soak.sh"]),
++            "The invocation command differs."
++        );
++        ensure!(
++            report["expected_exit"].as_i64() == Some(*expected)
++                && report["actual_exit"].as_i64() == Some(*expected),
++            "The invocation exit differs."
++        );
++        ensure!(
++            actual_files.insert(relative.to_owned()),
++            "An invocation is duplicated."
++        );
++    }
++    ensure!(
++        actual_files.len() == expected_files.len(),
++        "A required invocation is missing."
++    );
++    for (suite, count) in [("manifest", 3), ("models", 4), ("driver", 7)] {
++        let log = String::from_utf8(regular(&evidence.join(format!("{suite}.txt")), MAX_BYTES)?)?;
++        let pattern = format!(
++            r"(?m)^test result: ok\. {count} passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in [0-9.]+s$"
++        );
++        ensure!(
++            regex::Regex::new(&pattern)?.find_iter(&log).count() == 1
++                && !log.contains("test result: FAILED"),
++            "The test suite result differs."
++        );
++    }
++    exclusive(
++        output,
++        &encoded(
++            &json!({"schema_version":1,"scope":"binding-inventory-only","driver_invocations":actual_files.len(),"registered_cases":cases.len(),"matched_exits":true,"claim_discharge":"pending","node_execution":false}),
++        )?,
++        false,
++    )
++}
++
++fn main() {
++    let args = Args::parse();
++    if let Err(error) = check(&args.evidence, &args.output) {
++        eprintln!("{error}");
++        std::process::exit(2);
++    }
++}
+diff --git a/scripts/casper-soak/tests/bindings.rs b/scripts/casper-soak/tests/bindings.rs
+new file mode 100644
+index 000000000..2f606260e
+--- /dev/null
++++ b/scripts/casper-soak/tests/bindings.rs
+@@ -0,0 +1,78 @@
++use std::fs;
++use std::path::{Path, PathBuf};
++use std::process::Command;
++
++fn source() -> PathBuf {
++    std::env::var_os("SOAK_SOURCE_ROOT")
++        .map(PathBuf::from)
++        .unwrap_or_else(|| {
++            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
++                .parent()
++                .unwrap()
++                .parent()
++                .unwrap()
++                .to_path_buf()
++        })
++}
++
++fn check(evidence: &Path, output: &Path) -> bool {
++    let mut command = Command::new("bash");
++    command
++        .arg(source().join("scripts/ci/check-casper-soak-bindings.sh"))
++        .arg("--verify-evidence")
++        .arg(evidence)
++        .arg("--output")
++        .arg(output);
++    if std::env::var_os("SOAK_BINDING_CHECKER_BIN").is_none() {
++        if let Some(binary) = option_env!("CARGO_BIN_EXE_check-casper-bindings") {
++            command.env("SOAK_BINDING_CHECKER_BIN", binary);
++        }
++    }
++    command.output().unwrap().status.success()
++}
++
++#[test]
++fn required_case_cannot_be_replaced_by_an_unrelated_case() {
++    let root = tempfile::tempdir().unwrap();
++    assert!(Command::new("tar")
++        .arg("-xzf")
++        .arg(source().join(
++            "docs/casper/cbc-evidence/runs/casper-rust-migration-20260917-01/bindings.tar.gz"
++        ))
++        .arg("-C")
++        .arg(root.path())
++        .status()
++        .unwrap()
++        .success());
++    let historical = root.path().join("evidence");
++    let evidence = root.path().join("synthetic-inventory");
++    for path in casper_soak::walk(&historical).unwrap() {
++        if !path
++            .file_name()
++            .unwrap()
++            .to_string_lossy()
++            .starts_with("invocation-")
++        {
++            continue;
++        }
++        let source = casper_soak::record(&path).unwrap();
++        let destination = evidence.join(path.strip_prefix(&historical).unwrap());
++        fs::create_dir_all(destination.parent().unwrap()).unwrap();
++        fs::write(destination, casper_soak::encoded(&serde_json::json!({"command":source["command"],"expected_exit":source["expected_exit"],"actual_exit":source["actual_exit"],"evidence_kind":"synthetic_fixture","purpose":"inventory-validator-input"})).unwrap()).unwrap();
++    }
++    fs::create_dir(evidence.join("terminal-before-exec")).unwrap();
++    fs::write(evidence.join("terminal-before-exec/invocation-01.json"), casper_soak::encoded(&serde_json::json!({"command":["bash","scripts/run-merge-recovery-soak.sh"],"expected_exit":1,"actual_exit":1,"evidence_kind":"synthetic_fixture","purpose":"inventory-validator-input"})).unwrap()).unwrap();
++    for (suite, count) in [("manifest", 3), ("models", 4), ("driver", 7)] {
++        fs::write(evidence.join(format!("{suite}.txt")), format!("Synthetic inventory-validator input.\ntest result: ok. {count} passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n")).unwrap();
++    }
++    assert!(check(&evidence, &root.path().join("valid")));
++    fs::rename(
++        evidence.join("capability"),
++        evidence.join("unregistered-capability"),
++    )
++    .unwrap();
++    assert!(
++        !check(&evidence, &root.path().join("invalid")),
++        "The gate accepted an unrelated case in place of a required case."
++    );
++}
+diff --git a/scripts/casper-soak/tests/interruption.rs b/scripts/casper-soak/tests/interruption.rs
+new file mode 100644
+index 000000000..ad4b0bbd6
+--- /dev/null
++++ b/scripts/casper-soak/tests/interruption.rs
+@@ -0,0 +1,49 @@
++use std::fs;
++use std::os::unix::fs::PermissionsExt;
++use std::path::{Path, PathBuf};
++use std::process::Command;
++
++#[test]
++fn interrupted_runner_cannot_publish_success() {
++    let root = tempfile::tempdir().unwrap();
++    let bin = root.path().join("bin");
++    fs::create_dir(&bin).unwrap();
++    for (name, body) in [
++        ("rustup", "#!/bin/sh\nexit 0\n"),
++        ("cargo", "#!/bin/sh\nkill -HUP \"$PPID\"\nsleep 1\nexit 0\n"),
++    ] {
++        let path = bin.join(name);
++        fs::write(&path, body).unwrap();
++        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
++    }
++    let source = std::env::var_os("SOAK_SOURCE_ROOT")
++        .map(PathBuf::from)
++        .unwrap_or_else(|| {
++            Path::new(env!("CARGO_MANIFEST_DIR"))
++                .parent()
++                .unwrap()
++                .parent()
++                .unwrap()
++                .to_path_buf()
++        });
++    let output = root.path().join("results");
++    let response = Command::new("bash")
++        .arg(source.join("scripts/ci/check-casper-soak-bindings.sh"))
++        .arg("--output")
++        .arg(&output)
++        .arg("--image")
++        .arg(format!("sha256:{}", "0".repeat(64)))
++        .env(
++            "PATH",
++            format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
++        )
++        .output()
++        .unwrap();
++    let report = casper_soak::record(&output.join("report.json")).unwrap();
++    assert_eq!(
++        report["status"], "failed",
++        "An interrupted runner published success."
++    );
++    assert_ne!(report["exit_code"], 0);
++    assert!(!response.status.success());
++}
