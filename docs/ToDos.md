@@ -220,7 +220,7 @@ tasks:
     claim_spec: docs/claims/casper-soak-harness.md
     formal_plan: formal/tlaplus/casper_soak/verification-plan.jsonc
     cycle_plan: docs/tdd-plans/casper-soak-harness.md
-    status: in_progress
+    status: complete
     claimed_by: pi-casper-harness
     claimed_at: 2026-09-16T22:18:38Z
     execution_scope: "Authorized completion work: shared registration and real-driver bindings. No node dispatch, external repin, or claim waiver."
@@ -261,6 +261,8 @@ tasks:
       - "Implement H01 through H10 with a clean TLC configuration, named negative controls, and real-driver fixtures."
       - "Construction is not applicable to these harness and profile claims. Runtime proofs remain outside these epics."
 
+    completion_gaps: []
+    completed_date: 2026-09-18
   - id: TASK-017-5
     title: "Verify authority and finality profile generation and verdicts"
     claims: [CLAIM-CASPER-SOAK-002]
