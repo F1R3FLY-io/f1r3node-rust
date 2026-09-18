@@ -40,4 +40,8 @@ The shared claim includes later tasks. Task-specific binding evidence must not d
 
 ## Progress
 
-Implementation and verification are pending. The existing candidate matrix remains non-dispatchable.
+The [Rust and Bash migration](./task-017-4-rust-bash-migration.md) replaces the newly added Python code. It records 88 driver invocations and fresh bounded-model results.
+
+Admission, history, lifecycle dispatch, evidence reconstruction, and workflow fixtures have partial implementation coverage. Full claim gating and completion-helper support remain unresolved.
+
+The seven node profiles remain unimplemented. The candidate matrix remains non-dispatchable, and TASK-017-4 remains open.

@@ -3,7 +3,7 @@
   "status": "pending",
   "executable": true,
   "execution_scope": "bounded-harness-safety-only",
-  "local_runner": "scripts/ci/check_casper_soak_models.py",
+  "local_runner": "scripts/ci/check-casper-soak-models.sh",
   "evidence_report": "docs/casper/cbc-evidence/runs/casper-harness-controls-20260916-01/report.json",
   "claim": "CLAIM-CASPER-SOAK-001",
   "specification": "docs/claims/casper-soak-harness.md",

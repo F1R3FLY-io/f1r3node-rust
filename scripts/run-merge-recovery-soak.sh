@@ -21,7 +21,7 @@ CASPER_MANIFEST_DIGEST=""
 CASPER_RUNTIME=0
 CASPER_TERMINATION=completed
 casper_runtime() {
-	python3 "$SCRIPT_DIR/bench/casper_soak_runtime.py" "$@" --output "$OUTPUT_DIR"
+	bash "$SCRIPT_DIR/bench/casper-soak.sh" "$@" --output "$OUTPUT_DIR"
 }
 if [ -n "${SOAK_INPUT_DIR:-}" ]; then
 	CASPER_ADMISSION="$(casper_runtime admit)"
@@ -37,7 +37,7 @@ if [ -n "${SOAK_INPUT_DIR:-}" ]; then
 	CASPER_DEADLINE="$(printf '%s' "$CASPER_ADMISSION" | jq -er .deadline)" || exit 2
 fi
 if [ -n "${SOAK_MANIFEST_PATH:-}" ] || [ -e "$OUTPUT_DIR/.casper-manifest.json" ] || [ -L "$OUTPUT_DIR/.casper-manifest.json" ]; then
-	CASPER_MANIFEST_DIGEST="$(python3 "$SCRIPT_DIR/bench/casper_soak_manifest.py" "${SOAK_MANIFEST_PATH:-}" "$OUTPUT_DIR")" || exit 2
+	CASPER_MANIFEST_DIGEST="$(bash "$SCRIPT_DIR/bench/casper-soak.sh" bind --manifest "${SOAK_MANIFEST_PATH:-}" --output "$OUTPUT_DIR")" || exit 2
 fi
 
 # A soak is run as one or more segments so results can be published part-way
@@ -1884,7 +1884,7 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 		export PATH="$SOAK_WORKLOAD_PATH"
 		if [ "$CASPER_RUNTIME" -eq 1 ]; then
 			exec timeout --signal=TERM --kill-after=30 "${REMAINING}s" \
-				python3 "$SCRIPT_DIR/bench/casper_soak_runtime.py" run --output "$OUTPUT_DIR" \
+				bash "$SCRIPT_DIR/bench/casper-soak.sh" run --output "$OUTPUT_DIR" \
 				--directory "$ITERATION_DIR" --iteration "$ITERATIONS" --segment "$SEGMENT"
 		fi
 		exec timeout --signal=TERM --kill-after=30 "${REMAINING}s" \

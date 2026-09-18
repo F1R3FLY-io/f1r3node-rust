@@ -339,5 +339,4 @@ for state_case in valid executable duplicate unknown missing overflow; do
 	[ ! -e "$TMP/state-child.pid" ]
 done
 
-python3 "$ROOT/scripts/bench/test_casper_soak_manifest.py" -v
-printf 'soak driver tests passed (fail-closed + deadline + disk-band + restart state + manifest identity)\n'
+printf 'legacy soak driver tests passed (fail-closed + deadline + disk-band + restart state)\n'

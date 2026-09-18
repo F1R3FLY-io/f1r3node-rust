@@ -120,8 +120,8 @@ execution_contract:
 files:
   - scripts/run-merge-recovery-soak.sh
   - scripts/bench/test-run-merge-recovery-soak.sh
-  - scripts/bench/casper_soak_manifest.py
-  - scripts/bench/test_casper_soak_manifest.py
+  - scripts/casper-soak/src/manifest.rs
+  - scripts/casper-soak/tests/manifest.rs
   - scripts/bench/write-soak-summary.sh
   - scripts/ci/check-tla-invariants.sh
   - .github/workflows/merge-recovery-soak.yml
@@ -139,8 +139,18 @@ files:
   - formal/tlaplus/casper_soak/MC_CasperSoakHarness_samples_unsafe.cfg
   - formal/tlaplus/casper_soak/MC_CasperSoakHarness_merge_unsafe.cfg
   - formal/tlaplus/casper_soak/MC_CasperSoakHarness_control_unsafe.cfg
-  - scripts/ci/check_casper_soak_models.py
-  - scripts/ci/tests/test_casper_soak_model_runner.py
+  - scripts/ci/check-casper-soak-models.sh
+  - scripts/ci/check-casper-soak-bindings.sh
+  - scripts/casper-soak/Cargo.toml
+  - scripts/casper-soak/src/lib.rs
+  - scripts/casper-soak/src/main.rs
+  - scripts/casper-soak/src/models.rs
+  - scripts/casper-soak/src/runtime.rs
+  - scripts/casper-soak/tests/models.rs
+  - scripts/casper-soak/tests/driver.rs
+  - scripts/bench/casper-soak.sh
+  - scripts/bench/fixtures/casper-lifecycle-executor.sh
+  - .github/workflows/slashing-tests.yml
 tasks:
   - id: TASK-017-1
     title: "Reconcile ratifications, existing epics, and source dependencies"
@@ -441,8 +451,8 @@ execution_contract:
 files:
   - scripts/run-merge-recovery-soak.sh
   - scripts/bench/test-run-merge-recovery-soak.sh
-  - scripts/bench/casper_soak_manifest.py
-  - scripts/bench/test_casper_soak_manifest.py
+  - scripts/casper-soak/src/manifest.rs
+  - scripts/casper-soak/tests/manifest.rs
   - scripts/bench/write-soak-summary.sh
   - scripts/ci/check-tla-invariants.sh
   - .github/workflows/merge-recovery-soak.yml
@@ -460,8 +470,18 @@ files:
   - formal/tlaplus/casper_soak/MC_CasperSoakHarness_samples_unsafe.cfg
   - formal/tlaplus/casper_soak/MC_CasperSoakHarness_merge_unsafe.cfg
   - formal/tlaplus/casper_soak/MC_CasperSoakHarness_control_unsafe.cfg
-  - scripts/ci/check_casper_soak_models.py
-  - scripts/ci/tests/test_casper_soak_model_runner.py
+  - scripts/ci/check-casper-soak-models.sh
+  - scripts/ci/check-casper-soak-bindings.sh
+  - scripts/casper-soak/Cargo.toml
+  - scripts/casper-soak/src/lib.rs
+  - scripts/casper-soak/src/main.rs
+  - scripts/casper-soak/src/models.rs
+  - scripts/casper-soak/src/runtime.rs
+  - scripts/casper-soak/tests/models.rs
+  - scripts/casper-soak/tests/driver.rs
+  - scripts/bench/casper-soak.sh
+  - scripts/bench/fixtures/casper-lifecycle-executor.sh
+  - .github/workflows/slashing-tests.yml
 tasks:
   - id: TASK-018-1
     title: "Verify the merge gate and establish the post-merge baseline"

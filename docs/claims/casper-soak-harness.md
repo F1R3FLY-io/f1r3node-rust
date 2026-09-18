@@ -9,13 +9,23 @@ post_merge_tasks: [TASK-018-1, TASK-018-2, TASK-018-5, TASK-018-6]
 artifacts:
   - scripts/run-merge-recovery-soak.sh
   - scripts/bench/test-run-merge-recovery-soak.sh
-  - scripts/bench/casper_soak_manifest.py
-  - scripts/bench/test_casper_soak_manifest.py
+  - scripts/casper-soak/src/manifest.rs
+  - scripts/casper-soak/tests/manifest.rs
   - scripts/bench/write-soak-summary.sh
   - scripts/ci/check-tla-invariants.sh
   - .github/workflows/merge-recovery-soak.yml
-  - scripts/ci/check_casper_soak_models.py
-  - scripts/ci/tests/test_casper_soak_model_runner.py
+  - scripts/ci/check-casper-soak-models.sh
+  - scripts/ci/check-casper-soak-bindings.sh
+  - scripts/casper-soak/Cargo.toml
+  - scripts/casper-soak/src/lib.rs
+  - scripts/casper-soak/src/main.rs
+  - scripts/casper-soak/src/models.rs
+  - scripts/casper-soak/src/runtime.rs
+  - scripts/casper-soak/tests/models.rs
+  - scripts/casper-soak/tests/driver.rs
+  - scripts/bench/casper-soak.sh
+  - scripts/bench/fixtures/casper-lifecycle-executor.sh
+  - .github/workflows/slashing-tests.yml
   - formal/tlaplus/casper_soak/CasperSoakHarness.tla
   - formal/tlaplus/casper_soak/MC_CasperSoakHarness.cfg
   - formal/tlaplus/casper_soak/MC_CasperSoakHarness_identity_unsafe.cfg
@@ -56,7 +66,7 @@ The [branch plan](../plans/casper-ratified-soak-2026-09-16.md) controls phase ow
 
 Each profile needs executable fixtures against the actual generator, collector, and classifier. A correct collector can faithfully report a consensus failure.
 
-Node correctness, Rust changes, and Rocq proofs are outside both epics. Existing node claims, including CLAIM-FINALITY-002, remain external and unchanged.
+Node correctness, node runtime changes, and Rocq proofs are outside both epics. New harness code uses Rust and Bash. Existing node claims, including CLAIM-FINALITY-002, remain external and unchanged.
 
 ## Inputs, state, and outputs
 

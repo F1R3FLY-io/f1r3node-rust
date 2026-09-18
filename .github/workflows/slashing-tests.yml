@@ -248,13 +248,51 @@ jobs:
           else
             bash scripts/ci/check-tla-invariants.sh --soak-pr
           fi
+      - name: Install Rust for the Casper harness
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: nightly-2026-02-09
+      - name: Check the Casper model result records
+        run: |
+          cargo build --locked -p casper-soak
+          bash scripts/ci/check-casper-soak-models.sh --output-dir target/casper-model-evidence
       - name: Retain TLA+ logs
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: tla-invariant-logs-${{ github.run_id }}-${{ github.run_attempt }}
-          path: /tmp/tlc-*.log
+          path: |
+            /tmp/tlc-*.log
+            target/casper-model-evidence
           if-no-files-found: warn
+
+  casper-driver-bindings:
+    name: Casper driver binding fixtures
+    needs: tla-model-check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - name: Install Rust for the Casper harness
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: nightly-2026-02-09
+          targets: x86_64-unknown-linux-musl
+      - name: Check model result classification
+        run: cargo test --locked -p casper-soak --test models
+      - name: Check isolated driver bindings and actual case counts
+        run: bash scripts/ci/check-casper-soak-bindings.sh --output target/casper-binding-evidence
+      - name: Retain source-bound fixture evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: casper-driver-bindings-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/casper-binding-evidence/report.json
+            target/casper-binding-evidence/evidence.tar.gz
+          if-no-files-found: error
 
   rocq-build:
     name: Rocq slashing, fork-choice and rspace-guards rebuild

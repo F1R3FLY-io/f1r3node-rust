@@ -52,8 +52,9 @@ A negative control also requires the exact invariant name and a counterexample t
 ## Local runner
 
 ```bash
-python3 -m unittest discover -s scripts/ci/tests -p 'test_casper_soak_model_runner.py' -v
-python3 scripts/ci/check_casper_soak_models.py --output-dir target/casper-soak-formal/new-run
+cargo build --locked -p casper-soak
+cargo test --locked -p casper-soak --test models
+bash scripts/ci/check-casper-soak-models.sh --output-dir target/casper-soak-formal/new-run
 ```
 
 The output directory must not already exist. Set `JAVA` or pass `--java` when the default Java launcher is unsuitable.
@@ -64,7 +65,9 @@ The runner uses one worker, seed 1, a 512 MB Java heap, and a 120-second cap per
 
 Logs and the report retain every outcome. Input changes during a run invalidate the result. Configuration constants and digests record the actual model bounds.
 
-The runner is not yet called by shared CI. PRs #431 and #432 remain open prerequisites for that integration.
+The workflow runs model checks before the isolated driver fixture job. Local results do not establish hosted-CI completion.
+
+New implementation code uses Rust and Bash. Historical evidence retains the retired Python source names and hashes.
 
 ## Evidence and limits
 
@@ -72,7 +75,7 @@ The [local evidence package](../../../docs/casper/cbc-evidence/runs/casper-harne
 
 The clean model explored 43,424 distinct states. All ten negative controls produced their named violation with exit 12.
 
-Runner unit tests exercise verdict parsing, configuration validation, missing tools, timeout, cancellation, input drift, and evidence-directory preservation.
+Rust tests exercise verdict parsing, configuration validation, missing tools, timeout, input drift, and evidence-directory preservation.
 
 Those tests do not exercise the live Bash driver. They cannot discharge the driver or profile claims.
 
