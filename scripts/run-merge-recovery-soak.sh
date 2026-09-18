@@ -17,6 +17,10 @@ if ! [[ "$DURATION_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
 fi
 PROVIDERS=(docker subprocess)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export SOAK_HARNESS_BIN="${SOAK_HARNESS_BIN:-$SCRIPT_DIR/../target/debug/casper-soak}"
+host_control() {
+	"$SOAK_HARNESS_BIN" host-control "$@"
+}
 CASPER_MANIFEST_DIGEST=""
 CASPER_RUNTIME=0
 CASPER_TERMINATION=completed
@@ -409,43 +413,9 @@ process_identity() {
 	[[ "${20}" =~ ^[0-9]+$ ]] || return 1
 	printf '%s\n' "${20}"
 }
-process_gone() {
-	local current
-	current="$(process_identity "$1")" || return 0
-	[ "$current" != "$2" ]
-}
-record_entry_trusted() {
-	local uid mode kind
-	read -r uid mode kind < <(stat -c '%u %a %F' -- "$1" 2>/dev/null) || return 1
-	[ "$kind" = "$2" ] && [ "$uid" = 0 ] && [ $((8#$mode & 8#022)) -eq 0 ]
-}
 run_domain_verified() {
 	[ "$CONTAINMENT" = required ] || return 0
-	local path="$RUN_DOMAIN_RECORD" prefix="" rest part size cgroup
-	[ -n "$path" ] && [[ "$path" == /* && "$path" != *"/."* && "$path" != */ ]] || return 1
-	record_entry_trusted / directory || return 1
-	rest="${path#/}"
-	while [ -n "$rest" ]; do
-		part="${rest%%/*}"
-		if [ "$part" = "$rest" ]; then rest=""; else rest="${rest#*/}"; fi
-		[ -n "$part" ] || return 1
-		prefix="$prefix/$part"
-		if [ -n "$rest" ]; then
-			record_entry_trusted "$prefix" directory || return 1
-		else
-			record_entry_trusted "$prefix" "regular file" || return 1
-		fi
-	done
-	size="$(stat -c %s -- "$path" 2>/dev/null)" || return 1
-	[[ "$size" =~ ^[0-9]+$ ]] && [ "$size" -le 65536 ] || return 1
-	[ "$(wc -l </proc/self/cgroup)" -eq 1 ] || return 1
-	IFS= read -r cgroup </proc/self/cgroup || return 1
-	jq -es --arg uid "$(id -ur)" --arg cgroup "$cgroup" '
-		length == 1 and (.[0] | type == "object"
-			and .uid == ($uid | tonumber)
-			and (.unit | type == "string" and length > 0 and (contains("/") | not))
-			and (.cgroup | type == "string" and startswith("/"))
-			and $cgroup == ("0::" + .cgroup))' "$path" >/dev/null 2>&1
+	host_control verify-domain "$RUN_DOMAIN_RECORD"
 }
 
 # Free MB on the filesystem the soak actually fills. OUTPUT_DIR, the harness
@@ -485,69 +455,12 @@ guardian_progress_fresh() {
 	[ "$last" -le "$now" ] && [ "$((now - last))" -le "$GUARDIAN_MAX_SILENCE_SECONDS" ]
 }
 
-owned_host_processes() {
-	local marker="SOAK_PROCESS_OWNER=$1" entry pid identity item status=0
-	local -a environment pids
-	mapfile -t pids < <(printf '%s\n' /proc/[0-9]* | sed 's|^/proc/||' | sort -n)
-	for pid in "${pids[@]}"; do
-		entry="/proc/$pid"
-		[[ -O "$entry" ]] || continue
-		identity="$(process_identity "$pid")" || continue
-		environment=()
-		if ! mapfile -d '' -t environment 2>/dev/null <"$entry/environ"; then
-			[ ! -d "$entry" ] || status=1
-			continue
-		fi
-		for item in "${environment[@]}"; do
-			if [ "$item" = "$marker" ]; then
-				printf '%s %s\n' "$pid" "$identity"
-				break
-			fi
-		done
-	done
-	return "$status"
-}
-
 stop_owned_host_writers() {
-	local listing pid identity index waited=0 all_gone status=0
-	local -a pending_pids=() pending_identities=()
-	listing="$(owned_host_processes "$SOAK_WRITER_OWNER")" || status=1
-	while read -r pid identity; do
-		[ -n "$pid" ] || continue
-		process_gone "$pid" "$identity" && continue
-		pending_pids+=("$pid")
-		pending_identities+=("$identity")
-	done <<<"$listing"
-	[ "${#pending_pids[@]}" -eq 0 ] || kill -KILL "${pending_pids[@]}" 2>/dev/null || true
-	while :; do
-		all_gone=1
-		for index in "${!pending_pids[@]}"; do
-			process_gone "${pending_pids[index]}" "${pending_identities[index]}" || {
-				all_gone=0
-				break
-			}
-		done
-		[ "$all_gone" -eq 0 ] || break
-		if [ "$waited" -ge 750 ]; then
-			status=1
-			break
-		fi
-		sleep 0.05
-		waited=$((waited + 50))
-	done
-	return "$status"
+	host_control stop-owned "$SOAK_WRITER_OWNER"
 }
 
 mark_owned_oom_preferred() {
-	local listing pid identity status=0
-	listing="$(owned_host_processes "$SOAK_WRITER_OWNER")" || status=1
-	while read -r pid identity; do
-		[ -n "$pid" ] || continue
-		if ! printf '1000\n' 2>/dev/null >"/proc/$pid/oom_score_adj"; then
-			process_gone "$pid" "$identity" || status=1
-		fi
-	done <<<"$listing"
-	return "$status"
+	host_control prefer-oom "$SOAK_WRITER_OWNER"
 }
 
 stop_node_writer_commands() {
@@ -577,17 +490,20 @@ stop_node_writer_commands() {
 
 stop_node_writers() (
 	export SOAK_WRITER_OWNER
-	export -f process_identity process_gone owned_host_processes stop_owned_host_writers stop_node_writer_commands
+	export -f host_control stop_owned_host_writers stop_node_writer_commands
 	timeout --signal=TERM --kill-after=1 "$DISK_STOP_SECONDS" \
 		bash -c 'trap "" TERM; stop_node_writer_commands "$@"' bash "$@"
 )
 
 crash_monitor() {
-	local driver="$1" identity="$2" directory="$3" output="$4" status=0 marker
-	printf '%s\n' "$$" >"$directory/ready"
-	until process_gone "$driver" "$identity"; do sleep 0.1; done
-	marker="$(head -c 8 "$directory/handled-exit" 2>/dev/null; printf x)"
-	[ "$marker" != $'handled\nx' ] || exit 0
+	local driver="$1" identity="$2" directory="$3" output="$4" status=0
+	if ! host_control watch "$driver" "$identity" "$directory/ready"; then
+		printf 'Driver exit monitoring is unconfirmed.\n' >"$output/writer-stop-failure.txt" 2>/dev/null || true
+		stop_node_writers -q kill || true
+		printf '2\n' >"$directory/exit-code.txt"
+		exit 2
+	fi
+	if host_control handled "$directory/handled-exit" >/dev/null 2>&1; then exit 0; fi
 	stop_node_writers -q kill || status=$?
 	if [ "$status" -ne 0 ]; then
 		printf 'Writer termination is unconfirmed after the driver exited.\n' >"$output/writer-stop-failure.txt" 2>/dev/null || true
@@ -603,7 +519,7 @@ start_crash_monitor() {
 	CRASH_MONITOR_DIR="$directory"
 	(
 		export SOAK_WRITER_OWNER DISK_STOP_SECONDS
-		export -f process_identity process_gone owned_host_processes stop_owned_host_writers stop_node_writer_commands stop_node_writers crash_monitor
+		export -f host_control stop_owned_host_writers stop_node_writer_commands stop_node_writers crash_monitor
 		exec setsid bash -c 'crash_monitor "$@"' soak-crash-monitor "$$" "$identity" "$directory" "$OUTPUT_DIR"
 	) >"$directory/monitor.log" 2>&1 &
 	monitor=$!
@@ -1403,8 +1319,8 @@ if [ -s "$HOST_GUARDIAN_BREACH" ]; then
 	persist_soak_state
 	printf 'The previous guardian breach prevents this segment from starting work.\n'
 fi
-if ! process_identity "$$" >/dev/null; then
-	printf 'Host writer ownership requires a readable Linux proc filesystem. The driver refused work.\n' >&2
+if ! host_control probe; then
+	printf 'Host writer ownership requires the Rust harness and Linux pidfd support. The driver refused work.\n' >&2
 	exit 2
 fi
 read -r SOAK_WRITER_OWNER </proc/sys/kernel/random/uuid || exit 2
@@ -1548,7 +1464,7 @@ if { [ "$HOST_FREE_FLOOR_MB" -gt 0 ] && [ -r /proc/meminfo ]; } || [ "$DISK_FREE
 		guardian_mark_workload_oom_preferred() {
 			local failed=0
 			export SOAK_WRITER_OWNER
-			export -f process_identity process_gone owned_host_processes mark_owned_oom_preferred
+			export -f host_control mark_owned_oom_preferred
 			if ! timeout --signal=TERM --kill-after=1 "$DISK_STOP_SECONDS" bash -c 'mark_owned_oom_preferred'; then
 				failed=1
 			fi

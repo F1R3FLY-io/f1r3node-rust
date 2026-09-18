@@ -352,8 +352,29 @@ tasks:
     title: "Prepare isolated heartbeat and retry experiments against the baseline"
     claims: [CLAIM-CASPER-SOAK-004]
     claim_spec: docs/claims/casper-soak-recovery.md
-    status: pending
-    claimed_by: null
+    status: in_progress
+    claimed_by: pi-casper-recovery
+    claimed_at: 2026-09-18T15:43:03Z
+    work_log: docs/work-logs/task-017-7-recovery.md
+    implementation_status: controlled-transcript-implemented
+    validation_evidence: docs/casper/cbc-evidence/runs/casper-recovery-20260918-01/report.json
+    completion_blocker: "Binding acceptance and workflow-tag ratification remain pending. The shared driver repair awaits binding acceptance. Live adapters remain unqualified."
+    tests:
+      - scripts/casper-soak/tests/recovery.rs
+      - scripts/casper-soak/check-recovery.sh
+    files:
+      - scripts/casper-soak/src/profiles/recovery.rs
+      - scripts/casper-soak/src/bin/casper-recovery.rs
+      - scripts/casper-soak/tests/recovery.rs
+      - scripts/casper-soak/check-recovery.sh
+      - .github/workflows/casper-recovery.yml
+      - formal/tlaplus/casper_soak/profiles/recovery/Recovery.tla
+      - formal/tlaplus/casper_soak/profiles/recovery/MC_Recovery.cfg
+      - formal/tlaplus/casper_soak/profiles/recovery/MC_Recovery_lane_unsafe.cfg
+      - formal/tlaplus/casper_soak/profiles/recovery/MC_Recovery_occurrence_unsafe.cfg
+      - formal/tlaplus/casper_soak/profiles/recovery/MC_Recovery_pause_unsafe.cfg
+      - formal/tlaplus/casper_soak/profiles/recovery/verification-plan.jsonc
+      - formal/tlaplus/casper_soak/profiles/recovery/README.md
     blocked_by: []
     decisions: [D-06, D-07]
     related_tasks: [TASK-016-5, TASK-016-6, TASK-016-7]

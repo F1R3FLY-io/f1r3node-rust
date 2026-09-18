@@ -271,6 +271,10 @@ pub fn compiled_sources() -> Vec<(&'static str, &'static [u8])> {
         ("scripts/casper-soak/src/lib.rs", include_bytes!("lib.rs")),
         ("scripts/casper-soak/src/main.rs", include_bytes!("main.rs")),
         (
+            "scripts/casper-soak/src/host_control.rs",
+            include_bytes!("host_control.rs"),
+        ),
+        (
             "scripts/casper-soak/src/manifest.rs",
             include_bytes!("manifest.rs"),
         ),

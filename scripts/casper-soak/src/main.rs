@@ -1,3 +1,5 @@
+mod host_control;
+
 use std::path::PathBuf;
 
 use casper_soak::{encoded, manifest, models, runtime};
@@ -118,6 +120,9 @@ fn execute(args: Args) -> Result<i32> {
     Ok(0)
 }
 fn main() {
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("host-control")) {
+        std::process::exit(host_control::main());
+    }
     let code = match execute(Args::parse()) {
         Ok(code) => code,
         Err(error) => {

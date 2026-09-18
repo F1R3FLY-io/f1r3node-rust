@@ -21,6 +21,7 @@ pub const CORE: &[&str] = &[
     "scripts/casper-soak/Cargo.toml",
     "scripts/casper-soak/src/lib.rs",
     "scripts/casper-soak/src/main.rs",
+    "scripts/casper-soak/src/host_control.rs",
     "scripts/casper-soak/src/manifest.rs",
     "scripts/casper-soak/src/models.rs",
     "scripts/casper-soak/src/runtime.rs",

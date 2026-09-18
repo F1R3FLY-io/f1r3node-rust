@@ -14,6 +14,7 @@ fn timed_out_container_is_captured_before_removal() {
     let mut build = String::new();
     for (name, test) in [
         ("casper-soak", false),
+        ("casper-soak", true),
         ("check-casper-bindings", false),
         ("check-casper-claims", false),
         ("manifest", true),

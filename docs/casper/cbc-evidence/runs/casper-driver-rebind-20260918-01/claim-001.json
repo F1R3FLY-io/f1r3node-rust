@@ -1,0 +1,1 @@
+{"claim_discharge":"pending","claims":[{"claim_id":"CLAIM-CASPER-SOAK-001","soak":"pending","specification":"docs/claims/casper-soak-harness.md","specification_sha256":"1f0aea4e775ab73ffa4c8a355c6bcfd9b4c330c8d0f803c1c6321dceb0b5aa81","status":"pending"}],"phase":"pre_pr216_merge","proof_execution":false,"schema_version":1,"scope":"claim-ledger-audit"}

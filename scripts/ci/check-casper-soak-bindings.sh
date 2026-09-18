@@ -82,9 +82,12 @@ CONTAINER="$(docker create --pull=never --network none --cap-drop ALL --security
 	--pids-limit 192 --memory 512m --cpus 2 --user 65534:65534 --entrypoint timeout "$IMAGE" --signal=TERM --kill-after=5 550 bash -euc '
 mkdir -p /case/evidence
 export SOAK_SOURCE_ROOT=/case/repo SOAK_HARNESS_BIN=/case/casper-soak SOAK_TEST_ARTIFACTS=/case/evidence SOAK_BINDING_CHECKER_BIN=/case/check-casper-bindings SOAK_CLAIM_CHECKER_BIN=/case/check-casper-claims
+suites_failed=0
+/case/test-host-control --test-threads=1 > /case/evidence/host-control.txt 2>&1 || suites_failed=1
 for suite in manifest models bindings interruption claims driver; do
- /case/test-$suite --test-threads=1 > /case/evidence/$suite.txt 2>&1
+ /case/test-$suite --test-threads=1 > /case/evidence/$suite.txt 2>&1 || suites_failed=1
 done
+[[ "$suites_failed" == 0 ]] || exit 1
 grep -Eq "test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;" /case/evidence/bindings.txt
 grep -Eq "test result: ok\. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;" /case/evidence/interruption.txt
 grep -Eq "test result: ok\. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;" /case/evidence/claims.txt
@@ -98,6 +101,9 @@ COPYFILE_DISABLE=1 "$TAR" -cf - "${FILES[@]}" | docker cp - "$CONTAINER:/case/re
 docker cp "$BIN" "$CONTAINER:/case/casper-soak" >/dev/null
 docker cp "$CHECKER" "$CONTAINER:/case/check-casper-bindings" >/dev/null
 docker cp "$CLAIM_CHECKER" "$CONTAINER:/case/check-casper-claims" >/dev/null
+HOST_CONTROL_TEST="$(jq -rs '[.[] | select(.reason=="compiler-artifact" and .target.name=="casper-soak" and .profile.test==true and .executable!=null) | .executable] | last' "$OUTPUT/build.jsonl")"
+[[ -x "$HOST_CONTROL_TEST" ]] || exit 2
+docker cp "$HOST_CONTROL_TEST" "$CONTAINER:/case/test-host-control" >/dev/null
 for suite in manifest models bindings interruption claims driver; do
 	TEST="$(jq -rs --arg suite "$suite" '[.[] | select(.reason=="compiler-artifact" and .target.name==$suite and .profile.test==true and .executable!=null) | .executable] | last' "$OUTPUT/build.jsonl")"
 	[[ -x "$TEST" ]] || exit 2

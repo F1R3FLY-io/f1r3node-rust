@@ -2,7 +2,7 @@
 
 ```yaml
 claim_id: CLAIM-CASPER-SOAK-001
-status: discharged
+status: pending
 adapter: embedded
 pre_merge_tasks: [TASK-017-2, TASK-017-4, TASK-017-12, TASK-017-13]
 post_merge_tasks: [TASK-018-1, TASK-018-2, TASK-018-5, TASK-018-6]
@@ -19,6 +19,8 @@ artifacts:
   - scripts/casper-soak/Cargo.toml
   - scripts/casper-soak/src/lib.rs
   - scripts/casper-soak/src/main.rs
+  - scripts/casper-soak/src/host_control.rs
+  - scripts/bench/test-soak-disk-admission.sh
   - scripts/casper-soak/src/models.rs
   - scripts/casper-soak/src/runtime.rs
   - scripts/casper-soak/tests/models.rs
@@ -48,7 +50,7 @@ mechanization_plan: formal/tlaplus/casper_soak/verification-plan.jsonc
 refutation: bounded-safety-pass
 construction: not-applicable
 construction_assumptions: null
-binding: passed
+binding: pending
 soak: pending
 ```
 
@@ -182,7 +184,11 @@ The real-driver fixtures now cover lifecycle admission, history, terminal transi
 
 The user accepted the bounded H01–H10 [binding review](../work-logs/task-017-4-final-checks.md) for TASK-017-4.
 
-The [acceptance record](../work-logs/task-017-4-acceptance.md) binds that approval to the verified source and retained evidence. Discharge covers bounded pre-merge harness behavior only.
+The [acceptance record](../work-logs/task-017-4-acceptance.md) binds that approval to the earlier verified source and retained evidence.
+
+The current driver repair requires a new binding review. Its [verification record](../work-logs/casper-driver-source-rebind.md) preserves the earlier acceptance separately.
+
+The current claim is pending. TASK-017-4 remains complete for its accepted source. The strict audit must refuse discharge until the new review is accepted.
 
 B44, containment assumptions, and the stated model bounds remain unchanged. This acceptance does not discharge profile claims, node correctness, or post-merge work.
 

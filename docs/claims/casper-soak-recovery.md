@@ -5,16 +5,24 @@ claim_id: CLAIM-CASPER-SOAK-004
 status: pending
 adapter: embedded
 scope: harness-profile
-profile_implementation: not-implemented
+profile_implementation: controlled-transcript-implemented
 decisions: [D-06, D-07]
 pre_merge_tasks: [TASK-017-7]
 post_merge_tasks: [TASK-018-3, TASK-018-5]
 artifacts:
-  - scripts/run-merge-recovery-soak.sh
-  - scripts/bench/test-run-merge-recovery-soak.sh
-  - scripts/bench/write-soak-summary.sh
-  - formal/tlaplus/casper_soak/verification-plan.jsonc
-refutation: pending
+  - scripts/casper-soak/src/profiles/recovery.rs
+  - scripts/casper-soak/src/bin/casper-recovery.rs
+  - scripts/casper-soak/tests/recovery.rs
+  - scripts/casper-soak/check-recovery.sh
+  - .github/workflows/casper-recovery.yml
+  - formal/tlaplus/casper_soak/profiles/recovery/Recovery.tla
+  - formal/tlaplus/casper_soak/profiles/recovery/MC_Recovery.cfg
+  - formal/tlaplus/casper_soak/profiles/recovery/MC_Recovery_lane_unsafe.cfg
+  - formal/tlaplus/casper_soak/profiles/recovery/MC_Recovery_occurrence_unsafe.cfg
+  - formal/tlaplus/casper_soak/profiles/recovery/MC_Recovery_pause_unsafe.cfg
+  - formal/tlaplus/casper_soak/profiles/recovery/verification-plan.jsonc
+  - formal/tlaplus/casper_soak/profiles/recovery/README.md
+refutation: bounded-safety-pass
 construction: not-applicable
 construction_assumptions: null
 binding: pending
@@ -63,7 +71,7 @@ Unavailable test interfaces produce a blocked scenario, not a passing result. Ad
 
 ## Formal controls and executable fixtures
 
-| Proposed property | Defect knob | Fixture ID | Required fixture result |
+| Property | Defect knob | Fixture ID | Required fixture result |
 | --- | --- | --- | --- |
 | LaneLabelsPreserved | ConflateRecoveryLanes | recovery_lane_mismatch | Give a convergence request only stale-recovery observations. Expect `incomplete` for required convergence coverage. |
 | OccurrenceCountsPreserved | CollapseOccurrenceIdentity | recovery_occurrence_counts | Supply three observations: two copies of occurrence A and one of B. Expect two occurrences and one duplicate. |
@@ -75,13 +83,21 @@ TLC explores bounded scenario, event, and outcome states. Real harness fixtures 
 
 Construction is not applicable under PR #433's harness approach. No Rocq theorem or node-code discharge is required by this claim.
 
-The bound is two scenarios and three observations per scenario for the initial model. This is proposed coverage, not completed verification.
+The model explores two scenarios and three occurrence sample slots. Its clean control passes, and three unsafe controls violate their named properties.
+
+The [implementation contract](../../formal/tlaplus/casper_soak/profiles/recovery/README.md) defines the controlled schema, measurement rules, and executable commands.
+
+The [work log](../work-logs/task-017-7-recovery.md) records evidence and remaining gates. Human binding acceptance remains pending.
 
 ## Interface qualification and phase obligations
 
 SI-FAULT provides pause commands, but their return values do not acknowledge paused state. SI-LOAD uses explicit stress overrides, not baseline recovery settings.
 
-TASK-017-7 must qualify lane/custody observations, objective-height sampling, exact delivery control, and paused-state receipts. Missing capabilities block affected live scenarios.
+TASK-017-7 implements controlled lane/custody observations, objective-height samples, delivery receipts, and paused-state receipts. Live adapter qualification remains incomplete.
+
+D-07 now identifies uncertainty about exact-occurrence and reason-join support on `dev`. These controlled fixtures do not resolve that ratification question.
+
+The synthetic occurrence schema does not claim current node support. All live, experimental-policy, and post-merge requests remain blocked.
 
 Baseline expectations retain all-eligible stale recovery, leader-only convergence, frontier follow, readiness/backstop lanes, and one-parent B1 coverage.
 
