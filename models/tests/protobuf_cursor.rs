@@ -10,6 +10,150 @@ use models::rust::rholang::protobuf_cursor::{
 use proptest::prelude::*;
 use prost::bytes::Bytes;
 
+fn check_field_partition(bytes: &[u8], numeric_order: bool) -> bool {
+    let mut borrowed = if numeric_order {
+        CanonicalFieldCursor::new(bytes)
+    } else {
+        CanonicalFieldCursor::in_prost_slot_order(bytes)
+    };
+    let region = ProtobufRegion::from(bytes.to_vec());
+    let mut owned = if numeric_order {
+        CanonicalRegionFieldCursor::new(region)
+    } else {
+        CanonicalRegionFieldCursor::in_prost_slot_order(region)
+    };
+    let mut end = 0;
+    for _ in 0..=bytes.len() {
+        match (borrowed.next_field(), owned.next_field()) {
+            (Ok(Some(field)), Ok(Some(retained))) => {
+                assert_eq!(field.encoded_range.start, end);
+                assert!(field.encoded_range.end > end);
+                assert!(field.encoded_range.end <= bytes.len());
+                assert!(field.payload_range.start >= field.encoded_range.start);
+                assert_eq!(field.payload_range.end, field.encoded_range.end);
+                let mut rebuilt = Vec::new();
+                let wire = match field.wire_type {
+                    CanonicalWireType::Varint => 0,
+                    CanonicalWireType::Fixed64 => 1,
+                    CanonicalWireType::LengthDelimited => 2,
+                    CanonicalWireType::Fixed32 => 5,
+                };
+                prost::encoding::encode_varint((u64::from(field.number) << 3) | wire, &mut rebuilt);
+                match &field.value {
+                    CanonicalFieldValue::Varint(value) =>
+                        prost::encoding::encode_varint(*value, &mut rebuilt),
+                    CanonicalFieldValue::Fixed64(body) | CanonicalFieldValue::Fixed32(body) =>
+                        rebuilt.extend_from_slice(body),
+                    CanonicalFieldValue::LengthDelimited(body) => {
+                        prost::encoding::encode_varint(body.len() as u64, &mut rebuilt);
+                        rebuilt.extend_from_slice(body);
+                    }
+                }
+                assert_eq!(rebuilt, &bytes[end..field.encoded_range.end]);
+                end = field.encoded_range.end;
+                assert_field_equivalent(field, retained);
+            }
+            (Ok(None), Ok(None)) => {
+                assert_eq!(end, bytes.len());
+                assert!(owned.next_field().unwrap().is_none());
+                return true;
+            }
+            (Err(left), Err(right)) => {
+                assert_eq!(left, right);
+                assert_eq!(owned.next_field().unwrap_err(), right);
+                assert_eq!(owned.next_field().unwrap_err(), right);
+                return false;
+            }
+            (left, right) => panic!("partition cursor disagreement: {left:?} versus {right:?}"),
+        }
+    }
+    panic!("successful fields exceeded the source-byte bound");
+}
+
+#[test]
+fn canonical_varint_boundaries_reconstruct_exact_field_bytes() {
+    let mut values = vec![0, 1, u64::MAX];
+    for shift in 1..64 {
+        let power = 1u64 << shift;
+        values.extend([power - 1, power, power + 1]);
+    }
+    for value in values {
+        for tag in [1u32, 15, 16, 2047, 2048, 0x1fff_ffff] {
+            let mut bytes = Vec::new();
+            prost::encoding::encode_varint(u64::from(tag) << 3, &mut bytes);
+            prost::encoding::encode_varint(value, &mut bytes);
+            assert!(check_field_partition(&bytes, true));
+            assert!(check_field_partition(&bytes, false));
+        }
+    }
+}
+
+#[test]
+fn owned_cursor_refuses_and_retries_malformed_fields_without_consuming_them() {
+    let mut tenth_overflow = vec![8];
+    tenth_overflow.extend([0x80; 9]);
+    tenth_overflow.push(2);
+    let mut eleventh_group = vec![8];
+    eleventh_group.extend([0x80; 10]);
+    eleventh_group.push(1);
+    for bad in [
+        vec![8, 0x80, 0],
+        vec![8, 0x80],
+        vec![0],
+        vec![0x0b],
+        vec![0x0a, 2, 42],
+        vec![9, 1, 2],
+        vec![0x0d, 1, 2],
+        tenth_overflow,
+        eleventh_group,
+    ] {
+        for prefix in [vec![], vec![8, 42]] {
+            let bytes: Vec<_> = prefix.into_iter().chain(bad.iter().copied()).collect();
+            assert!(!check_field_partition(&bytes, true));
+            assert!(!check_field_partition(&bytes, false));
+        }
+    }
+    assert!(!check_field_partition(&[16, 1, 8, 1], true));
+    assert!(check_field_partition(&[16, 1, 8, 1], false));
+}
+
+proptest! {
+    #[test]
+    fn arbitrary_successful_fields_partition_and_reencode_source(
+        bytes in prop::collection::vec(any::<u8>(), 0..4096)
+    ) {
+        check_field_partition(&bytes, true);
+        check_field_partition(&bytes, false);
+    }
+
+    #[test]
+    fn generated_fields_partition_source_in_numeric_and_producer_order(
+        fields in prop::collection::vec(
+            (0u8..4, any::<u64>(), prop::collection::vec(any::<u8>(), 0..128)), 0..32)
+    ) {
+        for numeric in [true, false] {
+            let mut bytes = Vec::new();
+            for (index, (kind, value, body)) in fields.iter().enumerate() {
+                let tag = if numeric { index as u64 + 1 } else { 32 - index as u64 };
+                let wire = [0u64, 1, 2, 5][usize::from(*kind)];
+                prost::encoding::encode_varint(tag << 3 | wire, &mut bytes);
+                match kind {
+                    0 => prost::encoding::encode_varint(*value, &mut bytes),
+                    1 => bytes.extend_from_slice(&value.to_le_bytes()),
+                    2 => {
+                        prost::encoding::encode_varint(body.len() as u64, &mut bytes);
+                        bytes.extend_from_slice(body);
+                    }
+                    3 => bytes.extend_from_slice(&(*value as u32).to_le_bytes()),
+                    _ => unreachable!(),
+                }
+            }
+            prop_assert!(check_field_partition(&bytes, numeric));
+        }
+    }
+}
+
+
 fn assert_field_equivalent(borrowed: CanonicalField<'_>, owned: CanonicalRegionField) {
     assert_eq!(borrowed.number, owned.number);
     assert_eq!(borrowed.wire_type, owned.wire_type);

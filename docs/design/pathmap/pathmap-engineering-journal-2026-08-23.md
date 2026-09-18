@@ -13029,6 +13029,82 @@ error/charge ordering, work counters, non-identity scaling and lifecycle gates
 remain open. No production behavior, consensus format, dependency or PathMap
 implementation changes in this checkpoint; task 5916 is not complete.
 
+### J-178 — 2026-09-18 Canonical framing reconstruction and nonvacuous map-value binding
+
+**DERIVED.** Task 5916 now has the decoder-to-encoder direction missing from
+EPM1's prior round-trip proof: successful canonical varint, frame and frame-list
+decoding uniquely reconstructs the consumed source prefix. The new
+`SubstitutionRegionFraming.v` reuses those definitions rather than replacing the
+codec. Its bounded scanner models the ten-group, physical-byte, final-group and
+minimal-terminal guards and proves that successful results refine the canonical
+decoder. Adjacent source intervals concatenate to the consumed prefix; reaching
+EOF yields the complete input, and nonempty fields bound the field count by bytes
+consumed. The [SRF inventory](workspace-regression-formal-invariant-catalog-2026-08-28.md#canonical-framing-and-ordered-source-partitions-srf-task-5916)
+lists all 19 printed obligations and their concrete test bindings.
+
+The formal check precedes native extensions. Real borrowed/owned cursor tests
+reencode every successful field with the independent protobuf writer, verify
+adjacency and payload containment, and require complete input coverage at EOF.
+Generated valid inputs cover all four supported wire kinds in numeric and
+producer order; arbitrary bytes exercise accepted prefixes and refusals.
+Deterministic value cases span every power-of-two boundary through `u64::MAX`,
+six tag-width positions and both ordering modes. Malformed cases verify that
+retries of the owned cursor reproduce the same failure without consuming input;
+the borrowed cursor intentionally has no such failure-atomicity claim.
+
+**Review correction.** The first native run passed seven selected library tests
+and 66 integration tests, but independent review found its EPathMap value-frame
+loop vacuous: the shared publication corpus used set-mode EPathMaps and its
+generated maps were legacy EMaps. That run is not evidence for value-bearing
+EPathMap framing. The corrected fixture uses `EPathMap::new_map` with exactly
+three observed values: one empty and two distinct nonempty bodies. In addition
+to checking each canonical length header and contiguous body, the test locates
+the original length-delimited payload in captured source frames and requires
+the final value end to equal that independent payload end. It retains the full
+Original-output/source comparison. Test-only copying is not production overhead.
+
+**MEASURED (qualification).** Formal r6 passes 19 closed declarations and explicit
+kernel checking in 15.710 seconds, 15.359 CPU seconds and 436.3 MiB peak under a
+2 GiB cap, zero swap, one-core quota and 120-second watchdog. The final native r3
+passes eight selected library tests (508 others filtered) and all 66 focused
+integration tests: 31 manifest, 18 cursor, eight region, seven range/emission and
+two registry tests. None are ignored. Its capped service takes 40.353 seconds,
+104.287 CPU seconds and a reported 1.6 GiB peak, with `MemoryHigh=6G`,
+`MemoryMax=8G`, `MemorySwapMax=0`, `CPUQuota=400%` and a 1200-second watchdog.
+These are build-plus-test qualification receipts, not performance comparisons.
+Native r2 failed to compile a misspelled generated enum arm in the new fixture;
+r3 corrects it. Earlier proof-script failures and the limited r1 pass are retained
+and do not replace the final receipts.
+
+| Artifact | SHA-256 |
+|---|---|
+| `formal/rocq/stack_safe_pda/theories/SubstitutionRegionFraming.v` | `2dfb0c9ae76999f444bd4e4cd4b2bc275ebf5722e8b47155fba4dbb0cee21a5d` |
+| `target/verification/substitution-5916-framing-formal-r6.log` | `3b791aed7230babb0b009fe7cce1bcec8c90c23fdf70e1800262482078afd38d` |
+| `target/verification/substitution-5916-framing-native-r1.log` | `780538442129988ce3bc283fd12212744c98d3c6e41dce79a9b14652df0ca65a` |
+| `target/verification/substitution-5916-framing-native-r2.log` | `a0f4d82fcc5cace4df2a58ef0ed5fdc0edb978b51b894d1fa3850c9a1b6d4757` |
+| `target/verification/substitution-5916-framing-native-r3.log` | `366ac99d3a977b9da28c134b57edc297b3c1013bf549b2ed2f0a0a3953ab838b` |
+
+Commands run within the above capped services:
+
+```sh
+coqc -Q theories StackSafePDA theories/SubstitutionRegionFraming.v
+coqchk -silent -Q theories StackSafePDA StackSafePDA.SubstitutionRegionFraming
+cargo test --release --locked -j4 -p models --lib emission_tests -- --test-threads=4
+cargo test --release --locked -j4 -p models --test protobuf_cursor --test substitution_region_ranges --test protobuf_region_differential --test formal_equivalence_manifest --test test_target_registry_gate -- --test-threads=4
+```
+
+The formal commands run from `formal/rocq/stack_safe_pda`; Cargo runs from the
+worktree root. **DECISION:** no production parser, AST projection, field sort,
+dependency, PathMap implementation or consensus format changes. The successful
+mathematical group scanner still needs loop/bitwise-accumulator refinement; the
+concrete cursor must still be connected universally to the adjacent-interval
+relation and parent-frame suspension/certificates. EPM1's width-based minimality
+check also requires its own refinement to the protobuf scanner's zero-terminal
+check. Full substitution semantics, charge/error ordering, operational counters,
+non-identity scaling and lifecycle evidence remain required. Scheduler revision
+1206 reselected the same incumbent after its claim expired; no priority switch
+or task closure occurred.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

@@ -27,6 +27,7 @@ theories/SplitCarrierPrefilter.v
 theories/SubstitutionRegionRanges.v
 theories/SubstitutionRegionEmission.v
 theories/SubstitutionRegionPublication.v
+theories/SubstitutionRegionFraming.v
 theories/PathMapPhysicalOwnership.v
 theories/PathMapPhysicalOwnershipMutants.v
 theories/PathMapReversePruneTeardown.v

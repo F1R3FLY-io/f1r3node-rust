@@ -8547,6 +8547,18 @@ claims, and no production or consensus behavior changes. See
 [J-177](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-177--2026-09-17-checked-region-publication-and-actual-source-observation)
 for the exact claim boundary and receipts. Task 5916 remains open.
 
+The subsequent SRF framing checkpoint proves 19 additional closed obligations:
+successful canonical decoding reconstructs its consumed bytes, adjacent field
+intervals cover the source at EOF, and the bounded scanner refines the canonical
+decoder. The final native qualification passes eight selected library tests
+(508 filtered) and 66 focused integration tests, at a reported 1.6 GiB peak under
+the 8 GiB cap and zero-swap limit. Review caught and corrected a vacuous EPathMap
+value-frame test: a three-value map now verifies empty/distinct values and an
+independently captured payload end. No production behavior or speedup claim
+follows. Loop/bitwise, concrete-cursor and suspended-parent refinement remain
+open, as do full substitution and resource/lifecycle gates. See
+[J-178](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-178--2026-09-18-canonical-framing-reconstruction-and-nonvacuous-map-value-binding).
+
 ---
 
 ### 5.29 ParBag family and count-domain completeness [SS-A13, SS-A14, SS-Y9]

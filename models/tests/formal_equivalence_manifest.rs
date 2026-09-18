@@ -6,6 +6,55 @@
 //! that every named file, theorem, and oracle marker exists.
 
 use std::collections::{BTreeMap, BTreeSet};
+
+#[test]
+fn substitution_region_framing_has_reconstruction_proof_and_native_bindings() {
+    let theory = read_repository_file("formal/rocq/stack_safe_pda/theories/SubstitutionRegionFraming.v");
+    for theorem in [
+        "successful_varint_reencodes_consumed_prefix",
+        "successful_frame_reencodes_consumed_prefix",
+        "successful_frames_reencode_consumed_prefix",
+        "epm_value_frames_reconstruct_complete_suffix",
+        "adjacent_fields_bounds",
+        "interval_then_suffix",
+        "successful_fields_partition_consumed_suffix",
+        "eof_completes_source_partition",
+        "successful_fields_make_bounded_progress",
+        "framed_empty_values_are_not_omitted",
+        "wrong_same_length_value_is_not_reconstruction",
+        "truncated_frame_is_not_a_partition",
+        "successful_groups_refine_decoder",
+        "successful_bounded_varint_reencodes_consumed_prefix",
+        "successful_groups_consume_at_most_budget",
+        "bounded_scanner_accepts_multibyte_value",
+        "bounded_scanner_rejects_redundant_terminal",
+        "bounded_scanner_rejects_tenth_byte_overflow",
+        "bounded_scanner_rejects_eleventh_group",
+    ] {
+        assert!(theory.contains(&format!("Print Assumptions {theorem}.")));
+    }
+    let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
+    assert!(has_runner_command(&runner, &[
+        "rocq_compile_with_closed_count", "theories/SubstitutionRegionFraming.v", "19",
+    ]));
+    assert!(has_runner_kernel_check(&runner, &["StackSafePDA.SubstitutionRegionFraming"]));
+    assert!(read_repository_file("formal/rocq/stack_safe_pda/_CoqProject")
+        .lines().any(|line| line == "theories/SubstitutionRegionFraming.v"));
+    let native = read_repository_file("models/tests/protobuf_cursor.rs");
+    for witness in [
+        "canonical_varint_boundaries_reconstruct_exact_field_bytes",
+        "owned_cursor_refuses_and_retries_malformed_fields_without_consuming_them",
+        "arbitrary_successful_fields_partition_and_reencode_source",
+        "generated_fields_partition_source_in_numeric_and_producer_order",
+    ] {
+        assert!(native.contains(&format!("fn {witness}(")));
+    }
+    assert!(read_repository_file("models/tests/support/substitution_region_emission.rs")
+        .contains("fn verify_epathmap_value_frame_partition("));
+    assert!(read_repository_file("models/tests/support/substitution_region_emission.rs")
+        .contains("fn epathmap_publication_frames_include_empty_and_distinct_map_values("));
+}
+
 #[test]
 fn substitution_region_publication_has_derived_invariants_and_native_capture() {
     let theory =

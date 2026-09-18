@@ -505,6 +505,31 @@ evidence, not a proof over all accepted inputs. Parser errors, allocation failur
 the exact order of arithmetic refusals are not modeled by this publication theorem.
 Full substitution semantics, work counters and scaling/lifecycle acceptance remain open.
 
+## Canonical framing and ordered source partitions (SRF, task 5916)
+
+`SubstitutionRegionFraming.v` reuses EPM1's canonical varint/frame definitions.
+It proves the previously missing converse: successful decoding determines the
+exact consumed encoding, rather than only proving that encoded inputs decode.
+The ten-group scanner model adds physical-byte, final-group and minimal-terminal
+guards, then derives that its successful results refine the existing canonical
+decoder. No input-is-already-canonical premise is used for that direction.
+
+| ID | Printed obligations (19 total) | Native binding and boundary |
+|---|---|---|
+| SRF-01 | `successful_varint_reencodes_consumed_prefix`, `successful_frame_reencodes_consumed_prefix`, `successful_frames_reencode_consumed_prefix`, `epm_value_frames_reconstruct_complete_suffix` | `check_field_partition` reconstructs successful real cursor fields with the independent protobuf writer. `verify_epathmap_value_frame_partition` reconstructs retained EPM1 prefix/value frames against captured source bytes. EPM1 topology remains the existing inspector's authority, not a consequence of this framing proof. |
+| SRF-02 | `adjacent_fields_bounds`, `interval_then_suffix`, `successful_fields_partition_consumed_suffix`, `eof_completes_source_partition`, `successful_fields_make_bounded_progress` | Generated valid fields and arbitrary bytes check adjacent nonempty intervals, payload containment, source exhaustion on EOF and progress in both numeric and producer-slot order. The formal relation describes successful interval transitions; proving the concrete cursor always establishes it is a remaining refinement obligation. |
+| SRF-03 | `successful_groups_refine_decoder`, `successful_bounded_varint_reencodes_consumed_prefix`, `successful_groups_consume_at_most_budget` | Deterministic native cases exercise every power-of-two value boundary through `u64::MAX`, six tag-width positions and both ordering modes. The model composes radix groups mathematically; a universal proof relating Rust's shift/OR accumulator and machine arithmetic to it remains required. |
+| SRF-04 | `framed_empty_values_are_not_omitted`, `wrong_same_length_value_is_not_reconstruction`, `truncated_frame_is_not_a_partition`, `bounded_scanner_accepts_multibyte_value`, `bounded_scanner_rejects_redundant_terminal`, `bounded_scanner_rejects_tenth_byte_overflow`, `bounded_scanner_rejects_eleventh_group` | Formal nonvacuity/negative controls and native malformed fields cover empty values, redundant groups, truncation and overflow. Owned-cursor retries verify unchanged failure state; borrowed-cursor failure atomicity is deliberately not claimed. |
+
+The EPM1 primitive checks minimality by comparing consumed width to the writer's
+encoded width; the protobuf primitive rejects a redundant zero terminal group.
+The mathematical scanner models the latter. Equivalence of those concrete checks,
+native checked-offset conversion, and the parent-frame suspension/certificate
+bridge remain explicit obligations. Neither this module nor its bounded native
+properties constitute a universal proof of the Rust parser or full substitution.
+No new parser is introduced into production, and no generated schema, ACT
+topology, field order or consensus encoding changes.
+
 ## Original workspace-regression completion gates
 
 This checkpoint is complete only when all of the following hold:

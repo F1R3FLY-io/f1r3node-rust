@@ -17,6 +17,46 @@ struct PublishedNode {
     output: [prost::bytes::Bytes; 3],
 }
 
+fn verify_epathmap_value_frame_partition(
+    root: &ProtobufRegion,
+    plan: &ProtobufCutPlan,
+    observations: &[PublishedNode],
+) -> usize {
+    use crate::rust::rholang::protobuf_cursor::{CanonicalFieldCursor, CanonicalWireType};
+    let mut frame_count = 0;
+    for group in &plan.epathmaps {
+        let start = group.prefix.absolute_range().start;
+        let mut end = group.prefix.absolute_range().end;
+        let mut captured_end = None;
+        for observation in observations {
+            let base = observation.source.absolute_range().start;
+            let mut fields = CanonicalFieldCursor::in_prost_slot_order(observation.source.as_bytes());
+            while let Some(field) = fields.next_field().unwrap() {
+                if field.wire_type == CanonicalWireType::LengthDelimited
+                    && base + field.payload_range.start == start
+                {
+                    assert!(captured_end.replace(base + field.payload_range.end).is_none());
+                }
+            }
+        }
+        let mut rebuilt = group.prefix.as_bytes().to_vec();
+        for cut in &plan.cuts[group.cuts.clone()] {
+            frame_count += 1;
+            let body = cut.region.as_bytes();
+            let mut header = Vec::new();
+            prost::encoding::encode_varint(body.len() as u64, &mut header);
+            assert_eq!(end + header.len(), cut.region.absolute_range().start);
+            assert_eq!(header, &root.as_bytes()[end..end + header.len()]);
+            rebuilt.extend_from_slice(&header);
+            rebuilt.extend_from_slice(body);
+            end = cut.region.absolute_range().end;
+        }
+        assert_eq!(Some(end), captured_end);
+        assert_eq!(rebuilt, &root.as_bytes()[start..end]);
+    }
+    frame_count
+}
+
 thread_local! {
     static PUBLISHED: RefCell<Option<Vec<PublishedNode>>> = const { RefCell::new(None) };
 }
@@ -74,7 +114,7 @@ fn capture_build(
     (result, observations)
 }
 
-fn verify_publication(bytes: Vec<u8>) {
+fn verify_publication(bytes: Vec<u8>) -> usize {
     let root = ProtobufRegion::from(bytes);
     let (result, observations) = capture_build(root.clone(), &PAR_PROTOBUF_REGION_PROGRAM);
     let plan = result.unwrap();
@@ -103,6 +143,7 @@ fn verify_publication(bytes: Vec<u8>) {
             root.as_bytes()[range.start..].as_ptr()
         );
     }
+    let value_frames = verify_epathmap_value_frame_partition(&root, &plan, &observations);
     let mut ranks = Vec::new();
     for (index, (node, observed)) in plan.nodes.iter().zip(&observations).enumerate() {
         let range = observed.source.absolute_range();
@@ -166,6 +207,26 @@ fn verify_publication(bytes: Vec<u8>) {
         );
     }
     assert_eq!(plan.reconstructed_bytes().as_ref(), root.as_bytes());
+    value_frames
+}
+
+#[test]
+fn epathmap_publication_frames_include_empty_and_distinct_map_values() {
+    use crate::rhoapi::{Expr, Par};
+    use crate::rhoapi::expr::ExprInstance;
+    use crate::rust::rhoapi_ext::EPathMap;
+    let map = EPathMap::new_map(
+        [
+            (par_corpus::gint(1), Par::default()),
+            (par_corpus::gint(2), par_corpus::gint(7)),
+            (par_corpus::gint(3), par_corpus::gint(9)),
+        ],
+        Vec::new(), false, None,
+    );
+    let par = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::EPathmapBody(map)),
+    }]);
+    assert_eq!(verify_publication(protobuf_encoder::encode_to_vec(&par)), 3);
 }
 
 #[test]
