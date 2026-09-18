@@ -2231,6 +2231,10 @@ fn take<'a>(
 mod line_batch_tests;
 
 #[cfg(test)]
+#[path = "../../tests/support/substitution_varint.rs"]
+mod substitution_varint_tests;
+
+#[cfg(test)]
 mod tests {
     use std::hint::black_box;
     use std::time::{Duration, Instant};

@@ -13172,6 +13172,79 @@ prove disjoint-bit radix accumulation, the tenth-group `u64` bound and terminal
 width/minimality equivalence, reusing existing varint lemmas rather than building
 a general parser.
 
+### J-180 — 2026-09-18 Native varint accumulator and width-check refinement
+
+**DERIVED.** Task 5916 now connects SRF's mathematical group decoder to both
+existing byte-scanner algorithms in `SubstitutionVarintAccumulator.v`. For a
+current accumulator below the active bit position, masking and shifting the
+next seven-bit digit produces disjoint bits; OR therefore equals radix addition.
+The tenth-byte guard precedes accumulation and preserves the unsigned 64-bit
+bound. The model proves the locked prost 0.14.3 width formula equivalent to the
+nonzero-final-digit minimality criterion. Consequently the zero-initialized
+ten-group protobuf and EPM1 model loops agree on acceptance, decoded value and
+remaining suffix; successful re-encoding recovers exactly the consumed source.
+
+The [SVA inventory](workspace-regression-formal-invariant-catalog-2026-08-28.md#native-varint-accumulator-refinement-sva-task-5916)
+enumerates all 20 printed obligations and their native witnesses. Formal
+checking preceded test implementation. The native oracle finds the first
+terminator, accumulates digits in reverse order using multiplication and
+addition in `u128`, checks representability, then compares canonical
+re-encoding. This is independent of the scanners' shift/OR algorithms, though
+it uses prost's encoder. Deterministic cases cover every candidate byte in all
+ten positions, low/high continuation digits, nonzero offsets, power-of-two
+boundaries and maximum u64. Properties cover arbitrary byte strings, generated
+values and suffixes. Named malformed cases separately check each native error
+category and the exact consumed position.
+
+**MEASURED (qualification, not a benchmark).** Formal r8 reports 20 closed
+declarations and a successful explicit kernel check: 16.929 seconds wall,
+16.766 CPU seconds and 443.5 MiB peak, under a 2 GiB hard cap, zero swap, one-core
+quota and 120-second watchdog. Earlier failed proof-script iterations are not
+passing evidence. Native r1 passes five new scanner tests (517 library tests
+filtered), nine existing emission tests (513 filtered), and all 60 selected
+integration tests: 33 manifest, 18 cursor, seven range/emission and two registry.
+Its capped service takes 97.025 seconds wall, 286.528 CPU seconds and a reported
+2 GiB peak. The separate region r1 run passes all eight region-differential tests,
+including the depth-4096 shared-backing case, in 1.935 seconds wall, 5.131 CPU
+seconds and 252.3 MiB peak. Thus 82 distinct selected tests pass; none are ignored.
+Both native services use `MemoryHigh=6G`, `MemoryMax=8G`, `MemorySwapMax=0`,
+`CPUQuota=400%` and a 1200-second watchdog. Existing unrelated compiler warnings
+remain in the logs; no full-workspace pass is implied. Independent model/test
+review found no blocking mismatch, conditional on these now-passing runs.
+
+| Artifact | SHA-256 |
+|---|---|
+| `formal/rocq/stack_safe_pda/theories/SubstitutionVarintAccumulator.v` | `9b720bfd5adbec270e71c4ae8324d7f343cff37fb8e7d2d54e8aa9d7b17e7fa9` |
+| `target/verification/substitution-5916-accumulator-formal-r8.log` | `68c6e5f40f5e8b35f5009def81271fae23c6032c0d272e60de456988503f98a1` |
+| `target/verification/substitution-5916-accumulator-native-r1.log` | `688def04f0d83a05d24de5179e2f38ede3d71ad21319deab8859ef730de5154a` |
+| `target/verification/substitution-5916-accumulator-region-r1.log` | `05421c5914ae237acc8056c28e56e28f441bb27debf40141180abf64145d4acd` |
+
+Commands inside the capped services (formal commands from
+`formal/rocq/stack_safe_pda`, Cargo commands from the worktree root):
+
+```sh
+coqc -Q theories StackSafePDA theories/SubstitutionVarintAccumulator.v
+coqchk -silent -Q theories StackSafePDA StackSafePDA.SubstitutionVarintAccumulator
+cargo test --release --locked -j4 -p models --lib substitution_varint_tests -- --test-threads=4
+cargo test --release --locked -j4 -p models --lib emission_tests -- --test-threads=4
+cargo test --release --locked -j4 -p models --test protobuf_cursor --test substitution_region_ranges --test formal_equivalence_manifest --test test_target_registry_gate -- --test-threads=4
+cargo test --release --locked -j4 -p models --test protobuf_region_differential -- --test-threads=4
+```
+
+**DECISION and limits.** No production behavior, PathMap representation,
+dependency or consensus byte format changes; source additions are test-only
+module mounts. The model proves bounded mathematical bitwise arithmetic and
+loop correspondence, not extracted-Rust/compiler correctness. It erases errors
+into `None`; diagnostics, offsets, machine-sized address arithmetic and owned
+cursor failure atomicity are not formal conclusions of this model. Tests start
+at valid positions, including EOF, and pin named error categories rather than
+complete diagnostic strings. Fixed cut/group construction, schema/presence/order
+selection, full substitution semantics, error/charge ordering, operational
+counters, non-identity scaling and lifecycle/replay gates remain required.
+Task 5916 is still in progress; this closes its named accumulator/width bridge,
+not its end-to-end acceptance boundary.
+
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

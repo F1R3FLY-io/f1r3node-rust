@@ -25,6 +25,10 @@ use super::protobuf_schema::{ProtobufField, ProtobufWireType};
 #[path = "../../../tests/support/par_count_header_work.rs"]
 pub(crate) mod par_count_header_work;
 
+#[cfg(test)]
+#[path = "../../../tests/support/protobuf_varint_access.rs"]
+pub(crate) mod varint_test_access;
+
 /// A half-open range inside the message passed to a cursor.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CanonicalByteRange {

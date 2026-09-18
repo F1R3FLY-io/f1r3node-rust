@@ -744,6 +744,10 @@ rocq_reject_placeholders theories/SubstitutionRegionFraming.v
 rocq_compile_with_closed_count theories/SubstitutionRegionFraming.v 19 \
   "canonical substitution field framing and exact source partition"
 rocq_check_modules "substitution region framing" StackSafePDA.SubstitutionRegionFraming
+rocq_reject_placeholders theories/SubstitutionVarintAccumulator.v
+rocq_compile_with_closed_count theories/SubstitutionVarintAccumulator.v 20 \
+  "native substitution varint accumulator and canonical-width equivalence"
+rocq_check_modules "substitution varint accumulator" StackSafePDA.SubstitutionVarintAccumulator
 rocq_reject_placeholders theories/SubstitutionRegionDecomposition.v
 rocq_compile_with_closed_count theories/SubstitutionRegionDecomposition.v 21 \
   "substitution field decomposition and suspended-parent source certificates"

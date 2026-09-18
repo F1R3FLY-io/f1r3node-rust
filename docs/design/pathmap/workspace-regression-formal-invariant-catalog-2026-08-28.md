@@ -564,6 +564,44 @@ rescanning uses the same real cursor, so it independently checks piece/source
 association but is not a second parser oracle. Full substitution semantics and
 operational-resource acceptance remain open.
 
+## Native varint accumulator refinement (SVA, task 5916)
+
+`SubstitutionVarintAccumulator.v` connects the successful SRF radix scanner to
+the two concrete scanner algorithms: protobuf's nonzero-final-digit check and
+EPM1's encoded-width check. The accumulator contains only bits below the current
+seven-bit group. Consequently the shifted digit is disjoint from those bits,
+and bitwise OR equals radix addition. The tenth group is checked before
+accumulation, restricting its payload to one bit. The model derives the width
+formula used by locked prost 0.14.3 for the entire unsigned 64-bit domain.
+
+| ID | Printed obligations (20 total) | Native binding |
+|---|---|---|
+| SVA-01 | `low_accumulator_and_shifted_digit_are_disjoint`, `masked_shift_or_equals_radix_accumulation`, `forward_step_preserves_accumulator_invariant` | Independent reversed radix-128 accumulation in `u128`, compared with both private production scanners for arbitrary input and generated canonical values. |
+| SVA-02 | `forward_scanner_refines_group_decomposition`, `whole_forward_scanner_equals_group_scanner`, `successful_forward_scan_reencodes_consumed_bytes` | `both_varint_scanners_match_widened_reference_on_arbitrary_bytes` and `both_varint_scanners_preserve_generated_values_and_offsets` check acceptance, value, consumed extent and preserved suffix at valid initial offsets. |
+| SVA-03 | `all_native_shifts_are_below_word_width`, `tenth_group_guard_preserves_u64_bound`, `terminal_width_equals_nonzero_high_digit` | `both_varint_scanners_cover_every_terminal_byte_and_group_position` enumerates all 256 candidate bytes at ten positions, low/high lower digits and two offsets. |
+| SVA-04 | `forward_scanner_accepts_full_u64`, `forward_scanner_refuses_tenth_byte_two`, `forward_scanner_refuses_redundant_terminal` | `both_varint_scanners_cover_u64_boundaries_without_consuming_suffix` includes maximum u64 and both sides of every positive power-of-two boundary; named malformed cases include tenth-byte overflow and redundant zero. |
+| SVA-05 | `width_formula_for_all_u64_logarithms`, `prost_width_is_logarithmic_radix_width`, `radix_quotient_interval`, `prost_width_characterizes_canonical_range`, `terminal_prost_width_equals_nonzero_high_digit` | Both scanners are compared against canonical prost re-encoding; boundary fixtures independently stress every change in encoded width. |
+| SVA-06 | `width_checked_loop_equals_terminal_checked_loop`, `both_scanners_return_same_value_and_suffix`, `successful_epm_forward_scan_reencodes_consumed_bytes` | All five native witnesses exercise both actual private scanners, including named errors and exact consumption positions in `malformed_varints_preserve_each_scanners_error_class_and_position`. |
+
+**Boundary.** The zero-initialized ten-group specialization is the native
+algorithm correspondence; generalized starting accumulators and shifts are
+induction machinery, not an arbitrary native entry contract. The model uses
+unbounded binary naturals with proved accumulator/shift bounds, not extracted
+Rust or a compiler proof. It erases error distinctions into `None` and therefore
+does not prove native error messages, error offsets, `usize` address arithmetic
+or owned-cursor failure atomicity. Native named malformed cases check categories
+and consumed positions separately; arbitrary malformed properties check
+acceptance and cursor agreement, not every diagnostic. Initial positions are
+valid positions including EOF. The independent decoding oracle uses prost for
+canonical re-encoding, so it is not independent of that encoder.
+
+The manifest binds all 20 printed obligations, the runner's exact closed count,
+explicit kernel checking, five native witnesses and both test-only source
+module mounts. No production parser, representation, dependency or consensus
+format is changed. Full substitution semantics, schema/table construction and
+resource/lifecycle acceptance remain separate obligations.
+
+
 ## Original workspace-regression completion gates
 
 This checkpoint is complete only when all of the following hold:

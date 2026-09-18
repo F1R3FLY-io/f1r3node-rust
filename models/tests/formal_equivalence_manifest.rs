@@ -8,6 +8,56 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 #[test]
+fn substitution_varint_accumulator_has_bitwise_proof_and_native_bindings() {
+    let theory = read_repository_file("formal/rocq/stack_safe_pda/theories/SubstitutionVarintAccumulator.v");
+    for theorem in [
+        "low_accumulator_and_shifted_digit_are_disjoint",
+        "masked_shift_or_equals_radix_accumulation",
+        "forward_step_preserves_accumulator_invariant",
+        "forward_scanner_refines_group_decomposition",
+        "whole_forward_scanner_equals_group_scanner",
+        "successful_forward_scan_reencodes_consumed_bytes",
+        "all_native_shifts_are_below_word_width",
+        "tenth_group_guard_preserves_u64_bound",
+        "terminal_width_equals_nonzero_high_digit",
+        "forward_scanner_accepts_full_u64",
+        "forward_scanner_refuses_tenth_byte_two",
+        "forward_scanner_refuses_redundant_terminal",
+        "width_formula_for_all_u64_logarithms",
+        "prost_width_is_logarithmic_radix_width",
+        "radix_quotient_interval",
+        "prost_width_characterizes_canonical_range",
+        "terminal_prost_width_equals_nonzero_high_digit",
+        "width_checked_loop_equals_terminal_checked_loop",
+        "both_scanners_return_same_value_and_suffix",
+        "successful_epm_forward_scan_reencodes_consumed_bytes",
+    ] {
+        assert!(theory.contains(&format!("Print Assumptions {theorem}.")));
+    }
+    let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
+    assert!(has_runner_command(&runner, &[
+        "rocq_compile_with_closed_count", "theories/SubstitutionVarintAccumulator.v", "20",
+    ]));
+    assert!(has_runner_kernel_check(&runner, &["StackSafePDA.SubstitutionVarintAccumulator"]));
+    assert!(read_repository_file("formal/rocq/stack_safe_pda/_CoqProject")
+        .lines().any(|line| line == "theories/SubstitutionVarintAccumulator.v"));
+    let native = read_repository_file("models/tests/support/substitution_varint.rs");
+    for witness in [
+        "both_varint_scanners_cover_every_terminal_byte_and_group_position",
+        "both_varint_scanners_cover_u64_boundaries_without_consuming_suffix",
+        "malformed_varints_preserve_each_scanners_error_class_and_position",
+        "both_varint_scanners_match_widened_reference_on_arbitrary_bytes",
+        "both_varint_scanners_preserve_generated_values_and_offsets",
+    ] {
+        assert!(native.contains(&format!("fn {witness}(")));
+    }
+    assert!(read_repository_file("models/src/rust/epathmap_trie_codec.rs")
+        .contains("#[cfg(test)]\n#[path = \"../../tests/support/substitution_varint.rs\"]\nmod substitution_varint_tests;"));
+    assert!(read_repository_file("models/src/rust/rholang/protobuf_cursor.rs")
+        .contains("#[cfg(test)]\n#[path = \"../../../tests/support/protobuf_varint_access.rs\"]\npub(crate) mod varint_test_access;"));
+}
+
+#[test]
 fn substitution_region_decomposition_has_source_certificate_bindings() {
     let theory = read_repository_file("formal/rocq/stack_safe_pda/theories/SubstitutionRegionDecomposition.v");
     for theorem in [

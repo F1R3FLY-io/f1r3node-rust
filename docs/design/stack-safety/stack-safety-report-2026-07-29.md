@@ -8571,6 +8571,19 @@ and open. No production behavior or performance comparison changes. Exact
 receipts and boundaries are in
 [J-179](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-179--2026-09-18-field-decomposition-establishes-publication-certificates).
 
+The SVA accumulator refinement now proves disjoint-bit shift/OR accumulation,
+the tenth-group unsigned 64-bit bound, and equivalence between protobuf's
+nonzero-terminal check and EPM1's prost-width check. All 20 printed obligations
+and explicit kernel checking pass. Five new scanner tests, nine emission tests
+and 68 focused integration tests pass (82 distinct selected tests total), under
+an 8 GiB hard cap and zero swap; the main native service reports a 2 GiB peak.
+These are qualification runs, not performance comparisons. No production or
+consensus bytes change. Error diagnostics, machine-sized addresses, schema/table
+construction and full substitution/resource/lifecycle obligations remain
+separate; task 5916 remains open. See
+[J-180](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-180--2026-09-18-native-varint-accumulator-and-width-check-refinement)
+for exact receipts and formal/native limitations.
+
 ---
 
 ### 5.29 ParBag family and count-domain completeness [SS-A13, SS-A14, SS-Y9]
