@@ -18,6 +18,7 @@ use models::rust::casper::protocol::casper_message::{BlockMessage, Justification
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
 use shared::rust::dag::dag_ops;
+use shared::rust::store::key_value_store::KvStoreError;
 
 use super::types::MultiParentCasperImpl;
 use crate::rust::casper::{CasperSnapshot, OnChainCasperState};
@@ -60,7 +61,15 @@ fn prune_dag_covered_parents(
             if idx == other_idx {
                 continue;
             }
-            if !dag.is_dag_ancestor(&other.block_hash, &candidate.block_hash)? {
+            // Collapsing is an optimisation, so coverage must be PROVEN: a walk
+            // that runs out of held history has not proven it and must not fail
+            // the snapshot.
+            let covers = match dag.is_dag_ancestor(&other.block_hash, &candidate.block_hash) {
+                Ok(covers) => covers,
+                Err(KvStoreError::MissingBlock { .. }) => false,
+                Err(error) => return Err(error.into()),
+            };
+            if !covers {
                 covers_all = false;
                 break;
             }
@@ -143,25 +152,22 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
     // storage I/O.
     let mut valid_latest_metas: HashMap<Validator, BlockMetadata> =
         HashMap::with_capacity(valid_latest_msgs.len());
-    // A latest message this node does not hold (a stale slot below an LFS
-    // restore horizon) cannot be cited as a parent; abstain the validator
-    // instead of failing every snapshot. Parent and LCA reads below inherit
-    // held provenance from this filter.
+    // A slot that is unheld, or whose held target the validator never signed,
+    // cannot be cited as a parent; abstain the validator instead of failing
+    // every snapshot. Parent and LCA reads below inherit held provenance from
+    // this filter.
     let mut unheld_validators: Vec<Validator> = Vec::new();
     for (validator, hash) in valid_latest_msgs.iter() {
-        match dag.lookup(hash)? {
-            Some(meta) => {
-                valid_latest_metas.insert(validator.clone(), meta);
-            }
-            None => {
-                tracing::debug!(
-                    target: "f1r3fly.casper.snapshot",
-                    "abstaining validator with unheld latest message {:?}",
-                    hash
-                );
-                unheld_validators.push(validator.clone());
-            }
-        }
+        let Some(meta) = dag.own_testimony(validator, hash)? else {
+            tracing::debug!(
+                target: "f1r3fly.casper.snapshot",
+                "abstaining validator whose latest message is unheld or unsigned {:?}",
+                hash
+            );
+            unheld_validators.push(validator.clone());
+            continue;
+        };
+        valid_latest_metas.insert(validator.clone(), meta);
     }
     for validator in unheld_validators {
         valid_latest_msgs.remove(&validator);
@@ -781,7 +787,7 @@ mod tests {
                 .iter()
                 .map(|block| block.block_hash.clone())
                 .collect::<Vec<_>>(),
-            vec![left.block_hash, right.block_hash]
+            vec![left.block_hash.clone(), right.block_hash.clone()]
         );
 
         let diverged_from_seal =
@@ -790,5 +796,38 @@ mod tests {
         assert_eq!(diverged_from_seal.len(), 3);
         assert_eq!(diverged_from_seal[0].block_hash, left_child.block_hash);
         assert_eq!(diverged_from_seal[1].block_hash, right_child.block_hash);
+
+        // A coverage walk that leaves the held blocks proves nothing: keep the
+        // parent set whole rather than collapsing or failing.
+        let unheld = block_implicits::get_random_block(
+            Some(1),
+            Some(9),
+            None,
+            None,
+            None,
+            None,
+            Some(1),
+            Some(vec![
+                prost::bytes::Bytes::from_static(b"never-downloaded").into()
+            ]),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            None,
+            Some("test".to_string()),
+            None,
+        );
+        dag_storage
+            .insert(&unheld, InsertMode::Normal)
+            .expect("insert block whose parent is not held");
+        let dag = dag_storage.get_representation().expect("dag");
+
+        let unprovable = prune_dag_covered_parents(&dag, vec![unheld.clone(), left.clone()])
+            .expect("an unprovable coverage walk must not fail the snapshot");
+        assert_eq!(
+            unprovable.len(),
+            2,
+            "neither parent proves coverage, so the set is kept whole"
+        );
     }
 }
