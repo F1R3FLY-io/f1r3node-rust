@@ -274,8 +274,7 @@ Definition mode_well_formedb (snapshot : epm1_snapshot) : bool :=
       (0 <? length (topology_arena snapshot)) &&
       (length (value_bodies snapshot) =? 0)
   | MapMode =>
-      (0 <? length (topology_arena snapshot)) &&
-      (0 <? length (value_bodies snapshot))
+      0 <? length (topology_arena snapshot)
   end.
 
 Definition encode_epm1 (snapshot : epm1_snapshot) : bytes :=
@@ -476,7 +475,11 @@ Definition topology_positional_value_association (snapshot : epm1_snapshot) : Pr
   | MapMode =>
       extract_value_markers (topology_arena snapshot) =
         Some (positional_value_sentinels (value_bodies snapshot))
-  | Neutral | SetMode =>
+  | SetMode =>
+      exists markers,
+        extract_value_markers (topology_arena snapshot) = Some markers /\
+        Forall (fun marker => marker = 0) markers
+  | Neutral =>
       extract_value_markers (topology_arena snapshot) = Some []
   end.
 
@@ -509,7 +512,78 @@ Proof.
   apply positional_value_sentinels_are_zero_and_count_exact.
 Qed.
 
+Theorem associated_set_markers_are_zero_without_a_value_table :
+  forall arena markers,
+    extract_value_markers arena = Some markers ->
+    (topology_positional_value_association (Epm1Snapshot SetMode arena []) <->
+     Forall (fun marker => marker = 0) markers).
+Proof.
+  intros arena markers extracted. cbn.
+  split.
+  - intros [observed [same zeros]]. rewrite extracted in same.
+    inversion same; subst. exact zeros.
+  - intro zeros. exists markers. auto.
+Qed.
+
+Theorem zero_count_map_association_requires_no_valued_endpoints :
+  forall arena,
+    topology_positional_value_association (Epm1Snapshot MapMode arena []) <->
+    extract_value_markers arena = Some [].
+Proof. reflexivity. Qed.
+
+Theorem set_association_accepts_any_number_of_zero_markers :
+  forall arena count,
+    extract_value_markers arena = Some (repeat 0 count) ->
+    topology_positional_value_association (Epm1Snapshot SetMode arena []).
+Proof.
+  intros arena count extracted. exists (repeat 0 count).
+  split; [exact extracted|]. clear extracted.
+  induction count; constructor; auto.
+Qed.
+
+Theorem set_association_rejects_nonzero_markers :
+  forall arena markers marker,
+    extract_value_markers arena = Some markers ->
+    In marker markers -> marker <> 0 ->
+    ~ topology_positional_value_association (Epm1Snapshot SetMode arena []).
+Proof.
+  intros arena markers marker extracted present nonzero association.
+  apply (proj1 (associated_set_markers_are_zero_without_a_value_table
+    extracted)) in association.
+  apply nonzero. rewrite Forall_forall in association.
+  now apply association.
+Qed.
+
 End TopologyPositionalAssociation.
+
+Theorem structurally_nonempty_map_may_have_zero_values :
+  forall arena,
+    arena <> [] -> mode_well_formedb (Epm1Snapshot MapMode arena []) = true.
+Proof. intros [|b rest] nonempty; [contradiction|reflexivity]. Qed.
+
+Theorem structurally_empty_typed_arena_is_rejected :
+  forall storage_mode values,
+    storage_mode <> Neutral ->
+    mode_well_formedb (Epm1Snapshot storage_mode [] values) = false.
+Proof. intros [| |] values typed; [contradiction|reflexivity|reflexivity]. Qed.
+
+Theorem zero_count_map_framed_round_trip :
+  forall arena,
+    arena <> [] ->
+    decode_epm1 (encode_epm1 (Epm1Snapshot MapMode arena [])) =
+      Some (Epm1Snapshot MapMode arena []).
+Proof.
+  intros arena nonempty. apply epm1_framed_decode_encode_identity.
+  now apply structurally_nonempty_map_may_have_zero_values.
+Qed.
+
+Print Assumptions associated_set_markers_are_zero_without_a_value_table.
+Print Assumptions zero_count_map_association_requires_no_valued_endpoints.
+Print Assumptions set_association_accepts_any_number_of_zero_markers.
+Print Assumptions set_association_rejects_nonzero_markers.
+Print Assumptions structurally_nonempty_map_may_have_zero_values.
+Print Assumptions structurally_empty_typed_arena_is_rejected.
+Print Assumptions zero_count_map_framed_round_trip.
 
 Definition validation_algebra (local_valid : bool) (children : list bool) : bool :=
   local_valid && forallb (fun valid => valid) children.

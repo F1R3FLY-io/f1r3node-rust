@@ -171,6 +171,82 @@ fn topology_validation_remains_a_separate_post_framing_gate() {
         .contains("set EPathMap carries map values"));
 }
 
+fn framed_arena(mode: EPathMapMode, arena: &[u8], value_count: usize) -> Vec<u8> {
+    let mut bytes = Vec::from(EPM_MAGIC.as_slice());
+    bytes.extend_from_slice(&[EPM_VERSION, mode as u8]);
+    append_length(&mut bytes, arena.len() as u64);
+    bytes.extend_from_slice(arena);
+    append_length(&mut bytes, value_count as u64);
+    bytes.resize(bytes.len() + value_count, 0);
+    bytes
+}
+
+fn check_mode_matrix(markers: &[u64], retain_unvalued_path: bool) {
+    let mut trie = PathMap::<u64>::new();
+    if retain_unvalued_path {
+        trie.create_path(b"value-free-topology");
+    }
+    for (index, marker) in markers.iter().enumerate() {
+        trie.insert((index as u64).to_be_bytes(), *marker);
+    }
+    let arena = ArenaCompactTree::from_zipper(trie.read_zipper(), |marker| *marker);
+    let logically_nonempty = retain_unvalued_path || !markers.is_empty();
+    let all_zero = markers.iter().all(|marker| *marker == 0);
+    let mut counts = vec![0, markers.len(), markers.len() + 1];
+    counts.sort_unstable();
+    counts.dedup();
+    for mode in [EPathMapMode::Empty, EPathMapMode::Set, EPathMapMode::Map] {
+        for &value_count in &counts {
+            let bytes = framed_arena(mode, arena.get_data(), value_count);
+            let expected = match mode {
+                EPathMapMode::Empty => false,
+                EPathMapMode::Set => logically_nonempty && all_zero && value_count == 0,
+                EPathMapMode::Map => logically_nonempty && all_zero && value_count == markers.len(),
+            };
+            let framing = parse_canonical_snapshot_framing(&bytes).unwrap();
+            assert_eq!(framing.value_count, value_count);
+            let actual = inspect_canonical_snapshot_value_regions(&bytes);
+            assert_eq!(
+                actual.is_ok(), expected,
+                "mode={mode:?} markers={markers:?} unvalued={retain_unvalued_path} count={value_count}"
+            );
+            if let Ok(inspection) = actual {
+                assert_eq!(inspection.prefix, 0..framing.value_table_start);
+                assert_eq!(inspection.value_bodies, framing.value_bodies);
+                assert_eq!(inspection.mode, mode);
+            }
+        }
+    }
+}
+
+#[test]
+fn mode_admission_uses_logical_topology_and_zero_endpoint_markers() {
+    for markers in [vec![], vec![0], vec![0, 0, 0], vec![7], vec![0, 7, 0]] {
+        for retain_unvalued_path in [false, true] {
+            check_mode_matrix(&markers, retain_unvalued_path);
+        }
+    }
+    for mode in [EPathMapMode::Empty, EPathMapMode::Set, EPathMapMode::Map] {
+        let bytes = framed_arena(mode, &[], 0);
+        assert!(parse_canonical_snapshot_framing(&bytes).is_ok());
+        assert_eq!(
+            inspect_canonical_snapshot_value_regions(&bytes).is_ok(),
+            mode == EPathMapMode::Empty
+        );
+    }
+}
+
+proptest! {
+    #[test]
+    fn generated_mode_admission_matches_independent_endpoint_inventory(
+        markers in prop::collection::vec(prop_oneof![Just(0u64), 1u64..16], 0..24),
+        retain_unvalued_path in any::<bool>(),
+    ) {
+        check_mode_matrix(&markers, retain_unvalued_path);
+        check_mode_matrix(&vec![0; markers.len()], retain_unvalued_path);
+    }
+}
+
 proptest! {
     #[test]
     fn generated_value_regions_equal_independently_recorded_positions(

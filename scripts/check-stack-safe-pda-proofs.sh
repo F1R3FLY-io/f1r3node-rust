@@ -482,7 +482,9 @@ if [[ "${1:-}" == "--epathmap-import" ]]; then
   pushd "$rocq_root" >/dev/null
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/StackSafePDA.v
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/EPathMap.v
-  tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/EPM1.v
+  rocq_reject_placeholders theories/EPM1.v
+  rocq_compile_with_closed_count theories/EPM1.v 7 "EPM1 mode and positional-marker regressions"
+  rocq_check_modules "EPM1 mode contracts" StackSafePDA.EPM1
   epathmap_import_proofs
   rocq_compile_with_closed_count theories/ChannelImage.v 11 "RCI2 byte framing"
   rocq_compile_with_closed_count theories/RhoPathV1Datum.v 21 "RhoPath zero framing"
@@ -711,7 +713,9 @@ if [[ "$streaming_codec_closed_capstones" != "20" ]]; then
   echo "stack-safe-pda: expected all twenty streaming-codec Rocq capstones to be closed; got $streaming_codec_closed_capstones" >&2
   exit 1
 fi
-tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/EPM1.v
+rocq_reject_placeholders theories/EPM1.v
+rocq_compile_with_closed_count theories/EPM1.v 7 "EPM1 mode and positional-marker regressions"
+rocq_check_modules "EPM1 mode contracts" StackSafePDA.EPM1
 epathmap_import_proofs
 rocq_reject_placeholders theories/UnaryEListConstruction.v theories/UnaryEListConstructionMutants.v
 rocq_compile_with_closed_count theories/UnaryEListConstruction.v 22 \

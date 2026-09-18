@@ -8642,6 +8642,17 @@ full substitution and resource/lifecycle gates remain open. See
 [J-184](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-184--2026-09-18-exact-physical-epm-value-selection)
 for the exact scope, invariants and receipts.
 
+A subsequent admission audit corrected two stale EPM1 model premises: nonempty
+map topology may have no valued endpoints, while set membership endpoints carry
+zero markers without map value bodies. Seven closed theorems and kernel checks
+now cover those rules. A deterministic/generated native mode matrix distinguishes
+logical emptiness, value-free topology and valued endpoints; 104 focused release
+tests pass (1.7 GiB reported peak under the 8 GiB cap, zero swap). Production
+acceptance, serialization and performance are unchanged. These structural proofs
+do not substitute for ACT parser correctness or close task 5916. See
+[J-185](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-185--2026-09-18-correct-epm-mode-model-drift)
+for the complete evidence boundary.
+
 ---
 
 ### 5.29 ParBag family and count-domain completeness [SS-A13, SS-A14, SS-Y9]

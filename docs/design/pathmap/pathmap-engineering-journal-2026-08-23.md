@@ -13634,6 +13634,77 @@ scaling/profiling and lifecycle/replay gates. Scheduler revision 1208 retained
 this incumbent. No production/consensus change or new consensus-register entry,
 performance result, new dependency or PathMap modification is introduced.
 
+### J-185 — 2026-09-18 Correct EPM mode-model drift
+
+**Question and finding (task 5916).** The prefix-admission audit compared the
+older EPM1 structural model with the current inspector before composing further
+proofs. It found two stale premises: Map mode required a positive value-body
+count, and Set positional association required an empty endpoint-marker list.
+Neither describes the current native codec. A nonempty topology may contain no
+valued endpoints; set membership endpoints carry zero sentinels without any map
+value-body table. The existing zero-count native fixture already accepted the
+former, so adding another production implementation would have duplicated work.
+
+**DERIVED correction.** `EPM1.v` now permits a structurally nonempty map arena
+with zero bodies. Set association requires an extracted list of zero markers,
+without requiring that list to be empty. Map association still requires exactly
+one zero sentinel per value body; a zero-count map therefore requires no valued
+endpoints. Neutral mode retains its empty-arena/empty-body rule. Seven printed,
+closed theorems establish these contracts, reject nonzero set markers and empty
+typed byte arenas, and prove the zero-count map envelope round trip.
+The [EMR inventory](workspace-regression-formal-invariant-catalog-2026-08-28.md#epm-mode-model-regressions-emr-task-5916)
+binds all seven to executable regressions.
+
+These remain **structural** predicates: a nonempty byte array is not proof of a
+nonempty valid ACT trie. Native admission parses the arena and checks logical
+emptiness, marker values and endpoint count. Existing V5/V6 ACT authority is
+reused for its stated canonical-source scope; this repair neither replaces that
+parser nor proves arbitrary-byte acceptance equivalence. Set membership count
+is independent of the map-body count; a type mode is not inferred from count.
+
+**Independent native controls.** The deterministic matrix uses PathMap's ACT
+writer for empty topology, value-free topology, zero-valued endpoints, nonzero
+markers and mixed markers. For every mode it varies the declared body count
+and checks acceptance against the independently constructed endpoint inventory.
+Accepted snapshots retain the framing inspector's exact regions. A property
+test generates endpoint inventories and also checks each corresponding all-zero
+inventory, so random nonzero markers cannot make positive coverage disappear.
+A separate empty-byte arena control distinguishes neutral mode from typed modes.
+These tests use zero-length framed bodies to isolate topology admission, not
+Par semantic validity.
+
+**MEASURED verification.** Formal r4 recompiles EPM1 and nine dependent
+substitution modules, then kernel-checks EPM1 and SubstitutionValueRegions.
+The seven new declarations and existing dependent obligations pass: 43.767
+seconds wall, 42.930 CPU seconds, 454.6 MiB reported peak; 2 GiB hard cap,
+zero swap, one-core quota and a 600-second watchdog. Earlier r1–r3 proof-script
+failures are not passing evidence. Both maintained EPM1 runner entry points now
+require exactly seven closed declarations and explicit kernel checking.
+
+Native r1 passes **104 focused release tests**: seven value-region/mode tests,
+19 provenance tests, five varint tests and 73 integrations (38 manifest,
+18 cursor, eight differential, seven region-range and two registry tests).
+Library filtered counts are 532, 520 and 534. None of the selected tests fails
+or is ignored. The service takes 45.346 seconds wall and 113.628 CPU seconds,
+with 1.7 GiB reported peak and zero swap under an 8 GiB hard cap, 6 GiB soft
+threshold, four-core quota, four workers and an 1800-second watchdog.
+Runner shell syntax and patch whitespace also pass. This is correctness
+evidence, not a performance comparison or a full-workspace result.
+
+| Artifact | SHA-256 |
+|---|---|
+| `formal/rocq/stack_safe_pda/theories/EPM1.v` | `7452544b1e0000a7f41b1808888adfa8f003f29bf2fbb680028f253d0b6bef41` |
+| `target/verification/substitution-5916-epm-modes-formal-r4.log` | `a603e668db5242dee7dafdd14a354c6592c007107fe3309d6c32632173a91963` |
+| `target/verification/substitution-5916-epm-modes-native-r1.log` | `db2cc375e2b60d9627fdb98cfcc70244319ef4e26b46e8d61f0109a0cf5fd42c` |
+
+**Decision and remaining work.** Align verification with the existing codec;
+do not change production acceptance to satisfy obsolete model restrictions.
+No production, consensus, serialization, dependency or PathMap change occurs,
+so no new consensus-register entry is warranted. Task 5916 remains open for
+prefix/topology composition, generated schema dispatch, full substitution
+semantics and the outstanding resource/lifecycle evidence. Scheduler revision
+1208 retains this leaf; this checkpoint is not campaign completion.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

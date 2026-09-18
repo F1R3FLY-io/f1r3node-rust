@@ -794,6 +794,29 @@ remain separate refinement boundaries. See
 [J-184](pathmap-engineering-journal-2026-08-23.md#j-184--2026-09-18-exact-physical-epm-value-selection)
 for receipts and remaining scope.
 
+## EPM mode-model regressions (EMR, task 5916)
+
+The structural EPM1 envelope and positional-marker predicates must cover
+value-free map topology and set membership endpoints. They do not themselves
+validate ACT bytes or equate physical arena byte length with logical emptiness.
+
+| ID | Printed obligations (seven total) | Native binding |
+|---|---|---|
+| EMR-01 | `structurally_nonempty_map_may_have_zero_values`, `zero_count_map_framed_round_trip`, `zero_count_map_association_requires_no_valued_endpoints` | Existing three-mode zero-count fixture and the new mode matrix admit a nonempty value-free map but reject a map whose valued endpoint count differs from its body count. |
+| EMR-02 | `associated_set_markers_are_zero_without_a_value_table`, `set_association_accepts_any_number_of_zero_markers`, `set_association_rejects_nonzero_markers` | Deterministic and generated endpoint inventories admit all-zero set markers with no value bodies and reject nonzero or mixed markers. |
+| EMR-03 | `structurally_empty_typed_arena_is_rejected` | Empty-byte controls reject typed modes; the broader native matrix separately rejects a valid encoded but logically empty ACT, which the structural predicate alone cannot establish. |
+
+The native bindings are `value_region_zero_count_preserves_empty_set_and_value_free_map_modes`,
+`mode_admission_uses_logical_topology_and_zero_endpoint_markers` and
+`generated_mode_admission_matches_independent_endpoint_inventory`, under
+`models/tests/support/substitution_value_regions.rs`. The manifest requires
+all seven declarations, these witnesses, the exact closed-count runner and its
+kernel check. Generated cases explicitly include all-zero variants, preserving
+positive coverage. Full ACT admission, prefix parsing, schema dispatch and
+substitution semantics are separate obligations. See
+[J-185](pathmap-engineering-journal-2026-08-23.md#j-185--2026-09-18-correct-epm-mode-model-drift)
+for provenance, measured receipts and limits.
+
 ## Original workspace-regression completion gates
 
 This checkpoint is complete only when all of the following hold:

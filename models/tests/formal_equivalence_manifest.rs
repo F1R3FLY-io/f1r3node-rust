@@ -8,6 +8,36 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 #[test]
+fn epm_mode_model_has_value_free_map_and_set_marker_regressions() {
+    let theory = read_repository_file("formal/rocq/stack_safe_pda/theories/EPM1.v");
+    for theorem in [
+        "associated_set_markers_are_zero_without_a_value_table",
+        "zero_count_map_association_requires_no_valued_endpoints",
+        "set_association_accepts_any_number_of_zero_markers",
+        "set_association_rejects_nonzero_markers",
+        "structurally_nonempty_map_may_have_zero_values",
+        "structurally_empty_typed_arena_is_rejected",
+        "zero_count_map_framed_round_trip",
+    ] {
+        assert!(theory.contains(&format!("Print Assumptions {theorem}.")));
+    }
+    let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
+    assert!(has_runner_command(&runner, &[
+        "rocq_compile_with_closed_count", "theories/EPM1.v", "7",
+    ]));
+    assert!(has_runner_kernel_check(&runner, &["StackSafePDA.EPM1"]));
+    let native = read_repository_file("models/tests/support/substitution_value_regions.rs");
+    for witness in [
+        "value_region_zero_count_preserves_empty_set_and_value_free_map_modes",
+        "mode_admission_uses_logical_topology_and_zero_endpoint_markers",
+        "generated_mode_admission_matches_independent_endpoint_inventory",
+    ] {
+        assert!(native.contains(&format!("fn {witness}(")));
+    }
+}
+
+
+#[test]
 fn substitution_value_regions_have_physical_position_and_refusal_bindings() {
     let theory = read_repository_file("formal/rocq/stack_safe_pda/theories/SubstitutionValueRegions.v");
     for theorem in [
