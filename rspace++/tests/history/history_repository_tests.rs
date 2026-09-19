@@ -311,6 +311,70 @@ async fn history_repository_should_record_next_root_as_valid() {
     let _ = repo.reset(&next_repo_history.root());
 }
 
+#[test]
+fn checkpoint_attribution_preserves_roots_and_records_only_executed_stages() {
+    use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+    for count in [0, 1, 256] {
+        let actions: Vec<HotStoreTrieAction<String, String, String, String>> = (0..count)
+            .map(|index| {
+                HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertBinaryProduce(
+                    TrieInsertBinaryProduce {
+                        hash: hash(&index),
+                        data: vec![vec![index as u8; 8]],
+                    },
+                ))
+            })
+            .collect();
+        let expected = create_empty_repository()
+            .do_checkpoint(actions.clone())
+            .root();
+        let repo = create_empty_repository();
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let actual = metrics::with_local_recorder(&recorder, || repo.do_checkpoint(actions));
+        assert_eq!(actual.root(), expected);
+        let snapshot = snapshotter.snapshot().into_vec();
+        let samples = |name: &str| -> Vec<f64> {
+            snapshot
+                .iter()
+                .filter(|(key, _, _, _)| key.key().name() == name)
+                .flat_map(|(_, _, _, value)| match value {
+                    DebugValue::Histogram(values) => {
+                        values.iter().map(|value| value.into_inner()).collect()
+                    }
+                    _ => Vec::new(),
+                })
+                .collect()
+        };
+        assert_eq!(samples("history.checkpoint.actions"), vec![count as f64]);
+        assert_eq!(samples("history.checkpoint.time").len(), 1);
+        for stage in [
+            "storage-actions",
+            "partition",
+            "serialize",
+            "leaf-write",
+            "history-lock-wait",
+            "history-process",
+            "roots-lock-wait",
+            "root-commit",
+        ] {
+            let values = samples(&format!("history.checkpoint.{stage}.time"));
+            assert_eq!(values.len(), usize::from(count > 0), "{stage}, actions={count}");
+            assert!(
+                values
+                    .iter()
+                    .all(|value| value.is_finite() && *value >= 0.0)
+            );
+        }
+        let bytes = samples("history.checkpoint.serialized-bytes");
+        assert_eq!(bytes.len(), usize::from(count > 0));
+        if count > 0 {
+            assert!(bytes[0] > 0.0);
+        }
+    }
+}
+
 #[tokio::test]
 async fn checkpoint_with_no_actions_returns_repository_at_same_root() {
     let repo = create_empty_repository();
