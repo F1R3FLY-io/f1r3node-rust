@@ -22,7 +22,7 @@ artifacts:
   - formal/tlaplus/casper_soak/profiles/version_phlo/MC_VersionPhlo_refund_unsafe.cfg
   - formal/tlaplus/casper_soak/profiles/version_phlo/verification-plan.jsonc
   - formal/tlaplus/casper_soak/profiles/version_phlo/README.md
-refutation: pending
+refutation: bounded-safety-pass
 construction: not-applicable
 construction_assumptions: null
 binding: pending
@@ -119,4 +119,18 @@ The classifier compares pinned values without calculating node accounting. Missi
 
 The implementation blocks live execution, post-merge execution, experimental policies, and undefined funding mappings. Every controlled result retains zero node launches and a non-passing soak verdict.
 
-The new workflow tag remains unratified. Claim acceptance, canonical evidence review, and final discharge remain pending.
+The new workflow tag remains unratified. Human binding acceptance and final discharge remain pending.
+
+## Bounded verification review
+
+The [review report](../casper/cbc-evidence/runs/casper-version-phlo-20260919-01/report.json) binds the twelve reviewed artifacts and retained verification evidence.
+
+Native Linux, isolated Linux, and hosted fixtures each passed 15 tests, 102 cases, and 103 invocations. Four model controls passed.
+
+The model retains its two-scenario, three-observation bound. The review preserves failed attempts and the receipt-binding regression.
+
+The isolated run used host-built binaries. Its image and executable identities are retained. Original container configuration inspection was not retained.
+
+Hosted run `35459964874` verified the reviewed implementation at `807bf94dcb0389fdd57100bc32f64eea20f64ea6`. These checks neither qualify live adapters nor authorize protocol activation.
+
+The proposed tag is `.github/workflows/casper-version-phlo.yml cbc=mandatory cbc-weight=high`. Applying it requires separate human ratification.

@@ -548,14 +548,18 @@ tasks:
     claims: [CLAIM-CASPER-SOAK-007]
     claim_spec: docs/claims/casper-soak-version-phlo.md
     status: in_progress
-    claimed_by: pi-soak-carrier-index-linux
-    claimed_at: 2026-09-19T15:57:08Z
+    claimed_by: pi-casper-slashing
+    claimed_at: 2026-09-19T18:23:10Z
+    previous_claimed_by: pi-soak-carrier-index-linux
+    previous_claimed_at: 2026-09-19T15:57:08Z
     work_log: docs/work-logs/task-017-11-version-phlo.md
     implementation_status: controlled-transcript-implemented
     binding_status: pending
-    hosted_workflow_status: pending
+    hosted_workflow_status: verified
+    hosted_workflow_run: 35459964874
     workflow_tag_status: unratified
-    completion_blocker: "Hosted verification, final evidence review, binding acceptance, and workflow-tag ratification remain pending."
+    validation_evidence: docs/casper/cbc-evidence/runs/casper-version-phlo-20260919-01/report.json
+    completion_blocker: "Evidence review, human binding acceptance, and workflow-tag ratification remain pending."
     unit_tests: [scripts/casper-soak/tests/version_phlo.rs]
     files:
       - scripts/casper-soak/src/profiles/version_phlo.rs

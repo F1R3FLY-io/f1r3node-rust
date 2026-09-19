@@ -1,0 +1,403 @@
+{
+  "schema_version": 1,
+  "status": "bounded-checks-passed-awaiting-human-binding-review",
+  "claim_discharge": "pending",
+  "claim_ids": [
+    "CLAIM-CASPER-SOAK-007"
+  ],
+  "phase": "pre_pr216_merge",
+  "scope": "harness-profile",
+  "base_commit": "807bf94dcb0389fdd57100bc32f64eea20f64ea6",
+  "working_tree": true,
+  "recorded_at": "2026-09-19T18:31:09Z",
+  "source_digests": {
+    ".github/workflows/casper-version-phlo.yml": "f0b66b1183d12b318b3d62066c4044155a90eba4e332f938c7b51ec752f3583d",
+    "scripts/casper-soak/check-version-phlo.sh": "39399af4f440489cbc05177607b0a80c142115ad4d6977fac1f372af93d9d794",
+    "scripts/casper-soak/src/bin/casper-version-phlo.rs": "ae9211deb4c0d519c241463209a01ed3ebb301e4bf1f3a8037663dab2c50db40",
+    "scripts/casper-soak/src/profiles/version_phlo.rs": "a43d719598ecce30c5be73a91db8bfe3d5930566e6ed22742aeb7fdc43a5f843",
+    "scripts/casper-soak/tests/version_phlo.rs": "519a9b89407871ef86bf45d0c6bd16a91e3bb78efb9246a319b8e065e719c02c",
+    "scripts/casper-soak/src/lib.rs": "a70f76a28de8ef8010eb7f8876b5e947ce94bf35752bbd70b086983383ee7a8f",
+    "scripts/casper-soak/src/manifest.rs": "d9606d542cfb9bc058f691196244ae2e6055e6c84c02b5c2581ee07e70c03000",
+    "scripts/casper-soak/src/models.rs": "99e3f736aa9e753b73edced77049ab206f993d612870bb1d866f6d5c0655983f",
+    "scripts/casper-soak/Cargo.toml": "f6082e839d8bb20e5b2988a9ed92ffe5d1cd79a0e578e10d68582593ea3d13cb",
+    "Cargo.toml": "7c5397136932d04c6e72a04a593249dea347a0f13c4cbd2d7e04c7d6a69f9e88",
+    "Cargo.lock": "318659f6c97ee6030ac0b128b6e2ba0a6a86e07314c2761ecd73052830bb0c4e",
+    "rust-toolchain.toml": "cef5cc010fbd237ab34a4d07129372406e11ff8595c2efc1126d9c93e039aed4",
+    ".cargo/config.toml": "da7e626941c437575405e8eade493a1994483236d0f775c39800b2b2e93f230f",
+    "docs/claims/casper-soak-version-phlo.md": "2a6167b965f804533e9ce45b1f665303d022b0af144126db103ff421be532c98",
+    "formal/tlaplus/casper_soak/profiles/version_phlo/README.md": "a2b26626b3381df7ee8d73dffe1ac8e4c070310646a6464efae70c40060af48d",
+    "formal/tlaplus/casper_soak/profiles/version_phlo/VersionPhlo.tla": "8e62735f8a321cc6ed2687558f1913f9bdf3a747a6c0119a4c3da77ec531f570",
+    "formal/tlaplus/casper_soak/profiles/version_phlo/MC_VersionPhlo.cfg": "dd37bde379ba078b0b1590cac85750b7541fa731153cd4a80762a820fa7220d5",
+    "formal/tlaplus/casper_soak/profiles/version_phlo/MC_VersionPhlo_fields_unsafe.cfg": "cdcd43f3e8c0fcff6e8a4f8371077f2da2d4a0f6729c5d4e63a611fcc8c0948c",
+    "formal/tlaplus/casper_soak/profiles/version_phlo/MC_VersionPhlo_refund_unsafe.cfg": "a95c28b5428af60f30e64da099992276cbe95b868663763727396263d022cf2e",
+    "formal/tlaplus/casper_soak/profiles/version_phlo/MC_VersionPhlo_versions_unsafe.cfg": "f0f26703779277e62daa8aa573a4a5aa14b70e9e130b735e96601f8736ca1015",
+    "formal/tlaplus/casper_soak/profiles/version_phlo/verification-plan.jsonc": "ac854ed435ff7bda246ef2fb0160e138d3ffc86881a3499f6ea11e77387c25ad"
+  },
+  "tested_source_digests": {
+    ".github/workflows/casper-version-phlo.yml": "f0b66b1183d12b318b3d62066c4044155a90eba4e332f938c7b51ec752f3583d",
+    "scripts/casper-soak/check-version-phlo.sh": "39399af4f440489cbc05177607b0a80c142115ad4d6977fac1f372af93d9d794",
+    "scripts/casper-soak/src/bin/casper-version-phlo.rs": "ae9211deb4c0d519c241463209a01ed3ebb301e4bf1f3a8037663dab2c50db40",
+    "scripts/casper-soak/src/profiles/version_phlo.rs": "a43d719598ecce30c5be73a91db8bfe3d5930566e6ed22742aeb7fdc43a5f843",
+    "scripts/casper-soak/tests/version_phlo.rs": "519a9b89407871ef86bf45d0c6bd16a91e3bb78efb9246a319b8e065e719c02c",
+    "scripts/casper-soak/src/lib.rs": "a70f76a28de8ef8010eb7f8876b5e947ce94bf35752bbd70b086983383ee7a8f",
+    "scripts/casper-soak/src/manifest.rs": "d9606d542cfb9bc058f691196244ae2e6055e6c84c02b5c2581ee07e70c03000",
+    "scripts/casper-soak/src/models.rs": "99e3f736aa9e753b73edced77049ab206f993d612870bb1d866f6d5c0655983f",
+    "scripts/casper-soak/Cargo.toml": "f6082e839d8bb20e5b2988a9ed92ffe5d1cd79a0e578e10d68582593ea3d13cb",
+    "Cargo.toml": "7c5397136932d04c6e72a04a593249dea347a0f13c4cbd2d7e04c7d6a69f9e88",
+    "Cargo.lock": "318659f6c97ee6030ac0b128b6e2ba0a6a86e07314c2761ecd73052830bb0c4e",
+    "rust-toolchain.toml": "cef5cc010fbd237ab34a4d07129372406e11ff8595c2efc1126d9c93e039aed4",
+    ".cargo/config.toml": "da7e626941c437575405e8eade493a1994483236d0f775c39800b2b2e93f230f",
+    "docs/claims/casper-soak-version-phlo.md": "d643b208afe42f587d0274125b28c970174bdeea421ed8e5a6226f5234d7e750",
+    "formal/tlaplus/casper_soak/profiles/version_phlo/README.md": "a2b26626b3381df7ee8d73dffe1ac8e4c070310646a6464efae70c40060af48d",
+    "formal/tlaplus/casper_soak/profiles/version_phlo/VersionPhlo.tla": "8e62735f8a321cc6ed2687558f1913f9bdf3a747a6c0119a4c3da77ec531f570",
+    "formal/tlaplus/casper_soak/profiles/version_phlo/MC_VersionPhlo.cfg": "dd37bde379ba078b0b1590cac85750b7541fa731153cd4a80762a820fa7220d5",
+    "formal/tlaplus/casper_soak/profiles/version_phlo/MC_VersionPhlo_fields_unsafe.cfg": "cdcd43f3e8c0fcff6e8a4f8371077f2da2d4a0f6729c5d4e63a611fcc8c0948c",
+    "formal/tlaplus/casper_soak/profiles/version_phlo/MC_VersionPhlo_refund_unsafe.cfg": "a95c28b5428af60f30e64da099992276cbe95b868663763727396263d022cf2e",
+    "formal/tlaplus/casper_soak/profiles/version_phlo/MC_VersionPhlo_versions_unsafe.cfg": "f0f26703779277e62daa8aa573a4a5aa14b70e9e130b735e96601f8736ca1015",
+    "formal/tlaplus/casper_soak/profiles/version_phlo/verification-plan.jsonc": "ac854ed435ff7bda246ef2fb0160e138d3ffc86881a3499f6ea11e77387c25ad"
+  },
+  "claim_digests": {
+    "docs/claims/casper-soak-version-phlo.md": "2a6167b965f804533e9ce45b1f665303d022b0af144126db103ff421be532c98"
+  },
+  "artifact_inventory": [
+    "scripts/casper-soak/src/profiles/version_phlo.rs",
+    "scripts/casper-soak/src/bin/casper-version-phlo.rs",
+    "scripts/casper-soak/tests/version_phlo.rs",
+    "scripts/casper-soak/check-version-phlo.sh",
+    ".github/workflows/casper-version-phlo.yml",
+    "formal/tlaplus/casper_soak/profiles/version_phlo/VersionPhlo.tla",
+    "formal/tlaplus/casper_soak/profiles/version_phlo/MC_VersionPhlo.cfg",
+    "formal/tlaplus/casper_soak/profiles/version_phlo/MC_VersionPhlo_versions_unsafe.cfg",
+    "formal/tlaplus/casper_soak/profiles/version_phlo/MC_VersionPhlo_fields_unsafe.cfg",
+    "formal/tlaplus/casper_soak/profiles/version_phlo/MC_VersionPhlo_refund_unsafe.cfg",
+    "formal/tlaplus/casper_soak/profiles/version_phlo/verification-plan.jsonc",
+    "formal/tlaplus/casper_soak/profiles/version_phlo/README.md"
+  ],
+  "metadata_only_change": {
+    "path": "docs/claims/casper-soak-version-phlo.md",
+    "before": "d643b208afe42f587d0274125b28c970174bdeea421ed8e5a6226f5234d7e750",
+    "after": "2a6167b965f804533e9ce45b1f665303d022b0af144126db103ff421be532c98",
+    "description": "Record completed bounded verification. No contract, artifact, or compiled-source changes."
+  },
+  "tiers": {
+    "refutation": "bounded-safety-pass",
+    "construction": "not-applicable",
+    "binding": "pending"
+  },
+  "native_linux": {
+    "tests": 15,
+    "cases": 102,
+    "invocations": 103,
+    "nested_references": 1250
+  },
+  "isolated_linux": {
+    "status": "retained-linux-evidence-verified",
+    "lanes": 2,
+    "tests_per_lane": 15,
+    "cases_per_lane": 102,
+    "invocations_per_lane": 103,
+    "nested_references_per_lane": 1250,
+    "models": 4,
+    "runner_controls": {
+      "renamed_case": 1,
+      "interruption": 143
+    },
+    "image": "sha256:9b515734d83b6a1166cfe14b87766f85cd212dc6b2883fb333de0db4c8904e93",
+    "isolation_configuration": "owner-reported; original container inspection was not retained",
+    "binaries": "host-built; identities retained; binary files not in retrieved evidence",
+    "remote_current_checkout": "different branch; not changed or used to rerun tests",
+    "node_execution": false
+  },
+  "hosted": {
+    "status": "hosted-version-phlo-evidence-verified",
+    "run_id": 35459964874,
+    "artifact_id": 10588828005,
+    "head_revision": "807bf94dcb0389fdd57100bc32f64eea20f64ea6",
+    "source_files": 21,
+    "tests": 15,
+    "cases": 102,
+    "invocations": 103,
+    "model_controls": 4,
+    "nested_references": 1250,
+    "zip_bytes": 3976168,
+    "zip_sha256": "f515f4c8f31c07206ba5e333c939f3c2bc387bc24477774aaf466d91f340b8cc",
+    "verifier_sha256": "edcba9207f65d0e12e99f0535493aede95b85ab382b48e795005c20ab1fec00f",
+    "models": [
+      {
+        "configuration": "MC_VersionPhlo.cfg",
+        "exit": 0,
+        "expected_property": null,
+        "states_generated": 1201,
+        "distinct_states": 625
+      },
+      {
+        "configuration": "MC_VersionPhlo_versions_unsafe.cfg",
+        "exit": 12,
+        "expected_property": "VersionLabelsSeparate",
+        "states_generated": 834,
+        "distinct_states": 450
+      },
+      {
+        "configuration": "MC_VersionPhlo_fields_unsafe.cfg",
+        "exit": 12,
+        "expected_property": "BothPhloFieldsCaptured",
+        "states_generated": 462,
+        "distinct_states": 254
+      },
+      {
+        "configuration": "MC_VersionPhlo_refund_unsafe.cfg",
+        "exit": 12,
+        "expected_property": "SettlementOutcomeClassified",
+        "states_generated": 544,
+        "distinct_states": 304
+      }
+    ],
+    "node_execution": false,
+    "claim_discharge": "pending",
+    "workflow_tag_ratified": false
+  },
+  "model": {
+    "construction": "not-applicable",
+    "driver_binding": "pending",
+    "harness_binary_sha256": "5bc527a1d424113bc4e902ca83c2fe34117f5eb1c8f3a94ecd71925b14fcf58d",
+    "heap_limit_mb": 512,
+    "kill_grace_seconds": 5,
+    "model": "formal/tlaplus/casper_soak/VersionPhlo.tla",
+    "plan_sha256": "3d5caf0a75dc73de77d1636980c123962c8ca6ed821033586bfbc91d3df7953d",
+    "profile_verification": "pending",
+    "results": [
+      {
+        "configuration": "MC_VersionPhlo.cfg",
+        "configuration_sha256": "dd37bde379ba078b0b1590cac85750b7541fa731153cd4a80762a820fa7220d5",
+        "constant_assignments": [
+          [
+            "Scenarios",
+            "2"
+          ],
+          [
+            "MaxObservations",
+            "3"
+          ],
+          [
+            "ConflateAuthorityVersions",
+            "FALSE"
+          ],
+          [
+            "OmitPhloPrice",
+            "FALSE"
+          ],
+          [
+            "IgnoreRefundMismatch",
+            "FALSE"
+          ]
+        ],
+        "distinct_states": 625,
+        "elapsed_seconds": 4.071721669,
+        "exit": 0,
+        "expected_exit": 0,
+        "expected_property": null,
+        "log": "MC_VersionPhlo.log",
+        "log_sha256": "47cd7dd58e5edaa94b76c3ddc47772627fa7878bdde1b601e5e0b29b4d710314",
+        "model_sha256": "8e62735f8a321cc6ed2687558f1913f9bdf3a747a6c0119a4c3da77ec531f570",
+        "outcome": "passed",
+        "states_generated": 1201,
+        "tlc_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+        "tlc_version": "TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)"
+      },
+      {
+        "configuration": "MC_VersionPhlo_versions_unsafe.cfg",
+        "configuration_sha256": "f0f26703779277e62daa8aa573a4a5aa14b70e9e130b735e96601f8736ca1015",
+        "constant_assignments": [
+          [
+            "Scenarios",
+            "2"
+          ],
+          [
+            "MaxObservations",
+            "3"
+          ],
+          [
+            "ConflateAuthorityVersions",
+            "TRUE"
+          ],
+          [
+            "OmitPhloPrice",
+            "FALSE"
+          ],
+          [
+            "IgnoreRefundMismatch",
+            "FALSE"
+          ]
+        ],
+        "distinct_states": 450,
+        "elapsed_seconds": 3.099875581,
+        "exit": 12,
+        "expected_exit": 12,
+        "expected_property": "VersionLabelsSeparate",
+        "log": "MC_VersionPhlo_versions_unsafe.log",
+        "log_sha256": "7705e816f4965c684c0c8a4be7ecfeb9ed5e2df2c162690bb3c8ef60bbf2bd81",
+        "model_sha256": "8e62735f8a321cc6ed2687558f1913f9bdf3a747a6c0119a4c3da77ec531f570",
+        "outcome": "passed",
+        "states_generated": 834,
+        "tlc_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+        "tlc_version": "TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)"
+      },
+      {
+        "configuration": "MC_VersionPhlo_fields_unsafe.cfg",
+        "configuration_sha256": "cdcd43f3e8c0fcff6e8a4f8371077f2da2d4a0f6729c5d4e63a611fcc8c0948c",
+        "constant_assignments": [
+          [
+            "Scenarios",
+            "2"
+          ],
+          [
+            "MaxObservations",
+            "3"
+          ],
+          [
+            "ConflateAuthorityVersions",
+            "FALSE"
+          ],
+          [
+            "OmitPhloPrice",
+            "TRUE"
+          ],
+          [
+            "IgnoreRefundMismatch",
+            "FALSE"
+          ]
+        ],
+        "distinct_states": 254,
+        "elapsed_seconds": 4.06892347,
+        "exit": 12,
+        "expected_exit": 12,
+        "expected_property": "BothPhloFieldsCaptured",
+        "log": "MC_VersionPhlo_fields_unsafe.log",
+        "log_sha256": "69133ea4a21f9fff2a5302ca2e72455ab4360cba68a0a68d6f29f5991ad005d8",
+        "model_sha256": "8e62735f8a321cc6ed2687558f1913f9bdf3a747a6c0119a4c3da77ec531f570",
+        "outcome": "passed",
+        "states_generated": 462,
+        "tlc_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+        "tlc_version": "TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)"
+      },
+      {
+        "configuration": "MC_VersionPhlo_refund_unsafe.cfg",
+        "configuration_sha256": "a95c28b5428af60f30e64da099992276cbe95b868663763727396263d022cf2e",
+        "constant_assignments": [
+          [
+            "Scenarios",
+            "2"
+          ],
+          [
+            "MaxObservations",
+            "3"
+          ],
+          [
+            "ConflateAuthorityVersions",
+            "FALSE"
+          ],
+          [
+            "OmitPhloPrice",
+            "FALSE"
+          ],
+          [
+            "IgnoreRefundMismatch",
+            "TRUE"
+          ]
+        ],
+        "distinct_states": 304,
+        "elapsed_seconds": 4.24590068,
+        "exit": 12,
+        "expected_exit": 12,
+        "expected_property": "SettlementOutcomeClassified",
+        "log": "MC_VersionPhlo_refund_unsafe.log",
+        "log_sha256": "afe936f7298f6bf0cf50a141f1dacdaf0454abc892da83b871e27517ce1861f4",
+        "model_sha256": "8e62735f8a321cc6ed2687558f1913f9bdf3a747a6c0119a4c3da77ec531f570",
+        "outcome": "passed",
+        "states_generated": 544,
+        "tlc_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+        "tlc_version": "TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)"
+      }
+    ],
+    "runner_sha256": "99e3f736aa9e753b73edced77049ab206f993d612870bb1d866f6d5c0655983f",
+    "scope": "bounded-harness-refutation-only",
+    "seed": 1,
+    "status": "passed",
+    "timeout_seconds": 120,
+    "workers": 1
+  },
+  "shared_tests": {
+    "passed": 11,
+    "failed": 0
+  },
+  "runner_controls": {
+    "renamed_case": 1,
+    "interruption": 143
+  },
+  "external_evidence": {
+    "status": "local-sanitized-not-uploaded",
+    "local_archive": "target/task-017-11-final/casper-version-phlo-20260919-01.external.tar.gz",
+    "asset": "casper-version-phlo-20260919-01.external.tar.gz",
+    "sha256": "330e7609143ffe0eaf839ecf082a61ec02809acdd0bd357b66aac7ecee3616bb",
+    "bytes": 5187772,
+    "manifest": "external-manifest.sha256",
+    "manifest_sha256": "3d753dd5bde1c258f04e859c67d269fdac048e2cdb6d8adc3d18328daae87eba",
+    "manifest_entries": 28556,
+    "regular_files_including_manifest": 28557,
+    "proposed_release_id": 391939637,
+    "proposed_tag": "cbc-evidence-epic-017",
+    "upload_authorized": false
+  },
+  "privacy": {
+    "redacted_files": 9,
+    "redactions": "docs/casper/cbc-evidence/runs/casper-version-phlo-20260919-01/redactions.tsv",
+    "redactions_sha256": "45b9b3737f23cefb56a218a17eec57239a132c5111420aa5f05312442cae8a92",
+    "workstation_path_scan_matches": 0,
+    "personal_email_pattern_matches": 0,
+    "fixture_and_reviewed_source_bytes_unchanged": true
+  },
+  "retained_failures": [
+    {
+      "path": "checks/bootstrap-01",
+      "kind": "fixture-producer-source-mismatch",
+      "result": "12-passed-1-failed",
+      "source_snapshot": true
+    },
+    {
+      "path": "checks/review-red-01",
+      "kind": "receipt-binding-regression",
+      "result": "0-passed-1-failed",
+      "source_snapshot": true
+    },
+    {
+      "path": "hosted/validator-history.json",
+      "kind": "validator-omitted-manifest-and-request-checks",
+      "original_exit": 1,
+      "corrected_exit": 0,
+      "expected_count_unchanged": 1250
+    }
+  ],
+  "limits": [
+    "Only bounded controlled-transcript harness behavior is verified.",
+    "Real signatures, node accounting, live adapters, activation, and post-merge execution are excluded.",
+    "The isolated run used host-built binaries. Original container inspection is absent.",
+    "Executable binary identities are recorded. Binary files were not retained in the retrieved Linux evidence.",
+    "The original hosted ZIP and original Linux archive remain private local retention inputs.",
+    "A concurrent shared bindings-script edit belongs to separate Claim001 renewal, not this review."
+  ],
+  "workflow_tag": {
+    "path": ".github/workflows/casper-version-phlo.yml",
+    "proposed_cbc": "mandatory",
+    "proposed_weight": "high",
+    "ratified": false
+  },
+  "pending": [
+    "human-binding-acceptance",
+    "workflow-tag-ratification",
+    "external-evidence-publication"
+  ],
+  "soak": "pending",
+  "node_execution": false,
+  "post_merge_execution": "blocked",
+  "waiver": null
+}
