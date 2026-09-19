@@ -170,6 +170,18 @@ files:
   - formal/tlaplus/casper_soak/profiles/authority_finality/MC_AuthorityFinality_head_unsafe.cfg
   - formal/tlaplus/casper_soak/profiles/authority_finality/verification-plan.jsonc
   - formal/tlaplus/casper_soak/profiles/authority_finality/README.md
+  - scripts/casper-soak/src/profiles/carrier_index.rs
+  - scripts/casper-soak/src/bin/casper-carrier-index.rs
+  - scripts/casper-soak/tests/carrier_index.rs
+  - scripts/casper-soak/check-carrier-index.sh
+  - .github/workflows/casper-carrier-index.yml
+  - formal/tlaplus/casper_soak/profiles/carrier_index/CarrierIndex.tla
+  - formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex.cfg
+  - formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex_path_unsafe.cfg
+  - formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex_window_unsafe.cfg
+  - formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex_counter_unsafe.cfg
+  - formal/tlaplus/casper_soak/profiles/carrier_index/verification-plan.jsonc
+  - formal/tlaplus/casper_soak/profiles/carrier_index/README.md
 tasks:
   - id: TASK-017-1
     title: "Reconcile ratifications, existing epics, and source dependencies"
@@ -484,6 +496,27 @@ tasks:
     decisions: [D-10]
     claims: [CLAIM-CASPER-SOAK-008]
     claim_spec: docs/claims/casper-soak-carrier-index.md
+    validation_evidence: docs/casper/cbc-evidence/runs/casper-carrier-index-publication-20260919-01/report.json
+    binding_status: pending
+    hosted_workflow_status: verified
+    hosted_workflow_run: 35429044639
+    workflow_tag_status: unratified
+    evidence_publication_status: blocked
+    completion_blocker: "The draft release is not accessible. Evidence upload, remote retrieval, binding acceptance, and workflow-tag ratification remain pending."
+    unit_tests: [scripts/casper-soak/tests/carrier_index.rs]
+    files:
+      - scripts/casper-soak/src/profiles/carrier_index.rs
+      - scripts/casper-soak/src/bin/casper-carrier-index.rs
+      - scripts/casper-soak/tests/carrier_index.rs
+      - scripts/casper-soak/check-carrier-index.sh
+      - .github/workflows/casper-carrier-index.yml
+      - formal/tlaplus/casper_soak/profiles/carrier_index/CarrierIndex.tla
+      - formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex.cfg
+      - formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex_path_unsafe.cfg
+      - formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex_window_unsafe.cfg
+      - formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex_counter_unsafe.cfg
+      - formal/tlaplus/casper_soak/profiles/carrier_index/verification-plan.jsonc
+      - formal/tlaplus/casper_soak/profiles/carrier_index/README.md
     acceptance:
       - "Paired index and reference runs use the same candidate, DAG, window, and availability fixture."
       - "The profile records valid, invalid, and approved carrier cases and supported failure injections."

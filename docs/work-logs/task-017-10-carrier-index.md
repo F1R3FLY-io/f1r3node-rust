@@ -119,6 +119,26 @@ The proposed workflow tag is `.github/workflows/casper-carrier-index.yml cbc=man
 
 Acceptance does not qualify live interfaces, prove node carrier equivalence, activate a protocol, or authorize a soak. CLAIM-FINALITY-002 remains outside this task.
 
-Evidence upload, remote retrieval, and the shared inventory update remain completion requirements. Binding review must precede claim discharge and task closure.
+Evidence upload and remote retrieval remain completion requirements. Binding review must precede claim discharge and task closure.
+
+## Carrier inventory and compatibility links
+
+The user relayed approval for a carrier-only tracker update. `docs/ToDos.md` now lists all 12 carrier artifacts in the epic and task inventories.
+
+TASK-017-10 remains in progress. Claim 008 remains pending, and its workflow tag remains unratified. The slashing and preparation task sections remain byte-identical.
+
+Twelve relative symlinks now expose the canonical records through `docs/cbc-evidence/`. This corrects a packaging omission under `docs/casper/README.md`. The links introduce no separate status or duplicate evidence.
+
+The default-directory gate resolves all 11 currently mandatory carrier artifacts to pending records. The unratified workflow is outside that mandatory set. Strict claim audits still pass for Claims 001 through 005 and return the expected pending exit for Claim 008.
+
+YAML parsing, both carrier artifact inventories, symlink targets, and the diff check passed. These checks do not discharge any claim.
+
+The requested six-workflow bindings inventory change is separate. Its script is an accepted Claim-001 artifact. An edit invalidates its accepted digest and requires renewed binding acceptance.
+
+The user pulled revision `137b74fdb`, which adds the slashing workflow and the preparation agent's handoff. All six profile workflows are now available.
+
+The carrier and slashing workflow attributes are still unspecified. Inventory inclusion must not imply workflow-tag ratification.
+
+The shared inventory script, accepted claims, shared compiled sources, and `.gitattributes` remain unchanged. Its proposed batch change awaits explicit expanded scope.
 
 No node campaign, claim discharge, or task closure has occurred.
