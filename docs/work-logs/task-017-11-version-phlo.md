@@ -46,7 +46,9 @@ The six-workflow bindings-script change remains outside this assignment. Live qu
 - [x] Verify hosted CI after separately authorized publication.
 - [x] Package and sanitize retained evidence outside Git under the current retention rule.
 - [x] Add pending canonical ledger records and their required compatibility symlinks.
-- [ ] Obtain separate binding acceptance and workflow-tag ratification.
+- [x] Obtain separate binding acceptance and workflow-tag ratification.
+- [x] Upload and verify the two authorized sanitized archives.
+- [x] Discharge Claim007 and complete the strict task check.
 
 ## Intended files
 
@@ -60,7 +62,7 @@ The six-workflow bindings-script change remains outside this assignment. Live qu
 
 The workflow exists, but its CbC tag remains unratified. Cargo configuration, shared library registration, accepted profiles, and the common claim auditor remain unchanged.
 
-## Verification boundary
+## Initial verification boundary
 
 The initial model bound is two scenarios and three observations per scenario. The controls target `VersionLabelsSeparate`, `BothPhloFieldsCaptured`, and `SettlementOutcomeClassified`.
 
@@ -68,7 +70,7 @@ Passing controlled transcripts cannot establish actual node interface support. L
 
 Claim 007 remains pending. Local checks provide bounded verification results, not binding acceptance, workflow-tag ratification, a waiver, or task completion.
 
-## Current state
+## Implementation checkpoint
 
 The user published ownership commit `623ee7f54e841295c2538b67e3bcbfee19fea7d5`. The integrated starting revision is `4a7bf8960800d76be82d887c205a898169bdb8fe`.
 
@@ -151,3 +153,41 @@ TASK-017-14 must retain the final archive and supplementary checks before scratc
 Remaining decisions are bounded Claim007 binding acceptance, workflow-tag ratification, and authorization for the sanitized evidence upload. Strict closure follows those decisions and successful checks.
 
 No commit, push, release publication, policy activation, live qualification, or node execution occurred during this takeover.
+
+## Accepted binding and strict closure
+
+On 2026-09-19, the user accepted Claim007’s bounded protocol/Phlo harness binding and separately ratified the exact mandatory/high workflow tag.
+
+The [acceptance report](../casper/cbc-evidence/runs/casper-version-phlo-acceptance-20260919-01/report.json) preserves both approval quotations and binds the twelve unchanged profile artifacts.
+
+The previous pending ledgers, claim specification, and attributes remain in the acceptance metadata archive. No prior review or failed result was replaced.
+
+The user separately authorized upload of the two sanitized archives. Assets `575328309` and `575328308` contain those exact reviewed bytes.
+
+Both downloads matched the local archives byte-for-byte. The release remains a draft. Its 25 existing assets, including its index and checksum files, remain unchanged.
+
+Fresh native verification passed 15 tests, 102 cases, 103 invocations, and four model controls. Independent checks verified 92 reports and 1,250 retained references.
+
+The first shared check ran between the claim edit and ledger renewal. It refused the inconsistent metadata with exit 101.
+
+After ledger renewal, all eleven shared tests passed without source or assertion changes. The failed check remains retained.
+
+The first acceptance verifier read the shared-test count from the wrong field. Its correction preserves the eleven-test expectation and requires four passing suites.
+
+A separate preparation session changed TASK-017-12 during verification. Tracker checksum checks refused those changes. Subsequent checks preserved that task and compared all unrelated task objects.
+
+Claim007 and its twelve canonical ledgers are discharged. The exact twelve-artifact CbC gate reports zero gaps. Strict audits pass for Claims002 through 008.
+
+The full bundle remains pending only for Claim001. This acceptance does not renew Claim001 or authorize a campaign.
+
+The unchanged completion helper ran on a tracker copy in a fresh Bash process with strict checks and no force option.
+
+Its integrity grade is `full`, with no gaps. The reviewed patch marks only TASK-017-11 complete and updates its acceptance metadata.
+
+The repository completion adapter, tracker backup, unrelated task objects, and previous accepted records remain unchanged.
+
+Fresh acceptance evidence remains under `target/task-017-11-acceptance/`. TASK-017-14 must retain this evidence before scratch cleanup.
+
+The later private supplement retains both original Linux binaries and their verified identities. Neither binary was uploaded. Original container inspection remains unavailable.
+
+No commit, push, release publication, node execution, protocol activation, or post-merge execution occurred during acceptance and closure.

@@ -2,7 +2,7 @@
 
 ```yaml
 claim_id: CLAIM-CASPER-SOAK-007
-status: pending
+status: discharged
 adapter: embedded
 scope: harness-profile
 profile_implementation: controlled-transcript
@@ -25,7 +25,7 @@ artifacts:
 refutation: bounded-safety-pass
 construction: not-applicable
 construction_assumptions: null
-binding: pending
+binding: passed
 soak: pending
 ```
 
@@ -119,7 +119,7 @@ The classifier compares pinned values without calculating node accounting. Missi
 
 The implementation blocks live execution, post-merge execution, experimental policies, and undefined funding mappings. Every controlled result retains zero node launches and a non-passing soak verdict.
 
-The new workflow tag remains unratified. Human binding acceptance and final discharge remain pending.
+The user accepted the bounded binding and ratified the workflow tag. The acceptance record below supersedes the pending review state.
 
 ## Bounded verification review
 
@@ -133,4 +133,20 @@ The isolated run used host-built binaries. Its image and executable identities a
 
 Hosted run `35459964874` verified the reviewed implementation at `807bf94dcb0389fdd57100bc32f64eea20f64ea6`. These checks neither qualify live adapters nor authorize protocol activation.
 
-The proposed tag is `.github/workflows/casper-version-phlo.yml cbc=mandatory cbc-weight=high`. Applying it requires separate human ratification.
+## Human acceptance and workflow ratification
+
+On 2026-09-19, the user accepted the bounded binding:
+
+> I accept Claim007’s bounded protocol/Phlo harness binding
+
+The user separately ratified the exact workflow tag:
+
+> ratify: .github/workflows/casper-version-phlo.yml cbc=mandatory cbc-weight=high
+
+The [acceptance report](../casper/cbc-evidence/runs/casper-version-phlo-acceptance-20260919-01/report.json) binds this specification and the twelve unchanged profile artifacts.
+
+The acceptance package preserves the previous pending ledgers and their review references. The historical evidence retains its original source identities and unsuccessful outcomes.
+
+This discharge covers only the bounded pre-merge harness binding. Live adapters, node correctness, protocol activation, and post-merge execution remain outside this discharge.
+
+Task closure and release publication require their separate checks and authorization.

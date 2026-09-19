@@ -547,19 +547,19 @@ tasks:
     title: "Verify protocol and Phlo profile inputs and captured outcomes"
     claims: [CLAIM-CASPER-SOAK-007]
     claim_spec: docs/claims/casper-soak-version-phlo.md
-    status: in_progress
+    status: complete
     claimed_by: pi-casper-slashing
     claimed_at: 2026-09-19T18:23:10Z
     previous_claimed_by: pi-soak-carrier-index-linux
     previous_claimed_at: 2026-09-19T15:57:08Z
     work_log: docs/work-logs/task-017-11-version-phlo.md
     implementation_status: controlled-transcript-implemented
-    binding_status: pending
+    binding_status: passed
     hosted_workflow_status: verified
     hosted_workflow_run: 35459964874
-    workflow_tag_status: unratified
-    validation_evidence: docs/casper/cbc-evidence/runs/casper-version-phlo-20260919-01/report.json
-    completion_blocker: "Evidence review, human binding acceptance, and workflow-tag ratification remain pending."
+    workflow_tag_status: ratified
+    validation_evidence: docs/casper/cbc-evidence/runs/casper-version-phlo-acceptance-20260919-01/report.json
+    completion_blocker: null
     unit_tests: [scripts/casper-soak/tests/version_phlo.rs]
     files:
       - scripts/casper-soak/src/profiles/version_phlo.rs
@@ -584,6 +584,8 @@ tasks:
       - "Profiles report version rejection, minimum-price, prepayment, refund, and exhaustion outcomes against reviewed fixture expectations."
       - "The harness cannot authorize protocol activation or undefined funding policies."
 
+    completion_gaps: []
+    completed_date: 2026-09-19
   - id: TASK-017-12
     title: "Pin executable workloads, qualify candidates, and run the pre-merge baseline soak"
     candidate_review_note: "On 2026-09-19 dev is 6940a5beb, 120 commits and nine merged pull requests after the matrix pin a2fe60c72. Four of those change consensus or node code (#435 fork choice, #438 merge rejection groups, #444 certificate helper, #390 cost accounting). The matrix harness_revision f29c59d01 is 171 commits behind the branch tip. Qualification must repin at dispatch from CI-built dev images."
@@ -591,11 +593,20 @@ tasks:
     claims: [CLAIM-CASPER-SOAK-001, CLAIM-CASPER-SOAK-004]
     claim_index: docs/claims/casper-soak-harness.md
     status: in_progress
-    claimed_by: claude-session-9f19b46c
-    claimed_at: 2026-09-19T06:35:51Z
-    execution_scope: "Preparation only: repin tooling, resource proposal, adapter-qualification checklist, and the infrastructure dry-run plan. Workload pins, adapter qualification runs, and the baseline soak wait for TASK-017-8 through TASK-017-11 and a Linux agent."
+    claimed_by: pi-soak-carrier-index-linux
+    claimed_at: 2026-09-19T19:20:00Z
+    previous_claimed_by: claude-session-9f19b46c
+    previous_claimed_at: 2026-09-19T06:35:51Z
+    handoff_note: docs/handoffs/claude-session-9f19b46c--pi-soak-carrier-index-linux--20260919T192000Z.md
+    execution_scope: "Execution. Preparation is complete and recorded. The owner repins candidates at dispatch, qualifies the live adapters for claims 002 to 004, runs the preflight-only dispatch, and then runs the approved baseline soak. The maintainer already approved the resource budget, so no new budget decision is needed for the baseline."
+    repin_tool: scripts/ci/resolve-dev-candidate.sh
+    dispatch_preconditions: "docs/work-logs/task-017-12-preparation.md#dispatch-preconditions"
     work_log: docs/work-logs/task-017-12-preparation.md
-    blocked_by: [TASK-017-2, TASK-017-3, TASK-017-4, TASK-017-5, TASK-017-6, TASK-017-7, TASK-017-8, TASK-017-9, TASK-017-10, TASK-017-11]
+    blocked_by: []
+    remaining_prerequisites:
+      - "None outstanding from the profile tasks. TASK-017-11 closed on 2026-09-19, and all eight profile claims now carry a passing binding."
+      - "CLAIM-CASPER-SOAK-001 re-acceptance after the 2026-09-19 binding-inventory repair. The strict audit refuses discharge until then."
+      - "D-07 confirmation by jeffrey-l-turner, dylon, and spreston8. It gates recovery adapter qualification for CLAIM-CASPER-SOAK-004 only."
     related_epics: [EPIC-010, EPIC-013]
     resource_approval: "A maintainer approved the resource proposal on 2026-09-19 at 2026-09-19T07:03:24Z. The approval covers two candidates, dev-amd64 and dev-arm64, repinned at dispatch, one preflight-only dispatch, one 24-hour baseline soak per candidate, fleet default memory with the driver host-reserve ceiling, and up to two runner virtual machines for 26 hours each. A second repetition requires a new decision. The 60-hour stability soak requires a passing baseline and a new decision."
     resource_approval_record: docs/work-logs/task-017-12-preparation.md
