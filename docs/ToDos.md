@@ -462,8 +462,10 @@ tasks:
     title: "Verify slashing scenario scheduling and result classification"
     claims: [CLAIM-CASPER-SOAK-006]
     claim_spec: docs/claims/casper-soak-slashing.md
-    status: pending
-    claimed_by: null
+    status: in_progress
+    claimed_by: pi-casper-slashing
+    claimed_at: 2026-09-19T07:13:31Z
+    work_log: docs/work-logs/task-017-9-slashing.md
     blocked_by: []
     decisions: [D-09]
     acceptance:
