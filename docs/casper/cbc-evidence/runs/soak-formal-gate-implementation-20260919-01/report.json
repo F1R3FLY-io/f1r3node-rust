@@ -1,0 +1,236 @@
+{
+  "schema_version": 1,
+  "status": "local-implementation-verified-hosted-pending",
+  "claim_id": "CLAIM-SOAK-GATE-001",
+  "claim_discharge": "pending",
+  "base_revision": "f5ed8c198f18fb7b44fddbb0e8c3fe2185465087",
+  "working_tree": true,
+  "recorded_at": "2026-09-19T22:05:13Z",
+  "authorization": "proceed with your proposal -- approved",
+  "scope": "Workflow gate, source provenance, and local-only finalized-floor obligation revision. No protection-rule activation.",
+  "local_checks": {
+    "shell_syntax": "passed",
+    "gate_positive_round_trips": "passed",
+    "exact_exit_refusal_controls": 47,
+    "workflow_wiring": "passed",
+    "shared_formal_regression": {
+      "exit": 0,
+      "registered_negative_controls": 71
+    },
+    "incomplete_shared_attempt": {
+      "tool_timeout_seconds": 120,
+      "independent_exit": null,
+      "log_empty": true
+    },
+    "shared_retry_timeout_seconds": 600
+  },
+  "fixture_scope": "Synthetic Git responses and isolated files. No hosted artifact service, model checker, or node execution in the new tests.",
+  "effective_dev_required_checks": [
+    {
+      "ruleset_id": 15773875,
+      "parameters": {
+        "strict_required_status_checks_policy": true,
+        "do_not_enforce_on_create": false,
+        "required_status_checks": [
+          {
+            "context": "Lint",
+            "integration_id": 15368
+          },
+          {
+            "context": "cargo-deny",
+            "integration_id": 15368
+          },
+          {
+            "context": "Test (block-storage)",
+            "integration_id": 15368
+          },
+          {
+            "context": "Test (comm)",
+            "integration_id": 15368
+          },
+          {
+            "context": "Test (crypto)",
+            "integration_id": 15368
+          },
+          {
+            "context": "Test (graphz)",
+            "integration_id": 15368
+          },
+          {
+            "context": "Test (models)",
+            "integration_id": 15368
+          },
+          {
+            "context": "Test (rholang)",
+            "integration_id": 15368
+          },
+          {
+            "context": "Test (node)",
+            "integration_id": 15368
+          },
+          {
+            "context": "Test (shared)",
+            "integration_id": 15368
+          },
+          {
+            "context": "Integration Tests (amd64)",
+            "integration_id": 15368
+          },
+          {
+            "context": "Integration Tests (arm64)",
+            "integration_id": 15368
+          },
+          {
+            "context": "Test (casper)",
+            "integration_id": 15368
+          },
+          {
+            "context": "Test (rspace_plus_plus)",
+            "integration_id": 15368
+          }
+        ]
+      }
+    },
+    {
+      "ruleset_id": 14299997,
+      "parameters": {
+        "strict_required_status_checks_policy": true,
+        "do_not_enforce_on_create": false,
+        "required_status_checks": [
+          {
+            "context": "Lint",
+            "integration_id": 15368
+          },
+          {
+            "context": "Test (casper)",
+            "integration_id": 15368
+          },
+          {
+            "context": "Test (rspace_plus_plus)",
+            "integration_id": 15368
+          },
+          {
+            "context": "Test (rholang)",
+            "integration_id": 15368
+          },
+          {
+            "context": "Test (shared)",
+            "integration_id": 15368
+          },
+          {
+            "context": "Test (node)"
+          },
+          {
+            "context": "Test (models)"
+          },
+          {
+            "context": "Test (crypto)"
+          },
+          {
+            "context": "Test (block-storage)"
+          },
+          {
+            "context": "Test (comm)",
+            "integration_id": 15368
+          },
+          {
+            "context": "Test (graphz)",
+            "integration_id": 15368
+          },
+          {
+            "context": "cargo-deny",
+            "integration_id": 15368
+          }
+        ]
+      }
+    }
+  ],
+  "required_check_activation": "pending-separate-authorization",
+  "hosted_verification": "pending",
+  "workflow_provenance": "independent-job-comparison-not-signed-attestation",
+  "claim001_audit": {
+    "exit": 4,
+    "result": {
+      "claim_discharge": "pending",
+      "claims": [
+        {
+          "claim_id": "CLAIM-CASPER-SOAK-001",
+          "soak": "pending",
+          "specification": "docs/claims/casper-soak-harness.md",
+          "specification_sha256": "0ed5732c15eb02caa8d16d52d83cd156a371710b2a8c2a6281f1f921fe4cdef1",
+          "status": "pending"
+        },
+        {
+          "claim_id": "CLAIM-CASPER-SOAK-002",
+          "soak": "pending",
+          "specification": "docs/claims/casper-soak-authority-finality.md",
+          "specification_sha256": "1af422a0628c37ffab2150b98701c954a2875bf77df4eb9f3e69ff56d23feff2",
+          "status": "discharged"
+        },
+        {
+          "claim_id": "CLAIM-CASPER-SOAK-003",
+          "soak": "pending",
+          "specification": "docs/claims/casper-soak-publication.md",
+          "specification_sha256": "f49995b85ec66fe5da179efeadef28559eaec3df2a55fa69479c7688492b00db",
+          "status": "discharged"
+        },
+        {
+          "claim_id": "CLAIM-CASPER-SOAK-004",
+          "soak": "pending",
+          "specification": "docs/claims/casper-soak-recovery.md",
+          "specification_sha256": "057e4cfe06c19ac3ae7d61a15568fe6c72a8e0083f4737215fdf749cde4c5afe",
+          "status": "discharged"
+        },
+        {
+          "claim_id": "CLAIM-CASPER-SOAK-005",
+          "soak": "pending",
+          "specification": "docs/claims/casper-soak-merge-accounting.md",
+          "specification_sha256": "22a6534ef37b1675b6fe69cd04dbae6473d2fa93d9306efb454499cd04c970f3",
+          "status": "discharged"
+        },
+        {
+          "claim_id": "CLAIM-CASPER-SOAK-006",
+          "soak": "pending",
+          "specification": "docs/claims/casper-soak-slashing.md",
+          "specification_sha256": "6954ff5fe9edb29909f88f94b328aced5229ac5c7387b67d02c185c4b717845b",
+          "status": "discharged"
+        },
+        {
+          "claim_id": "CLAIM-CASPER-SOAK-007",
+          "soak": "pending",
+          "specification": "docs/claims/casper-soak-version-phlo.md",
+          "specification_sha256": "05e750fc023dd55ed869c1175b0e6639ecfd7e2be22ded37f32175003aa6757a",
+          "status": "discharged"
+        },
+        {
+          "claim_id": "CLAIM-CASPER-SOAK-008",
+          "soak": "pending",
+          "specification": "docs/claims/casper-soak-carrier-index.md",
+          "specification_sha256": "4aab7367b93766df504bcd679670b8d4bcfeda3d4cd5ea3a2f6b2f39ca86a236",
+          "status": "discharged"
+        }
+      ],
+      "phase": "pre_pr216_merge",
+      "proof_execution": false,
+      "schema_version": 1,
+      "scope": "claim-ledger-audit"
+    }
+  },
+  "documentation_contract": "pending-dependent-renewal",
+  "finalized_floor": {
+    "decision": "local-only",
+    "scope": "Supersede the historical CI-wiring obligation, not correctness or local verification obligations.",
+    "proof_sources_changed": false
+  },
+  "remaining": [
+    "Commit and push with separate authorization.",
+    "Verify fresh hosted results and independently reconstruct source/run/artifact identities.",
+    "Renew Claim001 and its dependent documentation contract.",
+    "Obtain separate protection-rule authorization after gate availability on the protected baseline.",
+    "Test effective required-check behavior and record final acceptance."
+  ],
+  "ruleset_changes": false,
+  "waiver_created": false,
+  "node_execution": false,
+  "task_closed": false
+}

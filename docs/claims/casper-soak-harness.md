@@ -2,7 +2,7 @@
 
 ```yaml
 claim_id: CLAIM-CASPER-SOAK-001
-status: discharged
+status: pending
 adapter: embedded
 pre_merge_tasks: [TASK-017-2, TASK-017-4, TASK-017-12, TASK-017-13]
 post_merge_tasks: [TASK-018-1, TASK-018-2, TASK-018-5, TASK-018-6]
@@ -50,7 +50,7 @@ mechanization_plan: formal/tlaplus/casper_soak/verification-plan.jsonc
 refutation: bounded-safety-pass
 construction: not-applicable
 construction_assumptions: null
-binding: passed
+binding: pending
 soak: pending
 ```
 
@@ -175,6 +175,12 @@ A failing product observation and an infrastructure termination remain separate 
 - [ ] TASK-018-5: Produce new merged-runtime evidence and compare compatible profiles.
 
 ## Current gaps
+
+The approved formal-gate implementation changes `.github/workflows/slashing-tests.yml` after the inventory renewal. This claim therefore returns to pending for the changed workflow.
+
+The [gate implementation record](../work-logs/soak-formal-gate-implementation.md) separates local checks, hosted verification, binding renewal, and protection-rule authorization.
+
+Earlier acceptance reports remain historical source-bound evidence. They do not discharge this new workflow revision.
 
 The local bounded model and control runner are implemented. One clean configuration and ten named negative controls pass their expected verdict checks.
 

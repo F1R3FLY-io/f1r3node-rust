@@ -639,12 +639,14 @@ tasks:
     handoff_note: docs/handoffs/casper-pre-merge-to-post-merge-20260919.md
     evidence_review: docs/casper/cbc-evidence/runs/casper-pre-merge-review-20260919-01/report.json
     canonical_record_review: docs/casper/cbc-evidence/runs/casper-formal-area-records-20260919-01/report.json
-    canonical_record_status: "Both documentation records are discharged under a separate documentation contract. The canonical changed-scope gate passes for 123 artifacts."
+    canonical_record_status: "The historical review passed. The approved formal-gate workflow change now requires Claim001 renewal and a new documentation consistency review."
     compatibility_review: docs/casper/cbc-evidence/runs/casper-compatibility-routing-20260919-01/report.json
-    compatibility_status: "Four stale lookup paths now link to canonical records. Byte-identical historical copies remain. The default gate retains one independent pending claim."
+    compatibility_status: "Four lookup repairs remain intact. The independent gate claim and reopened documentation records remain pending."
+    formal_gate_implementation: docs/work-logs/soak-formal-gate-implementation.md
     blocked_by: [TASK-017-12]
     remaining_prerequisites:
-      - "Resolve the applicability and remaining obligations of CLAIM-SOAK-GATE-001 for slashing-tests.yml. The Casper harness discharge does not cover that historical governance claim."
+      - "Verify the new formal gate on hosted CI, renew Claim001 and its dependent documentation records, and obtain separate protection-rule authorization."
+      - "Complete CLAIM-SOAK-GATE-001 under docs/claims/soak-formal-gate.md. The approved finalized-floor scope remains local-only."
       - "Review baseline results, scan benchmark evidence, and concurrency-gate evidence."
       - "Confirm TASK-018 owners and obtain acceptance of the completed handoff."
     decisions: [D-11]

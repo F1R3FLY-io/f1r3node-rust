@@ -1,6 +1,8 @@
 # CbC Evidence: formal/tlaplus/casper_soak/verification-plan.jsonc
 
-The documentation contract passes for the recorded plan. Fresh lifecycle controls verify unchanged executable inputs after the metadata update.
+The historical plan review passed for its recorded inputs. The documentation contract is now pending because the formal-gate workflow change reopens Claim001.
+
+The retained lifecycle results remain valid for their recorded plan. Recheck documentation consistency after the new workflow binding is accepted.
 
 The eight executable claim inventories remain unchanged. Soaks remain pending, and post-merge verification remains blocked.
 
@@ -23,7 +25,8 @@ The previous pending record remains available at the exact Git revision and dige
     "formal/tlaplus/casper_soak/README.md": "7745bc75532483aa730d7a2610297a3fb0e9b37e29d53b278f3f1ea637b22b07"
   },
   "adapter": "embedded",
-  "status": "discharged",
+  "status": "pending",
+  "pending_reason": "Claim001 requires renewal after the approved formal-gate workflow change.",
   "scope": "formal-area-documentation-and-plan-consistency-only",
   "evidence": {
     "kind": "bounded-controls-and-documentation-consistency",
@@ -33,10 +36,10 @@ The previous pending record remains available at the exact Git revision and dige
   "tiers": {
     "refutation": "bounded-safety-pass",
     "construction": "not-applicable",
-    "binding": "passed"
+    "binding": "pending"
   },
   "phase_status": {
-    "pre_pr216_merge": "discharged",
+    "pre_pr216_merge": "pending",
     "post_pr216_merge": "blocked"
   },
   "soak": "pending",
