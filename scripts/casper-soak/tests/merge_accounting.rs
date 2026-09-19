@@ -469,6 +469,32 @@ fn receipt_coverage_and_transport_conflicts() {
     f.invoke(2, "invalid_input");
 }
 #[test]
+fn malformed_fields_preserve_independent_failures() {
+    let mut f = Fixture::new("invalid-aggregate-keeps-effect-failure");
+    f.payload()["aggregate"]["value"]["charge"] = true.into();
+    f.payload()["entries"]["value"][1]["effect_digest"] = observed(json!("f".repeat(64)));
+    let v = f.invoke(2, "invalid_input");
+    assert!(v["product_failures"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|v| v["kind"] == "effect_digest_mismatch"));
+    let mut f = Fixture::new("invalid-admission-keeps-settlement-failure");
+    f.payload()["entries"]["value"][1]["admission_result"] = observed(json!("unsupported"));
+    f.payload()["entries"]["value"][1]["settlement"]["value"]["charge"] = "31".into();
+    let v = f.invoke(2, "invalid_input");
+    assert!(v["product_failures"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|v| v["kind"] == "settlement_mismatch"));
+    let mut f = Fixture::new("conflicting-identity-counts-unknown");
+    f.payload()["entries"]["value"][2]["context_digest"] = "f".repeat(64).into();
+    let v = f.invoke(2, "invalid_input");
+    assert!(v["measurements"]["counts"]["value"].is_null());
+}
+
+#[test]
 fn qualification_policy_and_raw_input_refusals() {
     for field in [
         "protocol_epoch",

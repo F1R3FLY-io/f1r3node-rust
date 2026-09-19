@@ -205,7 +205,9 @@ A package keeps four kinds of file in the tree: `report.json`, `validation.json`
 
 All other package content leaves the tree. This includes archives, model-checker transcripts, fixture inputs, container logs, attempt records, upstream snapshots, and retained source copies.
 
-The external evidence store holds that content. The package report records each external file as a location plus a SHA-256. A ledger field that cites external content, including `previous_ledger`, records the same location and digest.
+The external evidence store holds that content. A sibling file `external.json` in the package records the store, the asset, the asset digest, and each external member with its path, size, and SHA-256. The report stays byte-identical because the claims audit binds its digest.
+
+A ledger field that cites external content, including `previous_ledger`, records the store, the asset, the asset digest, the member path, and the member digest.
 
 Candidate ledgers are working copies. After acceptance promotes them to canonical records, they leave the tree with the rest of the package content.
 

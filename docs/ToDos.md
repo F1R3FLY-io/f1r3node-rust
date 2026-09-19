@@ -429,6 +429,20 @@ tasks:
     claimed_by: pi-casper-merge-accounting
     claimed_at: 2026-09-19T05:47:48Z
     work_log: docs/work-logs/task-017-8-merge-accounting.md
+    implementation_status: controlled-transcript-implemented
+    validation_evidence: docs/casper/cbc-evidence/runs/casper-merge-accounting-20260919-01/report.json
+    completion_blocker: "Bounded binding acceptance and workflow-tag ratification remain pending."
+    tests:
+      - scripts/casper-soak/tests/merge_accounting.rs
+      - scripts/casper-soak/check-merge-accounting.sh
+    files:
+      - scripts/casper-soak/src/profiles/merge_accounting.rs
+      - scripts/casper-soak/src/bin/casper-merge-accounting.rs
+      - scripts/casper-soak/tests/merge_accounting.rs
+      - scripts/casper-soak/check-merge-accounting.sh
+      - .github/workflows/casper-merge-accounting.yml
+      - formal/tlaplus/casper_soak/profiles/merge_accounting/MergeAccounting.tla
+      - formal/tlaplus/casper_soak/profiles/merge_accounting/verification-plan.jsonc
     blocked_by: []
     decisions: [D-08]
     external_prs: [216]
@@ -534,7 +548,7 @@ tasks:
     created_at: 2026-09-17
     rationale: "At 6814682e4 the branch differed from origin/dev by 762 files and about 46,000 added lines. At 490d21093, PR #436 against docs/consensus-neutral-execution shows 1,243 files and about 179,500 added lines. Evidence run packages are 948 of those files and 158,820 of those lines. That diff is too large for the repository PR review standard."
     measured_at: 490d21093
-    evidence_store: "Decide before the first move. Recommended: a GitHub release on this repository with the archives as assets. Alternatives: a dedicated evidence repository, or OCI object storage. Every option records a location and a SHA-256."
+    evidence_store: "Draft GitHub release cbc-evidence-epic-017 on this repository, created 2026-09-19 with 24 assets: one bundle per package, SHA256SUMS, and index.json. Publish it when the reduction commit lands."
     stack_review_baseline: docs/casper/cbc-evidence/runs/casper-stack-integration-20260917-01/report.json
     removal_targets:
       - "Evidence run packages under docs/casper/cbc-evidence/runs/: 23 packages, 948 files, 29 MB, of which 32 archives are 15 MB. Six packages are live because a canonical ledger record cites them. Seventeen are historical and only work logs or this tracker cite them."
@@ -551,7 +565,7 @@ tasks:
       - "Step 5. Work logs: consolidate per task. Keep the acceptance records, the human decision records, and handoff notes. Drop run-by-run narrative that a retained report already records."
       - "Step 6. Verify. Run the strict claims audit, the bindings inventory, the link check, and the STE check before and after. Record the before and after file and line counts against the PR base and against dev in this entry."
       - "Step 7. Land the reduction as one commit with the counts in its message. Ask the maintainer to confirm the reduced diff before PR #436 leaves draft."
-    expected_result: "About 300 files and about 20,000 added lines. The remainder is the crate, the models, the claims, the ledger records, and the retained reports, which are the deliverables."
+    expected_result: "Measured in the 2026-09-19 rehearsal: evidence files 1,049 to 78 and evidence lines 185,612 to 19,777, with the strict audit unchanged. Projected PR diff about 375 files and about 41,000 added lines. The remainder is the crate, the models, the claims, the ledger records, and the retained reports, which are the deliverables."
     acceptance:
       - "The PR diff against its confirmed stack parent contains only Casper soak harness deliverables. The report also measures the cumulative diff against dev."
       - "Record the actual stack parent revision and PR base after integration. Planned stack membership alone cannot justify file deletion."

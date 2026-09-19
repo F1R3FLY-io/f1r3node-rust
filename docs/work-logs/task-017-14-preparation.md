@@ -3,9 +3,9 @@
 ---
 handoff_status: paused
 next_steps:
-  - Create the draft release and upload the bundles, SHA256SUMS, and index.json. Then verify one bundle digest by download.
-  - Consolidate the work logs of TASK-017-1 through TASK-017-7.
-  - Wait for TASK-017-13 before any file leaves the tree.
+  - Wait for TASK-017-13. Then run the rehearsed reduction against the live tree and redirect the one dangling work-log link.
+  - Consolidate the work logs of TASK-017-1 through TASK-017-7 in the same commit.
+  - Publish the draft release when the reduction commit lands, so the tag resolves for readers without write access.
 ---
 
 ## Scope
@@ -44,7 +44,7 @@ The 80 symlinks stay until the workspace driver gains module routing. That chang
 
 ## External store
 
-The store is a draft GitHub release on this repository, tag `cbc-evidence-epic-017`, target `09b0a6006`. A draft is not public and can be deleted. The bundles wait in the session scratchpad until the release exists.
+The store is a draft GitHub release on this repository, tag `cbc-evidence-epic-017`, target `09b0a6006`. It was created on 2026-09-19 with 24 assets. A draft is visible only to people with write access, and its tag resolves only after publication.
 
 Each package has one bundle, `<package>.external.tar.gz`, that contains every file the keep rule excludes plus an inner `external-manifest.json` with each member's path, size, and SHA-256. Bundles are deterministic: sorted members, zero timestamps, root ownership.
 
@@ -52,9 +52,27 @@ The release also carries `SHA256SUMS` for the bundles and `index.json` with pack
 
 The stack-integration package has no file to externalize and no bundle.
 
+## Rehearsal (2026-09-19)
+
+The reduction ran against an exported copy of `442e93faa` in the session scratchpad. No live file changed.
+
+| Measure | Before | After |
+| --- | --- | --- |
+| Evidence files under `runs/` | 1,049 | 78 |
+| Evidence text lines under `runs/` | 185,612 | 19,777 |
+| Strict audit, claims 001 to 004 | exit 0 | exit 0 |
+| Strict audit, full bundle | exit 4 | exit 4 |
+
+The tool removed 993 files, wrote 22 `external.json` pointers, and rewrote 39 `previous_ledger` references. Each rewritten reference keeps the inner-file digest and adds the release tag, asset name, asset digest, member path, and pointer path.
+
+The offline link check reports one more error than the live tree. One work log links to a removed fixture result. Step 3 redirects that link to the package pointer. Code-span mentions of removed files are not links and stay as history.
+
+`report.json` stays byte-identical in every package because the audit binds its digest. The external pointer is a sibling file, not a report field. The retention rule in the plan document should say so for existing packages.
+
 ## Status
 
 - Step 0, retention rule: recorded in the plan document on 2026-09-19.
-- Step 1, store and bundles: 22 bundles built and digested locally, 22.0 MB. The draft release does not exist yet. Its creation needs a permission that this session does not hold.
+- Step 1, store and bundles: complete. 22 bundles, `SHA256SUMS`, and `index.json` uploaded to the draft release. Download verification: `SHA256SUMS`, `index.json`, and the profile-acceptance bundle match the local digests, and all 22 asset sizes match.
 - Step 4, symlinks: reviewed. No change on this branch.
-- Steps 2, 3, 5, 6, 7: not started.
+- Steps 2, 3, 6: rehearsed in the scratch copy. Not applied.
+- Steps 5, 7: not started.

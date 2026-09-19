@@ -615,27 +615,35 @@ pub fn classify(r: &Value, c: &Value, acknowledgments: &[Value]) -> Result<Value
             let expected = descriptors(&r["expectation"]["outcomes"])?;
             raw.push(v["raw_artifact"].clone());
             for name in ["aggregate", "causal_edges", "rejected_executions"] {
-                if let Some(value) = measurement(&p[name])? {
-                    let equal = match name {
-                        "aggregate" => {
-                            aggregate(value, &r["token_domain"])?;
-                            value == &r["expectation"][name]
-                        }
-                        "causal_edges" => edges(value, &rows)? == edges(&r[name], &rows)?,
-                        _ => {
-                            rejection_set(value, &rows)?
-                                == rejection_set(&r["expectation"][name], &rows)?
-                        }
-                    };
-                    if !equal {
-                        failures.push(
+                let attempt = (|| -> Result<()> {
+                    if let Some(value) = measurement(&p[name])? {
+                        let equal = match name {
+                            "aggregate" => {
+                                aggregate(value, &r["token_domain"])?;
+                                value == &r["expectation"][name]
+                            }
+                            "causal_edges" => edges(value, &rows)? == edges(&r[name], &rows)?,
+                            _ => {
+                                rejection_set(value, &rows)?
+                                    == rejection_set(&r["expectation"][name], &rows)?
+                            }
+                        };
+                        if !equal {
+                            failures.push(
                             json!({"kind":format!("{name}_mismatch"),"source":v["raw_artifact"]}),
                         );
+                        }
+                        out["measurements"][name] = p[name].clone();
+                    } else {
+                        missing.push(name.to_owned());
+                        out["measurements"][name] = p[name].clone();
                     }
-                    out["measurements"][name] = p[name].clone();
-                } else {
-                    missing.push(name.to_owned());
-                    out["measurements"][name] = p[name].clone();
+                    Ok(())
+                })();
+                if let Err(error) = attempt {
+                    rejected.push(
+                        json!({"source":v["raw_artifact"],"fatal":true,"reason":error.to_string()}),
+                    );
                 }
             }
             let Some(entries) = measurement(&p["entries"])? else {
@@ -648,6 +656,7 @@ pub fn classify(r: &Value, c: &Value, acknowledgments: &[Value]) -> Result<Value
                 "The execution observation bound is exceeded."
             );
             let mut seen = BTreeMap::new();
+            let mut counts_valid = true;
             let mut duplicates = 0usize;
             let mut rejected_duplicates = 0usize;
             for row in entries {
@@ -671,26 +680,33 @@ pub fn classify(r: &Value, c: &Value, acknowledgments: &[Value]) -> Result<Value
                         "The execution signature or context differs."
                     );
                     for name in FIELDS {
-                        if let Some(value) = measurement(&row[*name])? {
-                            field(name, value, &r["token_domain"])?;
-                            if value != &e[*name] {
-                                failures.push(json!({"kind":format!("{name}_mismatch"),"execution":k,"source":v["raw_artifact"]}));
+                        let attempt = (|| -> Result<()> {
+                            if let Some(value) = measurement(&row[*name])? {
+                                field(name, value, &r["token_domain"])?;
+                                if value != &e[*name] {
+                                    failures.push(json!({"kind":format!("{name}_mismatch"),"execution":k,"source":v["raw_artifact"]}));
+                                }
+                            } else {
+                                missing.push(format!("{k}:{name}"));
                             }
-                        } else {
-                            missing.push(format!("{k}:{name}"));
+                            Ok(())
+                        })();
+                        if let Err(error) = attempt {
+                            rejected.push(json!({"source":v["raw_artifact"],"fatal":true,"reason":error.to_string()}));
                         }
                     }
                     Ok(())
                 })();
                 if let Err(error) = attempt {
+                    counts_valid = false;
                     rejected.push(
                         json!({"source":v["raw_artifact"],"fatal":true,"reason":error.to_string()}),
                     );
                 }
             }
             let absent: Vec<_> = rows.keys().filter(|k| !seen.contains_key(*k)).collect();
-            if absent.is_empty() && seen.len() == rows.len() {
-                out["measurements"]["counts"] = json!({"presence":"observed","value":{"executions":rows.values().filter(|v| !v["execution_position"].is_null()).count(),"admission_rejections":rows.values().filter(|v| v["execution_position"].is_null()).count(),"duplicate_execution_observations":duplicates,"duplicate_admission_observations":rejected_duplicates},"reason":null});
+            if counts_valid && absent.is_empty() && seen.len() == rows.len() {
+                out["measurements"]["counts"] = json!({"presence":"observed","value":{"executions":seen.values().filter(|v| !v["execution_position"].is_null()).count(),"admission_rejections":seen.values().filter(|v| v["execution_position"].is_null()).count(),"duplicate_execution_observations":duplicates,"duplicate_admission_observations":rejected_duplicates},"reason":null});
             } else {
                 missing.push("execution_inventory".to_owned());
             }
