@@ -14,7 +14,9 @@ The carrier-index agent retains TASK-017-10. The preparation agent retains TASK-
 
 The claim update changes only TASK-017-9 ownership fields and this work log. Claim publication precedes executable implementation under the coordination agreement.
 
-No commit or push is authorized by the implementation request alone. Publication of this claim awaits separate approval or a confirmed external publication.
+The implementation request alone did not authorize a commit or push. The user subsequently published the claim before implementation began.
+
+A carrier-only inventory update can proceed separately. It must preserve TASK-017-9, slashing artifacts, accepted claims, and shared compiled sources.
 
 ## Requirements
 
@@ -36,7 +38,7 @@ The profile compares observations with pinned fixture expectations. It does not 
 - [x] Detect authorization differences from pinned expectations without granting slash authority.
 - [x] Add the bounded model and three named negative controls.
 - [x] Run native and isolated Linux fixtures, exact inventory checks, model controls, and shared regressions.
-- [ ] Retain source-bound evidence and failures under the current retention rule.
+- [x] Retain source-bound evidence and failures under the current retention rule.
 - [ ] Request separate binding acceptance and workflow-tag ratification.
 
 ## Intended files
@@ -69,7 +71,11 @@ The claim was published at `51615255aa4ad24779639120ea2a8c5ec0500d78`. Local HEA
 
 An external glossary commit subsequently changed HEAD to `590dd1f7e0d201dc13b90ccc2e4db6740f13584b`. This task did not modify the glossary.
 
-The controlled-transcript implementation and bounded model checks passed. The task remains in progress pending evidence retention, binding review, and workflow-tag ratification.
+The controlled-transcript implementation, bounded model checks, and evidence validator passed. The task remains in progress pending binding review and workflow-tag ratification.
+
+An external commit later captured an implementation snapshot at `137b74fdb903969d186aef9241380eef24dd4833`. That snapshot preceded completion of evidence packaging and validation.
+
+This session did not stage, commit, or push the implementation.
 
 ## Verification results
 
@@ -108,8 +114,41 @@ The fix requires exact equality between the request deadline and manifest deadli
 
 Additional checks reject future rebond epochs and unauthorized positive fixture expectations. Independent failures survive malformed sibling fields, missing receipts, and multiple snapshots.
 
+## Evidence package
+
+The [review report](../casper/cbc-evidence/runs/casper-slashing-20260919-02/report.json) binds 24 source files and archives 12614 evidence files.
+
+The [validation result](../casper/cbc-evidence/runs/casper-slashing-20260919-02/validation.json) checks 1430 nested references, both platform inventories, and 12 pending canonical ledgers.
+
+Twelve compatibility links point to the new canonical ledgers. Existing independent compatibility records remain unchanged.
+
+Claims 001 through 005 still pass strict discharge audits. Claim006 and the full bundle exit 4. Claims006, 007, and 008 remain pending.
+
+The first retention attempt stopped because its privacy scan matched the scan expression itself. Its source, evidence, and failure report remain intact.
+
+The first archive validator compared original TLC log hashes directly with redacted log bytes and exited 1.
+
+The corrected validator checks a pinned redaction manifest. It accepts only exact path, original-hash, and redacted-hash matches.
+
+The original validator, failed exit, corrected run, and audit outputs remain in the supplementary validation archive. No assertion or model property was weakened.
+
 ## Review boundary
 
 The synthetic fixtures test pinned comparisons. They do not establish a reviewed node truth table, actual interface qualification, or an observed node slash.
 
 No accepted profile or shared compiled source changed. No node campaign, policy activation, evidence upload, claim discharge, or workflow tag is authorized by these checks.
+
+## Handoff
+
+```yaml
+handoff_status: ready
+next_steps:
+  - Review the bounded Claim006 binding and pinned synthetic expectations.
+  - Obtain separate human acceptance and workflow-tag ratification.
+  - Preserve both evidence packages and the supplementary validation archive.
+  - Publish only with separate user authorization.
+```
+
+The proposed tag is `.github/workflows/casper-slashing.yml cbc=mandatory cbc-weight=high`. The tag remains unapplied.
+
+TASK-017-14 owns later evidence publication and reduction. This task neither uploads nor removes evidence.
