@@ -20,7 +20,7 @@ Unavailable node interfaces block affected live scenarios. Controlled transcript
 
 ## Plan
 
-- [ ] Record and publish task ownership before implementation.
+- [x] Record and publish task ownership before implementation.
 - [ ] Implement the profile generator, collector, classifier, and executable fixtures.
 - [ ] Run bounded model controls and matching implementation tests.
 - [ ] Record source-specific evidence and remaining interface limits.
@@ -36,4 +36,16 @@ Exchange published commit IDs between machines. Use fast-forward-only pulls from
 
 ## Current state
 
-Only task metadata and this work log have changed. Implementation and verification have not started. The correctness claim remains pending.
+The initial profile module, command-line binary, and 18 test functions now exist. This is an implementation checkpoint, not task completion.
+
+The profile checks paired inputs, path engagement, counters, artifact identities, fault receipts, and restart links. Live, post-merge, and typed-identity execution remain blocked.
+
+The first compile found an unsupported `Result` method. The replacement compiled successfully. The subsequent fixture run exceeded its 180-second tool limit before the final test completed.
+
+That interrupted run is not a passing test result. Its temporary log is `/tmp/carrier-index-checks/first-fixtures.log`.
+
+The commit hook rejected unformatted files. Targeted formatting corrected the three new Rust files without changing shared sources.
+
+The bounded model, model configurations, final verification, claim inventory, and evidence records remain unfinished. The `models` command cannot run until those model files exist.
+
+The correctness claim remains pending. No node campaign or claim discharge has occurred.
