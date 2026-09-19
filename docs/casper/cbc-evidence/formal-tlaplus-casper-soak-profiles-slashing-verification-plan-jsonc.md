@@ -1,6 +1,6 @@
 # CbC Evidence: formal/tlaplus/casper_soak/profiles/slashing/verification-plan.jsonc
 
-The user accepted this bounded pre-merge binding. Workflow-tag ratification and live execution remain outside this discharge.
+The user accepted this bounded pre-merge binding and ratified the workflow tag. Live execution remains outside this discharge.
 
 ```json
 {
@@ -17,15 +17,15 @@ The user accepted this bounded pre-merge binding. Workflow-tag ratification and 
     "CLAIM-CASPER-SOAK-006"
   ],
   "claim_digests": {
-    "docs/claims/casper-soak-slashing.md": "79e37bb2c481d95d9a2548f41e44bfc6e642a866263c665e6cef63fdcfd68a48"
+    "docs/claims/casper-soak-slashing.md": "6954ff5fe9edb29909f88f94b328aced5229ac5c7387b67d02c185c4b717845b"
   },
   "adapter": "embedded",
   "status": "discharged",
   "scope": "bounded-slashing-profile",
   "evidence": {
-    "kind": "accepted-bounded-refutation-and-executable-fixtures",
-    "ref": "docs/casper/cbc-evidence/runs/casper-slashing-acceptance-20260919-01/report.json",
-    "sha256": "3840449eb7f63f4b0fa7ec853c37a6fe9f91195d83e30d9b156898b4f9597871"
+    "kind": "ratified-bounded-refutation-and-executable-fixtures",
+    "ref": "docs/casper/cbc-evidence/runs/casper-slashing-ratification-20260919-01/report.json",
+    "sha256": "b47dc09e4d3f901503b88ae0ce346c94aecc4a0fc60d3b76079c8b19f54070ca"
   },
   "tiers": {
     "refutation": "bounded-safety-pass",
@@ -38,17 +38,15 @@ The user accepted this bounded pre-merge binding. Workflow-tag ratification and 
   },
   "soak": "pending",
   "waiver": null,
-  "verified_at": "2026-09-19T16:00:28Z",
+  "verified_at": "2026-09-19T16:44:10Z",
   "pending": [
-    "workflow-tag-ratification",
     "external-evidence-publication"
   ],
   "previous_ledger": {
-    "path": "docs/casper/cbc-evidence/runs/casper-slashing-acceptance-20260919-01/previous-ledgers.tar.gz",
-    "sha256": "a112156258c8407d2b5b498c3cc338085e706f9c743df29abb7eb5aefecb3189",
+    "path": "docs/casper/cbc-evidence/runs/casper-slashing-ratification-20260919-01/previous-ledgers.tar.gz",
+    "sha256": "084343234fa3ce8b30c87a0de1143cbd32f91b7685873ade6dacce906ddfb998",
     "member": "formal-tlaplus-casper-soak-profiles-slashing-verification-plan-jsonc.md",
-    "member_sha256": "388b6f51ef859518f52f8c5e05f1b47e67264e29b846103bccc4b1720a492037"
+    "member_sha256": "0d606deb727a614edffb6a029793442da135cf97f7aa6182912bf76dd0bfde0a"
   }
 }
-
 ```
