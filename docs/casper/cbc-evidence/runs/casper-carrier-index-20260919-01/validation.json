@@ -1,0 +1,18 @@
+{
+  "status": "passed",
+  "counts": {
+    "native-01": {
+      "cases": 88,
+      "invocations": 91
+    },
+    "isolated-01": {
+      "cases": 88,
+      "invocations": 91
+    }
+  },
+  "nested_references_checked": 2182,
+  "claim_discharge": "pending",
+  "node_execution": false,
+  "external_bundle_sha256": "51e7b6baae754ca393abe4f042dafefb86228a4c2d9a7b34a85ddcbbf43c1543",
+  "external_bundle_members": 10964
+}

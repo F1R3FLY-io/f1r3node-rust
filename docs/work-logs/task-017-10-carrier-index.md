@@ -21,9 +21,9 @@ Unavailable node interfaces block affected live scenarios. Controlled transcript
 ## Plan
 
 - [x] Record and publish task ownership before implementation.
-- [ ] Implement the profile generator, collector, classifier, and executable fixtures.
-- [ ] Run bounded model controls and matching implementation tests.
-- [ ] Record source-specific evidence and remaining interface limits.
+- [x] Implement the profile generator, collector, classifier, and executable fixtures.
+- [x] Run bounded model controls and matching implementation tests.
+- [x] Record source-specific evidence and remaining interface limits.
 - [ ] Obtain the required binding acceptance before task completion.
 
 ## Coordination
@@ -36,16 +36,53 @@ Exchange published commit IDs between machines. Use fast-forward-only pulls from
 
 ## Current state
 
-The initial profile module, command-line binary, and 18 test functions now exist. This is an implementation checkpoint, not task completion.
+The profile implementation and bounded verification are ready for binding review. TASK-017-10 remains in progress, and CLAIM-CASPER-SOAK-008 remains pending.
 
 The profile checks paired inputs, path engagement, counters, artifact identities, fault receipts, and restart links. Live, post-merge, and typed-identity execution remain blocked.
 
-The first compile found an unsupported `Result` method. The replacement compiled successfully. The subsequent fixture run exceeded its 180-second tool limit before the final test completed.
+## Verification
 
-That interrupted run is not a passing test result. Its temporary log is `/tmp/carrier-index-checks/first-fixtures.log`.
+| Check | Result |
+| --- | --- |
+| Host release fixtures | 23 tests, 88 cases, and 91 invocations passed. |
+| Isolated Linux fixtures | The same 23 tests, 88 cases, and 91 invocations passed. |
+| Clean bounded model | TLC generated 1,201 states and found 625 distinct states. |
+| Three model defect controls | Each produced exit 12 with its registered invariant violation. |
+| Shared manifest, model, inventory, and claim tests | 11 tests passed. |
+| Renamed required fixture control | The runner rejected the replacement with exit 1. |
+| Interrupted runner control | The runner recorded failure with exit 143, not a passing summary. |
+| Formatting, targeted Clippy, shell syntax, and diff checks | Passed. |
+| Accepted claims 001 through 004 | Each strict audit returned exit 0. |
+| Claim 008 | The strict audit returned exit 4 because acceptance remains pending. |
 
-The commit hook rejected unformatted files. Targeted formatting corrected the three new Rust files without changing shared sources.
+The container used a read-only root, no network, no capabilities, an unprivileged user, and explicit resource limits. The evidence records its image and executable hashes.
 
-The bounded model, model configurations, final verification, claim inventory, and evidence records remain unfinished. The `models` command cannot run until those model files exist.
+Review tests exposed four defects before repair. These concerned malformed measurements, contradictory predecessor copies, absent fault schedules, and comparison without complete counters.
 
-The correctness claim remains pending. No node campaign or claim discharge has occurred.
+The repaired tests preserve independent product failures and reject unsupported comparisons. The final evidence validator checked 2,182 nested references.
+
+## Retained failures
+
+The first compile found an unsupported `Result` method. Its replacement compiled successfully. The initial debug fixture run exceeded its 180-second tool limit.
+
+The timeout is not a passing test result. Subsequent release runs completed. The initial commit hook also rejected formatting before targeted formatting corrected the files.
+
+TLC 1.8.0 could not run on the installed Java 8 runtime. The verified campaign uses the same pinned TLC 1.7.4 JAR as TASK-017-8.
+
+The evidence retains failure logs and the four failing review tests. Not every earlier attempt has a retained source snapshot.
+
+## Evidence and handoff
+
+The [report](../casper/cbc-evidence/runs/casper-carrier-index-20260919-01/report.json) binds 22 source digests and 12 profile artifacts.
+
+The package retains only its report, validation result, bundle digest, and redaction list in Git. Twelve canonical ledger records retain pending status without waivers.
+
+The bulk bundle remains local at `/tmp/carrier-index-checks/casper-carrier-index-20260919-01.external.tar.gz`. Its SHA-256 is `51e7b6baae754ca393abe4f042dafefb86228a4c2d9a7b34a85ddcbbf43c1543`.
+
+The draft release does not contain this bundle. Evidence publication requires approval and must occur before completion.
+
+The new workflow has not run on hosted CI. Its proposed CbC tag requires human ratification. No shared workflow or attribute file changed.
+
+The remote tracker owner must add the profile artifact inventory to the epic records. Binding review must precede claim discharge and task closure.
+
+No node campaign, claim discharge, or task closure has occurred.
