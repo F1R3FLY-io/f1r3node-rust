@@ -197,6 +197,20 @@ Shared harness records remain under `docs/cbc-evidence/`. Mixed epic checks use 
 
 The generic artifact gate cannot establish coverage of every profile claim. Closure must also check claim IDs, digests, fixtures, and phase evidence.
 
+### Evidence retention rule (2026-09-19)
+
+This rule applies to every evidence package created after 2026-09-19. TASK-017-14 applies it to the packages that already exist.
+
+A package keeps four kinds of file in the tree: `report.json`, `validation.json`, the SHA-256 digest lists, and the redaction list. The strict claims audit reads the cited report from the tree, so the report must stay.
+
+All other package content leaves the tree. This includes archives, model-checker transcripts, fixture inputs, container logs, attempt records, upstream snapshots, and retained source copies.
+
+The external evidence store holds that content. The package report records each external file as a location plus a SHA-256. A ledger field that cites external content, including `previous_ledger`, records the same location and digest.
+
+Candidate ledgers are working copies. After acceptance promotes them to canonical records, they leave the tree with the rest of the package content.
+
+A verification result is not weaker because its bulk is external. The digest binds the external bytes, and the in-tree report binds the source and claim digests that the audit checks.
+
 ## Existing work and limits
 
 Reuse EPIC-010 reporting, EPIC-012 work counters, EPIC-015 test fixtures, and EPIC-016 scenario infrastructure where their interfaces fit.

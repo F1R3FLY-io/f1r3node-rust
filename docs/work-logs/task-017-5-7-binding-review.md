@@ -2,7 +2,7 @@
 
 ## Status and scope
 
-The three controlled-transcript profiles pass fresh verification. Tasks 017-5–7 remain in progress until human binding acceptance and workflow-tag ratification.
+The three controlled-transcript profiles pass fresh verification. The user accepted the bindings and ratified the workflow tags. Tasks 017-5–7 await ledger recording and strict completion checks.
 
 The [review package](../casper/cbc-evidence/runs/casper-profile-binding-review-20260919-01/report.json) identifies the exact sources, executable evidence, model results, retained failure, and pending candidate ledgers.
 
@@ -40,7 +40,7 @@ The authority unit test checks 2,000 arithmetic cases. Each profile also passed 
 
 Eleven shared native tests passed across claim auditing, binding inventories, manifests, and model results. These regression results do not discharge a claim.
 
-Strict audits for claims 001–004 returned 4 because acceptance remains pending. The full claim bundle also returned 4. These are pending results, not discharges.
+Before acceptance recording, strict audits for claims 001–004 returned 4 because their ledgers remained pending. The full claim bundle also returned 4. These are pending results, not discharges.
 
 Before this task, commit `856fae6ad` moved a function in `host_control.rs` and returned CLAIM-001 to pending. Its current source needs separate acceptance.
 
@@ -94,7 +94,7 @@ Unknown durations remain unknown across clock domains. Leases cannot authorize r
 
 TASK-017-12 retains live qualification, actual baseline results, final workload identities, resource approval, and node campaigns. This review does not satisfy those obligations.
 
-## Required human decisions
+## Decisions requested at review
 
 1. Accept or reject the source-bound, bounded pre-merge bindings for claims 002, 003, and 004.
 2. Ratify or reject `cbc=mandatory` for the three workflow paths below.
@@ -105,7 +105,7 @@ TASK-017-12 retains live qualification, actual baseline results, final workload 
 .github/workflows/casper-recovery.yml
 ```
 
-The proposed tags remain unapplied. Approval of these bindings would not resolve D-07, authorize live execution, or accept node correctness.
+The ratified tags now apply. Approval of these bindings does not resolve D-07, authorize live execution, or accept node correctness.
 
 The candidate ledgers remain pending. Existing canonical profile records retain their historical source and evidence identities until acceptance. No approval transferred through a digest change.
 
@@ -113,7 +113,9 @@ After approval, acceptance must bind the reviewed sources and updated claim spec
 
 ## Human decisions (2026-09-19)
 
-The user accepted the source-bound, bounded pre-merge bindings for claims 002, 003, and 004. The user ratified `cbc=mandatory` for the three workflow paths, and `.gitattributes` now carries those tags.
+The user accepted the source-bound, bounded pre-merge bindings for claims 002, 003, and 004. The user ratified `cbc=mandatory` for the three workflow paths.
+
+An external edit added those tags and the acceptance notice. This assistant paused and requested confirmation. The user replied, “yes - I authorized acceptance”.
 
 This acceptance applies to the reviewed sources in this package. Acceptance must bind those sources and the updated claim specifications before tracker closure.
 
@@ -127,7 +129,11 @@ The merge changed ancestry without changing the tracked tree from the starting r
 
 The package preserves the initial source snapshot, RED source snapshot, failed assertion, GREEN check, final native outputs, isolated Linux outputs, model traces, and source digests.
 
-Archive ownership is numeric. Evidence logs replace exact workspace and home prefixes with placeholders. The package records each changed file and both hashes.
+Archive ownership is numeric. Evidence logs replace exact workspace, home, and temporary-directory prefixes with placeholders. The package records each changed file and both hashes.
+
+The first packaging attempt stopped at the STE Check. Whole-tracker checking reported 19 legacy findings outside the changed metadata fields.
+
+The retained tracker patch changes only evidence paths and review links. The corrected check covers all four changed prose documents without changing legacy tracker prose.
 
 Original profile packages and the lifecycle acceptance package remain unchanged. Historical unavailable-Linux results do not describe these fresh Linux executions.
 

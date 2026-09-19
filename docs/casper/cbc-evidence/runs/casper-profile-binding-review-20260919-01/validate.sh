@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
-[[ $# == 1 && ! -e "$1" && ! -L "$1" ]]
+[[ ( $# == 1 || ( $# == 2 && "$2" == --historical ) ) && ! -e "$1" && ! -L "$1" ]]
 ROOT="$PWD"
+HISTORICAL="${2:-}"
 P=docs/casper/cbc-evidence/runs/casper-profile-binding-review-20260919-01
 mkdir -p "$1"
 OUT="$(cd "$1" && pwd)"
@@ -11,9 +12,11 @@ for kind in source evidence ledgers; do
  gtar --no-same-owner -xzf "$P/$kind.tar.gz" -C "$OUT/$kind"
  (cd "$OUT/$kind"; shasum -a 256 -c "$ROOT/$P/$kind-files.sha256") >"$OUT/$kind.txt"
 done
-shasum -a 256 -c "$P/source-files.sha256" >"$OUT/current-source.txt"
-shasum -a 256 -c "$P/ledgers-files.sha256" >"$OUT/previous-ledgers.txt"
-jq -e '.status=="verified-binding-acceptance-pending" and .claim_discharge=="pending" and .binding_acceptance==null and .tasks_complete==false and .tags_applied==false and .node_execution==false and .policy_activation==false and .soak_verdict=="non_passing"' "$P/report.json" >/dev/null
+if [[ -z "$HISTORICAL" ]]; then
+ shasum -a 256 -c "$P/source-files.sha256" >"$OUT/current-source.txt"
+ shasum -a 256 -c "$P/ledgers-files.sha256" >"$OUT/previous-ledgers.txt"
+fi
+jq -e '.status=="verified-binding-accepted-pending-recording" and .claim_discharge=="pending" and .binding_acceptance.confirmation=="yes - I authorized acceptance" and .tasks_complete==false and .tags_applied==true and .node_execution==false and .policy_activation==false and .soak_verdict=="non_passing"' "$P/report.json" >/dev/null
 E="$OUT/evidence"
 [[ "$(<"$E/publication-red.exit")" == 101 && "$(<"$E/publication-green.exit")" == 0 ]]
 grep -F 'left: Some(0)' "$E/publication-red.txt" >/dev/null
@@ -71,14 +74,14 @@ for candidate in "$P/candidate-ledgers/"*.md; do
  data="$(awk '/^```json$/ {on=1;next} on && /^```$/ {exit} on {print}' "$candidate")"
  artifact="$(jq -r '.artifact.path' <<<"$data")"
  spec="$(jq -r '.claim' <<<"$data")"
- sha="$(shasum -a 256 "$artifact" | awk '{print $1}')"
- spec_sha="$(shasum -a 256 "$spec" | awk '{print $1}')"
+ sha="$(shasum -a 256 "$OUT/source/$artifact" | awk '{print $1}')"
+ spec_sha="$(shasum -a 256 "$OUT/source/$spec" | awk '{print $1}')"
  jq -e --arg sha "$sha" --arg spec "$spec_sha" --arg report "$report_hash" '.artifact.sha256==$sha and .claim_digests[.claim]==$spec and .evidence.sha256==$report and .status=="pending" and .tiers.binding=="pending-review" and .phase_status.pre_pr216_merge=="pending" and .phase_status.post_pr216_merge=="blocked" and .soak=="pending" and .waiver==null' <<<"$data" >/dev/null
  count=$((count+1))
 done
 [[ "$count" == 36 ]]
 for p in authority-finality publication recovery; do
- [[ "$(git check-attr cbc -- ".github/workflows/casper-$p.yml")" == *': unspecified' ]]
+ [[ "$(git check-attr cbc -- ".github/workflows/casper-$p.yml")" == *': mandatory' ]]
 done
-jq -n --arg report "$report_hash" --argjson nested "$(wc -l <"$OUT/nested.sha256")" '{status:"review-package-integrity-passed",report_sha256:$report,current_sources:true,source_archives:true,evidence_archive:true,previous_ledgers:true,pending_candidates:36,nested_references:$nested,invocations_per_platform:203,models:12,claim_discharge:"pending",strict_001:4,strict_bundle:4,node_execution:false}' >"$OUT/validation.json"
-printf 'The source-bound review package is valid. Acceptance remains pending.\n'
+jq -n --arg report "$report_hash" --argjson nested "$(wc -l <"$OUT/nested.sha256")" --arg mode "${HISTORICAL:-current}" '{status:"review-package-integrity-passed",report_sha256:$report,current_sources:($mode=="current"),source_archives:true,evidence_archive:true,previous_ledgers:true,pending_candidates:36,nested_references:$nested,invocations_per_platform:203,models:12,claim_discharge:"pending",strict_001:4,strict_bundle:4,node_execution:false}' >"$OUT/validation.json"
+printf 'The source-bound review package is valid. Ledger recording remains pending in this snapshot.\n'

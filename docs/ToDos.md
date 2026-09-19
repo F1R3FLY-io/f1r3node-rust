@@ -512,13 +512,26 @@ tasks:
     claimed_by: null
     blocked_by: [TASK-017-13]
     created_at: 2026-09-17
-    rationale: "At 6814682e4 the branch differs from origin/dev by 762 files and about 46,000 added lines. That diff is too large for the repository PR review standard."
+    rationale: "At 6814682e4 the branch differed from origin/dev by 762 files and about 46,000 added lines. At 490d21093, PR #436 against docs/consensus-neutral-execution shows 1,243 files and about 179,500 added lines. Evidence run packages are 948 of those files and 158,820 of those lines. That diff is too large for the repository PR review standard."
+    measured_at: 490d21093
+    evidence_store: "Decide before the first move. Recommended: a GitHub release on this repository with the archives as assets. Alternatives: a dedicated evidence repository, or OCI object storage. Every option records a location and a SHA-256."
     stack_review_baseline: docs/casper/cbc-evidence/runs/casper-stack-integration-20260917-01/report.json
     removal_targets:
-      - "Evidence run packages under docs/casper/cbc-evidence/runs/: 440 files across four runs. Keep one report and one source manifest per run. Move raw TLC transcripts, fixture inputs, and container logs to an external evidence store and record their digests."
-      - "Files applied verbatim from PR #430 through PR #433: soak_disk models and configurations, deploy_storage models, scripts/bench fixtures, the verification-tiers document, the architecture note, and the soak-disk claim. Remove them after those PRs merge to dev, or rebase the branch onto the merged stack."
-      - "Compatibility symlinks in docs/cbc-evidence/: 21 links. Remove them when the CbC driver supports module routing. Otherwise keep the canonical record only."
+      - "Evidence run packages under docs/casper/cbc-evidence/runs/: 23 packages, 948 files, 29 MB, of which 32 archives are 15 MB. Six packages are live because a canonical ledger record cites them. Seventeen are historical and only work logs or this tracker cite them."
+      - "Files applied verbatim from PR #430 through PR #433. Resolved: the PR base now contains those merges, and only scripts/bench/test-soak-disk-admission.sh and its record remain in the diff as driver-repair deliverables."
+      - "Compatibility symlinks in docs/cbc-evidence/: 80 links. Remove them when the CbC driver supports module routing. Otherwise keep the canonical record only."
       - "Historical hosted TLC transcripts recovered in the evidence audit. Keep the audit report and digests, not the transcript copies."
+      - "Work logs: 21 files and about 2,300 lines. TASK-017-4 alone has four logs. Fold each task's logs into one log that keeps handoff and decision content."
+    implementation_plan:
+      - "Step 0. Apply the evidence retention rule in docs/plans/casper-ratified-soak-2026-09-16.md to every package created after 2026-09-19, so that no new package adds bulk while this task waits on TASK-017-13."
+      - "Step 1. Choose the external evidence store and record its location format. Upload every archive, transcript set, candidate-ledger set, attempt, and upstream snapshot from the 23 existing packages. Record each upload as a path plus SHA-256."
+      - "Step 2. Live packages (driver-rebind, driver-rebind-acceptance, driver-refresh-acceptance, profile-binding-review, profile-acceptance, manifest-resume, harness-controls): keep report.json, validation.json, and the digest lists in the tree. Replace each in-tree archive reference in the canonical ledger records, including previous_ledger references, with the external location and digest. The strict claims audit hashes the cited report.json and reads source digests from it, so those reports stay in the tree and the audit result does not change."
+      - "Step 3. Historical packages (the other sixteen): keep report.json only, or remove the package and record its external location and digest in the work log or tracker entry that cites it."
+      - "Step 4. Compatibility symlinks: identify every consumer of docs/cbc-evidence/. If the shared CbC gate accepts module paths, delete all 80 links. If it does not, add module routing to the gate in one change and then delete the links."
+      - "Step 5. Work logs: consolidate per task. Keep the acceptance records, the human decision records, and handoff notes. Drop run-by-run narrative that a retained report already records."
+      - "Step 6. Verify. Run the strict claims audit, the bindings inventory, the link check, and the STE check before and after. Record the before and after file and line counts against the PR base and against dev in this entry."
+      - "Step 7. Land the reduction as one commit with the counts in its message. Ask the maintainer to confirm the reduced diff before PR #436 leaves draft."
+    expected_result: "About 300 files and about 20,000 added lines. The remainder is the crate, the models, the claims, the ledger records, and the retained reports, which are the deliverables."
     acceptance:
       - "The PR diff against its confirmed stack parent contains only Casper soak harness deliverables. The report also measures the cumulative diff against dev."
       - "Record the actual stack parent revision and PR base after integration. Planned stack membership alone cannot justify file deletion."

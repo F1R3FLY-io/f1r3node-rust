@@ -1,0 +1,16 @@
+{
+  "status": "review-package-integrity-passed",
+  "report_sha256": "b4b2cedccde429e4f07adff9d9ce5f4c7c729114b696bfae5574bdb65a470c57",
+  "current_sources": true,
+  "source_archives": true,
+  "evidence_archive": true,
+  "previous_ledgers": true,
+  "pending_candidates": 36,
+  "nested_references": 5465,
+  "invocations_per_platform": 203,
+  "models": 12,
+  "claim_discharge": "pending",
+  "strict_001": 4,
+  "strict_bundle": 4,
+  "node_execution": false
+}

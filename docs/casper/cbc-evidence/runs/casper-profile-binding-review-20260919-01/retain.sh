@@ -37,11 +37,11 @@ done <"$S/source-paths.txt"
 cp -R "$E/." "$S/evidence/"
 rustc --edition 2021 "$P/redact.rs" -o "$S/redact-bin"
 "$S/redact-bin" "$S/evidence" >"$P/redactions.tsv"
-if grep -rIlE '/Users/|/home/[[:alnum:]_-]+/|/var/folders/' "$S/evidence" >"$P/private-path-scan.txt"; then exit 2; fi
+if grep -rIlE '/Users/[[:alnum:]_.-]+/|/home/[[:alnum:]_.-]+/|/var/folders/[[:alnum:]_-]+/' "$S/evidence" >"$P/private-path-scan.txt"; then exit 2; fi
 for claim in authority-finality publication recovery; do
  awk '/^artifacts:$/ {on=1; next} on && /^  - / {print $2; next} on {exit}' "docs/claims/casper-soak-$claim.md" |
  while IFS= read -r artifact; do
-  id="${artifact//\//-}"; id="${id//./-}"; id="${id//_/-}"
+  id="${artifact#.}"; id="${id//\//-}"; id="${id//./-}"; id="${id//_/-}"
   path="docs/casper/cbc-evidence/$id.md"
   [[ -f "$path" && ! -L "$path" ]]
   mkdir -p "$S/ledgers/$(dirname "$path")"
@@ -54,14 +54,14 @@ for kind in source evidence ledgers; do
  COPYFILE_DISABLE=1 gtar --owner=0 --group=0 --numeric-owner --no-xattrs --no-acls -czf "$P/$kind.tar.gz" -C "$S/$kind" .
 done
 jq -n --arg base "$(<"$E/base.txt")" --arg head "$(<"$E/final-head.txt")" --arg time "$(date -u +%FT%TZ)" --argjson sources "$(wc -l <"$P/source-files.sha256")" --argjson evidence "$(wc -l <"$P/evidence-files.sha256")" '{
- schema_version:1,status:"verified-binding-acceptance-pending",scope:"bounded-controlled-transcript-profiles",phase:"pre_pr216_merge",base:$base,observed_head:$head,verified_at:$time,
- claims:["CLAIM-CASPER-SOAK-002","CLAIM-CASPER-SOAK-003","CLAIM-CASPER-SOAK-004"],claim_discharge:"pending",binding_acceptance:null,tasks_complete:false,
+ schema_version:1,status:"verified-binding-accepted-pending-recording",scope:"bounded-controlled-transcript-profiles",phase:"pre_pr216_merge",base:$base,observed_head:$head,verified_at:$time,
+ claims:["CLAIM-CASPER-SOAK-002","CLAIM-CASPER-SOAK-003","CLAIM-CASPER-SOAK-004"],claim_discharge:"pending",binding_acceptance:{confirmation:"yes - I authorized acceptance",scope:"claims-002-003-004-bounded-pre-merge-only"},tasks_complete:false,
  profiles:[{profile:"authority-finality",tests:8,cases:58,invocations:65,threshold_cases:2000,generated_states:3281,distinct_states:1681},{profile:"publication",tests:6,cases:79,invocations:83,new_regressions:22,generated_states:3281,distinct_states:1681},{profile:"recovery",tests:7,cases:52,invocations:55,generated_states:841,distinct_states:441}],
  platforms:["native-macos","isolated-linux-aarch64-musl"],models:{clean:3,named_negatives:9,scenarios:2,observation_slots:3,negative_exit:12},shared_native_tests:11,
  publication_red:{exit:101,expected_profile_exit:2,observed_profile_exit:0,observed_verdict:"passed"},publication_green:true,
  audits:{ordinary:0,strict_001:4,strict_002:4,strict_003:4,strict_004:4,strict_bundle:4},
  lifecycle:{status:"pending",cause:"prior-host-control-function-move",changed_by_this_review:false,prior_67_source_check:"failed-four-declared-differences"},
- pending_workflow_tags:[".github/workflows/casper-authority-finality.yml",".github/workflows/casper-publication.yml",".github/workflows/casper-recovery.yml"],tags_applied:false,
+ ratified_workflow_tags:[".github/workflows/casper-authority-finality.yml",".github/workflows/casper-publication.yml",".github/workflows/casper-recovery.yml"],tags_applied:true,
  limits:["D-07 interpretation unresolved","Live adapters unqualified","Binary bytes not archived; executable hashes retained","Bounded models do not prove node correctness","Containment assumptions remain","Post-merge execution blocked"],
  construction:"not-applicable",node_execution:false,policy_activation:false,soak_verdict:"non_passing",source_files:$sources,evidence_files:$evidence,previous_ledgers:36,candidate_ledgers:36
 }' >"$P/report.json"
@@ -82,4 +82,4 @@ for old in "$S/ledgers/docs/casper/cbc-evidence/"*.md; do
 done
 (cd "$P"; find candidate-ledgers -type f | LC_ALL=C sort | while IFS= read -r path; do shasum -a 256 "$path"; done) >"$P/candidate-ledgers.sha256"
 (cd "$P"; shasum -a 256 report.json source.tar.gz evidence.tar.gz ledgers.tar.gz source-files.sha256 evidence-files.sha256 ledgers-files.sha256 candidate-ledgers.sha256 redactions.tsv private-path-scan.txt retain.sh validate.sh redact.rs >artifacts.sha256)
-printf 'The pending review package is retained.\n'
+printf 'The accepted review package is retained. Ledger recording remains pending.\n'
