@@ -507,9 +507,10 @@ tasks:
     binding_status: pending
     hosted_workflow_status: verified
     hosted_workflow_run: 35429044639
-    workflow_tag_status: unratified
-    evidence_publication_status: blocked
-    completion_blocker: "The draft release is not accessible. Evidence upload, remote retrieval, binding acceptance, and workflow-tag ratification remain pending."
+    workflow_tag_status: ratified
+    evidence_publication_status: verified
+    evidence_asset_id: 575126186
+    completion_blocker: "Source-specific acceptance records and strict task closure remain pending."
     unit_tests: [scripts/casper-soak/tests/carrier_index.rs]
     files:
       - scripts/casper-soak/src/profiles/carrier_index.rs
@@ -539,6 +540,25 @@ tasks:
     claimed_by: pi-soak-carrier-index-linux
     claimed_at: 2026-09-19T15:57:08Z
     work_log: docs/work-logs/task-017-11-version-phlo.md
+    implementation_status: controlled-transcript-implemented
+    binding_status: pending
+    hosted_workflow_status: pending
+    workflow_tag_status: unratified
+    completion_blocker: "Hosted verification, final evidence review, binding acceptance, and workflow-tag ratification remain pending."
+    unit_tests: [scripts/casper-soak/tests/version_phlo.rs]
+    files:
+      - scripts/casper-soak/src/profiles/version_phlo.rs
+      - scripts/casper-soak/src/bin/casper-version-phlo.rs
+      - scripts/casper-soak/tests/version_phlo.rs
+      - scripts/casper-soak/check-version-phlo.sh
+      - .github/workflows/casper-version-phlo.yml
+      - formal/tlaplus/casper_soak/profiles/version_phlo/VersionPhlo.tla
+      - formal/tlaplus/casper_soak/profiles/version_phlo/MC_VersionPhlo.cfg
+      - formal/tlaplus/casper_soak/profiles/version_phlo/MC_VersionPhlo_versions_unsafe.cfg
+      - formal/tlaplus/casper_soak/profiles/version_phlo/MC_VersionPhlo_fields_unsafe.cfg
+      - formal/tlaplus/casper_soak/profiles/version_phlo/MC_VersionPhlo_refund_unsafe.cfg
+      - formal/tlaplus/casper_soak/profiles/version_phlo/verification-plan.jsonc
+      - formal/tlaplus/casper_soak/profiles/version_phlo/README.md
     blocked_by: []
     decisions: [D-01, D-12]
     external_prs: [216, 430]

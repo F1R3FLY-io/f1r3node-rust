@@ -142,3 +142,43 @@ The carrier and slashing workflow attributes are still unspecified. Inventory in
 The shared inventory script, accepted claims, shared compiled sources, and `.gitattributes` remain unchanged. Its proposed batch change awaits explicit expanded scope.
 
 No node campaign, claim discharge, or task closure has occurred.
+
+## Approval and transfer checkpoint
+
+The Mac publisher relayed explicit user approval in message `01a0ba8f-fc95-7575-99d9-835d4b9b5b79` on 2026-09-19. The approval covers the bounded Claim 008 binding and the carrier workflow tag.
+
+The approved tag is `.github/workflows/casper-carrier-index.yml cbc=mandatory cbc-weight=high`. The approval also permits upload of the sanitized carrier archive to the existing draft release.
+
+These decisions supersede the earlier pending human decisions. Source-specific acceptance records, strict audits, and task closure will follow verified evidence publication.
+
+The existing draft release has ID `391939637`. Both locally available token selections return HTTP 403 for that release. The earlier HTTP 404 did not establish that the release was absent.
+
+The Mac publisher reports access through its existing stored credential. No credential transfer, replacement release, shared index change, or draft publication is authorized.
+
+Fresh checks at revision `4a7bf8960800d76be82d887c205a898169bdb8fe` confirmed all 21 carrier source digests. The sanitized archive remains 2,529,945 bytes with the recorded `941c3c95...` SHA-256.
+
+All 14,606 manifest entries match their archived bytes. The archive has 14,607 regular-file members with safe relative paths. Both native binaries remain withheld.
+
+The account-path and credential-pattern checks found no matches. The validation record is `/tmp/carrier-index-checks/publication-review/transfer-validation-01.json`.
+
+The publisher received the archive path, complete digest, size, and source-freshness result. An existing authorized file-transfer route remains to be confirmed.
+
+No upload or remote retrieval has occurred in this session. Carrier tag integration must preserve the separate slashing tag and TASK-017-9 closure work.
+
+TASK-017-11 implementation changes remain separate. This approval does not authorize Git publication, a shared Claim 001 change, or node execution.
+
+## Verified publication checkpoint
+
+The Mac publisher uploaded the sanitized archive and verified its remote download at `2026-09-19T16:53:38Z`. The asset ID is `575126186` on draft release `391939637`.
+
+The download was byte-identical to the sanitized archive. Its SHA-256 is `941c3c95a05e972e24bea9b33ba6c08b3da439dda7a87ceb63fa35da78dd0ca0`, and its size is 2,529,945 bytes.
+
+The publisher used an existing SSH alias and stored GitHub login. No credentials were transferred. The release remains draft, and its 24 earlier assets, shared index, and checksum list remain unchanged.
+
+This session verified the transferred receipt and all 12 entries in `receipt-transfer.sha256`. The receipt SHA-256 is `7ca046ac32e63d014e315f9a52d817aa533fef1f8612cd5a7bb3b6474744753e`.
+
+The receipt and supporting files remain in `/tmp/carrier-index-checks/mac-publication-receipt-20260919-01/`. The publication report remains unchanged as a historical record of the earlier blocked attempt.
+
+The approved carrier workflow tag is now applied in `.gitattributes`. The tracker records the ratified tag and verified publication. Claim 008 and its canonical ledgers remain pending until source-specific acceptance records and strict audits are complete.
+
+TASK-017-10 remains in progress. This checkpoint does not close either task, change Claim 001, or authorize node execution.
