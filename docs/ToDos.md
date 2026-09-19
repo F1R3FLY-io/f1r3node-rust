@@ -535,8 +535,10 @@ tasks:
     title: "Verify protocol and Phlo profile inputs and captured outcomes"
     claims: [CLAIM-CASPER-SOAK-007]
     claim_spec: docs/claims/casper-soak-version-phlo.md
-    status: pending
-    claimed_by: null
+    status: in_progress
+    claimed_by: pi-soak-carrier-index-linux
+    claimed_at: 2026-09-19T15:57:08Z
+    work_log: docs/work-logs/task-017-11-version-phlo.md
     blocked_by: []
     decisions: [D-01, D-12]
     external_prs: [216, 430]
