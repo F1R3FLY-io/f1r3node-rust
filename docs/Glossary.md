@@ -77,6 +77,12 @@ The dev integration soak is the scheduled variable-length soak of the `dev` inte
 
 **Preferred usage.** Use this term for the scheduled integration-branch soak. *Avoid*: daily soak. The machine series key keeps the legacy value `daily` until a separate identifier migration. *Distinguish from* the [60h stability soak](#60h-stability-soak): integration monitoring versus a release gate.
 
+### Committed outcome
+
+A committed outcome is an iteration control result that the soak driver records through `.soak-state` replacement. The record contains the iteration counter, failure counter, and iteration state.
+
+This term does not establish power-loss durability, artifact upload, or a committed blockchain transaction.
+
 ### Test net
 
 The test net is the continuously running network of shards that hosts [Shard soak-ins](#shard-soak-in) and serves select partners and customers. Its shards run stable releases; nodes that complete a soak-in period hold the [Anchor](#anchor) role. Unlike the per-iteration soak shards, the test net does not restart between runs.
@@ -151,6 +157,18 @@ dashboard reports p95 and maximum run aggregates in blocks.
 **Preferred usage.** Use this term to describe shard agreement on finalized
 state. *Distinguish from* finalization distance from the block graph tip.
 *Avoid*: block height and finalization latency.
+
+### Correct by Construction
+
+Correct by Construction (CbC) is the development process that connects a correctness claim to implementation behavior, formal verification, and retained evidence.
+
+**Preferred usage.** Use CbC for this verification process. Distinguish it from CBC Casper, which names the consensus protocol.
+
+### Work bound
+
+A work bound limits counted operations as a function of input size and explicit operating assumptions. A work bound does not directly establish elapsed time.
+
+**Preferred usage.** Name the counted operation, input dimensions, and assumptions. Distinguish a work bound from a finalization deadline.
 
 ### Disk hygiene
 
