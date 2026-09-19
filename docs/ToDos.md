@@ -625,9 +625,19 @@ tasks:
   - id: TASK-017-13
     title: "Close pre-merge CbC scope and hand off post-merge obligations"
     claim_index: docs/claims/casper-soak-harness.md
-    status: pending
-    claimed_by: null
+    status: in_progress
+    claimed_by: pi-casper-handoff-mac
+    claimed_at: 2026-09-19T20:21:28Z
+    execution_scope: "Prepare the evidence review and post-merge handoff. Final closure requires TASK-017-12 results and all remaining acceptance gates."
+    work_log: docs/work-logs/task-017-13-preparation.md
+    handoff_note: docs/handoffs/casper-pre-merge-to-post-merge-20260919.md
+    evidence_review: docs/casper/cbc-evidence/runs/casper-pre-merge-review-20260919-01/report.json
     blocked_by: [TASK-017-12]
+    remaining_prerequisites:
+      - "Resolve the pending canonical records for the harness README and verification plan. Passing the eight-claim audit does not cover these artifacts."
+      - "Resolve the full changed-scope gate without overwriting independent historical compatibility records."
+      - "Review baseline results, scan benchmark evidence, and concurrency-gate evidence."
+      - "Confirm TASK-018 owners and obtain acceptance of the completed handoff."
     decisions: [D-11]
     acceptance:
       - "Every changed mandatory artifact has current pre-merge claim evidence or an explicitly approved waiver."
