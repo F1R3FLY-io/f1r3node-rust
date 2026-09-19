@@ -425,8 +425,10 @@ tasks:
     title: "Verify merge and accounting workload generation and measurement"
     claims: [CLAIM-CASPER-SOAK-005]
     claim_spec: docs/claims/casper-soak-merge-accounting.md
-    status: pending
-    claimed_by: null
+    status: in_progress
+    claimed_by: pi-casper-merge-accounting
+    claimed_at: 2026-09-19T05:47:48Z
+    work_log: docs/work-logs/task-017-8-merge-accounting.md
     blocked_by: []
     decisions: [D-08]
     external_prs: [216]
@@ -485,7 +487,8 @@ tasks:
 
   - id: TASK-017-12
     title: "Pin executable workloads, qualify candidates, and run the pre-merge baseline soak"
-    candidate_review_note: "Current dev is bc23c8667ebef0f3fb7c3310caf85ce106df25fa. The matrix retains a2fe60c7255bf4ba035d41fb65b6d6f1c0f02632. Qualification must review this difference before dispatch."
+    candidate_review_note: "On 2026-09-19 dev is 6940a5beb, 120 commits and nine merged pull requests after the matrix pin a2fe60c72. Four of those change consensus or node code (#435 fork choice, #438 merge rejection groups, #444 certificate helper, #390 cost accounting). The matrix harness_revision f29c59d01 is 171 commits behind the branch tip. Qualification must repin at dispatch from CI-built dev images."
+    drift_review: docs/work-logs/task-017-12-drift-review-2026-09-19.md
     claims: [CLAIM-CASPER-SOAK-001, CLAIM-CASPER-SOAK-004]
     claim_index: docs/claims/casper-soak-harness.md
     status: pending
@@ -520,8 +523,11 @@ tasks:
 
   - id: TASK-017-14
     title: "Reduce the branch diff to the formal-verification deliverables"
-    status: pending
-    claimed_by: null
+    status: in_progress
+    claimed_by: claude-session-9f19b46c
+    claimed_at: 2026-09-19T05:52:15Z
+    execution_scope: "Preparation steps 0 through 5 only: retention rule, external store, bundles, consumer review, and work-log consolidation. Steps 6 and 7, the verification and the reduction commit, wait for TASK-017-13."
+    work_log: docs/work-logs/task-017-14-preparation.md
     blocked_by: [TASK-017-13]
     created_at: 2026-09-17
     rationale: "At 6814682e4 the branch differed from origin/dev by 762 files and about 46,000 added lines. At 490d21093, PR #436 against docs/consensus-neutral-execution shows 1,243 files and about 179,500 added lines. Evidence run packages are 948 of those files and 158,820 of those lines. That diff is too large for the repository PR review standard."
