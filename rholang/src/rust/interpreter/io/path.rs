@@ -1071,6 +1071,124 @@ mod tests {
         assert_qe(safe_descend(&root, "."), QuarantineError::RootSelf);
     }
 
+    /// SEC (2026-09-13): percent-encoded parent-traversal MUST be
+    /// treated as a literal filename, NOT decoded.  This is the
+    /// URL-parser-vs-filesystem-parser bug class: an HTTP server
+    /// or URL router that decodes `%2e%2e` after its path-safety
+    /// check accepts the request into the "safe" prefix but hands
+    /// the OS an escape.  The Rust `Path::components()` iterator
+    /// operates on raw byte sequences on Unix (`OsStr::as_bytes`)
+    /// and does NOT decode percent-encoding, URI encoding, or any
+    /// other transport-layer escape.  So `%2e%2e` is a Normal
+    /// component whose literal byte sequence is `%`, `2`, `e`,
+    /// `%`, `2`, `e` — six bytes matching no `..` predicate.
+    ///
+    /// A regression that added percent-decoding at the handler
+    /// boundary (e.g., "let rel = urlencoding::decode(&rel)?;" in
+    /// the parse layer) would flip this test's outcome from
+    /// `Ok(SafeParent)` — resolving to a non-existent literal
+    /// filename inside the root — to `Err(EscapesRoot)`, at which
+    /// point the reviewer must audit why decoding was introduced.
+    #[test]
+    fn percent_encoded_parent_traversal_is_treated_as_literal_filename() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        // Create a literal-named directory `%2e%2e` inside the
+        // root so the openat chain succeeds (proving the bytes are
+        // treated verbatim); if we hit ENOENT here it also proves
+        // no decoding, but the successful open is a stronger
+        // demonstration.
+        fs::create_dir(root.join("%2e%2e")).unwrap();
+        fs::write(root.join("%2e%2e/inner.txt"), b"literal").unwrap();
+        let sp = safe_descend(&root, "%2e%2e/inner.txt")
+            .expect("percent-encoded name MUST resolve as literal filename");
+        // SAFETY: `sp` holds a dirfd + leaf CString for its
+        // lifetime; `fstatat` reads the leaf under the dirfd.
+        unsafe {
+            let mut sb: libc::stat = std::mem::zeroed();
+            let rc = libc::fstatat(
+                sp.as_raw_fd(),
+                sp.leaf_ptr(),
+                &mut sb,
+                libc::AT_SYMLINK_NOFOLLOW,
+            );
+            assert_eq!(rc, 0, "expected the literal `%2e%2e/inner.txt` to open");
+            assert_eq!(
+                sb.st_size, 7,
+                "SEC regression: percent-encoded parent-traversal \
+                 resolved to some file OTHER than the literal 7-byte \
+                 inner.txt.  A percent-decoder was introduced between \
+                 the Rholang String and `safe_descend_verified`."
+            );
+        }
+    }
+
+    /// SEC (2026-09-13): a Unicode-homoglyph parent-traversal
+    /// (e.g., FULLWIDTH FULL STOP `．．` U+FF0E U+FF0E) MUST be
+    /// treated as a literal filename, NOT normalized to ASCII
+    /// `..`.  Rust's `Path::components()` iterates OS bytes and
+    /// does not apply NFC/NFKC normalization; the kernel and
+    /// filesystem also treat these as opaque bytes (linux ext4,
+    /// btrfs, xfs are byte-transparent; APFS on macOS 10.13+
+    /// preserves the original bytes and does not normalize).
+    /// Pins that a future refactor which adds Unicode
+    /// normalization would trip this test.
+    #[test]
+    fn fullwidth_dot_traversal_is_treated_as_literal_filename() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        // The fullwidth-full-stop sequence "．．" is three UTF-8
+        // bytes each (EF BC 8E) — total six bytes, none of which
+        // is ASCII `.` (0x2E).
+        let name = "\u{FF0E}\u{FF0E}";
+        assert_ne!(
+            name, "..",
+            "sanity: the homoglyph is not byte-equal to ASCII `..`"
+        );
+        fs::create_dir(root.join(name)).unwrap();
+        fs::write(root.join(name).join("inner.txt"), b"literal").unwrap();
+        let sp = safe_descend(&root, &format!("{name}/inner.txt"))
+            .expect("fullwidth-dot name MUST resolve as literal filename");
+        unsafe {
+            let mut sb: libc::stat = std::mem::zeroed();
+            let rc = libc::fstatat(
+                sp.as_raw_fd(),
+                sp.leaf_ptr(),
+                &mut sb,
+                libc::AT_SYMLINK_NOFOLLOW,
+            );
+            assert_eq!(
+                rc, 0,
+                "expected the literal fullwidth-dot dir + inner.txt to open"
+            );
+            assert_eq!(sb.st_size, 7);
+        }
+    }
+
+    /// SEC (2026-09-13): a NUL byte anywhere inside a rel-path
+    /// component MUST fail closed at the `CString::new` boundary
+    /// in `to_c`, mapping to `QuarantineError::EscapesRoot`.  The
+    /// class of attack this pins: a caller string like
+    /// "safe.txt\0/../../etc/passwd" where a C-string-consuming
+    /// syscall sees only "safe.txt" (NUL terminator) but a Rust-
+    /// or Rholang-side sanitizer sees the full string and thinks
+    /// it looks fine.  Rust's `CString::new` refuses to construct
+    /// a C string from bytes containing NUL; the `to_c` helper
+    /// treats that Err as `EscapesRoot` so the caller cannot
+    /// distinguish it from other quarantine failures.
+    #[test]
+    fn nul_byte_in_component_is_rejected_as_escapes_root() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        // The NUL byte lives INSIDE what would otherwise be a
+        // Normal component — no `..` sequence in the rel — so
+        // the only defense is `to_c`'s CString check.
+        assert_qe(
+            safe_descend(&root, "safe.txt\0malicious"),
+            QuarantineError::EscapesRoot,
+        );
+    }
+
     #[test]
     fn allows_simple_descendant() {
         let tmp = TempDir::new().unwrap();
