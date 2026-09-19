@@ -28,7 +28,7 @@ The preparing session ran macOS. Every remaining step needs Linux, a node build,
 
 Preparation is complete. The tracker moved from preparation-only to execution scope. This session keeps no part of the task.
 
-Seven of eight claims discharge under the strict audit. CLAIM-CASPER-SOAK-001 is pending and is the only claim holding the bundle at exit 4.
+All eight claims discharge under the strict audit, and the full bundle returns exit 0. The maintainer renewed the CLAIM-CASPER-SOAK-001 binding on 2026-09-19 after the inventory repair.
 
 ## Start here
 
@@ -40,7 +40,7 @@ The same [preparation log](../work-logs/task-017-12-preparation.md) carries the 
 
 The repin tool is committed at `scripts/ci/resolve-dev-candidate.sh`. It resolves both platform candidates from the immutable Docker Hub tag and returns the manifest, config, and node binary digests. It was proven against dev `6940a5beb`.
 
-The resource budget is approved. It covers two candidates, one preflight dispatch, one 24-hour baseline per candidate, fleet default memory, and two runner machines for up to 26 hours each.
+The resource budget is approved. It covers two candidates, one preflight dispatch, one 24-hour baseline per candidate, and two runner machines at 64 GB each for up to 26 hours. The 64 GB figure corrects an earlier 48 GB entry and matches what the soak workflow already sets.
 
 The adapter-qualification checklist names each adapter for claims 002 to 004 and the record each one must produce.
 
@@ -67,11 +67,11 @@ Do not publish the evidence draft release. TASK-017-15 owns that step, and it fo
 
 ## Prerequisites outside this task
 
-CLAIM-CASPER-SOAK-001 is pending after the 2026-09-19 binding-inventory repair. A maintainer must re-accept that binding before the strict bundle can discharge. Adapter qualification and the preflight do not wait for it.
+CLAIM-CASPER-SOAK-001 was renewed on 2026-09-19 after the binding-inventory repair. No claim blocks this task.
 
-Decision D-07 is unanswered. It gates recovery adapter qualification for CLAIM-CASPER-SOAK-004 only.
+Decision D-07 was answered on 2026-09-19 as Reading A, with PR #216 supplying the implementation. Recovery adapter qualification for CLAIM-CASPER-SOAK-004 waits for that merge, not for a decision.
 
-TASK-017-13 has no owner. It follows this task and gates the diff reduction.
+TASK-017-13 is owned by pi-casper-handoff-mac. It follows this task and gates the diff reduction.
 
 ## Coordination
 
@@ -82,7 +82,7 @@ The repin tool is not a mandatory artifact and the inventory does not copy it, s
 ## Open questions
 
 - Does the candidate matrix keep its CI artifact identity field, or does it rely on the registry digests the repin tool returns?
-- Which agent owns TASK-017-13 after this task reports?
+- Does the launcher gain arm64 support, or does the approved two-candidate plan narrow to one architecture?
 
 ## Redaction notes
 

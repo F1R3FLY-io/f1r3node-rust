@@ -16,7 +16,7 @@
 **Effect on this entry.**
 
 - Sub-decision 7.4 is deferred. The one-parent B1 predicate stays. The 2026-08-20 B1 row keeps its pending liveness guarantee.
-- The record lists exact occurrences, tombstones, and reason joining as `dev` rules to preserve. Section 2 attributes them to PR #216, and `dev` code holds no occurrence store and no tombstone as of 2026-09-18. The ratifiers must confirm whether sub-decisions 7.1 and 7.2 are ratified as rules or preserved as absent. This entry does not flip those two sub-decisions until that confirmation.
+- The record lists exact occurrences, tombstones, and reason joining as `dev` rules to preserve. Section 2 attributes them to PR #216, and `dev` code holds no occurrence store and no tombstone as of 2026-09-18. The ratifiers resolved this on 2026-09-19. Section 8 records Reading A, so sub-decisions 7.1 and 7.2 are ratified as rules to build, and PR #216 supplies them.
 - Sub-decision 7.3 is ratified. Custody stays with the carrier owner.
 - The prior-rejection count keeps the signature as its owner until protocol 7. Entry D-10 records the identity.
 - Open question 1 is answered by D-10. Open question 2 moves to the harness PR.
@@ -83,7 +83,7 @@ Adopt option A, as four sub-decisions.
 
 ## 8. Confirmation requested: are 7.1 and 7.2 rules or absences?
 
-**Status.** Open. The 2026-09-16 decision does not flip sub-decisions 7.1 and 7.2 until the ratifiers answer this section.
+**Status.** Answered on 2026-09-19. The ratifiers confirmed Reading A. Sub-decisions 7.1 and 7.2 are ratified as rules to build, and PR #216 supplies the implementation. The decision subsection below records the effects.
 
 **Ratifiers.** jeffrey-l-turner, dylon, spreston8.
 
@@ -117,13 +117,21 @@ It does not block the pre-merge baseline soak. That soak exercises the lifecycle
 
 ### Decision
 
-**Ratified reading.** _Pending._
+**Ratified reading.** Reading A. Sub-decisions 7.1 and 7.2 are ratified as rules to build.
 
-**Date and proof.** _Pending._
+**Date and proof.** Confirmed 2026-09-19 by jeffrey-l-turner with dylon and spreston8. The maintainer relayed the confirmation to the steward session. A proof link is still to be attached.
 
-**If reading A.** Record the implementing task, its epic, and whether PR #216 supplies the implementation or a new task does.
+**Implementation.** PR #216 supplies the implementation. Its merge is the gate. The node gains an occurrence store, exact tombstones, a `(deploy signature, source block)` record key, and the four-value reason join through that pull request. No separate implementing task is created.
 
-**If reading B.** Record what a recovery adapter observes on a node without occurrences, and whether the profile's synthetic schema stays as a specification or is withdrawn.
+**Effect on 7.1 and 7.2.** Both flip from preserved-as-absent to ratified. Exact-occurrence recovery and the reason-join semilattice are protocol obligations. Principle P2 supports both, because each rule is a function of on-chain data.
+
+**Effect on the recovery profile.** The synthetic occurrence schema in the recovery profile specifies future node behavior rather than current behavior. It stays as a specification.
+
+**Effect on adapter qualification.** Recovery adapter qualification for CLAIM-CASPER-SOAK-004 waits for the PR #216 merge. A `dev` node before that merge has no occurrence store to observe. TASK-017-12 may qualify the authority and publication adapters without waiting.
+
+**Effect on reverification.** TASK-018-3 and TASK-018-5 test the ratified rules after the merge. Both already cite this entry.
+
+**Unchanged.** Sub-decision 7.4, collective coverage, stays deferred. The one-parent B1 predicate stays, and the 2026-08-20 B1 row keeps its pending liveness guarantee. The duplicate-occurrence storm that DR-33 describes closes when PR #216 merges.
 
 ## 9. Open questions
 

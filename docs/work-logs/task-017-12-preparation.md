@@ -62,7 +62,7 @@ A second repetition requires a new decision. The 60-hour stability soak requires
 | First run | `preflight_only` dispatch of the soak workflow | Proves the repaired driver and the harness build on the OCI runner before any node runs. |
 | Baseline duration | `daily-24h` per candidate | The workflow's dev integration soak. The 60-hour stability soak waits for a passing baseline. |
 | Repetitions | One per candidate for the baseline | A second repetition only if the first reports a non-passing outcome. |
-| Memory | Fleet default 48 GB, harness RSS ceiling from the driver's host-reserve rule | The driver refuses a ceiling under 5,000 MB. |
+| Memory | 64 GB per runner, the value the soak workflow already sets | The sizing invariant needs about 60,416 MB. See the memory correction below. |
 | Quota | Two runner VMs for up to 26 hours each | OCI daily VM quota applies. A LimitExceeded result means retry the next day, not debug. |
 
 Deferred policy findings return to the team. No comparative or alternate-policy run is part of the baseline.
@@ -148,7 +148,7 @@ Live adapter qualification does not follow from the resource approval. A qualifi
 
 At handoff, CLAIM-CASPER-SOAK-001 was pending after the binding-inventory repair. The Linux readiness check below verifies its later renewal.
 
-Decision D-07 is unanswered. It gates recovery adapter qualification for CLAIM-CASPER-SOAK-004. The other adapters and the baseline soak do not depend on it.
+The ratifiers confirmed D-07 Reading A on 2026-09-19. PR #216 supplies the implementation. Recovery adapter qualification for CLAIM-CASPER-SOAK-004 therefore waits for that merge, because a pre-merge node has no occurrence store to observe. The other adapters and the baseline soak do not wait.
 
 ## Linux readiness check at 3aa79d0c1
 
@@ -177,11 +177,11 @@ The documented dispatch does not implement the approved candidate plan:
 - The launcher sets `RUNNER_MEM_GB_OVERRIDE` to 64 GB. The recorded resource approval specifies 48 GB.
 - The workflow sets a resident set size (RSS) ceiling of 45,056 MB and a host-free floor of 8,192 MB. Those values cannot fit together within 48 GB.
 
-The memory mismatch needs a maintainer decision before dispatch. Reducing the runner memory without adjusting the resource plan would not resolve the mismatch.
+The memory mismatch needed a maintainer decision before dispatch. The maintainer resolved it on 2026-09-19. See the memory correction below. The remaining architecture and image-selection items still stand.
 
 The workflow and runtime are mandatory Claim001 artifacts. Changes to either artifact require new source-bound verification and acceptance. No accepted artifact changed during this check.
 
-D-07 remains open for recovery adapter qualification. It does not block the separate pre-merge baseline soak.
+D-07 is answered. Recovery adapter qualification now waits for the PR #216 merge rather than for a decision. It does not block the separate pre-merge baseline soak.
 
 ### Retained results and next step
 
@@ -190,3 +190,38 @@ Local evidence is in `/tmp/task-017-12-readiness-fyVezE/`. It contains the revis
 No live node, qualification run, preflight dispatch, or baseline campaign started. TASK-017-12 remains in progress.
 
 The next step is to resolve the resource and dispatch differences. Candidate pinning and adapter qualification must retain their own evidence before campaign admission.
+
+## Memory correction, approved at 64 GB (2026-09-19)
+
+The maintainer approved 64 GB per runner on 2026-09-19. This replaces the 48 GB figure in the original resource proposal.
+
+The first proposal cited the fleet default of 48 GB. That was an error by the preparing session. The soak workflow sets `RUNNER_MEM_GB_OVERRIDE` to 64, and the workflow comment says to keep that knob in step with the ceiling.
+
+### The sizing invariant
+
+The workflow states the rule. The ceiling, plus about 7 GB of host overhead, plus the floor, must fit inside the virtual machine's total memory.
+
+| Term | Value |
+| --- | --- |
+| `SOAK_RSS_CEILING_MB` | 45,056 MB |
+| Host overhead | about 7,168 MB |
+| `SOAK_HOST_FREE_FLOOR_MB` | 8,192 MB |
+| Required total | about 60,416 MB |
+
+A 64 GB machine has 65,536 MB, which leaves about 5 GB of headroom. A 48 GB machine has 49,152 MB, so the requirement overruns it by about 11 GB. On that machine the host-free floor fires before the ceiling can attribute the growth, which produces an unattributable kill.
+
+### Why a lower ceiling does not work either
+
+Fitting the invariant inside 48 GB requires a ceiling near 33,792 MB. The measured workload peak is higher. Smoke run 31547587950 reached 36,008 MB of instant resident set size while fully healthy, at 1,200 deploys per 300 seconds, with zero errors and no finality lag. A ceiling below that peak stops healthy runs.
+
+The recorded history shows the same failure twice. On 2026-08-10 the ceiling moved from 20,480 MB to 28,672 MB when the machine grew to 48 GB. Run 31390673884 proved that 32 GB could not hold the envelope plus any safe floor. On 2026-08-11 the ceiling moved to 45,056 MB with the 64 GB machine, after the wedge fix in PR #228 revealed the true footprint.
+
+The current ceiling is about 1.25 times the observed peak. It stays silent on legitimate load and catches a real leak about 9 GB before the floor.
+
+### Effect on the approval
+
+The approved plan now reads 64 GB per runner for two runners, for up to 26 hours each. The candidate count, the preflight step, the 24-hour baseline duration, and the single repetition per candidate do not change.
+
+The quota arithmetic changes with the machine size. The executing agent records the actual shape at dispatch.
+
+This correction changes no workflow file and no runtime file. Both are mandatory CLAIM-CASPER-SOAK-001 artifacts, and neither needs a change, because the workflow already sets 64 GB.
