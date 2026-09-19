@@ -1,0 +1,18 @@
+Soak host protection: node RSS ceiling=0MB; host free floor=0MB; disk free floor=4096MB (hygiene band +4096MB)
+orchestrator host guardian watching MemAvailable floor 0MB (hard floor 0MB, warn 4096MB) and disk free floor 4096MB (hard floor 2048MB); pid 53
+repo/scripts/run-merge-recovery-soak.sh: line 1177:    71 Killed                  PATH="$SOAK_WORKLOAD_PATH" SOAK_PROCESS_OWNER="$SOAK_WRITER_OWNER" SOAK_WRITER_OWNER="$SOAK_WRITER_OWNER" SOAK_DOCKER_REAL="$SOAK_DOCKER_REAL" SOAK_DOCKER_OWNER_DIR="$SOAK_DOCKER_OWNER_DIR" NODE_REPO_DIR="$NODE_REPO_DIR" OUT_DIR="$segment_dir" BENCH_DURATION="$BENCH_DURATION" BENCH_RATE="$BENCH_RATE" SEGMENT_INDEX="$BENCH_SEGMENTS" SOAK_STARTED_AT="$STARTED_AT" timeout --signal=TERM --kill-after=1 "$remaining" bash -c 'trap "while :; do sleep 1; done" TERM; "$@"' bash "$SCRIPT_DIR/bench/run-bench-segment.sh" > "$segment_dir/segment.log" 2>&1
+bench segment 1 failed (status 137); segment.log tail:
+orchestrator host guardian fired; ending soak (fail-closed)
+The disk guardian detected 1024 MiB below floor 4096 MiB (hard floor 2048 MiB, consecutive samples 1). Workload termination is unconfirmed.
+started_at=1789614244
+segments=1
+finished_at=1789614249
+target_ref=disk-admission-fixture
+target_sha=unknown
+requested_seconds=700
+elapsed_seconds=5
+iterations=0
+failures=1
+bench_segments=1
+bench_failures=1
+early_exit_reason=host_protection_breach

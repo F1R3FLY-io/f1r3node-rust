@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "task": "TASK-017-4",
+  "status": "complete",
+  "claim_discharge": "discharged",
+  "claim_audit_exit": 0,
+  "integrity_grade": "full",
+  "completion_exit": 0,
+  "completion_gaps": [],
+  "bundle_audit_exit": 4,
+  "profile_claims_pending": 7,
+  "other_tasks_unchanged": true,
+  "report_sha256": "c510e4e393daf52f5a3d2e3affa908897ab0a574484de807939354d5ad8c5ec1",
+  "validation_evidence": {
+    "ref": "validation-evidence.tar.gz",
+    "sha256": "3faf1f481fae09a3f56c1dca478629df75b55657632f3bcfa1bbbdd04f18a823"
+  },
+  "current_suite": {
+    "tests": 22,
+    "driver_invocations": 91,
+    "registered_cases": 48,
+    "exit": 0
+  },
+  "host_regressions": "passed",
+  "format_check": "passed",
+  "active_lsp": {
+    "files": 2,
+    "errors": 0
+  },
+  "failure_history": [
+    {
+      "attempt": "initial-ledger-generation",
+      "exit": 2,
+      "reason": "An input redirect was missing. The claim gate rejected incomplete records."
+    },
+    {
+      "attempt": "accepted-red",
+      "exit": 101,
+      "reason": "The container lacked claim-ledger inputs."
+    },
+    {
+      "attempt": "accepted-green",
+      "exit": 101,
+      "reason": "The model-runner wrapper was still absent from the copied sources."
+    }
+  ],
+  "support_changes": [
+    "The container receives source artifacts, ledgers, and report inputs without weakening assertions.",
+    "The auditor resolves the existing lowercase Cargo ledger filename on case-sensitive systems."
+  ],
+  "node_execution": false,
+  "waiver": null,
+  "git_publication_performed_by_this_agent": false
+}

@@ -1,0 +1,42 @@
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 79 and seed -6612100088775421316 with 2 workers on 2 cores with 341MB heap and 64MB offheap memory [pid: 2577] (Linux 6.12.76-linuxkit aarch64, Debian 17.0.20.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /case/work/formal/tlaplus/soak_disk/MC_MetricSampleValidity_unchecked_pre_fix.tla
+Parsing file /case/work/formal/tlaplus/soak_disk/MetricSampleValidity.tla
+Parsing file /tmp/TLC.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/Sequences.tla
+Parsing file /tmp/FiniteSets.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module MetricSampleValidity
+Semantic processing of module MC_MetricSampleValidity_unchecked_pre_fix
+Starting... (2026-09-17 05:28:21)
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-09-17 05:28:21.
+Error: Invariant InvalidSamplesRejected is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ sample = "unselected"
+/\ phase = "ready"
+/\ hasDelta = FALSE
+/\ reason = "none"
+
+State 2: <Capture line 21, col 5 to line 24, col 37 of module MetricSampleValidity>
+/\ sample = "nonfinite-before"
+/\ phase = "captured"
+/\ hasDelta = FALSE
+/\ reason = "none"
+
+State 3: <Publish line 32, col 5 to line 38, col 23 of module MetricSampleValidity>
+/\ sample = "nonfinite-before"
+/\ phase = "retained"
+/\ hasDelta = FALSE
+/\ reason = "cumulative_decrease"
+
+8 states generated, 8 distinct states found, 3 states left on queue.
+The depth of the complete state graph search is 3.
+The average outdegree of the complete state graph is 5 (minimum is 5, the maximum 5 and the 95th percentile is 5).
+Finished in 00s at (2026-09-17 05:28:21)

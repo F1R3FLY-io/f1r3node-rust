@@ -1,0 +1,117 @@
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 119 and seed 3792883540686205170 with 2 workers on 2 cores with 341MB heap and 64MB offheap memory [pid: 2280] (Linux 6.12.76-linuxkit aarch64, Debian 17.0.20.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /case/work/formal/tlaplus/soak_disk/MC_SoakDiskGuardian_parent_only_pre_fix.tla
+Parsing file /case/work/formal/tlaplus/soak_disk/SoakDiskGuardian.tla
+Parsing file /tmp/Integers.tla
+Parsing file /tmp/TLC.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/Sequences.tla
+Parsing file /tmp/FiniteSets.tla
+Semantic processing of module Naturals
+Semantic processing of module Integers
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module SoakDiskGuardian
+Semantic processing of module MC_SoakDiskGuardian_parent_only_pre_fix
+Starting... (2026-09-17 03:09:44)
+Computing initial states...
+Computed 2 initial states...
+Computed 4 initial states...
+Computed 8 initial states...
+Computed 16 initial states...
+Computed 32 initial states...
+Finished computing initial states: 48 distinct states generated at 2026-09-17 03:09:44.
+Error: Invariant UntrustedControlPreventsRelease is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ phase = "launch"
+/\ rootsLeft = 1
+/\ wedged = FALSE
+/\ diagElapsed = 0
+/\ interruptRequested = FALSE
+/\ priorFailures = 0
+/\ failures = 0
+/\ unownedMarked = FALSE
+/\ pipeHeld = TRUE
+/\ exitFailureRetained = FALSE
+/\ controlTrusted = FALSE
+/\ copyElapsed = 0
+/\ alive = TRUE
+/\ timedOut = FALSE
+/\ exitRejected = FALSE
+/\ exitStop = FALSE
+/\ freeMiB = 150
+/\ termSent = FALSE
+/\ copied = FALSE
+/\ killSent = FALSE
+/\ syncState = "pending"
+/\ monitorAlive = TRUE
+/\ marker = FALSE
+/\ unownedStopped = FALSE
+/\ stopElapsed = 0
+/\ writersAlive = TRUE
+/\ lateUnits = 0
+/\ elapsed = 0
+/\ unownedHostStopped = FALSE
+/\ containedStop = FALSE
+/\ crashStop = FALSE
+/\ queryAvailable = TRUE
+/\ stale = FALSE
+/\ copyStalled = FALSE
+/\ known = FALSE
+/\ stopStarted = FALSE
+/\ unownedContainersMarked = FALSE
+/\ drained = FALSE
+/\ repeatedStop = FALSE
+/\ breachRecorded = FALSE
+/\ admitted = FALSE
+
+State 2: <Next line 581, col 12 to line 581, col 120 of module SoakDiskGuardian>
+/\ phase = "running"
+/\ rootsLeft = 1
+/\ wedged = FALSE
+/\ diagElapsed = 0
+/\ interruptRequested = FALSE
+/\ priorFailures = 0
+/\ failures = 0
+/\ unownedMarked = FALSE
+/\ pipeHeld = TRUE
+/\ exitFailureRetained = FALSE
+/\ controlTrusted = FALSE
+/\ copyElapsed = 0
+/\ alive = TRUE
+/\ timedOut = FALSE
+/\ exitRejected = FALSE
+/\ exitStop = FALSE
+/\ freeMiB = 150
+/\ termSent = FALSE
+/\ copied = FALSE
+/\ killSent = FALSE
+/\ syncState = "pending"
+/\ monitorAlive = TRUE
+/\ marker = FALSE
+/\ unownedStopped = FALSE
+/\ stopElapsed = 0
+/\ writersAlive = TRUE
+/\ lateUnits = 0
+/\ elapsed = 0
+/\ unownedHostStopped = FALSE
+/\ containedStop = FALSE
+/\ crashStop = FALSE
+/\ queryAvailable = TRUE
+/\ stale = FALSE
+/\ copyStalled = FALSE
+/\ known = FALSE
+/\ stopStarted = FALSE
+/\ unownedContainersMarked = FALSE
+/\ drained = FALSE
+/\ repeatedStop = FALSE
+/\ breachRecorded = FALSE
+/\ admitted = FALSE
+
+54 states generated, 54 distinct states found, 46 states left on queue.
+The depth of the complete state graph search is 2.
+The average outdegree of the complete state graph is 1 (minimum is 1, the maximum 1 and the 95th percentile is 1).
+Finished in 00s at (2026-09-17 03:09:44)

@@ -1,0 +1,40 @@
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 105 and seed 1344969308463144781 with 2 workers on 2 cores with 341MB heap and 64MB offheap memory [pid: 2610] (Linux 6.12.76-linuxkit aarch64, Debian 17.0.20.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /case/work/formal/tlaplus/soak_disk/MC_RetentionReserve_unskipped_pre_fix.tla
+Parsing file /case/work/formal/tlaplus/soak_disk/RetentionReserve.tla
+Parsing file /tmp/Integers.tla
+Parsing file /tmp/Naturals.tla
+Semantic processing of module Naturals
+Semantic processing of module Integers
+Semantic processing of module RetentionReserve
+Semantic processing of module MC_RetentionReserve_unskipped_pre_fix
+Starting... (2026-09-17 03:09:50)
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-09-17 03:09:50.
+Error: Invariant ReserveHeld is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ done = 0
+/\ free = 8
+
+State 2: <Copy line 13, col 5 to line 17, col 36 of module RetentionReserve>
+/\ done = 1
+/\ free = 6
+
+State 3: <Copy line 13, col 5 to line 17, col 36 of module RetentionReserve>
+/\ done = 2
+/\ free = 4
+
+State 4: <Copy line 13, col 5 to line 17, col 36 of module RetentionReserve>
+/\ done = 3
+/\ free = 2
+
+State 5: <Copy line 13, col 5 to line 17, col 36 of module RetentionReserve>
+/\ done = 4
+/\ free = 0
+
+5 states generated, 5 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 5.
+The average outdegree of the complete state graph is 1 (minimum is 1, the maximum 1 and the 95th percentile is 1).
+Finished in 00s at (2026-09-17 03:09:50)

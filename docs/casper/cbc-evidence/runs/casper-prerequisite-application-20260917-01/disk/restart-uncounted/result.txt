@@ -1,0 +1,1 @@
+PASS: Restart preserved the guardian breach and failure count without new work (restart-uncounted).

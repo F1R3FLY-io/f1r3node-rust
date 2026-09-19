@@ -1,0 +1,1 @@
+PASS: Guardian death during the probe prevented benchmark admission and preserved failure (benchmark-guardian-interleaved).

@@ -1,0 +1,46 @@
+--- a/scripts/ci/check-tla-invariants.sh
++++ b/scripts/ci/check-tla-invariants.sh
+@@ -286 +286,2 @@
+-        grep -Fxq 'Model checking completed. No error has been found.' "$log"; then
++        grep -Fxq 'Model checking completed. No error has been found.' "$log" &&
++        awk '/^Error:/ { invalid = 1 } END { exit invalid }' "$log"; then
+@@ -290 +291,4 @@
+-        awk '
++        awk -v expected="Error: Invariant $expected_invariant is violated." '
++            $0 == expected { violations++ }
++            /^Error:/ && $0 != expected && $0 != "Error: The behavior up to this point is:" { invalid = 1 }
++            /^Model checking completed\. No error has been found\.$/ { invalid = 1 }
+@@ -295 +299 @@
+-            END { exit !found }
++            END { exit !(found && violations == 1 && !invalid) }
+--- a/scripts/ci/test-check-tla-invariants.sh
++++ b/scripts/ci/test-check-tla-invariants.sh
+@@ -57,0 +58,9 @@
++        contradictory)
++            printf 'Model checking completed. No error has been found.\n'
++            if [[ -z "$invariant" ]]; then
++                printf 'Error: The verifier encountered an unexpected failure.\n'
++                exit 0
++            fi ;;
++        extra-invariant) printf 'Error: Invariant TypeOK is violated.\n' ;;
++        duplicate-invariant) printf 'Error: Invariant %s is violated.\n' "$invariant" ;;
++        extra-error) printf 'Error: The verifier encountered an unexpected failure.\n' ;;
+@@ -248,0 +258,18 @@
++ambiguous_targets=("$baseline")
++for area in "${AREAS[@]}"; do
++    check="$(printf '%s\n' "${CONTROLS[@]}" | grep -m1 "^$area/")"
++    ambiguous_targets+=("${check%%:*}")
++done
++for target in "${ambiguous_targets[@]}"; do
++    for result in contradictory extra-invariant duplicate-invariant extra-error; do
++        if [[ "$target" == "$baseline" && "$result" != contradictory ]]; then
++            continue
++        fi
++        if run_gate pull_request TEST_TLC_TARGET="${target##*/}.cfg" TEST_TLC_RESULT="$result"; then
++            fail "The gate accepted ambiguous output for $target with result $result."
++        fi
++        grep -Fq "FAIL   $target (" "$WORK/run.log" ||
++            fail "The gate failed for a reason other than the ambiguous output for $target."
++    done
++done
++

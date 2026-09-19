@@ -1,0 +1,517 @@
+diff --git a/docs/ToDos.md b/docs/ToDos.md
+index a550e1cd8..f28cc31d9 100644
+--- a/docs/ToDos.md
++++ b/docs/ToDos.md
+@@ -151,6 +151,9 @@ files:
+   - scripts/bench/casper-soak.sh
+   - scripts/bench/fixtures/casper-lifecycle-executor.sh
+   - .github/workflows/slashing-tests.yml
++  - scripts/casper-soak/src/bin/check-casper-bindings.rs
++  - scripts/casper-soak/tests/bindings.rs
++  - scripts/casper-soak/tests/interruption.rs
+ tasks:
+   - id: TASK-017-1
+     title: "Reconcile ratifications, existing epics, and source dependencies"
+@@ -217,7 +220,7 @@ tasks:
+     claimed_by: pi-casper-harness
+     claimed_at: 2026-09-16T22:18:38Z
+     execution_scope: "Authorized completion work: shared registration and real-driver bindings. No node dispatch, external repin, or claim waiver."
+-    work_log: docs/work-logs/task-017-4-driver-integration-2026-09-17.md
++    work_log: docs/work-logs/task-017-4-binding-inventory-gate.md
+     completion_blocker: "Full driver bindings and profile adapters remain incomplete. Approved profile implementation may proceed alongside this task. Dispatch and claim gates remain unchanged."
+     blocked_by: []
+     decisions: [D-11]
+@@ -482,6 +485,9 @@ files:
+   - scripts/bench/casper-soak.sh
+   - scripts/bench/fixtures/casper-lifecycle-executor.sh
+   - .github/workflows/slashing-tests.yml
++  - scripts/casper-soak/src/bin/check-casper-bindings.rs
++  - scripts/casper-soak/tests/bindings.rs
++  - scripts/casper-soak/tests/interruption.rs
+ tasks:
+   - id: TASK-018-1
+     title: "Verify the merge gate and establish the post-merge baseline"
+diff --git a/docs/claims/casper-soak-harness.md b/docs/claims/casper-soak-harness.md
+index f4f0f9502..ae8f9e239 100644
+--- a/docs/claims/casper-soak-harness.md
++++ b/docs/claims/casper-soak-harness.md
+@@ -23,6 +23,9 @@ artifacts:
+   - scripts/casper-soak/src/runtime.rs
+   - scripts/casper-soak/tests/models.rs
+   - scripts/casper-soak/tests/driver.rs
++  - scripts/casper-soak/src/bin/check-casper-bindings.rs
++  - scripts/casper-soak/tests/bindings.rs
++  - scripts/casper-soak/tests/interruption.rs
+   - scripts/bench/casper-soak.sh
+   - scripts/bench/fixtures/casper-lifecycle-executor.sh
+   - .github/workflows/slashing-tests.yml
+@@ -119,6 +122,10 @@ The interface contract records source-audited primitives at that pin. Each run m
+ 
+ Fixtures must execute the real driver with controlled processes and storage responses. A model-only simulation does not satisfy the binding tier.
+ 
++The inventory gate requires all 46 registered case identities and all 89 invocation records. Each invocation must match its registered exit and command.
++
++Aggregate counts cannot replace case coverage. Inventory acceptance does not discharge this claim or establish semantic binding coverage.
++
+ ## Evidence package
+ 
+ Each cycle needs the following fields. Null values mean pending, not zero assumptions or successful execution.
+diff --git a/docs/tdd-plans/casper-soak-harness.md b/docs/tdd-plans/casper-soak-harness.md
+index 8ca3aef7f..9d8167de9 100644
+--- a/docs/tdd-plans/casper-soak-harness.md
++++ b/docs/tdd-plans/casper-soak-harness.md
+@@ -77,6 +77,18 @@ The [resume report](../casper/cbc-evidence/runs/casper-manifest-resume-20260917-
+ 
+ The helper and fixture are mandatory-scope additions. No task, claim, or full verification cycle is marked complete.
+ 
++## Binding inventory and terminal entry
++
++The [gate continuation](../work-logs/task-017-4-binding-inventory-gate.md) records three additional RED/GREEN checks.
++
++- The inventory gate rejects unrelated replacements for required cases.
++- The execution entry point rejects a terminal marker set after Bash admission.
++- The wrapper cannot publish success after an interrupted build.
++
++Current host tests, three focused Linux tests, and eleven TLC controls pass. Two full-suite attempts remain incomplete or invalid.
++
++The complete current fixture suite, interrupted-container capture, and semantic binding review remain pending. No H01–H10 cycle receives full discharge from these partial checks.
++
+ ## Per-cycle record template
+ 
+ ```yaml
+diff --git a/formal/tlaplus/casper_soak/verification-plan.jsonc b/formal/tlaplus/casper_soak/verification-plan.jsonc
+index 936a2271e..cd7ef7b24 100644
+--- a/formal/tlaplus/casper_soak/verification-plan.jsonc
++++ b/formal/tlaplus/casper_soak/verification-plan.jsonc
+@@ -50,7 +50,13 @@
+   "binding": {
+     "status": "pending",
+     "driver": "scripts/run-merge-recovery-soak.sh",
+-    "fixtures": "scripts/bench/test-run-merge-recovery-soak.sh",
++    "fixtures": "scripts/casper-soak/tests/driver.rs",
++    "legacy_fixtures": "scripts/bench/test-run-merge-recovery-soak.sh",
++    "inventory_checker": "scripts/casper-soak/src/bin/check-casper-bindings.rs",
++    "inventory_tests": "scripts/casper-soak/tests/bindings.rs",
++    "registered_cases": 46,
++    "required_invocations": 89,
++    "inventory_scope": "Completeness only. Semantic binding review and claim discharge remain separate gates.",
+     "summary": "scripts/bench/write-soak-summary.sh",
+     "workflow": ".github/workflows/merge-recovery-soak.yml",
+     "fixture_digest": null,
+diff --git a/scripts/casper-soak/src/bin/check-casper-bindings.rs b/scripts/casper-soak/src/bin/check-casper-bindings.rs
+new file mode 100644
+index 000000000..184edbcfc
+--- /dev/null
++++ b/scripts/casper-soak/src/bin/check-casper-bindings.rs
+@@ -0,0 +1,149 @@
++use std::collections::{BTreeMap, BTreeSet};
++use std::path::{Path, PathBuf};
++
++use casper_soak::{encoded, exclusive, manifest, record, regular, walk, MAX_BYTES};
++use clap::Parser;
++use eyre::{ensure, eyre, Result};
++use serde_json::json;
++
++#[derive(Parser)]
++struct Args {
++    #[arg(long)]
++    evidence: PathBuf,
++    #[arg(long)]
++    output: PathBuf,
++}
++
++fn expected() -> BTreeMap<String, Vec<i64>> {
++    let mut cases = BTreeMap::new();
++    for (name, exits) in [
++        ("complete", vec![0]),
++        ("duplicate", vec![0]),
++        ("missing", vec![1]),
++        ("missing-zero", vec![1]),
++        ("wrong-identity", vec![1]),
++        ("missing-artifact", vec![1]),
++        ("boolean-counter", vec![1]),
++        ("mismatch", vec![1]),
++        ("fault-applied", vec![0]),
++        ("fault-not-applied", vec![1]),
++        ("fault-restart-applied", vec![0]),
++        ("fault-restart-unready", vec![1]),
++        ("history", vec![0, 0, 0]),
++        ("rollback", vec![0, 2]),
++        ("failure-counter", vec![1, 2]),
++        ("resource", vec![1, 1]),
++        ("terminal", vec![0, 0]),
++        ("terminal-before-exec", vec![1]),
++        ("timeout", vec![1, 1]),
++        ("capability", vec![3]),
++        ("executable", vec![2]),
++        ("configuration", vec![2]),
++        ("policy", vec![2]),
++        ("node-kind", vec![2]),
++        ("pending-verification", vec![0]),
++        ("missing-binding", vec![2]),
++        ("open-merge", vec![2]),
++        ("corrupt-capture", vec![0, 2]),
++        ("empty-inventory", vec![0, 2]),
++        ("cached-success", vec![1, 2]),
++        ("incomplete-capture", vec![1, 2]),
++    ] {
++        cases.insert(name.to_owned(), exits);
++    }
++    for name in [
++        "missing",
++        "array",
++        "duplicate",
++        "nested-duplicate",
++        "nan",
++        "overflow",
++        "utf8",
++        "oversize",
++        "boolean-schema",
++        "traversal",
++        "duplicate-scenarios",
++        "symbolic-link",
++        "fifo",
++        "directory",
++    ] {
++        cases.insert(format!("invalid-{name}"), vec![2]);
++    }
++    let mut resume = vec![0, 0];
++    resume.extend(vec![2; manifest::FIELDS.len() + 4]);
++    cases.insert("manifest-resume".to_owned(), resume);
++    cases
++}
++
++fn check(evidence: &Path, output: &Path) -> Result<()> {
++    let cases = expected();
++    let expected_files: BTreeMap<_, _> = cases
++        .iter()
++        .flat_map(|(case, exits)| {
++            exits.iter().enumerate().map(move |(index, code)| {
++                (format!("{case}/invocation-{:02}.json", index + 1), *code)
++            })
++        })
++        .collect();
++    let mut actual_files = BTreeSet::new();
++    for path in walk(evidence)? {
++        let name = path
++            .file_name()
++            .and_then(|name| name.to_str())
++            .ok_or_else(|| eyre!("The evidence path is invalid."))?;
++        if !name.starts_with("invocation-") {
++            continue;
++        }
++        let relative = path
++            .strip_prefix(evidence)?
++            .to_str()
++            .ok_or_else(|| eyre!("The evidence path is invalid."))?;
++        let expected = expected_files
++            .get(relative)
++            .ok_or_else(|| eyre!("An invocation is not registered."))?;
++        let report = record(&path)?;
++        ensure!(
++            report["command"] == json!(["bash", "scripts/run-merge-recovery-soak.sh"]),
++            "The invocation command differs."
++        );
++        ensure!(
++            report["expected_exit"].as_i64() == Some(*expected)
++                && report["actual_exit"].as_i64() == Some(*expected),
++            "The invocation exit differs."
++        );
++        ensure!(
++            actual_files.insert(relative.to_owned()),
++            "An invocation is duplicated."
++        );
++    }
++    ensure!(
++        actual_files.len() == expected_files.len(),
++        "A required invocation is missing."
++    );
++    for (suite, count) in [("manifest", 3), ("models", 4), ("driver", 7)] {
++        let log = String::from_utf8(regular(&evidence.join(format!("{suite}.txt")), MAX_BYTES)?)?;
++        let pattern = format!(
++            r"(?m)^test result: ok\. {count} passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in [0-9.]+s$"
++        );
++        ensure!(
++            regex::Regex::new(&pattern)?.find_iter(&log).count() == 1
++                && !log.contains("test result: FAILED"),
++            "The test suite result differs."
++        );
++    }
++    exclusive(
++        output,
++        &encoded(
++            &json!({"schema_version":1,"scope":"binding-inventory-only","driver_invocations":actual_files.len(),"registered_cases":cases.len(),"matched_exits":true,"claim_discharge":"pending","node_execution":false}),
++        )?,
++        false,
++    )
++}
++
++fn main() {
++    let args = Args::parse();
++    if let Err(error) = check(&args.evidence, &args.output) {
++        eprintln!("{error}");
++        std::process::exit(2);
++    }
++}
+diff --git a/scripts/casper-soak/src/runtime.rs b/scripts/casper-soak/src/runtime.rs
+index f6352663f..2ad082121 100644
+--- a/scripts/casper-soak/src/runtime.rs
++++ b/scripts/casper-soak/src/runtime.rs
+@@ -378,6 +378,11 @@ pub fn run(
+     iteration: u64,
+ ) -> Result<i32> {
+     let c = admit(root, iteration)?;
++    let terminal = output.join("finalize-requested");
++    ensure!(
++        !terminal.try_exists()? && !terminal.is_symlink(),
++        "A terminal marker prevents workload launch."
++    );
+     ensure!(
+         iteration == history(output)?.len() as u64 + 1,
+         "The iteration would overwrite history."
+diff --git a/scripts/casper-soak/tests/bindings.rs b/scripts/casper-soak/tests/bindings.rs
+new file mode 100644
+index 000000000..2f606260e
+--- /dev/null
++++ b/scripts/casper-soak/tests/bindings.rs
+@@ -0,0 +1,78 @@
++use std::fs;
++use std::path::{Path, PathBuf};
++use std::process::Command;
++
++fn source() -> PathBuf {
++    std::env::var_os("SOAK_SOURCE_ROOT")
++        .map(PathBuf::from)
++        .unwrap_or_else(|| {
++            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
++                .parent()
++                .unwrap()
++                .parent()
++                .unwrap()
++                .to_path_buf()
++        })
++}
++
++fn check(evidence: &Path, output: &Path) -> bool {
++    let mut command = Command::new("bash");
++    command
++        .arg(source().join("scripts/ci/check-casper-soak-bindings.sh"))
++        .arg("--verify-evidence")
++        .arg(evidence)
++        .arg("--output")
++        .arg(output);
++    if std::env::var_os("SOAK_BINDING_CHECKER_BIN").is_none() {
++        if let Some(binary) = option_env!("CARGO_BIN_EXE_check-casper-bindings") {
++            command.env("SOAK_BINDING_CHECKER_BIN", binary);
++        }
++    }
++    command.output().unwrap().status.success()
++}
++
++#[test]
++fn required_case_cannot_be_replaced_by_an_unrelated_case() {
++    let root = tempfile::tempdir().unwrap();
++    assert!(Command::new("tar")
++        .arg("-xzf")
++        .arg(source().join(
++            "docs/casper/cbc-evidence/runs/casper-rust-migration-20260917-01/bindings.tar.gz"
++        ))
++        .arg("-C")
++        .arg(root.path())
++        .status()
++        .unwrap()
++        .success());
++    let historical = root.path().join("evidence");
++    let evidence = root.path().join("synthetic-inventory");
++    for path in casper_soak::walk(&historical).unwrap() {
++        if !path
++            .file_name()
++            .unwrap()
++            .to_string_lossy()
++            .starts_with("invocation-")
++        {
++            continue;
++        }
++        let source = casper_soak::record(&path).unwrap();
++        let destination = evidence.join(path.strip_prefix(&historical).unwrap());
++        fs::create_dir_all(destination.parent().unwrap()).unwrap();
++        fs::write(destination, casper_soak::encoded(&serde_json::json!({"command":source["command"],"expected_exit":source["expected_exit"],"actual_exit":source["actual_exit"],"evidence_kind":"synthetic_fixture","purpose":"inventory-validator-input"})).unwrap()).unwrap();
++    }
++    fs::create_dir(evidence.join("terminal-before-exec")).unwrap();
++    fs::write(evidence.join("terminal-before-exec/invocation-01.json"), casper_soak::encoded(&serde_json::json!({"command":["bash","scripts/run-merge-recovery-soak.sh"],"expected_exit":1,"actual_exit":1,"evidence_kind":"synthetic_fixture","purpose":"inventory-validator-input"})).unwrap()).unwrap();
++    for (suite, count) in [("manifest", 3), ("models", 4), ("driver", 7)] {
++        fs::write(evidence.join(format!("{suite}.txt")), format!("Synthetic inventory-validator input.\ntest result: ok. {count} passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n")).unwrap();
++    }
++    assert!(check(&evidence, &root.path().join("valid")));
++    fs::rename(
++        evidence.join("capability"),
++        evidence.join("unregistered-capability"),
++    )
++    .unwrap();
++    assert!(
++        !check(&evidence, &root.path().join("invalid")),
++        "The gate accepted an unrelated case in place of a required case."
++    );
++}
+diff --git a/scripts/casper-soak/tests/driver.rs b/scripts/casper-soak/tests/driver.rs
+index 28e655eea..605dd363e 100644
+--- a/scripts/casper-soak/tests/driver.rs
++++ b/scripts/casper-soak/tests/driver.rs
+@@ -407,6 +407,28 @@ mod linux {
+             c.invoke(2);
+         }
+     }
++    #[test]
++    fn terminal_between_admission_and_executor() {
++        let mut c = Case::new("terminal-before-exec", "complete", 1);
++        let entry = c.root.join("bin/terminal-entry");
++        fs::write(&entry, "#!/usr/bin/env bash\nset -eu\nif [[ \"$1\" == run ]]; then printf 'cancelled\\n' >\"$SOAK_OUTPUT_DIR/finalize-requested\"; fi\nexec \"$SOAK_TEST_REAL_HARNESS_BIN\" \"$@\"\n").unwrap();
++        fs::set_permissions(&entry, fs::Permissions::from_mode(0o755)).unwrap();
++        c.env.insert(
++            "SOAK_TEST_REAL_HARNESS_BIN".into(),
++            binary().display().to_string(),
++        );
++        c.env
++            .insert("SOAK_HARNESS_BIN".into(), entry.display().to_string());
++        c.invoke(1);
++        let iteration = c.output.join("iteration-00001-docker");
++        assert!(!iteration.join("launch.json").exists());
++        assert!(!iteration.join("sample.json").exists());
++        assert_eq!(
++            record(&c.output.join("casper-result.json")).unwrap()["soak_verdict"],
++            "non_passing"
++        );
++    }
++
+     #[test]
+     fn invalid_manifests_through_driver() {
+         for kind in [
+diff --git a/scripts/ci/check-casper-soak-bindings.sh b/scripts/ci/check-casper-soak-bindings.sh
+index d60630251..7f266d42e 100755
+--- a/scripts/ci/check-casper-soak-bindings.sh
++++ b/scripts/ci/check-casper-soak-bindings.sh
+@@ -2,67 +2,97 @@
+ set -euo pipefail
+ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ OUTPUT=""
++EVIDENCE=""
++verify_evidence() {
++	"${SOAK_BINDING_CHECKER_BIN:-$ROOT/target/debug/check-casper-bindings}" --evidence "$EVIDENCE" --output "$OUTPUT/counts.json"
++}
+ IMAGE="${SOAK_DISK_TEST_IMAGE:-}"
+ while [[ $# -gt 0 ]]; do
+ 	case "$1" in
+ 		--output) OUTPUT="$2"; shift 2 ;;
+ 		--image) IMAGE="$2"; shift 2 ;;
++		--verify-evidence) EVIDENCE="$2"; shift 2 ;;
+ 		*) printf 'Unknown argument.\n' >&2; exit 2 ;;
+ 	esac
+ done
+ [[ -n "$OUTPUT" && ! -e "$OUTPUT" ]] || exit 2
+ mkdir -p "$OUTPUT"
+ OUTPUT="$(cd "$OUTPUT" && pwd)"
++if [[ -n "$EVIDENCE" ]]; then
++	verify_evidence
++	exit 0
++fi
+ cd "$ROOT"
++FILES=(Cargo.toml Cargo.lock scripts/run-merge-recovery-soak.sh scripts/casper-soak scripts/ci/check-casper-soak-bindings.sh scripts/bench/casper-soak.sh scripts/bench/fixtures/casper-lifecycle-executor.sh scripts/bench/write-soak-summary.sh scripts/bench/collect-soak-metrics.sh scripts/bench/soak-metrics.json scripts/bench/run-bench-segment.sh docs/casper/cbc-evidence/runs/casper-rust-migration-20260917-01/bindings.tar.gz)
++find "${FILES[@]}" -type f -exec shasum -a 256 {} \; >"$OUTPUT/sources.sha256"
+ case "$(uname -m)" in
+ 	arm64|aarch64) TARGET=aarch64-unknown-linux-musl ;;
+ 	x86_64) TARGET=x86_64-unknown-linux-musl ;;
+ 	*) exit 2 ;;
+ esac
+ CONTAINER=""
++COMPLETED=0
+ finish() {
+ 	status=$?
+-	trap - EXIT
++	trap - EXIT HUP INT TERM
++	if [[ "$COMPLETED" != 1 && "$status" == 0 ]]; then status=2; fi
+ 	if [[ -n "$CONTAINER" ]]; then
+-		docker rm -f "$CONTAINER" >"$OUTPUT/cleanup.txt" 2>&1 || status=2
++		if [[ "$COMPLETED" != 1 ]]; then
++			timeout --kill-after=5 15 docker stop -t 5 "$CONTAINER" >"$OUTPUT/interrupted-stop.txt" 2>&1 || status=2
++			timeout --kill-after=5 15 docker inspect "$CONTAINER" >"$OUTPUT/interrupted-state.json" 2>"$OUTPUT/interrupted-inspect.txt" || status=2
++			timeout --kill-after=5 15 docker cp "$CONTAINER:/case/evidence" "$OUTPUT/interrupted-evidence" >"$OUTPUT/interrupted-capture.txt" 2>&1 || status=2
++		fi
++		timeout --kill-after=5 15 docker rm -f "$CONTAINER" >"$OUTPUT/cleanup.txt" 2>&1 || status=2
+ 	fi
+ 	jq -n --argjson exit "$status" --arg image "$IMAGE" --arg target "$TARGET" \
+-		'{schema_version:1,status:(if $exit==0 then "passed" else "failed" end),exit_code:$exit,image:$image,target:$target,evidence_kind:"synthetic_fixture",node_execution:false,claim_discharge:"pending"}' >"$OUTPUT/report.json"
+-	if [[ -d "$OUTPUT/evidence" ]]; then
+-		(cd "$OUTPUT" && find evidence -type f -exec shasum -a 256 {} \;) >"$OUTPUT/artifacts.sha256"
+-		COPYFILE_DISABLE=1 tar -czf "$OUTPUT/evidence.tar.gz" -C "$OUTPUT" evidence artifacts.sha256 sources.sha256 report.json
++		'{schema_version:1,status:(if $exit==0 then "passed" else "failed" end),exit_code:$exit,image:$image,target:$target,container_timeout_seconds:550,attach_timeout_seconds:600,evidence_kind:"synthetic_fixture",node_execution:false,claim_discharge:"pending"}' >"$OUTPUT/report.json"
++	local captures=()
++	for name in evidence interrupted-evidence; do
++		if [[ -d "$OUTPUT/$name" ]]; then captures+=("$name"); fi
++	done
++	if [[ "${#captures[@]}" -gt 0 ]]; then
++		(cd "$OUTPUT" && find "${captures[@]}" -type f -exec shasum -a 256 {} \;) >"$OUTPUT/artifacts.sha256"
++		COPYFILE_DISABLE=1 tar -czf "$OUTPUT/evidence.tar.gz" -C "$OUTPUT" "${captures[@]}" artifacts.sha256 sources.sha256 report.json
+ 	fi
+ 	exit "$status"
+ }
+ trap finish EXIT
++trap 'exit 129' HUP
++trap 'exit 130' INT
++trap 'exit 143' TERM
+ rustup target add "$TARGET" >"$OUTPUT/target-setup.txt" 2>&1
+ RUSTFLAGS='-C linker=rust-lld -C link-self-contained=yes -C target-feature=+crt-static' \
+ 	cargo test --locked -p casper-soak --target "$TARGET" --no-run --message-format=json \
+ 	>"$OUTPUT/build.jsonl" 2>"$OUTPUT/build.txt"
+ BIN="$(jq -rs '[.[] | select(.reason=="compiler-artifact" and .target.name=="casper-soak" and .profile.test==false and .executable!=null) | .executable] | last' "$OUTPUT/build.jsonl")"
+ [[ -x "$BIN" ]] || exit 2
++CHECKER="$(jq -rs '[.[] | select(.reason=="compiler-artifact" and .target.name=="check-casper-bindings" and .profile.test==false and .executable!=null) | .executable] | last' "$OUTPUT/build.jsonl")"
++[[ -x "$CHECKER" ]] || exit 2
+ if [[ -z "$IMAGE" ]]; then
+ 	docker build --iidfile "$OUTPUT/image-id.txt" - <scripts/bench/soak-disk-test.Dockerfile >"$OUTPUT/image-build.txt" 2>&1
+ 	IMAGE="$(<"$OUTPUT/image-id.txt")"
+ fi
+ [[ "$IMAGE" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 2
+ CONTAINER="$(docker create --pull=never --network none --cap-drop ALL --security-opt no-new-privileges \
+-	--pids-limit 192 --memory 512m --cpus 2 --user 65534:65534 --entrypoint bash "$IMAGE" -euc '
++	--pids-limit 192 --memory 512m --cpus 2 --user 65534:65534 --entrypoint timeout "$IMAGE" --signal=TERM --kill-after=5 550 bash -euc '
+ mkdir -p /case/evidence
+-export SOAK_SOURCE_ROOT=/case/repo SOAK_HARNESS_BIN=/case/casper-soak SOAK_TEST_ARTIFACTS=/case/evidence
+-for suite in manifest models driver; do
++export SOAK_SOURCE_ROOT=/case/repo SOAK_HARNESS_BIN=/case/casper-soak SOAK_TEST_ARTIFACTS=/case/evidence SOAK_BINDING_CHECKER_BIN=/case/check-casper-bindings
++for suite in manifest models bindings interruption driver; do
+  /case/test-$suite --test-threads=1 > /case/evidence/$suite.txt 2>&1
+ done
++for suite in bindings interruption; do
++ grep -Eq "test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;" /case/evidence/$suite.txt
++done
++/case/check-casper-bindings --evidence /case/evidence --output /case/evidence/counts.json
+ ')"
+ docker inspect "$CONTAINER" >"$OUTPUT/container.json"
+ jq -e '.[0] | (.Mounts|length)==0 and .HostConfig.NetworkMode=="none" and .HostConfig.Privileged==false and .HostConfig.PidMode=="" and .Config.User=="65534:65534"' "$OUTPUT/container.json" >/dev/null
+-FILES=(Cargo.toml Cargo.lock scripts/run-merge-recovery-soak.sh scripts/casper-soak scripts/bench/casper-soak.sh scripts/bench/fixtures/casper-lifecycle-executor.sh scripts/bench/write-soak-summary.sh scripts/bench/collect-soak-metrics.sh scripts/bench/soak-metrics.json scripts/bench/run-bench-segment.sh)
+-find "${FILES[@]}" -type f -exec shasum -a 256 {} \; >"$OUTPUT/sources.sha256"
+ TAR=tar
+ command -v gtar >/dev/null && TAR=gtar
+ COPYFILE_DISABLE=1 "$TAR" -cf - "${FILES[@]}" | docker cp - "$CONTAINER:/case/repo/"
+ docker cp "$BIN" "$CONTAINER:/case/casper-soak" >/dev/null
+-for suite in manifest models driver; do
++docker cp "$CHECKER" "$CONTAINER:/case/check-casper-bindings" >/dev/null
++for suite in manifest models bindings interruption driver; do
+ 	TEST="$(jq -rs --arg suite "$suite" '[.[] | select(.reason=="compiler-artifact" and .target.name==$suite and .profile.test==true and .executable!=null) | .executable] | last' "$OUTPUT/build.jsonl")"
+ 	[[ -x "$TEST" ]] || exit 2
+ 	docker cp "$TEST" "$CONTAINER:/case/test-$suite" >/dev/null
+@@ -73,12 +103,8 @@ docker inspect "$CONTAINER" >"$OUTPUT/finished.json"
+ docker cp "$CONTAINER:/case/evidence" "$OUTPUT/evidence" >/dev/null
+ jq -e --argjson status "$status" '.[0].State | .Running==false and .OOMKilled==false and .ExitCode==$status' "$OUTPUT/finished.json" >/dev/null
+ [[ "$status" == 0 ]] || exit "$status"
+-find "$OUTPUT/evidence" -name 'invocation-*.json' -type f -exec jq -c '{expected_exit,actual_exit}' {} \; | \
+-	jq -s 'length as $count | {driver_invocations:$count,matched_exits:all(.expected_exit==.actual_exit)}' >"$OUTPUT/evidence/counts.json"
+-jq -e '.driver_invocations==88 and .matched_exits==true' "$OUTPUT/evidence/counts.json" >/dev/null
+-for suite in manifest models driver; do
+-	grep -Eq 'test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored;' "$OUTPUT/evidence/$suite.txt"
+-done
++jq -e '.scope=="binding-inventory-only" and .driver_invocations==89 and .registered_cases==46 and .matched_exits==true and .claim_discharge=="pending"' "$OUTPUT/evidence/counts.json" >/dev/null
+ rustc --version >"$OUTPUT/evidence/rustc-version.txt"
+ cargo --version >"$OUTPUT/evidence/cargo-version.txt"
+ shasum -a 256 -c "$OUTPUT/sources.sha256" >"$OUTPUT/source-check.txt"
++COMPLETED=1

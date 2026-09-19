@@ -1,0 +1,46 @@
+{
+  "evidence_kind": "synthetic_fixture",
+  "invocation": "bash scripts/bench/write-soak-summary.sh",
+  "environment": {
+    "SOAK_OUTPUT_DIR": "[PROBE]",
+    "SOAK_METRICS_REGISTRY": "[SOURCE_SNAPSHOT]/scripts/bench/soak-metrics.json",
+    "SOAK_TARGET_REF": "synthetic-fixture",
+    "SOAK_TARGET_SHA": "a2fe60c7255bf4ba035d41fb65b6d6f1c0f02632",
+    "SOAK_STARTED_AT": "1000",
+    "SOAK_FINISHED_AT": "1120",
+    "SOAK_DURATION_SECONDS": "120",
+    "SOAK_ITERATIONS": "2",
+    "SOAK_FAILURES": "0",
+    "SOAK_BENCH_SEGMENTS": "0",
+    "SOAK_BENCH_FAILURES": "0"
+  },
+  "timeout_seconds": 10,
+  "exit_code": 0,
+  "expected_observation": {
+    "declared_iterations": 2,
+    "retained_iteration_metrics": 1,
+    "failures": 0,
+    "scenario_verdict_present": false,
+    "soak_verdict_present": false
+  },
+  "actual_observation": {
+    "declared_iterations": 2,
+    "retained_iteration_metrics": 1,
+    "failures": 0,
+    "scenario_verdict_present": false,
+    "soak_verdict_present": false
+  },
+  "interpretation": "The current dashboard summary silently omits malformed metric input. Exit zero is not Casper conformance evidence.",
+  "scope_limit": "This probe does not assert a product pass or execute a node.",
+  "gap_reproduced": true,
+  "input_archive_mapping": {
+    "iteration-00002-docker/metrics.json.txt": "iteration-00002-docker/metrics.json"
+  },
+  "artifact_digests": {
+    "iteration-00001-docker/metrics.json": "f8f04d45d5203f691346f592527cc52220595e04d56bcf6296568c68b2f8a860",
+    "iteration-00002-docker/metrics.json.txt": "ed29fd7e055853bb9b23dbfbcc875141832308e97b61a1bda6f2127af190ff72",
+    "iterations.json": "08f8b1bc187f5a51acc93dcd54e81c894d0447aa413ab00dd74d363c58cd70a4",
+    "summary.json": "720b3138069dc0aa37f8c82055016d432687a3826021e31c923a08eb46c6afdc",
+    "writer.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "report_sha256": "aee066e144f2e725373d479a097c9b185b71621a47997862e0858f6b97cdc777",
+  "package_checksums": "passed",
+  "source_archive_files_verified": 22,
+  "evidence_archive_files_verified": 5126,
+  "nested_retained_references_verified": 954,
+  "pending_ledgers_verified": 12,
+  "compatibility_links_verified": 12,
+  "strict_claim_001_exit": 0,
+  "strict_claim_002_exit": 4,
+  "final_rust_lsp": {
+    "confirmed_clean": 3,
+    "diagnostics": 0
+  },
+  "initial_lsp_inconclusive": 1,
+  "final_rustfmt": "passed",
+  "ledger_ste_check": "passed",
+  "diff_check": "passed",
+  "staged_files": 0,
+  "committed_by_this_agent": false,
+  "pushed_by_this_agent": false,
+  "task_status": "in_progress",
+  "claim_discharge": "pending",
+  "node_execution": false
+}

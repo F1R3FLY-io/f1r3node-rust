@@ -1,0 +1,22 @@
+{
+  "scope": "claim-audit-invocations-not-discharge",
+  "attempts": [
+    {
+      "claim": "CLAIM-CASPER-SOAK-001",
+      "actual_exit": 2,
+      "output_report_present": false,
+      "output": "The discharged source or specification differs.\n"
+    },
+    {
+      "claim": "CLAIM-CASPER-SOAK-004",
+      "actual_exit": 2,
+      "output_report_present": false,
+      "output": "The discharged source or specification differs.\n"
+    }
+  ],
+  "cause": {
+    "artifact": "scripts/run-merge-recovery-soak.sh",
+    "accepted_sha256": "7f4ba9b1c9078c984251317a4cb5032772a092645bfb83d07f6950c0b43542b2",
+    "current_sha256": "5552bb673d0735ac04a10566753d80b5eaf6db7d238be6a943c15c384f5187a0"
+  }
+}

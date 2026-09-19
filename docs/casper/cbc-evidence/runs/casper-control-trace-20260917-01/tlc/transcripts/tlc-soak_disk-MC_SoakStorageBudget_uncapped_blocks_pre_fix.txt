@@ -1,0 +1,70 @@
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 22 and seed -5005926390016826177 with 2 workers on 2 cores with 341MB heap and 64MB offheap memory [pid: 2394] (Linux 6.12.76-linuxkit aarch64, Debian 17.0.20.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /case/work/formal/tlaplus/soak_disk/MC_SoakStorageBudget_uncapped_blocks_pre_fix.tla
+Parsing file /case/work/formal/tlaplus/soak_disk/SoakStorageBudget.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/TLC.tla
+Parsing file /tmp/Sequences.tla
+Parsing file /tmp/FiniteSets.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module SoakStorageBudget
+Semantic processing of module MC_SoakStorageBudget_uncapped_blocks_pre_fix
+Starting... (2026-09-17 05:09:13)
+Implied-temporal checking--satisfiability problem has 1 branches.
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-09-17 05:09:13.
+Error: Invariant WithinBudget is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ checkpoints = 0
+/\ deploys = 0
+/\ elapsed = 0
+/\ containerLogged = 0
+/\ blocks = 0
+/\ consumed = 0
+/\ logged = 0
+
+State 2: <StoreBlock line 58, col 5 to line 62, col 75 of module SoakStorageBudget>
+/\ checkpoints = 0
+/\ deploys = 0
+/\ elapsed = 0
+/\ containerLogged = 0
+/\ blocks = 1
+/\ consumed = 5
+/\ logged = 0
+
+State 3: <ExecuteDeploy line 65, col 5 to line 68, col 74 of module SoakStorageBudget>
+/\ checkpoints = 0
+/\ deploys = 1
+/\ elapsed = 0
+/\ containerLogged = 0
+/\ blocks = 1
+/\ consumed = 7
+/\ logged = 0
+
+State 4: <ExecuteDeploy line 65, col 5 to line 68, col 74 of module SoakStorageBudget>
+/\ checkpoints = 0
+/\ deploys = 2
+/\ elapsed = 0
+/\ containerLogged = 0
+/\ blocks = 1
+/\ consumed = 9
+/\ logged = 0
+
+State 5: <Log line 79, col 5 to line 83, col 75 of module SoakStorageBudget>
+/\ checkpoints = 0
+/\ deploys = 2
+/\ elapsed = 0
+/\ containerLogged = 0
+/\ blocks = 1
+/\ consumed = 11
+/\ logged = 2
+
+2408 states generated, 565 distinct states found, 324 states left on queue.
+The depth of the complete state graph search is 6.
+The average outdegree of the complete state graph is 2 (minimum is 0, the maximum 15 and the 95th percentile is 7).
+Finished in 00s at (2026-09-17 05:09:14)
