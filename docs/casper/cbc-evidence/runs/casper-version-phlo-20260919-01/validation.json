@@ -19,6 +19,24 @@
   "nested_references": 3750,
   "model_controls_per_native_and_hosted": 4,
   "shared_tests": 11,
+  "supplemental_verification": {
+    "local_archive": "target/task-017-11-final/casper-version-phlo-verification-20260919-01.external.tar.gz",
+    "sha256": "06f6b9f9d7a74ec726fbe9f61db056929cf07ac2a5d150a22f958034c4ce1cdc",
+    "bytes": 12434,
+    "status": "local-not-uploaded",
+    "contents": "Verifier scripts, strict audits, ledger hashes, retained check failures, STE baseline, and diagnostic coverage."
+  },
+  "ste": {
+    "new_prose": "passed-with-baseline",
+    "unchanged_legacy_findings": 1,
+    "legacy_finding": "The pre-existing SI-DEPLOY sentence contains a semicolon."
+  },
+  "lsp": {
+    "files_checked": 2,
+    "diagnostics": 0,
+    "confirmed_clean": 1,
+    "inconclusive": 1
+  },
   "strict_claims_002_006_and008": 0,
   "strict_claim007": 4,
   "strict_claim001": 4,
