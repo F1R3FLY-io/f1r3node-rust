@@ -1,0 +1,2 @@
+    Checking casper-soak v0.1.0 ([WORKSPACE_ROOT]/scripts/casper-soak)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.41s

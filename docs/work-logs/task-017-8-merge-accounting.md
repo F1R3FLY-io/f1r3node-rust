@@ -1,5 +1,29 @@
 # TASK-017-8 Merge and Accounting Profile
 
+## Acceptance and completion
+
+The user accepted TASK-017-8 on 2026-09-19 with the message “I accpet TASK-017-8”.
+
+The [acceptance report](../casper/cbc-evidence/runs/casper-merge-accounting-acceptance-20260919-01/report.json) discharges CLAIM-CASPER-SOAK-005 for the reviewed bounded pre-merge sources.
+
+The workflow tag is ratified and applied. All twelve reviewed artifact hashes remain unchanged.
+
+The pre-acceptance validator checked 1,476 nested references. Accepted-state native tests, all four model controls, and eleven shared tests passed again.
+
+Claims 001–005 pass strict discharge. The full bundle remains pending for claims 006–008.
+
+The pinned completion helper returned full integrity with no gaps. TASK-017-8 is complete, and EPIC-017 is eight of fourteen tasks complete.
+
+The helper changed only TASK-017-8 on a tracker copy. The reviewed patch preserved unrelated task records, the tracker backup, and the TASK-017-4 adapter.
+
+The original package and pending ledgers remain historical evidence. The original validator expects pending acceptance and does not represent the current accepted state.
+
+This acceptance does not authorize live execution, additive activation, post-merge execution, or a passing soak. No Git publication was performed by this assistant.
+
+The new acceptance package contains only a report, validation, and digest lists. Existing bulk evidence remains available for the TASK-017-14 retention owner.
+
+The following verification narrative records the earlier implementation and review state.
+
 ## Scope
 
 This task implements CLAIM-CASPER-SOAK-005 against controlled transcripts. It does not implement node accounting or activate additive merge semantics.
@@ -12,7 +36,7 @@ The starting revision is `09b0a60063815b750979864225a0a56387d6ed80`. The task st
 - [x] Preserve execution multiplicity, admission rejection, failed-body settlement, causal inputs, and compatibility labels.
 - [x] Add controlled fixtures and bounded model controls.
 - [x] Run native and isolated Linux tests, model checks, and shared regressions.
-- [ ] Accept the bounded binding and ratify the workflow tag.
+- [x] Accept the bounded binding and ratify the workflow tag.
 
 ## Boundaries
 
@@ -76,7 +100,7 @@ An external publisher committed initial files in `442e93faa`. HEAD later advance
 
 External staging and unrelated task updates remain intact. This assistant did not stage, commit, push, or synchronize the branch.
 
-## Pending acceptance
+## Historical pending acceptance
 
 TASK-017-8 remains in progress. CLAIM-CASPER-SOAK-005 remains pending, with bounded refutation results and no binding discharge.
 

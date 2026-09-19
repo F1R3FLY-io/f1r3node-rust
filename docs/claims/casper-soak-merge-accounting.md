@@ -2,7 +2,7 @@
 
 ```yaml
 claim_id: CLAIM-CASPER-SOAK-005
-status: pending
+status: discharged
 adapter: embedded
 scope: harness-profile
 profile_implementation: controlled-transcript
@@ -25,7 +25,7 @@ artifacts:
 refutation: bounded-safety-pass
 construction: not-applicable
 construction_assumptions: null
-binding: pending
+binding: passed
 soak: pending
 ```
 
@@ -107,8 +107,12 @@ A correct harness can report a failed product scenario. Passing harness verifica
 
 The [profile guide](../../formal/tlaplus/casper_soak/profiles/merge_accounting/README.md) defines executable bounds, limitations, and verification commands.
 
-The [work log](../work-logs/task-017-8-merge-accounting.md) records verification evidence and pending acceptance.
+The [work log](../work-logs/task-017-8-merge-accounting.md) records verification evidence and acceptance.
 
-Binding acceptance and the workflow tag require separate human review. This claim remains pending until that review.
+The user accepted TASK-017-8 with the message “I accpet TASK-017-8”. This acceptance covers the bounded pre-merge binding and its workflow tag.
+
+The [acceptance report](../casper/cbc-evidence/runs/casper-merge-accounting-acceptance-20260919-01/report.json) binds the reviewed sources and this specification.
+
+Live execution, additive activation, and post-merge execution remain outside this discharge. Soak verification remains pending.
 
 The [harness contract](./casper-soak-harness.md) defines provenance and outcome rules. Deferred policies still require separate approval before activation.

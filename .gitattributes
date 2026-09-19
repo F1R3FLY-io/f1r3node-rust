@@ -99,3 +99,4 @@ scripts/ci/check-casper-soak-bindings.sh cbc=mandatory cbc-weight=high
 .github/workflows/casper-authority-finality.yml cbc=mandatory cbc-weight=high
 .github/workflows/casper-publication.yml cbc=mandatory cbc-weight=high
 .github/workflows/casper-recovery.yml cbc=mandatory cbc-weight=high
+.github/workflows/casper-merge-accounting.yml cbc=mandatory cbc-weight=high

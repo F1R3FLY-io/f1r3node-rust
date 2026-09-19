@@ -69,6 +69,14 @@ The offline link check reports one more error than the live tree. One work log l
 
 `report.json` stays byte-identical in every package because the audit binds its digest. The external pointer is a sibling file, not a report field. The retention rule in the plan document should say so for existing packages.
 
+## Packages added after the rehearsal
+
+TASK-017-8 closed on 2026-09-19 with two packages. The review package `casper-merge-accounting-20260919-01` is 3.8 MB with archives in-tree. The acceptance package `casper-merge-accounting-acceptance-20260919-01` holds the report, the validation, and digest lists only.
+
+Both enter the retention inventory. The bundle set and the store assets are rebuilt from the tree at reduction time. The counts in this log are a snapshot, not the final list.
+
+The handoff from `pi-casper-merge-accounting` asks that the accepted report bytes, source hashes, and previous-ledger references stay unchanged. The rehearsed tool already preserves report bytes and rewrites references in place. Its open question is where the supplemental acceptance checks under `target/` go. The agent exports them as one archive, and the reduction uploads it to the release as a separate asset. Nothing under `target/` enters the tree.
+
 ## Status
 
 - Step 0, retention rule: recorded in the plan document on 2026-09-19.

@@ -425,13 +425,14 @@ tasks:
     title: "Verify merge and accounting workload generation and measurement"
     claims: [CLAIM-CASPER-SOAK-005]
     claim_spec: docs/claims/casper-soak-merge-accounting.md
-    status: in_progress
+    status: complete
     claimed_by: pi-casper-merge-accounting
     claimed_at: 2026-09-19T05:47:48Z
     work_log: docs/work-logs/task-017-8-merge-accounting.md
     implementation_status: controlled-transcript-implemented
-    validation_evidence: docs/casper/cbc-evidence/runs/casper-merge-accounting-20260919-01/report.json
-    completion_blocker: "Bounded binding acceptance and workflow-tag ratification remain pending."
+    validation_evidence: docs/casper/cbc-evidence/runs/casper-merge-accounting-acceptance-20260919-01/report.json
+    completion_evidence: docs/work-logs/task-017-8-merge-accounting.md
+    completion_blocker: null
     tests:
       - scripts/casper-soak/tests/merge_accounting.rs
       - scripts/casper-soak/check-merge-accounting.sh
@@ -454,6 +455,9 @@ tasks:
       - "Accounting expectations use pinned fixture values. The profile does not implement or prove node accounting."
       - "Conditional additive profiles remain isolated and do not authorize protocol activation."
 
+    unit_tests: [scripts/casper-soak/tests/merge_accounting.rs]
+    completion_gaps: []
+    completed_date: 2026-09-19
   - id: TASK-017-9
     title: "Verify slashing scenario scheduling and result classification"
     claims: [CLAIM-CASPER-SOAK-006]
@@ -507,8 +511,11 @@ tasks:
     drift_review: docs/work-logs/task-017-12-drift-review-2026-09-19.md
     claims: [CLAIM-CASPER-SOAK-001, CLAIM-CASPER-SOAK-004]
     claim_index: docs/claims/casper-soak-harness.md
-    status: pending
-    claimed_by: null
+    status: in_progress
+    claimed_by: claude-session-9f19b46c
+    claimed_at: 2026-09-19T06:35:51Z
+    execution_scope: "Preparation only: repin tooling, resource proposal, adapter-qualification checklist, and the infrastructure dry-run plan. Workload pins, adapter qualification runs, and the baseline soak wait for TASK-017-8 through TASK-017-11 and a Linux agent."
+    work_log: docs/work-logs/task-017-12-preparation.md
     blocked_by: [TASK-017-2, TASK-017-3, TASK-017-4, TASK-017-5, TASK-017-6, TASK-017-7, TASK-017-8, TASK-017-9, TASK-017-10, TASK-017-11]
     related_epics: [EPIC-010, EPIC-013]
     acceptance:
