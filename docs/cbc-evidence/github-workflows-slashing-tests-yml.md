@@ -6,7 +6,9 @@ The [restored claim](../claims/soak-formal-gate.md) records the approved workflo
 
 The [implementation log](../work-logs/soak-formal-gate-implementation.md) records local checks. The [hosted renewal log](../work-logs/soak-formal-gate-hosted-renewal.md) records successful run `35473280388` and renewed bounded bindings.
 
-The independent governance claim remains pending. Baseline availability, separate protection-rule authorization, effective enforcement tests, and final acceptance remain open.
+The independent governance claim remains pending. The user approved conditional protection changes, enforcement tests, and final acceptance after verification.
+
+The [authorization record](../work-logs/soak-formal-gate-authorization.md) preserves that approval. Baseline availability, actual rule activation, enforcement results, and evidence-backed acceptance remain open.
 
 The historical results below retain their original source identities. They do not discharge the new workflow.
 

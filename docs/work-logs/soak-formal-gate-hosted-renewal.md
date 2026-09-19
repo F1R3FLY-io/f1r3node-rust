@@ -84,6 +84,8 @@ The earlier implementation timeout remains in its original evidence package. The
 
 ## Remaining governance requirements
 
+This section records the renewal checkpoint. The later [authorization record](soak-formal-gate-authorization.md) approves conditional protection changes, enforcement tests, and evidence-backed final acceptance.
+
 `CLAIM-SOAK-GATE-001` remains pending. The protected `dev` workflow does not yet contain `Formal verification gate`, and the effective rules do not require it.
 
 1. Make the reviewed gate available on the protected baseline through an authorized Git workflow.

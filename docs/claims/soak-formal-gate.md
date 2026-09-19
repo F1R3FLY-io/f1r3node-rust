@@ -16,6 +16,10 @@ hosted_verification: passed
 hosted_revision: 191e184be556c1f190748143377ab369586c53b6
 hosted_run: 35473280388
 required_check_enforcement: pending
+protection_change_authorization: approved-after-baseline-availability
+enforcement_test_authorization: approved
+final_acceptance_authorization: approved-after-verification
+authorization_record: docs/work-logs/soak-formal-gate-authorization.md
 ```
 
 ## Authority and history
@@ -24,7 +28,9 @@ The [historical specification](https://github.com/F1R3FLY-io/f1r3node-rust/blob/
 
 The user approved the proposed implementation on 2026-09-19: `proceed with your proposal -- approved`.
 
-That approval covers workflow implementation and an explicit local-only revision of the finalized-floor obligation. It does not authorize protection-rule changes.
+That initial approval covers workflow implementation and an explicit local-only revision of the finalized-floor obligation. It did not authorize protection-rule changes.
+
+The user subsequently approved conditional protection changes, enforcement tests, and final acceptance after verification. The [authorization record](../work-logs/soak-formal-gate-authorization.md) preserves the approval and its limits.
 
 The retired 256-file digest inventory is not restored. Earlier pending records remain historical evidence, not fresh results for this implementation.
 
@@ -74,11 +80,13 @@ The existing CI Rocq suite still checks slashing, fork choice, and rspace guards
 - [x] Verify a successful hosted run and independently reconstruct its source and run identities.
 - [x] Preserve unsuccessful hosted outcomes and artifact retrieval evidence.
 - [x] Renew Claim001 for the changed workflow and recheck the formal-area documentation contract.
-- [ ] Obtain separate approval before changing repository protection rules.
+- [x] Obtain separate approval before changing repository protection rules.
 - [ ] Activate the required check only after it is available on the protected baseline.
 - [ ] Verify rejection of skipped, canceled, stale, missing, and failing results under the actual protection configuration.
-- [ ] Record current enforcement evidence and obtain final claim acceptance.
+- [ ] Record current enforcement evidence and apply the authorized final acceptance after all obligations pass.
 
 The [implementation log](../work-logs/soak-formal-gate-implementation.md) records the initial checks. The [hosted renewal log](../work-logs/soak-formal-gate-hosted-renewal.md) records verified execution and retained outcomes.
 
-The protected `dev` baseline does not yet contain the new gate. This claim remains pending until baseline availability, separate protection authorization, enforcement tests, and acceptance are complete.
+The protected `dev` baseline does not yet contain the new gate. Authorization is recorded, but activation remains blocked on baseline availability.
+
+This claim remains pending until baseline availability, effective enforcement tests, and evidence-backed final acceptance are complete.

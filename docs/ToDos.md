@@ -647,9 +647,10 @@ tasks:
     compatibility_status: "Four lookup repairs remain intact. The independent governance claim remains pending."
     formal_gate_implementation: docs/work-logs/soak-formal-gate-implementation.md
     formal_gate_hosted_renewal: docs/work-logs/soak-formal-gate-hosted-renewal.md
+    formal_gate_authorization: docs/work-logs/soak-formal-gate-authorization.md
     blocked_by: [TASK-017-12]
     remaining_prerequisites:
-      - "Make the verified formal gate available on the protected baseline, obtain separate protection-rule authorization, and verify effective enforcement."
+      - "Make the verified formal gate available on dev. Then apply the approved protection change, verify enforcement, and record evidence-backed acceptance."
       - "Complete CLAIM-SOAK-GATE-001 under docs/claims/soak-formal-gate.md. The approved finalized-floor scope remains local-only."
       - "Review baseline results, scan benchmark evidence, and concurrency-gate evidence."
       - "Confirm TASK-018 owners and obtain acceptance of the completed handoff."
