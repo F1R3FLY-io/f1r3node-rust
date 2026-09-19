@@ -604,8 +604,11 @@ tasks:
     work_log: docs/work-logs/task-017-12-preparation.md
     blocked_by: []
     remaining_prerequisites:
-      - "None outstanding from the profile tasks. TASK-017-11 closed on 2026-09-19, and all eight profile claims now carry a passing binding."
-      - "CLAIM-CASPER-SOAK-001 re-acceptance after the 2026-09-19 binding-inventory repair. The strict audit refuses discharge until then."
+      - "All eight source-bound claim audits pass at 3aa79d0c1. Their soak fields remain pending."
+      - "Repin candidates and executable workloads. The matrix remains not-dispatchable with null workload configuration digests."
+      - "Qualify live adapters. The existing profile commands do not admit node observations."
+      - "Resolve the dispatch mismatch. The workflow uses amd64 only and rebuilds images instead of selecting both pinned CI images."
+      - "Resolve the resource mismatch before dispatch. The approved plan specifies 48 GB, but the workflow requests 64 GB."
       - "D-07 confirmation by jeffrey-l-turner, dylon, and spreston8. It gates recovery adapter qualification for CLAIM-CASPER-SOAK-004 only."
     related_epics: [EPIC-010, EPIC-013]
     resource_approval: "A maintainer approved the resource proposal on 2026-09-19 at 2026-09-19T07:03:24Z. The approval covers two candidates, dev-amd64 and dev-arm64, repinned at dispatch, one preflight-only dispatch, one 24-hour baseline soak per candidate, fleet default memory with the driver host-reserve ceiling, and up to two runner virtual machines for 26 hours each. A second repetition requires a new decision. The 60-hour stability soak requires a passing baseline and a new decision."

@@ -146,6 +146,47 @@ Live adapter qualification does not follow from the resource approval. A qualifi
 
 ### Prerequisites outside the owner's control
 
-CLAIM-CASPER-SOAK-001 is pending after the 2026-09-19 binding-inventory repair. The strict bundle refuses discharge until the maintainer re-accepts that binding.
+At handoff, CLAIM-CASPER-SOAK-001 was pending after the binding-inventory repair. The Linux readiness check below verifies its later renewal.
 
 Decision D-07 is unanswered. It gates recovery adapter qualification for CLAIM-CASPER-SOAK-004. The other adapters and the baseline soak do not depend on it.
+
+## Linux readiness check at 3aa79d0c1
+
+The user requested TASK-017-12 completion after pulling `3aa79d0c1c91988be781c8380d8f6952b7d72868`. The checkout was clean when verification started.
+
+The four Claim001 renewal-package checksums passed. A fresh release build of `check-casper-claims` passed, and its strict canonical audit returned exit 0.
+
+All eight claim records are discharged. All eight soak fields remain pending. This audit checks source-bound records and does not rerun their proofs.
+
+The machine runs Linux on arm64. The Docker daemon and buildx responded. The required command-line tools are present, including the OCI client.
+
+Tool availability does not establish OCI authentication, quota, or dispatch permission. This check did not test those external conditions.
+
+### Dispatch blockers
+
+The current matrix remains `not-dispatchable`. Both candidates still have null workload configuration digests and blocked admission.
+
+The authority profile rejects every non-synthetic request with `live_adapter_unqualified`. The accepted runtime admits only synthetic `harness-lifecycle` requests through its qualified execution path.
+
+These restrictions do not prevent the separate integration workflow from launching nodes. An integration run does not qualify the profile adapters.
+
+The documented dispatch does not implement the approved candidate plan:
+
+- The launcher selects amd64, and the soak job requires an x64 runner.
+- The daily path builds a new amd64 image on that runner. It does not select both pinned CI images.
+- The launcher sets `RUNNER_MEM_GB_OVERRIDE` to 64 GB. The recorded resource approval specifies 48 GB.
+- The workflow sets a resident set size (RSS) ceiling of 45,056 MB and a host-free floor of 8,192 MB. Those values cannot fit together within 48 GB.
+
+The memory mismatch needs a maintainer decision before dispatch. Reducing the runner memory without adjusting the resource plan would not resolve the mismatch.
+
+The workflow and runtime are mandatory Claim001 artifacts. Changes to either artifact require new source-bound verification and acceptance. No accepted artifact changed during this check.
+
+D-07 remains open for recovery adapter qualification. It does not block the separate pre-merge baseline soak.
+
+### Retained results and next step
+
+Local evidence is in `/tmp/task-017-12-readiness-fyVezE/`. It contains the revision, build log, renewal checksum results, canonical audit, Docker check, and readiness summary.
+
+No live node, qualification run, preflight dispatch, or baseline campaign started. TASK-017-12 remains in progress.
+
+The next step is to resolve the resource and dispatch differences. Candidate pinning and adapter qualification must retain their own evidence before campaign admission.
