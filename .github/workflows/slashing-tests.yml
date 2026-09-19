@@ -224,6 +224,11 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
+          ref: ${{ github.sha }}
+      - name: Test formal gate controls
+        run: bash scripts/ci/test-check-formal-gate.sh
+      - name: Record TLA verification inputs
+        run: bash scripts/ci/check-formal-gate.sh record tla-model-check target/formal-provenance-tla
       - name: Install Java + TLC
         # Pinned release + sha256 (same fail-closed pattern as the OCI CLI
         # installer pin in _integration-pipeline.yml): a moved or compromised
@@ -260,6 +265,15 @@ jobs:
         run: |
           cargo build --locked -p casper-soak
           bash scripts/ci/check-casper-soak-models.sh --output-dir target/casper-model-evidence
+      - name: Complete TLA verification receipt
+        run: bash scripts/ci/check-formal-gate.sh complete tla-model-check target/formal-provenance-tla
+      - name: Retain TLA verification provenance
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: formal-provenance-tla-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/formal-provenance-tla
+          if-no-files-found: error
       - name: Retain TLA+ logs
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -313,6 +327,9 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
+          ref: ${{ github.sha }}
+      - name: Record Rocq verification inputs
+        run: bash scripts/ci/check-formal-gate.sh record rocq-build target/formal-provenance-rocq
       - name: Install Rocq / Coq
         run: |
           sudo apt-get update
@@ -324,6 +341,44 @@ jobs:
         run: |
           eval $(opam env)
           bash scripts/ci/check-formal-invariants.sh --rocq
+      - name: Complete Rocq verification receipt
+        run: bash scripts/ci/check-formal-gate.sh complete rocq-build target/formal-provenance-rocq
+      - name: Retain Rocq verification provenance
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: formal-provenance-rocq-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/formal-provenance-rocq
+          if-no-files-found: error
+
+  formal-verification-gate:
+    name: Formal verification gate
+    if: always()
+    needs: [tla-model-check, rocq-build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      FORMAL_TLA_RESULT: ${{ needs.tla-model-check.result }}
+      FORMAL_ROCQ_RESULT: ${{ needs.rocq-build.result }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - name: Require successful prerequisites
+        run: bash scripts/ci/check-formal-gate.sh status
+      - name: Retrieve TLA receipt for this attempt
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: formal-provenance-tla-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/formal-receipts/tla-model-check
+      - name: Retrieve Rocq receipt for this attempt
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: formal-provenance-rocq-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/formal-receipts/rocq-build
+      - name: Verify independent source and run identities
+        run: bash scripts/ci/check-formal-gate.sh verify target/formal-receipts
 
   search-horizon-smoke:
     name: Search-horizon smoke tier (10k fuzz runs)
