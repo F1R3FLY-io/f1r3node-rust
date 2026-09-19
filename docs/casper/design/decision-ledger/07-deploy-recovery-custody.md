@@ -81,7 +81,51 @@ Adopt option A, as four sub-decisions.
 - 7.4: `RecoveryFrontierCoverage.tla` with its one-parent control, and the split-frontier examples named in DR-56.
 - After ratification, update the glossary entries for merged-frontier retry packaging and kept rejection record, the protocol step 3 exclusion rule, and the 2026-08-20 B1 row.
 
-## 8. Open questions
+## 8. Confirmation requested: are 7.1 and 7.2 rules or absences?
+
+**Status.** Open. The 2026-09-16 decision does not flip sub-decisions 7.1 and 7.2 until the ratifiers answer this section.
+
+**Ratifiers.** jeffrey-l-turner, dylon, spreston8.
+
+### The contradiction
+
+Section 2 lists exact occurrences, tombstones, and reason joining as `dev` rules to preserve. Section 3 attributes them to PR #216.
+
+A source check of the node crates on 2026-09-19 found no occurrence store and no tombstone. The strings `occurrence` and `tombstone` do not appear in `casper/src`, `node/src`, or `block-storage/src`.
+
+The formal models exist. `formal/tlaplus/deploy_recovery/` holds `DeployRecovery.tla`, `FinalizedOccurrenceStatus.tla`, `EffectCausalClosure.tla`, and their configurations. The models are ahead of the implementation.
+
+A rejection record on `dev` is keyed by the deploy signature. There is no canonical reason join.
+
+### Reading A: ratified as rules to build
+
+Exact-occurrence recovery and the reason-join semilattice become protocol obligations. The node must gain an occurrence store, exact tombstones, a `(signature, source block)` record key, and the four-value join.
+
+Consequences. The recovery profile's synthetic occurrence schema specifies future node behavior. Adapter qualification waits for the implementation. EPIC-018 reverification tests the new rules. Principle P2 supports this reading, because both rules are functions of on-chain data.
+
+### Reading B: preserved as absent
+
+`dev` behavior stands. No occurrence store, no tombstone, no canonical join. The signature keeps the record key.
+
+Consequences. The recovery profile describes a schema the node does not implement. Its adapters cannot be qualified against a baseline node until the team decides what they observe. The duplicate-occurrence storm in DR-33 stays open on `dev`. Sub-decision 7.4 stays deferred either way.
+
+### What the answer unblocks
+
+Recovery adapter qualification for CLAIM-CASPER-SOAK-004 under TASK-017-12. The reverification tasks TASK-018-3 and TASK-018-5, which both cite this entry. The blocked alternate-policy experiments, including collective coverage.
+
+It does not block the pre-merge baseline soak. That soak exercises the lifecycle harness and needs no recovery adapter.
+
+### Decision
+
+**Ratified reading.** _Pending._
+
+**Date and proof.** _Pending._
+
+**If reading A.** Record the implementing task, its epic, and whether PR #216 supplies the implementation or a new task does.
+
+**If reading B.** Record what a recovery adapter observes on a node without occurrences, and whether the profile's synthetic schema stays as a specification or is withdrawn.
+
+## 9. Open questions
 
 1. Does the deploy-identity change to the prior-rejection count depend on protocol 6, or does it apply to legacy signatures unchanged? Entry D-10 tracks the tag.
 2. The dev remedy ladder lists C1 and C2 as escalations behind soak evidence. PR #216 does not mention them. Are they still the next steps if collective coverage leaves residual expiries?

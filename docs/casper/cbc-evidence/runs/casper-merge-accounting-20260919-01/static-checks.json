@@ -1,0 +1,16 @@
+{
+  "rustfmt": "passed",
+  "cargo_clippy": "passed",
+  "bash_syntax": "passed",
+  "working_and_index_diff_checks": "passed",
+  "changed_prose_ste_check": "passed",
+  "ste_conformance_claimed": false,
+  "active_lsp": {
+    "initial_batch": {"paths": 5, "clean": 4, "inconclusive": 1, "diagnostics": 0},
+    "workflow_recheck": {"paths": 1, "clean": 1, "inconclusive": 0, "diagnostics": 0},
+    "final_code_and_script_batch": {"paths": 6, "clean": 4, "inconclusive": 2, "diagnostics": 0},
+    "unconfirmed_checks_are_not_clean": true
+  },
+  "claim_discharge": "pending",
+  "node_execution": false
+}

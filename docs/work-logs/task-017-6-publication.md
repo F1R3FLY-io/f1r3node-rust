@@ -1,5 +1,15 @@
 # TASK-017-6 Publication and Restart Profile
 
+## Current review
+
+The [combined review](./task-017-5-7-binding-review.md) records the publication conflict repair and fresh native, isolated Linux, model, and shared checks.
+
+TASK-017-6 is complete for its bounded pre-merge scope. CLAIM-003 is discharged, and the workflow tag is ratified.
+
+The [acceptance record](./task-017-5-7-acceptance.md) identifies the repaired source and strict completion checks. Live adapters remain unqualified.
+
+The sections below retain the original implementation results. Their unavailable-Linux result is historical.
+
 ## Scope
 
 The controlled-transcript implementation is complete. TASK-017-6 remains in progress because claim acceptance and workflow-tag ratification remain pending.

@@ -1,0 +1,28 @@
+{
+  "status": "bounded-package-verified-binding-pending",
+  "report_sha256": "8d7d4583a67d3e54247421e95690fab1fcd6ea40f9cd92afc7be9d461aed01c2",
+  "validator_sha256": "fbfbb6742ca66ddae46d004d226bb430b5b559476fa1936fd32353000c3c1e7c",
+  "source_files": 24,
+  "evidence_files": 12614,
+  "artifacts": 12,
+  "pending_ledgers": 12,
+  "nested_references": 1430,
+  "native": {
+    "tests": 7,
+    "cases": 66,
+    "invocations": 72
+  },
+  "isolated_linux": {
+    "tests": 7,
+    "cases": 66,
+    "invocations": 72
+  },
+  "model_controls": 4,
+  "strict_claims_001_005": 0,
+  "strict_claim_006": 4,
+  "strict_bundle": 4,
+  "workflow_tag_ratified": false,
+  "node_execution": false,
+  "post_merge_execution": "blocked",
+  "soak": "pending"
+}

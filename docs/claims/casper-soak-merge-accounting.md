@@ -2,22 +2,30 @@
 
 ```yaml
 claim_id: CLAIM-CASPER-SOAK-005
-status: pending
+status: discharged
 adapter: embedded
 scope: harness-profile
-profile_implementation: not-implemented
+profile_implementation: controlled-transcript
 decisions: [D-08]
 pre_merge_tasks: [TASK-017-8]
 post_merge_tasks: [TASK-018-4, TASK-018-5]
 artifacts:
-  - scripts/run-merge-recovery-soak.sh
-  - scripts/bench/test-run-merge-recovery-soak.sh
-  - scripts/bench/write-soak-summary.sh
-  - formal/tlaplus/casper_soak/verification-plan.jsonc
-refutation: pending
+  - scripts/casper-soak/src/profiles/merge_accounting.rs
+  - scripts/casper-soak/src/bin/casper-merge-accounting.rs
+  - scripts/casper-soak/tests/merge_accounting.rs
+  - scripts/casper-soak/check-merge-accounting.sh
+  - .github/workflows/casper-merge-accounting.yml
+  - formal/tlaplus/casper_soak/profiles/merge_accounting/MergeAccounting.tla
+  - formal/tlaplus/casper_soak/profiles/merge_accounting/MC_MergeAccounting.cfg
+  - formal/tlaplus/casper_soak/profiles/merge_accounting/MC_MergeAccounting_multiplicity_unsafe.cfg
+  - formal/tlaplus/casper_soak/profiles/merge_accounting/MC_MergeAccounting_settlement_unsafe.cfg
+  - formal/tlaplus/casper_soak/profiles/merge_accounting/MC_MergeAccounting_epoch_unsafe.cfg
+  - formal/tlaplus/casper_soak/profiles/merge_accounting/verification-plan.jsonc
+  - formal/tlaplus/casper_soak/profiles/merge_accounting/README.md
+refutation: bounded-safety-pass
 construction: not-applicable
 construction_assumptions: null
-binding: pending
+binding: passed
 soak: pending
 ```
 
@@ -63,7 +71,7 @@ Unavailable test interfaces produce a blocked scenario, not a passing result. Ad
 
 ## Formal controls and executable fixtures
 
-| Proposed property | Defect knob | Fixture ID | Required fixture result |
+| Property | Defect knob | Fixture ID | Required fixture result |
 | --- | --- | --- | --- |
 | MultiplicityMeasured | DeduplicateByEffectValue | accounting_multiplicity | Observe executions A and B with equal effects, then A again. Retain both executions and one duplicate. |
 | SettlementCoverageRequired | TreatMissingSettlementAsZero | accounting_settlement_missing | Remove one required settlement. Expect unknown amount and `incomplete`, never a balanced zero. |
@@ -75,13 +83,15 @@ TLC explores bounded scenario, event, and outcome states. Real harness fixtures 
 
 Construction is not applicable under PR #433's harness approach. No Rocq theorem or node-code discharge is required by this claim.
 
-The bound is two scenarios and three observations per scenario for the initial model. This is proposed coverage, not completed verification.
+The model bound is two scenarios and three execution observations per scenario. The executable fixture bound is separate from this finite abstraction.
 
 ## Interface qualification and phase obligations
 
 SI-DEPLOY and SI-QUERY supply submission and query primitives. They do not qualify execution-position, full-context, or complete settlement extraction.
 
-TASK-017-8 must qualify those records and causal relationships. Unsupported overflow, token-domain, and effect-admission scenarios remain blocked.
+TASK-017-8 checks synthetic qualifications for these records and causal relationships. Actual node interface qualification remains under TASK-017-12.
+
+All live requests remain blocked. Synthetic qualification does not establish support for an actual node schema.
 
 Pinned fixture expectations cover admission/effect alignment, least causal rejection closure, checked arithmetic, and pooling once after aggregation.
 
@@ -94,5 +104,15 @@ Pre-merge work defines and verifies the profile against current supported interf
 After PR #216 merges, adapt the profile interfaces and rerun its model controls, fixtures, and approved soak scenarios with new identities.
 
 A correct harness can report a failed product scenario. Passing harness verification does not convert that product failure into a passing soak.
+
+The [profile guide](../../formal/tlaplus/casper_soak/profiles/merge_accounting/README.md) defines executable bounds, limitations, and verification commands.
+
+The [work log](../work-logs/task-017-8-merge-accounting.md) records verification evidence and acceptance.
+
+The user accepted TASK-017-8 with the message “I accpet TASK-017-8”. This acceptance covers the bounded pre-merge binding and its workflow tag.
+
+The [acceptance report](../casper/cbc-evidence/runs/casper-merge-accounting-acceptance-20260919-01/report.json) binds the reviewed sources and this specification.
+
+Live execution, additive activation, and post-merge execution remain outside this discharge. Soak verification remains pending.
 
 The [harness contract](./casper-soak-harness.md) defines provenance and outcome rules. Deferred policies still require separate approval before activation.

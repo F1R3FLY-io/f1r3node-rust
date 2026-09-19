@@ -170,6 +170,18 @@ files:
   - formal/tlaplus/casper_soak/profiles/authority_finality/MC_AuthorityFinality_head_unsafe.cfg
   - formal/tlaplus/casper_soak/profiles/authority_finality/verification-plan.jsonc
   - formal/tlaplus/casper_soak/profiles/authority_finality/README.md
+  - scripts/casper-soak/src/profiles/carrier_index.rs
+  - scripts/casper-soak/src/bin/casper-carrier-index.rs
+  - scripts/casper-soak/tests/carrier_index.rs
+  - scripts/casper-soak/check-carrier-index.sh
+  - .github/workflows/casper-carrier-index.yml
+  - formal/tlaplus/casper_soak/profiles/carrier_index/CarrierIndex.tla
+  - formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex.cfg
+  - formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex_path_unsafe.cfg
+  - formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex_window_unsafe.cfg
+  - formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex_counter_unsafe.cfg
+  - formal/tlaplus/casper_soak/profiles/carrier_index/verification-plan.jsonc
+  - formal/tlaplus/casper_soak/profiles/carrier_index/README.md
 tasks:
   - id: TASK-017-1
     title: "Reconcile ratifications, existing epics, and source dependencies"
@@ -298,13 +310,15 @@ tasks:
     title: "Verify authority and finality profile generation and verdicts"
     claims: [CLAIM-CASPER-SOAK-002]
     claim_spec: docs/claims/casper-soak-authority-finality.md
-    status: in_progress
+    status: complete
     claimed_by: pi-casper-authority-finality
     claimed_at: 2026-09-18T13:08:20Z
     work_log: docs/work-logs/task-017-5-authority-finality.md
     implementation_status: controlled-transcript-implemented
-    validation_evidence: docs/casper/cbc-evidence/runs/casper-authority-finality-20260918-01/report.json
-    completion_blocker: "Claim acceptance and the proposed workflow tag remain pending. Live adapters remain unqualified."
+    validation_evidence: docs/casper/cbc-evidence/runs/casper-profile-acceptance-20260919-01/report.json
+    binding_review: docs/work-logs/task-017-5-7-binding-review.md
+    completion_evidence: docs/work-logs/task-017-5-7-acceptance.md
+    completion_blocker: null
     tests:
       - scripts/casper-soak/tests/authority_finality.rs
       - scripts/casper-soak/check-authority-finality.sh
@@ -331,17 +345,22 @@ tasks:
       - "The collector reports traversal counters without inferring a node work-bound proof."
       - "Unsupported node test interfaces block the scenario rather than expand this epic into runtime implementation."
 
+    unit_tests: [scripts/casper-soak/tests/authority_finality.rs]
+    completion_gaps: []
+    completed_date: 2026-09-19
   - id: TASK-017-6
     title: "Verify publication and restart fault profiles and observations"
     claims: [CLAIM-CASPER-SOAK-003]
     claim_spec: docs/claims/casper-soak-publication.md
-    status: in_progress
+    status: complete
     claimed_by: pi-casper-publication
     claimed_at: 2026-09-18T14:39:27Z
     work_log: docs/work-logs/task-017-6-publication.md
     implementation_status: controlled-transcript-implemented
-    validation_evidence: docs/casper/cbc-evidence/runs/casper-publication-20260918-01/report.json
-    completion_blocker: "Claim acceptance and the proposed workflow tag remain pending. Live adapters remain unqualified."
+    validation_evidence: docs/casper/cbc-evidence/runs/casper-profile-acceptance-20260919-01/report.json
+    binding_review: docs/work-logs/task-017-5-7-binding-review.md
+    completion_evidence: docs/work-logs/task-017-5-7-acceptance.md
+    completion_blocker: null
     tests:
       - scripts/casper-soak/tests/publication.rs
       - scripts/casper-soak/check-publication.sh
@@ -367,17 +386,22 @@ tasks:
       - "Missing durable-state observations remain incomplete evidence."
       - "Baseline and optional parallel profiles remain separate and cannot change production defaults."
 
+    unit_tests: [scripts/casper-soak/tests/publication.rs]
+    completion_gaps: []
+    completed_date: 2026-09-19
   - id: TASK-017-7
     title: "Prepare isolated heartbeat and retry experiments against the baseline"
     claims: [CLAIM-CASPER-SOAK-004]
     claim_spec: docs/claims/casper-soak-recovery.md
-    status: in_progress
+    status: complete
     claimed_by: pi-casper-recovery
     claimed_at: 2026-09-18T15:43:03Z
     work_log: docs/work-logs/task-017-7-recovery.md
     implementation_status: controlled-transcript-implemented
-    validation_evidence: docs/casper/cbc-evidence/runs/casper-recovery-20260918-01/report.json
-    completion_blocker: "Recovery binding acceptance and workflow-tag ratification remain pending. Live adapters remain unqualified."
+    validation_evidence: docs/casper/cbc-evidence/runs/casper-profile-acceptance-20260919-01/report.json
+    binding_review: docs/work-logs/task-017-5-7-binding-review.md
+    completion_evidence: docs/work-logs/task-017-5-7-acceptance.md
+    completion_blocker: null
     tests:
       - scripts/casper-soak/tests/recovery.rs
       - scripts/casper-soak/check-recovery.sh
@@ -406,12 +430,32 @@ tasks:
       - "An experiment cannot grant authority to activate its policy."
       - "Record baseline results and candidate availability. The merged-runtime comparison belongs to TASK-018-5."
 
+    unit_tests: [scripts/casper-soak/tests/recovery.rs]
+    completion_gaps: []
+    completed_date: 2026-09-19
   - id: TASK-017-8
     title: "Verify merge and accounting workload generation and measurement"
     claims: [CLAIM-CASPER-SOAK-005]
     claim_spec: docs/claims/casper-soak-merge-accounting.md
-    status: pending
-    claimed_by: null
+    status: complete
+    claimed_by: pi-casper-merge-accounting
+    claimed_at: 2026-09-19T05:47:48Z
+    work_log: docs/work-logs/task-017-8-merge-accounting.md
+    implementation_status: controlled-transcript-implemented
+    validation_evidence: docs/casper/cbc-evidence/runs/casper-merge-accounting-acceptance-20260919-01/report.json
+    completion_evidence: docs/work-logs/task-017-8-merge-accounting.md
+    completion_blocker: null
+    tests:
+      - scripts/casper-soak/tests/merge_accounting.rs
+      - scripts/casper-soak/check-merge-accounting.sh
+    files:
+      - scripts/casper-soak/src/profiles/merge_accounting.rs
+      - scripts/casper-soak/src/bin/casper-merge-accounting.rs
+      - scripts/casper-soak/tests/merge_accounting.rs
+      - scripts/casper-soak/check-merge-accounting.sh
+      - .github/workflows/casper-merge-accounting.yml
+      - formal/tlaplus/casper_soak/profiles/merge_accounting/MergeAccounting.tla
+      - formal/tlaplus/casper_soak/profiles/merge_accounting/verification-plan.jsonc
     blocked_by: []
     decisions: [D-08]
     external_prs: [216]
@@ -423,12 +467,28 @@ tasks:
       - "Accounting expectations use pinned fixture values. The profile does not implement or prove node accounting."
       - "Conditional additive profiles remain isolated and do not authorize protocol activation."
 
+    unit_tests: [scripts/casper-soak/tests/merge_accounting.rs]
+    completion_gaps: []
+    completed_date: 2026-09-19
   - id: TASK-017-9
     title: "Verify slashing scenario scheduling and result classification"
     claims: [CLAIM-CASPER-SOAK-006]
     claim_spec: docs/claims/casper-soak-slashing.md
-    status: pending
-    claimed_by: null
+    status: complete
+    claimed_by: pi-casper-slashing
+    claimed_at: 2026-09-19T07:13:31Z
+    work_log: docs/work-logs/task-017-9-slashing.md
+    implementation_status: controlled-transcript-implemented
+    binding_status: accepted
+    binding_acceptance: docs/casper/cbc-evidence/runs/casper-slashing-acceptance-20260919-01/report.json
+    hosted_workflow_status: verified
+    hosted_workflow_run: 35452747041
+    workflow_tag_status: ratified
+    workflow_tag_ratification: docs/casper/cbc-evidence/runs/casper-slashing-ratification-20260919-01/report.json
+    validation_evidence: docs/casper/cbc-evidence/runs/casper-slashing-ratification-20260919-01/validation.json
+    completion_evidence: docs/work-logs/task-017-9-slashing.md
+    completion_blocker: null
+    unit_tests: [scripts/casper-soak/tests/slashing.rs]
     blocked_by: []
     decisions: [D-09]
     acceptance:
@@ -436,15 +496,44 @@ tasks:
       - "Observed delivery order and epochs remain distinct from requested scheduling."
       - "Fixtures prove that planted authorization mismatches are reported rather than suppressed."
       - "Node slash authorization, reconstruction, and bisimilarity proofs remain outside this epic."
+    completion_gaps: []
+    completed_date: 2026-09-19
 
   - id: TASK-017-10
     title: "Verify carrier-index comparison inputs and telemetry classification"
-    status: pending
-    claimed_by: null
+    status: complete
+    claimed_by: pi-soak-carrier-index-linux
+    claimed_at: 2026-09-19T06:11:36Z
+    work_log: docs/work-logs/task-017-10-carrier-index.md
     blocked_by: []
     decisions: [D-10]
     claims: [CLAIM-CASPER-SOAK-008]
     claim_spec: docs/claims/casper-soak-carrier-index.md
+    validation_evidence: docs/casper/cbc-evidence/runs/casper-carrier-index-acceptance-20260919-01/report.json
+    binding_status: accepted
+    binding_acceptance: docs/casper/cbc-evidence/runs/casper-carrier-index-acceptance-20260919-01/report.json
+    hosted_workflow_status: verified
+    hosted_workflow_run: 35429044639
+    workflow_tag_status: ratified
+    evidence_publication_status: verified
+    evidence_asset_id: 575126186
+    workflow_tag_ratification: docs/casper/cbc-evidence/runs/casper-carrier-index-acceptance-20260919-01/report.json
+    completion_evidence: docs/work-logs/task-017-10-carrier-index.md
+    completion_blocker: null
+    unit_tests: [scripts/casper-soak/tests/carrier_index.rs]
+    files:
+      - scripts/casper-soak/src/profiles/carrier_index.rs
+      - scripts/casper-soak/src/bin/casper-carrier-index.rs
+      - scripts/casper-soak/tests/carrier_index.rs
+      - scripts/casper-soak/check-carrier-index.sh
+      - .github/workflows/casper-carrier-index.yml
+      - formal/tlaplus/casper_soak/profiles/carrier_index/CarrierIndex.tla
+      - formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex.cfg
+      - formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex_path_unsafe.cfg
+      - formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex_window_unsafe.cfg
+      - formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex_counter_unsafe.cfg
+      - formal/tlaplus/casper_soak/profiles/carrier_index/verification-plan.jsonc
+      - formal/tlaplus/casper_soak/profiles/carrier_index/README.md
     acceptance:
       - "Paired index and reference runs use the same candidate, DAG, window, and availability fixture."
       - "The profile records valid, invalid, and approved carrier cases and supported failure injections."
@@ -452,12 +541,35 @@ tasks:
       - "Unsupported identity-domain interfaces block those scenarios without authorizing runtime changes."
       - "CLAIM-FINALITY-002 remains an external node claim, not an obligation of this epic."
 
+    completion_gaps: []
+    completed_date: 2026-09-19
   - id: TASK-017-11
     title: "Verify protocol and Phlo profile inputs and captured outcomes"
     claims: [CLAIM-CASPER-SOAK-007]
     claim_spec: docs/claims/casper-soak-version-phlo.md
-    status: pending
-    claimed_by: null
+    status: in_progress
+    claimed_by: pi-soak-carrier-index-linux
+    claimed_at: 2026-09-19T15:57:08Z
+    work_log: docs/work-logs/task-017-11-version-phlo.md
+    implementation_status: controlled-transcript-implemented
+    binding_status: pending
+    hosted_workflow_status: pending
+    workflow_tag_status: unratified
+    completion_blocker: "Hosted verification, final evidence review, binding acceptance, and workflow-tag ratification remain pending."
+    unit_tests: [scripts/casper-soak/tests/version_phlo.rs]
+    files:
+      - scripts/casper-soak/src/profiles/version_phlo.rs
+      - scripts/casper-soak/src/bin/casper-version-phlo.rs
+      - scripts/casper-soak/tests/version_phlo.rs
+      - scripts/casper-soak/check-version-phlo.sh
+      - .github/workflows/casper-version-phlo.yml
+      - formal/tlaplus/casper_soak/profiles/version_phlo/VersionPhlo.tla
+      - formal/tlaplus/casper_soak/profiles/version_phlo/MC_VersionPhlo.cfg
+      - formal/tlaplus/casper_soak/profiles/version_phlo/MC_VersionPhlo_versions_unsafe.cfg
+      - formal/tlaplus/casper_soak/profiles/version_phlo/MC_VersionPhlo_fields_unsafe.cfg
+      - formal/tlaplus/casper_soak/profiles/version_phlo/MC_VersionPhlo_refund_unsafe.cfg
+      - formal/tlaplus/casper_soak/profiles/version_phlo/verification-plan.jsonc
+      - formal/tlaplus/casper_soak/profiles/version_phlo/README.md
     blocked_by: []
     decisions: [D-01, D-12]
     external_prs: [216, 430]
@@ -470,15 +582,23 @@ tasks:
 
   - id: TASK-017-12
     title: "Pin executable workloads, qualify candidates, and run the pre-merge baseline soak"
-    candidate_review_note: "Current dev is bc23c8667ebef0f3fb7c3310caf85ce106df25fa. The matrix retains a2fe60c7255bf4ba035d41fb65b6d6f1c0f02632. Qualification must review this difference before dispatch."
+    candidate_review_note: "On 2026-09-19 dev is 6940a5beb, 120 commits and nine merged pull requests after the matrix pin a2fe60c72. Four of those change consensus or node code (#435 fork choice, #438 merge rejection groups, #444 certificate helper, #390 cost accounting). The matrix harness_revision f29c59d01 is 171 commits behind the branch tip. Qualification must repin at dispatch from CI-built dev images."
+    drift_review: docs/work-logs/task-017-12-drift-review-2026-09-19.md
     claims: [CLAIM-CASPER-SOAK-001, CLAIM-CASPER-SOAK-004]
     claim_index: docs/claims/casper-soak-harness.md
-    status: pending
-    claimed_by: null
+    status: in_progress
+    claimed_by: claude-session-9f19b46c
+    claimed_at: 2026-09-19T06:35:51Z
+    execution_scope: "Preparation only: repin tooling, resource proposal, adapter-qualification checklist, and the infrastructure dry-run plan. Workload pins, adapter qualification runs, and the baseline soak wait for TASK-017-8 through TASK-017-11 and a Linux agent."
+    work_log: docs/work-logs/task-017-12-preparation.md
     blocked_by: [TASK-017-2, TASK-017-3, TASK-017-4, TASK-017-5, TASK-017-6, TASK-017-7, TASK-017-8, TASK-017-9, TASK-017-10, TASK-017-11]
     related_epics: [EPIC-010, EPIC-013]
+    resource_approval: "A maintainer approved the resource proposal on 2026-09-19 at 2026-09-19T07:03:24Z. The approval covers two candidates, dev-amd64 and dev-arm64, repinned at dispatch, one preflight-only dispatch, one 24-hour baseline soak per candidate, fleet default memory with the driver host-reserve ceiling, and up to two runner virtual machines for 26 hours each. A second repetition requires a new decision. The 60-hour stability soak requires a passing baseline and a new decision."
+    resource_approval_record: docs/work-logs/task-017-12-preparation.md
+    first_dispatch_step: "A preflight-only manual dispatch of merge-recovery-soak.yml on this branch precedes any baseline soak. It proves the repaired driver and the harness build on the OCI runner. The workflow has no pull-request trigger and its soak job needs a launched OCI runner, so this stays a manual step. A non-passing preflight blocks the baseline dispatch."
     acceptance:
       - "The maintainer approves the resource budget, durations, repetitions, and candidate matrix before dispatch."
+      - "A preflight-only dispatch on this branch passes before any baseline soak dispatch. Its run ID and outcome are recorded."
       - "Every dispatched candidate has qualified interfaces and immutable executable workload, node, harness, model, image, and configuration identities."
       - "Required pre-dispatch harness and profile verification must pass. Missing capabilities and null workload pins block dispatch."
       - "The disk-protected harness completes required pre-merge baseline profiles or reports an explicit non-passing outcome."
@@ -505,17 +625,33 @@ tasks:
 
   - id: TASK-017-14
     title: "Reduce the branch diff to the formal-verification deliverables"
-    status: pending
-    claimed_by: null
+    status: in_progress
+    claimed_by: claude-session-9f19b46c
+    claimed_at: 2026-09-19T05:52:15Z
+    execution_scope: "Preparation steps 0 through 5 only: retention rule, external store, bundles, consumer review, and work-log consolidation. Steps 6 and 7, the verification and the reduction commit, wait for TASK-017-13."
+    work_log: docs/work-logs/task-017-14-preparation.md
     blocked_by: [TASK-017-13]
     created_at: 2026-09-17
-    rationale: "At 6814682e4 the branch differs from origin/dev by 762 files and about 46,000 added lines. That diff is too large for the repository PR review standard."
+    rationale: "At 6814682e4 the branch differed from origin/dev by 762 files and about 46,000 added lines. At 490d21093, PR #436 against docs/consensus-neutral-execution shows 1,243 files and about 179,500 added lines. Evidence run packages are 948 of those files and 158,820 of those lines. That diff is too large for the repository PR review standard."
+    measured_at: 490d21093
+    evidence_store: "Draft GitHub release cbc-evidence-epic-017 on this repository, created 2026-09-19 with 24 assets: one bundle per package, SHA256SUMS, and index.json. Publish it when the reduction commit lands."
     stack_review_baseline: docs/casper/cbc-evidence/runs/casper-stack-integration-20260917-01/report.json
     removal_targets:
-      - "Evidence run packages under docs/casper/cbc-evidence/runs/: 440 files across four runs. Keep one report and one source manifest per run. Move raw TLC transcripts, fixture inputs, and container logs to an external evidence store and record their digests."
-      - "Files applied verbatim from PR #430 through PR #433: soak_disk models and configurations, deploy_storage models, scripts/bench fixtures, the verification-tiers document, the architecture note, and the soak-disk claim. Remove them after those PRs merge to dev, or rebase the branch onto the merged stack."
-      - "Compatibility symlinks in docs/cbc-evidence/: 21 links. Remove them when the CbC driver supports module routing. Otherwise keep the canonical record only."
+      - "Evidence run packages under docs/casper/cbc-evidence/runs/: 23 packages, 948 files, 29 MB, of which 32 archives are 15 MB. Six packages are live because a canonical ledger record cites them. Seventeen are historical and only work logs or this tracker cite them."
+      - "Files applied verbatim from PR #430 through PR #433. Resolved: the PR base now contains those merges, and only scripts/bench/test-soak-disk-admission.sh and its record remain in the diff as driver-repair deliverables."
+      - "Compatibility symlinks in docs/cbc-evidence/: 80 links. Remove them when the CbC driver supports module routing. Otherwise keep the canonical record only."
       - "Historical hosted TLC transcripts recovered in the evidence audit. Keep the audit report and digests, not the transcript copies."
+      - "Work logs: 21 files and about 2,300 lines. TASK-017-4 alone has four logs. Fold each task's logs into one log that keeps handoff and decision content."
+    implementation_plan:
+      - "Step 0. Apply the evidence retention rule in docs/plans/casper-ratified-soak-2026-09-16.md to every package created after 2026-09-19, so that no new package adds bulk while this task waits on TASK-017-13."
+      - "Step 1. Choose the external evidence store and record its location format. Upload every archive, transcript set, candidate-ledger set, attempt, and upstream snapshot from the 23 existing packages. Record each upload as a path plus SHA-256."
+      - "Step 2. Live packages (driver-rebind, driver-rebind-acceptance, driver-refresh-acceptance, profile-binding-review, profile-acceptance, manifest-resume, harness-controls): keep report.json, validation.json, and the digest lists in the tree. Replace each in-tree archive reference in the canonical ledger records, including previous_ledger references, with the external location and digest. The strict claims audit hashes the cited report.json and reads source digests from it, so those reports stay in the tree and the audit result does not change."
+      - "Step 3. Historical packages (the other sixteen): keep report.json only, or remove the package and record its external location and digest in the work log or tracker entry that cites it."
+      - "Step 4. Compatibility symlinks: identify every consumer of docs/cbc-evidence/. If the shared CbC gate accepts module paths, delete all 80 links. If it does not, add module routing to the gate in one change and then delete the links."
+      - "Step 5. Work logs: consolidate per task. Keep the acceptance records, the human decision records, and handoff notes. Drop run-by-run narrative that a retained report already records."
+      - "Step 6. Verify. Run the strict claims audit, the bindings inventory, the link check, and the STE check before and after. Record the before and after file and line counts against the PR base and against dev in this entry."
+      - "Step 7. Land the reduction as one commit with the counts in its message. Ask the maintainer to confirm the reduced diff before PR #436 leaves draft."
+    expected_result: "Measured in the 2026-09-19 rehearsal: evidence files 1,049 to 78 and evidence lines 185,612 to 19,777, with the strict audit unchanged. Projected PR diff about 375 files and about 41,000 added lines. The remainder is the crate, the models, the claims, the ledger records, and the retained reports, which are the deliverables."
     acceptance:
       - "The PR diff against its confirmed stack parent contains only Casper soak harness deliverables. The report also measures the cumulative diff against dev."
       - "Record the actual stack parent revision and PR base after integration. Planned stack membership alone cannot justify file deletion."
@@ -525,6 +661,28 @@ tasks:
       - "The task records the file and line counts of the diff before and after reduction."
       - "The link check, the STE check, and the strict CbC gate produce the same results after reduction as before it."
       - "The maintainer confirms the reduced diff meets the PR review standard before the PR opens."
+
+  - id: TASK-017-15
+    title: "Retrieve and publish the external evidence release"
+    status: pending
+    claimed_by: null
+    claimed_at: null
+    blocked_by: [TASK-017-13, TASK-017-14]
+    created_at: 2026-09-19
+    ordering: "Final task for this branch and for PR #436. Run step 2 after the reduction commit lands and before the PR leaves draft."
+    evidence_store: "Draft GitHub release cbc-evidence-epic-017, release ID 391939637, target 09b0a60063815b750979864225a0a56387d6ed80, 24 assets as of 2026-09-19."
+    execution_scope: "Step 1 needs no new authorization and unblocks evidence consumers today. Step 2 exposes evidence on a public surface and requires recorded maintainer authorization at the time of the action."
+    rationale: "A draft release carries no Git tag. The endpoint repos/F1R3FLY-io/f1r3node-rust/releases/tags/cbc-evidence-epic-017 returns 404 for every credential. That result blocked carrier-index retrieval under TASK-017-10 on 2026-09-19. The numeric release ID resolves the same release and lists its 24 assets. A branch merge does not create the tag, because publication creates it."
+    implementation_plan:
+      - "Step 1. Address the release by its numeric ID while it stays a draft. List assets through repos/F1R3FLY-io/f1r3node-rust/releases/391939637. Download each asset by its asset ID with an octet-stream accept header. Record the retrieval check in the consuming task's evidence."
+      - "Step 2. Publish the release after the reduction commit lands. Confirm or update the target revision first, because publication creates the tag at that commit. Publication makes the by-tag endpoint work and makes the assets publicly visible."
+    acceptance:
+      - "Every consumer of the external evidence store addresses the release by its ID while the release stays a draft."
+      - "No task records a credential failure for a draft-release lookup. Each record names the absent tag as the cause."
+      - "Publication happens only after the reduction commit lands and only with recorded maintainer authorization."
+      - "The published release pins the revision that the reduction commit produced. The record names that revision."
+      - "Asset digests after publication match the digests recorded at upload time."
+      - "Publication does not change a claim status, a ledger record status, or a discharge result."
 ---
 ```
 
@@ -539,6 +697,8 @@ tasks:
 The [interface contract](./casper/design/soak-interface-contract.md) records exact payloads, source boundaries, fixture expectations, and missing capabilities. The local model alone cannot discharge a harness claim. The accepted lifecycle records include executable bindings and source-specific review.
 
 **Scope:** This epic covers the pre-#216 PR only. The [branch plan](./plans/casper-ratified-soak-2026-09-16.md) records both phases and their evidence boundary.
+
+**Final task:** TASK-017-15 closes the branch and PR #436. Evidence consumers address the draft release by its ID until then. Release publication is the last action, and it follows the reduction commit.
 
 ---
 

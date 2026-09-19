@@ -1,0 +1,33 @@
+{
+  "status": "accepted-bounded-claim-006-verified",
+  "report_sha256": "3840449eb7f63f4b0fa7ec853c37a6fe9f91195d83e30d9b156898b4f9597871",
+  "claim_sha256": "79e37bb2c481d95d9a2548f41e44bfc6e642a866263c665e6cef63fdcfd68a48",
+  "artifacts": 12,
+  "reviewed_artifacts_unchanged": true,
+  "previous_pending_ledgers_preserved": 12,
+  "compatibility_links_preserved": 12,
+  "preacceptance_nested_references": 1430,
+  "hosted_nested_references": 715,
+  "accepted_state_native": {
+    "tests": 7,
+    "cases": 66,
+    "invocations": 72,
+    "models": 4
+  },
+  "shared_tests": 11,
+  "linux_evidence": "reviewed-source-identical-no-rerun",
+  "strict_claims_001_006": 0,
+  "strict_bundle": 4,
+  "pending_claims": [
+    "CLAIM-CASPER-SOAK-007",
+    "CLAIM-CASPER-SOAK-008"
+  ],
+  "workflow_tag_ratified": false,
+  "task_status": "in_progress",
+  "task_closure_blocker": "workflow-tag-ratification",
+  "gitattributes_unchanged": true,
+  "node_execution": false,
+  "policy_activation": false,
+  "post_merge_execution": "blocked",
+  "soak": "pending"
+}

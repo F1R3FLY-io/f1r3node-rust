@@ -1,5 +1,17 @@
 # TASK-017-7 Recovery and Custody Profile
 
+## Current review
+
+The [combined review](./task-017-5-7-binding-review.md) records fresh native and isolated Linux checks, model controls, and shared regressions.
+
+TASK-017-7 is complete for its bounded pre-merge scope. CLAIM-004 is discharged, and the workflow tag is ratified.
+
+The [acceptance record](./task-017-5-7-acceptance.md) identifies the source-bound evidence and strict completion checks. External commit `d60f54544` separately restored CLAIM-001 discharge.
+
+D-07 interpretation remains unresolved. Controlled fixtures do not establish node support. Live, experimental-policy, and post-merge requests remain blocked.
+
+The sections below retain historical results, including the unavailable Linux execution and failed shared source audit.
+
 ## Scope
 
 The controlled-transcript implementation is complete. TASK-017-7 remains in progress because binding acceptance, workflow-tag ratification, and shared source verification remain unresolved.
