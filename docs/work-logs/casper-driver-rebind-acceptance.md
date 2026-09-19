@@ -89,3 +89,37 @@ The change alters `scripts/ci/check-casper-soak-bindings.sh`, which is a mandato
 Claims 002 through 006 and claim 008 keep their discharge. Their specifications and records did not change. Claim 007 stays pending for its own reasons.
 
 No evidence package, ledger record status, model, or profile source changed. This repair does not qualify a live adapter, activate a policy, or authorize node execution.
+
+## Inventory binding renewal (2026-09-19)
+
+The user requested: `it is commited. Complete Claim001 renewal`.
+
+The [renewal report](../casper/cbc-evidence/runs/casper-binding-inventory-renewal-20260919-01/report.json) binds the repaired inventory to the existing bounded H01–H10 contract.
+
+The starting revision is `8dc35ae4a55e1e10cf59cea69f6de87db4da276b`. Only the workflow-copy line differs among the 39 accepted artifacts. Runtime code and test assertions remain unchanged.
+
+The old copy list reproduces audit exit 2. Adding the seven workflows restores the ordinary audit. Each single-workflow omission also produces exit 2.
+
+Fresh isolated Linux verification passed 29 tests, 48 cases, and 91 invocations. The separate root container passed all eight host-control tests.
+
+The unprivileged container used no network or host mounts. It had two CPUs, 512 MiB memory, and 192 process slots, with all capabilities removed.
+
+The clean model completed with 66,208 generated states and 43,424 distinct states. All ten negative controls produced exit 12 and their named invariant violations.
+
+After renewal, the isolated suite passed again against the discharged records. The exact source inventories, model logs, container inspections, and both execution outcomes remain retained.
+
+Claim001 and all eight source-bound claims pass strict audits. The renewal preserves all 39 previous ledgers and the pending claim specification.
+
+The canonical CbC gate passes for all 38 tagged artifacts. The claim audit additionally verifies the declared disk-admission test, whose CbC attribute remains unspecified.
+
+The default compatibility gate still reports six historical pending records. Those independent records remain unchanged. They are not the canonical Claim001 ledger.
+
+This distinction does not waive a claim or reduce the 39-artifact source audit. No new artifact tag was applied.
+
+B44, future-process discovery, kernel assumptions, and Docker daemon limitations remain unchanged. Node correctness, live-adapter qualification, campaigns, and post-merge execution remain outside this renewal.
+
+TASK-017-4 remains complete. This renewal does not close TASK-017-12 or the epic.
+
+Private execution evidence remains under `target/claim001-inventory-renewal/`. TASK-017-14 must retain this evidence before scratch cleanup.
+
+No commit, push, external evidence upload, release publication, or node campaign occurred during this renewal.
