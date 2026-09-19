@@ -8,6 +8,8 @@ execution_scope: authorized-working-tree-application
 
 # TASK-017-3 Prerequisite Application
 
+**Historical record:** TASK-017-3 is now complete. The [completion review](task-017-1-3-completion.md) records final checks. Workload pinning and candidate qualification remain with TASK-017-12.
+
 The user authorized working-tree application of the reviewed prerequisites and completion of the candidate matrix. This assistant has no authorization for staging, commits, pushes, or merges.
 
 The other agent committed the prerequisite application as `f29c59d010a32b523246bf2c980a48dd7f49d152` during validation. This assistant preserved that commit.

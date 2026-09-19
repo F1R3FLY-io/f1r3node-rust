@@ -173,8 +173,13 @@ files:
 tasks:
   - id: TASK-017-1
     title: "Reconcile ratifications, existing epics, and source dependencies"
-    status: in_progress
+    status: complete
     claimed_by: pi-casper-ratification-planning
+    work_log: docs/work-logs/task-017-1-3-completion.md
+    completion_evidence: docs/casper/cbc-evidence/runs/casper-preparation-completion-20260918-01/report.json
+    completion_blocker: null
+    unit_tests: [docs/casper/cbc-evidence/runs/casper-preparation-completion-20260918-01/verify.sh]
+    files: [docs/plans/casper-ratified-soak-2026-09-16.md, docs/work-logs/task-017-1-3-completion.md]
     blocked_by: []
     acceptance:
       - "The branch plan maps D-01 through D-12 to tasks, activation conditions, and evidence."
@@ -182,15 +187,21 @@ tasks:
       - "Existing epic overlaps, claims, parser limitations, and stale specification conflicts are recorded."
       - "The maintainer reviews the pre/post split and plan before implementation starts."
 
+    completion_gaps: []
+    completed_date: 2026-09-19
   - id: TASK-017-2
     title: "Define harness and profile claims, fixture expectations, and source scope"
     scaffold_status: specified
     contract_status: complete
     interface_contract: docs/casper/design/soak-interface-contract.md
     work_log: docs/work-logs/task-017-2-interface-contract-2026-09-17.md
-    completion_blocker: "The shared task-complete helper rejects TASK-* identifiers with exit 2. Tracker closure remains pending."
+    completion_blocker: null
+    completion_review: docs/work-logs/task-017-1-3-completion.md
+    completion_evidence: docs/casper/cbc-evidence/runs/casper-preparation-completion-20260918-01/report.json
+    unit_tests: [docs/casper/cbc-evidence/runs/casper-preparation-completion-20260918-01/verify.sh]
+    files: [docs/casper/design/soak-interface-contract.md]
     claim_index: docs/claims/casper-soak-harness.md
-    status: in_progress
+    status: complete
     claimed_by: pi-casper-harness
     claimed_at: 2026-09-16T22:18:38Z
     blocked_by: [TASK-017-1]
@@ -203,9 +214,11 @@ tasks:
       - "Unavailable interfaces remain explicit scenario blockers. No mock result becomes product evidence."
       - "Each profile identifies its post-merge interface adaptation under EPIC-018."
 
+    completion_gaps: []
+    completed_date: 2026-09-19
   - id: TASK-017-3
     title: "Integrate reviewed harness prerequisites and record initial candidate identities"
-    status: in_progress
+    status: complete
     claimed_by: pi-casper-harness
     claimed_at: 2026-09-17T01:43:26Z
     execution_scope: "Approved prerequisites and initial candidate identities only. Final executable workload pinning belongs to TASK-017-12. No Git publication or merge is authorized."
@@ -214,7 +227,11 @@ tasks:
     prerequisite_application: complete
     candidate_matrix: docs/casper/design/soak-candidate-matrix.jsonc
     validation_evidence: docs/casper/cbc-evidence/runs/casper-prerequisite-application-20260917-01/report.json
-    completion_blocker: "Remaining prerequisite review and completion-helper support are pending. Final executable workload pinning belongs to TASK-017-12 before dispatch."
+    completion_blocker: null
+    completion_review: docs/work-logs/task-017-1-3-completion.md
+    completion_evidence: docs/casper/cbc-evidence/runs/casper-preparation-completion-20260918-01/report.json
+    unit_tests: [docs/casper/cbc-evidence/runs/casper-preparation-completion-20260918-01/verify.sh]
+    files: [docs/casper/design/soak-candidate-matrix.jsonc, docs/work-logs/task-017-1-3-completion.md]
     blocked_by: [TASK-017-1]
     external_prs: [390, 430, 431, 432, 433]
     acceptance:
@@ -226,6 +243,8 @@ tasks:
       - "The system-integration fixture contract is reviewed before any coordinated harness edit or repin."
       - "PR #216 stays an optional candidate reference. Its merge does not gate this phase."
 
+    completion_gaps: []
+    completed_date: 2026-09-19
   - id: TASK-017-4
     title: "Bind experiment manifests and formal controls to workflow evidence"
     claims: [CLAIM-CASPER-SOAK-001]
@@ -509,15 +528,15 @@ tasks:
 ---
 ```
 
-**Current state:** Shared Casper registration and numeric restart-state validation pass their fixtures. Full driver bindings, profile fixtures, evidence publication, and soaks remain pending.
+**Current state:** TASK-017-1 through TASK-017-4 are complete. The repaired lifecycle binding is accepted. Three controlled-transcript profiles await acceptance. Four profiles remain unimplemented. Baseline soaks remain pending.
 
 **Approved sequence:** TASK-017-4 and TASK-017-5 through TASK-017-11 may proceed together against the completed contract and applied prerequisites. TASK-017-12 requires final workload pins, qualification, verification, and dispatch approval.
 
-**Verified stack:** Merge `0f1ccdf38` includes PR #433 at `65f7f6daa`. PR #436 targets `docs/consensus-neutral-execution`. Fresh shared-gate, driver, and runner fixtures pass. Full harness verification remains incomplete.
+**Verified stack:** Merge `0f1ccdf38` includes PR #433 at `65f7f6daa`. PR #436 targets `docs/consensus-neutral-execution`. CLAIM-CASPER-SOAK-001 passes strict discharge. The seven profile claims remain pending.
 
-**Tracker limitation:** The completion helper still rejects TASK-* identifiers. That limitation does not cancel the approved implementation sequence or permit task closure without evidence.
+**Tracker compatibility:** The shared CLI still rejects TASK-* identifiers. The completion review invokes its unchanged task function for the three reviewed preparation tasks. The TASK-017-4 adapter remains unchanged.
 
-The [interface contract](./casper/design/soak-interface-contract.md) records exact payloads, source boundaries, fixture expectations, and missing capabilities. The local model does not discharge the full harness claim.
+The [interface contract](./casper/design/soak-interface-contract.md) records exact payloads, source boundaries, fixture expectations, and missing capabilities. The local model alone cannot discharge a harness claim. The accepted lifecycle records include executable bindings and source-specific review.
 
 **Scope:** This epic covers the pre-#216 PR only. The [branch plan](./plans/casper-ratified-soak-2026-09-16.md) records both phases and their evidence boundary.
 
