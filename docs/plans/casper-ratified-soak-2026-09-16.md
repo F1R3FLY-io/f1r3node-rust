@@ -1,6 +1,8 @@
 # Casper Soak Harness and Profile Verification Plan
 
-**Status:** Shared Casper registration and restart-state validation pass their fixtures. Full driver/profile bindings, evidence publication, and soaks remain pending.
+**Status:** Planning, contracts, and prerequisite review are complete. The repaired lifecycle binding is accepted. Profile acceptance and baseline soaks remain pending.
+
+The [completion review](../work-logs/task-017-1-3-completion.md) records TASK-017-1 through TASK-017-3 criteria, checks, and retained limits.
 
 **Branch:** `formal/soak-casper-consensus`
 
@@ -55,7 +57,9 @@ These revisions were observed on 2026-09-16. They identify reference material, n
 
 Approved prerequisite integration must preserve `#430 -> #431 -> #432 -> #433`. Git integration still needs separate authorization.
 
-PR #431's B44 containment limitation remains explicit. The shared PR job has a 15-minute limit. Each Casper configuration has a two-minute cap and a 60-second kill grace.
+PR #431's B44 containment limitation remains explicit. The shared PR job has a 15-minute limit, not a two-minute whole-suite limit.
+
+The shared gate permits two minutes per Casper configuration and a 60-second termination grace. The standalone Rust runner uses a five-second grace.
 
 ## Planned stack integration
 
@@ -73,7 +77,9 @@ At this merge, the stack review diff contains 813 files, 94,281 insertions, and 
 
 TASK-017-14 still owns diff reduction. No evidence or upstream file was deleted during integration verification.
 
-Current `dev` is `bc23c8667ebef0f3fb7c3310caf85ce106df25fa`, while the blocked matrix retains `a2fe60c7255bf4ba035d41fb65b6d6f1c0f02632`. TASK-017-12 must review this difference during qualification before dispatch.
+At the stack review, `dev` was `bc23c8667ebef0f3fb7c3310caf85ce106df25fa`. The blocked matrix retains `a2fe60c7255bf4ba035d41fb65b6d6f1c0f02632`.
+
+The completion review records a later `dev` observation without changing the matrix. TASK-017-12 must review source drift during qualification before dispatch.
 
 This stack merge does not establish the PR #216 gate or accepted EPIC-018 handoff. No candidate repin, node dispatch, task closure, or claim discharge occurred.
 
@@ -116,7 +122,7 @@ PR #216's merge is not a blocker for this phase. Optional candidate experiments 
 
 On 2026-09-17, the user approved profile implementation alongside unfinished common-driver bindings. TASK-017-4 and TASK-017-5 through TASK-017-11 no longer wait for each other.
 
-Their implementation prerequisites are the completed TASK-017-2 contract and the applied TASK-017-3 prerequisites. Both milestones are recorded, although their parent tasks remain open.
+Their implementation prerequisites are the completed TASK-017-2 contract and the applied TASK-017-3 prerequisites. The completion review closes these preparation tasks separately from profile verification.
 
 TASK-017-3 owns prerequisite integration and initial candidate identities. TASK-017-12 owns final executable workload pinning and candidate qualification before dispatch.
 
@@ -133,7 +139,9 @@ flowchart LR
 
 The candidate matrix remains non-dispatchable while required pins, capabilities, verification, or approvals are missing. This sequencing change grants no node execution or external repin permission.
 
-The task-completion helper limitation remains separate. No task status, claim status, evidence requirement, or EPIC-018 start gate changes through this approval.
+The original sequencing approval did not close tasks or discharge claims. The completion review uses a bounded compatibility invocation of the unchanged shared helper.
+
+Profile evidence requirements and the EPIC-018 start gate remain unchanged.
 
 ## Post-merge phase: EPIC-018
 
@@ -175,9 +183,9 @@ New profile implementation files must enter the harness-only inventory when intr
 
 ## Scope and evidence storage
 
-Both epics list twenty-three artifacts, including the manifest identity helper and its real-driver fixtures. No runtime artifact was added.
+Each claim lists its current harness, profile, workflow, and formal artifacts. Artifact counts from earlier scaffolds are historical, not current scope inventories.
 
-Their ledger statuses remain pending. No Rust or protobuf artifact belongs to either epic's CbC scope.
+CLAIM-CASPER-SOAK-001 is discharged for its accepted pre-merge source. Claims 002 through 008 remain pending. No node-runtime or protobuf artifact enters these obligations.
 
 The [first implementation log](../work-logs/task-017-4-harness-model-2026-09-16.md) records the bounded safety result and the remaining integration barriers.
 

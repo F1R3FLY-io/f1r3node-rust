@@ -12,6 +12,8 @@ next_steps:
 
 # Ratified Casper Soak Preparation
 
+**Historical record:** TASK-017-1 is now complete. The [completion review](task-017-1-3-completion.md) supersedes the open-task statements below without replacing historical evidence.
+
 ## Latest implementation increment
 
 The [TASK-017-4 log](./task-017-4-harness-model-2026-09-16.md) records the first executable bounded model and local runner.

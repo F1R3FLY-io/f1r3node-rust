@@ -8,7 +8,9 @@ The [branch plan](../../plans/casper-ratified-soak-2026-09-16.md) defines author
 
 ## Source scope
 
-The current mandatory inventory contains twenty-three harness, model, configuration, and workflow artifacts. TASK-017-2 adds no node artifact or node-proof obligation.
+Each claim identifies its current mandatory harness, model, configuration, and workflow inventory. TASK-017-2 adds no node artifact or node-proof obligation.
+
+The [completion review](../../work-logs/task-017-1-3-completion.md) records the contract review. Historical matrix digests remain unchanged and require qualification before dispatch.
 
 TASK-017-4 owns driver integration, manifest validation, event correlation, and result publication. TASK-017-5 through TASK-017-11 own their profile implementations.
 
@@ -40,7 +42,9 @@ Each proposed module exports `generate(request)`, `collect(manifest, artifacts)`
 
 `generate` returns ordered workload and fault requests. `collect` returns observations and rejected-source records. `classify` returns one scenario result without executing node logic.
 
-These modules do not exist yet. Add each module to the mandatory inventory when its owner implements it. No proposed interface is an existing command-line option.
+Authority/finality, publication, and recovery have controlled-transcript implementations. Their claims remain pending. The other four profile modules remain unimplemented.
+
+Add each implementation to its claim inventory. Proposed interfaces do not establish qualified live command-line options.
 
 Existing node claims remain independent. Construction is not applicable. Missing product capabilities block scenarios instead of authorizing Rust changes.
 
@@ -94,7 +98,7 @@ Contract adapters must distinguish those defaults from observed zero values. His
 
 ## Common record contract
 
-The following records are required design interfaces, not implemented schemas. JSON objects use UTF-8 and integer schema version `1`.
+The following records define the common design contract. Individual implementations and their claims identify supported schemas. JSON objects use UTF-8 and integer schema version `1`.
 
 SHA-256 fields contain lowercase hexadecimal digests of exact retained bytes. Repository revisions use full commit IDs. Artifact paths are relative to the run directory.
 
@@ -208,11 +212,13 @@ The three negative fixture IDs in each claim test defects in handling those reco
 
 Each fixture retains input bytes, expected result, actual result, invocation, source digests, and exit status. Failure must return nonzero to the fixture runner.
 
-Synthetic transcripts remain sufficient for harness binding tests, but never for product evidence. No profile fixture is implemented by this specification.
+Synthetic transcripts remain sufficient for harness binding tests, but never for product evidence. This specification alone does not establish fixture implementation or acceptance.
 
 ## Harness fixture matrix
 
-All fixture IDs below are required and unimplemented as real-driver bindings. The existing local TLC runner covers only the bounded refutation slice.
+All fixture IDs below remain required. The accepted CLAIM-CASPER-SOAK-001 records bind the lifecycle controls to real-driver fixtures within the stated bounds.
+
+The local TLC runner supplies bounded refutation evidence. Its model result alone does not establish executable binding or product behavior.
 
 Each row needs a matching positive control. Each negative mutation must fail before the corresponding implementation repair and pass after correct handling.
 

@@ -10,6 +10,8 @@ tracking_status: completion-helper-incompatible
 
 # TASK-017-2 Interface Contract
 
+**Historical record:** TASK-017-2 is now complete. The [completion review](task-017-1-3-completion.md) records current validation and the bounded helper invocation.
+
 ## Scope
 
 The user requested completion of the harness/profile specification task. No runtime implementation, shared CI edit, external repin, or Git write is authorized.
