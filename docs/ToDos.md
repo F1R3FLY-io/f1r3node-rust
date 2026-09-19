@@ -456,8 +456,10 @@ tasks:
 
   - id: TASK-017-10
     title: "Verify carrier-index comparison inputs and telemetry classification"
-    status: pending
-    claimed_by: null
+    status: in_progress
+    claimed_by: pi-soak-carrier-index-linux
+    claimed_at: 2026-09-19T06:11:36Z
+    work_log: docs/work-logs/task-017-10-carrier-index.md
     blocked_by: []
     decisions: [D-10]
     claims: [CLAIM-CASPER-SOAK-008]
