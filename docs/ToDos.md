@@ -638,10 +638,11 @@ tasks:
     work_log: docs/work-logs/task-017-13-preparation.md
     handoff_note: docs/handoffs/casper-pre-merge-to-post-merge-20260919.md
     evidence_review: docs/casper/cbc-evidence/runs/casper-pre-merge-review-20260919-01/report.json
+    canonical_record_review: docs/casper/cbc-evidence/runs/casper-formal-area-records-20260919-01/report.json
+    canonical_record_status: "Both documentation records are discharged under a separate documentation contract. The canonical changed-scope gate passes for 123 artifacts."
     blocked_by: [TASK-017-12]
     remaining_prerequisites:
-      - "Resolve the pending canonical records for the harness README and verification plan. Passing the eight-claim audit does not cover these artifacts."
-      - "Resolve the full changed-scope gate without overwriting independent historical compatibility records."
+      - "Resolve the five remaining default-gate gaps without overwriting independent historical compatibility records."
       - "Review baseline results, scan benchmark evidence, and concurrency-gate evidence."
       - "Confirm TASK-018 owners and obtain acceptance of the completed handoff."
     decisions: [D-11]

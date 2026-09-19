@@ -1,10 +1,15 @@
 {
   "schema_version": 1,
-  "status": "pending",
+  "status": "bounded-pre-merge-binding-accepted",
+  "soak": "pending",
+  "live_adapter_qualification": "pending",
+  "post_merge_verification": "blocked",
   "executable": true,
   "execution_scope": "bounded-harness-safety-only",
   "local_runner": "scripts/ci/check-casper-soak-models.sh",
-  "evidence_report": "docs/casper/cbc-evidence/runs/casper-harness-controls-20260916-01/report.json",
+  "evidence_report": "docs/casper/cbc-evidence/runs/casper-binding-inventory-renewal-20260919-01/report.json",
+  "evidence_report_scope": "Accepted lifecycle sources and historical execution. Its recorded plan digest identifies the plan before this metadata update.",
+  "documentation_review": "docs/casper/cbc-evidence/runs/casper-formal-area-records-20260919-01/report.json",
   "claim": "CLAIM-CASPER-SOAK-001",
   "specification": "docs/claims/casper-soak-harness.md",
   "owner_task": "TASK-017-4",
@@ -48,7 +53,8 @@
     {"configuration": "MC_CasperSoakHarness_control_unsafe.cfg", "knob": "AllowWrongControlVerdict", "property": "ControlVerdictExact", "expected_exit": 12, "fixture": "timeout_is_not_counterexample"}
   ],
   "binding": {
-    "status": "pending",
+    "status": "passed",
+    "scope": "Accepted bounded fixtures only. Live adapters and soaks remain pending.",
     "driver": "scripts/run-merge-recovery-soak.sh",
     "fixtures": "scripts/casper-soak/tests/driver.rs",
     "legacy_fixtures": "scripts/bench/test-run-merge-recovery-soak.sh",
@@ -62,8 +68,8 @@
     "inventory_scope": "Completeness only. Semantic binding review and claim discharge remain separate gates.",
     "summary": "scripts/bench/write-soak-summary.sh",
     "workflow": ".github/workflows/merge-recovery-soak.yml",
-    "fixture_digest": null,
-    "external_harness_revision": null
+    "fixture_digest": "8e4bc9c2b58f0613a164b48caeb1dd74c1d6c480d58af5c5dfaf3fe426c73fa5",
+    "external_harness_revision": "b3d14b27e3c6276b1eb4ab9ccef04e02b0c4e283"
   },
   "registration_policy": {
     "status": "implemented",
@@ -88,22 +94,24 @@
   "scope": "harness-and-profiles-only",
   "node_role": "system-under-test",
   "profile_verification": {
-    "status": "pending",
+    "status": "bounded-pre-merge-bindings-accepted",
     "construction": "not-applicable",
-    "model_status": "not-implemented",
-    "binding_status": "pending",
+    "model_status": "implemented",
+    "binding_status": "passed",
+    "soak": "pending",
+    "live_adapter_qualification": "pending",
     "bounds": {"scenarios": 2, "observations_per_scenario": 3},
     "positive_expected_exit": 0,
     "negative_expected_exit": 12,
-    "control_contract": "Each claim specifies three named properties, defect knobs, and fixture verdicts. Register controls separately from the clean list after implementation.",
+    "control_contract": "Each profile plan registers three named properties, defect knobs, and fixture verdicts. Negative controls remain separate from the clean list.",
     "claims": [
-      {"id": "CLAIM-CASPER-SOAK-002", "specification": "docs/claims/casper-soak-authority-finality.md"},
-      {"id": "CLAIM-CASPER-SOAK-003", "specification": "docs/claims/casper-soak-publication.md"},
-      {"id": "CLAIM-CASPER-SOAK-004", "specification": "docs/claims/casper-soak-recovery.md"},
-      {"id": "CLAIM-CASPER-SOAK-005", "specification": "docs/claims/casper-soak-merge-accounting.md"},
-      {"id": "CLAIM-CASPER-SOAK-006", "specification": "docs/claims/casper-soak-slashing.md"},
-      {"id": "CLAIM-CASPER-SOAK-007", "specification": "docs/claims/casper-soak-version-phlo.md"},
-      {"id": "CLAIM-CASPER-SOAK-008", "specification": "docs/claims/casper-soak-carrier-index.md"}
+      {"id": "CLAIM-CASPER-SOAK-002", "specification": "docs/claims/casper-soak-authority-finality.md", "verification_plan": "formal/tlaplus/casper_soak/profiles/authority_finality/verification-plan.jsonc", "accepted_report": "docs/casper/cbc-evidence/runs/casper-profile-acceptance-20260919-01/report.json"},
+      {"id": "CLAIM-CASPER-SOAK-003", "specification": "docs/claims/casper-soak-publication.md", "verification_plan": "formal/tlaplus/casper_soak/profiles/publication/verification-plan.jsonc", "accepted_report": "docs/casper/cbc-evidence/runs/casper-profile-acceptance-20260919-01/report.json"},
+      {"id": "CLAIM-CASPER-SOAK-004", "specification": "docs/claims/casper-soak-recovery.md", "verification_plan": "formal/tlaplus/casper_soak/profiles/recovery/verification-plan.jsonc", "accepted_report": "docs/casper/cbc-evidence/runs/casper-profile-acceptance-20260919-01/report.json"},
+      {"id": "CLAIM-CASPER-SOAK-005", "specification": "docs/claims/casper-soak-merge-accounting.md", "verification_plan": "formal/tlaplus/casper_soak/profiles/merge_accounting/verification-plan.jsonc", "accepted_report": "docs/casper/cbc-evidence/runs/casper-merge-accounting-acceptance-20260919-01/report.json"},
+      {"id": "CLAIM-CASPER-SOAK-006", "specification": "docs/claims/casper-soak-slashing.md", "verification_plan": "formal/tlaplus/casper_soak/profiles/slashing/verification-plan.jsonc", "accepted_report": "docs/casper/cbc-evidence/runs/casper-slashing-ratification-20260919-01/report.json"},
+      {"id": "CLAIM-CASPER-SOAK-007", "specification": "docs/claims/casper-soak-version-phlo.md", "verification_plan": "formal/tlaplus/casper_soak/profiles/version_phlo/verification-plan.jsonc", "accepted_report": "docs/casper/cbc-evidence/runs/casper-version-phlo-acceptance-20260919-01/report.json"},
+      {"id": "CLAIM-CASPER-SOAK-008", "specification": "docs/claims/casper-soak-carrier-index.md", "verification_plan": "formal/tlaplus/casper_soak/profiles/carrier_index/verification-plan.jsonc", "accepted_report": "docs/casper/cbc-evidence/runs/casper-carrier-index-acceptance-20260919-01/report.json"}
     ]
   },
   "prerequisites": [431, 432, 433],

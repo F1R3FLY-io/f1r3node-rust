@@ -1,23 +1,34 @@
 # Casper Soak Harness Formal Area
 
-**Status:** The bounded safety model and local control runner are implemented. Driver bindings, profile models, shared CI integration, and soaks remain pending.
+**Status:** The bounded lifecycle and seven profile bindings are accepted for their recorded pre-merge sources. Live adapter qualification and baseline soaks remain pending.
 
 The [harness claim](../../../docs/claims/casper-soak-harness.md) owns the specification. The [verification plan](./verification-plan.jsonc) records controls and bounds.
 
 This area follows [PR #433](https://github.com/F1R3FLY-io/f1r3node-rust/blob/65f7f6daa832c0acb6fddf2b462db1b9d5461729/docs/cbc-verification-tiers.md). Construction is not applicable. Node correctness and Rocq proofs are outside this area.
 
+## Documentation contract
+
+`CLAIM-CASPER-SOAK-FORMAL-AREA-DOCS` covers this README and the top-level verification plan only. It is separate from the eight executable harness claims.
+
+1. Status descriptions must match the source-bound acceptance records without asserting a passing soak or qualified live adapter.
+2. Metadata updates must preserve model inputs, controls, bounds, assumptions, registration policy, and executable source identities.
+3. Each profile reference must identify its current claim, verification plan, and accepted report.
+4. Evidence must preserve previous document and ledger identities, unsuccessful outcomes, and pending post-merge obligations.
+
+The documentation check verifies these requirements. Fresh lifecycle controls check the executable plan, not node correctness.
+
 ## Model correspondence
 
 | Model action | Intended harness boundary | Property | Driver binding |
 | --- | --- | --- | --- |
-| Init, Admit | Manifest initialization and post-merge admission | PostMergeGate | Pending |
-| Resume | State load and persist_soak_state | IdentityPinned, ResumePreservesHistory | Pending |
-| Launch, Stop | Workload launch, deadline, and resource stop | StopPreventsLaunch, ProductFailureMonotone | Pending |
-| Finish | emit_iteration_metrics and finalization sample extraction | MissingIsUnknown | Pending |
-| Experiment | Profile selection and baseline isolation | PolicyIsolation | Pending |
-| JudgeControl | Local runner classify function | ControlVerdictExact | Runner unit tests only |
-| Capture, Cleanup | snapshot_iteration_monitor_outputs and cleanup | EvidenceBeforeCleanup | Pending |
-| Report | Summary and workflow verdict | PassRequiresEvidence | Pending |
+| Init, Admit | Manifest initialization and post-merge admission | PostMergeGate | Accepted bounded fixtures |
+| Resume | State load and persist_soak_state | IdentityPinned, ResumePreservesHistory | Accepted bounded fixtures |
+| Launch, Stop | Workload launch, deadline, and resource stop | StopPreventsLaunch, ProductFailureMonotone | Accepted bounded fixtures |
+| Finish | emit_iteration_metrics and finalization sample extraction | MissingIsUnknown | Accepted bounded fixtures |
+| Experiment | Profile selection and baseline isolation | PolicyIsolation | Accepted bounded fixtures |
+| JudgeControl | Local runner classify function | ControlVerdictExact | Accepted exact-verdict controls |
+| Capture, Cleanup | snapshot_iteration_monitor_outputs and cleanup | EvidenceBeforeCleanup | Accepted bounded fixtures |
+| Report | Summary and workflow verdict | PassRequiresEvidence | Accepted bounded fixtures |
 
 The record fields `recorded` and `failureSeen` preserve specification history. They detect loss from the modeled persisted history and failure flag.
 
@@ -71,26 +82,41 @@ New implementation code uses Rust and Bash. Historical evidence retains the reti
 
 ## Evidence and limits
 
-The [local evidence package](../../../docs/casper/cbc-evidence/runs/casper-harness-controls-20260916-01/report.json) records the bounded run.
+The [initial evidence package](../../../docs/casper/cbc-evidence/runs/casper-harness-controls-20260916-01/report.json) retains the historical bounded run.
+
+The [inventory renewal](../../../docs/casper/cbc-evidence/runs/casper-binding-inventory-renewal-20260919-01/report.json) records the accepted lifecycle binding and its executable evidence.
+
+The [formal-area review](../../../docs/casper/cbc-evidence/runs/casper-formal-area-records-20260919-01/report.json) binds this documentation and the updated plan metadata. It does not expand the eight claim inventories.
 
 The clean model explored 43,424 distinct states. All ten negative controls produced their named violation with exit 12.
 
 Rust tests exercise verdict parsing, configuration validation, missing tools, timeout, input drift, and evidence-directory preservation.
 
-Those tests do not exercise the live Bash driver. They cannot discharge the driver or profile claims.
+Model-runner tests alone do not exercise the live Bash driver. The separate accepted lifecycle fixtures cover 48 registered cases and 91 driver invocations.
+
+Production-driver process fixtures run in isolated Linux containers. Accepted profile fixtures use controlled transcripts, not qualified live node observations.
+
+B44, Linux host-control assumptions, cooperating-writer limits, and missing historical evidence remain recorded in the [acceptance log](../../../docs/work-logs/casper-driver-rebind-acceptance.md).
 
 ## Profile models
 
-The verification plan links seven profile claims with proposed properties, defect knobs, and fixture expectations. Their models and executable bindings remain pending.
+The verification plan links seven implemented profile plans and their accepted evidence. Each plan retains its properties, defect knobs, finite bounds, and fixture expectations.
+
+The [claim index](../../../docs/claims/casper-soak-harness.md) separates their bounded discharges from pending soaks. Construction remains not applicable.
+
+Changed interfaces require a new binding review. The actual PR #216 merge and an accepted handoff still gate post-merge execution.
 
 ## Completion checklist
 
 - [x] State bounded safety properties and model limits.
 - [x] Implement the lifecycle model and ten defect knobs.
 - [x] Run the clean configuration and ten targeted negative controls.
-- [ ] Bind each modeled action to the real driver with fault fixtures.
-- [ ] Implement and verify profile generators, collectors, and classifiers.
-- [ ] Integrate the checks into the prerequisite-aware workflow.
-- [ ] Review the complete evidence package before full claim discharge.
+- [x] Bind each modeled action to the real driver with bounded fault fixtures.
+- [x] Implement and verify profile generators, collectors, and classifiers with controlled fixtures.
+- [x] Integrate the checks into the prerequisite-aware workflow.
+- [x] Accept the source-specific bounded lifecycle and profile evidence.
+- [ ] Qualify live adapters and review baseline outcomes under TASK-017-12.
+- [ ] Close the full changed scope and accept the TASK-017-13 handoff.
+- [ ] Reverify changed interfaces after the actual PR #216 merge.
 
-The [cycle checklist](../../../docs/tdd-plans/casper-soak-harness.md) separates model results from pending driver fixtures.
+The [cycle checklist](../../../docs/tdd-plans/casper-soak-harness.md) retains implementation history. Current source-bound ledgers control the accepted binding status.
