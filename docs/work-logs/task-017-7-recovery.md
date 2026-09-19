@@ -4,9 +4,9 @@
 
 The [combined review](./task-017-5-7-binding-review.md) records fresh native and isolated Linux checks, model controls, and shared regressions.
 
-Shared regression tests now pass. Publication conflict handling is repaired. Human binding acceptance and workflow-tag ratification remain pending.
+TASK-017-7 is complete for its bounded pre-merge scope. CLAIM-004 is discharged, and the workflow tag is ratified.
 
-A later driver function move returned CLAIM-001 to pending before this review. Current lifecycle acceptance therefore remains a separate gate.
+The [acceptance record](./task-017-5-7-acceptance.md) identifies the source-bound evidence and strict completion checks. External commit `d60f54544` separately restored CLAIM-001 discharge.
 
 D-07 interpretation remains unresolved. Controlled fixtures do not establish node support. Live, experimental-policy, and post-merge requests remain blocked.
 

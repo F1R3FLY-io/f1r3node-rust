@@ -1,5 +1,11 @@
 # TASK-017-5–7 Bounded Binding Review
 
+## Completion notice
+
+Tasks 017-5–7 are complete. The [acceptance record](./task-017-5-7-acceptance.md) records discharged claims 002–004 and strict completion checks.
+
+External commit `d60f54544` separately restored CLAIM-001 discharge. The sections below preserve the review-stage observations, including earlier pending claim states.
+
 ## Status and scope
 
 The three controlled-transcript profiles pass fresh verification. The user accepted the bindings and ratified the workflow tags. Tasks 017-5–7 await ledger recording and strict completion checks.

@@ -4,7 +4,9 @@
 
 The [combined review](./task-017-5-7-binding-review.md) records fresh native and isolated Linux checks, model controls, and shared regressions.
 
-Final profile checks passed. Human binding acceptance and workflow-tag ratification remain pending. Live adapters remain unqualified.
+TASK-017-5 is complete for its bounded pre-merge scope. CLAIM-002 is discharged, and the workflow tag is ratified.
+
+The [acceptance record](./task-017-5-7-acceptance.md) identifies the source-bound evidence and strict completion checks. Live adapters remain unqualified.
 
 The sections below retain the original implementation results. Their unavailable-Linux result is historical.
 

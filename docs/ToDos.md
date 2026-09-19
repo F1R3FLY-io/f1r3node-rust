@@ -298,14 +298,15 @@ tasks:
     title: "Verify authority and finality profile generation and verdicts"
     claims: [CLAIM-CASPER-SOAK-002]
     claim_spec: docs/claims/casper-soak-authority-finality.md
-    status: in_progress
+    status: complete
     claimed_by: pi-casper-authority-finality
     claimed_at: 2026-09-18T13:08:20Z
     work_log: docs/work-logs/task-017-5-authority-finality.md
     implementation_status: controlled-transcript-implemented
-    validation_evidence: docs/casper/cbc-evidence/runs/casper-profile-binding-review-20260919-01/report.json
+    validation_evidence: docs/casper/cbc-evidence/runs/casper-profile-acceptance-20260919-01/report.json
     binding_review: docs/work-logs/task-017-5-7-binding-review.md
-    completion_blocker: "Claim acceptance and the proposed workflow tag remain pending. Live adapters remain unqualified."
+    completion_evidence: docs/work-logs/task-017-5-7-acceptance.md
+    completion_blocker: null
     tests:
       - scripts/casper-soak/tests/authority_finality.rs
       - scripts/casper-soak/check-authority-finality.sh
@@ -332,18 +333,22 @@ tasks:
       - "The collector reports traversal counters without inferring a node work-bound proof."
       - "Unsupported node test interfaces block the scenario rather than expand this epic into runtime implementation."
 
+    unit_tests: [scripts/casper-soak/tests/authority_finality.rs]
+    completion_gaps: []
+    completed_date: 2026-09-19
   - id: TASK-017-6
     title: "Verify publication and restart fault profiles and observations"
     claims: [CLAIM-CASPER-SOAK-003]
     claim_spec: docs/claims/casper-soak-publication.md
-    status: in_progress
+    status: complete
     claimed_by: pi-casper-publication
     claimed_at: 2026-09-18T14:39:27Z
     work_log: docs/work-logs/task-017-6-publication.md
     implementation_status: controlled-transcript-implemented
-    validation_evidence: docs/casper/cbc-evidence/runs/casper-profile-binding-review-20260919-01/report.json
+    validation_evidence: docs/casper/cbc-evidence/runs/casper-profile-acceptance-20260919-01/report.json
     binding_review: docs/work-logs/task-017-5-7-binding-review.md
-    completion_blocker: "Claim acceptance and the proposed workflow tag remain pending. Live adapters remain unqualified."
+    completion_evidence: docs/work-logs/task-017-5-7-acceptance.md
+    completion_blocker: null
     tests:
       - scripts/casper-soak/tests/publication.rs
       - scripts/casper-soak/check-publication.sh
@@ -369,18 +374,22 @@ tasks:
       - "Missing durable-state observations remain incomplete evidence."
       - "Baseline and optional parallel profiles remain separate and cannot change production defaults."
 
+    unit_tests: [scripts/casper-soak/tests/publication.rs]
+    completion_gaps: []
+    completed_date: 2026-09-19
   - id: TASK-017-7
     title: "Prepare isolated heartbeat and retry experiments against the baseline"
     claims: [CLAIM-CASPER-SOAK-004]
     claim_spec: docs/claims/casper-soak-recovery.md
-    status: in_progress
+    status: complete
     claimed_by: pi-casper-recovery
     claimed_at: 2026-09-18T15:43:03Z
     work_log: docs/work-logs/task-017-7-recovery.md
     implementation_status: controlled-transcript-implemented
-    validation_evidence: docs/casper/cbc-evidence/runs/casper-profile-binding-review-20260919-01/report.json
+    validation_evidence: docs/casper/cbc-evidence/runs/casper-profile-acceptance-20260919-01/report.json
     binding_review: docs/work-logs/task-017-5-7-binding-review.md
-    completion_blocker: "Recovery binding acceptance and workflow-tag ratification remain pending. Live adapters remain unqualified."
+    completion_evidence: docs/work-logs/task-017-5-7-acceptance.md
+    completion_blocker: null
     tests:
       - scripts/casper-soak/tests/recovery.rs
       - scripts/casper-soak/check-recovery.sh
@@ -409,6 +418,9 @@ tasks:
       - "An experiment cannot grant authority to activate its policy."
       - "Record baseline results and candidate availability. The merged-runtime comparison belongs to TASK-018-5."
 
+    unit_tests: [scripts/casper-soak/tests/recovery.rs]
+    completion_gaps: []
+    completed_date: 2026-09-19
   - id: TASK-017-8
     title: "Verify merge and accounting workload generation and measurement"
     claims: [CLAIM-CASPER-SOAK-005]
