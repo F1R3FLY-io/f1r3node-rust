@@ -12,7 +12,9 @@ artifacts:
   - scripts/ci/check-formal-invariants.sh
 phase: repository-governance
 binding: pending
-hosted_verification: pending
+hosted_verification: passed
+hosted_revision: 191e184be556c1f190748143377ab369586c53b6
+hosted_run: 35473280388
 required_check_enforcement: pending
 ```
 
@@ -69,12 +71,14 @@ The existing CI Rocq suite still checks slashing, fork choice, and rspace guards
 ## Completion gates
 
 - [x] Review local refusal tests and workflow wiring checks.
-- [ ] Verify a successful hosted run and independently reconstruct its source and run identities.
-- [ ] Preserve unsuccessful hosted outcomes and artifact retrieval evidence.
-- [ ] Renew Claim001 for the changed workflow and recheck the formal-area documentation contract.
+- [x] Verify a successful hosted run and independently reconstruct its source and run identities.
+- [x] Preserve unsuccessful hosted outcomes and artifact retrieval evidence.
+- [x] Renew Claim001 for the changed workflow and recheck the formal-area documentation contract.
 - [ ] Obtain separate approval before changing repository protection rules.
 - [ ] Activate the required check only after it is available on the protected baseline.
 - [ ] Verify rejection of skipped, canceled, stale, missing, and failing results under the actual protection configuration.
 - [ ] Record current enforcement evidence and obtain final claim acceptance.
 
-The [implementation log](../work-logs/soak-formal-gate-implementation.md) records progress. This claim remains pending until every required gate passes.
+The [implementation log](../work-logs/soak-formal-gate-implementation.md) records the initial checks. The [hosted renewal log](../work-logs/soak-formal-gate-hosted-renewal.md) records verified execution and retained outcomes.
+
+The protected `dev` baseline does not yet contain the new gate. This claim remains pending until baseline availability, separate protection authorization, enforcement tests, and acceptance are complete.

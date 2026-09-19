@@ -638,14 +638,15 @@ tasks:
     work_log: docs/work-logs/task-017-13-preparation.md
     handoff_note: docs/handoffs/casper-pre-merge-to-post-merge-20260919.md
     evidence_review: docs/casper/cbc-evidence/runs/casper-pre-merge-review-20260919-01/report.json
-    canonical_record_review: docs/casper/cbc-evidence/runs/casper-formal-area-records-20260919-01/report.json
-    canonical_record_status: "The historical review passed. The approved formal-gate workflow change now requires Claim001 renewal and a new documentation consistency review."
+    canonical_record_review: docs/casper/cbc-evidence/runs/casper-formal-gate-documentation-20260919-01/report.json
+    canonical_record_status: "Claim001 and both documentation records are renewed after hosted verification. All eight executable claims pass strict source-bound audits."
     compatibility_review: docs/casper/cbc-evidence/runs/casper-compatibility-routing-20260919-01/report.json
-    compatibility_status: "Four lookup repairs remain intact. The independent gate claim and reopened documentation records remain pending."
+    compatibility_status: "Four lookup repairs remain intact. The independent governance claim remains pending."
     formal_gate_implementation: docs/work-logs/soak-formal-gate-implementation.md
+    formal_gate_hosted_renewal: docs/work-logs/soak-formal-gate-hosted-renewal.md
     blocked_by: [TASK-017-12]
     remaining_prerequisites:
-      - "Verify the new formal gate on hosted CI, renew Claim001 and its dependent documentation records, and obtain separate protection-rule authorization."
+      - "Make the verified formal gate available on the protected baseline, obtain separate protection-rule authorization, and verify effective enforcement."
       - "Complete CLAIM-SOAK-GATE-001 under docs/claims/soak-formal-gate.md. The approved finalized-floor scope remains local-only."
       - "Review baseline results, scan benchmark evidence, and concurrency-gate evidence."
       - "Confirm TASK-018 owners and obtain acceptance of the completed handoff."

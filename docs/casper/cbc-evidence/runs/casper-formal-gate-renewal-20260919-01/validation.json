@@ -1,0 +1,78 @@
+{
+  "schema_version": 1,
+  "status": "bounded-renewal-verified-governance-pending",
+  "report_sha256": "a7397d9c2fa35436452872d3112bdaae755bc0de0f947955e847d1bf9e4b8831",
+  "verification_metadata_sha256": "b759ab5ee4ff9122c43bdec3c52e70fa741ef3594a745d60c3d678d05581cf16",
+  "private_retention": {
+    "path": "target/formal-gate-hosted-35473280388.private.tar.gz",
+    "sha256": "79df9e992cb4f4e58e6301c91aee33c609e7b54469899980408c510894a81a00",
+    "uploaded": false
+  },
+  "hosted_gate": {
+    "app": {
+      "id": 15368,
+      "slug": "github-actions"
+    },
+    "conclusion": "success",
+    "head_sha": "191e184be556c1f190748143377ab369586c53b6",
+    "id": 105978576163,
+    "name": "Formal verification gate",
+    "status": "completed"
+  },
+  "post_renewal_isolated": {
+    "passed_tests": 29,
+    "counts": {
+      "claim_discharge": "pending",
+      "driver_invocations": 91,
+      "matched_exits": true,
+      "node_execution": false,
+      "registered_cases": 48,
+      "schema_version": 1,
+      "scope": "binding-inventory-only"
+    },
+    "source_check": "passed",
+    "root_only_test": "not-rerun"
+  },
+  "checks": {
+    "eight_claim_strict_exit": 0,
+    "canonical_gate": {
+      "total": 123,
+      "gaps": 0,
+      "exit": 0
+    },
+    "default_gate": {
+      "total": 123,
+      "gaps": 1,
+      "exit": 4,
+      "remaining_claim": "CLAIM-SOAK-GATE-001"
+    },
+    "documentation_negative_controls": 8,
+    "source_and_archive_hashes": "passed",
+    "unrelated_task_blocks": "unchanged",
+    "runtime_sources_and_policies": "unchanged",
+    "ste": "passed",
+    "human_ste_review": "not-performed",
+    "diagnostics": {
+      "files_checked": 10,
+      "clean": 7,
+      "false_positive": 2,
+      "inconclusive": 1,
+      "independent_json_checks": "passed"
+    }
+  },
+  "retained_unsuccessful_checks": [
+    "Initial verifier incorrectly required an explicit ref input for the default-checkout driver job.",
+    "Initial ledger selection refused 41 matches instead of the 39 accepted artifacts."
+  ],
+  "protection": {
+    "changed": false,
+    "effective_rules_sha256": "bb8d060d7de40671a7f91d712fccc25a52b05ddf83a6c4921eef20f58658d9fc",
+    "baseline_workflow_sha256": "be6741fcad7ac67437bb43ccc247d433e1f32f5ad73109d615564843f4f45207",
+    "gate_present_on_dev": false,
+    "required_gate_present": false,
+    "authorization": "pending"
+  },
+  "node_execution": false,
+  "commit_or_push": false,
+  "task_closed": false
+}

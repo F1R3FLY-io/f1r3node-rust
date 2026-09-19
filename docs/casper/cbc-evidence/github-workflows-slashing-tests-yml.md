@@ -1,17 +1,17 @@
 # CbC Evidence: .github/workflows/slashing-tests.yml
 
-The user authorized renewal of the existing bounded H01–H10 binding after the workflow inventory repair. This discharge covers only the pre-merge harness.
+The user authorized this bounded harness renewal after fresh hosted verification of the formal-gate workflow. Node execution and protection-rule activation remain outside this discharge.
 
-Previous evidence and containment limitations remain preserved. Node execution and post-merge work remain outside this renewal.
+The previous ledger remains in the archive below. Earlier reports retain their execution identities and limitations.
 
 ```json
 {
   "artifact": {
     "path": ".github/workflows/slashing-tests.yml",
     "id": "github-workflows-slashing-tests-yml",
-    "commit": "8dc35ae4a55e1e10cf59cea69f6de87db4da276b",
+    "commit": "191e184be556c1f190748143377ab369586c53b6",
     "commit_is_base": true,
-    "sha256": "b040baafa3723c789aa762fef0e925702504e1a70c7a0a47ccc2d2a39b25c336",
+    "sha256": "1821ac5e6d95226e323423806efb1de9ceda8f423b5fa19bdc7572bf2209cc3b",
     "working_tree": true
   },
   "claim": "docs/claims/casper-soak-harness.md",
@@ -19,15 +19,15 @@ Previous evidence and containment limitations remain preserved. Node execution a
     "CLAIM-CASPER-SOAK-001"
   ],
   "claim_digests": {
-    "docs/claims/casper-soak-harness.md": "61e085da51b1f69759c579d8fea92e192541ec28bf0b8905d6b3054ae26d015b"
+    "docs/claims/casper-soak-harness.md": "c1f6b7473f790a60ab964ce7fd7277841cd6cee5718e9853ad96cf4c671d5932"
   },
   "adapter": "embedded",
   "status": "discharged",
   "scope": "bounded-harness-only",
   "evidence": {
-    "kind": "renewed-bounded-inventory-binding",
-    "ref": "docs/casper/cbc-evidence/runs/casper-binding-inventory-renewal-20260919-01/report.json",
-    "sha256": "6a0cd52a9153f128cadef74c5469b02a3580e25a53e44fb45cf15d678186e889"
+    "kind": "hosted-source-bound-workflow-renewal",
+    "ref": "docs/casper/cbc-evidence/runs/casper-formal-gate-renewal-20260919-01/report.json",
+    "sha256": "a7397d9c2fa35436452872d3112bdaae755bc0de0f947955e847d1bf9e4b8831"
   },
   "tiers": {
     "refutation": "bounded-safety-pass",
@@ -40,12 +40,12 @@ Previous evidence and containment limitations remain preserved. Node execution a
   },
   "soak": "pending",
   "waiver": null,
-  "verified_at": "2026-09-19T19:41:31Z",
+  "verified_at": "2026-09-19T22:43:31Z",
   "previous_ledger": {
-    "path": "docs/casper/cbc-evidence/runs/casper-binding-inventory-renewal-20260919-01/previous-metadata.tar.gz",
-    "sha256": "9d7e06983cf0c357adba8408c1fd716099cf39b4d6e179547162e05738e0026d",
-    "member": "previous-ledgers/github-workflows-slashing-tests-yml.md",
-    "member_sha256": "bb416af77c2984eb26915bf3b0550020417496aad8882e7eb18125605f044653"
+    "path": "docs/casper/cbc-evidence/runs/casper-formal-gate-renewal-20260919-01/previous-metadata.tar.gz",
+    "sha256": "855516a6685384190c8a4f427ff547fc2c8a0f2b6d894849d26dea9fde91b6d9",
+    "member": "prior/ledgers/github-workflows-slashing-tests-yml.md",
+    "member_sha256": "dde15e00e81ef2bb3676560c669bcaf8143f98e4a1db41e29758e1f69593677e"
   },
   "review_candidate": "docs/casper/cbc-evidence/runs/casper-driver-rebind-20260918-01/candidate-ledgers/github-workflows-slashing-tests-yml.md"
 }

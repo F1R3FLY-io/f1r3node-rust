@@ -84,9 +84,15 @@ New implementation code uses Rust and Bash. Historical evidence retains the reti
 
 The [initial evidence package](../../../docs/casper/cbc-evidence/runs/casper-harness-controls-20260916-01/report.json) retains the historical bounded run.
 
-The [inventory renewal](../../../docs/casper/cbc-evidence/runs/casper-binding-inventory-renewal-20260919-01/report.json) records the accepted lifecycle binding and its executable evidence.
+The [inventory renewal](../../../docs/casper/cbc-evidence/runs/casper-binding-inventory-renewal-20260919-01/report.json) retains the earlier lifecycle binding and its executable evidence.
 
-The [formal-area review](../../../docs/casper/cbc-evidence/runs/casper-formal-area-records-20260919-01/report.json) binds this documentation and the updated plan metadata. It does not expand the eight claim inventories.
+The [hosted workflow renewal](../../../docs/casper/cbc-evidence/runs/casper-formal-gate-renewal-20260919-01/report.json) binds the current lifecycle sources after the formal-gate workflow change.
+
+The [earlier formal-area review](../../../docs/casper/cbc-evidence/runs/casper-formal-area-records-20260919-01/report.json) preserves its source and plan identities.
+
+The [renewed documentation review](../../../docs/casper/cbc-evidence/runs/casper-formal-gate-documentation-20260919-01/report.json) checks current metadata and unchanged executable plan inputs. It does not expand the eight claim inventories.
+
+The independent `CLAIM-SOAK-GATE-001` remains pending. This documentation does not establish required-check enforcement or authorize protection-rule changes.
 
 The clean model explored 43,424 distinct states. All ten negative controls produced their named violation with exit 12.
 

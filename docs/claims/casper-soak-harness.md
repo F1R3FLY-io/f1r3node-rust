@@ -2,7 +2,7 @@
 
 ```yaml
 claim_id: CLAIM-CASPER-SOAK-001
-status: pending
+status: discharged
 adapter: embedded
 pre_merge_tasks: [TASK-017-2, TASK-017-4, TASK-017-12, TASK-017-13]
 post_merge_tasks: [TASK-018-1, TASK-018-2, TASK-018-5, TASK-018-6]
@@ -50,7 +50,7 @@ mechanization_plan: formal/tlaplus/casper_soak/verification-plan.jsonc
 refutation: bounded-safety-pass
 construction: not-applicable
 construction_assumptions: null
-binding: pending
+binding: passed
 soak: pending
 ```
 
@@ -176,11 +176,13 @@ A failing product observation and an infrastructure termination remain separate 
 
 ## Current gaps
 
-The approved formal-gate implementation changes `.github/workflows/slashing-tests.yml` after the inventory renewal. This claim therefore returns to pending for the changed workflow.
+The formal-gate implementation changed `.github/workflows/slashing-tests.yml` and reopened this claim. Hosted run `35473280388`, attempt 1, now verifies that workflow and the isolated driver fixtures.
 
-The [gate implementation record](../work-logs/soak-formal-gate-implementation.md) separates local checks, hosted verification, binding renewal, and protection-rule authorization.
+The user requested fresh hosted verification and Claim001/documentation renewal. The [hosted renewal record](../work-logs/soak-formal-gate-hosted-renewal.md) binds that request to the verified sources.
 
-Earlier acceptance reports remain historical source-bound evidence. They do not discharge this new workflow revision.
+The [renewed report](../casper/cbc-evidence/runs/casper-formal-gate-renewal-20260919-01/report.json) preserves the previous binding and records the new execution identities.
+
+This renewal restores only the bounded harness discharge. The independent governance claim remains pending until its protection and acceptance requirements pass.
 
 The local bounded model and control runner are implemented. One clean configuration and ten named negative controls pass their expected verdict checks.
 
