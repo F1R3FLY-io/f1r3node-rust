@@ -2,7 +2,7 @@
 
 ```yaml
 claim_id: CLAIM-CASPER-SOAK-001
-status: pending
+status: discharged
 adapter: embedded
 pre_merge_tasks: [TASK-017-2, TASK-017-4, TASK-017-12, TASK-017-13]
 post_merge_tasks: [TASK-018-1, TASK-018-2, TASK-018-5, TASK-018-6]
@@ -50,7 +50,7 @@ mechanization_plan: formal/tlaplus/casper_soak/verification-plan.jsonc
 refutation: bounded-safety-pass
 construction: not-applicable
 construction_assumptions: null
-binding: pending
+binding: passed
 soak: pending
 ```
 
@@ -190,7 +190,9 @@ The user accepted the repaired driver's bounded binding review. Its [acceptance 
 
 CLAIM-CASPER-SOAK-001 was discharged for the repaired pre-merge harness on 2026-09-18. TASK-017-4 remains complete. The source-specific ledger records control this discharge.
 
-Later on 2026-09-18, `scripts/casper-soak/src/host_control.rs` changed after that acceptance. The change moves one function above the test module to satisfy clippy and does not change behavior. The accepted binding covers the file at commit `f9273621c`, not the current file. The claim returns to pending until a new acceptance binds the current source. The [drift record](../work-logs/casper-driver-rebind-acceptance.md#drift-after-acceptance-2026-09-18) states the scope.
+Later on 2026-09-18, `scripts/casper-soak/src/host_control.rs` changed after that acceptance. The change moves one function above the test module to satisfy clippy and does not change behavior. The accepted binding covers the file at commit `f9273621c`, not the current file. The claim returned to pending until a new acceptance bound the current source. The [drift record](../work-logs/casper-driver-rebind-acceptance.md#drift-after-acceptance-2026-09-18) states the scope.
+
+On 2026-09-19 the user accepted the refreshed binding for the current source. The [refresh acceptance record](../work-logs/casper-driver-rebind-acceptance.md#refresh-acceptance-2026-09-19) identifies the approved source and the retained evidence. CLAIM-CASPER-SOAK-001 is discharged again for the repaired pre-merge harness.
 
 B44, containment assumptions, and the stated model bounds remain unchanged. This acceptance does not discharge profile claims, node correctness, or post-merge work.
 
