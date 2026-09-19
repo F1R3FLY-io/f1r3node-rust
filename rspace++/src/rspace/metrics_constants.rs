@@ -15,6 +15,21 @@ pub const COMM_CONSUME_TIME_METRIC: &str = "comm.consume-time";
 pub const COMM_PRODUCE_TIME_METRIC: &str = "comm.produce-time";
 pub const INSTALL_TIME_METRIC: &str = "install-time";
 pub const LOCK_ACQUIRE_TIME_METRIC: &str = "lock.acquire";
+pub const HISTORY_CHECKPOINT_TIME_METRIC: &str = "history.checkpoint.time";
+pub const HISTORY_CHECKPOINT_STORAGE_ACTIONS_TIME_METRIC: &str =
+    "history.checkpoint.storage-actions.time";
+pub const HISTORY_CHECKPOINT_PARTITION_TIME_METRIC: &str = "history.checkpoint.partition.time";
+pub const HISTORY_CHECKPOINT_SERIALIZE_TIME_METRIC: &str = "history.checkpoint.serialize.time";
+pub const HISTORY_CHECKPOINT_LEAF_WRITE_TIME_METRIC: &str = "history.checkpoint.leaf-write.time";
+pub const HISTORY_CHECKPOINT_HISTORY_LOCK_WAIT_TIME_METRIC: &str =
+    "history.checkpoint.history-lock-wait.time";
+pub const HISTORY_CHECKPOINT_HISTORY_PROCESS_TIME_METRIC: &str =
+    "history.checkpoint.history-process.time";
+pub const HISTORY_CHECKPOINT_ROOTS_LOCK_WAIT_TIME_METRIC: &str =
+    "history.checkpoint.roots-lock-wait.time";
+pub const HISTORY_CHECKPOINT_ROOT_COMMIT_TIME_METRIC: &str = "history.checkpoint.root-commit.time";
+pub const HISTORY_CHECKPOINT_ACTIONS_METRIC: &str = "history.checkpoint.actions";
+pub const HISTORY_CHECKPOINT_SERIALIZED_BYTES_METRIC: &str = "history.checkpoint.serialized-bytes";
 
 // RSpace gauge metrics
 pub const LOCK_QUEUE_METRIC: &str = "lock.queue";
