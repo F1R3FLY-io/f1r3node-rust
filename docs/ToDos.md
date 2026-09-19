@@ -501,7 +501,7 @@ tasks:
 
   - id: TASK-017-10
     title: "Verify carrier-index comparison inputs and telemetry classification"
-    status: in_progress
+    status: complete
     claimed_by: pi-soak-carrier-index-linux
     claimed_at: 2026-09-19T06:11:36Z
     work_log: docs/work-logs/task-017-10-carrier-index.md
@@ -509,14 +509,17 @@ tasks:
     decisions: [D-10]
     claims: [CLAIM-CASPER-SOAK-008]
     claim_spec: docs/claims/casper-soak-carrier-index.md
-    validation_evidence: docs/casper/cbc-evidence/runs/casper-carrier-index-publication-20260919-01/report.json
-    binding_status: pending
+    validation_evidence: docs/casper/cbc-evidence/runs/casper-carrier-index-acceptance-20260919-01/report.json
+    binding_status: accepted
+    binding_acceptance: docs/casper/cbc-evidence/runs/casper-carrier-index-acceptance-20260919-01/report.json
     hosted_workflow_status: verified
     hosted_workflow_run: 35429044639
     workflow_tag_status: ratified
     evidence_publication_status: verified
     evidence_asset_id: 575126186
-    completion_blocker: "Source-specific acceptance records and strict task closure remain pending."
+    workflow_tag_ratification: docs/casper/cbc-evidence/runs/casper-carrier-index-acceptance-20260919-01/report.json
+    completion_evidence: docs/work-logs/task-017-10-carrier-index.md
+    completion_blocker: null
     unit_tests: [scripts/casper-soak/tests/carrier_index.rs]
     files:
       - scripts/casper-soak/src/profiles/carrier_index.rs
@@ -538,6 +541,8 @@ tasks:
       - "Unsupported identity-domain interfaces block those scenarios without authorizing runtime changes."
       - "CLAIM-FINALITY-002 remains an external node claim, not an obligation of this epic."
 
+    completion_gaps: []
+    completed_date: 2026-09-19
   - id: TASK-017-11
     title: "Verify protocol and Phlo profile inputs and captured outcomes"
     claims: [CLAIM-CASPER-SOAK-007]

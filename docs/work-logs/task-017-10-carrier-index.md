@@ -24,7 +24,7 @@ Unavailable node interfaces block affected live scenarios. Controlled transcript
 - [x] Implement the profile generator, collector, classifier, and executable fixtures.
 - [x] Run bounded model controls and matching implementation tests.
 - [x] Record source-specific evidence and remaining interface limits.
-- [ ] Obtain the required binding acceptance before task completion.
+- [x] Obtain the required binding acceptance before task completion.
 
 ## Coordination
 
@@ -38,7 +38,7 @@ Exchange published commit IDs between machines. Use fast-forward-only pulls from
 
 ## Current state
 
-The profile implementation and bounded verification are ready for binding review. TASK-017-10 remains in progress, and CLAIM-CASPER-SOAK-008 remains pending.
+The user accepted the bounded binding. CLAIM-CASPER-SOAK-008 is discharged, and TASK-017-10 is complete after strict audits and helper verification.
 
 The profile checks paired inputs, path engagement, counters, artifact identities, fault receipts, and restart links. Live, post-merge, and typed-identity execution remain blocked.
 
@@ -182,3 +182,35 @@ The receipt and supporting files remain in `/tmp/carrier-index-checks/mac-public
 The approved carrier workflow tag is now applied in `.gitattributes`. The tracker records the ratified tag and verified publication. Claim 008 and its canonical ledgers remain pending until source-specific acceptance records and strict audits are complete.
 
 TASK-017-10 remains in progress. This checkpoint does not close either task, change Claim 001, or authorize node execution.
+
+## Bounded acceptance and strict closure
+
+The user instructed this session to proceed with Claim 008 acceptance, audit, and closure. Relay message `01a0bab7-2e7a-7d91-b6ef-545592fecbca` records that instruction.
+
+The [acceptance report](../casper/cbc-evidence/runs/casper-carrier-index-acceptance-20260919-01/report.json) binds the exact approval, reviewed sources, published archive, and verified receipt. The [validation record](../casper/cbc-evidence/runs/casper-carrier-index-acceptance-20260919-01/validation.json) records the final audits and task integrity.
+
+The starting revision is `f7b0cb32f4d4ac8ac28996e99e75e0cd8cdb68c6`. All 21 reviewed source hashes matched before the acceptance update. Only the claim status, binding status, and acceptance prose changed within that source inventory.
+
+The 12 profile artifacts remain unchanged. All 12 canonical ledgers now discharge the bounded pre-merge binding without waivers. Their previous bytes remain recoverable from the starting revision and retained local copies.
+
+The existing reports remain unchanged. Fresh archive validation verified all 14,606 manifest hashes and all 12 receipt checksum entries. The release remains draft.
+
+The fresh native runner passed 23 tests, 88 cases, 91 invocations, and four model controls. The clean model generated 1,201 states with 625 distinct states. Each negative control produced its named violation with exit 12.
+
+Strict audits for Claims 001 through 006 and 008 returned exit 0. The full bundle returned exit 4 for pending Claim 007 only. The explicit carrier gate found 12 discharged artifacts and zero gaps.
+
+The first shared test attempt ran before ledger assembly and failed. The final shared suite passed all 11 tests. The evidence retains both attempts.
+
+Three closure attempts failed, and another exceeded its tool time limit. The successful invocation used a fresh shell and the unchanged `mark_task_complete` function. It used strict checking, no force override, and gap stamping.
+
+The task parser omits the artifact inventory from its parsed task object. A separate strict gate checked all 12 artifacts before closure. The raw tracker inventory also matched the claim inventory.
+
+The unchanged helper completed a tracker copy with full integrity and zero gaps. Independent checks confirmed the result before application of the narrow helper-generated patch. No unrelated task object or tracker bytes changed.
+
+The temporary helper copy removes only the final CLI dispatch line. All helper functions and installed libraries remain unchanged. The repository adapter and the original backup state remain unchanged.
+
+TASK-017-10 is complete with `completion_gaps: []`. Both approved workflow tags remain intact. TASK-017-9, TASK-017-11, and the preparation tasks remain unchanged.
+
+Bulk checks and failed attempts remain in `/tmp/carrier-index-checks/acceptance-20260919-01/`. The source-specific receipt and ledger history remain recoverable without changing the shared release index.
+
+This acceptance does not qualify live interfaces, discharge node equivalence, activate a protocol, authorize node execution, or close a post-merge task.

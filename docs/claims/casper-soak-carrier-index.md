@@ -2,7 +2,7 @@
 
 ```yaml
 claim_id: CLAIM-CASPER-SOAK-008
-status: pending
+status: discharged
 adapter: embedded
 scope: harness-profile
 profile_implementation: controlled-transcript
@@ -25,7 +25,7 @@ artifacts:
 refutation: bounded-safety-pass
 construction: not-applicable
 construction_assumptions: null
-binding: pending
+binding: passed
 soak: pending
 ```
 
@@ -103,9 +103,13 @@ A correct harness can report a failed product scenario. Passing harness verifica
 
 The [profile guide](../../formal/tlaplus/casper_soak/profiles/carrier_index/README.md) defines executable bounds, source binding, limits, and verification commands.
 
-The [work log](../work-logs/task-017-10-carrier-index.md) records verification progress and pending acceptance.
+The [work log](../work-logs/task-017-10-carrier-index.md) records verification, publication, acceptance, and task closure.
 
-Binding acceptance, evidence publication, hosted workflow verification, and the workflow tag require separate review. This claim remains pending.
+The user accepted the bounded binding and ratified the carrier workflow tag. The [acceptance record](../casper/cbc-evidence/runs/casper-carrier-index-acceptance-20260919-01/report.json) binds the reviewed sources, evidence, and approval.
+
+Native, isolated, and hosted verification passed for the reviewed artifacts. The publisher uploaded the sanitized archive and verified its remote download. Earlier pending reports remain unchanged.
+
+This discharge covers only the bounded pre-merge harness binding. Live adapters remain unqualified, post-merge execution remains blocked, and soak results remain pending.
 
 The [harness contract](./casper-soak-harness.md) defines provenance and outcome rules. Deferred policies still require separate approval before activation.
 
