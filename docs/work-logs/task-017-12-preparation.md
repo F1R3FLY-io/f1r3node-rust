@@ -274,3 +274,106 @@ Authority and publication adapters remain unqualified. Generic node queries and 
 Local evidence is in `target/task-017-12/repin-20260919-01/`. It retains both archives, source snapshots, verifier code, node binaries, metadata, failed checks, and final verification results.
 
 No live qualification, cloud launch, workflow dispatch, upload, or campaign occurred. TASK-017-12 remains in progress.
+
+## Execution feasibility review at f5ed8c198
+
+The user requested the remaining work. This review inspected the current workflow, candidate API definitions, and pinned external runner sources before proposing code changes.
+
+GitHub still reports `dev` at `6940a5beb4aa806d3d75f6df3be9f238512fcc2f`. PR #216 remains open with no merge commit.
+
+The external launcher already supports amd64 and arm64. The local workflow selects amd64 explicitly, so architecture support requires workflow changes rather than a new launcher architecture.
+
+The pinned runner template registers with `--ephemeral`. After one job, it terminates its own instance. The template has no reuse option in the inspected registration path.
+
+A completed preflight-only job therefore cannot leave its runner available for a later baseline job. Three separate dispatches need at least three machines with this launcher.
+
+The workflow can also launch replacement machines and retry a failed segment. An approved campaign needs an explicit launch limit rather than these generic retry paths.
+
+The `daily-24h` input selects 79,200 seconds, which is 22 hours. The workflow subtracts integration-preflight time before the workload starts.
+
+A full 24-hour baseline needs a separate duration calculation. Its setup, preflight, evidence capture, and cleanup must still fit within the approved 26-hour runner limit.
+
+The inspected gRPC definition and three HTTP route tables match the selected candidate source exactly. They expose normal block, deploy, validator, and proposal operations.
+
+Those interfaces do not expose the specified publication-boundary control or complete atomic publication tuple. This source inspection does not qualify a live adapter.
+
+The profile contracts require blocked results for unavailable interfaces. Adding node interfaces remains outside this task. Recovery qualification retains its separate PR #216 dependency.
+
+### Proposed implementation, not yet approved
+
+The proposed change adds a manual campaign mode to `.github/workflows/merge-recovery-soak.yml`. Existing scheduled runs retain their current behavior.
+
+Rust and Bash helpers under `scripts/casper-soak/` and `scripts/ci/` would validate workload pins, candidate identities, qualification records, durations, and launch limits.
+
+Tests would cover both architectures, wrong image identities, missing capabilities, exhausted budgets, and incomplete preflight evidence. Existing host-protection and evidence-preservation controls remain required.
+
+Changes to accepted artifacts require renewed source-bound verification and acceptance before dispatch. The binding inventory script remains unchanged.
+
+One resource decision remains necessary. An additional 64 GB preflight runner, capped at four hours, would preserve the existing one-job runner lifecycle.
+
+The two baseline runners would retain their approved 64 GB size and 26-hour limit. Alternatively, retaining two total machines requires a separately reviewed reusable-runner design.
+
+Neither option is approved by this proposal. No new code, node process, cloud runner, or workflow dispatch resulted from this review.
+
+External source snapshots are in `target/task-017-12/execution-review-f5ed8c198-01/`. The failed lookup for `cloud-init.yaml` remains beside the correctly resolved `cloud-init-runner.yml.tmpl`.
+
+## Approval amendment and initial campaign helpers
+
+The user approved separate preflight and baseline dispatches on 2026-09-19. This approval accepts the proposed additional OCI preflight runner.
+
+The preflight runner retains its four-hour limit. The two baseline runners retain their 26-hour limits. All three runners have 64 GB of memory.
+
+The user also approved a separate 60-hour TASK-017-12 campaign after a passing baseline. This campaign does not replace or automatically launch the scheduled weekend soak.
+
+The 60-hour phase still needs explicit candidate and runner limits before launch. The prototype models two additional 64 GB runners, with a 64-hour limit each.
+
+That proposal means five total machines across the three phases, with at most two campaign runners active. The prototype requires both baseline run IDs before the stability phase.
+
+The 64-hour limit and two additional machines remain a proposal. Synthetic fixture approvals do not authorize cloud resources.
+
+### Implemented scope
+
+Two new Bash files provide the first implementation increment:
+
+- `scripts/casper-soak/campaign.sh` validates a campaign request and calculates a full workload window.
+- `scripts/casper-soak/test-campaign.sh` tests the helper with synthetic fixtures.
+
+The plan command checks candidate identities, artifact digests, control sources, qualification declarations, memory, durations, and declared launch limits. Its output explicitly requires external checks.
+
+The window command preserves 86,400 baseline seconds or 216,000 stability seconds. It rejects insufficient runner time instead of shortening the workload.
+
+The calculation reserves 600 seconds for cleanup. It does not enforce an OCI termination deadline by itself.
+
+The helper checks run-ID syntax but does not verify GitHub run outcomes. It neither reserves a campaign launch nor starts a runner.
+
+The helper does not perform live adapter qualification. It does not establish that the campaign inventory includes every required model, configuration, or capability.
+
+The workflow, runtime, profiles, and binding inventory script remain unchanged. Daily and weekend scheduling remain unchanged.
+
+Both new Bash files inherit mandatory, high-weight CbC attributes. Their claim registration, source-bound verification, and acceptance remain pending.
+
+The existing eight-claim audit passed before implementation. That audit covers the accepted artifact set, not these new helpers.
+
+The matrix check rechecked 179 stored source pins. The `formal/tlaplus/casper_soak/verification-plan.jsonc` pin differs after the earlier pull.
+
+The matrix remains `not-dispatchable`. Its existing pins remain unchanged until the complete inventory review. This check does not establish inventory completeness.
+
+### Local verification
+
+The final native and isolated lanes each passed 30 checks. Both lanes used synthetic fixtures, not node observations.
+
+Checks include architecture selection, source and approval drift, path escape, missing capabilities, wrong node identities, reruns, and exact duration limits.
+
+An added negative control reproduced an ignored source-inventory parser failure in the earlier helper. The corrected helper rejects that failure.
+
+The initial missing-helper failure, path-validation failure, and parser negative control remain retained. The first isolated attempt lacked `jq` and returned exit 127.
+
+A fixture image built from the existing disk-test Dockerfile supplied `jq`. The final isolated lane disabled networking and capabilities and used an unprivileged user.
+
+The isolated lane used two CPUs, 512 MiB of memory, and a 128-process limit. Its container exited normally and was removed after evidence capture.
+
+Evidence remains under `target/task-017-12/campaign-implementation-f5ed8c198-01/`. It includes source snapshots, image identity, commands, fixture outputs, exit codes, and failed attempts.
+
+Workflow integration, prior-run verification, launch enforcement, complete inventory review, live qualification, and renewed acceptance remain incomplete. No node, OCI runner, or workflow dispatch started.
+
+TASK-017-12 remains in progress. No commit, push, or upload occurred during this implementation increment.
