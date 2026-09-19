@@ -605,15 +605,18 @@ tasks:
     work_log: docs/work-logs/task-017-12-preparation.md
     blocked_by: []
     remaining_prerequisites:
-      - "All eight source-bound claim audits pass. Their soak fields remain pending."
+      - "The eight existing source-bound claim audits pass for their accepted scope. New mandatory campaign helpers still require claim registration and discharge."
       - "Pin executable workloads and review the complete campaign model and configuration inventory. Recheck candidate identities before dispatch."
       - "Qualify live adapters. The existing profile commands do not admit node observations."
       - "Resolve the dispatch mismatch. The workflow uses amd64 only and rebuilds images instead of selecting both pinned CI images."
-      - "Keep runner use within the approved two-machine budget. The existing workflow launches a runner for each separate dispatch."
+      - "Implement the full 24-hour baseline duration. The existing daily-24h input selects 22 hours and then subtracts preflight time."
+      - "Enforce the amended three-machine budget for preflight and baselines. Disable automatic replacement and repeat launches in campaign mode."
+      - "Record the exact candidate count and runner lifetime limits before the approved 60-hour campaign launches. Passing baseline evidence remains required."
       - "The memory decision is resolved at 64 GB per runner. Preserve the approved limits and host controls."
       - "Recovery adapter qualification for CLAIM-CASPER-SOAK-004 waits for the PR #216 merge. The ratifiers confirmed D-07 Reading A on 2026-09-19, so a pre-merge dev node has no occurrence store to observe. The authority and publication adapters do not wait."
     related_epics: [EPIC-010, EPIC-013]
-    resource_approval: "A maintainer approved the resource proposal on 2026-09-19 at 2026-09-19T07:03:24Z. The approval covers two candidates, dev-amd64 and dev-arm64, repinned at dispatch, one preflight-only dispatch, one 24-hour baseline soak per candidate, and up to two runner virtual machines for 26 hours each. A second repetition requires a new decision. The 60-hour stability soak requires a passing baseline and a new decision."
+    resource_approval: "The user amended the approval on 2026-09-19. Separate preflight and baseline dispatches may use one 64 GB preflight runner for four hours and two 64 GB baseline runners for 26 hours each. Each candidate receives one full 24-hour baseline. The user also approved a 60-hour TASK-017-12 campaign after a passing baseline. Its candidate count and runner lifetime limits must be explicit before launch. Additional repetitions remain unapproved."
+    resource_approval_original: "A maintainer approved the resource proposal on 2026-09-19 at 2026-09-19T07:03:24Z. The approval covered two candidates, one preflight, and two runner virtual machines for 26 hours each. The later approval amends that machine count and authorizes the 60-hour campaign."
     resource_approval_memory: "The maintainer approved 64 GB per runner on 2026-09-19, which corrects the 48 GB figure in the original proposal. The soak workflow already sets RUNNER_MEM_GB_OVERRIDE to 64. The sizing invariant needs about 60,416 MB, from a 45,056 MB ceiling, about 7,168 MB of host overhead, and an 8,192 MB floor. A 48 GB machine overruns that by about 11 GB, and a ceiling small enough to fit falls below the measured 36,008 MB healthy peak. No workflow or runtime file changes."
     resource_approval_record: docs/work-logs/task-017-12-preparation.md
     first_dispatch_step: "A preflight-only manual dispatch of merge-recovery-soak.yml on this branch precedes any baseline soak. It proves the repaired driver and the harness build on the OCI runner. The workflow has no pull-request trigger and its soak job needs a launched OCI runner, so this stays a manual step. A non-passing preflight blocks the baseline dispatch."
