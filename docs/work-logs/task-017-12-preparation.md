@@ -1,7 +1,7 @@
 # TASK-017-12 Preparation
 
 ---
-handoff_status: ready
+handoff_status: in_progress
 handoff_to: pi-soak-carrier-index-linux
 handoff_at: 2026-09-19T19:20:00Z
 handoff_note: ../handoffs/claude-session-9f19b46c--pi-soak-carrier-index-linux--20260919T192000Z.md
@@ -225,3 +225,52 @@ The approved plan now reads 64 GB per runner for two runners, for up to 26 hours
 The quota arithmetic changes with the machine size. The executing agent records the actual shape at dispatch.
 
 This correction changes no workflow file and no runtime file. Both are mandatory CLAIM-CASPER-SOAK-001 artifacts, and neither needs a change, because the workflow already sets 64 GB.
+
+## Candidate identity refresh at 1f749aa83
+
+The user requested continuation after the memory and D-07 decisions arrived. Both decisions remain in force. Recovery qualification waits for the actual PR #216 merge.
+
+The current `dev` revision was `6940a5beb4aa806d3d75f6df3be9f238512fcc2f` before and after image verification. The harness revision was `1f749aa831f54f2c5b3a7c79be27581c89e55f46`.
+
+The committed resolver completed successfully for amd64 and arm64. No node ran. Stopped containers supplied the registry images' node bytes.
+
+The [identity report](../casper/cbc-evidence/runs/casper-candidate-repin-20260919-01/report.json) records the exact registry, archive, config, and binary digests.
+
+| Candidate | Push run | Image artifact | Archive bytes |
+| --- | --- | --- | --- |
+| dev-amd64 | 35423285859 | 10578996716 | 93,420,701 |
+| dev-arm64 | 35423285859 | 10578617001 | 91,815,112 |
+
+Both archive sizes and SHA-256 values matched the GitHub metadata. ZIP integrity checks passed. Each archive supplied ten verified blobs and eight verified layer identities.
+
+The CI and registry images have equal config digests, uncompressed layer digests, and node hashes. Their manifest digests differ and remain separately recorded.
+
+The CI archives use OCI manifests. The registry uses Docker v2 manifests and different compression for the base layers. These differences do not change the verified node bytes.
+
+The earlier preparation cited run `35423287293`. That pull-request run has no candidate image artifacts. Push run `35423285859` supplies the retained images.
+
+This verification uses GitHub run metadata and the pinned workflow source. It does not verify cryptographic build attestations or prove node correctness.
+
+### Matrix changes
+
+The candidate matrix now retains the verified current candidate identities and both CI artifact references. It records the registry manifest type explicitly.
+
+The existing model and configuration inventory contained 179 hashes. Its first check failed on the harness verification plan and the interface contract.
+
+Both stale values now match the current files. The other 177 values remain unchanged. The initial failed check remains in local evidence.
+
+This refresh does not establish a complete campaign inventory. Workload configuration digests remain null, both candidates remain blocked, and the matrix remains `not-dispatchable`.
+
+### Remaining execution work
+
+The existing workflow still selects amd64 and rebuilds an image. The approved plan requires both verified platform images.
+
+Each separate workflow dispatch launches a runner. A separate preflight followed by two baseline dispatches would exceed the approved two-machine count without a reuse path.
+
+Dispatch design must preserve the approved 64 GB sizing, host controls, image identities, and total runner budget. No workflow or runtime changed during this refresh.
+
+Authority and publication adapters remain unqualified. Generic node queries and restart commands cannot replace the specified paired evaluations, publication cut points, or atomic snapshots.
+
+Local evidence is in `target/task-017-12/repin-20260919-01/`. It retains both archives, source snapshots, verifier code, node binaries, metadata, failed checks, and final verification results.
+
+No live qualification, cloud launch, workflow dispatch, upload, or campaign occurred. TASK-017-12 remains in progress.
