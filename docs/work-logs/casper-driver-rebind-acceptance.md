@@ -69,3 +69,23 @@ The refreshed baseline is `ab682eea1760c50867dcf7416e37f155b63e5dbc`. The only a
 The [refresh package](../casper/cbc-evidence/runs/casper-driver-refresh-acceptance-20260919-01/report.json) records the approval, the source digests, the production-region comparison, and the isolated binding check. That check passed on this baseline with 91 driver invocations across 48 registered cases.
 
 The model bounds, B44, kernel assumptions, and Docker daemon containment limits remain unchanged. Profile claims 002 through 008 and the soak status remain pending. No node campaign, external repin, waiver, commit, or push is authorized by this acceptance.
+
+## Inventory repair drift (2026-09-19)
+
+The hosted job "Casper driver binding fixtures" failed from 2026-09-19T05:46Z. The last passing revision was `d60f54544`. The `dev` branch stayed green through the same period, so the cause was branch-local.
+
+The job runs `scripts/ci/check-casper-soak-bindings.sh`. That script copies a fixed file list into an isolated container and runs the shared suites against the copy. The claims suite audits the copied tree.
+
+The copied list named two workflows. It named no profile workflow. Seven claim specifications declare a `casper-*` profile workflow as an artifact.
+
+The claim auditor reads every declared artifact of a discharged claim. Seven files were absent from the copy, so the audit stopped with a file-not-found error and returned exit 2. The suite expects exit 0.
+
+A local reproduction confirmed the cause. A copy that matched the script list returned exit 2. The same copy with the seven profile workflows added returned exit 0 for the plain audit and exit 4 for the strict audit, which the suite expects.
+
+The repair adds one line to the file list. The line is a glob that matches every `casper-*` profile workflow. A glob prevents the same failure when a later profile adds a workflow. The claims, the models, and the evidence reports already use globs in the same list.
+
+The change alters `scripts/ci/check-casper-soak-bindings.sh`, which is a mandatory artifact of CLAIM-CASPER-SOAK-001. The accepted binding covers the earlier bytes. The claim returns to pending, and the strict audit refuses discharge until a new acceptance binds the current source.
+
+Claims 002 through 006 and claim 008 keep their discharge. Their specifications and records did not change. Claim 007 stays pending for its own reasons.
+
+No evidence package, ledger record status, model, or profile source changed. This repair does not qualify a live adapter, activate a policy, or authorize node execution.

@@ -26,6 +26,7 @@ cd "$ROOT"
 FILES=(Cargo.toml Cargo.lock scripts/run-merge-recovery-soak.sh scripts/casper-soak scripts/ci/check-casper-soak-bindings.sh scripts/bench/casper-soak.sh scripts/bench/fixtures/casper-lifecycle-executor.sh scripts/bench/write-soak-summary.sh scripts/bench/collect-soak-metrics.sh scripts/bench/soak-metrics.json scripts/bench/run-bench-segment.sh docs/casper/cbc-evidence/runs/casper-rust-migration-20260917-01/bindings.tar.gz)
 FILES+=(docs/claims/casper-soak*.md formal/tlaplus/casper_soak)
 FILES+=(scripts/bench/test-run-merge-recovery-soak.sh scripts/bench/test-soak-disk-admission.sh scripts/ci/check-tla-invariants.sh scripts/ci/check-casper-soak-models.sh .github/workflows/merge-recovery-soak.yml .github/workflows/slashing-tests.yml)
+FILES+=(.github/workflows/casper-*.yml)
 FILES+=(docs/casper/cbc-evidence/*.md docs/casper/cbc-evidence/runs/*/report.json)
 find "${FILES[@]}" -type f -exec shasum -a 256 {} \; >"$OUTPUT/sources.sha256"
 case "$(uname -m)" in

@@ -43,10 +43,10 @@ The six-workflow bindings-script change remains outside this assignment. Live qu
 - [x] Preserve unknown measurements and independent product failures.
 - [x] Add the bounded model and three named negative controls.
 - [x] Verify native and isolated Linux fixtures, exact evidence inventories, and shared regressions.
-- [ ] Verify hosted CI after separately authorized publication.
-- [ ] Package and sanitize retained evidence outside Git under the current retention rule.
-- [ ] Add pending canonical ledger records and their required compatibility symlinks.
-- [ ] Request separate binding acceptance and workflow-tag ratification.
+- [x] Verify hosted CI after separately authorized publication.
+- [x] Package and sanitize retained evidence outside Git under the current retention rule.
+- [x] Add pending canonical ledger records and their required compatibility symlinks.
+- [ ] Obtain separate binding acceptance and workflow-tag ratification.
 
 ## Intended files
 
@@ -113,3 +113,41 @@ The new protocol/Phlo workflow adds a seventh missing entry to the separate shar
 TASK-017-9 and its closure records remain unchanged. Only the TASK-017-11 tracker block changed during this implementation.
 
 This session retains TASK-017-10. Carrier evidence transfer takes priority while its authorized Mac publisher has access to the existing draft release.
+
+## Completion takeover and bounded review
+
+On 2026-09-19, the user transferred the remaining work to the Mac session because the Linux agent had stopped.
+
+The completion owner is `pi-casper-slashing`. The original implementer and its failed attempts remain recorded above.
+
+The Mac session retrieved `/tmp/version-phlo-checks/` through the existing verified SSH route. It did not change the remote checkout or execute a node.
+
+The remote checkout had moved to another branch. The retained 21-source manifest still matched the reviewed implementation at `807bf94dcb0389fdd57100bc32f64eea20f64ea6`.
+
+Independent checks verified native Linux, isolated Linux, and hosted evidence. Each set contains 15 passing tests, 102 cases, 103 invocations, and 1,250 checked references.
+
+Four bounded model controls passed with exact source, configuration, executable, and log identities. Eleven shared regression tests passed again on the Mac.
+
+Hosted run `35459964874` produced artifact `10588828005`. Its ZIP digest is `f515f4c8f31c07206ba5e333c939f3c2bc387bc24477774aaf466d91f340b8cc`.
+
+The first Mac validator omitted 184 request and manifest checks. Its unchanged 1,250-reference assertion failed. The corrected validator adds those checks and passes.
+
+The original validator, failure, correction, bootstrap failure, receipt-binding regression, renamed-case refusal, and interruption result remain retained.
+
+The isolated run used host-built binaries. The retained evidence identifies the image and executables, but does not retain the original container configuration inspection.
+
+The [review report](../casper/cbc-evidence/runs/casper-version-phlo-20260919-01/report.json) binds twelve unchanged profile artifacts and the current claim specification.
+
+The sanitized archive contains 28,556 manifest-bound files plus its manifest. Nine text files have exact before-and-after redaction records. Fixture and reviewed source bytes remain unchanged.
+
+The archive is `target/task-017-11-final/casper-version-phlo-20260919-01.external.tar.gz`. Its SHA-256 is `330e7609143ffe0eaf839ecf082a61ec02809acdd0bd357b66aac7ecee3616bb`.
+
+Twelve canonical ledgers and twelve relative compatibility links now record pending binding status. The workflow tag remains unapplied.
+
+A concurrent session changed the shared bindings inventory and reopened Claim001. This session neither changed that script nor renewed Claim001.
+
+TASK-017-14 must retain the final archive and supplementary checks before scratch cleanup. Original Linux and hosted archives remain local and require privacy review before publication.
+
+Remaining decisions are bounded Claim007 binding acceptance, workflow-tag ratification, and authorization for the sanitized evidence upload. Strict closure follows those decisions and successful checks.
+
+No commit, push, release publication, policy activation, live qualification, or node execution occurred during this takeover.
