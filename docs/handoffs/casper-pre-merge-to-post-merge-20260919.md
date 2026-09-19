@@ -63,9 +63,9 @@ The lifecycle bounds remain two candidates, two segments, four iterations, and o
 
 TLC controls require completed clean exploration or exit 12 with the named invariant and trace. Tool errors and timeouts remain non-passing.
 
-## Outstanding pre-merge gates
+## Initial pre-merge gate review
 
-The current PR diff contains 1,609 files and 123 mandatory artifacts. It has 259,106 insertions and 643 deletions before these preparation documents.
+At the initial review, the PR diff contains 1,609 files and 123 mandatory artifacts. It has 259,106 insertions and 643 deletions before these preparation documents.
 
 The exact claim inventories cover 121 of those mandatory artifacts. Two additional mandatory artifacts retain pending canonical records:
 
@@ -83,6 +83,20 @@ The Claim001-only compatibility check previously reported six pending records. O
 Do not overwrite historical records or remove tags to make these checks pass. Resolve ledger routing and current-source evidence explicitly.
 
 The disk-admission fixture remains declared but untagged. The summary writer remains declared and mandatory but unchanged against this PR base.
+
+## Canonical record resolution
+
+The [formal-area review](../casper/cbc-evidence/runs/casper-formal-area-records-20260919-01/report.json) resolves both pending canonical documentation records.
+
+The README now states a separate documentation contract. The plan metadata reflects accepted bounded bindings without changing model inputs or executable claim inventories.
+
+Fresh lifecycle controls pass for the updated plan digest. One consistency check and eight exact-exit refusal checks verify metadata, references, and preserved obligations.
+
+The canonical gate now passes for all 123 changed mandatory artifacts. The default gate still reports five independent historical gaps and exits 4.
+
+Existing compatibility symlinks expose the two updated canonical records. No compatibility record or symlink was overwritten.
+
+The eight executable claim audits still pass, with all soak fields pending. TASK-017-13 remains open for compatibility routing, baseline evidence, owners, and handoff acceptance.
 
 ## Baseline inputs still required
 

@@ -108,3 +108,50 @@ An initial combined STE check refused the new documents because the legacy basel
 Active diagnostics checked the tracker, both new documents, and the report. The only finding was a spelling warning inside an unchanged historical Git hash.
 
 That finding is a false positive. Automated language checks do not establish full ASD-STE100 conformance or a human STE Review.
+
+## Canonical record resolution
+
+The user requested: `proceed with resolving the canonical records`.
+
+The [formal-area report](../casper/cbc-evidence/runs/casper-formal-area-records-20260919-01/report.json) resolves both documentation records at base `1f749aa831f54f2c5b3a7c79be27581c89e55f46`.
+
+The README and plan still described completed lifecycle and profile bindings as pending. Their metadata now reflects the accepted source-bound evidence.
+
+The README states `CLAIM-CASPER-SOAK-FORMAL-AREA-DOCS` for these two artifacts. This documentation contract is separate from the eight executable harness claims.
+
+The review preserves executable model inputs, controls, bounds, assumptions, registration policy, and all 123 declared executable artifacts. It changes no claim specification or tag.
+
+The plan links each implemented profile plan and its accepted report. Soaks and live adapter qualification remain pending, and post-merge verification remains blocked.
+
+The previous document and ledger bytes remain in Git at the recorded base revision. The report records their paths and exact hashes.
+
+### Verification
+
+| Check | Result |
+| --- | --- |
+| Fresh lifecycle controls | Eleven expected verdicts pass. The clean run visits 66,208 generated and 43,424 distinct states. |
+| Negative lifecycle controls | Ten exact exit-12 named violations pass. |
+| Documentation consistency | The positive check passes. Eight deliberate metadata defects return exact exit 1. |
+| Source-bound executable claims | All eight audits pass. Every soak status remains pending. |
+| Canonical changed-scope gate | All 123 mandatory artifacts pass, with zero gaps. |
+| Default changed-scope gate | Five historical compatibility gaps remain, with exit 4. |
+
+The fresh model run binds the updated plan digest. It does not relabel earlier execution or replace earlier accepted runtime evidence.
+
+The first missing-file refusal check returned exit 2 instead of expected exit 1. A compound shell check allowed the verifier to reach `jq`.
+
+The corrected verifier checks each required file separately. All eight controls then returned exact exit 1, without changing the expected outcomes.
+
+The initial failed attempt remains retained. An ambiguous text edit also required a targeted retry before verification, with no executable change.
+
+### Remaining scope and retention
+
+The two compatibility paths already link to the canonical records. Their results change through those existing links, not through overwritten historical records.
+
+The five independent default records remain untouched. Compatibility routing remains a separate blocker, as do baseline results and final handoff acceptance.
+
+Local verification evidence is under `target/task-017-13-canonical-20260919-01/`. Its private retention archive preserves model logs, check scripts, and failed attempts.
+
+TASK-017-14 must retain that archive before cleanup. This review performs no upload or deletion.
+
+TASK-017-13 remains in progress. This session creates no commit and does not dispatch nodes or authorize post-merge work.
