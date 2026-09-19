@@ -10,7 +10,9 @@ The [completion review](../work-logs/task-017-1-3-completion.md) records TASK-01
 
 **Post-merge epic:** [EPIC-018](../ToDos.md#epic-018-post-merge-casper-soak-formal-verification)
 
-**Proposed follow-on branch:** `formal/soak-casper-post-cost-accounting`, after PR #216 merges.
+**Proposed follow-on branch:** `formal/soak-casper-post-cost-accounting`, stacked on PR #216.
+
+The maintainer amended the branch policy on 2026-09-19. The follow-on branch starts from the PR #216 head and targets that pull request. It retargets to `dev` after PR #216 merges. Discharge of a post-merge claim still requires the actual merge revision.
 
 ## Scope boundary
 

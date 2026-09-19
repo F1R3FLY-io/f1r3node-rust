@@ -766,13 +766,15 @@ related_epics: [EPIC-010, EPIC-013, EPIC-017]
 external_dependencies:
   - repo: F1R3FLY-io/f1r3node-rust
     pr: 216
-    required_state: merged
+    required_state: open_or_merged
     required_ancestor_of: origin/dev
+    ancestor_required_by: "merge of the EPIC-018 follow-on pull request"
 execution_contract:
   base_branch: dev
-  scope: "A separate follow-on formal-methods PR for the soak harness after PR #216 merges."
-  start_gate: "EPIC-017 handoff accepted and PR #216 merge verified in origin/dev. An open candidate head is insufficient."
-  branch_policy: "Create the follow-on branch from updated dev after the start gate passes. Record the actual merge and baseline SHAs."
+  scope: "A separate follow-on formal-methods PR for the soak harness, stacked on PR #216."
+  start_gate: "EPIC-017 handoff accepted. The follow-on branch may start from the PR #216 head before that pull request merges."
+  branch_policy: "Cut the follow-on branch from the PR #216 head and target that pull request. Retarget it to dev after PR #216 merges. Record the PR #216 head revision at branch creation, the actual merge revision, and the baseline revisions."
+  amendment_2026_09_19: "The maintainer amended this contract on 2026-09-19 to allow stacking. The earlier contract required PR #216 to be merged and an ancestor of origin/dev before EPIC-018 started, and it stated that an open candidate head was insufficient. Stacking lets the follow-on work begin earlier. It also means the branch starts from a revision that can still change, so the owner rebases on each PR #216 update and records the revision it verified against. Discharge of a post-merge claim still requires the actual merge revision."
   completion_policy: "Require updated harness models, profile fixtures, completed soaks, and harness-only CbC discharge. No node proof is required."
   authority: "Merge does not authorize deferred policies, waive ratification conditions, or replace FIPS activation approval."
 files:
