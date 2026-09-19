@@ -71,7 +71,7 @@
     "network": "none",
     "read_only_root": true,
     "unprivileged": true,
-    "identity": "image=sha256:9b515734d83b6a1166cfe14b87766f85cd212dc6b2883fb333de0db4c8904e93\nprofile=/home/bf_spark/src/F1r3fly/f1r3node-rust/target/release/casper-carrier-index\ntest=/home/bf_spark/src/F1r3fly/f1r3node-rust/target/release/deps/carrier_index-2cd52d997aedcc00\nf365f833946af49fafcf14bc27f32cca96eab1aedc713c12d504bc27dbe21cb4  /home/bf_spark/src/F1r3fly/f1r3node-rust/target/release/casper-carrier-index\n40219f3f076b4c7c522b9f19b6c6bd41cafa55aa5e03b260852521b34bf20dcf  /home/bf_spark/src/F1r3fly/f1r3node-rust/target/release/deps/carrier_index-2cd52d997aedcc00\n"
+    "identity": "image=sha256:9b515734d83b6a1166cfe14b87766f85cd212dc6b2883fb333de0db4c8904e93\nprofile=[WORKSPACE_ROOT]/target/release/casper-carrier-index\ntest=[WORKSPACE_ROOT]/target/release/deps/carrier_index-2cd52d997aedcc00\nf365f833946af49fafcf14bc27f32cca96eab1aedc713c12d504bc27dbe21cb4  [WORKSPACE_ROOT]/target/release/casper-carrier-index\n40219f3f076b4c7c522b9f19b6c6bd41cafa55aa5e03b260852521b34bf20dcf  [WORKSPACE_ROOT]/target/release/deps/carrier_index-2cd52d997aedcc00\n"
   },
   "shared_rust_tests": 11,
   "model": {

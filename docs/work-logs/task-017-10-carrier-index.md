@@ -28,7 +28,9 @@ Unavailable node interfaces block affected live scenarios. Controlled transcript
 
 ## Coordination
 
-The remote machine owns TASK-017-8. The proposed assignment for TASK-017-11 remains unconfirmed and unclaimed.
+The remote machine completed TASK-017-8 and now owns TASK-017-9. TASK-017-11 remains unclaimed.
+
+TASK-017-12 owns node interface qualification and approved live deployment. This task does not dispatch either operation.
 
 Profile-specific files belong to this task. Shared inventory and workflow changes require coordination before editing.
 
@@ -79,10 +81,44 @@ The package retains only its report, validation result, bundle digest, and redac
 
 The bulk bundle remains local at `/tmp/carrier-index-checks/casper-carrier-index-20260919-01.external.tar.gz`. Its SHA-256 is `51e7b6baae754ca393abe4f042dafefb86228a4c2d9a7b34a85ddcbbf43c1543`.
 
-The draft release does not contain this bundle. Evidence publication requires approval and must occur before completion.
+The original bundle contains workstation account paths. Do not publish that bundle. The publication copy removes those paths from text and withholds two native binaries.
 
-The new workflow has not run on hosted CI. Its proposed CbC tag requires human ratification. No shared workflow or attribute file changed.
+The native executable hashes remain recorded. Fixture inputs, fixture reports, source files, and their nested hashes remain unchanged.
 
-The remote tracker owner must add the profile artifact inventory to the epic records. Binding review must precede claim discharge and task closure.
+The user requested the remaining carrier work, including evidence publication, on 2026-09-19. Binding acceptance and workflow-tag ratification remain separate decisions.
+
+## Hosted verification and publication
+
+The [publication report](../casper/cbc-evidence/runs/casper-carrier-index-publication-20260919-01/report.json) records hosted verification and the upload blocker.
+
+[Hosted run 35429044639](https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/35429044639) passed for revision `51615255a`. Its artifact contains 23 passing tests, 88 cases, 91 invocations, and four passing model controls.
+
+The downloaded ZIP matches the GitHub artifact digest. Its 21 source hashes match the reviewed profile inputs. Validation checked 3,274 nested evidence references across native, isolated, and hosted fixtures.
+
+The publication archive contains 14,607 members. Its SHA-256 is `941c3c95a05e972e24bea9b33ba6c08b3da439dda7a87ceb63fa35da78dd0ca0`.
+
+The archive is local at `/tmp/carrier-index-checks/publication-review/casper-carrier-index-publication-20260919-01.external.tar.gz`. The current API credential cannot find the planned draft release `cbc-evidence-epic-017`. The release-tag endpoint returns HTTP 404.
+
+No upload occurred. The shared release, its index, and its checksum list remain unchanged. The remote agent received a request for the release ID and the shared inventory update.
+
+The historical review report changed only to remove the workstation prefix from its isolated-run identity field. All 12 pending ledger records now reference the redacted report hash.
+
+The source hashes and historical results remain unchanged. The publication report records the old and new report hashes. Git history still contains the original account path.
+
+Strict audits for Claims 001 through 005 passed after the report redaction. Claim 008 still returns exit 4 because binding acceptance remains pending.
+
+## Requested binding review
+
+The proposed acceptance covers only the published carrier source and the bounded controlled-transcript checks. The finite model has two scenarios and three observations per scenario.
+
+The profile requires matched comparison inputs, observed traversal paths, known counters, and applied fault receipts. Missing observations cannot become measured zero values or passing coverage.
+
+Independent product failures remain recorded when observations are incomplete or malformed. Filesystem checks retain their cooperating-writer assumptions and do not prove durability or hostile-process containment.
+
+The proposed workflow tag is `.github/workflows/casper-carrier-index.yml cbc=mandatory cbc-weight=high`. Human ratification must precede this attribute change.
+
+Acceptance does not qualify live interfaces, prove node carrier equivalence, activate a protocol, or authorize a soak. CLAIM-FINALITY-002 remains outside this task.
+
+Evidence upload, remote retrieval, and the shared inventory update remain completion requirements. Binding review must precede claim discharge and task closure.
 
 No node campaign, claim discharge, or task closure has occurred.

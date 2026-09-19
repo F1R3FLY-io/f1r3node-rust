@@ -25,7 +25,7 @@ The bounded checks passed. Binding acceptance and evidence publication remain pe
   "evidence": {
     "kind": "bounded-refutation-and-executable-fixtures-awaiting-acceptance",
     "ref": "docs/casper/cbc-evidence/runs/casper-carrier-index-20260919-01/report.json",
-    "sha256": "4b0642726f3765ccc079ed43e6f6e58876a581e8fe6044dc492cb0e57a9b25a2"
+    "sha256": "b18b3549273c469f2cb7a59f547834f5413ddb96f8791aa989ba93144543d33b"
   },
   "tiers": {
     "refutation": "bounded-safety-pass",
