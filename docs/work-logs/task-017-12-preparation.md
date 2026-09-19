@@ -4,8 +4,8 @@
 handoff_status: paused
 next_steps:
   - A Linux agent qualifies the live adapters for claims 002 to 004 against a real node, using the checklist below.
-  - The maintainer decides the resource proposal below.
-  - The user decides whether to run the infrastructure dry run below. It spends OCI runner time.
+  - The maintainer approved the resource proposal on 2026-09-19. No further budget decision is needed for the baseline.
+  - Run the preflight-only dispatch as the first step of dispatch, not before it. It spends OCI runner time.
   - At dispatch, rerun the resolution procedure against the dev commit current at that time and update the matrix.
 ---
 
@@ -43,7 +43,12 @@ CI run 35423287293 built this commit and succeeded. The matrix is not updated by
 
 The matrix's existing entries also cite a CI artifact identity record. The executing agent decides whether to keep that field or to rely on the registry digests above.
 
-## Resource proposal for maintainer approval
+## Resource proposal, approved
+
+A maintainer approved this proposal on 2026-09-19. The approval covers the table below.
+
+A second repetition requires a new decision. The 60-hour stability soak requires a passing baseline and a new decision. The approval does not authorize live adapter use, policy activation, or post-merge execution.
+
 
 | Item | Proposal | Basis |
 | --- | --- | --- |
@@ -55,6 +60,8 @@ The matrix's existing entries also cite a CI artifact identity record. The execu
 | Quota | Two runner VMs for up to 26 hours each | OCI daily VM quota applies. A LimitExceeded result means retry the next day, not debug. |
 
 Deferred policy findings return to the team. No comparative or alternate-policy run is part of the baseline.
+
+The executing agent records the approval reference, the preflight run identifier, and each soak run identifier in the dispatch evidence.
 
 ## Adapter qualification checklist
 
@@ -70,11 +77,19 @@ Each adapter needs a qualification record that names the node revision, the inte
 
 This work needs Linux, a node build, and the harness. It belongs to a Linux agent after its profile work, or to a third agent.
 
-## Infrastructure dry run
+## Preflight dispatch, the first step of TASK-017-12
 
 The merge-recovery soak workflow has never run on this branch. The repaired driver and the harness build step are exercised on pull requests only through the bindings gate.
 
-A manual dispatch with `preflight_only=true` runs the full integration preflight and stops. It launches an OCI runner and spends quota. It needs the user's decision.
+The user decided on 2026-09-19 to fold this into TASK-017-12 as a manual first step. It is not a pull-request check.
+
+The workflow triggers on schedule and manual dispatch only. Its soak job runs on a self-hosted OCI label that exists only after a launch job provisions it. That job reads thirteen secrets and spends a VM from the daily quota on every run.
+
+A pull-request trigger would therefore launch a VM on every push and exhaust the quota. The repository already gates expensive validation behind maintainer approval for the same reason.
+
+A dispatch with `preflight_only=true` runs the full integration preflight and stops before any node campaign. The executing agent runs it first and records the run identifier and outcome. A non-passing preflight blocks the baseline dispatch.
+
+A GitHub-hosted job can give continuous protection later. It builds the harness and exercises the driver's fail-closed path in a container. That covers most of the same ground without touching OCI.
 
 ```
 gh workflow run merge-recovery-soak.yml --ref formal/soak-casper-consensus -f target_ref=formal/soak-casper-consensus -f preflight_only=true
@@ -83,6 +98,6 @@ gh workflow run merge-recovery-soak.yml --ref formal/soak-casper-consensus -f ta
 ## Status
 
 - Repin procedure: written and proven on the current dev commit.
-- Resource proposal: drafted, awaiting maintainer decision.
+- Resource proposal: approved by a maintainer on 2026-09-19.
 - Adapter checklist: written, awaiting a Linux agent.
-- Dry run: planned, awaiting the user's decision.
+- Preflight dispatch: folded into TASK-017-12 as its manual first step.

@@ -518,8 +518,12 @@ tasks:
     work_log: docs/work-logs/task-017-12-preparation.md
     blocked_by: [TASK-017-2, TASK-017-3, TASK-017-4, TASK-017-5, TASK-017-6, TASK-017-7, TASK-017-8, TASK-017-9, TASK-017-10, TASK-017-11]
     related_epics: [EPIC-010, EPIC-013]
+    resource_approval: "A maintainer approved the resource proposal on 2026-09-19 at 2026-09-19T07:03:24Z. The approval covers two candidates, dev-amd64 and dev-arm64, repinned at dispatch, one preflight-only dispatch, one 24-hour baseline soak per candidate, fleet default memory with the driver host-reserve ceiling, and up to two runner virtual machines for 26 hours each. A second repetition requires a new decision. The 60-hour stability soak requires a passing baseline and a new decision."
+    resource_approval_record: docs/work-logs/task-017-12-preparation.md
+    first_dispatch_step: "A preflight-only manual dispatch of merge-recovery-soak.yml on this branch precedes any baseline soak. It proves the repaired driver and the harness build on the OCI runner. The workflow has no pull-request trigger and its soak job needs a launched OCI runner, so this stays a manual step. A non-passing preflight blocks the baseline dispatch."
     acceptance:
       - "The maintainer approves the resource budget, durations, repetitions, and candidate matrix before dispatch."
+      - "A preflight-only dispatch on this branch passes before any baseline soak dispatch. Its run ID and outcome are recorded."
       - "Every dispatched candidate has qualified interfaces and immutable executable workload, node, harness, model, image, and configuration identities."
       - "Required pre-dispatch harness and profile verification must pass. Missing capabilities and null workload pins block dispatch."
       - "The disk-protected harness completes required pre-merge baseline profiles or reports an explicit non-passing outcome."
