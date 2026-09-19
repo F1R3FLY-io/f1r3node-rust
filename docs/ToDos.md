@@ -588,7 +588,8 @@ tasks:
     completed_date: 2026-09-19
   - id: TASK-017-12
     title: "Pin executable workloads, qualify candidates, and run the pre-merge baseline soak"
-    candidate_review_note: "On 2026-09-19 dev is 6940a5beb, 120 commits and nine merged pull requests after the matrix pin a2fe60c72. Four of those change consensus or node code (#435 fork choice, #438 merge rejection groups, #444 certificate helper, #390 cost accounting). The matrix harness_revision f29c59d01 is 171 commits behind the branch tip. Qualification must repin at dispatch from CI-built dev images."
+    candidate_review_note: "Both platform identities were verified for dev 6940a5beb and harness 1f749aa83 on 2026-09-19. Push run 35423285859 supplied the image artifacts. The matrix retains blocked admission and null workload pins. Recheck current dev before dispatch."
+    candidate_identity_evidence: docs/casper/cbc-evidence/runs/casper-candidate-repin-20260919-01/report.json
     drift_review: docs/work-logs/task-017-12-drift-review-2026-09-19.md
     claims: [CLAIM-CASPER-SOAK-001, CLAIM-CASPER-SOAK-004]
     claim_index: docs/claims/casper-soak-harness.md
@@ -604,11 +605,12 @@ tasks:
     work_log: docs/work-logs/task-017-12-preparation.md
     blocked_by: []
     remaining_prerequisites:
-      - "All eight source-bound claim audits pass at 3aa79d0c1. Their soak fields remain pending."
-      - "Repin candidates and executable workloads. The matrix remains not-dispatchable with null workload configuration digests."
+      - "All eight source-bound claim audits pass. Their soak fields remain pending."
+      - "Pin executable workloads and review the complete campaign model and configuration inventory. Recheck candidate identities before dispatch."
       - "Qualify live adapters. The existing profile commands do not admit node observations."
       - "Resolve the dispatch mismatch. The workflow uses amd64 only and rebuilds images instead of selecting both pinned CI images."
-      - "Resolve the resource mismatch before dispatch. The approved plan specifies 48 GB, but the workflow requests 64 GB."
+      - "Keep runner use within the approved two-machine budget. The existing workflow launches a runner for each separate dispatch."
+      - "The memory decision is resolved at 64 GB per runner. Preserve the approved limits and host controls."
       - "Recovery adapter qualification for CLAIM-CASPER-SOAK-004 waits for the PR #216 merge. The ratifiers confirmed D-07 Reading A on 2026-09-19, so a pre-merge dev node has no occurrence store to observe. The authority and publication adapters do not wait."
     related_epics: [EPIC-010, EPIC-013]
     resource_approval: "A maintainer approved the resource proposal on 2026-09-19 at 2026-09-19T07:03:24Z. The approval covers two candidates, dev-amd64 and dev-arm64, repinned at dispatch, one preflight-only dispatch, one 24-hour baseline soak per candidate, and up to two runner virtual machines for 26 hours each. A second repetition requires a new decision. The 60-hour stability soak requires a passing baseline and a new decision."
