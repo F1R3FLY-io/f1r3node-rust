@@ -152,3 +152,47 @@ next_steps:
 The proposed tag is `.github/workflows/casper-slashing.yml cbc=mandatory cbc-weight=high`. The tag remains unapplied.
 
 TASK-017-14 owns later evidence publication and reduction. This task neither uploads nor removes evidence.
+
+## Hosted verification and handoff
+
+Hosted run `35452747041` passed at published revision `fcc2fb22270d403757785f6955915e40dec3625d`. Artifact `10587177940` passed ZIP digest verification.
+
+All 21 hosted source hashes match the current tree. Seven tests, 66 cases, 72 invocations, four model controls, and 715 nested artifact references passed verification.
+
+The [hosted report](../casper/cbc-evidence/runs/casper-slashing-hosted-20260919-01/report.json) records these checks without changing the prior review package or pending ledgers.
+
+The user asked to complete the remaining slashing steps and hand off other work. Explicit human binding acceptance and workflow-tag ratification were requested separately.
+
+The [carrier handoff](../handoffs/pi-casper-slashing--pi-soak-carrier-index-linux--20260919T154942Z.md) preserves TASK-017-10 ownership and requests confirmation of a future TASK-017-11 owner.
+
+The [preparation handoff](../handoffs/pi-casper-slashing--claude-session-9f19b46c--20260919T154942Z.md) transfers retention and remaining preparation context. The preparation agent has no verified mesh route.
+
+The existing evidence-store draft release ID is `391939637`. The authenticated read-only lookup confirmed its tag, target, and draft status.
+
+No release asset was uploaded. No claim was discharged, workflow tag applied, task closed, or commit created during this hosted-verification step.
+
+## Bounded acceptance on 2026-09-19
+
+The user subsequently accepted Claim006's bounded binding and assigned TASK-017-11 to the carrier agent:
+
+> accepted for Claim006's bounded binding and go ahead with the assignement for 017-11 to the other agent
+
+The [acceptance report](../casper/cbc-evidence/runs/casper-slashing-acceptance-20260919-01/report.json) records that exact approval and its limited scope.
+
+All 12 reviewed artifact hashes remain unchanged. Twelve canonical ledgers now discharge the bounded pre-merge binding and preserve the previous pending records in a small metadata archive.
+
+The previous review package and hosted report remain unchanged. Their pending-state validators are historical after this acceptance.
+
+The accepted-state native runner passed seven tests, 66 cases, 72 invocations, and all four model controls. Eleven shared regression tests also passed.
+
+The [acceptance validation](../casper/cbc-evidence/runs/casper-slashing-acceptance-20260919-01/validation.json) confirms strict discharge for Claims001 through 006. The full bundle exits 4 for Claims007 and 008.
+
+The reviewed isolated Linux evidence uses identical implementation bytes. This acceptance step did not repeat the isolated Linux run.
+
+Workflow-tag ratification was not explicit in this approval. The tag remains unapplied, and TASK-017-9 stays in progress pending that decision.
+
+The carrier agent received the explicit TASK-017-11 assignment and the existing claim-publication requirement. This session did not claim that task or authorize a commit.
+
+TASK-017-14 must retain `target/task-017-9-acceptance/` before scratch cleanup. Those files contain acceptance scripts, preflight checks, fresh fixtures, model logs, and strict audits.
+
+No node execution, policy activation, evidence upload, Git commit, or push occurred during acceptance recording.

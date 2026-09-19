@@ -2,7 +2,7 @@
 
 ```yaml
 claim_id: CLAIM-CASPER-SOAK-006
-status: pending
+status: discharged
 adapter: embedded
 scope: harness-profile
 profile_implementation: controlled-transcript
@@ -25,7 +25,7 @@ artifacts:
 refutation: bounded-safety-pass
 construction: not-applicable
 construction_assumptions: null
-binding: pending
+binding: passed
 soak: pending
 ```
 
@@ -109,6 +109,18 @@ A correct harness can report a failed product scenario. Passing harness verifica
 
 The [profile guide](../../formal/tlaplus/casper_soak/profiles/slashing/README.md) defines schemas, bounds, and verification commands.
 
-The [work log](../work-logs/task-017-9-slashing.md) records checks and pending work. Binding acceptance and workflow-tag ratification remain pending.
+The [work log](../work-logs/task-017-9-slashing.md) records checks and pending work. The bounded binding is accepted. Workflow-tag ratification remains pending.
 
 The [harness contract](./casper-soak-harness.md) defines provenance and outcome rules. Deferred policies still require separate approval before activation.
+
+## Bounded binding acceptance
+
+The user accepted Claim006's bounded binding on 2026-09-19:
+
+> accepted for Claim006's bounded binding and go ahead with the assignement for 017-11 to the other agent
+
+The [acceptance record](../casper/cbc-evidence/runs/casper-slashing-acceptance-20260919-01/report.json) binds the 12 unchanged reviewed artifacts, bounded model checks, and executable evidence.
+
+Hosted run `35452747041` verified the same implementation. This acceptance does not establish node correctness or qualify a live adapter.
+
+The workflow tag remains unratified. TASK-017-9 closure waits for that separate decision. No policy activation, live campaign, or post-merge execution is authorized.

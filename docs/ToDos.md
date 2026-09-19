@@ -478,6 +478,13 @@ tasks:
     claimed_by: pi-casper-slashing
     claimed_at: 2026-09-19T07:13:31Z
     work_log: docs/work-logs/task-017-9-slashing.md
+    binding_status: accepted
+    binding_acceptance: docs/casper/cbc-evidence/runs/casper-slashing-acceptance-20260919-01/report.json
+    hosted_workflow_status: verified
+    hosted_workflow_run: 35452747041
+    workflow_tag_status: unratified
+    completion_blocker: "The bounded binding is accepted. Workflow-tag ratification remains pending."
+    unit_tests: [scripts/casper-soak/tests/slashing.rs]
     blocked_by: []
     decisions: [D-09]
     acceptance:
