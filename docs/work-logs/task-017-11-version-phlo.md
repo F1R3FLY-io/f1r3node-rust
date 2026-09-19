@@ -68,7 +68,7 @@ Passing controlled transcripts cannot establish actual node interface support. L
 
 Claim 007 remains pending. Local checks provide bounded verification results, not binding acceptance, workflow-tag ratification, a waiver, or task completion.
 
-## Current state
+## Implementation checkpoint
 
 The user published ownership commit `623ee7f54e841295c2538b67e3bcbfee19fea7d5`. The integrated starting revision is `4a7bf8960800d76be82d887c205a898169bdb8fe`.
 
@@ -113,3 +113,57 @@ The new protocol/Phlo workflow adds a seventh missing entry to the separate shar
 TASK-017-9 and its closure records remain unchanged. Only the TASK-017-11 tracker block changed during this implementation.
 
 This session retains TASK-017-10. Carrier evidence transfer takes priority while its authorized Mac publisher has access to the existing draft release.
+
+## Merge and evidence review checkpoint
+
+The user merged `formal/soak-casper-consensus` into `fix/soak-finalization-attribution` and published merge commit `f180fb732fc5b7f51e8ef5ca0a45d1bb8cfc74f5`. The working tree was clean before this checkpoint.
+
+The merge retains the published protocol implementation and carrier closure at `807bf94dcb0389fdd57100bc32f64eea20f64ea6`. TASK-017-10 is complete. This session did not perform the merge or push.
+
+All 21 retained protocol source hashes match the merged tree. The shared harness sources, accepted claim records, and approved workflow tags remain unchanged from `807bf94dc`.
+
+A fresh release build passed for `casper-version-phlo` and `check-casper-claims`. All 11 shared tests passed. These checks do not establish a complete node build.
+
+Fresh strict audits passed for Claims 001 through 006 and Claim 008. The full bundle returned exit 4 solely because Claim 007 remains pending.
+
+Merge evidence remains under `/tmp/version-phlo-checks/merge-f180fb732-01/`. Review evidence remains under `/tmp/version-phlo-checks/review-20260919-01/`.
+
+A fresh validator checked the native and isolated evidence against the current named inventory. Each environment contains 102 cases, 103 invocations, 92 retained reports, and 1,250 verified references.
+
+The validator checked retained bytes, report identities, expected exits, scenario verdicts, and zero-launch labels. The review directory also retains all 21 source files and both original native executables.
+
+The first validator incorrectly required every declared raw-source digest to match its retained bytes. The intentional raw-digest negative fixture preserves changed bytes and rejects the declared identity.
+
+That validator returned exit 101. Its source, log, output, exit status, and executable digest remain retained under `failed-01/`.
+
+The corrected validator requires the exact negative fixture, an `invalid_input` verdict, and the matching fatal rejection. All retained-byte hashes remain mandatory. Both environments passed without changes to profile bytes or expected counts.
+
+The Mac peer independently verified hosted run `35459964874` at `807bf94dcb0389fdd57100bc32f64eea20f64ea6`. Artifact `10588828005` contains the reviewed protocol evidence.
+
+The peer reports matching source hashes, 15 tests, 102 cases, 103 invocations, 1,250 references, and all four model controls. The peer retained its initial validator failure and corrected check.
+
+The original hosted ZIP has SHA-256 `f515f4c8f31c07206ba5e333c939f3c2bc387bc24477774aaf466d91f340b8cc` and size 3,976,168 bytes. Local transfer verification remains pending.
+
+The new transfer destination is `/tmp/version-phlo-checks/hosted-transfer-35459964874-01/`. Hosted execution remains attributed to `807bf94dc`, not the later merge commit.
+
+Final packaging, privacy review, pending canonical ledgers, and compatibility links remain open. Binding acceptance, workflow-tag ratification, evidence upload, and strict closure require their separate decisions.
+
+No profile source, claim status, workflow tag, shared bindings inventory, or unrelated task record changed in this checkpoint. No new commit, push, upload, or node execution occurred.
+
+## Local package preparation
+
+The review directory now contains a private `raw/` staging tree and a `local-sanitized-01/` derivative. This derivative does not yet contain hosted evidence.
+
+The staging tree preserves bootstrap failures, the receipt-binding regression, native and isolated fixtures, both local model batches, runner controls, and merge checks. Historical reports retain their original outcomes.
+
+The derivative changes nine text files to remove workstation paths. It withholds both native executables and records their original digests. The private staging tree retains those executables.
+
+All 21 source snapshots remain exact. Both fixture inventories and all 2,500 retained references pass again after sanitization. The private-path scan found no matching workstation paths.
+
+Both local model batches pass source, configuration, plan, log, state-count, and exact-control checks. Their clean controls finish with 1,201 generated states and 625 distinct states.
+
+The local derivative contains 23,776 files, including its 23,775-entry manifest. This count is not the final hosted-inclusive package count.
+
+The review directory retains `validate.rs`, `validate-models.sh`, `inventory.sh`, and `sanitize.rs`, with their logs and results. These are local evidence tools, not profile changes.
+
+Hosted transfer verification remains the next step. The final archive, compact report, pending ledgers, and compatibility links do not exist yet.
