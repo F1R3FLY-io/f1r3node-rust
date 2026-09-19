@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "status": "evidence-integrity-passed-binding-review-pending",
+  "report_sha256": "0a4a23bba01053c5674c487ca7dded80d573c25eb2f0c51904d6c3096f67e581",
+  "source_files": 67,
+  "evidence_files": 11317,
+  "preserved_canonical_ledgers": 37,
+  "pending_candidate_ledgers": 39,
+  "current_source_matches": true,
+  "archive_checks_passed": true,
+  "canonical_acceptance_unchanged": true,
+  "binding_inventory_passed": true,
+  "model_results_verified": true,
+  "strict_claim_001_exit": 4,
+  "strict_claim_004_exit": 4,
+  "claim_discharge": "pending",
+  "node_execution": false,
+  "tool_warnings": [
+    "The file observer reported blind-write warnings for generated files. The generation script required an absent destination and did not overwrite canonical ledgers."
+  ]
+}

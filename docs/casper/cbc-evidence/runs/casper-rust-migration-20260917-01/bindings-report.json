@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "status": "passed",
+  "exit_code": 0,
+  "image": "sha256:7d402dd7f1922bcdbdbeb90d14cecf398fdd36bc5105242fa4a4dc1d1cd596c5",
+  "target": "aarch64-unknown-linux-musl",
+  "evidence_kind": "synthetic_fixture",
+  "node_execution": false,
+  "claim_discharge": "pending"
+}

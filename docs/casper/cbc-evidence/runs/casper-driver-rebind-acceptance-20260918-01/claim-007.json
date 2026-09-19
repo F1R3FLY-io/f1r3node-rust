@@ -1,0 +1,1 @@
+{"claim_discharge":"pending","claims":[{"claim_id":"CLAIM-CASPER-SOAK-007","soak":"pending","specification":"docs/claims/casper-soak-version-phlo.md","specification_sha256":"629c0b87f8e1bf6e72914209f0b25462ee1026a2a9d1c112c65811fef0b08007","status":"pending"}],"phase":"pre_pr216_merge","proof_execution":false,"schema_version":1,"scope":"claim-ledger-audit"}

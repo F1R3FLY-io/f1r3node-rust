@@ -1,0 +1,937 @@
+[
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-1"
+    ],
+    "expected_exit": 3,
+    "actual_exit": 3,
+    "expected_verdict": "blocked",
+    "observed_verdict": "blocked"
+  },
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-1"
+    ],
+    "expected_exit": 3,
+    "actual_exit": 3,
+    "expected_verdict": "blocked",
+    "observed_verdict": "blocked"
+  },
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-1"
+    ],
+    "expected_exit": 3,
+    "actual_exit": 3,
+    "expected_verdict": "blocked",
+    "observed_verdict": "blocked"
+  },
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-1"
+    ],
+    "expected_exit": 3,
+    "actual_exit": 3,
+    "expected_verdict": "blocked",
+    "observed_verdict": "blocked"
+  },
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-1"
+    ],
+    "expected_exit": 3,
+    "actual_exit": 3,
+    "expected_verdict": "blocked",
+    "observed_verdict": "blocked"
+  },
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-1"
+    ],
+    "expected_exit": 3,
+    "actual_exit": 3,
+    "expected_verdict": "blocked",
+    "observed_verdict": "blocked"
+  },
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-1"
+    ],
+    "expected_exit": 3,
+    "actual_exit": 3,
+    "expected_verdict": "blocked",
+    "observed_verdict": "blocked"
+  },
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-1"
+    ],
+    "expected_exit": 3,
+    "actual_exit": 3,
+    "expected_verdict": "blocked",
+    "observed_verdict": "blocked"
+  },
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-1"
+    ],
+    "expected_exit": 1,
+    "actual_exit": 1,
+    "expected_verdict": "incomplete",
+    "observed_verdict": "incomplete"
+  },
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-1"
+    ],
+    "expected_exit": 1,
+    "actual_exit": 1,
+    "expected_verdict": "incomplete",
+    "observed_verdict": "incomplete"
+  },
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-1"
+    ],
+    "expected_exit": 1,
+    "actual_exit": 1,
+    "expected_verdict": "incomplete",
+    "observed_verdict": "incomplete"
+  },
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-1"
+    ],
+    "expected_exit": 1,
+    "actual_exit": 1,
+    "expected_verdict": "incomplete",
+    "observed_verdict": "incomplete"
+  },
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-1"
+    ],
+    "expected_exit": 1,
+    "actual_exit": 1,
+    "expected_verdict": "incomplete",
+    "observed_verdict": "incomplete"
+  },
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-1"
+    ],
+    "expected_exit": 1,
+    "actual_exit": 1,
+    "expected_verdict": "incomplete",
+    "observed_verdict": "incomplete"
+  },
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-1"
+    ],
+    "expected_exit": 1,
+    "actual_exit": 1,
+    "expected_verdict": "incomplete",
+    "observed_verdict": "incomplete"
+  },
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-1"
+    ],
+    "expected_exit": 1,
+    "actual_exit": 1,
+    "expected_verdict": "incomplete",
+    "observed_verdict": "incomplete"
+  },
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-1"
+    ],
+    "expected_exit": 1,
+    "actual_exit": 1,
+    "expected_verdict": "incomplete",
+    "observed_verdict": "incomplete"
+  },
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-1"
+    ],
+    "expected_exit": 1,
+    "actual_exit": 1,
+    "expected_verdict": "incomplete",
+    "observed_verdict": "incomplete"
+  },
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-1"
+    ],
+    "expected_exit": 1,
+    "actual_exit": 1,
+    "expected_verdict": "incomplete",
+    "observed_verdict": "incomplete"
+  },
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-1"
+    ],
+    "expected_exit": 1,
+    "actual_exit": 1,
+    "expected_verdict": "incomplete",
+    "observed_verdict": "incomplete"
+  },
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-1"
+    ],
+    "expected_exit": 1,
+    "actual_exit": 1,
+    "expected_verdict": "incomplete",
+    "observed_verdict": "incomplete"
+  },
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-1"
+    ],
+    "expected_exit": 1,
+    "actual_exit": 1,
+    "expected_verdict": "incomplete",
+    "observed_verdict": "incomplete"
+  },
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-1"
+    ],
+    "expected_exit": 1,
+    "actual_exit": 1,
+    "expected_verdict": "incomplete",
+    "observed_verdict": "incomplete"
+  },
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-1"
+    ],
+    "expected_exit": 2,
+    "actual_exit": 2,
+    "expected_verdict": "invalid_input",
+    "observed_verdict": "invalid_input"
+  },
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-1"
+    ],
+    "expected_exit": 2,
+    "actual_exit": 2,
+    "expected_verdict": "invalid_input",
+    "observed_verdict": "invalid_input"
+  },
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-1"
+    ],
+    "expected_exit": 2,
+    "actual_exit": 2,
+    "expected_verdict": "invalid_input",
+    "observed_verdict": "invalid_input"
+  },
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-1"
+    ],
+    "expected_exit": 2,
+    "actual_exit": 2,
+    "expected_verdict": "invalid_input",
+    "observed_verdict": "invalid_input"
+  },
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-1"
+    ],
+    "expected_exit": 2,
+    "actual_exit": 2,
+    "expected_verdict": "invalid_input",
+    "observed_verdict": "invalid_input"
+  },
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-1"
+    ],
+    "expected_exit": 2,
+    "actual_exit": 2,
+    "expected_verdict": "invalid_input",
+    "observed_verdict": "invalid_input"
+  },
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-1"
+    ],
+    "expected_exit": 2,
+    "actual_exit": 2,
+    "expected_verdict": "invalid_input",
+    "observed_verdict": "invalid_input"
+  },
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-1"
+    ],
+    "expected_exit": 0,
+    "actual_exit": 0,
+    "expected_verdict": "passed",
+    "observed_verdict": "passed"
+  },
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-1"
+    ],
+    "expected_exit": 0,
+    "actual_exit": 0,
+    "expected_verdict": "passed",
+    "observed_verdict": "passed"
+  },
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-1"
+    ],
+    "expected_exit": 0,
+    "actual_exit": 0,
+    "expected_verdict": "passed",
+    "observed_verdict": "passed"
+  },
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-1"
+    ],
+    "expected_exit": 0,
+    "actual_exit": 0,
+    "expected_verdict": "passed",
+    "observed_verdict": "passed"
+  },
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-1"
+    ],
+    "expected_exit": 0,
+    "actual_exit": 0,
+    "expected_verdict": "passed",
+    "observed_verdict": "passed"
+  },
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-1"
+    ],
+    "expected_exit": 0,
+    "actual_exit": 0,
+    "expected_verdict": "passed",
+    "observed_verdict": "passed"
+  },
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-1"
+    ],
+    "expected_exit": 0,
+    "actual_exit": 0,
+    "expected_verdict": "passed",
+    "observed_verdict": "passed"
+  },
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-1"
+    ],
+    "expected_exit": 0,
+    "actual_exit": 0,
+    "expected_verdict": "passed",
+    "observed_verdict": "passed"
+  },
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-1"
+    ],
+    "expected_exit": 0,
+    "actual_exit": 0,
+    "expected_verdict": "passed",
+    "observed_verdict": "passed"
+  },
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-1"
+    ],
+    "expected_exit": 0,
+    "actual_exit": 0,
+    "expected_verdict": "passed",
+    "observed_verdict": "passed"
+  },
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-1"
+    ],
+    "expected_exit": 0,
+    "actual_exit": 0,
+    "expected_verdict": "passed",
+    "observed_verdict": "passed"
+  },
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-1"
+    ],
+    "expected_exit": 0,
+    "actual_exit": 0,
+    "expected_verdict": "passed",
+    "observed_verdict": "passed"
+  },
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-1"
+    ],
+    "expected_exit": 1,
+    "actual_exit": 1,
+    "expected_verdict": "product_failure",
+    "observed_verdict": "product_failure"
+  },
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-1"
+    ],
+    "expected_exit": 1,
+    "actual_exit": 1,
+    "expected_verdict": "product_failure",
+    "observed_verdict": "product_failure"
+  },
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-1"
+    ],
+    "expected_exit": 1,
+    "actual_exit": 1,
+    "expected_verdict": "product_failure",
+    "observed_verdict": "product_failure"
+  },
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-1"
+    ],
+    "expected_exit": 1,
+    "actual_exit": 1,
+    "expected_verdict": "product_failure",
+    "observed_verdict": "product_failure"
+  },
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-1"
+    ],
+    "expected_exit": 1,
+    "actual_exit": 1,
+    "expected_verdict": "product_failure",
+    "observed_verdict": "product_failure"
+  },
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-1"
+    ],
+    "expected_exit": 1,
+    "actual_exit": 1,
+    "expected_verdict": "product_failure",
+    "observed_verdict": "product_failure"
+  },
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-1"
+    ],
+    "expected_exit": 1,
+    "actual_exit": 1,
+    "expected_verdict": "product_failure",
+    "observed_verdict": "product_failure"
+  },
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-1"
+    ],
+    "expected_exit": 1,
+    "actual_exit": 1,
+    "expected_verdict": "product_failure",
+    "observed_verdict": "product_failure"
+  },
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-1"
+    ],
+    "expected_exit": 1,
+    "actual_exit": 1,
+    "expected_verdict": "product_failure",
+    "observed_verdict": "product_failure"
+  },
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-1"
+    ],
+    "expected_exit": 1,
+    "actual_exit": 1,
+    "expected_verdict": "product_failure",
+    "observed_verdict": "product_failure"
+  },
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-2"
+    ],
+    "expected_exit": 2,
+    "actual_exit": 2,
+    "expected_verdict": "invalid_input",
+    "observed_verdict": "invalid_input"
+  },
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-2"
+    ],
+    "expected_exit": 0,
+    "actual_exit": 0,
+    "expected_verdict": "passed",
+    "observed_verdict": "passed"
+  },
+  {
+    "arguments": [
+      "run",
+      "--manifest",
+      "manifest.json",
+      "--request",
+      "request.json",
+      "--artifacts",
+      ".",
+      "--output",
+      "output-2"
+    ],
+    "expected_exit": 1,
+    "actual_exit": 1,
+    "expected_verdict": "product_failure",
+    "observed_verdict": "product_failure"
+  }
+]

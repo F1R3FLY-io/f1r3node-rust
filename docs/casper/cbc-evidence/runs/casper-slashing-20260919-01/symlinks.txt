@@ -1,0 +1,5 @@
+target/task-017-9/linux-final/evidence/fixtures/symlink-artifact/raw/0.json	source.json
+target/task-017-9/native-corrected/fixtures/symlink-artifact/raw/0.json	source.json
+target/task-017-9/native-final/fixtures/symlink-artifact/raw/0.json	source.json
+target/task-017-9/native-recorded/fixtures/symlink-artifact/raw/0.json	source.json
+target/task-017-9/runner-controls/rename/fixtures/symlink-artifact/raw/0.json	source.json

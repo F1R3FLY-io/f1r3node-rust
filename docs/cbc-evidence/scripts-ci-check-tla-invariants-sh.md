@@ -1,73 +1,85 @@
 # CbC Evidence: scripts/ci/check-tla-invariants.sh
 
-- **Status:** pending (local and hosted execution green; required-check enforcement open)
-- **Adapter:** embedded
-- **Claim:** [CLAIM-SOAK-GATE-001](https://github.com/F1R3FLY-io/f1r3node-rust/blob/2388a8eedf33d07018f0630bced51a6e054ba439/docs/claims/soak-formal-gate.md), retired with the digest inventory and kept in the staging branch history
-- **Verified:** locally 2026-09-08 and 2026-09-09, hosted 2026-09-08
+**Status:** Pending. The bounded model result does not discharge the full harness/profile claim.
 
-## Cycles
+- [CLAIM-CASPER-SOAK-001](../claims/casper-soak-harness.md)
 
-| Cycle | Base | RED | GREEN |
-| --- | --- | --- | --- |
-| B1 classification | `599513d4a` | The gate accepted a clean `MC_CarrierIndex_dag_first_pre_fix` because it never ran controls. | Controls run in CI. Each must exit 12 with its exact invariant. A fixture test checks seven outcomes per control. |
-| B2 routing | `7034e2168` | The TLA+ job skipped pull requests. | PR and push run `--soak-pr` (2 workers, 2 m per configuration, 15-minute job). Schedule and dispatch keep the full list and 240 minutes. TLC logs upload on every result. |
-| B3 inventory | `43af06dab` | No candidate-bound claim inventory. | Superseded on 2026-09-09. The 256-file digest inventory and its CI step were replaced by [soak-disk-protection.md](../claims/soak-disk-protection.md), because any change to a digested file failed CI for every unrelated pull request. |
-
-The B1 and B2 tests are merged into `scripts/ci/test-check-tla-invariants.sh`. It reads the control registry from the gate and checks 61 registered controls times seven outcomes plus six routing scenarios.
-
-## Real TLC results
-
-| Configuration | Result |
-| --- | --- |
-| `MC_ReplayHotLoop` | clean, 9 distinct states |
-| `MC_CarrierIndex` | clean, 222 distinct states |
-| `MC_CarrierIndex_dag_first_pre_fix` | `IndexCompleteForWindow`, exit 12 |
-| `MC_CarrierIndex_read_failure_pre_fix` | `AbsenceProofSound`, exit 12 |
-| `soak_disk` configurations | see [the driver record](scripts-run-merge-recovery-soak-sh.md) |
-
-## Hosted execution
-
-| Revision | Run | Job | Result |
-| --- | --- | --- | --- |
-| `43af06dab` (synthetic checkout `bad72c4c`) | 34228660038 | 102069244605 (TLA+) | 4 configurations as expected in 33 s; artifact 10056856375 |
-| `9310ae2ce` | 34232911628 | 102109798473 (Lint) | inventory step passed |
-| `d6aaba962` | 34244231314 and 34244230926 | 102122023044 (Lint) and 102121946596 (TLA+) | passed; artifact 10063312912, SHA-256 `67c33849b3cd439fb5e6ded2fd8294b29413086562b66d52d19b9045298252e0` |
-
-## Historical manifests
-
-Retained outside Git by the agent that ran the cycles. The digests bind that raw store to this record. A regenerated manifest is a new record, not renewed verification.
-
-| Manifest | SHA-256 |
-| --- | --- |
-| `soak-g0-2026-09-08/manifest.jsonc` (B1) | `b4e857a74cf4e091c7cff84a495e0db77d6a5ea3f2234f81078c2bdbe4ce0cde` |
-| `soak-g0-b2-2026-09-08/manifest.jsonc` (B2) | `2e132518c37579b90c0c0a143e0ee553278e4b763562ee3b54eb3f6c1ea68a0e` |
-| `soak-g0-b3-2026-09-08/manifest.jsonc` (B3) | `b73351d1b39df729dcc01014462249ddf456df896bacfa3865f10ea88810c28e` |
-| `soak-g0-b3-2026-09-08/hosted-observation.jsonc` | `0c28cb6b5f83a005845153f0edc28fbc069d7fb85822b643f6faa9afd55927f6` |
-| `g0-hosted-d6aaba962-2026-09-08/manifest.json` | `618bd14f61760e12959e97636a6c7a46a4e8cd2c7f15381859058d305db634c8` |
-| `repin-962effd-2026-09-08/manifest.json` | `3858c683327fd88fff364fb1974adcadc748cea0464d1e26ea0989e406ca3e9e` |
-
-## Open
-
-- Rulesets `devProtect` (15773875) and `masterProtect` (14299997) require `Lint` only. `TLA+ invariant check` is not required. The classic-protection endpoint returned 403.
-- GitHub treats skipped and neutral statuses as success. Success-only enforcement is unverified.
-- Hosted runs do not independently attest the workflow-control SHA.
+The evidence package contains partial results only. No node correctness claim or construction proof belongs to this scope.
 
 ```json
 {
   "artifact": {
     "path": "scripts/ci/check-tla-invariants.sh",
-    "commit": "3d2aa7904",
-    "id": "scripts-ci-check-tla-invariants-sh"
+    "commit": "cc7e84b482887f0647277ccbacd6f65ae3cf749d",
+    "id": "scripts-ci-check-tla-invariants-sh",
+    "sha256": "ff2ca9e5e6b045db231e374cb43dbec2896e3bdea64e43b321ad73945974eeb9"
   },
-  "claim": "CLAIM-SOAK-GATE-001",
+  "claim": "docs/claims/casper-soak-harness.md",
+  "claim_ids": [
+    "CLAIM-CASPER-SOAK-001"
+  ],
+  "claim_digests": {
+    "docs/claims/casper-soak-harness.md": "636bdd0681096a3fb054a88f114641e4b23812001bff02d873dce5f6d52aa4c5"
+  },
   "adapter": "embedded",
   "status": "pending",
+  "scope": "harness-and-profiles-only",
   "evidence": {
-    "kind": "behavior-tests+bounded-model-check+hosted-observation",
-    "ref": "scripts/ci/test-check-tla-invariants.sh; hosted runs 34228660038, 34244230926",
-    "counterexample": "a clean negative control passed the pre-B1 gate",
-    "detail": "The fixture tests the shell gate, not the models. Real TLC runs test the models, not the gate. Required-check enforcement on dev remains a maintainer action."
+    "kind": "partial-verification",
+    "ref": "docs/casper/cbc-evidence/runs/casper-harness-controls-20260916-01/report.json",
+    "sha256": "b192d4c2152081f3d47c26fa951a98d14d96aaeeed74d55818c14457134346c7",
+    "counterexample": null,
+    "detail": "Bounded lifecycle controls and runner unit tests pass. Driver/profile bindings, shared CI integration, and soaks remain pending."
   },
+  "incremental_evidence": [
+    {
+      "cycle": "H10-trace",
+      "status": "partial-binding-pass",
+      "base_revision": "6814682e4c7de98f883b8791d3227e98bc3f2c15",
+      "artifact_sha256": "5ad5058f26280a0f90730f6b8c14c40c5326ca0d2fc0dcf9c7ba8018be0397c8",
+      "ref": "docs/casper/cbc-evidence/runs/casper-control-trace-20260917-01/report.json",
+      "sha256": "7df040249f5ec1aed98b662ecf0913dc705283a328dd2f6ccadce13352d6e135",
+      "detail": "RED reproduced a missing-trace acceptance. GREEN rejected the truncated trace. Full classification and CI bindings remain pending."
+    },
+    {
+      "cycle": "H10-positive-search",
+      "status": "partial-binding-pass",
+      "base_revision": "4204340b0d573e14df9b224ae43e0c0aea083136",
+      "artifact_sha256": "8b72bf9f0190b8b15b71d0e3da6af5af07ac8d811b923f402bc2952bc716cd7c",
+      "ref": "docs/casper/cbc-evidence/runs/casper-positive-search-20260917-01/report.json",
+      "sha256": "db4db3a796ccd1e7bfd8d11754c8b7870826df9030944b727ad6d9cf52ba3ea5",
+      "detail": "RED reproduced acceptance of an incomplete positive search. GREEN requires a completed-search marker. Full classification remains pending."
+    },
+    {
+      "cycle": "H10-exact-result",
+      "status": "partial-binding-pass",
+      "base_revision": "4204340b0d573e14df9b224ae43e0c0aea083136",
+      "artifact_sha256": "cfd7c5ebec8610161571cb887c866ede74ae43d7161e7c9fbadc8772e9ddddc2",
+      "ref": "docs/casper/cbc-evidence/runs/casper-exact-result-20260917-01/report.json",
+      "sha256": "d9722f0eb25e8d74a377ba2a68244722acd80f18ef2a068242408411a2301052",
+      "detail": "RED reproduced contradictory-output acceptance. GREEN rejected 13 ambiguity cases. Shared Casper registration and full driver bindings remain pending."
+    },
+    {
+      "cycle": "H10-shared-registration",
+      "status": "partial-binding-pass",
+      "base_revision": "c9faa7d2f4c1cf4564b544a6cf3aa4c95f869d26",
+      "artifact_sha256": "41849481aeafbf7b98ec690fc44d209139c8b1749cd99e8de43ebb5ffc876baf",
+      "ref": "docs/casper/cbc-evidence/runs/casper-driver-integration-20260917-01/report.json",
+      "sha256": "f8ad774a9856bc9d986058b77caa6e375c92dbc2a0ebccda589afadad339285c",
+      "detail": "Both shared tiers register all Casper controls. The bounded tier passed 14 positives and 71 negatives. Publication binding remains pending."
+    }
+  ],
+  "tiers": {
+    "refutation": "pending",
+    "construction": "not-applicable",
+    "construction_assumptions": null,
+    "binding": "pending"
+  },
+  "phase_status": {
+    "pre_pr216_merge": "pending",
+    "post_pr216_merge": "blocked"
+  },
+  "scaffold_base_commit": "cc7e84b482887f0647277ccbacd6f65ae3cf749d",
   "waiver": null,
   "verified_at": null
 }

@@ -1,0 +1,110 @@
+{
+  "schema_version": 1,
+  "status": "hosted-verified-awaiting-evidence-upload-and-binding-review",
+  "claim_discharge": "pending",
+  "claim_ids": ["CLAIM-CASPER-SOAK-008"],
+  "phase": "pre_pr216_merge",
+  "verified_commit": "51615255aa4ad24779639120ea2a8c5ec0500d78",
+  "source_digests": {
+    ".github/workflows/casper-carrier-index.yml": "fbf03950c448d1872ac2cdc59772aadf1c9b96f657cda736dd1e9d4a9d2da97d",
+    "scripts/casper-soak/check-carrier-index.sh": "7312a341117291d6affe23c42239a4f3968d38524c2c340c9ef8d768b5914e00",
+    "scripts/casper-soak/src/bin/casper-carrier-index.rs": "012a3c217cbc39ddf2d31d4236e46f85272af2d352ece9d52e96b831e131617c",
+    "scripts/casper-soak/src/profiles/carrier_index.rs": "997181af0574612162ad8167f1989c86d49d005e54a77a1da9f0a1bdb0409d57",
+    "scripts/casper-soak/tests/carrier_index.rs": "e2dcbd5c5cd457b01234586b2b5e806a4fc73727aaba8c94d5b5f63d39c9cdc9",
+    "scripts/casper-soak/src/lib.rs": "a70f76a28de8ef8010eb7f8876b5e947ce94bf35752bbd70b086983383ee7a8f",
+    "scripts/casper-soak/src/manifest.rs": "d9606d542cfb9bc058f691196244ae2e6055e6c84c02b5c2581ee07e70c03000",
+    "scripts/casper-soak/src/models.rs": "99e3f736aa9e753b73edced77049ab206f993d612870bb1d866f6d5c0655983f",
+    "scripts/casper-soak/Cargo.toml": "f6082e839d8bb20e5b2988a9ed92ffe5d1cd79a0e578e10d68582593ea3d13cb",
+    "Cargo.toml": "7c5397136932d04c6e72a04a593249dea347a0f13c4cbd2d7e04c7d6a69f9e88",
+    "Cargo.lock": "318659f6c97ee6030ac0b128b6e2ba0a6a86e07314c2761ecd73052830bb0c4e",
+    "rust-toolchain.toml": "cef5cc010fbd237ab34a4d07129372406e11ff8595c2efc1126d9c93e039aed4",
+    ".cargo/config.toml": "da7e626941c437575405e8eade493a1994483236d0f775c39800b2b2e93f230f",
+    "docs/claims/casper-soak-carrier-index.md": "bad35868513365e7702f57899a67ef40fcec5e8471c1cfe4ec2265291897aec3",
+    "formal/tlaplus/casper_soak/profiles/carrier_index/README.md": "9756c9b74fd54c73f7cf5e0487efe4cd67efe6fea96ce93a47364e2bdef6df77",
+    "formal/tlaplus/casper_soak/profiles/carrier_index/CarrierIndex.tla": "db2e55be76a8ba4221282a47695b3b50a8d536b912e4b7cd10650ede9521fd59",
+    "formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex.cfg": "43ad380e7ef3076738a658d806df672708c4608afe60b40cb8d2c01984709e0e",
+    "formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex_counter_unsafe.cfg": "f6ab729f2187bae1a3e8d1ee4ae2acbe77a5e2e45e985ca244fa364c049ced13",
+    "formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex_path_unsafe.cfg": "17e96482cca383b76c726942de71369f2bf24134b8772b25b964a1bd4fac6588",
+    "formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex_window_unsafe.cfg": "35a20940754963616db711c38bb8da6e4a250ea33a9454273fd6bdae5c8ef4fb",
+    "formal/tlaplus/casper_soak/profiles/carrier_index/verification-plan.jsonc": "e914f6852dd5b01746215996df69bd000a6f8a074c1341cacb766e58382c3322"
+  },
+  "claim_digests": {
+    "docs/claims/casper-soak-carrier-index.md": "bad35868513365e7702f57899a67ef40fcec5e8471c1cfe4ec2265291897aec3"
+  },
+  "review_report": {
+    "path": "docs/casper/cbc-evidence/runs/casper-carrier-index-20260919-01/report.json",
+    "sha256": "b18b3549273c469f2cb7a59f547834f5413ddb96f8791aa989ba93144543d33b",
+    "before_privacy_redaction_sha256": "4b0642726f3765ccc079ed43e6f6e58876a581e8fe6044dc492cb0e57a9b25a2",
+    "change": "Only the workstation prefix in isolated_linux.identity changed. Source hashes, executable hashes, results, and historical publication status remain unchanged.",
+    "pending_ledger_report_hashes_updated": 12
+  },
+  "hosted_ci": {
+    "run_id": 35429044639,
+    "run_attempt": 1,
+    "url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/35429044639",
+    "head_sha": "51615255aa4ad24779639120ea2a8c5ec0500d78",
+    "event": "pull_request",
+    "conclusion": "success",
+    "artifact_id": 10580395137,
+    "artifact_name": "casper-carrier-index",
+    "artifact_zip_sha256": "1c3fd03ba834fecd4b9f44cbb7504a2630b4ff8a43cbb401c85abe52daf76c41",
+    "artifact_zip_bytes": 2945064,
+    "source_files_verified": 21,
+    "rust_tests": 23,
+    "cases": 88,
+    "invocations": 91,
+    "model_controls": 4,
+    "executable_sha256": "dc50c1d535b600c18d3c1cd8d80282a17d7715a2e15e0112e511bfad386bb091",
+    "checkout_note": "The pull-request job checks its merge ref. Retained source hashes match the reviewed carrier inputs.",
+    "retention_days": 30
+  },
+  "validation": {
+    "native_cases": 88,
+    "native_invocations": 91,
+    "isolated_cases": 88,
+    "isolated_invocations": 91,
+    "hosted_cases": 88,
+    "hosted_invocations": 91,
+    "nested_references_checked": 3274,
+    "original_manifest_entries_verified": 10963,
+    "public_manifest_entries_verified": 14606,
+    "native_model_controls": 4,
+    "hosted_model_controls": 4,
+    "fixture_and_source_bytes_unchanged": true
+  },
+  "privacy": {
+    "redacted_text_files": 11,
+    "withheld_native_binaries": 2,
+    "workstation_account_paths_remaining": 0,
+    "native_binary_limit": "The public archive omits native binaries with embedded account paths. Their original hashes remain recorded. No replacement binary is claimed."
+  },
+  "external_evidence": {
+    "status": "local-ready-upload-blocked",
+    "repository": "F1R3FLY-io/f1r3node-rust",
+    "tag": "cbc-evidence-epic-017",
+    "asset": "casper-carrier-index-publication-20260919-01.external.tar.gz",
+    "sha256": "941c3c95a05e972e24bea9b33ba6c08b3da439dda7a87ceb63fa35da78dd0ca0",
+    "bytes": 2529945,
+    "members": 14607,
+    "original_private_bundle_sha256": "51e7b6baae754ca393abe4f042dafefb86228a4c2d9a7b34a85ddcbbf43c1543",
+    "upload_performed": false,
+    "remote_download_verified": false,
+    "blocker": "The current API credential cannot find the planned draft release. The release-tag endpoint returns HTTP 404."
+  },
+  "source_drift": {
+    "path": ".gitattributes",
+    "change": "Commit 712ee6233 added the accepted merge-accounting workflow tag. Carrier source files did not change.",
+    "carrier_workflow_attribute": "unspecified"
+  },
+  "strict_claim_audits": {"001": 0, "002": 0, "003": 0, "004": 0, "005": 0, "008": 4},
+  "tiers": {"refutation": "bounded-safety-pass", "construction": "not-applicable", "binding": "pending"},
+  "pending": [
+    "external-evidence-upload-and-retrieval",
+    "shared-inventory-update",
+    "human-binding-acceptance",
+    "workflow-tag-ratification"
+  ],
+  "soak": "pending",
+  "node_execution": false,
+  "waiver": null
+}

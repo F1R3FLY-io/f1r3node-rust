@@ -1,0 +1,20 @@
+#0 building with "desktop-linux" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 277B done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/sha256:7d402dd7f1922bcdbdbeb90d14cecf398fdd36bc5105242fa4a4dc1d1cd596c5
+#2 ERROR: pull access denied, repository does not exist or may require authorization: server message: insufficient_scope: authorization failed
+------
+ > [internal] load metadata for docker.io/library/sha256:7d402dd7f1922bcdbdbeb90d14cecf398fdd36bc5105242fa4a4dc1d1cd596c5:
+------
+Dockerfile:1
+--------------------
+   1 | >>> FROM sha256:7d402dd7f1922bcdbdbeb90d14cecf398fdd36bc5105242fa4a4dc1d1cd596c5
+   2 |     USER root
+   3 |     RUN apt-get update && apt-get install -y --no-install-recommends openjdk-17-jre-headless && rm -rf /var/lib/apt/lists/*
+--------------------
+ERROR: failed to build: failed to solve: sha256:7d402dd7f1922bcdbdbeb90d14cecf398fdd36bc5105242fa4a4dc1d1cd596c5: failed to resolve source metadata for docker.io/library/sha256:7d402dd7f1922bcdbdbeb90d14cecf398fdd36bc5105242fa4a4dc1d1cd596c5: pull access denied, repository does not exist or may require authorization: server message: insufficient_scope: authorization failed
+
+View build details: docker-desktop://dashboard/build/desktop-linux/desktop-linux/93xguexylrw97l9qsq6ozyky7

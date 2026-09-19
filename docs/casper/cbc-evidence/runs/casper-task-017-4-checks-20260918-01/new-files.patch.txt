@@ -1,0 +1,509 @@
+diff --git a/scripts/casper-soak/src/bin/check-casper-claims.rs b/scripts/casper-soak/src/bin/check-casper-claims.rs
+new file mode 100644
+index 000000000..e06a484ec
+--- /dev/null
++++ b/scripts/casper-soak/src/bin/check-casper-claims.rs
+@@ -0,0 +1,189 @@
++use std::collections::BTreeSet;
++use std::path::{Path, PathBuf};
++
++use casper_soak::{
++    array, encoded, exclusive, file_hash, parse, record, regular, relative, text, MAX_BYTES,
++};
++use clap::Parser;
++use eyre::{ensure, eyre, Result};
++use serde_json::{json, Value};
++
++#[derive(Parser)]
++struct Args {
++    #[arg(long, default_value = ".")]
++    root: PathBuf,
++    #[arg(long)]
++    output: PathBuf,
++    #[arg(long)]
++    strict: bool,
++    #[arg(long)]
++    claim: Option<String>,
++}
++
++fn fenced(path: &Path, language: &str) -> Result<String> {
++    let content = String::from_utf8(regular(path, MAX_BYTES)?)?;
++    let marker = format!("```{language}\n");
++    let mut sections = content.split(&marker);
++    sections.next();
++    let body = sections
++        .next()
++        .ok_or_else(|| eyre!("The metadata block is missing."))?;
++    if language == "json" {
++        ensure!(
++            sections.next().is_none(),
++            "The metadata block is ambiguous."
++        );
++    }
++    Ok(body
++        .split_once("```")
++        .ok_or_else(|| eyre!("The metadata block is incomplete."))?
++        .0
++        .to_owned())
++}
++
++fn field<'a>(header: &'a str, key: &str) -> Result<&'a str> {
++    let prefix = format!("{key}: ");
++    let values: Vec<_> = header
++        .lines()
++        .filter_map(|line| line.strip_prefix(&prefix))
++        .collect();
++    ensure!(
++        values.len() == 1,
++        "A required metadata field is missing or duplicated."
++    );
++    Ok(values[0])
++}
++
++fn discharged(root: &Path, spec: &str, header: &str, id: &str) -> Result<()> {
++    ensure!(
++        field(header, "construction")? == "not-applicable"
++            && field(header, "refutation")? == "bounded-safety-pass"
++            && field(header, "binding")? == "passed",
++        "The declared claim has incomplete verification tiers."
++    );
++    let body = header
++        .split_once("artifacts:\n")
++        .ok_or_else(|| eyre!("The artifact inventory is missing."))?
++        .1;
++    ensure!(header.lines().filter(|line| *line == "artifacts:").count() == 1, "The artifact inventory is duplicated.");
++    let mut artifacts = Vec::new();
++    for line in body.lines() {
++        if line.trim().is_empty() {
++            continue;
++        }
++        if let Some(path) = line.strip_prefix("  - ") {
++            artifacts.push(path);
++        } else if !line.starts_with(char::is_whitespace) && line.contains(':') {
++            break;
++        } else {
++            return Err(eyre!("The artifact inventory syntax is unsupported."));
++        }
++    }
++    ensure!(!artifacts.is_empty(), "The artifact inventory is empty.");
++    let mut seen = BTreeSet::new();
++    for artifact in artifacts {
++        ensure!(seen.insert(artifact), "An artifact is duplicated.");
++        let source = relative(root, artifact)?;
++        let slug = artifact.trim_start_matches('.').replace(['/', '.', '_'], "-");
++        let ledger_path = relative(root, &format!("docs/casper/cbc-evidence/{slug}.md"))?;
++        let ledger = parse(fenced(&ledger_path, "json")?.as_bytes())?;
++        ensure!(
++            ledger["status"] == "discharged"
++                && ledger["waiver"].is_null()
++                && array(&ledger["claim_ids"])?.contains(&json!(id)),
++            "The artifact has no discharge for this claim."
++        );
++        ensure!(
++            ledger["artifact"]["path"] == artifact
++                && ledger["artifact"]["sha256"] == file_hash(&source)?
++                && ledger["claim_digests"][spec] == file_hash(&relative(root, spec)?)?,
++            "The discharged source or specification differs."
++        );
++        ensure!(
++            ledger["phase_status"]["pre_pr216_merge"] == "discharged",
++            "The phase is not discharged."
++        );
++        let evidence_path = relative(root, text(&ledger["evidence"]["ref"])?)?;
++        ensure!(
++            ledger["evidence"]["sha256"] == file_hash(&evidence_path)?,
++            "The discharge evidence differs."
++        );
++        casper_soak::manifest::hex(&ledger["artifact"]["commit"], 40)?;
++        ensure!(!text(&ledger["verified_at"])?.is_empty(), "The verification timestamp is missing.");
++        let evidence = record(&evidence_path)?;
++        ensure!(
++            evidence["source_digests"][artifact] == file_hash(&source)?
++                && evidence["claim_digests"][spec] == file_hash(&relative(root, spec)?)?
++                && evidence["tiers"]["refutation"] == "bounded-safety-pass"
++                && evidence["tiers"]["binding"] == "passed"
++                && evidence["tiers"]["construction"] == "not-applicable",
++            "The evidence does not bind the current source, specification, and tiers."
++        );
++        ensure!(
++            evidence["claim_discharge"] == "discharged"
++                && evidence["phase"] == "pre_pr216_merge"
++                && array(&evidence["claim_ids"])?.contains(&json!(id)),
++            "The evidence does not discharge this claim and phase."
++        );
++    }
++    Ok(())
++}
++
++fn audit(args: &Args) -> Result<i32> {
++    let root = args.root.canonicalize()?;
++    let plan = record(&root.join(casper_soak::models::PLAN))?;
++    let mut claims = vec![json!({"id":plan["claim"],"specification":plan["specification"]})];
++    claims.extend(
++        array(&plan["profile_verification"]["claims"])?
++            .iter()
++            .cloned(),
++    );
++    let required: BTreeSet<_> = (1..=8)
++        .map(|n| format!("CLAIM-CASPER-SOAK-{n:03}"))
++        .collect();
++    if let Some(id) = &args.claim {
++        ensure!(required.contains(id), "The requested claim is not registered.");
++    }
++    let mut seen = BTreeSet::new();
++    let mut results = Vec::new();
++    for claim in claims {
++        let id = text(&claim["id"])?;
++        ensure!(
++            required.contains(id) && seen.insert(id.to_owned()),
++            "The claim registry is invalid."
++        );
++        let spec = text(&claim["specification"])?;
++        let header = fenced(&relative(&root, spec)?, "yaml")?;
++        ensure!(
++            field(&header, "claim_id")? == id,
++            "The specification identity differs."
++        );
++        let status = field(&header, "status")?;
++        ensure!(
++            ["pending", "refuted", "discharged"].contains(&status),
++            "The claim status is unsupported."
++        );
++        if status == "discharged" {
++            discharged(&root, spec, &header, id)?;
++        }
++        if args.claim.as_deref().is_none_or(|selected| selected == id) {
++            results.push(json!({"claim_id":id,"status":status,"soak":field(&header,"soak")?,"specification":spec,"specification_sha256":file_hash(&relative(&root,spec)?)?}));
++        }
++    }
++    ensure!(seen == required, "A required claim is missing.");
++    let all_discharged = results.iter().all(|claim| claim["status"] == "discharged");
++    let result: Value = json!({"schema_version":1,"scope":"claim-ledger-audit","phase":"pre_pr216_merge","claim_discharge":if all_discharged {"discharged"} else {"pending"},"claims":results,"proof_execution":false});
++    exclusive(&args.output, &encoded(&result)?, false)?;
++    Ok(if args.strict && !all_discharged { 4 } else { 0 })
++}
++
++fn main() {
++    let args = Args::parse();
++    match audit(&args) {
++        Ok(code) => std::process::exit(code),
++        Err(error) => {
++            eprintln!("{error}");
++            std::process::exit(2);
++        }
++    }
++}
+diff --git a/scripts/casper-soak/tests/claims.rs b/scripts/casper-soak/tests/claims.rs
+new file mode 100644
+index 000000000..931e16898
+--- /dev/null
++++ b/scripts/casper-soak/tests/claims.rs
+@@ -0,0 +1,142 @@
++use std::fs;
++use std::path::{Path, PathBuf};
++use std::process::Command;
++
++fn source() -> PathBuf {
++    std::env::var_os("SOAK_SOURCE_ROOT").map(PathBuf::from).unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap().to_path_buf())
++}
++
++fn binary() -> PathBuf {
++    std::env::var_os("SOAK_CLAIM_CHECKER_BIN").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_check-casper-claims")))
++}
++
++fn check(root: &Path, output: &Path, strict: bool) -> i32 {
++    let mut command = Command::new(binary());
++    command.arg("--root").arg(root).arg("--output").arg(output);
++    if strict {
++        command.arg("--strict");
++    }
++    command.output().unwrap().status.code().unwrap_or(128)
++}
++
++#[test]
++fn pending_claims_are_visible_and_strict_discharge_refuses() {
++    let root = fixture();
++    let root = root.path();
++    let output = tempfile::tempdir().unwrap();
++    assert_eq!(check(&source(), &output.path().join("source-audit.json"), false), 0);
++    assert_eq!(check(root, &output.path().join("audit.json"), false), 0);
++    let report = casper_soak::record(&output.path().join("audit.json")).unwrap();
++    assert_eq!(report["claims"].as_array().unwrap().len(), 8);
++    assert_eq!(report["claim_discharge"], "pending");
++    assert_eq!(check(root, &output.path().join("strict.json"), true), 4);
++}
++
++fn fixture() -> tempfile::TempDir {
++    let source = source();
++    let root = tempfile::tempdir().unwrap();
++    let plan_path = root.path().join(casper_soak::models::PLAN);
++    fs::create_dir_all(plan_path.parent().unwrap()).unwrap();
++    let plan = casper_soak::record(&source.join(casper_soak::models::PLAN)).unwrap();
++    let mut claims = vec![serde_json::json!({"id":plan["claim"],"specification":plan["specification"]})];
++    claims.extend(plan["profile_verification"]["claims"].as_array().unwrap().iter().cloned());
++    for claim in claims {
++        let path = root.path().join(claim["specification"].as_str().unwrap());
++        fs::create_dir_all(path.parent().unwrap()).unwrap();
++        fs::write(path, format!("```yaml\nclaim_id: {}\nstatus: pending\nconstruction: not-applicable\nrefutation: pending\nbinding: pending\nsoak: pending\n```\nSynthetic audit input.\n", claim["id"].as_str().unwrap())).unwrap();
++    }
++    fs::write(&plan_path, casper_soak::encoded(&plan).unwrap()).unwrap();
++    root
++}
++
++#[test]
++fn missing_claims_and_unsupported_discharge_cannot_pass() {
++    let root = fixture();
++    let plan_path = root.path().join(casper_soak::models::PLAN);
++    let mut plan = casper_soak::record(&plan_path).unwrap();
++    let spec = root.path().join(plan["specification"].as_str().unwrap());
++    let original = fs::read_to_string(&spec).unwrap();
++    fs::write(
++        &spec,
++        original.replacen("status: pending", "status: discharged", 1),
++    )
++    .unwrap();
++    assert_eq!(
++        check(
++            root.path(),
++            &root.path().join("false-discharge.json"),
++            false
++        ),
++        2
++    );
++    fs::write(&spec, original).unwrap();
++    plan["profile_verification"]["claims"]
++        .as_array_mut()
++        .unwrap()
++        .pop();
++    fs::write(&plan_path, casper_soak::encoded(&plan).unwrap()).unwrap();
++    assert_eq!(
++        check(root.path(), &root.path().join("missing.json"), false),
++        2
++    );
++}
++
++#[test]
++fn claim_scope_source_and_evidence_are_independent_of_soak() {
++    use serde_json::json;
++    let root = fixture();
++    let spec = "docs/claims/casper-soak-harness.md";
++    let header = "```yaml\nclaim_id: CLAIM-CASPER-SOAK-001\nstatus: discharged\nartifacts:\n  - source_file.txt\nconstruction: not-applicable\nrefutation: bounded-safety-pass\nbinding: passed\nsoak: pending\n```\nSynthetic audit input, not verification evidence.\n";
++    fs::write(root.path().join(spec), header).unwrap();
++    fs::write(root.path().join("source_file.txt"), "source").unwrap();
++    let report = json!({"claim_discharge":"discharged","claim_ids":["CLAIM-CASPER-SOAK-001"],"phase":"pre_pr216_merge","purpose":"synthetic-audit-input","source_digests":{"source_file.txt":casper_soak::hash(b"source")},"claim_digests":{spec:casper_soak::hash(header.as_bytes())},"tiers":{"refutation":"bounded-safety-pass","binding":"passed","construction":"not-applicable"}});
++    fs::write(root.path().join("verification.json"), casper_soak::encoded(&report).unwrap()).unwrap();
++    let ledger = json!({"artifact":{"path":"source_file.txt","sha256":casper_soak::hash(b"source"),"commit":"0".repeat(40)},"verified_at":"2026-09-18T00:00:00Z","claim_digests":{spec:casper_soak::hash(header.as_bytes())},"claim_ids":["CLAIM-CASPER-SOAK-001"],"status":"discharged","phase_status":{"pre_pr216_merge":"discharged"},"evidence":{"ref":"verification.json","sha256":casper_soak::file_hash(&root.path().join("verification.json")).unwrap()},"waiver":null});
++    let path = root.path().join("docs/casper/cbc-evidence/source-file-txt.md");
++    fs::create_dir_all(path.parent().unwrap()).unwrap();
++    let save = |value: &serde_json::Value| fs::write(&path, format!("```json\n{value}\n```\n")).unwrap();
++    save(&ledger);
++    let selected = |name: &str| Command::new(binary()).args(["--claim","CLAIM-CASPER-SOAK-001","--strict","--root"]).arg(root.path()).arg("--output").arg(root.path().join(name)).output().unwrap().status.code().unwrap();
++    assert_eq!(selected("selected.json"), 0);
++    let result = casper_soak::record(&root.path().join("selected.json")).unwrap();
++    assert_eq!(result["claims"].as_array().unwrap().len(), 1);
++    assert_eq!(result["claims"][0]["soak"], "pending");
++    assert_eq!(result["proof_execution"], false);
++    assert_eq!(check(root.path(), &root.path().join("all.json"), true), 4);
++    let spaced_header = header.replace("construction:", "\n  - missing.txt\nconstruction:");
++    fs::write(root.path().join(spec), &spaced_header).unwrap();
++    let mut spaced_report = report.clone();
++    spaced_report["claim_digests"][spec] = casper_soak::hash(spaced_header.as_bytes()).into();
++    fs::write(root.path().join("verification.json"), casper_soak::encoded(&spaced_report).unwrap()).unwrap();
++    let mut spaced_ledger = ledger.clone();
++    spaced_ledger["claim_digests"][spec] = spaced_report["claim_digests"][spec].clone();
++    spaced_ledger["evidence"]["sha256"] = casper_soak::file_hash(&root.path().join("verification.json")).unwrap().into();
++    save(&spaced_ledger);
++    assert_eq!(selected("incomplete-artifact-list.json"), 2);
++    fs::write(root.path().join(spec), header).unwrap();
++    fs::write(root.path().join("verification.json"), casper_soak::encoded(&report).unwrap()).unwrap();
++    save(&ledger);
++    fs::write(root.path().join("source_file.txt"), "changed").unwrap();
++    assert_eq!(selected("stale-source.json"), 2);
++    let mut relabeled = ledger.clone();
++    relabeled["artifact"]["sha256"] = casper_soak::hash(b"changed").into();
++    save(&relabeled);
++    assert_eq!(selected("relabeled-old-evidence.json"), 2);
++    fs::write(root.path().join("source_file.txt"), "source").unwrap();
++    let mut bad = ledger.clone();
++    bad["claim_ids"] = json!([]);
++    save(&bad);
++    assert_eq!(selected("wrong-claim.json"), 2);
++    bad = ledger.clone();
++    bad["phase_status"]["pre_pr216_merge"] = "pending".into();
++    save(&bad);
++    assert_eq!(selected("wrong-phase.json"), 2);
++    save(&ledger);
++    fs::write(root.path().join("verification.json"), "{}").unwrap();
++    assert_eq!(selected("stale-evidence.json"), 2);
++    fs::write(root.path().join("verification.json"), casper_soak::encoded(&report).unwrap()).unwrap();
++    let outside = root.path().join("outside-ledgers");
++    fs::rename(path.parent().unwrap(), &outside).unwrap();
++    std::os::unix::fs::symlink(&outside, path.parent().unwrap()).unwrap();
++    assert_eq!(selected("symlink-ledger-parent.json"), 2);
++}
+diff --git a/scripts/casper-soak/task-complete.sh b/scripts/casper-soak/task-complete.sh
+new file mode 100644
+index 000000000..abbcc6ea0
+--- /dev/null
++++ b/scripts/casper-soak/task-complete.sh
+@@ -0,0 +1,38 @@
++#!/usr/bin/env bash
++set -euo pipefail
++[[ "${1:-}" == TASK-017-4 ]] || { printf 'Only TASK-017-4 is supported.\n' >&2; exit 2; }
++shift
++MODE=check
++HELPER="${SA_TASK_COMPLETE_HELPER:-}"
++while [[ $# -gt 0 ]]; do
++ case "$1" in
++  --helper) HELPER="$2"; shift 2 ;;
++  --complete) MODE=complete; shift ;;
++  --check) MODE=check; shift ;;
++  *) printf 'Unsupported completion option.\n' >&2; exit 2 ;;
++ esac
++done
++[[ -f "$HELPER" && ! -L "$HELPER" ]] || { printf 'A regular shared completion helper is required.\n' >&2; exit 2; }
++EXPECTED=924a1cde6ae61d15a72dda276687b0d63d9df0dd75d7b7f1aba4e8300f502d2e
++[[ "$(shasum -a 256 "$HELPER" | awk '{print $1}')" == "$EXPECTED" ]] || { printf 'The shared completion helper needs compatibility review.\n' >&2; exit 2; }
++DIRECTORY="$(cd "$(dirname "$HELPER")" && pwd)"
++TEMP="$(mktemp -d)"
++trap 'rm -rf "$TEMP"' EXIT
++ln -s "$DIRECTORY/lib" "$TEMP/lib"
++awk 'BEGIN { n=0 } $0 == "main \"$@\"" { n++; next } { print } END { if (n != 1) exit 2 }' "$HELPER" >"$TEMP/helper.sh"
++source "$TEMP/helper.sh"
++ROOT="$(git rev-parse --show-toplevel)"
++report="$(validate_task TASK-017-4)"
++claim_status=0
++"${SOAK_CLAIM_CHECKER_BIN:-$ROOT/target/debug/check-casper-claims}" --root "$ROOT" --claim CLAIM-CASPER-SOAK-001 --strict --output "$TEMP/claim-check.json" || claim_status=$?
++if [[ "$claim_status" != 0 ]]; then
++ report="$(jq '.grade="partial" | .gaps=((.gaps+["undischarged_cbc_claim"])|unique) | .details += [{code:"undischarged_cbc_claim",message:"The source-bound harness claim audit did not pass.",location:"docs/claims/casper-soak-harness.md"}]' <<<"$report")"
++ printf '%s\n' "$report"
++ exit "$claim_status"
++fi
++if [[ "$MODE" == complete ]]; then
++ mark_task_complete TASK-017-4 "" true false false
++else
++ printf '%s\n' "$report"
++ if ! jq -e '.grade=="full" and (.gaps|length)==0' <<<"$report" >/dev/null; then exit 3; fi
++fi
+diff --git a/docs/work-logs/task-017-4-final-checks.md b/docs/work-logs/task-017-4-final-checks.md
+new file mode 100644
+index 000000000..40820b152
+--- /dev/null
++++ b/docs/work-logs/task-017-4-final-checks.md
+@@ -0,0 +1,116 @@
++# TASK-017-4 Final Harness Checks
++
++## Scope
++
++The user selected TASK-017-4, not all of EPIC-017. This work changes only the harness, fixtures, workflow checks, and related records.
++
++New executable code uses Rust and Bash. No node campaign, external repin, waiver, commit, or push occurred.
++
++## Changes
++
++The full binding runner now uses test optimization level 1. The runner records this setting and preserves its resource limits and assertions.
++
++The registry requires 48 case identities and 91 driver invocations. Aggregate counts cannot replace a missing case.
++
++A new fixture checks interrupted capture before container removal. It uses a controlled Docker command boundary and verifies the retained bytes and operation order.
++
++This fixture does not establish Docker daemon behavior or native process containment. The existing HUP fixture separately checks report classification.
++
++The claim auditor checks all eight claim identities. A declared discharge requires matching artifact, specification, evidence, claim, and phase records.
++
++A RED test exposed reuse of old evidence after a ledger digest changed. The GREEN audit checks the evidence report's own digests and tiers.
++
++Discharge reports require `source_digests`, `claim_digests`, `claim_ids`, `phase`, and `tiers`. Ledger records also require a commit identity and verification timestamp.
++
++Additional audit fixtures check canonical ledger names, blank-separated artifact lists, and symlinked ledger directories.
++
++The auditor does not execute a prover. Its ordinary mode can report pending claims successfully. Strict mode rejects pending claims with exit 4.
++
++The `--claim` option selects one claim for a strict gate. Node soak status remains separate from harness verification.
++
++The workflow runs claim-audit tests and retains the audit report. A manual `require_casper_discharge` input activates the strict bundle gate.
++
++## Terminal transitions
++
++The concurrent-transition fixture reproduced a workload launch while another actor held the terminal-transition lock. The RED test exited 101.
++
++The runtime now acquires `.casper-transition-lock` before it checks the terminal marker. It releases the lock after it starts the workload supervisor.
++
++The `stop` action uses the same lock and durably publishes the terminal marker. Lock acquisition has a two-second limit.
++
++The GREEN fixture prevents launch when the terminal transition wins. Another fixture checks `stop` between Bash admission and Rust execution.
++
++An active-stop fixture reproduced an unnecessary second iteration after cancellation. Its RED test exited 101.
++
++The Bash loop now drains an admitted iteration and stops before another iteration. The GREEN result preserves the completed observation and reports cancellation separately.
++
++Use the `stop` action for concurrent terminal requests. Do not replace the lock file or write internal markers concurrently outside this protocol.
++
++```bash
++bash scripts/bench/casper-soak.sh stop --output "$SOAK_OUTPUT_DIR"
++```
++
++This action prevents further workload admission. It does not replace emergency writer termination.
++
++The lock does not solve simultaneous driver and crash-monitor death. Existing containment assumptions and B44 remain explicit.
++
++## Binding review
++
++These mappings describe the bounded lifecycle fixtures. They do not establish node correctness, profile implementation, or unbounded liveness.
++
++| Obligation | Implementation and executable evidence | Boundary |
++| --- | --- | --- |
++| H01: Identity | Manifest binding, admission, invalid inputs, and exact-byte resume mutations. | Approved inputs and executable identities remain separate requirements. |
++| H02: History | Hash-linked entries, rollback refusal, and failure-counter refusal. | Capture inventories must remain intact. |
++| H03: Failures | Resource-stop and cached-success fixtures preserve observed failures. | Resource termination is not a product verdict. |
++| H04: Evidence | Missing artifacts, incomplete capture, and publication replay prevent false success. | Synthetic fixtures do not become node observations. |
++| H05: Stop | Entry guard, shared transition lock, and active-stop drain fixtures. | Cooperating terminal writers use the lock protocol. |
++| H06: Capture | Durable capture and replay checks, plus interrupted-run capture ordering. | Storage and supervisor assumptions still apply. |
++| H07: Policy | Configuration, policy, and executable mismatches reject admission. | No fixture authorizes a production policy change. |
++| H08: Missing data | Missing-zero, Boolean-counter, missing-artifact, and duplicate fixtures. | Missing data remains distinct from observed zero. |
++| H09: Merge | Open-merge refusal and the bounded post-merge model gate. | No actual merged-node campaign occurred. |
++| H10: Verdicts | Exact TLC classification, source checks, inventory checks, and interrupted-report refusal. | Inventory and receipt validation are not proof execution. |
++
++## Completion interface
++
++The repository adapter supports TASK-017-4 without changing the installed shared helper. It pins the helper source and calls its existing strict completion function.
++
++The adapter exposes no force or waiver option. Both modes require strict discharge of CLAIM-CASPER-SOAK-001.
++
++The shared structural check alone reported a full chain despite pending claims. The adapter adds the missing claim gap and prevents a completion stamp.
++
++```bash
++bash scripts/casper-soak/task-complete.sh TASK-017-4 --check \
++  --helper "$SA_TASK_COMPLETE_HELPER"
++```
++
++US-006 and FLOW-001 now describe the maintainer verification flow. TASK-017-4 lists its tests and changed mandatory files.
++
++The compatibility check uses `BF_TODO_PARSER_STRICT=0` for existing unrelated `review` states. This setting does not disable the completion integrity gate.
++
++## Verification results
++
++| Check | Result |
++| --- | --- |
++| Isolated Rust suite | All 22 tests passed. |
++| Driver inventory | All 91 invocations across 48 cases matched. |
++| Casper TLC controls | One clean configuration and ten negative controls passed their expected checks. |
++| Shared TLC gate | All 14 positive configurations and 71 negative controls passed their expected checks. |
++| Legacy and disk suites | The legacy suite and all 42 disk scenarios passed. |
++| Active language-server checks | Eleven files had no reported errors. |
++| Strict claim and CbC gates | Both exited 4 with pending discharge. |
++| Completion attempt | The adapter exited 4 and left the tracker unchanged. |
++
++## Evidence and limits
++
++The source-bound package is [casper-task-017-4-checks-20260918-01](../casper/cbc-evidence/runs/casper-task-017-4-checks-20260918-01/report.json).
++
++Earlier successful 89-invocation runs remain historical. The package retains both terminal RED/GREEN cycles and all later verification attempts.
++
++One model setup attempt copied an unrelated build directory and failed on file permissions. A second attempt lacked a workflow input for shared-gate fixtures.
++
++Neither setup failure counts as a passing suite. Their logs remain separate from the successful final model and legacy run.
++
++Claim acceptance remains pending. No inventory result, synthetic transcript, or audit result discharges the complete claim by itself.
++
++The seven profiles, candidate qualification, approved node resources, and node soaks remain separate tasks. Human review and required ratification remain open.

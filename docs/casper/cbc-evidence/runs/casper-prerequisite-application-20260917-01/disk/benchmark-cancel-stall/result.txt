@@ -1,0 +1,1 @@
+PASS: The guardian fault canceled the stalled benchmark client and preserved failure before fixture release (benchmark-cancel-stall).

@@ -29,11 +29,113 @@ correctness — proved, model-checked, and tested — is the organizing concern.
 
 ## Canonical Terms
 
+### Soak harness
+
+The soak harness is the driver, profile adapters, collectors, and classifier that run [soak profiles](#soak-profile) against a [soak candidate](#soak-candidate) and retain evidence.
+
+**Preferred usage.** Use this term for the harness implementation and its evidence pipeline. The driver is `scripts/run-merge-recovery-soak.sh`. *Distinguish from* the node under test, which the harness observes and never proves. *Avoid*: soak driver for the whole harness, because the driver is one component.
+
+### Soak candidate
+
+A soak candidate is the pinned node build that a soak run observes. Its identity is the node revision, binary digest, image digest, and configuration digest in the run manifest.
+
+**Preferred usage.** Use this term, or candidate node, in harness contracts and profile claims. *Distinguish from* [Release candidate](#release-candidate): a soak candidate can be an open pull-request head, which satisfies neither a release gate nor the post-merge gate. *Avoid*: bare candidate where the release sense is possible.
+
+### Soak profile
+
+A soak profile specifies workload inputs, requested faults, required observations, expected outcomes, and evidence rules for a [soak candidate](#soak-candidate).
+
+**Preferred usage.** Use this term for the [Casper harness contracts](casper/design/soak-interface-contract.md). Distinguish profile verification from node correctness and observed product outcomes.
+
+### Fault acknowledgment
+
+A fault acknowledgment records the observed application of a requested fault to an identified node or process incarnation.
+
+**Preferred usage.** Use this term only with supporting observation evidence. A requested fault or successful control-command return is not sufficient acknowledgment. *Distinguish from* [Receipt](#receipt): a fault acknowledgment is the receipt class for requested faults.
+
+### Receipt
+
+A receipt is a retained raw artifact that proves the harness observed one requested event on an identified node or process incarnation. Examples are delivery, cut-point, restart, and path-engagement receipts.
+
+**Preferred usage.** Use this term with the event it proves, such as delivery receipt. A command return code is not a receipt. *Distinguish from* [Fault acknowledgment](#fault-acknowledgment), which is the receipt class for requested faults. *Avoid*: log line, because a receipt must carry identity, producer sequence, and a digest.
+
+### Negative control
+
+A negative control is a model configuration or driver fixture that enables one [defect knob](#defect-knob). It must fail with its one named property violation and a retained trace.
+
+**Preferred usage.** Use this term for expected-violation checks that a separate registry lists apart from the clean configuration. Unexpected success, timeout, and tool error are failures of the control. *Distinguish from* [Violation](casper/GLOSSARY.md#violation): a violation is the TLC outcome, and a negative control is the check that requires it. *Avoid*: unsafe configuration in prose, because `_unsafe` is a machine suffix.
+
+### Defect knob
+
+A defect knob is a named model constant or fixture switch that enables one specified defect in an otherwise correct model or driver. Each knob names the one property it must break.
+
+**Preferred usage.** Use this term for the switch a [negative control](#negative-control) turns on. *Distinguish from* a model bound, which sizes the state space and introduces no defect. *Avoid*: flag without qualification.
+
+### Scenario verdict
+
+A scenario verdict is the classifier result for one profile scenario: `passed`, `product_failure`, `incomplete`, `blocked`, or `invalid_input`. A product failure survives later cancellation, resource termination, and missing observations.
+
+**Preferred usage.** Use this term for per-scenario classification in the [interface contract](casper/design/soak-interface-contract.md). *Distinguish from* harness verification, which grades the harness evidence, and from termination, which records why a run stopped. *Avoid*: pass or fail without the scenario qualifier, because a run verdict aggregates scenario verdicts.
+
+### Refutation
+
+Refutation is the claim evidence tier that seeks counterexamples with bounded model checking, [negative controls](#negative-control), and executable fixtures. A passing refutation slice shows bounded safety and never discharges an unbounded claim.
+
+**Preferred usage.** Use this term for the `refutation` field of a [claim](#claim) specification. *Distinguish from* [Construction](#construction), the proof tier, which the harness claims mark not applicable. *Distinguish from* [Verification tier](casper/GLOSSARY.md#verification-tier), which is a CI budget class. *Avoid*: verification without a tier qualifier.
+
+### Claim
+
+A claim is a stated correctness property with its evidence tiers, artifact inventory, and phase. Its specification records the status, the tier results, and the accepted source digests.
+
+**Preferred usage.** Use this term for a specification under `docs/claims/`. *Distinguish from* [Scenario verdict](#scenario-verdict): a claim covers a property, and a verdict grades one scenario run. *Avoid*: requirement, because a claim carries evidence obligations and a status.
+
+### Construction
+
+Construction is the claim evidence tier that proves correctness from the structure of the implementation. The Casper soak harness claims record this tier as not applicable.
+
+**Preferred usage.** Use this term for the `construction` field of a [claim](#claim) specification. *Distinguish from* [Correct by Construction](#correct-by-construction), which names the whole process rather than one tier. *Avoid*: proof without a tier qualifier.
+
+### Binding
+
+Binding is the claim evidence tier that connects a formal property to the executable path that realizes it. A binding review maps each property to its fixture and states the bounds.
+
+**Preferred usage.** Use this term for the `binding` field of a [claim](#claim) specification. *Distinguish from* [Refutation](#refutation): refutation searches for counterexamples, and binding connects a checked property to code. *Avoid*: mapping without qualification.
+
+### Binding acceptance
+
+Binding acceptance is the recorded human decision that a binding review holds for named source bytes. A later change to an accepted artifact returns the claim to pending.
+
+**Preferred usage.** Use this term for the decision that an acceptance record names, with its date and scope. *Distinguish from* [Refutation](#refutation): a passing model result is evidence, not acceptance. *Avoid*: approval without the binding qualifier.
+
+### Discharge
+
+A discharge is the claim status that records accepted evidence for one stated scope and phase. A discharged claim names its bounds and does not extend past them.
+
+**Preferred usage.** Use this term for the `status` value of a [claim](#claim) and its [ledger records](#ledger-record). *Distinguish from* a passing test, which supplies evidence without changing claim status. *Avoid*: proved, because a bounded discharge is not an unbounded proof.
+
+### Ledger record
+
+A ledger record is the per-artifact CbC evidence entry that pins one file by SHA-256 to its claim and accepted evidence. Canonical Casper records live under `docs/casper/cbc-evidence/`.
+
+**Preferred usage.** Use this term for a record file and its embedded JSON block. *Distinguish from* the [decision ledger](casper/design/decision-ledger/README.md), which records ratified design decisions. *Avoid*: evidence file, because a record pins an artifact and carries a status.
+
+### Evidence package
+
+An evidence package is the retained run output that a [ledger record](#ledger-record) cites. It keeps the report, the validation result, and the digest lists in the repository.
+
+**Preferred usage.** Use this term for a directory under `docs/casper/cbc-evidence/runs/`. *Distinguish from* [Release evidence](#release-evidence): one binds a claim, and the other binds gate results to one source SHA. *Avoid*: run artifacts.
+
+### Controlled transcript
+
+A controlled transcript is a synthetic record set that a profile generates and classifies without a running node. It establishes harness behavior and never establishes node behavior.
+
+**Preferred usage.** Use this term for a profile in the `controlled-transcript-implemented` state. *Distinguish from* [Receipt](#receipt), which proves an observed event on an identified node incarnation. *Avoid*: simulation.
+
 ### Release candidate
 
 A release candidate is one immutable source commit with its tested artifacts and [release evidence](#release-evidence). Standard release gates evaluate this identity.
 
-**Preferred usage.** Use this term for the source, artifact, and evidence set. *Distinguish from* [Canary release](#canary-release): candidate identity versus candidate publication.
+**Preferred usage.** Use this term for the source, artifact, and evidence set. *Distinguish from* [Canary release](#canary-release): candidate identity versus candidate publication. *Distinguish from* [Soak candidate](#soak-candidate): release identity under release gates versus any pinned build that a soak run observes.
 
 ### Canary release
 
@@ -162,7 +264,7 @@ state. *Distinguish from* finalization distance from the block graph tip.
 
 Correct by Construction (CbC) is the development process that connects a correctness claim to implementation behavior, formal verification, and retained evidence.
 
-**Preferred usage.** Use CbC for this verification process. Distinguish it from CBC Casper, which names the consensus protocol.
+**Preferred usage.** Use CbC for this verification process. *Distinguish from* CBC Casper, which names the consensus protocol. *Distinguish from* [Construction](#construction), which names one evidence tier inside this process.
 
 ### Work bound
 

@@ -1,0 +1,1 @@
+exec failed: Error Domain=NSPOSIXErrorDomain Code=86 "Bad CPU type in executable" UserInfo={NSLocalizedFailureReason=Failed to execute /usr/local/Cellar/openjdk@17/17.0.13/libexec/openjdk.jdk/Contents/Home/bin/java: Bad CPU type in executable}

@@ -149,7 +149,7 @@ must, with the status of each item recorded here:
    **Done** — `batched_walk_matches_the_reference_walk_on_generated_lineages`
    plus `batched_walk_is_fail_closed_on_a_gapped_segment` in
    `deploy_lifecycle.rs`.
-3. Record the evidence in `docs/cbc-evidence/` for the touched
+3. Record the evidence in `docs/casper/cbc-evidence/` for the touched
    `cbc=mandatory` artifacts and cite this claim id. **Done** —
    `casper-src-rust-finality-deploy-lifecycle-rs.md` and the appended
    record in `casper-src-rust-util-rholang-interpreter-util-rs.md`.

@@ -1,0 +1,44 @@
+PASS: Disk hygiene left 7000 MiB below 8192 MiB. No iteration started, and the driver recorded refusal.
+PASS: A post-start disk sample was missing (missing-boundary). No iteration started, and the driver recorded refusal.
+PASS: A post-start disk sample was missing (missing-after-hygiene). No iteration started, and the driver recorded refusal.
+PASS: A post-start disk sample was malformed (malformed-boundary). No iteration started, and the driver recorded refusal.
+PASS: The driver stopped the active iteration after the disk probe fault (missing-active).
+PASS: The driver stopped the active iteration after the disk probe fault (stalled-active).
+PASS: The disk breach record exists before Docker starts the stop command. Termination remains unconfirmed.
+PASS: The driver recorded guardian death and stopped the active iteration.
+PASS: Stalled attribution stopped within the aggregate fixture deadline across 32 session roots.
+PASS: Restart preserved the guardian breach and failure count without new work (restart-uncounted).
+PASS: Restart preserved the guardian breach and failure count without new work (restart-counted).
+PASS: The driver bounded stalled stop commands and published the protection failure. Writer termination remains unconfirmed.
+PASS: Guardian death during the boundary probe prevented admission and produced a protection failure.
+PASS: The retained breach prevented benchmark and iteration admission and preserved the failure.
+PASS: The 7000 MiB sample prevented benchmark and iteration admission and recorded one protection failure.
+PASS: The guardian recorded the benchmark disk breach and requested a stop before benchmark return.
+PASS: Opening benchmark admission preserved the allowed path (benchmark-equal).
+PASS: Opening benchmark admission preserved the allowed path (benchmark-sufficient).
+PASS: An unavailable opening benchmark sample refused work and recorded one protection failure.
+PASS: Opening benchmark admission preserved the allowed path (benchmark-disabled).
+PASS: The guardian fault canceled the stalled benchmark client and preserved failure before fixture release (benchmark-cancel-death).
+PASS: The guardian fault canceled the stalled benchmark client and preserved failure before fixture release (benchmark-cancel-breach).
+PASS: Guardian death during the probe prevented benchmark admission and preserved failure (benchmark-guardian-boundary).
+PASS: Guardian death during the probe prevented benchmark admission and preserved failure (benchmark-guardian-interleaved).
+PASS: The guardian fault canceled the stalled benchmark client and preserved failure before fixture release (benchmark-cancel-stall).
+PASS: The missing guardian progress stopped the active iteration and preserved failure before fixture release.
+PASS: Stale guardian progress prevented admission and preserved failure (guardian-progress-boundary).
+PASS: Stale guardian progress prevented admission and preserved failure (benchmark-progress-boundary).
+PASS: The driver canceled the stalled hygiene client and published failure before fixture release.
+PASS: Invalid disk settings were rejected before workload admission (disk-floor-range).
+PASS: Invalid disk settings were rejected before workload admission (disk-band-range).
+PASS: Invalid disk settings were rejected before workload admission (disk-sum-range).
+PASS: A valid maximum disk setting preserved admission behavior (disk-max-floor).
+PASS: A valid maximum disk setting preserved admission behavior (disk-max-band).
+PASS: Disk hygiene preserved the unowned active session and refused new work below the admission threshold.
+PASS: A failed cleanup command prevented admission despite a sufficient later disk sample (cleanup-error-list).
+PASS: A failed cleanup command prevented admission despite a sufficient later disk sample (cleanup-error-remove).
+PASS: A failed cleanup command prevented admission despite a sufficient later disk sample (cleanup-error-network).
+PASS: A failed cleanup command prevented admission despite a sufficient later disk sample (cleanup-error-image).
+PASS: A failed cleanup command prevented admission despite a sufficient later disk sample (cleanup-error-builder).
+PASS: Successful cleanup preserved the admission result for its disk sample (cleanup-partial).
+PASS: Successful cleanup preserved the admission result for its disk sample (cleanup-sufficient).
+Evidence: [WORKSPACE]/target/task-017-3-validation/disk
+PASS: All 42 isolated disk scenarios passed.

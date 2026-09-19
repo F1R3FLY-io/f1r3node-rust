@@ -1,0 +1,90 @@
+{
+  "total": 21,
+  "gaps": 21,
+  "items": [
+    {
+      "status": "pending",
+      "path": ".github/workflows/merge-recovery-soak.yml"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/casper_soak/CasperSoakHarness.tla"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/casper_soak/MC_CasperSoakHarness_cleanup_unsafe.cfg"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/casper_soak/MC_CasperSoakHarness_control_unsafe.cfg"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/casper_soak/MC_CasperSoakHarness_evidence_unsafe.cfg"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/casper_soak/MC_CasperSoakHarness_failure_unsafe.cfg"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/casper_soak/MC_CasperSoakHarness_identity_unsafe.cfg"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/casper_soak/MC_CasperSoakHarness_merge_unsafe.cfg"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/casper_soak/MC_CasperSoakHarness_policy_unsafe.cfg"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/casper_soak/MC_CasperSoakHarness_resume_unsafe.cfg"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/casper_soak/MC_CasperSoakHarness_samples_unsafe.cfg"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/casper_soak/MC_CasperSoakHarness_stop_unsafe.cfg"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/casper_soak/MC_CasperSoakHarness.cfg"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/casper_soak/README.md"
+    },
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/casper_soak/verification-plan.jsonc"
+    },
+    {
+      "status": "pending",
+      "path": "scripts/bench/test-run-merge-recovery-soak.sh"
+    },
+    {
+      "status": "pending",
+      "path": "scripts/bench/write-soak-summary.sh"
+    },
+    {
+      "status": "pending",
+      "path": "scripts/ci/check_casper_soak_models.py"
+    },
+    {
+      "status": "pending",
+      "path": "scripts/ci/check-tla-invariants.sh"
+    },
+    {
+      "status": "pending",
+      "path": "scripts/ci/tests/test_casper_soak_model_runner.py"
+    },
+    {
+      "status": "pending",
+      "path": "scripts/run-merge-recovery-soak.sh"
+    }
+  ]
+}

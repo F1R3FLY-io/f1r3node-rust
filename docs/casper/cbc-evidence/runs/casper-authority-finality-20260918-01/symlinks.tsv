@@ -1,0 +1,2 @@
+./final-local/fixtures/symlinked-observation/observations/0.json	../dag.json
+./final-source/fixtures/symlinked-observation/observations/0.json	../dag.json

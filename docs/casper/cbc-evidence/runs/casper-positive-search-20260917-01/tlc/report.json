@@ -1,0 +1,14 @@
+{
+  "phase": "tlc",
+  "exit_code": 0,
+  "seconds": 67.696,
+  "image_id": "sha256:dc81b270cbde51da56ddc700548c7f1b476b610ae71c96b155dc4e944f83ef64",
+  "command": "bash scripts/ci/check-tla-invariants.sh --soak-pr",
+  "source_sha256": {
+    "scripts/ci/check-tla-invariants.sh": "8b72bf9f0190b8b15b71d0e3da6af5af07ac8d811b923f402bc2952bc716cd7c",
+    "scripts/ci/test-check-tla-invariants.sh": "d6df6ca72cba8a94bf8f2513f779f0fea40a5aae94d26c7b3851c9809cbe62bb",
+    "scripts/ci/check-formal-invariants.sh": "84e75616a60f671c1be36b85a4678f97c1c3ea1f8f08396e1281bcfa0e8f2876",
+    ".github/workflows/slashing-tests.yml": "be6741fcad7ac67437bb43ccc247d433e1f32f5ad73109d615564843f4f45207"
+  },
+  "jar_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88"
+}

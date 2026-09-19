@@ -1,0 +1,1 @@
+PASS: The driver recorded guardian death and stopped the active iteration.

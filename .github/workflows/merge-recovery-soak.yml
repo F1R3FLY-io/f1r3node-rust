@@ -1687,6 +1687,16 @@ jobs:
           path: system-integration
           persist-credentials: false
 
+      - name: Install the pinned Rust toolchain for harness controls
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: nightly-2026-02-09
+
+      - name: Build the harness host controls
+        working-directory: ci-control
+        shell: bash -euo pipefail {0}
+        run: cargo build --locked --target-dir target -p casper-soak --bin casper-soak
+
       - name: Extend issue 24 soak metrics
         shell: bash -euo pipefail {0}
         run: bash node-under-test/scripts/bench/extend-issue24-metrics.sh system-integration/integration-tests/test/infra/metrics.py

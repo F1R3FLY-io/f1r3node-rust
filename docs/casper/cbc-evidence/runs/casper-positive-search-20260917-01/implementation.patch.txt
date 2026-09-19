@@ -1,0 +1,24 @@
+diff --git a/scripts/ci/check-tla-invariants.sh b/scripts/ci/check-tla-invariants.sh
+index 10ac9e828..d06b130b9 100755
+--- a/scripts/ci/check-tla-invariants.sh
++++ b/scripts/ci/check-tla-invariants.sh
+@@ -285 +285,2 @@ for check in "${POST_FIX_CONFIGS[@]}" "${NEGATIVE_CONTROLS[@]}"; do
+-    if ((status == 0)) && [[ -z "$expected_invariant" ]]; then
++    if ((status == 0)) && [[ -z "$expected_invariant" ]] &&
++        grep -Fxq 'Model checking completed. No error has been found.' "$log"; then
+@@ -304,0 +306,2 @@ for check in "${POST_FIX_CONFIGS[@]}" "${NEGATIVE_CONTROLS[@]}"; do
++        else
++            echo "Expected TLC exit 0 and a completed-search marker, received exit $status."
+diff --git a/scripts/ci/test-check-tla-invariants.sh b/scripts/ci/test-check-tla-invariants.sh
+index 322f69d57..a04383e6e 100755
+--- a/scripts/ci/test-check-tla-invariants.sh
++++ b/scripts/ci/test-check-tla-invariants.sh
+@@ -56,0 +57 @@ if [[ "$config" == "${TEST_TLC_TARGET:-}" ]]; then
++        incomplete) printf 'Finished in 0s.\n'; exit 0 ;;
+@@ -241,0 +243,6 @@ fi
++if run_gate pull_request TEST_TLC_TARGET="${baseline##*/}.cfg" TEST_TLC_RESULT=incomplete; then
++    fail 'An incomplete baseline search passed the pull-request gate.'
++fi
++grep -Fq "FAIL   $baseline (" "$WORK/run.log" ||
++    fail 'The gate failed for a reason other than the incomplete baseline search.'
++
