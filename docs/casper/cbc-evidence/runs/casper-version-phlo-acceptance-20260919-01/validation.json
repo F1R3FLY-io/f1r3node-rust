@@ -1,0 +1,115 @@
+{
+  "status": "accepted-binding-verification-passed",
+  "source_files": 21,
+  "unchanged_implementation_files": 20,
+  "artifacts": 12,
+  "compatibility_links": 12,
+  "tests": 15,
+  "cases": 102,
+  "invocations": 103,
+  "reports": 92,
+  "nested_references": 1250,
+  "model_controls": 4,
+  "shared_tests": 11,
+  "strict_claim007": 0,
+  "strict_bundle": 4,
+  "bundle_pending": [
+    "CLAIM-CASPER-SOAK-001"
+  ],
+  "artifact_gate": {
+    "total": 12,
+    "gaps": 0
+  },
+  "concurrent_task12_changes_preserved": true,
+  "retained_verifier_failures": [
+    {
+      "exit": 1,
+      "cause": "The initial verifier read the shared test count from the wrong field."
+    },
+    {
+      "exit": 1,
+      "cause": "The tracker changed concurrently only within TASK01712."
+    }
+  ],
+  "retained_initial_shared_test": {
+    "exit": 101,
+    "cause": "Claim metadata changed before ledger renewal. No source or assertion changed for the passing rerun."
+  },
+  "workflow_tag_ratified": true,
+  "node_execution": false,
+  "report_sha256": "114a1372249ed2488da96f3dc4346a41ea4cc2eddc8702ca3444e4008e52edc3",
+  "closure": {
+    "target": "TASK-017-11",
+    "kind": "task",
+    "grade": "full",
+    "gaps": [],
+    "details": []
+  },
+  "task_status": "complete",
+  "strict": true,
+  "force": false,
+  "completion_helper_sha256": "924a1cde6ae61d15a72dda276687b0d63d9df0dd75d7b7f1aba4e8300f502d2e",
+  "previous_metadata_sha256": "fb6c4fb15eeb121a2ffc01f1efd715aceddd9fbb7936a8a4524091d8b195aaae",
+  "verification_metadata": {
+    "path": "verification-metadata.tar.gz",
+    "sha256": "540994bac4c66624e9d1676e421a025b39832551a187cfd7978bb967d994bdbe",
+    "privacy_scan_matches": 0
+  },
+  "private_retention": {
+    "path": "target/task-017-11-acceptance.private.tar.gz",
+    "sha256": "057d30f2ceab69f9198435d43066355d74145d3d829b57f04dc032df8bd0988e",
+    "uploaded": false,
+    "owner_task": "TASK-017-14"
+  },
+  "upload": {
+    "schema_version": 1,
+    "status": "uploaded-and-download-verified",
+    "recorded_at": "2026-09-19T19:11:52Z",
+    "approval": "I authorize upload of the two sanitized evidence archives to the existing draft evidence release.",
+    "release_id": 391939637,
+    "tag": "cbc-evidence-epic-017",
+    "draft": true,
+    "release_published": false,
+    "existing_assets_unchanged": true,
+    "existing_asset_count": 25,
+    "uploaded_assets": [
+      {
+        "digest": "sha256:330e7609143ffe0eaf839ecf082a61ec02809acdd0bd357b66aac7ecee3616bb",
+        "id": 575328309,
+        "name": "casper-version-phlo-20260919-01.external.tar.gz",
+        "size": 5187772
+      },
+      {
+        "digest": "sha256:06f6b9f9d7a74ec726fbe9f61db056929cf07ac2a5d150a22f958034c4ce1cdc",
+        "id": 575328308,
+        "name": "casper-version-phlo-verification-20260919-01.external.tar.gz",
+        "size": 12434
+      }
+    ],
+    "verification": "Both downloads are byte-identical to the reviewed local archives.",
+    "private_originals_uploaded": false,
+    "credentials_transferred": false
+  },
+  "ste": {
+    "new_prose": "passed-with-prechange-baseline",
+    "human_conformance_claim": false
+  },
+  "diagnostics": {
+    "files_checked": 17,
+    "clean": 16,
+    "inconclusive": 0,
+    "findings": 1,
+    "false_positives": [
+      {
+        "file": "docs/ToDos.md",
+        "rule": "typos",
+        "message": "`daa` should be `data`",
+        "reason": "The text is part of the historical Git commit hash 65f7f6daa."
+      }
+    ],
+    "code_errors": 0
+  },
+  "commit_created": false,
+  "push_performed": false,
+  "release_published": false
+}
