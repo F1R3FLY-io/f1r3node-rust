@@ -109,7 +109,7 @@ A correct harness can report a failed product scenario. Passing harness verifica
 
 The [profile guide](../../formal/tlaplus/casper_soak/profiles/slashing/README.md) defines schemas, bounds, and verification commands.
 
-The [work log](../work-logs/task-017-9-slashing.md) records checks and pending work. The bounded binding is accepted. Workflow-tag ratification remains pending.
+The [work log](../work-logs/task-017-9-slashing.md) records checks and closure. The bounded binding is accepted. The user ratified the workflow tag.
 
 The [harness contract](./casper-soak-harness.md) defines provenance and outcome rules. Deferred policies still require separate approval before activation.
 
@@ -123,4 +123,16 @@ The [acceptance record](../casper/cbc-evidence/runs/casper-slashing-acceptance-2
 
 Hosted run `35452747041` verified the same implementation. This acceptance does not establish node correctness or qualify a live adapter.
 
-The workflow tag remains unratified. TASK-017-9 closure waits for that separate decision. No policy activation, live campaign, or post-merge execution is authorized.
+No policy activation, live campaign, or post-merge execution is authorized.
+
+## Workflow tag ratification
+
+The user ratified the workflow tag on 2026-09-19:
+
+> 017-9 should now be closed out
+
+The [`.gitattributes`](../../.gitattributes) file now marks `.github/workflows/casper-slashing.yml` as `cbc=mandatory` with high weight. The tag matches the four ratified profile workflows.
+
+The [ratification record](../casper/cbc-evidence/runs/casper-slashing-ratification-20260919-01/report.json) binds this specification and the twelve reviewed sources after the decision. The acceptance record keeps its original bytes.
+
+TASK-017-9 is complete. External evidence publication remains pending, and the soak tier remains pending.

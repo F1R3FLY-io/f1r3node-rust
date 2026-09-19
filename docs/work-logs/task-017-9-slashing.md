@@ -196,3 +196,25 @@ The carrier agent received the explicit TASK-017-11 assignment and the existing 
 TASK-017-14 must retain `target/task-017-9-acceptance/` before scratch cleanup. Those files contain acceptance scripts, preflight checks, fresh fixtures, model logs, and strict audits.
 
 No node execution, policy activation, evidence upload, Git commit, or push occurred during acceptance recording.
+
+## Workflow tag ratification and closure
+
+The user ratified the workflow tag on 2026-09-19 with the message "017-9 should now be closed out". The session `claude-session-9f19b46c` recorded the ratification and closed the task.
+
+The `.gitattributes` file gains one line. It marks `.github/workflows/casper-slashing.yml` as `cbc=mandatory` with high weight. The entry matches the four profile workflows that earlier tasks ratified.
+
+The claims checker binds the claim specification digest into every ledger record and into the discharge evidence report. Editing the specification therefore requires new evidence bytes.
+
+The acceptance report keeps its original bytes. A separate ratification package records the new decision, and the twelve ledger records now cite that package.
+
+The ratification package is `docs/casper/cbc-evidence/runs/casper-slashing-ratification-20260919-01/`. It holds the report, the validation, the digest list of the twelve canonical records, and an archive of those records as accepted.
+
+Each record drops `workflow-tag-ratification` from its pending list and keeps `external-evidence-publication`. Each record points its previous-ledger reference at the new archive.
+
+The strict audit after ratification returns exit 0 for Claims001 through 006. Claims007 and 008 stay pending, and the full bundle returns 4.
+
+The reviewed artifact digests did not change. The workflow file itself was not edited.
+
+Closure does not qualify a live adapter, activate a deferred policy, or authorize node execution or a post-merge run. The soak tier stays pending.
+
+External evidence publication stays pending. TASK-017-14 must retain `target/task-017-9-acceptance/` and `target/task-017-9-hosted-35452747041/` before scratch cleanup.

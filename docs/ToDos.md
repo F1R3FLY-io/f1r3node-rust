@@ -474,16 +474,20 @@ tasks:
     title: "Verify slashing scenario scheduling and result classification"
     claims: [CLAIM-CASPER-SOAK-006]
     claim_spec: docs/claims/casper-soak-slashing.md
-    status: in_progress
+    status: complete
     claimed_by: pi-casper-slashing
     claimed_at: 2026-09-19T07:13:31Z
     work_log: docs/work-logs/task-017-9-slashing.md
+    implementation_status: controlled-transcript-implemented
     binding_status: accepted
     binding_acceptance: docs/casper/cbc-evidence/runs/casper-slashing-acceptance-20260919-01/report.json
     hosted_workflow_status: verified
     hosted_workflow_run: 35452747041
-    workflow_tag_status: unratified
-    completion_blocker: "The bounded binding is accepted. Workflow-tag ratification remains pending."
+    workflow_tag_status: ratified
+    workflow_tag_ratification: docs/casper/cbc-evidence/runs/casper-slashing-ratification-20260919-01/report.json
+    validation_evidence: docs/casper/cbc-evidence/runs/casper-slashing-ratification-20260919-01/validation.json
+    completion_evidence: docs/work-logs/task-017-9-slashing.md
+    completion_blocker: null
     unit_tests: [scripts/casper-soak/tests/slashing.rs]
     blocked_by: []
     decisions: [D-09]
@@ -492,6 +496,8 @@ tasks:
       - "Observed delivery order and epochs remain distinct from requested scheduling."
       - "Fixtures prove that planted authorization mismatches are reported rather than suppressed."
       - "Node slash authorization, reconstruction, and bisimilarity proofs remain outside this epic."
+    completion_gaps: []
+    completed_date: 2026-09-19
 
   - id: TASK-017-10
     title: "Verify carrier-index comparison inputs and telemetry classification"
@@ -630,6 +636,28 @@ tasks:
       - "The task records the file and line counts of the diff before and after reduction."
       - "The link check, the STE check, and the strict CbC gate produce the same results after reduction as before it."
       - "The maintainer confirms the reduced diff meets the PR review standard before the PR opens."
+
+  - id: TASK-017-15
+    title: "Retrieve and publish the external evidence release"
+    status: pending
+    claimed_by: null
+    claimed_at: null
+    blocked_by: [TASK-017-13, TASK-017-14]
+    created_at: 2026-09-19
+    ordering: "Final task for this branch and for PR #436. Run step 2 after the reduction commit lands and before the PR leaves draft."
+    evidence_store: "Draft GitHub release cbc-evidence-epic-017, release ID 391939637, target 09b0a60063815b750979864225a0a56387d6ed80, 24 assets as of 2026-09-19."
+    execution_scope: "Step 1 needs no new authorization and unblocks evidence consumers today. Step 2 exposes evidence on a public surface and requires recorded maintainer authorization at the time of the action."
+    rationale: "A draft release carries no Git tag. The endpoint repos/F1R3FLY-io/f1r3node-rust/releases/tags/cbc-evidence-epic-017 returns 404 for every credential. That result blocked carrier-index retrieval under TASK-017-10 on 2026-09-19. The numeric release ID resolves the same release and lists its 24 assets. A branch merge does not create the tag, because publication creates it."
+    implementation_plan:
+      - "Step 1. Address the release by its numeric ID while it stays a draft. List assets through repos/F1R3FLY-io/f1r3node-rust/releases/391939637. Download each asset by its asset ID with an octet-stream accept header. Record the retrieval check in the consuming task's evidence."
+      - "Step 2. Publish the release after the reduction commit lands. Confirm or update the target revision first, because publication creates the tag at that commit. Publication makes the by-tag endpoint work and makes the assets publicly visible."
+    acceptance:
+      - "Every consumer of the external evidence store addresses the release by its ID while the release stays a draft."
+      - "No task records a credential failure for a draft-release lookup. Each record names the absent tag as the cause."
+      - "Publication happens only after the reduction commit lands and only with recorded maintainer authorization."
+      - "The published release pins the revision that the reduction commit produced. The record names that revision."
+      - "Asset digests after publication match the digests recorded at upload time."
+      - "Publication does not change a claim status, a ledger record status, or a discharge result."
 ---
 ```
 
@@ -644,6 +672,8 @@ tasks:
 The [interface contract](./casper/design/soak-interface-contract.md) records exact payloads, source boundaries, fixture expectations, and missing capabilities. The local model alone cannot discharge a harness claim. The accepted lifecycle records include executable bindings and source-specific review.
 
 **Scope:** This epic covers the pre-#216 PR only. The [branch plan](./plans/casper-ratified-soak-2026-09-16.md) records both phases and their evidence boundary.
+
+**Final task:** TASK-017-15 closes the branch and PR #436. Evidence consumers address the draft release by its ID until then. Release publication is the last action, and it follows the reduction commit.
 
 ---
 
