@@ -1,6 +1,6 @@
 # CbC Evidence: scripts/casper-soak/src/host_control.rs
 
-The user accepted the repaired bounded H01–H10 binding review. This record discharges only CLAIM-CASPER-SOAK-001 in the pre-merge phase.
+The user accepted the repaired bounded H01–H10 binding review for this file at commit `f9273621c`. The file changed on 2026-09-18 to satisfy clippy, so this record is pending again until a new acceptance binds the current source. The `drift` field keeps the accepted commit and digest.
 
 Profile claims, node soaks, post-merge work, and inherited containment limits remain separate. The linked archive preserves the previous acceptance records.
 
@@ -9,19 +9,19 @@ Profile claims, node soaks, post-merge work, and inherited containment limits re
   "artifact": {
     "path": "scripts/casper-soak/src/host_control.rs",
     "id": "scripts-casper-soak-src-host-control-rs",
-    "commit": "f9273621c8887947b56d0093a71486338312138e",
-    "commit_is_base": true,
-    "sha256": "fb6dafc47a5df2073c4ca618ddf81c4a292229b20e5b08a1f0cfeae306e185bb"
+    "commit": "6adeb7d38cee6d6e0c580e6b3ea1af3720d2b16a",
+    "commit_is_base": false,
+    "sha256": "933e9cd7d05e763fea581d53f255ddba08fe3737c2046d3bbe6e996a06859aa9"
   },
   "claim": "docs/claims/casper-soak-harness.md",
   "claim_ids": [
     "CLAIM-CASPER-SOAK-001"
   ],
   "claim_digests": {
-    "docs/claims/casper-soak-harness.md": "51a863feac95f73d06aab10b45ef05ff01b07d5ebb91d1a4fb4879f5776c0134"
+    "docs/claims/casper-soak-harness.md": "ea23866a9aa860d601dfd3dc4eaccfc7ef56a162022e907ab3619ef34c7dee51"
   },
   "adapter": "embedded",
-  "status": "discharged",
+  "status": "pending",
   "scope": "bounded-harness-only",
   "evidence": {
     "kind": "accepted-bounded-refutation-and-binding",
@@ -31,15 +31,21 @@ Profile claims, node soaks, post-merge work, and inherited containment limits re
   "tiers": {
     "refutation": "bounded-safety-pass",
     "construction": "not-applicable",
-    "binding": "passed"
+    "binding": "pending"
   },
   "phase_status": {
-    "pre_pr216_merge": "discharged",
+    "pre_pr216_merge": "pending",
     "post_pr216_merge": "blocked"
   },
   "soak": "pending",
   "waiver": null,
-  "verified_at": "2026-09-18T20:44:50Z",
+  "verified_at": null,
+  "drift": {
+    "accepted_commit": "f9273621c8887947b56d0093a71486338312138e",
+    "accepted_sha256": "fb6dafc47a5df2073c4ca618ddf81c4a292229b20e5b08a1f0cfeae306e185bb",
+    "changed_at": "2026-09-18",
+    "reason": "The execute function moved above the test module to satisfy clippy. The accepted evidence binds the earlier file only."
+  },
   "previous_ledger": null,
   "review_candidate": "docs/casper/cbc-evidence/runs/casper-driver-rebind-20260918-01/candidate-ledgers/scripts-casper-soak-src-host-control-rs.md"
 }

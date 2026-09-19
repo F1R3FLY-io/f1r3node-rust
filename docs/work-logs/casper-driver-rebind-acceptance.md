@@ -53,3 +53,9 @@ The strict CLAIM-CASPER-SOAK-001 audit returns exit 0. The full bundle remains p
 The package retains the initial failed run, its source snapshot, the startup probe, and the successful checks. No failure evidence was replaced.
 
 No node campaign, external repin, waiver, commit, or push is authorized by this acceptance.
+
+## Drift after acceptance (2026-09-18)
+
+The harness source `scripts/casper-soak/src/host_control.rs` changed after this acceptance. The `execute` function moved above the test module inside the linux module, because clippy denies items after a test module and CI runs clippy with warnings denied. The change does not alter behavior. The accepted digest is `fb6dafc47a5d…` at commit `f9273621c`. The current digest differs.
+
+The claim audit refuses a discharged record whose source differs, so CLAIM-CASPER-SOAK-001 and the host-control ledger record return to pending. The other records keep their accepted digests, which still match. A new acceptance on the current source restores the discharge. The acceptance package `casper-driver-rebind-acceptance-20260918-01` stays as the record of the earlier acceptance.
