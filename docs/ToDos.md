@@ -638,9 +638,11 @@ tasks:
     evidence_review: docs/casper/cbc-evidence/runs/casper-pre-merge-review-20260919-01/report.json
     canonical_record_review: docs/casper/cbc-evidence/runs/casper-formal-area-records-20260919-01/report.json
     canonical_record_status: "Both documentation records are discharged under a separate documentation contract. The canonical changed-scope gate passes for 123 artifacts."
+    compatibility_review: docs/casper/cbc-evidence/runs/casper-compatibility-routing-20260919-01/report.json
+    compatibility_status: "Four stale lookup paths now link to canonical records. Byte-identical historical copies remain. The default gate retains one independent pending claim."
     blocked_by: [TASK-017-12]
     remaining_prerequisites:
-      - "Resolve the five remaining default-gate gaps without overwriting independent historical compatibility records."
+      - "Resolve the applicability and remaining obligations of CLAIM-SOAK-GATE-001 for slashing-tests.yml. The Casper harness discharge does not cover that historical governance claim."
       - "Review baseline results, scan benchmark evidence, and concurrency-gate evidence."
       - "Confirm TASK-018 owners and obtain acceptance of the completed handoff."
     decisions: [D-11]

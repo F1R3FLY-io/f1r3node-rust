@@ -98,6 +98,20 @@ Existing compatibility symlinks expose the two updated canonical records. No com
 
 The eight executable claim audits still pass, with all soak fields pending. TASK-017-13 remains open for compatibility routing, baseline evidence, owners, and handoff acceptance.
 
+## Compatibility routing review
+
+The [routing report](../casper/cbc-evidence/runs/casper-compatibility-routing-20260919-01/report.json) resolves four stale lookup paths. Each path now links to its unchanged canonical record.
+
+Exact historical copies remain beside those links with the suffix `.historical-f8623a54e.md`. Their relative references and pending statuses remain unchanged.
+
+The default gate now reports one gap and exits 4. The canonical gate and eight executable claim audits still pass.
+
+The remaining workflow record cites `CLAIM-SOAK-GATE-001`, not a Casper profile claim. Its historical specification includes required-check enforcement and workflow-control identity obligations.
+
+The prerequisite record describes retirement with the digest inventory but retains open obligations. This review infers no blanket supersession or waiver.
+
+A maintainer must resolve that applicability question and review current evidence. Historical enforcement observations are not fresh checks of current repository settings.
+
 ## Baseline inputs still required
 
 TASK-017-12 remains with `pi-soak-carrier-index-linux`. The [dispatch preparation](../work-logs/task-017-12-preparation.md) defines its resource approval and qualification requirements.

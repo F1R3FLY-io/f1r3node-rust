@@ -155,3 +155,47 @@ Local verification evidence is under `target/task-017-13-canonical-20260919-01/`
 TASK-017-14 must retain that archive before cleanup. This review performs no upload or deletion.
 
 TASK-017-13 remains in progress. This session creates no commit and does not dispatch nodes or authorize post-merge work.
+
+## Compatibility routing resolution
+
+The user requested step 2 after committing the canonical review as `f8623a54e`. The [routing report](../casper/cbc-evidence/runs/casper-compatibility-routing-20260919-01/report.json) records this review.
+
+Four default records are stale snapshots of the Casper harness claims. Their current canonical records bind accepted sources and passing bounded evidence.
+
+Each historical file now has a byte-identical sibling with the suffix `.historical-f8623a54e.md`. The original lookup path becomes a relative symlink to the canonical record.
+
+Keeping the copies in the same directory preserves their relative references. Their pending statuses, partial results, and unsuccessful outcomes remain unchanged.
+
+The review changes no canonical record, executable source, claim specification, artifact tag, or shared tool. It leaves the unchanged summary-writer record outside the changed scope.
+
+### Remaining independent claim
+
+The fifth record covers `.github/workflows/slashing-tests.yml` under `CLAIM-SOAK-GATE-001`. It is not another stale Casper claim snapshot.
+
+The historical specification at `2388a8eedf33d07018f0630bced51a6e054ba439` includes required-check enforcement, workflow-control identity, and a separate Rocq coverage gap.
+
+The [prerequisite record](../cbc-evidence/prerequisites/pr432-formal-gate.md) describes retirement with the digest inventory. It also retains open enforcement obligations and a pending status.
+
+The current Casper discharge cannot settle those different obligations. Neither record supplies a blanket waiver or an unambiguous decision to exclude every remaining obligation.
+
+This review preserves the fifth lookup path and its bytes. It does not change repository rulesets or acquire node-proof work.
+
+A maintainer must resolve applicability and review current enforcement evidence. The historical settings observations do not establish the current repository settings.
+
+### Checks
+
+| Check | Result |
+| --- | --- |
+| Historical preservation | All four copies match the exact bytes at the base revision. |
+| Current routing | All four relative links select the expected canonical files. |
+| Lookup fixtures | Sixteen checks pass across current, pending, refuted, and missing canonical targets. |
+| Protected inputs | All canonical records, claim specifications, tags, and independent prerequisite records remain unchanged. |
+| Eight executable claims | The strict audit passes, with all soak fields pending. |
+| Canonical changed scope | All 123 mandatory artifacts pass. |
+| Default changed scope | One independent claim remains pending, with exit 4. |
+
+Local verification evidence is under `target/task-017-13-routing-20260919-01/`. The report and hash lists preserve the routing identities.
+
+Step 2 is partially complete. The remaining gate failure is an explicit governance decision, not a reason to substitute a different claim.
+
+TASK-017-13 remains open. This session performs no commit, push, waiver, dispatch, upload, or release publication.

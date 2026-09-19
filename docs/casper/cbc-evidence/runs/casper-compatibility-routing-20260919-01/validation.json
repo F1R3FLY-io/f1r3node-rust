@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "status": "verified-partial-routing-repair",
+  "report_sha256": "406b1cdf0634265f2821e96f0498d659dc04b86be8e639c305578e55c1403255",
+  "historical_copies_verified": 4,
+  "symlink_targets_verified": 4,
+  "canonical_records_unchanged": true,
+  "independent_gate_record_unchanged": true,
+  "source_and_claim_digests_unchanged": true,
+  "lookup_checks": 16,
+  "strict_claim_audit_exit": 0,
+  "canonical_gate": {
+    "artifacts": 123,
+    "gaps": 0,
+    "exit": 0
+  },
+  "default_gate": {
+    "artifacts": 123,
+    "gaps": 1,
+    "exit": 4
+  },
+  "relative_links_checked": 21,
+  "unrelated_task_blocks_unchanged": true,
+  "ste_check": "passed-with-prechange-baseline",
+  "human_ste_review": "not-performed",
+  "diagnostics": {
+    "files_checked": 4,
+    "false_positive": 1,
+    "unconfirmed": 0
+  },
+  "waiver_created": false,
+  "task_closed": false
+}
