@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "status": "passed",
+  "exit_code": 0,
+  "image": "sha256:c3c2e3456e9ea8cb1fe10faeb028e90512ee4013106ee7635342c1e20ecef93d",
+  "target": "aarch64-unknown-linux-musl",
+  "test_opt_level": 1,
+  "container_timeout_seconds": 550,
+  "attach_timeout_seconds": 600,
+  "evidence_kind": "synthetic_fixture",
+  "node_execution": false,
+  "claim_discharge": "pending"
+}
