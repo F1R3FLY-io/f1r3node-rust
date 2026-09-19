@@ -2,7 +2,7 @@
 
 ```yaml
 claim_id: CLAIM-CASPER-SOAK-001
-status: discharged
+status: pending
 adapter: embedded
 pre_merge_tasks: [TASK-017-2, TASK-017-4, TASK-017-12, TASK-017-13]
 post_merge_tasks: [TASK-018-1, TASK-018-2, TASK-018-5, TASK-018-6]
@@ -50,7 +50,7 @@ mechanization_plan: formal/tlaplus/casper_soak/verification-plan.jsonc
 refutation: bounded-safety-pass
 construction: not-applicable
 construction_assumptions: null
-binding: passed
+binding: pending
 soak: pending
 ```
 
@@ -188,7 +188,9 @@ The [acceptance record](../work-logs/task-017-4-acceptance.md) binds that approv
 
 The user accepted the repaired driver's bounded binding review. Its [acceptance record](../work-logs/casper-driver-rebind-acceptance.md) identifies the approved source and preserves earlier evidence.
 
-CLAIM-CASPER-SOAK-001 is discharged for the repaired pre-merge harness. TASK-017-4 remains complete. The source-specific ledger records control this discharge.
+CLAIM-CASPER-SOAK-001 was discharged for the repaired pre-merge harness on 2026-09-18. TASK-017-4 remains complete. The source-specific ledger records control this discharge.
+
+Later on 2026-09-18, `scripts/casper-soak/src/host_control.rs` changed after that acceptance. The change moves one function above the test module to satisfy clippy and does not change behavior. The accepted binding covers the file at commit `f9273621c`, not the current file. The claim returns to pending until a new acceptance binds the current source. The [drift record](../work-logs/casper-driver-rebind-acceptance.md#drift-after-acceptance-2026-09-18) states the scope.
 
 B44, containment assumptions, and the stated model bounds remain unchanged. This acceptance does not discharge profile claims, node correctness, or post-merge work.
 

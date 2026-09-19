@@ -1,6 +1,6 @@
 # Casper Soak Harness Verification Cycles
 
-**Status:** The user accepted bounded H01–H10 harness binding. CLAIM-CASPER-SOAK-001 is discharged for that scope. Profile verification and node soaks remain pending.
+**Status:** The user accepted bounded H01–H10 harness binding twice, most recently for the repaired driver on 2026-09-18. The harness source changed again after that acceptance, so CLAIM-CASPER-SOAK-001 is pending until a new acceptance binds the current source. Profile verification and node soaks remain pending.
 
 The [acceptance record](../work-logs/task-017-4-acceptance.md) supersedes the historical pending labels below. It preserves all stated containment limits.
 

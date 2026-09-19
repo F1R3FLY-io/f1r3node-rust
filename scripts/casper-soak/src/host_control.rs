@@ -359,6 +359,32 @@ mod linux {
         }
     }
 
+    pub(super) fn execute(action: Action) -> Result<()> {
+        match action {
+            Action::Probe => {
+                let fd = open_pid(std::process::id() as i32)?;
+                signal(&fd, 0)?;
+            }
+            Action::Handled { marker } => ensure!(
+                casper_soak::regular(&marker, 8)? == b"handled\n",
+                "The exit marker is invalid."
+            ),
+            Action::StopOwned { owner } => stop(&owner)?,
+            Action::PreferOom { owner } => prefer_oom(&owner)?,
+            Action::VerifyDomain { record } => check_domain(
+                &domain_record(&record)?,
+                unsafe { libc::getuid() },
+                &fs::read_to_string("/proc/self/cgroup")?,
+            )?,
+            Action::Watch {
+                pid,
+                identity,
+                ready,
+            } => watch(pid, &identity, &ready)?,
+        }
+        Ok(())
+    }
+
     #[cfg(test)]
     mod tests {
         use std::os::unix::fs::{symlink, PermissionsExt};
@@ -585,31 +611,5 @@ mod linux {
             assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
             assert!(domain_record(&path).is_err());
         }
-    }
-
-    pub(super) fn execute(action: Action) -> Result<()> {
-        match action {
-            Action::Probe => {
-                let fd = open_pid(std::process::id() as i32)?;
-                signal(&fd, 0)?;
-            }
-            Action::Handled { marker } => ensure!(
-                casper_soak::regular(&marker, 8)? == b"handled\n",
-                "The exit marker is invalid."
-            ),
-            Action::StopOwned { owner } => stop(&owner)?,
-            Action::PreferOom { owner } => prefer_oom(&owner)?,
-            Action::VerifyDomain { record } => check_domain(
-                &domain_record(&record)?,
-                unsafe { libc::getuid() },
-                &fs::read_to_string("/proc/self/cgroup")?,
-            )?,
-            Action::Watch {
-                pid,
-                identity,
-                ready,
-            } => watch(pid, &identity, &ready)?,
-        }
-        Ok(())
     }
 }
