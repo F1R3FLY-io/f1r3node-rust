@@ -2,6 +2,7 @@
 task: soak-finalization-attribution
 branch: fix/soak-finalization-attribution
 base_commit: bc23c8667ebef0f3fb7c3310caf85ce106df25fa
+evidence_revision: 7f0ae8182d76005590976b8989f0173c49fe1d33
 handoff_status: blocked
 next_steps:
   - Discharge the two pending CbC claims or obtain an explicit maintainer waiver.
@@ -65,9 +66,9 @@ Workflow control files come from `github.workflow_sha`. Selecting a candidate th
 
 Provider comparisons require the same candidate, driver, suite revision, configuration, and workload seed. Each comparison must preserve workload failures before infrastructure termination.
 
-PR #436 does not yet supply implemented profile adapters. No live soak or provider comparison belongs to this diagnostic patch.
+PR #436 owns the soak harness and profile evidence. This diagnostic patch does not authorize live soaks or provider comparisons.
 
-## Results
+## Historical implementation results
 
 The collector regression test failed before implementation because the requested metrics were absent. The checkpoint attribution test also failed before instrumentation.
 
@@ -96,7 +97,7 @@ Language-server checks returned no reported diagnostics, but some checks remaine
 
 Local logs are in `/tmp/soak-attribution-checks/`. These temporary logs are not committed evidence artifacts.
 
-## CbC gate
+## Historical CbC gate
 
 Both embedded verification attempts returned exit code 3 because Verus is unavailable. This change also lacks a formal specification connected to Rust execution.
 
@@ -108,3 +109,57 @@ The strict CbC gate returned exit code 4 with two pending claims. The evidence r
 These gaps block full completion. The passing regression tests do not discharge the formal claims.
 
 No PR prerequisite, Git commit, deployment, live soak, or controlled provider comparison occurred.
+
+## Evidence refresh at merged HEAD
+
+The refresh ran on 2026-09-19 at commit `7f0ae8182d76005590976b8989f0173c49fe1d33`. The working tree was clean when the tests started.
+
+All 74 targeted Rust tests passed. No selected test failed or was ignored.
+
+| Command | Result |
+| --- | --- |
+| `cargo test --locked --release -p rspace_plus_plus --test mod history::history_repository_tests` | 11 passed |
+| `cargo test --locked --release -p casper --test mod repeat_deploy` | 22 passed |
+| `cargo test --locked --release -p casper --test mod runtime_manager_test` | 36 passed |
+| `cargo test --locked --release -p casper --lib rust::util::rholang::runtime_manager::tests` | 5 passed |
+| `bash scripts/bench/test-extend-issue24-metrics.sh` | Exit 0 |
+| Targeted `rustfmt --check --config skip_children=true` on eight Rust files | Exit 0 |
+| `bash -n` on both collector shell scripts | Exit 0 |
+| Pinned-suite smoke test | Exit 0 |
+
+The collector regression log includes the expected rejection of a module without its report function. That negative control did not fail the test.
+
+The smoke test used a fresh download of the integration module at `b3d14b27e3c6276b1eb4ab9ccef04e02b0c4e283`. Its SHA-256 matched the earlier retained source.
+
+The smoke test passed these checks:
+
+- Labeled samples passed through scraping, delta calculation, and formatted output.
+- Histogram durations used seconds. Lock-wait counters used nanoseconds with matching acquisition counts.
+- Observed zero remained distinct from unknown values.
+- Missing baselines, missing final samples, resets, and nonfinite values remained unknown.
+- An empty report retained unknown measurements.
+- Repeated extension produced identical bytes.
+
+The smoke test used synthetic samples, not live node measurements. It did not run the full integration suite.
+
+The refresh retained 19 source snapshots and three test executables. Source hashes matched before and after the tests. Snapshot verification passed.
+
+Local evidence is in `target/soak-attribution-evidence/7f0ae8182-20260919-01/`. The directory contains commands, logs, exit codes, source hashes, executable hashes, and the smoke-test script.
+
+| Record | SHA-256 |
+| --- | --- |
+| `report.json` | `63f8934c369271eecf104438594a7b4484a10b55174306bc2a4fcbffa29e52d1` |
+| `artifacts.sha256` | `a337f1c33de76836f7e50b9c6b9dd495869274df49d3d6eab34a7a88cd252f00` |
+| `source-before.sha256` | `13242d614f078eea2bda4710c6dc1de6dedcb7519f0bcb75559de820b24e128a` |
+
+The evidence manifest passed verification. These local files are not committed artifacts. The retained executables can contain private build paths.
+
+The language-server probe checked eight Rust files. It reported 26 informational findings in five files. Three files remained inconclusive, including one timeout.
+
+No file received confirmed-clean coverage. These results do not establish clean language-server coverage. Release test builds supplied the Rust compilation evidence.
+
+The strict CbC gate again returned exit code 4 with two pending claims. This refresh did not rerun formal verification or grant a waiver.
+
+The two evidence records now identify the tested commit and artifact hashes. Their status remains pending, and their verification timestamps remain null.
+
+The refresh did not run Clippy, hosted CI, or the full workspace test suite. It did not launch live nodes, dispatch workflows, or publish artifacts.
