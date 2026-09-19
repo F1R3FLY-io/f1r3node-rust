@@ -205,10 +205,12 @@ impl Fixture {
             .unwrap()["payload"]
     }
     fn fault(&mut self, action: &str) {
-        self.request["carrier_case"] = if action == "restart" {
-            "restart"
-        } else {
-            "read_failure"
+        self.request["carrier_case"] = match action {
+            "restart" => "restart",
+            "watermark" => "watermark_boundary",
+            "prune" => "retention_boundary",
+            "availability" => "missing_history",
+            _ => "read_failure",
         }
         .into();
         self.configure();
@@ -219,6 +221,15 @@ impl Fixture {
         self.invoke_edited(code, verdict, |_| {})
     }
     fn invoke_edited(&mut self, code: i32, verdict: &str, edit: impl FnOnce(&Path)) -> Value {
+        self.invoke_into(code, verdict, None, edit)
+    }
+    fn invoke_into(
+        &mut self,
+        code: i32,
+        verdict: &str,
+        output: Option<&str>,
+        edit: impl FnOnce(&Path),
+    ) -> Value {
         self.invocation += 1;
         let refs: Vec<_> = self
             .observations
@@ -259,7 +270,9 @@ impl Fixture {
             fs::create_dir_all(target.parent().unwrap()).unwrap();
             fs::copy(path, target).unwrap();
         }
-        let out = format!("output-{}", self.invocation);
+        let out = output
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("output-{}", self.invocation));
         let args = [
             "run",
             "--manifest",
@@ -608,10 +621,107 @@ fn retained_reports_are_immutable() {
     let mut f = Fixture::new("carrier_immutable");
     f.invoke(0, "passed");
     let before = fs::read(f.root.join("output-1/report.json")).unwrap();
-    f.invocation = 0;
-    f.invoke(2, "invalid_input");
+    f.invoke_into(2, "invalid_input", Some("output-1"), |_| {});
+    assert_eq!(
+        record(&f.root.join("invocation-1.json")).unwrap()["actual_exit"],
+        0
+    );
+    assert_eq!(
+        record(&f.root.join("invocation-2.json")).unwrap()["actual_exit"],
+        2
+    );
     assert_eq!(
         before,
         fs::read(f.root.join("output-1/report.json")).unwrap()
     );
+}
+
+#[test]
+fn independent_failures_survive_malformed_measurements() {
+    for field in [
+        "engaged_path",
+        "probe_count",
+        "ancestor_body_read_count",
+        "fallback_reason",
+    ] {
+        let mut f = Fixture::new(&format!("carrier_failure_and_malformed_{field}"));
+        f.payload("index")["result"]["value"]["verdict"] = "fresh".into();
+        f.payload("index")[field] = observed(json!(false));
+        let r = f.invoke(2, "invalid_input");
+        assert!(r["product_failures"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v["kind"] == "result_mismatch"));
+    }
+}
+
+#[test]
+fn previous_incarnation_cannot_hide_a_conflicting_event_copy() {
+    let mut f = Fixture::new("carrier_conflicting_predecessor_copy");
+    f.fault("restart");
+    let mut copy = f.observations[1].clone();
+    copy["record_id"] = "copy".into();
+    copy["previous_incarnation"] = "wrong-predecessor".into();
+    copy["payload"]["result"]["value"]["verdict"] = "fresh".into();
+    f.observations.push(copy);
+    f.invoke(2, "invalid_input");
+}
+
+#[test]
+fn fault_cases_require_a_schedule_for_each_member() {
+    for case in ["restart", "read_failure"] {
+        for absent in ["both", "reference"] {
+            let mut f = Fixture::new(&format!("carrier_required_fault_{case}_{absent}"));
+            f.fault(case);
+            f.request["fault_schedule"]
+                .as_array_mut()
+                .unwrap()
+                .retain(|v| absent != "both" && v["member_id"] != absent);
+            f.pin();
+            f.invoke(2, "invalid_input");
+        }
+    }
+}
+
+#[test]
+fn work_comparisons_require_complete_counters() {
+    let mut f = Fixture::new("carrier_comparison_counter_missing");
+    f.payload("index")["probe_count"] = missing();
+    f.payload("index")["result"]["value"]["verdict"] = "fresh".into();
+    let r = f.invoke(1, "product_failure");
+    assert!(r["product_failures"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|v| v["kind"] == "result_mismatch"));
+    assert!(!r["product_failures"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|v| v["kind"] == "differential_result_mismatch"));
+}
+
+#[test]
+fn boundary_values_are_preserved_without_node_inference() {
+    for field in ["watermark", "retention_boundary"] {
+        for value in [
+            "0",
+            "9",
+            "10",
+            "11",
+            "29",
+            "30",
+            "31",
+            "18446744073709551615",
+        ] {
+            let mut f = Fixture::new(&format!("carrier_boundary_{field}_{value}"));
+            f.request[field] = value.into();
+            f.configure();
+            f.invoke(0, "passed");
+            let generated = record(&f.root.join("output-1/generation.json")).unwrap();
+            assert_eq!(generated["workloads"][0]["member"][field], value);
+            assert_eq!(generated["workloads"][2]["member"][field], value);
+        }
+    }
 }

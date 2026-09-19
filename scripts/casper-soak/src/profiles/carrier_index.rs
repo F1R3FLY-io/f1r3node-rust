@@ -101,6 +101,28 @@ fn measurement(v: &Value) -> Result<Option<&Value>> {
         _ => Err(eyre!("The measurement presence is unsupported.")),
     }
 }
+fn observed_field<'a>(name: &str, v: &'a Value) -> Result<Option<&'a Value>> {
+    let value = measurement(v)?;
+    if let Some(value) = value {
+        match name {
+            "engaged_path" => ensure!(
+                ["index", "reference"].contains(&text(value)?),
+                "The engaged path is unsupported."
+            ),
+            "probe_count" | "ancestor_body_read_count" => {
+                manifest::decimal(value)?;
+            }
+            "result" => {
+                result_key(value)?;
+            }
+            "fallback_reason" => {
+                id(value)?;
+            }
+            _ => return Err(eyre!("The measurement field is unsupported.")),
+        }
+    }
+    Ok(value)
+}
 fn unknown(reason: &str) -> Value { json!({"presence":"missing","value":null,"reason":reason}) }
 fn member<'a>(r: &'a Value, name: &Value) -> Result<&'a Value> {
     array(&r["members"])?
@@ -269,6 +291,20 @@ fn request(r: &Value) -> Result<()> {
             seen.insert(text(&f["fault_id"])?),
             "A fault identity is duplicated."
         );
+    }
+    for m in members {
+        for action in ["restart", "read_failure"] {
+            if r["carrier_case"] == action
+                || (action == "restart" && !m["previous_incarnation"].is_null())
+            {
+                ensure!(
+                    faults
+                        .iter()
+                        .any(|f| f["member_id"] == m["member_id"] && f["action"] == action),
+                    "The scenario requires a fault for each member."
+                );
+            }
+        }
     }
     Ok(())
 }
@@ -479,7 +515,7 @@ pub fn collect(m: &Value, a: &Value) -> Result<Value> {
             );
             let context: Vec<_> = CONTEXT
                 .iter()
-                .chain(MEMBER)
+                .chain(MEMBER.iter().filter(|key| **key != "previous_incarnation"))
                 .map(|key| v[*key].clone())
                 .collect();
             let producer = json!([context, v["producer"]]).to_string();
@@ -631,15 +667,16 @@ pub fn classify(r: &Value, c: &Value, acknowledgments: &[Value]) -> Result<Value
                         && p["requested_path"] == m["requested_path"],
                     "The observed traversal inputs differ."
                 );
-                let path = measurement(&p["engaged_path"])?;
-                if let Some(value) = path {
-                    ensure!(
-                        ["index", "reference"].contains(&text(value)?),
-                        "The engaged path is unsupported."
-                    );
-                }
-                measured["engaged_path"] = p["engaged_path"].clone();
-                let engaged = path == Some(&m["requested_path"]);
+                let engaged = match observed_field("engaged_path", &p["engaged_path"]) {
+                    Ok(path) => {
+                        measured["engaged_path"] = p["engaged_path"].clone();
+                        path == Some(&m["requested_path"])
+                    }
+                    Err(error) => {
+                        rejected.push(json!({"source":v["raw_artifact"],"fatal":true,"reason":error.to_string()}));
+                        false
+                    }
+                };
                 if !engaged {
                     missing.push(format!("{name}:path_engagement"));
                 }
@@ -655,41 +692,46 @@ pub fn classify(r: &Value, c: &Value, acknowledgments: &[Value]) -> Result<Value
                     }
                 }
                 let mut complete = engaged;
-                for field in COUNTERS {
-                    if let Some(value) = measurement(&p[*field])? {
-                        manifest::decimal(value)?;
-                    } else {
-                        missing.push(format!("{name}:{field}"));
-                        complete = false;
-                    }
-                    if engaged {
-                        measured[*field] = p[*field].clone();
-                    }
-                }
-                for field in ["result", "fallback_reason"] {
-                    measured[field] = p[field].clone();
-                    if let Some(value) = measurement(&p[field])? {
-                        let expected = &r["expectation"]["members"][name][field];
-                        let equal = if field == "result" {
-                            let key = result_key(value)?;
-                            if engaged && snapshots.len() == 1 {
-                                compared.insert(name.to_owned(), key.clone());
+                let mut comparison = None;
+                for field in COUNTERS
+                    .iter()
+                    .copied()
+                    .chain(["result", "fallback_reason"])
+                {
+                    let attempt = (|| -> Result<()> {
+                        if let Some(value) = observed_field(field, &p[field])? {
+                            if !COUNTERS.contains(&field) {
+                                let expected = &r["expectation"]["members"][name][field];
+                                let equal = if field == "result" {
+                                    let key = result_key(value)?;
+                                    comparison = Some(key.clone());
+                                    key == result_key(expected)?
+                                } else {
+                                    value == expected
+                                };
+                                if !equal {
+                                    failures.push(json!({"kind":format!("{field}_mismatch"),"member_id":name,"observed":value,"expected":expected,"source":v["raw_artifact"]}));
+                                }
                             }
-                            key == result_key(expected)?
                         } else {
-                            id(value)?;
-                            value == expected
-                        };
-                        if !equal {
-                            failures.push(json!({"kind":format!("{field}_mismatch"),"member_id":name,"observed":value,"expected":expected,"source":v["raw_artifact"]}));
+                            missing.push(format!("{name}:{field}"));
+                            complete = false;
                         }
-                    } else {
-                        missing.push(format!("{name}:{field}"));
+                        if !COUNTERS.contains(&field) || engaged {
+                            measured[field] = p[field].clone();
+                        }
+                        Ok(())
+                    })();
+                    if let Err(error) = attempt {
+                        rejected.push(json!({"source":v["raw_artifact"],"fatal":true,"reason":error.to_string()}));
                         complete = false;
                     }
                 }
                 if complete && snapshots.len() == 1 {
                     covered += 1;
+                    if let Some(key) = comparison {
+                        compared.insert(name.to_owned(), key);
+                    }
                 }
                 Ok(())
             })();
