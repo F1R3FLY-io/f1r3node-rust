@@ -1,5 +1,13 @@
 # TASK-017-5 Authority and Finality Profile
 
+## Current review
+
+The [combined review](./task-017-5-7-binding-review.md) records fresh native and isolated Linux checks, model controls, and shared regressions.
+
+Final profile checks passed. Human binding acceptance and workflow-tag ratification remain pending. Live adapters remain unqualified.
+
+The sections below retain the original implementation results. Their unavailable-Linux result is historical.
+
 ## Status
 
 The controlled-transcript implementation is ready for review. TASK-017-5 remains in progress because CLAIM-CASPER-SOAK-002 acceptance is pending.

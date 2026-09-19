@@ -303,7 +303,8 @@ tasks:
     claimed_at: 2026-09-18T13:08:20Z
     work_log: docs/work-logs/task-017-5-authority-finality.md
     implementation_status: controlled-transcript-implemented
-    validation_evidence: docs/casper/cbc-evidence/runs/casper-authority-finality-20260918-01/report.json
+    validation_evidence: docs/casper/cbc-evidence/runs/casper-profile-binding-review-20260919-01/report.json
+    binding_review: docs/work-logs/task-017-5-7-binding-review.md
     completion_blocker: "Claim acceptance and the proposed workflow tag remain pending. Live adapters remain unqualified."
     tests:
       - scripts/casper-soak/tests/authority_finality.rs
@@ -340,7 +341,8 @@ tasks:
     claimed_at: 2026-09-18T14:39:27Z
     work_log: docs/work-logs/task-017-6-publication.md
     implementation_status: controlled-transcript-implemented
-    validation_evidence: docs/casper/cbc-evidence/runs/casper-publication-20260918-01/report.json
+    validation_evidence: docs/casper/cbc-evidence/runs/casper-profile-binding-review-20260919-01/report.json
+    binding_review: docs/work-logs/task-017-5-7-binding-review.md
     completion_blocker: "Claim acceptance and the proposed workflow tag remain pending. Live adapters remain unqualified."
     tests:
       - scripts/casper-soak/tests/publication.rs
@@ -376,7 +378,8 @@ tasks:
     claimed_at: 2026-09-18T15:43:03Z
     work_log: docs/work-logs/task-017-7-recovery.md
     implementation_status: controlled-transcript-implemented
-    validation_evidence: docs/casper/cbc-evidence/runs/casper-recovery-20260918-01/report.json
+    validation_evidence: docs/casper/cbc-evidence/runs/casper-profile-binding-review-20260919-01/report.json
+    binding_review: docs/work-logs/task-017-5-7-binding-review.md
     completion_blocker: "Recovery binding acceptance and workflow-tag ratification remain pending. Live adapters remain unqualified."
     tests:
       - scripts/casper-soak/tests/recovery.rs

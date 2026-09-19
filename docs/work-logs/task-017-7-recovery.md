@@ -1,5 +1,17 @@
 # TASK-017-7 Recovery and Custody Profile
 
+## Current review
+
+The [combined review](./task-017-5-7-binding-review.md) records fresh native and isolated Linux checks, model controls, and shared regressions.
+
+Shared regression tests now pass. Publication conflict handling is repaired. Human binding acceptance and workflow-tag ratification remain pending.
+
+A later driver function move returned CLAIM-001 to pending before this review. Current lifecycle acceptance therefore remains a separate gate.
+
+D-07 interpretation remains unresolved. Controlled fixtures do not establish node support. Live, experimental-policy, and post-merge requests remain blocked.
+
+The sections below retain historical results, including the unavailable Linux execution and failed shared source audit.
+
 ## Scope
 
 The controlled-transcript implementation is complete. TASK-017-7 remains in progress because binding acceptance, workflow-tag ratification, and shared source verification remain unresolved.
