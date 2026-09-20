@@ -577,3 +577,28 @@ Batch A proposes disabled-by-default local access, identity checks, bounds, and 
 This authorization does not amend the harness epics or accept a claim. No node source changed, and no node or cloud runner launched.
 
 The exact Batch A file list awaits confirmation before implementation. The existing campaign blockers and actual-merge prerequisite remain in effect.
+
+### Claim001 specification digest reconciliation
+
+The user requested reconciliation without changes to historical evidence or the pending campaign helper records. The review started from `7b8865aaa49fdec69b5b3dea8a239c06b4d399b6`.
+
+The current workflow ledger now names the specification digest from the two-line status correction at `859cbc36c`:
+
+- Previous digest: `c1f6b7473f790a60ab964ce7fd7277841cd6cee5718e9853ad96cf4c671d5932`.
+- Current digest: `b6d4f83f958af79037c9b938edd52f0a91ef6f4e8858d6a85a2e4aa8b6346faf`.
+
+The reconciliation metadata identifies the previous ledger and both specification versions by Git revision, path, and digest. All four Git references passed digest checks, including the unchanged earlier acceptance reference.
+
+The fixture report, its digest, and its execution identity remain unchanged. Digest checks also confirmed that all 1,206 tracked historical run files remain unchanged.
+
+Both campaign helper records remain byte-identical and pending. Their compatibility links remain unchanged, and the workflow compatibility link still resolves to the canonical ledger.
+
+The direct specification check rejected the stale digest before the edit and passed afterward. The other workflow fields remain unchanged, including its pending status and null verification time.
+
+The rebuilt claim auditor returned exit 4 with Claim001 pending and seven other claims discharged. Default and canonical artifact gates each returned exit 4 with three pending records.
+
+These checks verify metadata consistency, not formal discharge. No prover, hosted verification, node, or cloud runner executed.
+
+Evidence remains under `target/task-017-12/claim001-reconciliation-7b8865aaa-C8GNMj/`. The earlier completion review remains unchanged as a historical record.
+
+The specification digest gap is resolved. Claim001 still requires source-bound renewal and acceptance, and TASK-017-12 remains blocked before execution.
