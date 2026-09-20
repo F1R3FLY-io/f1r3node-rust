@@ -592,6 +592,10 @@ tasks:
     candidate_identity_evidence: docs/casper/cbc-evidence/runs/casper-candidate-repin-20260919-01/report.json
     live_admission_evidence: docs/casper/cbc-evidence/runs/casper-linux-admission-7509c831c-01/report.json
     manual_dispatch_evidence: docs/casper/cbc-evidence/runs/casper-campaign-dispatch-5e26ba4c5-01/report.json
+    completion_review: docs/work-logs/task-017-12-preparation.md#completion-review-at-859cbc36c
+    node_interface_prerequisite: docs/plans/casper-node-interface-prerequisite.md
+    node_interface_status: "The user authorized a separate prerequisite. Its file-level plan awaits confirmation. No node code changed, and campaign admission remains blocked."
+    compatibility_lookup_status: "Both campaign helper links resolve to canonical records. Default and canonical gates each return exit 4 with three pending records. No lookup is missing in this scope."
     execution_gate: "Four exact-candidate probes returned blocked before node launch. Their controlled inputs are not live qualification. The legacy workload is pinned but cannot replace required Casper profiles."
     drift_review: docs/work-logs/task-017-12-drift-review-2026-09-19.md
     claims: [CLAIM-CASPER-SOAK-001, CLAIM-CASPER-SOAK-004, CLAIM-CASPER-CAMPAIGN-001]
@@ -609,7 +613,7 @@ tasks:
     work_log: docs/work-logs/task-017-12-preparation.md
     blocked_by: []
     remaining_prerequisites:
-      - "The changed workflow requires Claim001 renewal. Both campaign helper records match current sources but remain pending. Earlier eight-claim success is historical."
+      - "The changed workflow requires Claim001 renewal. The strict claim audit now returns exit 4 with Claim001 pending. Reconcile its changed specification digest without rewriting historical evidence. Both campaign helper records remain pending."
       - "Pin executable workloads and review the complete campaign model and configuration inventory. Recheck candidate identities before dispatch."
       - "Qualify live adapters and their required node interfaces. Fresh authority and publication probes reject both candidate identities with explicit unqualified-adapter reasons."
       - "The manual campaign planner selects immutable platform references for both architectures. Cloud execution integration remains incomplete and cannot use the legacy rebuild path."

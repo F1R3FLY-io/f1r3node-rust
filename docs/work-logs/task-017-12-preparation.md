@@ -531,3 +531,49 @@ The campaign route remains admission-only. Eligible Casper workloads, qualified 
 The legacy action, driver, preflight script, and schedules remain unchanged. The manual baseline selection means 86,400 workload seconds, but no workload execution occurred.
 
 TASK-017-12 remains in progress. This update does not deliver the missing baseline, scan benchmark, or concurrency-gate evidence to TASK-017-13.
+
+### Completion review at 859cbc36c
+
+The user requested completion after commit `859cbc36c`. That commit marks the harness claim and binding as pending.
+
+A fresh GitHub query still selects `6940a5beb4aa806d3d75f6df3be9f238512fcc2f` for `dev`. PR #216 remains open and unmerged.
+
+Five candidate API source files were downloaded at that exact revision. Their digests match the earlier inspected files.
+
+This comparison does not establish live qualification or prove that every possible interface is absent. No candidate node ran during this review.
+
+The authority and publication profiles still reject requests for node observations. The shared runtime admits only the synthetic lifecycle profile.
+
+The ratified plan excludes node implementation changes. Missing node interfaces require a separate scope decision or an existing qualified interface before campaign completion.
+
+The two campaign helper compatibility links now resolve to their canonical ledger records. Neither link copies a record or changes its pending status.
+
+The default artifact gate previously reported two missing lookups and one pending record. Both lookup modes now report three pending records with exit 4.
+
+A fresh build of the unchanged claim auditor reports Claim001 as pending and the seven other claims as discharged. The strict audit returns exit 4.
+
+The auditor checks ledger consistency. This execution does not run a prover, renew hosted verification, or accept a claim.
+
+The pending workflow ledger still names the specification digest from before the two-line correction. That digest needs reconciliation during renewal, without rewriting historical reports.
+
+The matrix check found 179 stored model and configuration entries. One verification-plan digest remains stale, and complete campaign inventory coverage remains unproved.
+
+Both eligible workload digests remain null. Campaign execution, authenticated approvals, persistent launch reservations, and independent lifetime enforcement remain unfinished.
+
+Evidence remains under `target/task-017-12/completion-review-859cbc36c-dD9zLH/`. The directory retains remote identities, source copies, gate results, auditor identity, and the readiness report.
+
+No workflow dispatch, cloud launch, node launch, claim acceptance, commit, or push occurred. TASK-017-12 remains in progress with execution blocked.
+
+### Separate node-interface authorization
+
+The user authorized a separate node-interface prerequisite after this review. The [file-level plan](../plans/casper-node-interface-prerequisite.md) records the proposed changes, safety limits, tests, and approval boundaries.
+
+The inspected node source trees match the pinned `dev` revision. The review found shared mutable stores behind DAG representations and separate publication writes.
+
+The proposed interface therefore requires detached evaluation inputs and receipts from actual node boundaries. It must not invent atomic snapshots, durable effects, or occurrence identities.
+
+Batch A proposes disabled-by-default local access, identity checks, bounds, and truthful capability reporting. Batches B and C require further source and consistency reviews.
+
+This authorization does not amend the harness epics or accept a claim. No node source changed, and no node or cloud runner launched.
+
+The exact Batch A file list awaits confirmation before implementation. The existing campaign blockers and actual-merge prerequisite remain in effect.
