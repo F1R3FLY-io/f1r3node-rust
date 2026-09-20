@@ -115,5 +115,121 @@ jq -s '.[]' "$OUT/invalid-window.json" "$OUT/baseline_amd64.stdout" > "$OUT/inva
 expect invalid_first_window_document 2 bash "$HELPER" window "$OUT/invalid-first-window.json" 2000000000 2000000600
 jq -s '.' "$OUT/baseline_amd64.stdout" > "$OUT/window-array.json"
 expect array_window_input 2 bash "$HELPER" window "$OUT/window-array.json" 2000000000 2000000600
+cp "$OUT/qualification-original.json" "$FIXTURE/docs/campaign/amd64-qualification.json"
+cp "$HELPER" "$FIXTURE/scripts/casper-soak/campaign.sh"
+jq --arg digest "$(hash "$HELPER")" '.source_digests["scripts/casper-soak/campaign.sh"]=$digest' "$OUT/approval-original.json" > "$FIXTURE/docs/campaign/approval.json"
+export GITHUB_REPOSITORY=F1R3FLY-io/f1r3node-rust
+export GITHUB_RUN_ID=200
+export INPUT_TARGET_REF=dev
+export INPUT_PREFLIGHT_ONLY=false INPUT_SKIP_PREFLIGHT=false INPUT_CANARY=false INPUT_INJECT_PROTECTION_BREACH=false
+export INPUT_SCHEDULED_SLOT='' INPUT_WINDOW_END='' INPUT_SERIES='' INPUT_RETRY_ATTEMPT=0 INPUT_RESTART_OF_RUN_ID='' INPUT_CANDIDATE_TAG=''
+mkdir "$OUT/api" "$OUT/api-tools"
+printf '#!/usr/bin/env bash\nexit 99\n' > "$OUT/api-tools/gh"
+chmod +x "$OUT/api-tools/gh"
+export PATH="$OUT/api-tools:$PATH"
+make_request preflight dev-amd64 > "$OUT/dispatch-request.json"
+expect dispatch_preflight_blocked 3 bash "$HELPER" dispatch "$FIXTURE" "$OUT/dispatch-request.json" campaign-preflight "$OUT/dispatch-preflight"
+jq -e '.admission=="blocked" and .exit_code==3 and .planning=="passed" and .prior_runs=="not-required" and .cloud_launch_count==0 and .node_launch_count==0 and .soak_verdict=="non_passing"' "$OUT/dispatch-preflight/report.json" >/dev/null
+cmp "$OUT/dispatch-request.json" "$OUT/dispatch-preflight/request.json"
+expect dispatch_directory_reuse 2 bash "$HELPER" dispatch "$FIXTURE" "$OUT/dispatch-request.json" campaign-preflight "$OUT/dispatch-preflight"
+expect dispatch_stage_mismatch 2 bash "$HELPER" dispatch "$FIXTURE" "$OUT/dispatch-request.json" campaign-baseline-24h "$OUT/dispatch-mismatch"
+expect dispatch_legacy_duration 2 bash "$HELPER" dispatch "$FIXTURE" "$OUT/dispatch-request.json" daily-24h "$OUT/dispatch-legacy"
+expect dispatch_rerun 2 env GITHUB_RUN_ATTEMPT=2 bash "$HELPER" dispatch "$FIXTURE" "$OUT/dispatch-request.json" campaign-preflight "$OUT/dispatch-rerun"
+expect dispatch_schedule 2 env GITHUB_EVENT_NAME=schedule bash "$HELPER" dispatch "$FIXTURE" "$OUT/dispatch-request.json" campaign-preflight "$OUT/dispatch-schedule"
+for pair in INPUT_PREFLIGHT_ONLY=true INPUT_SKIP_PREFLIGHT=true INPUT_CANARY=true INPUT_INJECT_PROTECTION_BREACH=true INPUT_SCHEDULED_SLOT=2000000000 INPUT_WINDOW_END=2000000000 INPUT_SERIES=weekend INPUT_RETRY_ATTEMPT=1 INPUT_RESTART_OF_RUN_ID=101 INPUT_CANDIDATE_TAG=v1.0.0 INPUT_TARGET_REF=master; do
+  key="${pair%%=*}"
+  expect "dispatch_$key" 2 env "$pair" bash "$HELPER" dispatch "$FIXTURE" "$OUT/dispatch-request.json" campaign-preflight "$OUT/dispatch-$key"
+done
+expect dispatch_empty_input 2 bash "$HELPER" dispatch "$FIXTURE" "$OUT/empty.json" campaign-preflight "$OUT/dispatch-empty"
+jq -e '.exit_code==2 and .admission=="invalid_input" and .cloud_launch_count==0' "$OUT/dispatch-empty/report.json" >/dev/null
+make_request baseline dev-amd64 > "$OUT/dispatch-request.json"
+expect dispatch_api_failure 2 bash "$HELPER" dispatch "$FIXTURE" "$OUT/dispatch-request.json" campaign-baseline-24h "$OUT/dispatch-api-failure"
+jq -e '.planning=="passed" and .prior_runs=="failed" and .exit_code==2' "$OUT/dispatch-api-failure/report.json" >/dev/null
+expect dispatch_self_reference 2 env GITHUB_RUN_ID=101 bash "$HELPER" dispatch "$FIXTURE" "$OUT/dispatch-request.json" campaign-baseline-24h "$OUT/dispatch-self"
+export FIXTURE_API="$OUT/api"
+cat > "$OUT/api-tools/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "$1" == api && "$2" == --hostname && "$3" == github.com && "$4" == --method && "$5" == GET ]] || exit 98
+printf '%s\n' "$6" >> "$FIXTURE_API/calls.txt"
+case "$6" in
+  repos/F1R3FLY-io/f1r3node-rust/actions/runs/101) cp "$FIXTURE_API/run.json" /dev/stdout ;;
+  repos/F1R3FLY-io/f1r3node-rust/actions/runs/101/artifacts\?per_page=100) cp "$FIXTURE_API/artifacts.json" /dev/stdout ;;
+  repos/F1R3FLY-io/f1r3node-rust/actions/artifacts/301/zip) cp "$FIXTURE_API/result.zip" /dev/stdout ;;
+  *) exit 97 ;;
+esac
+EOF
+chmod +x "$OUT/api-tools/gh"
+bash "$HELPER" plan "$FIXTURE" "$OUT/dispatch-request.json" > "$OUT/dispatch-plan.json"
+jq -n --arg revision "$REV" '{id:101,run_attempt:1,path:".github/workflows/merge-recovery-soak.yml",repository:{full_name:"F1R3FLY-io/f1r3node-rust"},head_sha:$revision,event:"workflow_dispatch",status:"completed",conclusion:"success"}' > "$OUT/api/run.json"
+jq -n --slurpfile p "$OUT/dispatch-plan.json" '{schema_version:1,run_id:"101",run_attempt:1,repository:"F1R3FLY-io/f1r3node-rust",plan:($p[0]+{stage:"preflight",duration_seconds:0}),admission:"admitted",result:"passed",evidence_kind:"node_observation",cloud_launch_count:1,node_launch_count:1,cleanup:{complete:true},host_protection:{status:"passed"},integration_preflight:"passed"}' > "$OUT/api/campaign-result.json"
+pack_result() {
+  local zipfile
+  zipfile="$(mktemp "$OUT/api/archive-XXXXXX.zip")"
+  zip -q -j "$zipfile.new" "$OUT/api/campaign-result.json"
+  mv "$zipfile.new" "$OUT/api/result.zip"
+  jq -n --arg revision "$REV" --arg digest "sha256:$(hash "$OUT/api/result.zip")" --argjson size "$(stat -c %s "$OUT/api/result.zip")" '{total_count:1,artifacts:[{id:301,name:"casper-campaign-result-101-1",expired:false,size_in_bytes:$size,digest:$digest,workflow_run:{id:101,head_sha:$revision}}]}' > "$OUT/api/artifacts.json"
+}
+pack_result
+expect dispatch_prior_consistent 3 bash "$HELPER" dispatch "$FIXTURE" "$OUT/dispatch-request.json" campaign-baseline-24h "$OUT/dispatch-prior-consistent"
+jq -e '.planning=="passed" and .prior_runs=="verified-records-only" and .admission=="blocked" and .cloud_launch_count==0' "$OUT/dispatch-prior-consistent/report.json" >/dev/null
+cp "$OUT/api/run.json" "$OUT/api/run-original.json"
+cp "$OUT/api/artifacts.json" "$OUT/api/artifacts-original.json"
+cp "$OUT/api/campaign-result.json" "$OUT/api/result-original.json"
+for entry in 'failed|.conclusion="failure"' 'cancelled|.conclusion="cancelled"' 'running|.status="in_progress"' 'rerun|.run_attempt=2' 'wrong_workflow|.path=".github/workflows/other.yml"' 'wrong_repository|.repository.full_name="other/repo"' 'wrong_revision|.head_sha="0000000000000000000000000000000000000000"' 'wrong_event|.event="push"' 'wrong_run|.id=102'; do
+  name="${entry%%|*}"; filter="${entry#*|}"
+  jq "$filter" "$OUT/api/run-original.json" > "$OUT/api/run.json"
+  expect "prior_$name" 2 bash "$HELPER" dispatch "$FIXTURE" "$OUT/dispatch-request.json" campaign-baseline-24h "$OUT/prior-$name"
+done
+cp "$OUT/api/run-original.json" "$OUT/api/run.json"
+for entry in 'expired|.artifacts[0].expired=true' 'duplicate|.artifacts += .artifacts | .total_count=2' 'digest|.artifacts[0].digest="sha256:0000000000000000000000000000000000000000000000000000000000000000"' 'artifact_run|.artifacts[0].workflow_run.id=102' 'pagination|.total_count=101' 'missing|.artifacts=[]|.total_count=0'; do
+  name="${entry%%|*}"; filter="${entry#*|}"
+  jq "$filter" "$OUT/api/artifacts-original.json" > "$OUT/api/artifacts.json"
+  expect "prior_$name" 2 bash "$HELPER" dispatch "$FIXTURE" "$OUT/dispatch-request.json" campaign-baseline-24h "$OUT/prior-$name"
+done
+cp "$OUT/api/artifacts-original.json" "$OUT/api/artifacts.json"
+for entry in 'fixture|.evidence_kind="synthetic_fixture"' 'not_passed|.result="non_passing"' 'cleanup|.cleanup.complete=false' 'protection|.host_protection.status="breached"' 'identity|.plan.identity_digest="bad"' 'candidate|.plan.candidate_id="dev-arm64"' 'binary|.plan.node_binary_digest="bad"' 'preflight|.integration_preflight="failed"' 'extra_launch|.cloud_launch_count=2'; do
+  name="${entry%%|*}"; filter="${entry#*|}"
+  jq "$filter" "$OUT/api/result-original.json" > "$OUT/api/campaign-result.json"
+  pack_result
+  expect "prior_$name" 2 bash "$HELPER" dispatch "$FIXTURE" "$OUT/dispatch-request.json" campaign-baseline-24h "$OUT/prior-$name"
+done
+cp "$OUT/api/result-original.json" "$OUT/api/campaign-result.json"
+pack_result
+jq '.plan.stage="baseline" | .plan.duration_seconds=86400 | .workload_elapsed_seconds=86400 | .soak_verdict="passed" | .measurement_completeness="complete" | .profile_verdicts={authority_finality:"passed",publication:"passed"}' "$OUT/api/result-original.json" > "$OUT/baseline-result.json"
+expect baseline_record 0 bash "$HELPER" prior "$OUT/dispatch-plan.json" "$OUT/api/run.json" "$OUT/baseline-result.json" baseline dev-amd64
+for entry in 'short|.workload_elapsed_seconds=86399' 'preflight_subtracted|.plan.duration_seconds=79200' 'missing_time|del(.workload_elapsed_seconds)' 'missing_measurements|.measurement_completeness="incomplete"' 'product_failure|.profile_verdicts.publication="product_failure"' 'missing_profile|del(.profile_verdicts.authority_finality)' 'no_verdict|del(.soak_verdict)'; do
+  name="${entry%%|*}"; filter="${entry#*|}"
+  jq "$filter" "$OUT/baseline-result.json" > "$OUT/short-result.json"
+  expect "baseline_$name" 2 bash "$HELPER" prior "$OUT/dispatch-plan.json" "$OUT/api/run.json" "$OUT/short-result.json" baseline dev-amd64
+done
+jq -s '.[]' "$OUT/api/result-original.json" "$OUT/api/result-original.json" > "$OUT/api/campaign-result.json"
+pack_result
+expect prior_json_stream 2 bash "$HELPER" dispatch "$FIXTURE" "$OUT/dispatch-request.json" campaign-baseline-24h "$OUT/prior-json-stream"
+printf ' ' > "$OUT/api/extra.txt"
+cp "$OUT/api/result-original.json" "$OUT/api/campaign-result.json"
+pack_result
+zip -q -j "$OUT/api/result.zip" "$OUT/api/extra.txt"
+jq --arg digest "sha256:$(hash "$OUT/api/result.zip")" --argjson size "$(stat -c %s "$OUT/api/result.zip")" '.artifacts[0].digest=$digest | .artifacts[0].size_in_bytes=$size' "$OUT/api/artifacts-original.json" > "$OUT/api/artifacts.json"
+expect prior_extra_archive_member 2 bash "$HELPER" dispatch "$FIXTURE" "$OUT/dispatch-request.json" campaign-baseline-24h "$OUT/prior-extra-member"
+awk 'BEGIN {for(i=0;i<1048577;i++) printf " "; print "{}"}' > "$OUT/api/campaign-result.json"
+pack_result
+expect prior_expanded_size_limit 2 bash "$HELPER" dispatch "$FIXTURE" "$OUT/dispatch-request.json" campaign-baseline-24h "$OUT/prior-expanded-size"
+WORKFLOW="$ROOT/.github/workflows/merge-recovery-soak.yml"
+awk '/^  campaign_admission:/ {copy=1} /^  schedule_gate:/ {copy=0} copy' "$WORKFLOW" > "$OUT/campaign-job.yml"
+expect workflow_hosted_only 0 grep -Fq 'runs-on: ubuntu-latest' "$OUT/campaign-job.yml"
+expect workflow_no_cloud_credentials 1 grep -Eq 'secrets\.|environment:|self-hosted|actions: write|contents: write|continue-on-error:|needs:' "$OUT/campaign-job.yml"
+expect workflow_always_retain 0 grep -Fq 'if: always()' "$OUT/campaign-job.yml"
+expect workflow_pinned_checkout 0 grep -Fq 'ref: ${{ github.workflow_sha }}' "$OUT/campaign-job.yml"
+expect workflow_explicit_baseline 0 grep -Fxq '          - campaign-baseline-24h' "$WORKFLOW"
+awk '/^  schedule_gate:/ {copy=1} /^    name:/ && copy {exit} copy' "$WORKFLOW" > "$OUT/schedule-condition.yml"
+expect workflow_excludes_campaign_request 0 grep -Fq "inputs.campaign_request == '' &&" "$OUT/schedule-condition.yml"
+expect workflow_excludes_campaign_duration 0 grep -Fq "!startsWith(inputs.duration, 'campaign-')" "$OUT/schedule-condition.yml"
+awk '/if \[\[ -n "\$\{INPUT_CAMPAIGN_REQUEST:-\}"/ {copy=1} copy {sub(/^          /, ""); print} copy && /^fi$/ {exit}' "$WORKFLOW" > "$OUT/schedule-guard.sh"
+expect workflow_legacy_guard 0 env INPUT_CAMPAIGN_REQUEST='' INPUT_DURATION=daily-24h bash "$OUT/schedule-guard.sh"
+expect workflow_campaign_request_guard 2 env INPUT_CAMPAIGN_REQUEST='{}' INPUT_DURATION=daily-24h bash "$OUT/schedule-guard.sh"
+for selection in campaign-preflight campaign-baseline-24h campaign-stability-60h campaign-invalid; do
+  expect "workflow_$selection" 2 env INPUT_CAMPAIGN_REQUEST='' INPUT_DURATION="$selection" bash "$OUT/schedule-guard.sh"
+done
 jq -n --argjson count "$passed" '{schema_version:1,status:"passed",checks:$count,evidence_kind:"synthetic_fixture",node_launch_count:0,cloud_launch_count:0,claim_discharge:"pending"}' > "$OUT/summary.json"
 printf 'PASS: %s campaign admission and duration checks. No node or cloud runner launched.\n' "$passed"

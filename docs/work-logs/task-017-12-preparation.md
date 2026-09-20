@@ -459,3 +459,25 @@ The source snapshots establish byte identity. They do not establish the checkout
 The new branch policy permits EPIC-018 stacking after acceptance of the EPIC-017 handoff. The actual merge remains necessary for recovery qualification and post-merge discharge.
 
 This work does not complete that handoff. The incoming formal-gate authorization also remains separate from campaign approval and execution.
+
+## Manual campaign dispatch implementation
+
+The implementation starts from `797d29ca1f2703d1e4dd4c9c2bc6ae0e0edbceb1`. The user authorized the file-level implementation plan, without dispatch, commit, or push authorization.
+
+The workflow will separate campaign inputs from scheduled and legacy manual inputs. Campaign baseline selection must mean 86,400 workload seconds, without preflight subtraction.
+
+The helpers will validate prior-run identities and outcomes before reporting the remaining admission blockers. Failed requests must retain their inputs and non-passing reports.
+
+The campaign route must not reach existing cloud launch, replacement, retry, or publication jobs. The current launcher does not establish the required lifetime enforcement.
+
+This route remains admission-only until eligible Casper workloads, live adapters, authenticated approvals, persistent launch reservations, and independent instance termination are implemented and verified.
+
+Authority and publication admission actively reject both candidates. Recovery qualification waits for the actual PR #216 merge under D-07 Reading A.
+
+The baseline budget permits three machines in total. Campaign mode must not permit replacement or repeat launches.
+
+The 60-hour phase also requires passing baselines and an explicit decision recording candidate count and runner lifetime limits. Fixture approval records cannot supply that decision.
+
+Changes to the workflow invalidate its current source binding. Affected claims remain pending until fresh verification and explicit acceptance.
+
+Evidence remains under `target/task-017-12/manual-dispatch-797d29ca1-01/`. Earlier source and ledger bytes remain in that directory and Git history.

@@ -24,14 +24,26 @@ on:
         required: true
         default: dev
         type: string
+      campaign_request:
+        description: >-
+          Supply a campaign request JSON object with an explicit campaign
+          duration. Admission remains blocked before cloud execution.
+        required: false
+        default: ""
+        type: string
       duration:
-        description: Requested soak duration; weekend-60h is the 60h stability soak, daily-24h the dev integration soak (ignored when window_end_epoch is set)
+        description: >-
+          Select a legacy schedule window or an explicit campaign stage.
+          The campaign baseline requires 86400 workload seconds.
         required: true
         default: daily-24h
         type: choice
         options:
           - daily-24h
           - weekend-60h
+          - campaign-preflight
+          - campaign-baseline-24h
+          - campaign-stability-60h
       preflight_only:
         description: Run only the full integration preflight
         required: false
@@ -285,7 +297,82 @@ env:
   CI_RUNNER_COMPARTMENT_OCID: "ocid1.compartment.oc1..aaaaaaaalq6bh2a6dmq4h6i3nrripxlcevv7fa3goaf7wxve52qiuocmehia"
 
 jobs:
+  campaign_admission:
+    name: Check Manual Campaign Admission
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      (inputs.campaign_request != '' ||
+       startsWith(inputs.duration, 'campaign-'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Retain campaign request
+        env:
+          CAMPAIGN_REQUEST: ${{ inputs.campaign_request }}
+          CAMPAIGN_SELECTION: ${{ inputs.duration }}
+          CAMPAIGN_CONTROL_REVISION: ${{ github.workflow_sha }}
+        shell: bash -euo pipefail {0}
+        run: |
+          mkdir -p "$RUNNER_TEMP/campaign-evidence"
+          printf '%s' "$CAMPAIGN_REQUEST" \
+            > "$RUNNER_TEMP/campaign-evidence/request.json"
+          jq -n --arg revision "$CAMPAIGN_CONTROL_REVISION" \
+            --arg selection "$CAMPAIGN_SELECTION" \
+            --arg run "$GITHUB_RUN_ID" --arg attempt "$GITHUB_RUN_ATTEMPT" \
+            '{control_revision:$revision,selection:$selection,
+              run_id:$run,run_attempt:$attempt,execution_enabled:false}' \
+            > "$RUNNER_TEMP/campaign-evidence/dispatch.json"
+
+      - name: Checkout campaign controls
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: ci-control
+          persist-credentials: false
+
+      - name: Check campaign records
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CAMPAIGN_CONTROL_REVISION: ${{ github.workflow_sha }}
+          CAMPAIGN_SELECTION: ${{ inputs.duration }}
+          INPUT_TARGET_REF: ${{ inputs.target_ref }}
+          INPUT_SCHEDULED_SLOT: ${{ inputs.scheduled_slot_epoch }}
+          INPUT_WINDOW_END: ${{ inputs.window_end_epoch }}
+          INPUT_SERIES: ${{ inputs.series }}
+          INPUT_RETRY_ATTEMPT: ${{ inputs.retry_attempt }}
+          INPUT_RESTART_OF_RUN_ID: ${{ inputs.restart_of_run_id }}
+          INPUT_CANDIDATE_TAG: ${{ inputs.candidate_tag }}
+          INPUT_PREFLIGHT_ONLY: ${{ inputs.preflight_only }}
+          INPUT_SKIP_PREFLIGHT: ${{ inputs.skip_integration_preflight }}
+          INPUT_CANARY: ${{ inputs.canary }}
+          INPUT_INJECT_PROTECTION_BREACH: ${{ inputs.inject_protection_breach }}
+        shell: bash -euo pipefail {0}
+        run: |
+          test "$(git -C ci-control rev-parse HEAD)" \
+            = "$CAMPAIGN_CONTROL_REVISION"
+          bash ci-control/scripts/casper-soak/campaign.sh dispatch \
+            "$GITHUB_WORKSPACE/ci-control" \
+            "$RUNNER_TEMP/campaign-evidence/request.json" \
+            "$CAMPAIGN_SELECTION" \
+            "$RUNNER_TEMP/campaign-evidence/admission"
+
+      - name: Retain campaign admission evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: >-
+            campaign-admission-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/campaign-evidence
+          retention-days: 30
+          if-no-files-found: error
+
   schedule_gate:
+    if: >-
+      inputs.campaign_request == '' &&
+      !startsWith(inputs.duration, 'campaign-')
     name: Resolve Pacific Schedule
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -330,6 +417,7 @@ jobs:
       - name: Resolve schedule
         id: resolve
         env:
+          INPUT_CAMPAIGN_REQUEST: ${{ inputs.campaign_request }}
           INPUT_CANDIDATE_TAG: ${{ inputs.candidate_tag }}
           INPUT_RESTART_OF_RUN_ID: ${{ inputs.restart_of_run_id }}
           EVENT_NAME: ${{ github.event_name }}
@@ -348,6 +436,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: bash -euo pipefail {0}
         run: |
+          if [[ -n "${INPUT_CAMPAIGN_REQUEST:-}" ||
+                "${INPUT_DURATION:-}" == campaign-* ]]; then
+            echo "::error::Campaign inputs cannot enter the legacy path."
+            exit 2
+          fi
           case "${INPUT_PREFLIGHT_ONLY:-false}" in
             true|false|"") ;;
             *) echo "::error::preflight_only must be true or false"; exit 1 ;;

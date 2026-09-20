@@ -7,7 +7,7 @@ artifacts:
   - scripts/casper-soak/campaign.sh
   - scripts/casper-soak/test-campaign.sh
 phase: pre_pr216_merge
-scope: campaign-planning-helpers
+scope: campaign-planning-and-dispatch-admission
 binding: pending
 soak: pending
 audited_by_claim_checker: false
@@ -21,7 +21,7 @@ This claim covers the draft campaign planner and its fixture runner:
 - `scripts/casper-soak/campaign.sh`
 - `scripts/casper-soak/test-campaign.sh`
 
-The planner validates supplied records and calculates a proposed workload window. It does not admit or execute a Casper campaign.
+The planner validates supplied records and calculates a proposed workload window. The dispatch command checks manual inputs and prior-run records without executing a campaign.
 
 This claim is separate from the eight accepted Casper harness and profile claims. Their previous discharges do not cover these two helpers.
 
@@ -65,11 +65,37 @@ The fixture runner must check the expected command exits and its explicit assert
 
 The fixture summary must retain `synthetic_fixture`, zero node launches, zero cloud launches, and pending claim discharge. Fixture results must not become live qualification.
 
+### C6: Separate manual dispatch admission
+
+Campaign input selects `campaign-preflight`, `campaign-baseline-24h`, or `campaign-stability-60h`. The selection must agree with the request stage.
+
+The command must reject legacy scheduling, restart, retry, candidate-tag, skipped-preflight, canary, and injection inputs. It must reject reruns and self-referencing prior-run identifiers.
+
+The command must retain a terminal report for each initialized output directory. Invalid input returns exit 2, while valid planning with unresolved execution prerequisites returns exit 3.
+
+The dispatch command must never return successful campaign admission. It must not launch nodes or cloud instances, invoke replacement, or publish a passing campaign result.
+
+### C7: Bound prior-run verification
+
+Prior-run metadata must identify this repository, workflow, control revision, manual event, first attempt, successful conclusion, and completed status.
+
+Exactly one unexpired result artifact must match the prior run. Its retained archive digest must match the GitHub artifact metadata.
+
+The archive must contain exactly one regular result file. Its bounded JSON record must match the campaign identity and the expected stage and candidate.
+
+The prior record must declare successful cleanup and host protection. A baseline record must declare at least 86,400 elapsed workload seconds and passing required profiles.
+
+Failed, incomplete, mismatched, expired, malformed, or unavailable evidence must block advancement. The command must retain download failures and rejected evidence.
+
+These checks authenticate the producer and compare record fields. They do not independently verify node observations, nested evidence, cloud termination, or approval authority.
+
 ## Assumptions and exclusions
 
 The caller must provide a trusted source root and stable files during validation. The caller must bind the executing helper to the reviewed source.
 
-The caller must authenticate approvals, prior-run records, and qualification evidence. The planner does not verify their external origin or review authority.
+The caller must authenticate approvals and qualification evidence. The planner does not verify their external origin or review authority.
+
+The dispatch command trusts GitHub API responses obtained through the GitHub CLI. Local fixtures replace that transport and do not establish hosted qualification.
 
 The caller must enforce launch reservations, total machine limits, retry limits, host protection, cleanup, and instance lifetime. The planner does not enforce these controls.
 
