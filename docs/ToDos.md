@@ -640,6 +640,8 @@ tasks:
     execution_scope: "Prepare the evidence review and post-merge handoff. Final closure requires TASK-017-12 results and all remaining acceptance gates."
     work_log: docs/work-logs/task-017-13-preparation.md
     handoff_note: docs/handoffs/casper-pre-merge-to-post-merge-20260919.md
+    handoff_preparation_status: "Prepared for review, not accepted. Baseline delivery and named recipients remain pending."
+    handoff_preparation_review: docs/casper/cbc-evidence/runs/casper-handoff-preparation-20260919-02/report.json
     evidence_review: docs/casper/cbc-evidence/runs/casper-pre-merge-review-20260919-01/report.json
     canonical_record_review: docs/casper/cbc-evidence/runs/casper-formal-gate-documentation-20260919-01/report.json
     canonical_record_status: "Claim001 and both documentation records are renewed after hosted verification. All eight executable claims pass strict source-bound audits."
@@ -652,8 +654,9 @@ tasks:
     remaining_prerequisites:
       - "Make the verified formal gate available on dev. Then apply the approved protection change, verify enforcement, and record evidence-backed acceptance."
       - "Complete CLAIM-SOAK-GATE-001 under docs/claims/soak-formal-gate.md. The approved finalized-floor scope remains local-only."
-      - "Review baseline results, scan benchmark evidence, and concurrency-gate evidence."
-      - "Confirm TASK-018 owners and obtain acceptance of the completed handoff."
+      - "Review current-source registration and discharge for the two mandatory campaign helpers owned by TASK-017-12."
+      - "Review baseline results, scan benchmark evidence, and concurrency-gate evidence. Record the required scope of the approved 60-hour phase."
+      - "Confirm TASK-018 owners and obtain acceptance of the completed handoff. Stacked branch preparation does not satisfy post-merge discharge requirements."
     decisions: [D-11]
     acceptance:
       - "Every changed mandatory artifact has current pre-merge claim evidence or an explicitly approved waiver."

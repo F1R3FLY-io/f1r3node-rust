@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "status": "preparation-checks-passed-closure-blocked",
+  "report_sha256": "c5f6d386b18816dd122229739a1a54273f6312954f5812bacfd1dc70f22047c4",
+  "checks": {
+    "strict_claim_audit": {
+      "exit": 0,
+      "claims": 8,
+      "soaks": "pending"
+    },
+    "default_gate": {
+      "exit": 4,
+      "total": 125,
+      "gaps": 3
+    },
+    "canonical_gate": {
+      "exit": 4,
+      "total": 125,
+      "gaps": 2
+    },
+    "source_manifest": {
+      "artifacts": 127,
+      "result": "passed"
+    },
+    "accepted_report_sources": {
+      "artifacts": 129,
+      "result": "passed"
+    },
+    "reviewed_inputs": {
+      "artifacts": 26,
+      "comparison": "Git bytes at base_commit",
+      "result": "passed"
+    },
+    "relative_links": "passed",
+    "unrelated_tracker_blocks": "unchanged",
+    "ste": "passed",
+    "human_ste_review": "not-performed",
+    "diagnostics": {
+      "files_checked": 4,
+      "clean": 3,
+      "false_positive": 1,
+      "inconclusive": 0
+    }
+  },
+  "tool_identities": {
+    "claim_auditor_binary_sha256": "0c851c5f2169880b105d216614862e8373dfd076c1dfa735f9a2c1fd23898432",
+    "cbc_cli_sha256": "2ef86fc9f34bbabfa2cd0601e3c02bacbfc25ab046826d18fbcaca901ba72787",
+    "ste_checker_sha256": "5e96af3603803c264fe5544f7706087891db0ec421ac589a9fab808fd19bf10e"
+  },
+  "retained_refusal": "inventory-selection-refusal.txt",
+  "handoff_accepted": false,
+  "task_closed": false,
+  "node_execution": false,
+  "model_execution": false,
+  "fixture_execution": false,
+  "protection_changes": false,
+  "commit_or_push": false
+}

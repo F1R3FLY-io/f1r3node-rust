@@ -1,6 +1,14 @@
 # TASK-017-13 preparation
 
-## Status
+## Current preparation checkpoint
+
+The draft handoff is prepared for review at `5cc4e665b52f0cc5279ec577ac5075b5b9897caf`. It is not accepted, and TASK-017-13 remains in progress.
+
+The [latest review report](../casper/cbc-evidence/runs/casper-handoff-preparation-20260919-02/report.json) records the expanded mandatory scope and current blockers.
+
+The final section records this update. Earlier sections retain their historical revisions, counts, failures, and decisions.
+
+## Initial review status
 
 TASK-017-13 is in progress. This session owns preparation of the evidence review and post-merge handoff.
 
@@ -199,3 +207,71 @@ Local verification evidence is under `target/task-017-13-routing-20260919-01/`. 
 Step 2 is partially complete. The remaining gate failure is an explicit governance decision, not a reason to substitute a different claim.
 
 TASK-017-13 remains open. This session performs no commit, push, waiver, dispatch, upload, or release publication.
+
+## Handoff preparation refresh
+
+The user requested: `go ahead with the handoff preparation`.
+
+The checkout was clean at `5cc4e665b52f0cc5279ec577ac5075b5b9897caf`. The review updated the existing handoff rather than creating a competing transfer record.
+
+### Current evidence review
+
+| Check | Result |
+| --- | --- |
+| Eight source-bound claims | Strict audit exits 0. All eight retain pending soak status. |
+| Actual changed mandatory scope | 125 artifacts against the confirmed PR #436 base. |
+| Default artifact gate | Exit 4, with three gaps. |
+| Canonical diagnostic gate | Exit 4, with two gaps. |
+| Declared inventories | 123 distinct artifacts. |
+| Combined source manifest | 127 artifacts, including the two new campaign helpers. |
+| Accepted-report sources | All 129 unique source hashes match. These include six dependencies beyond the declared inventories. |
+| Reviewed input manifest | 26 inputs at the stated base revision. |
+| Baseline delivery | No completed TASK-017-12 evidence was supplied to this review. |
+
+The remaining default gaps cover the independent formal-gate governance claim and two new mandatory campaign files. The canonical diagnostic still lacks both campaign records.
+
+The two files are `scripts/casper-soak/campaign.sh` and `scripts/casper-soak/test-campaign.sh`. Their source-bound claim registration and acceptance remain with TASK-017-12.
+
+The first manifest attempt incorrectly treated accepted-report source lists as the declared artifact inventory. It found 129 paths instead of 123 and refused.
+
+The corrected selection reads each claim specification. A separate manifest preserves and verifies all 129 report sources, so no dependency hash is discarded.
+
+### Prepared delivery requirements
+
+The handoff now lists the required admission, preflight, baseline, failure-history, resource, and governance records. Unknown campaign values remain explicitly unfilled.
+
+It records the amended three-runner baseline budget and separates the approved 60-hour phase from unresolved candidate and runner limits.
+
+The review does not decide whether that later phase is an additional TASK-017-13 completion requirement. That scope must be recorded before final acceptance.
+
+D-07 Reading A is ratified. The handoff now distinguishes that resolved decision from recovery qualification, which waits for the actual PR #216 merge.
+
+The governance authorization is recorded. Rule activation, live enforcement results, and evidence-backed discharge still wait for the gate to reach `dev`.
+
+### EPIC-018 amendment
+
+Commit `5cc4e665b` permits a branch stacked on the PR #216 head after handoff acceptance. Post-merge claim discharge still requires the actual merge revision.
+
+The handoff reflects the amended contract without completing TASK-018-1 or changing its dependent tasks. No owner assignment or branch creation is inferred.
+
+The tracker retains an older prose start condition that conflicts with the amendment. This review flags that inconsistency without changing another task or the approved contract.
+
+All six TASK-018 implementers remain unassigned. Owner confirmation and handoff acceptance remain open requirements.
+
+### Preparation limits
+
+This update changes only the draft handoff, its preparation log, the TASK-017-13 tracker block, and the new read-only review package.
+
+It does not change source bindings, campaign helpers, artifact tags, the Linux task, or historical evidence packages. It performs no model, fixture, node, or enforcement execution.
+
+The prepared handoff is ready for evidence delivery and owner review. It is not a task-completion result or authorization for TASK-017-14 reduction.
+
+Scratch records remain under `target/task-017-13-handoff-refresh-20260919-01/`. Preserve the initial inventory refusal with the corrected review outputs.
+
+### Refresh validation
+
+Source hashes, historical input hashes, relative links, and unrelated task preservation checks pass. The strict eight-claim audit still passes.
+
+The STE Check passes against the pre-edit baseline. Active diagnostics report only a false-positive spelling warning inside an unchanged Git hash.
+
+These checks verify preparation integrity, not task completion or live campaign results. No human STE Review is claimed.

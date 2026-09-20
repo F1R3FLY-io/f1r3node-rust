@@ -2,15 +2,23 @@
 
 ## Status and authority
 
-This handoff is a draft for TASK-017-13. It does not close EPIC-017 or authorize EPIC-018.
+This handoff is prepared for review, not accepted. TASK-017-13 remains in progress and blocked on TASK-017-12 results and the remaining acceptance requirements.
 
-The review uses commit `3aa79d0c1c91988be781c8380d8f6952b7d72868`. The [review report](../casper/cbc-evidence/runs/casper-pre-merge-review-20260919-01/report.json) records exact identities and gate outcomes.
+The current preparation uses commit `5cc4e665b52f0cc5279ec577ac5075b5b9897caf`. The [current review report](../casper/cbc-evidence/runs/casper-handoff-preparation-20260919-02/report.json) records source identities and gate outcomes.
+
+The [initial review report](../casper/cbc-evidence/runs/casper-pre-merge-review-20260919-01/report.json) retains the checkpoint at `3aa79d0c1c91988be781c8380d8f6952b7d72868`. Historical sections below retain their original counts and outcomes.
 
 On 2026-09-19, GitHub reported that PR #436 targets `dev` at `6940a5beb4aa806d3d75f6df3be9f238512fcc2f`. PR #436 was open and not a draft.
 
 Earlier records of the stack parent and draft status are historical. This review does not change the PR base or its status.
 
-PR #216 remains open, with no merge commit. EPIC-018 requires its actual merge in the selected `dev` history and acceptance of this completed handoff.
+PR #216 remains open at `619beb4a4a7ad3f8967d4586daf0f5c552bd150e`, with no merge commit.
+
+The approved amendment in `5cc4e665b` permits an EPIC-018 branch stacked on PR #216 after handoff acceptance. It does not require a merge before branch creation.
+
+The owner must record each candidate revision, rebase after candidate updates, and retarget the follow-on PR to `dev` after the merge.
+
+Post-merge claim discharge still requires the actual merge revision. Neither the branch amendment nor this draft authorizes a campaign or satisfies that evidence requirement.
 
 ## Evidence boundaries
 
@@ -19,7 +27,7 @@ PR #216 remains open, with no merge commit. EPIC-018 requires its actual merge i
 | Bounded models | The eight accepted claim inventories cite passing finite safety checks and named negative controls. | The models do not prove node correctness or unbounded liveness. |
 | Executable bindings | All eight source-bound claim audits pass. | Controlled fixtures do not qualify live adapters. |
 | Product observations | TASK-017-12 has not supplied completed baseline evidence to this review. | No campaign result, seed, or run identity is inferred. |
-| Full changed scope | Both artifact-gate checks fail. | Claim-level success cannot cover undeclared mandatory artifacts. |
+| Full changed scope | The default gate has three gaps among 125 artifacts. The canonical diagnostic has two gaps. Both exit 4. | Two new campaign helpers lack records. The independent governance claim remains pending. |
 
 This review executes metadata audits, not models, fixtures, or nodes. Earlier execution revisions remain unchanged.
 
@@ -29,13 +37,15 @@ The accepted claims use `bounded-safety-pass`, `not-applicable`, and `passed` fo
 
 The [claim index](../claims/casper-soak-harness.md) links all eight specifications. The source-bound audit checks 123 declared artifacts across these claims.
 
-The [source manifest](../casper/cbc-evidence/runs/casper-pre-merge-review-20260919-01/source-artifacts.sha256) records 125 artifact hashes. These cover both the claim inventories and the changed mandatory scope.
+The [current source manifest](../casper/cbc-evidence/runs/casper-handoff-preparation-20260919-02/source-artifacts.sha256) records 127 artifact hashes. It covers the accepted inventories and the expanded mandatory scope.
 
-The [evidence manifest](../casper/cbc-evidence/runs/casper-pre-merge-review-20260919-01/evidence-inputs.sha256) binds the specifications, canonical ledgers, accepted reports, attributes, and governance inputs.
+The [current input manifest](../casper/cbc-evidence/runs/casper-handoff-preparation-20260919-02/reviewed-inputs.sha256) records the reviewed specifications, reports, and coordination documents at the stated revision.
+
+The initial review package retains its earlier 125-source and 142-input manifests. Those historical manifests do not describe the new campaign helpers.
 
 | Claim | Accepted report | Post-merge task |
 | --- | --- | --- |
-| 001 | [Inventory renewal](../casper/cbc-evidence/runs/casper-binding-inventory-renewal-20260919-01/report.json) | TASK-018-1, TASK-018-2, TASK-018-5, TASK-018-6 |
+| 001 | [Hosted workflow renewal](../casper/cbc-evidence/runs/casper-formal-gate-renewal-20260919-01/report.json) | TASK-018-1, TASK-018-2, TASK-018-5, TASK-018-6 |
 | 002 | [Three-profile acceptance](../casper/cbc-evidence/runs/casper-profile-acceptance-20260919-01/report.json) | TASK-018-3 |
 | 003 | [Three-profile acceptance](../casper/cbc-evidence/runs/casper-profile-acceptance-20260919-01/report.json) | TASK-018-3 |
 | 004 | [Three-profile acceptance](../casper/cbc-evidence/runs/casper-profile-acceptance-20260919-01/report.json) | TASK-018-3, TASK-018-5 |
@@ -84,7 +94,7 @@ Do not overwrite historical records or remove tags to make these checks pass. Re
 
 The disk-admission fixture remains declared but untagged. The summary writer remains declared and mandatory but unchanged against this PR base.
 
-## Canonical record resolution
+## Historical canonical record resolution
 
 The [formal-area review](../casper/cbc-evidence/runs/casper-formal-area-records-20260919-01/report.json) resolves both pending canonical documentation records.
 
@@ -98,7 +108,7 @@ Existing compatibility symlinks expose the two updated canonical records. No com
 
 The eight executable claim audits still pass, with all soak fields pending. TASK-017-13 remains open for compatibility routing, baseline evidence, owners, and handoff acceptance.
 
-## Compatibility routing review
+## Historical compatibility routing review
 
 The [routing report](../casper/cbc-evidence/runs/casper-compatibility-routing-20260919-01/report.json) resolves four stale lookup paths. Each path now links to its unchanged canonical record.
 
@@ -112,16 +122,44 @@ The prerequisite record describes retirement with the digest inventory but retai
 
 A maintainer must resolve that applicability question and review current evidence. Historical enforcement observations are not fresh checks of current repository settings.
 
+## Current closure requirements
+
+The [hosted renewal](../work-logs/soak-formal-gate-hosted-renewal.md) restores Claim001 and both formal-area documentation records. The current eight-claim audit passes without changing soak status.
+
+The default gate still reports these gaps:
+
+| Artifact | Current requirement | Responsible role |
+| --- | --- | --- |
+| `.github/workflows/slashing-tests.yml` | Complete the independent governance claim after baseline availability, rule activation, and enforcement tests. | Authorized gate operator, with TASK-017-13 evidence review |
+| `scripts/casper-soak/campaign.sh` | Register and discharge the source-bound campaign-helper claim. | TASK-017-12 owner |
+| `scripts/casper-soak/test-campaign.sh` | Register and discharge the mandatory fixture artifact. | TASK-017-12 owner |
+
+The two campaign helpers are mandatory and high-weight. Their synthetic fixture results do not add them to an accepted claim inventory.
+
+The [authorization record](../work-logs/soak-formal-gate-authorization.md) approves conditional protection changes, enforcement tests, and evidence-backed final acceptance. It is not an enforcement result.
+
+At the latest recorded check, `dev` lacks `Formal verification gate`. Baseline availability remains the activation prerequisite, and Git publication or merge requires separate authorization.
+
+No deferral of this governance requirement has been approved. A separate gate PR is an option, not a merge instruction.
+
 ## Baseline inputs still required
 
 TASK-017-12 remains with `pi-soak-carrier-index-linux`. The [dispatch preparation](../work-logs/task-017-12-preparation.md) defines its resource approval and qualification requirements.
 
-Claim001 renewal is now committed and passes. Earlier preparation text that calls that renewal pending is historical.
+The approved baseline budget now covers one four-hour preflight runner and two 26-hour baseline runners. Each runner has 64 GB of memory.
+
+Each candidate must receive a full 24-hour workload window. The Linux owner still must resolve workflow integration, launch limits, candidate selection, and live qualification.
+
+The separate 60-hour campaign is approved after a passing baseline. Its candidate count and runner lifetime limits still need an explicit decision.
+
+The proposed two additional 64-hour runners are not approved by the baseline budget. Additional repetitions remain unapproved.
+
+Before final review, record whether the 60-hour phase is a required TASK-017-13 input or a separately tracked delivery. Approval alone does not decide that requirement.
 
 The final handoff still needs these baseline fields:
 
 - Immutable node, harness, external harness, image, workload, and configuration identities.
-- Qualified adapter records, including the unresolved D-07 recovery prerequisite where applicable.
+- Qualified adapter records, with unsupported capabilities and the recovery merge dependency stated separately.
 - Preflight run identity and outcome.
 - Each campaign seed, run identity, repetition, duration, terminal outcome, and retained product failure.
 - Metrics definitions and comparability limits.
@@ -129,15 +167,39 @@ The final handoff still needs these baseline fields:
 
 These campaign fields remain unknown in this review. A fixture seed cannot substitute for a campaign seed.
 
+D-07 Reading A is ratified. Recovery qualification waits for the actual PR #216 merge because the selected pre-merge node lacks its occurrence store.
+
+Do not report recovery as passed or require an unavailable recovery observation to appear in the pre-merge baseline. Authority and publication qualification retain their own requirements.
+
 [D-11](../casper/design/decision-ledger/11-cbc-fv-governance.md) retains the scan benchmark requirement. No baseline benchmark result has been supplied here.
 
 The existing `ucc_tests` job invokes User Contract Concurrency tests for Docker and subprocess providers on AMD64. Workflow presence does not establish a baseline result.
 
 TASK-018-5 explicitly owns both post-merge reruns. That assignment does not waive missing pre-merge evidence.
 
+### Linux evidence delivery checklist
+
+Deliver the following records for each candidate. This checklist does not authorize dispatch or assign additional work outside TASK-017-12.
+
+| Required record | Contents needed for review | Current delivery status |
+| --- | --- | --- |
+| Admission | Current source-bound helper claims, complete inventory, qualification results, immutable workload and candidate pins. | Not supplied |
+| Preflight | Run and attempt IDs, inputs, image identity, independent outcome, logs, and evidence checksums. | Not supplied |
+| Baseline | Platform, seeds, exact workload start and end, full duration, metrics definitions, run IDs, and terminal verdict. | Not supplied |
+| Failure history | Product failures, infrastructure stops, partial evidence, independent exits, and any approved repetition. | Not supplied |
+| Resources | Actual machine count, memory, launch count, lifetime limits, capture, and cleanup results. | Not supplied |
+| Governance baselines | Scan benchmark and User Contract Concurrency results with revisions, commands, counts, and digests. | Not supplied |
+| Follow-on campaign | Explicit phase scope, approved candidate and runner limits, baseline prerequisite, and result or pending state. | Not supplied |
+
+A non-passing result must remain visible. Submitting a failure report does not automatically satisfy acceptance or authorize the 60-hour phase.
+
 ## Post-merge ownership
 
 The tracker names tasks but no assigned implementers for TASK-018-1 through TASK-018-6. Owner confirmation remains a handoff blocker.
+
+The amended epic contract permits earlier branch preparation. TASK-018-1 still requires actual merge evidence for completion, and its dependent tasks retain their recorded completion gates.
+
+The tracker also retains an older prose start condition that conflicts with the amendment. This preparation follows the explicit amendment and flags that prose for reconciliation.
 
 | Task | Required delivery | Assigned implementer |
 | --- | --- | --- |
@@ -156,12 +218,30 @@ Host controls depend on Linux pidfds, procfs, trusted paths, and available kerne
 
 Docker-daemon behavior, storage availability, and enforced child termination remain explicit assumptions. A host failure cannot produce a passing result from incomplete evidence.
 
-Live observation interfaces remain separately qualified. D-07 semantics, historical missing references, and unavailable independent exits remain unresolved where recorded.
+Live observation interfaces remain separately qualified. D-07 Reading A is resolved, but recovery qualification still depends on the merged implementation.
+
+Historical missing references and unavailable independent exits remain unresolved where recorded.
 
 PR #441 diagnostic claims remain separate from the eight claims in this handoff. Diagnostic test results do not discharge those claims.
 
 TASK-017-14 owns retention and reduction after this task closes. Preserve prior records, failed attempts, private execution archives, and exact report bytes.
 
 TASK-017-15 owns separately authorized release publication. Draft-release consumers use numeric release identifier `391939637` until publication.
+
+## Handoff acceptance checklist
+
+- [x] Identify current accepted source-bound reports and preserve historical checkpoints.
+- [x] Review the actual PR scope and list all current mandatory-artifact gaps.
+- [x] Record the Linux delivery fields, approved resource boundaries, and missing results.
+- [x] Distinguish stacked branch preparation from post-merge claim discharge.
+- [ ] Receive and review required TASK-017-12 evidence and resolve the campaign completion scope.
+- [ ] Resolve the campaign-helper and independent governance claim gaps.
+- [ ] Review scan and concurrency baseline evidence.
+- [ ] Confirm named TASK-018 implementers and receive handoff acceptance.
+- [ ] Repeat current-source, full-scope, and strict task-completion checks.
+
+Prepared by `pi-casper-handoff-mac`. Acceptance recipient, acceptance timestamp, and accepted evidence revision remain unassigned.
+
+TASK-017-14 reduction and TASK-017-15 publication remain gated on their recorded prerequisites. This draft does not change those dependencies.
 
 This preparation authorizes no dispatch, policy activation, upload, deletion, release publication, waiver, or post-merge execution.
