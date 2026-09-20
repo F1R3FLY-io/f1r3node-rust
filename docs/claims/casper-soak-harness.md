@@ -2,7 +2,7 @@
 
 ```yaml
 claim_id: CLAIM-CASPER-SOAK-001
-status: discharged
+status: pending
 adapter: embedded
 pre_merge_tasks: [TASK-017-2, TASK-017-4, TASK-017-12, TASK-017-13]
 post_merge_tasks: [TASK-018-1, TASK-018-2, TASK-018-5, TASK-018-6]
@@ -50,7 +50,7 @@ mechanization_plan: formal/tlaplus/casper_soak/verification-plan.jsonc
 refutation: bounded-safety-pass
 construction: not-applicable
 construction_assumptions: null
-binding: passed
+binding: pending
 soak: pending
 ```
 
