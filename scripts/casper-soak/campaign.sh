@@ -7,7 +7,7 @@ fail() {
 hash_file() { sha256sum "$1" | cut -d ' ' -f1; }
 check_json() {
   [[ -f "$1" && "$(stat -c %s "$1")" -le 1048576 ]] || fail 'The JSON input is missing or exceeds its byte limit.'
-  jq -e 'type=="object"' "$1" >/dev/null 2>&1 || fail 'The input is not a JSON object.'
+  jq -se 'length==1 and (.[0]|type=="object")' "$1" >/dev/null 2>&1 || fail 'The input must contain exactly one JSON object.'
 }
 resolve_file() {
   local root="$1" path="$2" digest="$3" resolved

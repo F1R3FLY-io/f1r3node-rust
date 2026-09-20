@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "status": "passed",
+  "scope": "metadata-consistency-not-live-qualification",
+  "report_sha256": "35d6e8b46c7ad5f87060881047649658adc07b5e57347b9baf859d5a95a30631",
+  "candidate_admission_probes": 4,
+  "expected_blocked_exits": 4,
+  "retained_suite_source_hashes": 269,
+  "git_blob_identity_checks": 269,
+  "node_api_source_checks": 5,
+  "native_campaign_checks": 34,
+  "isolated_campaign_checks": 34,
+  "authority_rust_tests": 8,
+  "publication_rust_tests": 6,
+  "existing_claim_audit_count": 8,
+  "claim_registration": "CLAIM-CASPER-CAMPAIGN-001",
+  "registered_pending_artifacts": 2,
+  "claim_discharge_action": "none",
+  "workflow_changed": false,
+  "runtime_or_profiles_changed": false,
+  "node_launch_count": 0,
+  "cloud_launch_count": 0
+}

@@ -106,5 +106,14 @@ expect insufficient_baseline_time 2 bash "$HELPER" window "$OUT/baseline_amd64.s
 expect exact_baseline_limit 0 bash "$HELPER" window "$OUT/baseline_amd64.stdout" 2000000000 2000006600
 expect clock_reversal 2 bash "$HELPER" window "$OUT/baseline_amd64.stdout" 2000000000 1999999999
 expect full_stability_window 0 bash "$HELPER" window "$OUT/stability.stdout" 2000000000 2000000600
+: > "$OUT/empty.json"
+expect empty_window_input 2 bash "$HELPER" window "$OUT/empty.json" 2000000000 2000000600
+jq -s '.[]' "$OUT/baseline_amd64.stdout" "$OUT/stability.stdout" > "$OUT/multiple-windows.json"
+expect multiple_window_documents 2 bash "$HELPER" window "$OUT/multiple-windows.json" 2000000000 2000000600
+jq '.duration_seconds=1' "$OUT/baseline_amd64.stdout" > "$OUT/invalid-window.json"
+jq -s '.[]' "$OUT/invalid-window.json" "$OUT/baseline_amd64.stdout" > "$OUT/invalid-first-window.json"
+expect invalid_first_window_document 2 bash "$HELPER" window "$OUT/invalid-first-window.json" 2000000000 2000000600
+jq -s '.' "$OUT/baseline_amd64.stdout" > "$OUT/window-array.json"
+expect array_window_input 2 bash "$HELPER" window "$OUT/window-array.json" 2000000000 2000000600
 jq -n --argjson count "$passed" '{schema_version:1,status:"passed",checks:$count,evidence_kind:"synthetic_fixture",node_launch_count:0,cloud_launch_count:0,claim_discharge:"pending"}' > "$OUT/summary.json"
 printf 'PASS: %s campaign admission and duration checks. No node or cloud runner launched.\n' "$passed"

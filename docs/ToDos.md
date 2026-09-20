@@ -590,9 +590,12 @@ tasks:
     title: "Pin executable workloads, qualify candidates, and run the pre-merge baseline soak"
     candidate_review_note: "Both platform identities were verified for dev 6940a5beb and harness 1f749aa83 on 2026-09-19. Push run 35423285859 supplied the image artifacts. The matrix retains blocked admission and null workload pins. Recheck current dev before dispatch."
     candidate_identity_evidence: docs/casper/cbc-evidence/runs/casper-candidate-repin-20260919-01/report.json
+    live_admission_evidence: docs/casper/cbc-evidence/runs/casper-linux-admission-7509c831c-01/report.json
+    execution_gate: "Four exact-candidate probes returned blocked before node launch. Their controlled inputs are not live qualification. The legacy workload is pinned but cannot replace required Casper profiles."
     drift_review: docs/work-logs/task-017-12-drift-review-2026-09-19.md
-    claims: [CLAIM-CASPER-SOAK-001, CLAIM-CASPER-SOAK-004]
+    claims: [CLAIM-CASPER-SOAK-001, CLAIM-CASPER-SOAK-004, CLAIM-CASPER-CAMPAIGN-001]
     claim_index: docs/claims/casper-soak-harness.md
+    campaign_claim_index: docs/claims/casper-soak-campaign.md
     status: in_progress
     claimed_by: pi-soak-carrier-index-linux
     claimed_at: 2026-09-19T19:20:00Z
@@ -605,9 +608,9 @@ tasks:
     work_log: docs/work-logs/task-017-12-preparation.md
     blocked_by: []
     remaining_prerequisites:
-      - "The eight existing source-bound claim audits pass for their accepted scope. New mandatory campaign helpers still require claim registration and discharge."
+      - "The eight existing source-bound claim audits pass for their accepted scope. The separate campaign claim is registered for both helpers. Its discharge remains pending."
       - "Pin executable workloads and review the complete campaign model and configuration inventory. Recheck candidate identities before dispatch."
-      - "Qualify live adapters. The existing profile commands do not admit node observations."
+      - "Qualify live adapters and their required node interfaces. Fresh authority and publication probes reject both candidate identities with explicit unqualified-adapter reasons."
       - "Resolve the dispatch mismatch. The workflow uses amd64 only and rebuilds images instead of selecting both pinned CI images."
       - "Implement the full 24-hour baseline duration. The existing daily-24h input selects 22 hours and then subtracts preflight time."
       - "Enforce the amended three-machine budget for preflight and baselines. Disable automatic replacement and repeat launches in campaign mode."

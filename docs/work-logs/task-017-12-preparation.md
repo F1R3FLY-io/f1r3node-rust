@@ -377,3 +377,85 @@ Evidence remains under `target/task-017-12/campaign-implementation-f5ed8c198-01/
 Workflow integration, prior-run verification, launch enforcement, complete inventory review, live qualification, and renewed acceptance remain incomplete. No node, OCI runner, or workflow dispatch started.
 
 TASK-017-12 remains in progress. No commit, push, or upload occurred during this implementation increment.
+
+## Linux continuation at 7509c831c
+
+The user requested the remaining Linux work. The source review confirmed a required interface blocker before any cloud launch.
+
+The [admission report](../casper/cbc-evidence/runs/casper-linux-admission-7509c831c-01/report.json) records the new checks. Its status is `blocked-before-node-launch`, not campaign completion.
+
+### Current identities and source inventory
+
+GitHub still reports `dev` at `6940a5beb4aa806d3d75f6df3be9f238512fcc2f`. The revision remained unchanged during this review. PR #216 remains open and unmerged.
+
+The immutable image index matches the earlier retained snapshot byte for byte. The earlier candidate identity report remains the authority for image and node-binary verification.
+
+All 269 files in the pinned external suite match their Git blob identities, byte lengths, and retained SHA-256 inventory. No suite source changed.
+
+The [legacy workload record](../casper/cbc-evidence/runs/casper-linux-admission-7509c831c-01/legacy-load-workload.json) pins the load test, preflight selection, dependency files, providers, and stress options.
+
+That record has scope `legacy-load-only`. Its three stress options are not production defaults. It cannot substitute for the required Casper baseline.
+
+Five candidate API source snapshots match their Git blobs and the local source bytes. This check does not establish live interface qualification.
+
+The matrix still has one stale pin among its 179 stored source entries. That pin names `formal/tlaplus/casper_soak/verification-plan.jsonc`.
+
+The matrix remains unchanged and `not-dispatchable`. Its complete campaign inventory and ratified executable workload pins remain unfinished.
+
+### Executable admission results
+
+Fresh release builds passed eight authority tests and six publication tests. The retained fixture evidence contains 148 profile invocations.
+
+Four additional admission probes used the exact amd64 and arm64 candidate identities. The probes supplied controlled fixture inputs and no observations from running nodes.
+
+Both profile binaries rejected both candidates with exit 3 and verdict `blocked`. Each report records zero node launches, no measurements, and no captured node observations.
+
+The authority profile requires qualified same-DAG evaluation, electorate context, finality decisions, original fault-tolerance projection, and applicable counters or fault controls.
+
+The publication profile requires qualified cut-point, exit, linked-restart, atomic-snapshot, and durable-work observations. Generic queries and restarts do not satisfy those requirements.
+
+Both profiles also retain an explicit unqualified-live-adapter guard. The probes demonstrate refusal, not successful qualification or node execution on either candidate architecture.
+
+Recovery qualification retains its separate actual-merge prerequisite. The review does not fabricate occurrence-store observations before PR #216 merges.
+
+### Parser repair and verification
+
+The draft campaign helper accepted multiple JSON documents when it checked a workload window. A regression test reproduced exit 0 where exit 2 was required.
+
+The helper now requires exactly one JSON object. New cases cover empty input, multiple documents, an invalid first document, and an array.
+
+The repaired helper passed 34 checks in each native and isolated lane. The original failure, tested sources, commands, and outputs remain retained.
+
+A fresh strict audit passed for all eight existing claims. That audit does not include the two campaign helpers.
+
+[CLAIM-CASPER-CAMPAIGN-001](../claims/casper-soak-campaign.md) now defines the planning controls and exclusions. Both helper ledgers remain pending, without a waiver or verification date.
+
+The separate claim does not alter previous discharges. It does not convert fixture results into formal discharge or live qualification.
+
+The accepted workflow, runtime, profiles, binding inventory, and candidate matrix remain unchanged. Existing daily and weekend schedules remain unchanged.
+
+### Handoff boundary
+
+Bulk evidence remains under `target/task-017-12/linux-continuation-7509c831c-01/`. The compact report, validation record, legacy workload record, and suite-source manifest are in Git scope.
+
+Workflow integration and execution remain unfinished. No OCI runner, candidate node, preflight dispatch, or soak campaign started.
+
+A qualified live-adapter contract and eligible Casper workload are prerequisites for the campaign path. Hardware approval alone cannot satisfy these requirements.
+
+A separate legacy-load diagnostic campaign would require an explicit scope decision. Its results could not close the missing Casper-profile evidence.
+
+The other agent can use this evidence for review and the remaining handoff work. TASK-017-12 remains in progress. I did not start EPIC-018.
+
+### Concurrent checkout change
+
+The checkout advanced to `5cc4e665b52f0cc5279ec577ac5075b5b9897caf` during this review. The revision guard rejected that change with exit 1.
+
+The two incoming commits changed six documentation paths. They did not change the scoped executable sources, workflow, binding inventory, or candidate matrix.
+
+The [provenance record](../casper/cbc-evidence/runs/casper-linux-admission-7509c831c-01/provenance.json) preserves this event and the original request identities. No earlier result becomes execution at the later revision.
+
+The source snapshots establish byte identity. They do not establish the checkout revision at every earlier command.
+
+The new branch policy permits EPIC-018 stacking after acceptance of the EPIC-017 handoff. The actual merge remains necessary for recovery qualification and post-merge discharge.
+
+This work does not complete that handoff. The incoming formal-gate authorization also remains separate from campaign approval and execution.
