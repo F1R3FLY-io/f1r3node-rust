@@ -116,6 +116,8 @@ Exact historical copies remain beside those links with the suffix `.historical-f
 
 The default gate now reports one gap and exits 4. The canonical gate and eight executable claim audits still pass.
 
+The auditor covers CLAIM-CASPER-SOAK-001 through 008 only. A zero exit means those eight claims discharge, not that every claim under `docs/claims/` discharges. The [tier document](../cbc-verification-tiers.md#auditor-coverage) names the claims governed separately and explains why extending the auditor is costly.
+
 The remaining workflow record cites `CLAIM-SOAK-GATE-001`, not a Casper profile claim. Its historical specification includes required-check enforcement and workflow-control identity obligations.
 
 The prerequisite record describes retirement with the digest inventory but retains open obligations. This review infers no blanket supersession or waiver.

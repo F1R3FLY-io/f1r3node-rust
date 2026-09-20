@@ -1,8 +1,18 @@
 # Casper campaign planning controls
 
-Claim ID: `CLAIM-CASPER-CAMPAIGN-001`
-
-Status: pending.
+```yaml
+claim_id: CLAIM-CASPER-CAMPAIGN-001
+status: pending
+artifacts:
+  - scripts/casper-soak/campaign.sh
+  - scripts/casper-soak/test-campaign.sh
+phase: pre_pr216_merge
+scope: campaign-planning-helpers
+binding: pending
+soak: pending
+audited_by_claim_checker: false
+audit_note: "The check-casper-claims auditor covers CLAIM-CASPER-SOAK-001 through 008 only. This claim is governed by its own review and by the ledger records for its two artifacts."
+```
 
 ## Scope
 

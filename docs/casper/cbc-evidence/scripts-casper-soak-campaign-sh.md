@@ -16,7 +16,7 @@ The campaign planning claim remains pending. Fixture checks do not supply formal
     "CLAIM-CASPER-CAMPAIGN-001"
   ],
   "claim_digests": {
-    "docs/claims/casper-soak-campaign.md": "70575b8b455b81bd8a02b5c83eb59b7bd43437dc07468557e8a24da11bb66f4a"
+    "docs/claims/casper-soak-campaign.md": "56598912886b421dd092923ee9520358215eafdd526411d0213adb32355dc7bd"
   },
   "adapter": null,
   "status": "pending",

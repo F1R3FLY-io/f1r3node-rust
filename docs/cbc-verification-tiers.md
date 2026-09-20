@@ -192,6 +192,27 @@ This document defines these four terms. Their promotion to
 - **Promotion.** The decision to carry a stable refutation-tier result into
   the construction tier after Rust traceability confirms it.
 
+## Auditor coverage
+
+The `check-casper-claims` auditor covers exactly eight claims, CLAIM-CASPER-SOAK-001 through CLAIM-CASPER-SOAK-008. It reads them from `formal/tlaplus/casper_soak/verification-plan.jsonc` and rejects any other claim identity.
+
+A zero exit from the strict bundle means that those eight claims discharge. It does not mean that every claim under `docs/claims/` discharges.
+
+Other claims carry their own status and their own review. They include the following.
+
+| Claim | Subject | Audited by the tool |
+| --- | --- | --- |
+| CLAIM-SOAK-GATE-001 | Formal verification gate in continuous integration | No |
+| CLAIM-CASPER-CAMPAIGN-001 | Campaign planning helpers | No |
+| CLAIM-SOAK-001 | Soak disk protection | No |
+| CLAIM-FINALITY-001 | Settled effect probe equivalence | No |
+| CLAIM-FINALITY-002 | Repeat deploy carrier index equivalence | No |
+| CLAIM-RSPACE-001 | Check, commit, play, and replay | No |
+
+The separation is deliberate. The auditor source is `scripts/casper-soak/src/bin/check-casper-claims.rs`, which CLAIM-CASPER-SOAK-001 lists as a mandatory artifact. Extending the auditor changes that file, returns the harness claim to pending, and requires a new binding acceptance with fresh hosted verification.
+
+Read an eight-claim result as an eight-claim result. The artifact gates under `docs/casper/cbc-evidence/` and `docs/cbc-evidence/` cover a wider set and report separately.
+
 ## References
 
 - [Formal Verification](./formal-verification.md), the umbrella for stack,
