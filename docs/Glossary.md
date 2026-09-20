@@ -626,6 +626,18 @@ A **creation fence** prevents further workload execution after closure, includin
 **Preferred usage:** Identify the mechanism that enforces the creation fence.
 A rejected client request, an empty process list, or a single kill operation does not establish a creation fence.
 
+### Launch reservation
+
+A **launch reservation** permanently consumes one campaign launch slot before the controller submits a launch request.
+
+**Preferred usage:** Name the budget and store that enforce the launch reservation. A launch reservation does not establish approval, a successful launch, or completed cleanup.
+
+### Reservation store
+
+A **reservation store** retains campaign bindings and consumed launch slots across controller invocations.
+
+**Preferred usage:** State whether the reservation store serves one local controller or all campaign controllers. Local filesystem records alone do not establish global launch accounting.
+
 ## Maintenance
 
 - Update this file before merging code or documentation that introduces a

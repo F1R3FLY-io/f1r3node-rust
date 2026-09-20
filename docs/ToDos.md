@@ -593,14 +593,19 @@ tasks:
     live_admission_evidence: docs/casper/cbc-evidence/runs/casper-linux-admission-7509c831c-01/report.json
     manual_dispatch_evidence: docs/casper/cbc-evidence/runs/casper-campaign-dispatch-5e26ba4c5-01/report.json
     completion_review: docs/work-logs/task-017-12-preparation.md#completion-review-at-859cbc36c
+    claim001_reconciliation: docs/work-logs/task-017-12-preparation.md#claim001-specification-digest-reconciliation
     node_interface_prerequisite: docs/plans/casper-node-interface-prerequisite.md
-    node_interface_status: "The user authorized a separate prerequisite. Its file-level plan awaits confirmation. No node code changed, and campaign admission remains blocked."
+    node_interface_status: "PR #447 targets dev independently. Batch A and its shutdown correction are published at 799e2136a. The node claim remains pending. Later batches require separate approval, and campaign admission remains blocked."
+    stack_scope: "PR #436 temporarily targets the node branch. This dependency order does not include node implementation in the harness scope. Independent harness controls can proceed before node qualification."
+    reservation_work_log: docs/work-logs/task-017-12-reservations.md
+    reservation_status: "A local three-slot reservation guard has native and isolated fixture checks. It does not provide global accounting or launch enforcement. Approval authentication and independent lifetime enforcement remain unimplemented."
     compatibility_lookup_status: "Both campaign helper links resolve to canonical records. Default and canonical gates each return exit 4 with three pending records. No lookup is missing in this scope."
     execution_gate: "Four exact-candidate probes returned blocked before node launch. Their controlled inputs are not live qualification. The legacy workload is pinned but cannot replace required Casper profiles."
     drift_review: docs/work-logs/task-017-12-drift-review-2026-09-19.md
-    claims: [CLAIM-CASPER-SOAK-001, CLAIM-CASPER-SOAK-004, CLAIM-CASPER-CAMPAIGN-001]
+    claims: [CLAIM-CASPER-SOAK-001, CLAIM-CASPER-SOAK-004, CLAIM-CASPER-CAMPAIGN-001, CLAIM-CASPER-CAMPAIGN-002]
     claim_index: docs/claims/casper-soak-harness.md
     campaign_claim_index: docs/claims/casper-soak-campaign.md
+    reservation_claim_index: docs/claims/casper-campaign-reservation.md
     status: in_progress
     claimed_by: pi-soak-carrier-index-linux
     claimed_at: 2026-09-19T19:20:00Z
@@ -613,12 +618,12 @@ tasks:
     work_log: docs/work-logs/task-017-12-preparation.md
     blocked_by: []
     remaining_prerequisites:
-      - "The changed workflow requires Claim001 renewal. The strict claim audit now returns exit 4 with Claim001 pending. Reconcile its changed specification digest without rewriting historical evidence. Both campaign helper records remain pending."
+      - "The workflow specification digest now matches current Claim001. Historical evidence remains unchanged. Claim001 still requires source-bound renewal and acceptance. The strict claim audit returns exit 4, and both campaign helper records remain pending."
       - "Pin executable workloads and review the complete campaign model and configuration inventory. Recheck candidate identities before dispatch."
       - "Qualify live adapters and their required node interfaces. Fresh authority and publication probes reject both candidate identities with explicit unqualified-adapter reasons."
       - "The manual campaign planner selects immutable platform references for both architectures. Cloud execution integration remains incomplete and cannot use the legacy rebuild path."
       - "The campaign-baseline-24h input requests 86400 workload seconds. Execution must preserve that full duration without preflight subtraction. Existing scheduled behavior remains unchanged."
-      - "Implement persistent reservations and instance lifetime enforcement for the three-machine budget. Campaign admission currently launches no machines and cannot reach legacy replacement or retry jobs."
+      - "Integrate one authoritative reservation store and independent instance lifetime enforcement for the three-machine budget. Local reservation fixtures do not establish cross-run enforcement. Campaign admission still launches nothing and cannot reach legacy replacement or retry jobs."
       - "Record the exact candidate count and runner lifetime limits before the approved 60-hour campaign launches. Passing baseline evidence remains required."
       - "The memory decision is resolved at 64 GB per runner. Preserve the approved limits and host controls."
       - "Recovery adapter qualification for CLAIM-CASPER-SOAK-004 waits for the PR #216 merge. The ratifiers confirmed D-07 Reading A on 2026-09-19, so a pre-merge dev node has no occurrence store to observe. The authority and publication adapters do not wait."
