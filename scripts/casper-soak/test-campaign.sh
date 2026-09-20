@@ -15,7 +15,7 @@ export CAMPAIGN_CONTROL_REVISION="$REV"
 export GITHUB_RUN_ATTEMPT=1
 export GITHUB_EVENT_NAME=workflow_dispatch
 hash() { sha256sum "$1" | cut -d ' ' -f1; }
-for path in scripts/casper-soak/campaign.sh .github/workflows/merge-recovery-soak.yml .github/actions/soak-segment/action.yml scripts/run-merge-recovery-soak.sh scripts/run-integration-preflight.sh; do
+for path in scripts/casper-soak/campaign.sh scripts/casper-soak/test-campaign.sh .github/workflows/merge-recovery-soak.yml .github/actions/soak-segment/action.yml scripts/run-merge-recovery-soak.sh scripts/run-integration-preflight.sh; do
   mkdir -p "$FIXTURE/$(dirname "$path")"
   printf 'Synthetic source fixture.\n' > "$FIXTURE/$path"
 done
@@ -24,7 +24,7 @@ for arch in amd64 arm64; do
   jq -n --arg candidate "dev-$arch" --arg node "$NODE" --arg digest "$DIGEST" --arg workload "$(hash "$FIXTURE/docs/campaign/workload.json")" '{schema_version:1,candidate_id:$candidate,node_revision:$node,node_binary_digest:("sha256:"+$digest),image_digest:("sha256:"+$digest),workload_sha256:$workload,evidence_kind:"node_observation",status:"qualified",capabilities:{load:"qualified",query:"qualified",metrics:"qualified"}}' > "$FIXTURE/docs/campaign/$arch-qualification.json"
 done
 sources='{}'
-for path in scripts/casper-soak/campaign.sh .github/workflows/merge-recovery-soak.yml .github/actions/soak-segment/action.yml scripts/run-merge-recovery-soak.sh scripts/run-integration-preflight.sh; do
+for path in scripts/casper-soak/campaign.sh scripts/casper-soak/test-campaign.sh .github/workflows/merge-recovery-soak.yml .github/actions/soak-segment/action.yml scripts/run-merge-recovery-soak.sh scripts/run-integration-preflight.sh; do
   sources="$(jq -cn --argjson old "$sources" --arg path "$path" --arg digest "$(hash "$FIXTURE/$path")" '$old + {($path):$digest}')"
 done
 candidates='{}'
@@ -85,7 +85,7 @@ mkdir "$OUT/tools"
 printf '#!/usr/bin/env bash\nfor arg in "$@"; do\n  if [[ "$arg" == '\''.source_digests|to_entries[]|[.key,.value]|@tsv'\'' ]]; then exit 7; fi\ndone\nexec %q "$@"\n' "$(command -v jq)" > "$OUT/tools/jq"
 chmod +x "$OUT/tools/jq"
 expect source_inventory_error 2 env PATH="$OUT/tools:$PATH" bash "$HELPER" plan "$FIXTURE" "$OUT/request.json"
-for entry in 'short_baseline|.stages.baseline.duration_seconds=79200' 'extra_launches|.stages.baseline.max_launches=3' 'unapproved|.stages.baseline.approved=false' 'wrong_memory|.stages.baseline.memory_gb=48' 'wrong_platform|.candidates["dev-amd64"].platform="linux/arm64"' 'missing_source|del(.source_digests["scripts/run-merge-recovery-soak.sh"])' 'unapproved_campaign|.status="pending"'; do
+for entry in 'short_baseline|.stages.baseline.duration_seconds=79200' 'extra_launches|.stages.baseline.max_launches=3' 'unapproved|.stages.baseline.approved=false' 'wrong_memory|.stages.baseline.memory_gb=48' 'wrong_platform|.candidates["dev-amd64"].platform="linux/arm64"' 'missing_source|del(.source_digests["scripts/run-merge-recovery-soak.sh"])' 'missing_test_source|del(.source_digests["scripts/casper-soak/test-campaign.sh"])' 'unapproved_campaign|.status="pending"'; do
   name="${entry%%|*}"; filter="${entry#*|}"
   jq "$filter" "$OUT/approval-original.json" > "$FIXTURE/docs/campaign/approval.json"
   make_request baseline dev-amd64 > "$OUT/request.json"
@@ -156,6 +156,13 @@ case "$6" in
   repos/F1R3FLY-io/f1r3node-rust/actions/runs/101) cp "$FIXTURE_API/run.json" /dev/stdout ;;
   repos/F1R3FLY-io/f1r3node-rust/actions/runs/101/artifacts\?per_page=100) cp "$FIXTURE_API/artifacts.json" /dev/stdout ;;
   repos/F1R3FLY-io/f1r3node-rust/actions/artifacts/301/zip) cp "$FIXTURE_API/result.zip" /dev/stdout ;;
+  repos/F1R3FLY-io/f1r3node-rust/actions/runs/10[23]) cp "$FIXTURE_API/run-${6##*/}.json" /dev/stdout ;;
+  repos/F1R3FLY-io/f1r3node-rust/actions/runs/10[23]/artifacts\?per_page=100)
+    id="${6#repos/F1R3FLY-io/f1r3node-rust/actions/runs/}"
+    cp "$FIXTURE_API/artifacts-${id%%/*}.json" /dev/stdout ;;
+  repos/F1R3FLY-io/f1r3node-rust/actions/artifacts/30[23]/zip)
+    id="${6%/zip}"
+    cp "$FIXTURE_API/result-${id##*/}.zip" /dev/stdout ;;
   *) exit 97 ;;
 esac
 EOF
@@ -231,5 +238,58 @@ expect workflow_campaign_request_guard 2 env INPUT_CAMPAIGN_REQUEST='{}' INPUT_D
 for selection in campaign-preflight campaign-baseline-24h campaign-stability-60h campaign-invalid; do
   expect "workflow_$selection" 2 env INPUT_CAMPAIGN_REQUEST='' INPUT_DURATION="$selection" bash "$OUT/schedule-guard.sh"
 done
+cp "$OUT/api/result-original.json" "$OUT/api/campaign-result.json"
+pack_result
+for arch in amd64 arm64; do
+  make_request baseline "dev-$arch" > "$OUT/request-baseline-$arch.json"
+  expect "dispatch_baseline_$arch" 3 bash "$HELPER" dispatch "$FIXTURE" "$OUT/request-baseline-$arch.json" campaign-baseline-24h "$OUT/dispatch-baseline-$arch"
+  jq -e '.prior_runs=="verified-records-only" and .execution_enabled==false' "$OUT/dispatch-baseline-$arch/report.json" >/dev/null
+  jq -e --arg arch "$arch" '.platform==("linux/"+$arch) and .duration_seconds==86400 and .runner_max_seconds==93600' "$OUT/dispatch-baseline-$arch/plan.json" >/dev/null
+done
+pin_baseline_result() {
+  local run="$1" artifact="$(( $1 + 200 ))"
+  zip -q -j "$OUT/api/result-$artifact.zip" "$OUT/api/baseline-$run/campaign-result.json"
+  jq -n --arg run "$run" --argjson artifact "$artifact" --arg revision "$REV" --arg digest "sha256:$(hash "$OUT/api/result-$artifact.zip")" --argjson size "$(stat -c %s "$OUT/api/result-$artifact.zip")" '{total_count:1,artifacts:[{id:$artifact,name:("casper-campaign-result-"+$run+"-1"),expired:false,size_in_bytes:$size,digest:$digest,workflow_run:{id:($run|tonumber),head_sha:$revision}}]}' > "$OUT/api/artifacts-$run.json"
+}
+for pair in 102:dev-amd64 103:dev-arm64; do
+  run="${pair%%:*}"; candidate="${pair#*:}"
+  mkdir "$OUT/api/baseline-$run"
+  jq --argjson id "$run" '.id=$id' "$OUT/api/run-original.json" > "$OUT/api/run-$run.json"
+  jq --arg id "$run" --arg candidate "$candidate" '.run_id=$id | .plan=(.plan + .plan.campaign_candidates[$candidate] + {candidate_id:$candidate,stage:"baseline",duration_seconds:86400})' "$OUT/baseline-result.json" > "$OUT/api/baseline-$run/campaign-result.json"
+  pin_baseline_result "$run"
+done
+for arch in amd64 arm64; do
+  make_request stability "dev-$arch" > "$OUT/request-stability-$arch.json"
+  expect "dispatch_stability_$arch" 3 bash "$HELPER" dispatch "$FIXTURE" "$OUT/request-stability-$arch.json" campaign-stability-60h "$OUT/dispatch-stability-$arch"
+  jq -e '.prior_runs=="verified-records-only" and .admission=="blocked" and .execution_enabled==false' "$OUT/dispatch-stability-$arch/report.json" >/dev/null
+  for run in 101 102 103; do test -s "$OUT/dispatch-stability-$arch/prior-$run/result.json"; done
+  jq -e '.duration_seconds==216000 and .runner_max_seconds==230400' "$OUT/dispatch-stability-$arch/plan.json" >/dev/null
+done
+jq '.baseline_run_ids["dev-arm64"]="102"' "$OUT/request-stability-arm64.json" > "$OUT/duplicate-baselines.json"
+expect stability_duplicate_baselines 2 bash "$HELPER" dispatch "$FIXTURE" "$OUT/duplicate-baselines.json" campaign-stability-60h "$OUT/stability-duplicate-baselines"
+jq '.conclusion="failure"' "$OUT/api/run-103.json" > "$OUT/api/failed-run.json"
+cp "$OUT/api/run-103.json" "$OUT/api/run-103-original.json"
+cp "$OUT/api/failed-run.json" "$OUT/api/run-103.json"
+expect stability_failed_arm64_baseline 2 bash "$HELPER" dispatch "$FIXTURE" "$OUT/request-stability-arm64.json" campaign-stability-60h "$OUT/stability-failed-arm64"
+cp "$OUT/api/run-103-original.json" "$OUT/api/run-103.json"
+cp "$OUT/api/baseline-103/campaign-result.json" "$OUT/api/baseline-103-original.json"
+jq '.workload_elapsed_seconds=86399' "$OUT/api/baseline-103-original.json" > "$OUT/api/baseline-103/campaign-result.json"
+pin_baseline_result 103
+expect stability_short_arm64_baseline 2 bash "$HELPER" dispatch "$FIXTURE" "$OUT/request-stability-arm64.json" campaign-stability-60h "$OUT/stability-short-arm64"
+cp "$OUT/api/baseline-103-original.json" "$OUT/api/baseline-103/campaign-result.json"
+pin_baseline_result 103
+cp "$FIXTURE/docs/campaign/approval.json" "$OUT/current-approval.json"
+jq '.stages.stability.approved=false' "$OUT/current-approval.json" > "$FIXTURE/docs/campaign/approval.json"
+make_request stability dev-arm64 > "$OUT/unapproved-stability.json"
+expect stability_unapproved_resources 2 bash "$HELPER" dispatch "$FIXTURE" "$OUT/unapproved-stability.json" campaign-stability-60h "$OUT/stability-unapproved-resources"
+cp "$OUT/current-approval.json" "$FIXTURE/docs/campaign/approval.json"
+expect exact_stability_limit 0 bash "$HELPER" window "$OUT/stability.stdout" 2000000000 2000013800
+expect insufficient_stability_time 2 bash "$HELPER" window "$OUT/stability.stdout" 2000000000 2000013801
+mkdir "$OUT/api/symlink-archive"
+ln -s ../result-original.json "$OUT/api/symlink-archive/campaign-result.json"
+zip -q -y -j "$OUT/api/symlink.zip" "$OUT/api/symlink-archive/campaign-result.json"
+cp "$OUT/api/symlink.zip" "$OUT/api/result.zip"
+jq --arg digest "sha256:$(hash "$OUT/api/result.zip")" --argjson size "$(stat -c %s "$OUT/api/result.zip")" '.artifacts[0].digest=$digest | .artifacts[0].size_in_bytes=$size' "$OUT/api/artifacts-original.json" > "$OUT/api/artifacts.json"
+expect prior_symlink_member 2 bash "$HELPER" dispatch "$FIXTURE" "$OUT/request-baseline-amd64.json" campaign-baseline-24h "$OUT/prior-symlink-member"
 jq -n --argjson count "$passed" '{schema_version:1,status:"passed",checks:$count,evidence_kind:"synthetic_fixture",node_launch_count:0,cloud_launch_count:0,claim_discharge:"pending"}' > "$OUT/summary.json"
 printf 'PASS: %s campaign admission and duration checks. No node or cloud runner launched.\n' "$passed"

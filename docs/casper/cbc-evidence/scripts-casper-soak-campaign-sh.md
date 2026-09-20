@@ -7,24 +7,25 @@ The campaign planning claim remains pending. Fixture checks do not supply formal
   "artifact": {
     "path": "scripts/casper-soak/campaign.sh",
     "id": "scripts-casper-soak-campaign-sh",
-    "commit": "7509c831c881ae6bbd284a5f2121da0ce7ae5605",
+    "commit": "5e26ba4c545ff8dafcf9ca9b20767703fa96f437",
     "commit_is_base": true,
-    "sha256": "43ffb4bc249d3d6ff75e0c860821170940680174f3b0c7f93a3dc5aa5a8d46ae"
+    "sha256": "03b470653bbd8aa8b0311f97cde4bb38a390614157abd40509ff895511d51950",
+    "working_tree": true
   },
   "claim": "docs/claims/casper-soak-campaign.md",
   "claim_ids": [
     "CLAIM-CASPER-CAMPAIGN-001"
   ],
   "claim_digests": {
-    "docs/claims/casper-soak-campaign.md": "56598912886b421dd092923ee9520358215eafdd526411d0213adb32355dc7bd"
+    "docs/claims/casper-soak-campaign.md": "b5d3853a19c5bb4bf019f10d89297a5938c145c0597376c2a203c793b194bb92"
   },
   "adapter": null,
   "status": "pending",
-  "scope": "campaign-planning-and-fixture-controls",
+  "scope": "campaign-planning-and-dispatch-admission",
   "evidence": {
     "kind": "synthetic-fixtures-not-formal-discharge",
-    "ref": "docs/casper/cbc-evidence/runs/casper-linux-admission-7509c831c-01/report.json",
-    "sha256": "35d6e8b46c7ad5f87060881047649658adc07b5e57347b9baf859d5a95a30631"
+    "ref": "docs/casper/cbc-evidence/runs/casper-campaign-dispatch-5e26ba4c5-01/report.json",
+    "sha256": "853909cfd9f9b16380585b5e8c852f1468103826d44274605d4ecaaaeef23452"
   },
   "tiers": {
     "refutation": "pending",
@@ -37,6 +38,11 @@ The campaign planning claim remains pending. Fixture checks do not supply formal
   },
   "soak": "pending",
   "waiver": null,
-  "verified_at": null
+  "verified_at": null,
+  "previous_ledger": {
+    "commit": "5e26ba4c545ff8dafcf9ca9b20767703fa96f437",
+    "path": "docs/casper/cbc-evidence/scripts-casper-soak-campaign-sh.md",
+    "sha256": "5272d3dbb71eed9ea0983574f90f28dd03855d7b3e7e92b9820f95e6662c87b1"
+  }
 }
 ```

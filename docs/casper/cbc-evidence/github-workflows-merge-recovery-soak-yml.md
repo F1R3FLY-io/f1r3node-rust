@@ -1,52 +1,48 @@
 # CbC Evidence: .github/workflows/merge-recovery-soak.yml
 
-The user authorized this bounded harness renewal after fresh hosted verification of the formal-gate workflow. Node execution and protection-rule activation remain outside this discharge.
+The manual campaign route changed this artifact. Its current source binding is pending.
 
-The previous ledger remains in the archive below. Earlier reports retain their execution identities and limitations.
+The earlier accepted ledger remains at the Git revision below. Local fixture checks do not renew hosted verification or authorize campaign execution.
 
 ```json
 {
   "artifact": {
     "path": ".github/workflows/merge-recovery-soak.yml",
     "id": "github-workflows-merge-recovery-soak-yml",
-    "commit": "191e184be556c1f190748143377ab369586c53b6",
+    "commit": "5e26ba4c545ff8dafcf9ca9b20767703fa96f437",
     "commit_is_base": true,
-    "sha256": "38f2cf89278bdff9b9e74ba900726267b27d5cc6b1dab16c8fec919bbe84330b",
-    "working_tree": true
+    "sha256": "46807d26da6011c3643f376cdd620b1085c1553a08cc37d173df649d12ec044a",
+    "working_tree": false
   },
   "claim": "docs/claims/casper-soak-harness.md",
-  "claim_ids": [
-    "CLAIM-CASPER-SOAK-001"
-  ],
+  "claim_ids": ["CLAIM-CASPER-SOAK-001"],
   "claim_digests": {
     "docs/claims/casper-soak-harness.md": "c1f6b7473f790a60ab964ce7fd7277841cd6cee5718e9853ad96cf4c671d5932"
   },
-  "adapter": "embedded",
-  "status": "discharged",
+  "adapter": null,
+  "status": "pending",
   "scope": "bounded-harness-only",
   "evidence": {
-    "kind": "hosted-source-bound-workflow-renewal",
-    "ref": "docs/casper/cbc-evidence/runs/casper-formal-gate-renewal-20260919-01/report.json",
-    "sha256": "a7397d9c2fa35436452872d3112bdaae755bc0de0f947955e847d1bf9e4b8831"
+    "kind": "local-fixtures-not-workflow-acceptance",
+    "ref": "docs/casper/cbc-evidence/runs/casper-campaign-dispatch-5e26ba4c5-01/report.json",
+    "sha256": "853909cfd9f9b16380585b5e8c852f1468103826d44274605d4ecaaaeef23452"
   },
   "tiers": {
-    "refutation": "bounded-safety-pass",
+    "refutation": "pending",
     "construction": "not-applicable",
-    "binding": "passed"
+    "binding": "pending"
   },
   "phase_status": {
-    "pre_pr216_merge": "discharged",
+    "pre_pr216_merge": "pending",
     "post_pr216_merge": "blocked"
   },
   "soak": "pending",
   "waiver": null,
-  "verified_at": "2026-09-19T22:43:31Z",
+  "verified_at": null,
   "previous_ledger": {
-    "path": "docs/casper/cbc-evidence/runs/casper-formal-gate-renewal-20260919-01/previous-metadata.tar.gz",
-    "sha256": "855516a6685384190c8a4f427ff547fc2c8a0f2b6d894849d26dea9fde91b6d9",
-    "member": "prior/ledgers/github-workflows-merge-recovery-soak-yml.md",
-    "member_sha256": "dc46802cda767c42adab2b4ec12325b2aba55acaf05ae1d88a8cf9458a105569"
-  },
-  "review_candidate": "docs/casper/cbc-evidence/runs/casper-driver-rebind-20260918-01/candidate-ledgers/github-workflows-merge-recovery-soak-yml.md"
+    "commit": "5e26ba4c545ff8dafcf9ca9b20767703fa96f437",
+    "path": "docs/casper/cbc-evidence/github-workflows-merge-recovery-soak-yml.md",
+    "sha256": "f35743cd5901aaec916ae6b61b075607bb6ed0d1a34368db40ef4fbb6385803a"
+  }
 }
 ```

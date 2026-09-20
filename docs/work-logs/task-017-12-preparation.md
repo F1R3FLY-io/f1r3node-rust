@@ -481,3 +481,53 @@ The 60-hour phase also requires passing baselines and an explicit decision recor
 Changes to the workflow invalidate its current source binding. Affected claims remain pending until fresh verification and explicit acceptance.
 
 Evidence remains under `target/task-017-12/manual-dispatch-797d29ca1-01/`. Earlier source and ledger bytes remain in that directory and Git history.
+
+### Continuation after the commit checkpoint
+
+Commit `5e26ba4c5` records the admission-only route. Its 103 native checks, Actionlint 1.7.12 check, and pre-commit checks passed.
+
+The interrupted work did not renew source bindings or finish isolated verification. The earlier workflow discharge applies only to its stored source digest.
+
+The continuation will require both campaign helpers in the pinned source inventory. It will test both baseline candidates and all three stability prerequisite records.
+
+The continuation will preserve rejected inputs and old ledger bytes. The changed workflow and both helper records will remain pending, without a waiver or acceptance date.
+
+Bulk evidence uses `target/task-017-12/manual-dispatch-continuation-5e26ba4c5-01/`. No additional commit, push, workflow dispatch, or cloud execution is authorized.
+
+### Continuation results
+
+The missing-test-pin regression returned exit 0 instead of required exit 2. The corrected planner requires all six control paths, including both campaign helpers.
+
+The [continuation report](../casper/cbc-evidence/runs/casper-campaign-dispatch-5e26ba4c5-01/report.json) records 115 native checks and 115 isolated checks. Both final lanes passed.
+
+The first isolated attempt reached its 120-second timeout and returned process exit 124. Its wrapper returned exit 1, and all available evidence remains retained.
+
+The second attempt retained the same fixture assertions, network isolation, memory limit, CPU limit, and process limit. Its timeout increased to 550 seconds.
+
+Both containers stopped and were removed after evidence capture. Neither container ran a node or contacted a live prior-run API.
+
+The checks cover both baseline candidates, all three stability prerequisite records, shortened workload records, failed baselines, unapproved resources, and archive symbolic links.
+
+Actionlint 1.7.12 and Bash syntax checks passed. Actionlint ran without ShellCheck or Pyflakes, so those checks are not claimed.
+
+The canonical artifact gate returns exit 4 with three pending records. The default gate also returns exit 4, with one pending workflow and two missing helper lookups.
+
+The canonical gate does not replace the default gate. Compatibility lookup repair for the two helpers remains open.
+
+The fresh strict claim auditor first rejected stale source bindings. After the ledger update, it rejects the pending workflow discharge instead.
+
+The workflow ledger now records the current source digest. Its unchanged compatibility symbolic link resolves to the same pending record.
+
+Both campaign helper ledgers record current source and specification digests.
+
+The initial metadata check compared the symbolic link text with its resolved ledger content and returned exit 1. The corrected check verifies both identities separately.
+
+The failed check and its original verifier remain retained. The corrected metadata check passes without changing the compatibility link.
+
+Every changed ledger retains its prior Git revision, path, and digest. Earlier accepted reports, profile ledgers, and completion records remain unchanged.
+
+The campaign route remains admission-only. Eligible Casper workloads, qualified live adapters, approval authentication, launch reservations, lifetime enforcement, hosted verification, and explicit acceptance remain required.
+
+The legacy action, driver, preflight script, and schedules remain unchanged. The manual baseline selection means 86,400 workload seconds, but no workload execution occurred.
+
+TASK-017-12 remains in progress. This update does not deliver the missing baseline, scan benchmark, or concurrency-gate evidence to TASK-017-13.

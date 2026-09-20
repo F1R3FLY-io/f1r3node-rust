@@ -39,7 +39,9 @@ Each referenced path must resolve to a regular file within the supplied source r
 
 The helper must reject path traversal, an escaping symbolic link, missing files, and digest differences. It must reject a source-inventory parser failure.
 
-The source inventory must contain the required control paths and between 5 and 512 entries. This requirement does not establish inventory completeness.
+The source inventory must contain the six required control paths and between 6 and 512 entries. Both campaign helpers must be pinned.
+
+This requirement does not establish inventory completeness.
 
 ### C3: Consistent planning records
 
@@ -108,5 +110,9 @@ The claim does not establish node correctness, cryptographic correctness, missin
 The [Linux report](../casper/cbc-evidence/runs/casper-linux-admission-7509c831c-01/report.json) retains the parser regression and 34 native and isolated checks.
 
 Those checks support regression review. They do not constitute formal discharge, a source-binding acceptance, or workflow qualification.
+
+The [continuation report](../casper/cbc-evidence/runs/casper-campaign-dispatch-5e26ba4c5-01/report.json) records 115 native checks and 115 isolated checks. It retains the missing-test-pin regression and the first isolated timeout.
+
+The expanded checks cover both baseline candidates and all three prior records for stability. Consistent fixture records still produce blocked dispatch, not execution approval.
 
 Source-bound verification and explicit acceptance remain pending. No waiver applies.

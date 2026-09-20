@@ -48,7 +48,7 @@ plan() {
     (.candidates|keys)==["dev-amd64","dev-arm64"] and
     (.preflight_candidate_id=="dev-amd64" or .preflight_candidate_id=="dev-arm64") and
     ($r[0].stage!="preflight" or .preflight_candidate_id==$r[0].candidate_id) and
-    (.source_digests|type=="object" and length>=5 and length<=512) and
+    (.source_digests|type=="object" and length>=6 and length<=512) and
     all(.source_digests[];type=="string" and test("^[a-f0-9]{64}$")) and
     (.candidates["dev-amd64"].platform=="linux/amd64") and (.candidates["dev-arm64"].platform=="linux/arm64") and
     (.candidates["dev-amd64"].node_revision==.candidates["dev-arm64"].node_revision) and
@@ -58,7 +58,7 @@ plan() {
       elif $r[0].stage=="baseline" then $s.duration_seconds==86400 and $s.runner_max_seconds==93600 and $s.max_launches==2
       else $s.duration_seconds==216000 and $s.runner_max_seconds==230400 and $s.max_launches==2 end)
   ' "$approval" >/dev/null 2>&1 || fail 'The campaign approval does not authorize this request.'
-  for path in scripts/casper-soak/campaign.sh .github/workflows/merge-recovery-soak.yml .github/actions/soak-segment/action.yml scripts/run-merge-recovery-soak.sh scripts/run-integration-preflight.sh; do
+  for path in scripts/casper-soak/campaign.sh scripts/casper-soak/test-campaign.sh .github/workflows/merge-recovery-soak.yml .github/actions/soak-segment/action.yml scripts/run-merge-recovery-soak.sh scripts/run-integration-preflight.sh; do
     jq -e --arg path "$path" '.source_digests|has($path)' "$approval" >/dev/null || fail 'A required control source is not pinned.'
   done
   source_rows="$(jq -r '.source_digests|to_entries[]|[.key,.value]|@tsv' "$approval")" || fail 'The control source inventory cannot be read.'

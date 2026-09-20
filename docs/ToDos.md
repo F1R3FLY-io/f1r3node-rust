@@ -591,6 +591,7 @@ tasks:
     candidate_review_note: "Both platform identities were verified for dev 6940a5beb and harness 1f749aa83 on 2026-09-19. Push run 35423285859 supplied the image artifacts. The matrix retains blocked admission and null workload pins. Recheck current dev before dispatch."
     candidate_identity_evidence: docs/casper/cbc-evidence/runs/casper-candidate-repin-20260919-01/report.json
     live_admission_evidence: docs/casper/cbc-evidence/runs/casper-linux-admission-7509c831c-01/report.json
+    manual_dispatch_evidence: docs/casper/cbc-evidence/runs/casper-campaign-dispatch-5e26ba4c5-01/report.json
     execution_gate: "Four exact-candidate probes returned blocked before node launch. Their controlled inputs are not live qualification. The legacy workload is pinned but cannot replace required Casper profiles."
     drift_review: docs/work-logs/task-017-12-drift-review-2026-09-19.md
     claims: [CLAIM-CASPER-SOAK-001, CLAIM-CASPER-SOAK-004, CLAIM-CASPER-CAMPAIGN-001]
@@ -602,18 +603,18 @@ tasks:
     previous_claimed_by: claude-session-9f19b46c
     previous_claimed_at: 2026-09-19T06:35:51Z
     handoff_note: docs/handoffs/claude-session-9f19b46c--pi-soak-carrier-index-linux--20260919T192000Z.md
-    execution_scope: "Execution. Preparation is complete and recorded. The owner repins candidates at dispatch, qualifies the live adapters for claims 002 to 004, runs the preflight-only dispatch, and then runs the approved baseline soak. The maintainer already approved the resource budget, so no new budget decision is needed for the baseline."
+    execution_scope: "Execution remains blocked. The owner repins both candidates and qualifies authority and publication adapters. Recovery qualification waits for PR #216 to merge. A separate passing preflight must precede both 24-hour baselines. The three-machine baseline budget is approved."
     repin_tool: scripts/ci/resolve-dev-candidate.sh
     dispatch_preconditions: "docs/work-logs/task-017-12-preparation.md#dispatch-preconditions"
     work_log: docs/work-logs/task-017-12-preparation.md
     blocked_by: []
     remaining_prerequisites:
-      - "The eight existing source-bound claim audits pass for their accepted scope. The separate campaign claim is registered for both helpers. Its discharge remains pending."
+      - "The changed workflow requires Claim001 renewal. Both campaign helper records match current sources but remain pending. Earlier eight-claim success is historical."
       - "Pin executable workloads and review the complete campaign model and configuration inventory. Recheck candidate identities before dispatch."
       - "Qualify live adapters and their required node interfaces. Fresh authority and publication probes reject both candidate identities with explicit unqualified-adapter reasons."
-      - "Resolve the dispatch mismatch. The workflow uses amd64 only and rebuilds images instead of selecting both pinned CI images."
-      - "Implement the full 24-hour baseline duration. The existing daily-24h input selects 22 hours and then subtracts preflight time."
-      - "Enforce the amended three-machine budget for preflight and baselines. Disable automatic replacement and repeat launches in campaign mode."
+      - "The manual campaign planner selects immutable platform references for both architectures. Cloud execution integration remains incomplete and cannot use the legacy rebuild path."
+      - "The campaign-baseline-24h input requests 86400 workload seconds. Execution must preserve that full duration without preflight subtraction. Existing scheduled behavior remains unchanged."
+      - "Implement persistent reservations and instance lifetime enforcement for the three-machine budget. Campaign admission currently launches no machines and cannot reach legacy replacement or retry jobs."
       - "Record the exact candidate count and runner lifetime limits before the approved 60-hour campaign launches. Passing baseline evidence remains required."
       - "The memory decision is resolved at 64 GB per runner. Preserve the approved limits and host controls."
       - "Recovery adapter qualification for CLAIM-CASPER-SOAK-004 waits for the PR #216 merge. The ratifiers confirmed D-07 Reading A on 2026-09-19, so a pre-merge dev node has no occurrence store to observe. The authority and publication adapters do not wait."
@@ -622,7 +623,7 @@ tasks:
     resource_approval_original: "A maintainer approved the resource proposal on 2026-09-19 at 2026-09-19T07:03:24Z. The approval covered two candidates, one preflight, and two runner virtual machines for 26 hours each. The later approval amends that machine count and authorizes the 60-hour campaign."
     resource_approval_memory: "The maintainer approved 64 GB per runner on 2026-09-19, which corrects the 48 GB figure in the original proposal. The soak workflow already sets RUNNER_MEM_GB_OVERRIDE to 64. The sizing invariant needs about 60,416 MB, from a 45,056 MB ceiling, about 7,168 MB of host overhead, and an 8,192 MB floor. A 48 GB machine overruns that by about 11 GB, and a ceiling small enough to fit falls below the measured 36,008 MB healthy peak. No workflow or runtime file changes."
     resource_approval_record: docs/work-logs/task-017-12-preparation.md
-    first_dispatch_step: "A preflight-only manual dispatch of merge-recovery-soak.yml on this branch precedes any baseline soak. It proves the repaired driver and the harness build on the OCI runner. The workflow has no pull-request trigger and its soak job needs a launched OCI runner, so this stays a manual step. A non-passing preflight blocks the baseline dispatch."
+    first_dispatch_step: "After admission and execution controls pass, run a separate campaign-preflight before either baseline. The current manual route checks admission only and cannot execute preflight. A non-passing preflight must block both baseline dispatches."
     acceptance:
       - "The maintainer approves the resource budget, durations, repetitions, and candidate matrix before dispatch."
       - "A preflight-only dispatch on this branch passes before any baseline soak dispatch. Its run ID and outcome are recorded."
