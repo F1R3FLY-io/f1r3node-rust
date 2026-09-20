@@ -618,3 +618,27 @@ The updated plans distinguish dependent targets from source integration. No bran
 Independent harness work continues with the [local reservation guard](task-017-12-reservations.md). Its checks do not establish authenticated approval, global accounting, instance lifetime enforcement, or campaign execution.
 
 The admission-only route remains blocked. Live qualification, separate preflight, both full baselines, and the later stability resource decision remain required.
+
+### Campaign execution-control review at db4a52fb6
+
+The user authorized the remaining execution-control implementation. The [execution-control plan](../plans/casper-campaign-execution-controls.md) records the reviewed boundaries, proposed mechanisms, source scope, and acceptance tests.
+
+A read-only GitHub query found no required reviewers on `oci-credentials`. The environment has a branch rule and permits administrator bypass.
+
+That configuration cannot independently establish campaign approval. The approval authority and its binding to the exact campaign request require confirmation.
+
+Fresh external downloads at `b3d14b27e3c6276b1eb4ab9ccef04e02b0c4e283` match the retained launcher and bootstrap. The launcher can submit three attempts and retries selected timeout failures.
+
+The inspected launch request has no creation-time campaign tags. The campaign must not reuse this retry path or depend on a later tag update.
+
+The existing reaper has a 30-minute GitHub schedule. It does not establish the approved lifetime limits or independence from GitHub scheduling availability.
+
+The installed OCI Resource Scheduler help lists start, stop, and backup actions. Stop is not evidence of instance termination or completed cleanup.
+
+The proposed design uses a dedicated approval environment, one pre-provisioned OCI campaign object, and an independently deployed lifetime supervisor. These are proposed mechanisms, not configured services.
+
+The reviewer identities, authoritative object, and supervisor deployment remain unspecified. No additional supervisor machine is included in the approved baseline budget.
+
+Evidence remains under `target/task-017-12/execution-control-review-db4a52fb6-QwPy0a/`. It contains source copies, digests, the environment response, and local CLI help.
+
+No executable source, claim status, GitHub protection, OCI policy, or external repository changed. No node, cloud instance, workflow dispatch, commit, or push occurred.

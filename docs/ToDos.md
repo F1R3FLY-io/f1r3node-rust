@@ -599,6 +599,8 @@ tasks:
     stack_scope: "PR #436 temporarily targets the node branch. This dependency order does not include node implementation in the harness scope. Independent harness controls can proceed before node qualification."
     reservation_work_log: docs/work-logs/task-017-12-reservations.md
     reservation_status: "A local three-slot reservation guard has native and isolated fixture checks. It does not provide global accounting or launch enforcement. Approval authentication and independent lifetime enforcement remain unimplemented."
+    execution_control_plan: docs/plans/casper-campaign-execution-controls.md
+    execution_control_status: "Implementation is authorized. The review found no required reviewers on oci-credentials, launch retries in the pinned launcher, and no verified maximum-lifetime supervisor. Approval authority and external service choices require confirmation."
     compatibility_lookup_status: "Both campaign helper links resolve to canonical records. Default and canonical gates each return exit 4 with three pending records. No lookup is missing in this scope."
     execution_gate: "Four exact-candidate probes returned blocked before node launch. Their controlled inputs are not live qualification. The legacy workload is pinned but cannot replace required Casper profiles."
     drift_review: docs/work-logs/task-017-12-drift-review-2026-09-19.md
