@@ -48,6 +48,21 @@ pub struct NodeConf {
     /// OpenAI configuration - ported from Scala PR #123
     #[serde(default)]
     pub openai: OpenAIConf,
+
+    #[serde(default, rename = "soak-observer")]
+    pub soak_observer: Option<SoakObserverConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct SoakObserverConfig {
+    pub directory: PathBuf,
+    pub source_revision: String,
+    pub approved_request_sha256: String,
+    pub peer_pid: u32,
+    pub peer_start_ticks: u64,
+    pub session_timeout_ms: u64,
+    pub max_sessions: u32,
 }
 
 /// Protocol server configuration

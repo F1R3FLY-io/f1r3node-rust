@@ -125,6 +125,9 @@ pub mod builder {
     /// Validate configuration parameters. Returns non-fatal warning
     /// messages; fatal errors are returned via `Err`.
     pub(crate) fn validate_config(node_conf: &NodeConf) -> eyre::Result<Vec<String>> {
+        if let Some(config) = &node_conf.soak_observer {
+            crate::rust::soak_observer::validate_config(config)?;
+        }
         let mut warnings = Vec::new();
         let pos_multi_sig_quorum = node_conf.casper.genesis_block_data.pos_multi_sig_quorum;
         let pos_multi_sig_public_keys_length = node_conf
