@@ -124,6 +124,32 @@ impl Provider for Cli {
         Ok(parse(&wrapped)?["data"].take())
     }
 
+    fn github_post(&mut self, path: &str, body: &Value) -> Result<Value> {
+        ensure!(
+            path == format!(
+                "repos/{}/actions/runners/generate-jitconfig",
+                super::REPOSITORY
+            ),
+            "The GitHub write endpoint is unsupported."
+        );
+        let temporary = tempfile::tempdir()?;
+        let input = temporary.path().join("request.json");
+        let bytes = encoded(body)?;
+        fs::write(&input, &bytes)?;
+        let args = vec![
+            "gh".into(),
+            "api".into(),
+            "--hostname".into(),
+            "github.com".into(),
+            "--method".into(),
+            "POST".into(),
+            "--input".into(),
+            input.to_string_lossy().into_owned(),
+            path.into(),
+        ];
+        parse(&self.run("github", &args, Some(hash(&bytes)))?)
+    }
+
     fn oci(
         &mut self,
         service: &str,
@@ -136,7 +162,7 @@ impl Provider for Cli {
             matches!(method, "GET" | "PUT" | "POST" | "DELETE") && !path.contains(['\r', '\n']),
             "The provider operation is unsupported."
         );
-        let uri = if service == "invoke" {
+        let uri = if matches!(service, "invoke" | "invoke-detached") {
             let region = text(&self.config.value["storage"]["region"])?;
             let host = path
                 .strip_prefix("https://")
@@ -175,8 +201,12 @@ impl Provider for Cli {
         if let Some(tag) = etag {
             headers["if-match"] = json!(tag);
         }
-        if service == "invoke" {
-            headers["fn-invoke-type"] = json!("sync");
+        if matches!(service, "invoke" | "invoke-detached") {
+            headers["fn-invoke-type"] = json!(if service == "invoke-detached" {
+                "detached"
+            } else {
+                "sync"
+            });
         }
         let header_path = temporary.path().join("headers.json");
         fs::write(&header_path, encoded(&headers)?)?;

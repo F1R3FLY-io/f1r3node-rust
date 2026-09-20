@@ -6,11 +6,12 @@ use eyre::{ensure, eyre, Result};
 use serde_json::{json, Value};
 
 pub mod operations;
+pub mod results;
 pub mod transport;
 
 pub const REPOSITORY: &str = "F1R3FLY-io/f1r3node-rust";
 pub const SLOTS: [&str; 3] = ["preflight", "baseline-dev-amd64", "baseline-dev-arm64"];
-pub const SOURCE_PATHS: [&str; 8] = [
+pub const SOURCE_PATHS: [&str; 18] = [
     "scripts/casper-soak/src/campaign_control/mod.rs",
     "scripts/casper-soak/src/campaign_control/transport.rs",
     "scripts/casper-soak/src/campaign_control/operations.rs",
@@ -18,7 +19,17 @@ pub const SOURCE_PATHS: [&str; 8] = [
     "scripts/casper-soak/src/bin/casper-campaign-supervisor.rs",
     "scripts/casper-soak/campaign-control.sh",
     "scripts/casper-soak/campaign-host.sh",
+    "scripts/casper-soak/campaign-host-guard.sh",
     "scripts/casper-soak/src/lib.rs",
+    "scripts/casper-soak/src/campaign_control/results.rs",
+    "scripts/casper-soak/campaign-bootstrap.sh",
+    "scripts/casper-soak/campaign-finish.sh",
+    "scripts/casper-soak/campaign-job.sh",
+    "scripts/casper-soak/campaign.sh",
+    "scripts/casper-soak/supervisor/Dockerfile",
+    "scripts/casper-soak/supervisor/start.sh",
+    ".github/workflows/merge-recovery-soak.yml",
+    "Cargo.lock",
 ];
 
 #[derive(Clone, Debug)]
@@ -31,6 +42,9 @@ pub struct Reply {
 
 pub trait Provider {
     fn github(&mut self, path: &str) -> Result<Value>;
+    fn github_post(&mut self, _path: &str, _body: &Value) -> Result<Value> {
+        Err(eyre!("GitHub writes are unavailable."))
+    }
     fn oci(
         &mut self,
         service: &str,
@@ -119,6 +133,7 @@ pub fn epoch(value: &Value) -> Result<u64> {
         suffix == "Z"
             || suffix == "+00:00"
             || (suffix.starts_with('.')
+                && suffix.as_bytes().get(1).is_some_and(u8::is_ascii_digit)
                 && (suffix.ends_with('Z') || suffix.ends_with("+00:00"))
                 && suffix
                     .trim_start_matches('.')
@@ -215,7 +230,15 @@ impl Config {
             identifier(&value["storage"][field])?;
         }
         digest(&value["storage"]["policy_sha256"], 64)?;
-        keys(&value["compute"], &["compartment_id", "candidates"])?;
+        keys(&value["compute"], &[
+            "compartment_id",
+            "candidates",
+            "runner_group_id",
+        ])?;
+        ensure!(
+            number(&value["compute"]["runner_group_id"])? > 0,
+            "The runner group is invalid."
+        );
         identifier(&value["compute"]["compartment_id"])?;
         keys(&value["compute"]["candidates"], &["dev-amd64", "dev-arm64"])?;
         for candidate in ["dev-amd64", "dev-arm64"] {
@@ -298,6 +321,32 @@ impl Config {
     }
 
     pub fn verify_sources(&self, root: &Path) -> Result<()> {
+        let revision = std::process::Command::new("git")
+            .args(["-C"])
+            .arg(root)
+            .args(["rev-parse", "HEAD"])
+            .output()?;
+        ensure!(
+            revision.status.success()
+                && std::str::from_utf8(&revision.stdout)?.trim()
+                    == text(&self.value["control_revision"])?,
+            "The checkout has the wrong control revision."
+        );
+        let mut command = std::process::Command::new("git");
+        command
+            .arg("-C")
+            .arg(root)
+            .args(["diff", "--exit-code", "HEAD", "--"]);
+        for path in object(&self.value["source_digests"])?.keys() {
+            command.arg(path);
+        }
+        ensure!(
+            command
+                .stdout(std::process::Stdio::null())
+                .status()?
+                .success(),
+            "The checkout differs from the approved source revision."
+        );
         for (path, expected) in object(&self.value["source_digests"])? {
             ensure!(
                 file_hash(&relative(root, path)?)? == digest(expected, 64)?,
@@ -646,13 +695,109 @@ pub fn load<P: Provider>(provider: &mut P, config: &Config) -> Result<(Value, St
     Ok((reply.data, etag))
 }
 
+pub fn validate_transition(previous: &Value, next: &Value) -> Result<()> {
+    ensure!(
+        number(&next["sequence"])? == number(&previous["sequence"])? + 1,
+        "The reservation sequence is not monotonic."
+    );
+    for name in SLOTS {
+        let old = &previous["slots"][name];
+        let new = &next["slots"][name];
+        if old.is_null() {
+            ensure!(
+                new.is_null() || new["state"] == "reserved",
+                "A new slot must begin as a reservation."
+            );
+            continue;
+        }
+        ensure!(!new.is_null(), "A consumed reservation cannot be refunded.");
+        for field in [
+            "slot",
+            "config_digest",
+            "run_id",
+            "run_attempt",
+            "request_sha256",
+            "reservation_id",
+            "approval",
+            "plan",
+            "reserved_epoch",
+            "deadline_epoch",
+            "termination_epoch",
+        ] {
+            ensure!(
+                old[field] == new[field],
+                "A durable reservation binding cannot change."
+            );
+        }
+        for field in ["product_failures", "infrastructure_failures"] {
+            ensure!(
+                array(&new[field])?.starts_with(array(&old[field])?),
+                "A previous failure cannot be erased."
+            );
+        }
+        let before = text(&old["state"])?;
+        let after = text(&new["state"])?;
+        ensure!(
+            before == after
+                || matches!(
+                    (before, after),
+                    ("reserved", "armed")
+                        | ("armed", "submitting")
+                        | ("submitting", "launched")
+                        | (
+                            "reserved" | "armed" | "submitting" | "launched",
+                            "terminated"
+                        )
+                ),
+            "The reservation state cannot move backward or repeat submission."
+        );
+        ensure!(
+            old["termination_confirmed"] != true || new["termination_confirmed"] == true,
+            "Confirmed termination cannot be erased."
+        );
+        ensure!(
+            old["result"] == "pending" || new["result"] == old["result"],
+            "A recorded workload result cannot change."
+        );
+        ensure!(
+            old["cleanup_requested"] != true || new["cleanup_requested"] == true,
+            "A cleanup request cannot be erased."
+        );
+        for field in [
+            "worker_result",
+            "worker_artifact",
+            "runner_id",
+            "schedule_id",
+            "launch_request_sha256",
+        ] {
+            ensure!(
+                old[field].is_null() || new[field] == old[field],
+                "An immutable execution record changed."
+            );
+        }
+        if !old["instance_id"].is_null() {
+            ensure!(
+                new["instance_id"] == old["instance_id"],
+                "The instance identity cannot change."
+            );
+        }
+    }
+    Ok(())
+}
+
 pub fn save<P: Provider>(
     provider: &mut P,
     config: &Config,
     state: &mut Value,
     etag: &str,
 ) -> Result<String> {
+    let (previous, observed_etag) = load(provider, config)?;
+    ensure!(
+        observed_etag == etag,
+        "Another controller changed the reservation record."
+    );
     state["sequence"] = json!(number(&state["sequence"])? + 1);
+    validate_transition(&previous, state)?;
     validate_state(config, state)?;
     let reply = provider.oci(
         "object",

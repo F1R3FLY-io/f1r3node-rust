@@ -72,10 +72,14 @@ plan() {
     check_json "$workload"
     check_json "$qualification"
     jq -e --slurpfile a "$approval" '
-      .schema_version==1 and .profile_id=="current-dev-load" and .policy_variant=="current-dev-load" and
-      .external_harness_revision==$a[0].external_harness_revision and .providers==["docker","subprocess"] and
-      .test_path=="integration-tests/test/tests/custom/test_load.py" and (.test_sha256|type=="string" and test("^[a-f0-9]{64}$")) and
-      .preflight_profile_path=="integration-tests/test/full-suite.txt" and (.preflight_profile_sha256|type=="string" and test("^[a-f0-9]{64}$")) and
+      .schema_version==1 and .policy_variant=="current-dev-load" and
+      .external_harness_revision==$a[0].external_harness_revision and
+      ((.profile_id=="current-dev-load" and .providers==["docker","subprocess"] and
+        .test_path=="integration-tests/test/tests/custom/test_load.py" and (.test_sha256|type=="string" and test("^[a-f0-9]{64}$")) and
+        .preflight_profile_path=="integration-tests/test/full-suite.txt" and (.preflight_profile_sha256|type=="string" and test("^[a-f0-9]{64}$"))) or
+       (.profile_id=="casper-authority-publication" and .providers==["docker"] and
+        (.entrypoint.path|type=="string") and (.entrypoint.sha256|type=="string" and test("^[a-f0-9]{64}$")) and
+        .required_capabilities==["authority_finality","publication"])) and
       (.required_capabilities|type=="array" and length>0 and length<=32) and
       all(.required_capabilities[];type=="string" and test("^[a-z][a-z0-9_-]{0,63}$")) and
       (.required_capabilities|length)==(.required_capabilities|unique|length)
@@ -235,6 +239,7 @@ case "${1:-}" in
   plan) shift; plan "$@" ;;
   window) shift; window "$@" ;;
   prior) shift; prior "$@" ;;
+  verify-priors) shift; [[ $# == 2 ]] || fail "The prior verifier requires a plan and output directory."; verify_prior_runs "$@" ;;
   dispatch) shift; dispatch "$@" ;;
   *) fail 'Select the plan, window, prior, or dispatch command.' ;;
 esac

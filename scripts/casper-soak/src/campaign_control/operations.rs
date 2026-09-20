@@ -87,6 +87,77 @@ pub fn arm<P: Provider>(
     Ok(ack)
 }
 
+pub fn base64(bytes: &[u8]) -> String {
+    let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut result = String::new();
+    for chunk in bytes.chunks(3) {
+        let a = chunk[0] as usize;
+        let b = *chunk.get(1).unwrap_or(&0) as usize;
+        let c = *chunk.get(2).unwrap_or(&0) as usize;
+        result.push(alphabet[a >> 2] as char);
+        result.push(alphabet[((a & 3) << 4) | (b >> 4)] as char);
+        result.push(if chunk.len() > 1 {
+            alphabet[((b & 15) << 2) | (c >> 6)] as char
+        } else {
+            '='
+        });
+        result.push(if chunk.len() > 2 {
+            alphabet[c & 63] as char
+        } else {
+            '='
+        });
+    }
+    result
+}
+
+pub fn bootstrap<P: Provider>(
+    provider: &mut P,
+    config: &Config,
+    slot: &Value,
+    template: &str,
+) -> Result<(String, Value)> {
+    for token in ["__CASPER_RESERVATION__", "__CASPER_JIT__"] {
+        ensure!(
+            template.matches(token).count() == 1,
+            "The bootstrap template binding is invalid."
+        );
+    }
+    let label = format!("casper-{}", text(&slot["reservation_id"])?);
+    let registration = provider.github_post(
+        &format!("repos/{REPOSITORY}/actions/runners/generate-jitconfig"),
+        &json!({"name":label,"runner_group_id":config.value["compute"]["runner_group_id"],
+            "labels":["self-hosted",label],"work_folder":"_work"}),
+    )?;
+    ensure!(
+        registration["runner"]["name"] == label && number(&registration["runner"]["id"])? > 0,
+        "The just-in-time runner identity differs."
+    );
+    let custom: BTreeSet<_> = array(&registration["runner"]["labels"])?
+        .iter()
+        .map(|v| text(&v["name"]))
+        .collect::<Result<_>>()?;
+    ensure!(
+        custom == BTreeSet::from(["self-hosted", label.as_str()]),
+        "The runner labels are not exclusive."
+    );
+    let jit = text(&registration["encoded_jit_config"])?;
+    ensure!(
+        !jit.is_empty()
+            && jit.len() <= 20000
+            && jit
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"+/=".contains(&b)),
+        "The runner configuration is invalid."
+    );
+    let script = template
+        .replace("__CASPER_RESERVATION__", text(&slot["reservation_id"])?)
+        .replace("__CASPER_JIT__", jit);
+    Ok((
+        base64(script.as_bytes()),
+        registration["runner"]["id"].clone(),
+    ))
+}
+
 pub fn launch_request(config: &Config, slot: &Value, bootstrap: &str) -> Result<Value> {
     let candidate = &config.value["compute"]["candidates"][text(&slot["plan"]["candidate_id"])?];
     ensure!(
@@ -257,12 +328,14 @@ pub fn dispatch<P: Provider>(
         "The independent supervisor acknowledgment is missing or stale."
     );
     verify_service(provider, config)?;
-    let launch = launch_request(config, slot, bootstrap)?;
+    let (bootstrap, runner_id) = self::bootstrap(provider, config, slot, bootstrap)?;
+    let launch = launch_request(config, slot, &bootstrap)?;
     ensure!(
         provider.now() + number(&plan["duration_seconds"])? + 1200
             < number(&slot["termination_epoch"])?,
         "The remaining lifetime cannot hold preparation, workload, and cleanup."
     );
+    state["slots"][&name]["runner_id"] = runner_id;
     state["slots"][&name]["state"] = json!("submitting");
     state["slots"][&name]["launch_request_sha256"] = json!(hash(&encoded(&launch)?));
     state["slots"][&name]["submit_before_epoch"] = json!(
@@ -311,7 +384,8 @@ pub fn dispatch<P: Provider>(
         json!({"scope":"campaign-launch-control","reservation_id":reservation,
         "instance_id":state["slots"][&name]["instance_id"],"runner_label":format!("casper-{reservation}"),
         "launch_submissions":1,"workload_admitted":false,"termination_confirmed":false,
-        "slot":name,"config_digest":config.digest}),
+        "slot":name,"config_digest":config.digest,
+        "snapshot":state,"snapshot_sha256":hash(&encoded(&state)?)}),
     )
 }
 
@@ -322,7 +396,8 @@ pub fn supervise<P: Provider>(provider: &mut P, config: &Config) -> Result<Value
         let slot = &state["slots"][name];
         if slot.is_null()
             || slot["state"] == "terminated"
-            || provider.now() < number(&slot["termination_epoch"])?
+            || (provider.now() < number(&slot["termination_epoch"])?
+                && slot["cleanup_requested"] != true)
         {
             continue;
         }
@@ -432,7 +507,9 @@ fn terminate_slot<P: Provider>(
         current["slots"][name]["reservation_id"] == slot["reservation_id"],
         "The reservation changed during supervision."
     );
-    current["slots"][name]["instance_id"] = confirmed[0].clone();
+    if current["slots"][name]["instance_id"].is_null() {
+        current["slots"][name]["instance_id"] = confirmed[0].clone();
+    }
     current["slots"][name]["terminated_instance_ids"] = json!(confirmed);
     current["slots"][name]["termination_confirmed"] = json!(true);
     current["slots"][name]["termination_observed_epoch"] = json!(provider.now());

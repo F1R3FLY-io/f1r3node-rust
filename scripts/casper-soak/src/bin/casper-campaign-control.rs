@@ -30,6 +30,16 @@ struct Args {
     slot: Option<String>,
     #[arg(long)]
     observations: Option<PathBuf>,
+    #[arg(long)]
+    snapshot: Option<PathBuf>,
+    #[arg(long)]
+    snapshot_sha256: Option<String>,
+    #[arg(long)]
+    worker_result: Option<PathBuf>,
+    #[arg(long)]
+    artifact: Option<PathBuf>,
+    #[arg(long)]
+    archive: Option<PathBuf>,
 }
 
 fn required<T>(value: Option<T>) -> Result<T> {
@@ -89,7 +99,10 @@ fn run() -> Result<()> {
         return Ok(());
     }
     ensure!(
-        matches!(args.command.as_str(), "dispatch" | "host-admission"),
+        matches!(
+            args.command.as_str(),
+            "dispatch" | "host-admission" | "finish"
+        ),
         "The controller command is unsupported."
     );
     let evidence = required(args.evidence)?;
@@ -102,8 +115,10 @@ fn run() -> Result<()> {
                 == Some(config.digest.as_str()),
             "The controller configuration differs from the trusted deployment pin."
         );
-        config.verify_sources(&args.root)?;
-        qualified(&args.root, &plan)?;
+        if args.command != "finish" {
+            config.verify_sources(&args.root)?;
+            qualified(&args.root, &plan)?;
+        }
         let mut provider = campaign_control::transport::Cli::new(config.clone(), &evidence)?;
         if args.command == "host-admission" {
             let slot_name = required(args.slot)?;
@@ -111,9 +126,16 @@ fn run() -> Result<()> {
                 campaign_control::SLOTS.contains(&slot_name.as_str()),
                 "The host slot is invalid."
             );
-            let (state, _) = campaign_control::load(&mut provider, &config)?;
+            let state = record(&required(args.snapshot)?)?;
             ensure!(
-                state["slots"][&slot_name]["run_id"] == run,
+                casper_soak::hash(&encoded(&state)?) == required(args.snapshot_sha256)?,
+                "The host snapshot differs from the controller output."
+            );
+            campaign_control::validate_state(&config, &state)?;
+            ensure!(
+                state["slots"][&slot_name]["run_id"] == run
+                    && state["slots"][&slot_name]["plan"] == plan
+                    && state["slots"][&slot_name]["request_sha256"] == casper_soak::hash(&request),
                 "The host run differs from its reservation."
             );
             return campaign_control::host_admission(
@@ -131,6 +153,38 @@ fn run() -> Result<()> {
                 && std::env::var("GITHUB_RUN_ID").ok().as_deref() == Some(run.as_str()),
             "The execution is not the bound first-attempt workflow."
         );
+        if args.command == "finish" {
+            let worker = (|| -> Result<(Value, Value)> {
+                let artifact = record(&required(args.artifact)?)?;
+                let archive = required(args.archive)?;
+                ensure!(
+                    format!("sha256:{}", file_hash(&archive)?) == text(&artifact["digest"])?
+                        && std::fs::metadata(&archive)?.len()
+                            == casper_soak::number(&artifact["size_in_bytes"])?,
+                    "The worker archive differs from its authenticated digest."
+                );
+                Ok((record(&required(args.worker_result)?)?, artifact))
+            })()
+            .ok();
+            let result = campaign_control::results::finish(
+                &mut provider,
+                &config,
+                &request,
+                &plan,
+                &run,
+                worker.as_ref().map(|(r, a)| (r, a)),
+            )?;
+            exclusive(
+                &evidence.join("campaign-result.json"),
+                &encoded(&result)?,
+                false,
+            )?;
+            ensure!(
+                result["result"] == "passed",
+                "The campaign result is non-passing."
+            );
+            return Ok(result);
+        }
         let candidate = &config.value["compute"]["candidates"][text(&plan["candidate_id"])?];
         let bootstrap = relative(&args.root, text(&candidate["bootstrap_path"])?)?;
         ensure!(
@@ -138,6 +192,18 @@ fn run() -> Result<()> {
             "The launch bootstrap differs from its pin."
         );
         let bootstrap = String::from_utf8(regular(&bootstrap, 32768)?)?;
+        ensure!(
+            bootstrap.matches("__CASPER_GUARD_BASE64__").count() == 1,
+            "The bootstrap does not bind the host guardian."
+        );
+        let guardian = regular(
+            &args.root.join("scripts/casper-soak/campaign-host-guard.sh"),
+            16384,
+        )?;
+        let bootstrap = bootstrap.replace(
+            "__CASPER_GUARD_BASE64__",
+            &campaign_control::operations::base64(&guardian),
+        );
         campaign_control::operations::dispatch(
             &mut provider,
             &config,

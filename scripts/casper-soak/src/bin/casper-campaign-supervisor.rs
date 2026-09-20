@@ -31,7 +31,11 @@ fn invoke(config: &campaign_control::Config, input: &Value, evidence: &Path) -> 
 
 fn body<R: BufRead>(reader: &mut R) -> Result<Vec<u8>> {
     let mut line = String::new();
-    reader.read_line(&mut line)?;
+    reader.take(129).read_line(&mut line)?;
+    ensure!(
+        line.len() <= 128,
+        "The function request line exceeds its bound."
+    );
     ensure!(
         line == "POST /call HTTP/1.1\r\n" || line == "POST / HTTP/1.1\r\n",
         "The function request method or path is unsupported."

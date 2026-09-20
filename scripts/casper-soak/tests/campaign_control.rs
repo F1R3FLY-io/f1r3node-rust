@@ -58,7 +58,7 @@ fn config() -> Config {
         "environment":{"id":99,"name":"casper-campaign","branch":"formal/soak-casper-consensus"},
         "storage":{"region":"us-sanjose-1","namespace":"test","bucket":"campaigns","object":"budget.json",
             "policy_id":"ocid1.policy.fixture","policy_sha256":hash(&encoded(&json!(["reviewed-policy"])).unwrap())},
-        "compute":{"compartment_id":"ocid1.compartment.fixture",
+        "compute":{"runner_group_id":1,"compartment_id":"ocid1.compartment.fixture",
             "candidates":{"dev-amd64":candidate,"dev-arm64":candidate}},
         "supervisor":{"application_id":"ocid1.fnapp.fixture","function_id":"ocid1.fnfunc.fixture",
             "image_digest":format!("sha256:{}","3".repeat(64)),"verification_sha256":"4".repeat(64),
@@ -120,7 +120,7 @@ impl Fake {
             &self.request.clone(),
             &self.plan.clone(),
             &self.run.clone(),
-            "IyEvYmluL3NoCg==",
+            "#!/bin/bash\nreservation=__CASPER_RESERVATION__\njit=__CASPER_JIT__\n",
         )
     }
 
@@ -189,6 +189,10 @@ impl Provider for Fake {
         )
     }
 
+    fn github_post(&mut self, _path: &str, body: &Value) -> Result<Value> {
+        Ok(json!({"runner":{"id":500,"name":body["name"],"labels":[
+            {"name":"self-hosted"},{"name":body["name"]}]},"encoded_jit_config":"c2VjcmV0"}))
+    }
     fn oci(
         &mut self,
         service: &str,
@@ -201,8 +205,11 @@ impl Provider for Fake {
         if self.fail_at == Some(self.calls) {
             return Err(eyre!("Injected transport failure."));
         }
-        if service == "invoke" {
+        if matches!(service, "invoke" | "invoke-detached") {
             let body = body.unwrap();
+            if body.as_object().is_some_and(|v| v.is_empty()) {
+                return Ok(reply(operations::supervise(self, &self.config.clone())?));
+            }
             return Ok(reply(operations::arm(
                 self,
                 &self.config.clone(),
