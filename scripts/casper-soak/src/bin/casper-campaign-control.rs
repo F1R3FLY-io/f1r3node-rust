@@ -1,0 +1,171 @@
+#[path = "../campaign_control/mod.rs"]
+pub mod campaign_control;
+
+use std::fs::{self, DirBuilder};
+use std::os::unix::fs::DirBuilderExt;
+use std::path::{Path, PathBuf};
+
+use campaign_control::{Config, Provider};
+use casper_soak::{encoded, exclusive, file_hash, record, regular, relative, text, MAX_BYTES};
+use clap::Parser;
+use eyre::{ensure, eyre, Result};
+use serde_json::{json, Value};
+
+#[derive(Parser)]
+struct Args {
+    command: String,
+    #[arg(long)]
+    config: PathBuf,
+    #[arg(long, default_value = ".")]
+    root: PathBuf,
+    #[arg(long)]
+    request: Option<PathBuf>,
+    #[arg(long)]
+    plan: Option<PathBuf>,
+    #[arg(long)]
+    run: Option<String>,
+    #[arg(long)]
+    evidence: Option<PathBuf>,
+    #[arg(long)]
+    slot: Option<String>,
+    #[arg(long)]
+    observations: Option<PathBuf>,
+}
+
+fn required<T>(value: Option<T>) -> Result<T> {
+    value.ok_or_else(|| eyre!("A required command input is missing."))
+}
+
+fn qualified(root: &Path, plan: &Value) -> Result<()> {
+    for key in ["workload", "qualification"] {
+        let reference = &plan[key];
+        let path = relative(root, text(&reference["path"])?)?;
+        ensure!(
+            file_hash(&path)? == text(&reference["sha256"])?,
+            "The executable workload or qualification differs from its pin."
+        );
+        let value = record(&path)?;
+        if key == "workload" {
+            ensure!(
+                value["profile_id"] == "casper-authority-publication"
+                    && value["required_capabilities"]
+                        == json!(["authority_finality", "publication"]),
+                "The required executable Casper workload is not available."
+            );
+        } else {
+            ensure!(
+                value["evidence_kind"] == "node_observation"
+                    && value["status"] == "qualified"
+                    && value["candidate_id"] == plan["candidate_id"]
+                    && value["node_revision"] == plan["node_revision"]
+                    && value["node_binary_digest"] == plan["node_binary_digest"]
+                    && value["image_digest"] == plan["image_digest"]
+                    && value["workload_sha256"] == plan["workload"]["sha256"]
+                    && value["capabilities"]["authority_finality"] == "qualified"
+                    && value["capabilities"]["publication"] == "qualified",
+                "The required live adapters are not qualified."
+            );
+        }
+    }
+    Ok(())
+}
+
+fn run() -> Result<()> {
+    let args = Args::parse();
+    let config = Config::new(record(&args.config)?)?;
+    if args.command == "config-digest" {
+        println!("{}", config.digest);
+        return Ok(());
+    }
+    let request = regular(&required(args.request)?, MAX_BYTES)?;
+    let plan = record(&required(args.plan)?)?;
+    let run = required(args.run)?;
+    campaign_control::validate_plan(&config, &request, &plan)?;
+    if args.command == "approval" {
+        println!(
+            "{}",
+            campaign_control::approval_comment(&config, &request, &plan, &run)?
+        );
+        return Ok(());
+    }
+    ensure!(
+        matches!(args.command.as_str(), "dispatch" | "host-admission"),
+        "The controller command is unsupported."
+    );
+    let evidence = required(args.evidence)?;
+    DirBuilder::new().mode(0o700).create(&evidence)?;
+    let result = (|| -> Result<Value> {
+        ensure!(
+            std::env::var("CASPER_CAMPAIGN_CONFIG_SHA256")
+                .ok()
+                .as_deref()
+                == Some(config.digest.as_str()),
+            "The controller configuration differs from the trusted deployment pin."
+        );
+        config.verify_sources(&args.root)?;
+        qualified(&args.root, &plan)?;
+        let mut provider = campaign_control::transport::Cli::new(config.clone(), &evidence)?;
+        if args.command == "host-admission" {
+            let slot_name = required(args.slot)?;
+            ensure!(
+                campaign_control::SLOTS.contains(&slot_name.as_str()),
+                "The host slot is invalid."
+            );
+            let (state, _) = campaign_control::load(&mut provider, &config)?;
+            ensure!(
+                state["slots"][&slot_name]["run_id"] == run,
+                "The host run differs from its reservation."
+            );
+            return campaign_control::host_admission(
+                &config,
+                &state["slots"][&slot_name],
+                &record(&required(args.observations)?)?,
+                provider.now(),
+            );
+        }
+        ensure!(
+            std::env::var("GITHUB_REPOSITORY").ok().as_deref()
+                == Some(campaign_control::REPOSITORY)
+                && std::env::var("GITHUB_EVENT_NAME").ok().as_deref() == Some("workflow_dispatch")
+                && std::env::var("GITHUB_RUN_ATTEMPT").ok().as_deref() == Some("1")
+                && std::env::var("GITHUB_RUN_ID").ok().as_deref() == Some(run.as_str()),
+            "The execution is not the bound first-attempt workflow."
+        );
+        let candidate = &config.value["compute"]["candidates"][text(&plan["candidate_id"])?];
+        let bootstrap = relative(&args.root, text(&candidate["bootstrap_path"])?)?;
+        ensure!(
+            file_hash(&bootstrap)? == text(&candidate["bootstrap_sha256"])?,
+            "The launch bootstrap differs from its pin."
+        );
+        let bootstrap = String::from_utf8(regular(&bootstrap, 32768)?)?;
+        campaign_control::operations::dispatch(
+            &mut provider,
+            &config,
+            &request,
+            &plan,
+            &run,
+            bootstrap.trim(),
+        )
+    })();
+    let report = match &result {
+        Ok(receipt) => json!({"schema_version":1,"control_result":"passed","receipt":receipt,
+            "request_sha256":casper_soak::hash(&request),"config_digest":config.digest,
+            "claim_discharge":"pending","campaign_result":"pending"}),
+        Err(_) => json!({"schema_version":1,"control_result":"non_passing",
+            "request_sha256":casper_soak::hash(&request),"config_digest":config.digest,
+            "launch_outcome":"consult_authoritative_record","termination_confirmed":false,
+            "claim_discharge":"pending","campaign_result":"non_passing"}),
+    };
+    exclusive(&evidence.join("report.json"), &encoded(&report)?, false)?;
+    fs::File::open(&evidence)?.sync_all()?;
+    result?;
+    println!("{}", report);
+    Ok(())
+}
+
+fn main() {
+    if let Err(error) = run() {
+        eprintln!("Campaign control rejected: {error}");
+        std::process::exit(2);
+    }
+}

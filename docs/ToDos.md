@@ -600,7 +600,7 @@ tasks:
     reservation_work_log: docs/work-logs/task-017-12-reservations.md
     reservation_status: "A local three-slot reservation guard has native and isolated fixture checks. It does not provide global accounting or launch enforcement. Approval authentication and independent lifetime enforcement remain unimplemented."
     execution_control_plan: docs/plans/casper-campaign-execution-controls.md
-    execution_control_status: "Implementation is authorized. The review found no required reviewers on oci-credentials, launch retries in the pinned launcher, and no verified maximum-lifetime supervisor. Approval authority and external service choices require confirmation."
+    execution_control_status: "The user approved the design, maintainer approvals, and OCI supervisor hosting. OCI Functions with Resource Scheduler can provide the service. Reviewer identities, deployment settings, timing bounds, implementation, and verification remain outstanding."
     compatibility_lookup_status: "Both campaign helper links resolve to canonical records. Default and canonical gates each return exit 4 with three pending records. No lookup is missing in this scope."
     execution_gate: "Four exact-candidate probes returned blocked before node launch. Their controlled inputs are not live qualification. The legacy workload is pinned but cannot replace required Casper profiles."
     drift_review: docs/work-logs/task-017-12-drift-review-2026-09-19.md

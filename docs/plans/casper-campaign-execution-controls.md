@@ -1,6 +1,6 @@
 # Casper Campaign Execution Controls
 
-**Status:** The user authorized implementation of the execution controls. Approval authority and infrastructure settings require confirmation before integration.
+**Status:** The user approved the design. Repository maintainers may approve campaigns, and OCI will host the supervisor. Deployment settings and verification remain required.
 
 **Task:** TASK-017-12 on `formal/soak-casper-consensus`.
 
@@ -31,11 +31,19 @@ The external source revision is `b3d14b27e3c6276b1eb4ab9ccef04e02b0c4e283`. Fres
 
 The CLI review is local help inspection, not a live service test. The environment query does not establish the full repository authorization policy.
 
-## Decisions required
+## Confirmed design and deployment requirements
+
+The user confirmed the design after commit `e3a134cdff5201036ca0f143a84a78e32a733bab`. This confirmation permits implementation, not campaign execution or remote configuration changes.
 
 ### Approval authority
 
-The recommended design uses a dedicated campaign environment with named required reviewers. Campaign approval must bind the exact request, control revision, identities, and resource budget.
+Repository maintainers may approve campaigns through a dedicated environment. Campaign approval must bind the exact request, control revision, identities, and resource budget.
+
+Reviewer identities must resolve to repository maintainers or an explicitly configured maintainer team. Unknown role mappings must reject approval.
+
+GitHub maps the `maintain` role to the legacy `permission: write` value. Use `role_name` or a verified maintainer-team binding instead of legacy permission alone.
+
+The read-only repository-team query returned HTTP 403. This response does not establish that no maintainer team exists. Reviewer identities remain unverified.
 
 Required settings include the reviewer identities, self-review policy, administrator-bypass policy, and allowed deployment references. The implementation must reject missing or unsupported approval evidence.
 
@@ -45,7 +53,7 @@ The environment does not yet exist as a verified campaign approval mechanism. Th
 
 ### Authoritative reservation store
 
-The recommended backend is one pre-provisioned OCI Object Storage object for the approved campaign budget. Its location must come from trusted controller configuration.
+The approved backend is one pre-provisioned OCI Object Storage object for the approved campaign budget. Its location must come from trusted controller configuration.
 
 The record contains the campaign binding, all three slots, all used run identifiers, and each slot state. One conditional update checks the complete record.
 
@@ -59,9 +67,13 @@ The existing local reservation command remains useful for local fixtures. It mus
 
 ### Independent lifetime enforcement
 
-A supervisor outside the campaign controller and workload instance must own termination. The operator must identify its deployment, permissions, scheduling bounds, and failure response.
+OCI will host the supervisor outside the campaign controller and workload instance. The implementation will use OCI Functions with OCI Resource Scheduler.
 
-An existing service can satisfy this role only after source and operational verification. No additional supervisor machine is included in the approved three-machine budget.
+Resource Scheduler supports function invocation through its Start action. The function must call the Compute termination API, not substitute a stop operation.
+
+Scheduled functions use detached invocation. Function completion and instance termination remain separate observations.
+
+The operator must identify the deployment, permissions, scheduling bounds, and failure response. No additional supervisor machine is included in the approved three-machine budget.
 
 A GitHub job timeout, runner-local timer, tag, or termination request does not prove that an instance terminated.
 
@@ -70,6 +82,30 @@ The supervisor must accept a durable campaign intent before launch. Creation-tim
 Its enforcement allowance must fit inside the approved lifetime. Scheduling delay, clock uncertainty, and provider API latency must remain explicit assumptions.
 
 Missing supervisor evidence or unsupported timing guarantees must block launch. A termination failure must remain an infrastructure failure, not successful cleanup.
+
+### OCI scheduling constraints
+
+Oracle documents a one-hour minimum recurring interval. An hourly scan alone cannot satisfy the existing 600-second cleanup reserve.
+
+Use individual deadline schedules for primary termination. Recurring scans can support orphan reconciliation but cannot replace the deadline schedules.
+
+Create and verify the deadline schedules before the launch submission. Derive deadlines from trusted campaign state, not an instance-controlled tag or invocation payload.
+
+The implementation must budget scheduling delay, detached invocation delay, API latency, and termination observation before the maximum lifetime.
+
+A successful schedule-creation response does not prove that the schedule will execute on time. Unsupported timing bounds must leave execution disabled.
+
+These constraints do not shorten either baseline or authorize another machine. OCI deployment, quotas, permissions, and actual termination remain unverified.
+
+### Provider references
+
+- [GitHub repository permission endpoint](https://docs.github.com/en/rest/collaborators/collaborators#get-repository-permissions-for-a-user).
+- [GitHub workflow review history](https://docs.github.com/en/rest/actions/workflow-runs#get-the-review-history-for-a-workflow-run).
+- [Oracle function scheduling](https://docs.oracle.com/en-us/iaas/Content/Functions/Tasks/functionsscheduling.htm).
+- [Oracle scheduled invocation type](https://docs.oracle.com/en-us/iaas/Content/Functions/Tasks/functionsschedulingfunctions-about.htm).
+- [Oracle schedule intervals](https://docs.oracle.com/en-us/iaas/Content/resource-scheduler/tasks/schedule-info.htm).
+
+Provider documentation establishes supported interfaces, not verified behavior in the selected tenancy.
 
 ## Execution contract
 
@@ -138,7 +174,7 @@ The final source list depends on the confirmed approval and supervisor mechanism
 
 All listed executable paths already have mandatory attributes. Changed accepted artifacts require renewed source-bound verification and explicit acceptance.
 
-Supervisor source and deployment files require an exact inventory after the operator selects the service. The implementation must not silently modify external repositories.
+The OCI Functions supervisor source and deployment files require an exact inventory before implementation. The implementation must not silently modify external repositories.
 
 ## Acceptance tests
 
@@ -160,4 +196,4 @@ Fixtures establish controlled behavior only. They do not establish deployed serv
 
 The review made no executable changes and no remote configuration changes. No node, cloud instance, campaign workflow, or infrastructure deployment started.
 
-Implementation can proceed after the approval authority and external service choices are explicit. Campaign execution remains blocked throughout preparation and verification.
+The approval authority and OCI hosting choices are confirmed. Executable implementation has not started. Campaign execution remains blocked throughout preparation and verification.

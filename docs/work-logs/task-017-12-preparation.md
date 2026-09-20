@@ -642,3 +642,29 @@ The reviewer identities, authoritative object, and supervisor deployment remain 
 Evidence remains under `target/task-017-12/execution-control-review-db4a52fb6-QwPy0a/`. It contains source copies, digests, the environment response, and local CLI help.
 
 No executable source, claim status, GitHub protection, OCI policy, or external repository changed. No node, cloud instance, workflow dispatch, commit, or push occurred.
+
+### Confirmed control design after e3a134cdf
+
+Commit `e3a134cdff5201036ca0f143a84a78e32a733bab` records the initial execution-control plan. Normal commit hooks passed, and the committed bytes match the reviewed three-file change.
+
+The user then approved the design and specified maintainers as campaign approvers. The user also specified OCI as the supervisor host.
+
+The [updated plan](../plans/casper-campaign-execution-controls.md) records these decisions. The design retains one authoritative OCI Object Storage record and uses OCI Functions with Resource Scheduler for supervision.
+
+Oracle documents function invocation through the scheduler Start action. Scheduled functions use detached invocation, so the supervisor must separately observe Compute instance termination.
+
+Oracle also documents a one-hour minimum recurring interval. Primary termination therefore needs individual deadline schedules, not only an hourly cleanup scan.
+
+Provider documentation does not establish scheduling latency bounds or successful operation in the selected tenancy. The deployment must satisfy the unchanged lifetime and workload requirements.
+
+GitHub documents that the legacy permission field maps `maintain` to `write`. Approval checks must distinguish maintainer authority from ordinary write access.
+
+The repository-team query returned HTTP 403. Reviewer identities remain unverified, and the implementation must not invent a maintainer team.
+
+Evidence remains under `target/task-017-12/control-design-confirmation-e3a134cdf-sb8sD0/`. The evidence includes provider documentation, the failed team query, and documentation checks.
+
+An initial parser assumed that the GitHub documentation endpoint returned JSON. The endpoint returned Markdown, and the parser failed with exit 5.
+
+The original response remains retained with its initial filename. A Markdown copy supports the corrected documentation review.
+
+This continuation changes documentation only. No executable implementation, remote configuration, deployment, node launch, cloud launch, or additional commit occurred.
