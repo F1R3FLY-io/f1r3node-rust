@@ -26,6 +26,20 @@ Product defects found by a correct profile remain product failures. They belong 
 
 Missing node test interfaces block their scenarios. These epics do not acquire runtime implementation obligations to unblock those scenarios.
 
+### Separate node prerequisite
+
+The [node prerequisite plan](casper-node-interface-prerequisite.md) records separately approved node work. PR #447 targets `dev` and can merge independently after its own gates pass.
+
+PR #436 temporarily targets `feature/casper-node-observation`. After the prerequisite merges, PR #436 can return to `dev`.
+
+This dependency order does not include node implementation in either harness epic. Node claims, harness claims, diagnostic PR #441, and EPIC-018 remain separate.
+
+Independent harness execution controls can proceed before the node interfaces are ready. Live qualification, preflight, and baselines still require qualified interfaces and all campaign gates.
+
+A changed pull request target does not integrate source commits. Combined-source verification remains necessary before qualification.
+
+This clarification does not approve merges, image publication, candidate repinning, claim acceptance, or cloud launches. Resource limits and full baseline durations remain unchanged.
+
 ## Authority and method
 
 The [ratification meeting](https://github.com/F1R3FLY-io/f1r3node-rust/pull/390#pullrequestreview-5227717933) supplies the reviewed expectations for profile scenarios.
@@ -67,7 +81,9 @@ The shared gate permits two minutes per Casper configuration and a 60-second ter
 
 The planned integration completed at merge `0f1ccdf38f9ab3b056e7601b93961cb56c0a51e9`. Its second parent is PR #433's revision `65f7f6daa832c0acb6fddf2b462db1b9d5461729`.
 
-[PR #436](https://github.com/F1R3FLY-io/f1r3node-rust/pull/436) targets `docs/consensus-neutral-execution`. The verified ancestry preserves `#430 -> #431 -> #432 -> #433 -> formal/soak-casper-consensus`.
+At that integration, [PR #436](https://github.com/F1R3FLY-io/f1r3node-rust/pull/436) targeted `docs/consensus-neutral-execution`. The verified ancestry preserved `#430 -> #431 -> #432 -> #433 -> formal/soak-casper-consensus`.
+
+The separate node prerequisite section records the current target relationship. The following measurements remain historical integration evidence.
 
 The merged tree equals its first parent's tree. All 228 recorded source hashes and 1,692 retained evidence records still match.
 

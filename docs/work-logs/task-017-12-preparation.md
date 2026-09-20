@@ -602,3 +602,19 @@ These checks verify metadata consistency, not formal discharge. No prover, hoste
 Evidence remains under `target/task-017-12/claim001-reconciliation-7b8865aaa-C8GNMj/`. The earlier completion review remains unchanged as a historical record.
 
 The specification digest gap is resolved. Claim001 still requires source-bound renewal and acceptance, and TASK-017-12 remains blocked before execution.
+
+### Independent node delivery and harness controls
+
+The later node authorization approved Batch A, its claim, and both mandatory tags. Batch A and its shutdown correction are published at `799e2136adc6e0100b289945d9a5a6851e81c91f`.
+
+The node claim remains pending. Batch B1, Batch B2, and Batch C require separate approval. The node prerequisite is not complete or merge-ready.
+
+PR #447 targets `dev` independently. PR #436 temporarily targets the node branch and can return to `dev` after the prerequisite merges.
+
+This dependency order does not include node implementation in the harness scope. The published harness head does not contain the node commits.
+
+The updated plans distinguish dependent targets from source integration. No branch, pull request target, merge, image, or candidate pin changed during this update.
+
+Independent harness work continues with the [local reservation guard](task-017-12-reservations.md). Its checks do not establish authenticated approval, global accounting, instance lifetime enforcement, or campaign execution.
+
+The admission-only route remains blocked. Live qualification, separate preflight, both full baselines, and the later stability resource decision remain required.

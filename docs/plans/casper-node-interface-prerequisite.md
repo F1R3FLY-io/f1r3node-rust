@@ -1,6 +1,6 @@
 # Casper Node Interface Prerequisite
 
-**Status:** The separate prerequisite is authorized. The file-level implementation plan awaits confirmation.
+**Status:** Batch A and its shutdown correction are implemented on the separate node branch. Its claim remains pending. Later batches require separate approval.
 
 **Consumer:** TASK-017-12. This prerequisite is separate from EPIC-017 and EPIC-018 harness verification.
 
@@ -13,6 +13,24 @@ The inspected `casper/src`, `node/src`, `block-storage/src`, and `models/src` tr
 The user authorized this prerequisite after the Linux completion review. Authorization does not discharge claims, approve publication, authorize a merge, or change the campaign resource limits.
 
 The [ratified plan](casper-ratified-soak-2026-09-16.md) continues to exclude node implementation from the harness epics. This separate prerequisite does not amend that boundary.
+
+## Independent delivery and current status
+
+[PR #447](https://github.com/F1R3FLY-io/f1r3node-rust/pull/447) targets `dev` from `feature/casper-node-observation`. It can merge independently after its own approval and verification gates pass.
+
+[PR #436](https://github.com/F1R3FLY-io/f1r3node-rust/pull/436) temporarily targets the node branch. After the prerequisite merges, the harness pull request can return to `dev`.
+
+This dependency order does not include node implementation in the harness scope. The node prerequisite must not wait for the harness pull request to merge.
+
+A pull request target does not establish commit ancestry or successful integration. The inspected harness head does not contain the published node commits.
+
+Batch A and its shutdown correction are published through `799e2136adc6e0100b289945d9a5a6851e81c91f`. The correction has a source-order regression, not an end-to-end node shutdown test.
+
+The [revised Batch B proposal](https://github.com/F1R3FLY-io/f1r3node-rust/blob/799e2136adc6e0100b289945d9a5a6851e81c91f/docs/plans/casper-node-observation-batch-b.md) separates detached capture from later evaluator wiring. Batch B1, Batch B2, and Batch C remain unapproved.
+
+The prerequisite is incomplete and not merge-ready. Local tests do not discharge its claim or qualify authority and publication capabilities.
+
+Independent harness execution-control work can proceed now. Live qualification and campaign execution still require the completed prerequisite and all existing gates.
 
 ## Goal
 
@@ -111,6 +129,8 @@ Each batch requires its listed source bodies and callers to be reviewed before e
 
 ### Batch A: Local protocol and disabled-by-default access
 
+The user approved this nine-file batch, its pending claim, and both mandatory tags. The table records that approved scope.
+
 This batch adds transport, identity checks, bounds, and explicit capability reporting. It does not claim authority or publication qualification.
 
 | File | Proposed change |
@@ -134,6 +154,8 @@ Reuse existing dependencies for transport, serialization, identifiers, and hashi
 No public API route or protobuf schema change is proposed for this batch.
 
 ### Batch B: Detached authority capture and evaluation
+
+The revised Batch B proposal supersedes this original file list. This historical list does not authorize implementation or replace the revised approval gates.
 
 | File | Proposed change |
 | --- | --- |
@@ -200,15 +222,15 @@ Use local isolated qualification first. Preserve failed attempts and do not char
 
 Identify all affected claims before changing those files. Propose mandatory tags for new observation and fault-control artifacts for human ratification.
 
-Batch A also proposes `.gitattributes` entries for the observer module and its dedicated tests. Both entries use `cbc=mandatory` and `cbc-weight=high`.
+Batch A has approved `.gitattributes` entries for the observer module and its dedicated tests. Both entries use `cbc=mandatory` and `cbc-weight=high`.
 
-Register the pending interface claim in `docs/claims/casper-node-observation.md`. Its inventory must include all nine Batch A source and test files.
+The node branch registers the pending interface claim in `docs/claims/casper-node-observation.md`. Its inventory includes all nine Batch A source and test files.
 
 Retain per-artifact verification records under `docs/cbc-evidence/`. Neither registration nor a passing unit test discharges this claim.
 
 Do not replace existing node obligations with a harness-only claim. Record new interface claims separately and keep them pending until their verification requirements pass.
 
-Keep this prerequisite separate from PR #436, diagnostic PR #441, and the post-merge EPIC-018 branch.
+Keep node implementation, verification, and delivery separate from PR #436, diagnostic PR #441, and the post-merge EPIC-018 branch. A temporary dependent target preserves this separation.
 
 A local instrumented build is a new candidate. It is not execution of the currently pinned CI images.
 
@@ -220,6 +242,6 @@ The later 60-hour phase retains its separate candidate-count and runner-lifetime
 
 ## Approval boundary
 
-Confirm Batch A before executable edits. Batches B and C require the additional source and consistency reviews identified above.
+Batch A approval is complete. Batch B1 requires confirmation of its revised scope, claim, and tags. Batch B2 and Batch C require later review and approval.
 
 This plan does not authorize storage-policy changes, protocol changes, occurrence-store implementation, production fault injection, cloud launches, commits, pushes, or claim acceptance.
