@@ -1309,6 +1309,7 @@ async fn await_http_server_task(
 /// Returns `Ok(())` on successful node shutdown, or an error if initialization fails
 pub async fn start(node_conf: NodeConf) -> eyre::Result<()> {
     info!("Starting RChain node runtime...");
+    let observer = crate::rust::soak_observer::Observer::bind(&node_conf)?;
 
     // Create node identifier from certificate
     let id = node_environment::create(&node_conf).await?;
@@ -1318,8 +1319,12 @@ pub async fn start(node_conf: NodeConf) -> eyre::Result<()> {
     // Create NodeRuntime instance
     let runtime = NodeRuntime::new(node_conf, id);
 
-    // Run the main node program with error handling
-    handle_unrecoverable_errors(runtime.main()).await
+    let observer = observer.map(|observer| observer.spawn());
+    let result = runtime.main().await;
+    if let Some(observer) = observer {
+        observer.stop().await;
+    }
+    handle_unrecoverable_errors(async { result }).await
 }
 
 /// Handle unrecoverable errors in the node program
