@@ -100,6 +100,32 @@ async fn closed(stream: &mut UnixStream) {
 }
 
 #[test]
+fn runtime_source_returns_before_observer_cleanup_and_exit() {
+    let source = include_str!("../src/rust/runtime/node_runtime.rs");
+    let main = source
+        .split_once("pub async fn main(&self)")
+        .unwrap()
+        .1
+        .split_once("async fn node_program")
+        .unwrap()
+        .0;
+    assert!(!main.contains("handle_unrecoverable_errors("));
+    assert!(!main.contains("std::process::exit("));
+    assert!(main.contains("\n        program.await\n    }"));
+
+    let start = source
+        .split_once("pub async fn start(node_conf: NodeConf)")
+        .unwrap()
+        .1;
+    let returned = start.find("let result = runtime.main().await;").unwrap();
+    let stopped = start.find("observer.stop().await;").unwrap();
+    let exited = start
+        .find("handle_unrecoverable_errors(async { result }).await")
+        .unwrap();
+    assert!(returned < stopped && stopped < exited);
+}
+
+#[test]
 fn default_configuration_has_no_observer() {
     let directory = Directory::new();
     let conf = configuration(&directory, false);

@@ -118,6 +118,20 @@ The final formatting check and all-target node Clippy check passed. Initial comp
 
 The interface tests use a test executable. No running blockchain node, live adapter, campaign image, or consensus result was qualified.
 
+## Shutdown correction
+
+A later source review found an early process exit inside `NodeRuntime::main`. That exit bypassed observer cleanup in `start`.
+
+The correction returns the node program result to `start`. The existing exit handler runs after the observer stops.
+
+The [shutdown work log](../work-logs/casper-node-observer-shutdown-review.md) identifies the retained failing check, correction, and new local results.
+
+The new regression checks source ordering. It is not an end-to-end production node shutdown test.
+
+The earlier Batch A report remains unchanged. Its passing transport tests did not establish the missing runtime shutdown property.
+
+Batch B remains unapproved. The [revised proposal](../plans/casper-node-observation-batch-b.md) separates bounded storage capture from later authority evaluation.
+
 ## Verification requirements
 
 Retain failing controls for configuration, permissions, peer identity, request identity, replay, frame bounds, deadlines, and cleanup.
