@@ -331,8 +331,7 @@ impl NodeRuntime {
             mergeable_channels_gc_loop,
         );
 
-        // Wrap with error handling
-        handle_unrecoverable_errors(program).await
+        program.await
     }
 
     /// Node program - orchestrates all concurrent tasks
