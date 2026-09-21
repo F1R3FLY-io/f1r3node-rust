@@ -8771,6 +8771,20 @@ maps the original task requirements to retained formal, semantic, scaling and
 replay evidence. This completes local task qualification, not trusted pgmcp
 verification or the still-open whole-workspace/campaign release gates.
 
+**2026-09-21 fixture-phase qualification pilot.** Task 5915 now measures the
+existing nine deep-fixture families with paired fixture-only and real-operation
+arms, separating construction, input witness, operation, result witness and
+teardown. All 108 pilot cells through depth 4,096 pass on a fixed 1 MiB worker
+stack within the unchanged 20-second watchdog; the slowest child takes 5.043
+seconds. The entire pilot service reports 205.3 MiB peak and zero swap under
+an 8 GiB hard cap. This is not yet the required confidence-bound scaling
+qualification: experiment 347's 31-sample population remains pending.
+Allocation instrumentation now also counts zeroed requests; it does not measure
+live heap. The existing three fixture-equivalence tests, two new probe tests
+and both runner self-tests pass. Production code is unchanged. See
+[J-193](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-193--2026-09-21-separate-deep-fixture-costs-from-gated-operations)
+for phase ownership, skipped-control semantics, source receipts and limitations.
+
 ---
 
 ### 5.29 ParBag family and count-domain completeness [SS-A13, SS-A14, SS-Y9]

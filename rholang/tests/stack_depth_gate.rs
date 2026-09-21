@@ -91,6 +91,8 @@ use rspace_plus_plus::rspace::serializers::cold_store_decode::ColdStoreDecode;
 
 #[path = "support/counting_alloc.rs"]
 mod counting_alloc;
+#[path = "support/deep_fixture_scaling.rs"]
+mod deep_fixture_scaling;
 #[path = "support/planned_deep_fixture.rs"]
 mod planned_deep_fixture;
 #[path = "support/substitution_scaling.rs"]
@@ -2565,54 +2567,12 @@ fn clone_send_chain_body(depth: usize) {
     dismantle(term);
 }
 
-/// ★ The **EXTERN obligation**, measured rather than asserted.
+/// Clone a final-root PathMap-value chain and release both roots.
 ///
-/// The clone driver treats `EPathMap` as a **bounded** field — one whole-value
-/// `Clone` call — because an extern type contributes no descriptor-derived
-/// children. That is correct only because `EPathMap::clone` is O(1) **at the
-/// node**: `ps` is an `EntryTrie` whose clone is a refcount bump on the trie root
-/// plus `Arc` bumps on the canonical EPM1 snapshot and layout caches
-/// (`models/src/rust/rhoapi_ext.rs`).
-///
-/// ⚠ If that ever stops being true — if `EPathMap::clone` starts deep-copying its
-/// PathMap contents — this ladder goes sloped while every other clone subject stays
-/// flat, because `EPathMap` is the ONE recursive edge the driver does not own.
-/// Nesting is `Par → Expr → EPathmapBody(EPathMap) → map value → Par`.
-///
-/// ## ⚠★ Why this subject LEAKS instead of dismantling — measured, not assumed
-///
-/// Its first reading was **1,865 B/level** (debug, 16 → 128) while `clone` and
-/// `clone_send_chain` were both flat, which looked exactly like the emitter
-/// having routed one field to a whole-value clone. It was not. The control
-/// [`pathmap_chain_drop_body`] builds the same ladder and releases it **with no
-/// clone at all**, and it measures the SAME two numbers to the byte:
-///
-/// ```text
-///   clone_pathmap_chain   69,632 -> 278,528   1,865 B/level
-///   pathmap_chain_drop    69,632 -> 278,528   1,865 B/level   ◀── no clone
-/// ```
-///
-/// So the clone contributes **zero** and the slope is the FIXTURE's teardown:
-/// `par_children::dismantle` cannot tear down through an `EPathMap`. Its
-/// `EPathmapBody` arm does `out.extend(x.ps().iter().cloned())` — it clones the
-/// entries out of the trie and leaves the ORIGINAL trie to drop through the
-/// derived recursive destructor. (`par_children.rs` already calls that exclusion
-/// *"a real gap, not a formality"*, for the matcher; this ladder is the first
-/// thing to measure it.)
-///
-/// A subject whose reading is `max(clone, drop)` reports the wrong traversal —
-/// the exact trap that once made the score-tree subjects report the SORTER's
-/// 78,573 B/level instead of the comparator's 1,329. So the term is **forgotten**
-/// rather than dismantled, and the teardown is measured separately by
-/// `pathmap_chain_drop`, which is in [`CLONE_LADDERS_CAPPED_BY_THEIR_FIXTURE`] —
-/// **neither** register list, per its own doc at `:898-921`. ⛔ This line previously read
-/// `TRIPWIRE_DEPTH`, and `:2515` previously read `CONVERTED_DEPTH`; the file asserted
-/// three mutually exclusive memberships for one subject. Corrected 2026-07-30 against
-/// the list itself rather than against either claim.
-///
-/// ⚠ Leaking is correct HERE and nowhere else: every subject runs in its own
-/// child process, which exits immediately afterwards. `models/benches/bincode_encoder_bench.rs`
-/// uses `std::mem::forget` for the same reason.
+/// Construction and byte-native depth witnessing use the shared planned fixture.
+/// This whole-body gate includes teardown; `deep_fixture_scaling::phase_child`
+/// separately measures construction, witnessing, cloning and final release.
+/// Both this subject and its no-clone control are in `CONVERTED_DEPTH`.
 fn clone_pathmap_chain_body(depth: usize) {
     let term = nested_pathmap_chain(depth);
     assert_carries(
@@ -2626,103 +2586,13 @@ fn clone_pathmap_chain_body(depth: usize) {
     dismantle(term);
 }
 
-/// ★ The **TEARDOWN control** for [`clone_pathmap_chain_body`]: build the same
-/// ladder and release it, with **no clone at all**.
+/// No-clone teardown control for `clone_pathmap_chain_body`.
 ///
-/// ⚠ This exists because the first release measurement of `clone_pathmap_chain`
-/// came out SLOPED at 1,865 B/level (debug) while `clone` and `clone_send_chain`
-/// were both flat, and there are two candidate causes with opposite conclusions:
-///
-/// 1. the driven clone recurses through `EPathMap` — a defect in the emitter;
-/// 2. the FIXTURE's teardown recurses through `EPathMap` — a defect in
-///    `par_children::dismantle`, which the clone subject would then be reporting
-///    as its own.
-///
-/// This subject decides it. If it is sloped, cause (2) holds and the clone is
-/// innocent; the gate's own history contains the same trap — "a cloning fixture
-/// would report `max(clone, eq)`", which once made the score-tree subjects report
-/// the SORTER's 78,573 B/level instead of the comparator's 1,329.
-///
-/// ★ It stays in the file whatever the answer is, because a subject whose reading
-/// is a maximum over two traversals needs the other one measured beside it.
-///
-/// ## ★★★ THE ANSWER: NEITHER. It was a THIRD cause, and the first "confirmation"
-/// was a COMMON-CAUSE ARTIFACT.
-///
-/// The measurement sequence, recorded in full because the middle step is exactly
-/// the mistake this note exists to stop somebody repeating:
-///
-/// | step | `clone_pathmap_chain` | `pathmap_chain_drop` | read as |
-/// |---|---|---|---|
-/// | 1. both dismantle their fixture | 69,632 → 278,528 (1,865) | 69,632 → 278,528 (1,865) | "identical ⇒ the TEARDOWN is the cause" |
-/// | 2. clone subject leaks instead | 49,152 → 278,528 (2,048) | — | ⚠ still sloped, and the DEEP END DID NOT MOVE |
-/// | 3. fixture built on a big stack | **32,768 → 32,768 (0)** | **69,632 → 69,632 (0)** | ★ the BUILDER was the cause |
-///
-/// Step 1's identical numbers were **not** evidence that the teardown was the
-/// cause. Two bodies that share one sloped component read identically whatever
-/// else they do — and both of these shared the FIXTURE BUILDER. The step-1
-/// reading is a true statement ("the clone contributes zero") that supports a
-/// false conclusion, and step 2's unchanged deep end is what gave it away.
-///
-/// **The actual cause**: `EPathMap::new` keys every entry by its canonical bytes,
-/// so building an `EPathMap` around a depth-`d` `Par` *encodes* that `Par`, and
-/// the prost encoder is audit row 7 — still Θ(depth), still in
-/// [`TRIPWIRE_DEPTH`] as `encode`. The ladder was measuring the ENCODER through a
-/// constructor.
-///
-/// ⛔ **CORRECTED 2026-07-30. The paragraph that stood here carried TWO falsehoods,
-/// and the flat measurement it explained is true for a different reason that does
-/// NOT generalise.** It read: *"`par_children::dismantle` handles the `EPathMap`
-/// shape FLAT. Its `EPathmapBody` arm clones the entries out of the trie and pushes
-/// them onto the worklist; the residual trie holds `Par`s that were moved out, so its
-/// drop is O(1) per node. … which is why it is in `CONVERTED_DEPTH` rather than in the
-/// tripwire list."*
-///
-/// **Falsehood 1 — nothing is moved out.** `par_children.rs:395` is
-/// `out.extend(x.ps().iter().cloned())`, a **copy**. Read it beside its own siblings,
-/// which is where it becomes unmistakable: `EListBody`, `ETupleBody`, `ESetBody` and
-/// `EMapBody` all write `out.extend(x.ps)`, *consuming*; only `EPathmapBody` and
-/// `EZipperBody` clone. The arm **owns** the `EPathMap`, so the originals are still in
-/// it when the arm ends and they fall to the recursive derived destructor.
-///
-/// ⚠ Worse than one stray copy: `x.ps()` is `EntryTrie::view()`, a **memoised** `Vec`
-/// built by `entries_in_trie_order`, which clones every value — and a freshly built map's
-/// memo is always cold. So the teardown path *materialises a full second copy in order to
-/// destroy the first*: up to **2N** deep clones, and **2N** `Par`s left to the recursive
-/// destructor. (`EPathMap` in fact retains the entries **three** ways — `trie`, this
-/// memo, and `intern`, whose `map` is a third clone of the same trie.)
-///
-/// **Falsehood 2 — the list membership.** `pathmap_chain_drop` is in **neither**
-/// register: it is in [`CLONE_LADDERS_CAPPED_BY_THEIR_FIXTURE`], documented at `:898-921`
-/// as *"deliberately in NEITHER register list"*. ⚠ `:2404` states the opposite of this
-/// sentence (`TRIPWIRE_DEPTH`), so the file contradicted itself twice over.
-///
-/// ⇒ ★ **Why the ladder nonetheless reads flat, which is the part worth keeping.**
-/// `EPathMap::clone` is O(1) — a refcount bump on the trie root plus an `Arc` bump on the
-/// memo. `nested_pathmap_chain` nests a pathmap **at every level**, so the entry the arm
-/// clones is a *shallow alias* sharing the level-below trie; when the original drops, that
-/// refcount is still `≥ 1` and the recursion **stops one level down**. **The sharing breaks
-/// the chain — the dismantling does not.**
-///
-/// ⇒ ⛔ **This fixture is precisely the one shape that cannot see the defect.** Any payload
-/// that is not immediately re-entrant into another `EPathMap` — an `EList`, `Send` or `ESet`
-/// chain — is deep-copied by `Par::clone` while the original drops at **full depth**.
-/// `pathmap_entry_drop` (one `EPathMap`, one deep non-pathmap entry) is the discriminating
-/// subject and is expected RED. ⇒ **A flat reading here must never again be read as
-/// coverage.**
-///
-/// ⚠ `move_and_borrow_tables_agree` (`par_children.rs:1034-1051`) cannot catch this either:
-/// it compares `locally_free[0]` **tag bytes**, so a clone passes identically to a move —
-/// and the by-*reference* table (`:181`) reports the same memo projection, so **both tables
-/// are wrong identically**. The guard meant to keep them in step is blind to the very class
-/// that separates them.
-///
-/// ⇒ Tracked as stack-safety **§3d-0**, which must land **before** any integration of
-/// `dismantle`: integrating it as-is would ship a false claim of coverage.
-///
-/// ⚠ The `EPathmapBody` exclusion `par_children.rs` calls *"a real gap, not a
-/// formality"* is about **matching and substitution descent**, not about
-/// teardown. Nothing here bears on it.
+/// Build and witness the same final-root PathMap-value chain, then release it
+/// through the current stack-safe ownership path. No entries are projected to
+/// a resident collection and no fixture is intentionally leaked here.
+/// Historical encoder/builder slopes do not describe the current implementation;
+/// the phase probe distinguishes fixture costs from operation and teardown costs.
 fn pathmap_chain_drop_body(depth: usize) {
     let term = nested_pathmap_chain(depth);
     assert_carries(

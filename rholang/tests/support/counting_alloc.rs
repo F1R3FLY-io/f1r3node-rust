@@ -23,6 +23,11 @@ unsafe impl GlobalAlloc for Counting {
         unsafe { System.dealloc(ptr, layout) }
     }
 
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        bump(layout.size());
+        unsafe { System.alloc_zeroed(layout) }
+    }
+
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         bump(new_size);
         unsafe { System.realloc(ptr, layout, new_size) }

@@ -14461,6 +14461,65 @@ trusted verified status. Submission and verified roll-up remain distinct.
 Required whole-workspace, campaign release and persistence gates remain open;
 no optional research is introduced as a new prerequisite.
 
+### J-193 — 2026-09-21 Separate deep-fixture costs from gated operations
+
+**Question.** Task 5915 already has final-root builders and bounded legacy
+oracles. Does construction plus byte-native witnessing scale near-linearly
+across every required shape, independently of operation and final release?
+Reimplementing the builders would duplicate completed work rather than answer
+the remaining resource question.
+
+**DECISION and protocol.** Experiment 347 preregisters nine families: ESet,
+EMap, ENot, binders with a deep environment value, Send, PathMap values,
+spatial lists, spatial binders and spatial PathMap values. Each has a paired
+fixture-only arm and its existing production sort, evaluation, substitution,
+clone or matching operation. Depths are 128, 256, 512, 1,024, 2,048 and 4,096.
+The acceptance population has three warmups and 31 samples per cell, randomized
+pair/arm ordering with seed 5915, fresh processes, a fixed 1 MiB worker stack
+and a 20-second whole-child watchdog. Each family/arm must have a construction
+plus input-witness elapsed-time growth exponent whose upper 95% stratified
+bootstrap bound is at most 1.20; the bootstrap uses 10,000 replicates.
+
+The test-only probe reuses existing builders and semantic witnesses. It records
+construction, input witness, operation, result witness and teardown separately.
+The entire sorter result, including its score tree, survives until teardown.
+Substitution and matching consume inputs, so their internal input release
+remains operation cost; artificial retained aliases would change the CoW
+conditions and are not introduced. Fixture controls label operation and result
+phases as skipped with zero measurements. Allocation counts include zeroed
+allocations and measure requested traffic, not live bytes or process RSS.
+Historical counter results retain their original instrumentation boundary.
+
+**MEASURED pilot, not acceptance.** The existing fixture equivalence suite
+passes 3/3. The new probe checks all nine families at depths 0, 1, 7 and 32;
+both its semantic/phase test and zeroed-allocation control pass. Both benchmark
+analyzer self-tests pass, including rejection of missing/duplicate cells,
+incorrect skipped phases, negative counts, pilot populations and watchdog
+violations. The pilot completes all 108 fresh-process cells and 540 phase rows.
+Its maximum child wall time is 5.043 seconds. The capped service reports
+43.193 seconds wall time and 205.3 MiB peak with zero swap, under an 8 GiB
+maximum and four-core quota. These are pilot/service observations, not a
+confidence interval, production speedup or per-operation RSS measurement.
+
+**Reproducibility and limits.** Source and binary digests, topology, governor,
+CPU-idleness snapshots and full child logs are retained under
+`target/verification/fixture-5915-pilot-r2/`. The shared host helper preserves
+the previous sufficient-idle-core policy. An earlier helper-check invocation
+failed before measurement because the systemd working directory was omitted;
+the successful run explicitly binds it. The full repeated population remains
+pending at this checkpoint. Identical spatial-binder operands may use the
+existing equality fast path; that cell is not evidence of deep dynamic matcher
+work. The free-variable list and PathMap cells verify the exact terminal
+binding. No production codec, PathMap dependency or consensus behavior changes.
+Obsolete clone/drop comments describing flattened projections and intentional
+leaks are corrected against the current implementation.
+
+| Artifact | SHA-256 |
+|---|---|
+| target/verification/fixture-5915-pilot-r2/samples.tsv | 92a0410ddb524d1ad888a5bc7d786bad34cf6dda25e2f39f45d6d004bcb72302 |
+| target/verification/fixture-5915-pilot-r2/children.log | d0589e8f64103c396b30a8ea97210331052bf07c86c9c75874e9e0d25c226bcd |
+| target/verification/fixture-5915-runner-pilot-r2.log | 70e8e1d1219dc663f883addccde267379a0af2a56d49fad52ab41f18c49da98a |
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
