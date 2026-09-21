@@ -9,6 +9,39 @@ import numpy as np
 from scipy.stats import shapiro, ttest_rel, wilcoxon
 
 
+def stratified_loglog_slope(depths, samples, replicates=10_000, seed=5916):
+    if len(depths) < 3 or len(depths) != len(samples):
+        raise ValueError("at least three aligned depth strata are required")
+    if len(set(depths)) != len(depths) or any(depth <= 0 for depth in depths):
+        raise ValueError("depths must be positive and distinct")
+    if replicates < 10_000:
+        raise ValueError("at least 10,000 bootstrap replicates are required")
+    widths = {len(group) for group in samples}
+    if len(widths) != 1 or next(iter(widths)) < 3:
+        raise ValueError("strata require equal sample sizes of at least three")
+    values = np.asarray(samples, dtype=np.float64)
+    if not np.all(np.isfinite(values)) or np.any(values <= 0):
+        raise ValueError("observations must be finite and positive")
+    x = np.log(np.asarray(depths, dtype=np.float64))
+    centered = x - np.mean(x)
+    denominator = np.sum(centered**2)
+    logs = np.log(values)
+    estimate = np.dot(centered, logs.mean(axis=1)) / denominator
+    generator = np.random.default_rng(seed)
+    boot = np.zeros(replicates)
+    for index, group in enumerate(logs):
+        draws = generator.integers(0, len(group), size=(replicates, len(group)))
+        boot += centered[index] * group[draws].mean(axis=1) / denominator
+    low, high = np.quantile(boot, [0.025, 0.975])
+    return {
+        "estimate": float(estimate),
+        "lower95": float(low),
+        "upper95": float(high),
+        "replicates": replicates,
+        "seed": seed,
+    }
+
+
 def sample_summary(values: list[float]) -> dict[str, float | int]:
     if len(values) < 2:
         raise ValueError("sample summaries require at least two observations")

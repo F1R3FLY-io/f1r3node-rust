@@ -14044,6 +14044,163 @@ or full-campaign completion is inferred from these correctness receipts.
 | `target/verification/substitution-5916-binder-preservation-native-r5.log` | `c3fd723ebafd79c77cd0499f322e760cd02d7b5ec8a4ae3c773f5e4fd5d1b8e6` |
 | `target/verification/substitution-5916-construction-preservation-native-r6.log` | `8881293a1bda6878099fc3c4df4e3910327bc6c3e926763e0e47156d36c4b6c2` |
 
+### J-190 — 2026-09-18 Non-identity substitution scaling and allocation attribution
+
+**Question and preregistration (task 5916, experiment 346).** Does the repaired
+borrowed-region machine retain approximately linear growth when substitution
+must actually visit the nested input? The original ground-list gate now takes
+the certified copy-on-write identity route. It remains a useful regression
+control, but cannot establish the cost of non-identity traversal.
+
+The new test-only fixture uses one transient construction arena to build a
+unary EList chain ending in BoundVar(0), with matching locally-free metadata.
+The environment binds that variable to integer 123. Before measurement, the
+probe rejects an identity-certified input and verifies that input and expected
+output bytes differ. After measurement, it verifies the changed leaf, complete
+protobuf bytes and compact RPB3 bytes. Fixture construction, environment setup
+and output validation are outside the operation timer and allocation window;
+ownership cleanup performed by the substitution API remains inside that window.
+No production implementation, PathMap dependency, schema or consensus behavior
+changes in this checkpoint.
+
+**Method.** Experiment 346 was opened before collection. Each of unsorted,
+sorted and charged substitution has 31 fresh-process samples at depths 128,
+256, 512, 1024, 2048 and 4096, after three warmups per cell. The runner shuffles
+the 18 cells in each round with seed 5916. All 558 measured observations and
+54 warmups are retained. The only excluded timings are those preregistered
+warmups; failed or timed-out children abort and retain the partial run.
+
+For each API, ordinary least squares fits log operation time against log depth
+over all 186 observations. The uncertainty interval is the central 95%
+percentile interval from 10,000 bootstrap replicates, resampling independently
+within each depth stratum with seed 5916. The upper endpoint must not exceed
+1.20. This is not a fit to median timings, a simultaneous confidence band for
+all three APIs, or a before/after speedup estimate. The fixed-depth medians below
+are descriptive summaries, separate from the regression estimator.
+
+**MEASURED results.** All three latency gates pass. Allocation counts and
+cumulative requested bytes also scale approximately linearly over these rungs.
+
+| API | Latency exponent | Central 95% interval | Depth-4096 median API time | Maximum complete depth-4096 process time | Depth-4096 allocation calls | Depth-4096 cumulative requested bytes |
+|---|---:|---|---:|---:|---:|---:|
+| Unsorted | 0.995763 | [0.994536, 0.996981] | 159.496 ms | 447.767 ms | 831,503 | 136,725,322 |
+| Sorted | 0.995072 | [0.993760, 0.996345] | 159.398 ms | 455.244 ms | 839,749 | 141,443,274 |
+| Charged | 0.995539 | [0.994458, 0.996612] | 159.351 ms | 448.127 ms | 839,752 | 141,448,758 |
+
+Allocation-call exponents are 1.002256, 1.001905 and 1.001875 respectively;
+requested-byte exponents are 1.005647, 1.006742 and 1.006413. Counts and requested
+bytes are identical across repetitions within each cell, so their bootstrap
+intervals collapse to rounding precision. Requested bytes count allocations
+and the full requested sizes of reallocations, not net growth, live heap or
+resident set size (RSS). The existing thread-local counting allocator is reused;
+it measures the gate thread, not arbitrary background threads. Input and output
+protobuf lengths at depth 4096 are 74,734 and 48,270 bytes. These observations
+do not claim that the remaining allocation constant is optimal.
+
+**Resource and validation receipts.** The matrix pins each child to CPU 2 on
+the observed 32-physical/32-logical-core host, using the performance governor,
+a 1 MiB worker stack, a 20-second per-process watchdog, a one-core service quota,
+an 8 GiB hard/6 GiB soft memory limit and zero swap. The service completes in
+126.513 seconds wall and 90.044 CPU seconds with 137.5 MiB reported peak and no
+swap. Round-boundary mpstat snapshots pass the idle-core requirement; this is
+not continuous exclusive isolation of the core.
+
+The collector's first revision counted logical CPUs; the recorded topology
+establishes a one-to-one physical/logical mapping on this host. The reviewed
+runner now groups socket/core siblings for future runs, records source hashes,
+and validates the exact warmup population as well as the measurement population.
+Updated analysis r2 rechecks the same raw data without recollection and passes
+all population/known-exponent self-tests: 1.534 seconds wall, 1.404 CPU seconds,
+98.3 MiB reported peak under a 1 GiB cap and zero swap. Missing or duplicate
+cells, missing warmups, unknown phases and watchdog violations are rejected.
+The environment marker SUBSTITUTION_CAPPED is a launcher assertion, not proof
+of a memory limit; the recorded systemd invocation supplies that evidence.
+
+The native fixture test passes 12 depth/API cases. The three original ground
+controls also pass at depth 4096 with the same 1 MiB stack, CPU pin and 20-second
+watchdog: 0.13, 0.13 and 0.07 seconds of test execution, respectively. Their
+service reports 6.3 MiB peak under the 8 GiB cap. These single control runs
+are correctness/watchdog checks, not comparison populations.
+
+**Diagnostic profiles, not timing samples.** Headless Heaptrack r2 records the
+same unsorted depth-4096 process and validates its output. Whole-process totals
+include fixture construction and checking: 2,056,766 allocation calls, a
+reported 26.76 MB peak heap and 34.92 MB peak RSS including profiler overhead.
+The systemd service, which also contains the profiling machinery, reports
+110.3 MiB peak, 1.317 seconds wall and zero swap under a 4 GiB hard cap.
+These differently scoped memory figures must not be substituted for one another.
+The first attempt wrapped taskset inside Heaptrack, recorded zero allocations,
+and is invalid; the successful invocation pins Heaptrack outside the direct
+Rust-binary launch. No GUI is started.
+
+The text report filtered to sub_drive attributes 551,977 allocation calls to
+PathMap LineListNode::split_0: 288,910 through the input's guarded root disposal
+and 263,067 through value-free guarded disposal beneath final construction
+publication. This is a cleanup/mutation attribution, not evidence that nested
+Pars are being decoded again. The work-frame vector is also a major retained
+allocation site. Default merged-backtrace peak totals are not additive or exact
+per-site live-heap accounting. Independent read-only review confirms the known
+linear-but-allocation-heavy guarded lifecycle mechanism already recorded in
+J-052: input final-owner disposal, plus value-free donor disposal after missing
+suffix materialization and grafting during publication. Task 6441,
+guarded-pathmap-final-root-allocation-teardown, and upstream request PMU-005
+already own this cost. No duplicate task or bypass of the stack-safe guard is
+introduced. Optional causal attribution within that existing work can separate
+retained-input substitution, isolated final finish and final-owner drop, while
+continuing to report their combined end-to-end cost.
+
+uProf 5.3 time-based sampling collects 426 samples at a 1 ms interval over the
+whole process. Its hottest reported functions include mutable zipper advance,
+shared-reference counting, child-mask traversal and pruning. Collection reports
+72.5 MiB peak; report generation reports 260.6 MiB peak, both under 4 GiB caps
+with zero swap. The report warns of a kernel-symbol-address mismatch and lacks
+Rust line debug information. It supports coarse user-space hotspot attribution,
+not exact operation-only percentages, kernel attribution or a stable population
+effect size. CPU pinning was requested at launch; the profiler report lists a
+0–31 affinity mask, so profile pinning is not independently established by that
+report. This does not alter the separately pinned latency matrix.
+
+**Reproduction and provenance.** Build the existing release stack_depth_gate
+test, then launch scripts/bench/substitution-region-scaling.py under the envelope
+above with SUBSTITUTION_CAPPED=1, OPENBLAS_NUM_THREADS=1, --cpu 2, --binary pointing
+at that test executable, and a new --output directory. Use --self-test and
+--analyze-only --output on the resulting directory to validate without sampling
+again. The new subjects are substitute_bound_no_sort, substitute_bound_sorted
+and substitute_bound_charged. Headless profiling uses taskset outside
+heaptrack --record-only; analysis uses heaptrack_print --filter-bt-function
+sub_drive. uProf uses collect --config tbp --call-graph-mode dwarf
+--call-graph-size 8192, followed by report --detail.
+
+Collection ran against parent 17beb6fed plus the test-harness changes committed
+with this entry. The Rust probe and gate source hashes are
+db5a9d772cf5f327db864f732ec47f28c9e910ee9c161e3416725eacd101c672 and
+20bd946118a4a8658c50250506adab0fddadf0e81d2ab9759fbc263618545c18.
+The initial collector/statistics source hashes are
+6905f3277b61a44187c77c9dc4cdd5eca36dc94e24929c8fc214663d2210c10f and
+085aefed0b76b72f780f369721b878c15b6439d61dff2b188fde76e98ccfdc98;
+subsequent changes strengthen validation/provenance and format those scripts,
+without changing the collected population or regression formula. Experiment
+346 stores the four raw metric series for every sample and warmup, aligned
+with depth, repeat and input/output byte lengths, plus the three upper bounds.
+The hypothesis remains open because its work-counter obligations remain.
+
+| Artifact | SHA-256 |
+|---|---|
+| Release gate binary | 923a5ce8d6999f48262718a6f8b0145d13f127a84cde2376fb3c7c68c4e36864 |
+| target/verification/substitution-5916-scaling-matrix-r1/samples.tsv | 1626d54393b4842d916551948db47bb7079e64d271a81f319a2c033d908596c5 |
+| target/verification/substitution-5916-scaling-matrix-r1/summary.json | 338cee92412d1cba201b20d5eee21427ce45fa6999d4d6b1ab3716b069e95b5b |
+| target/verification/substitution-5916-analysis-r2.log | d3133e2d9b8820a838e2a154ae69e55ebabd56f02ddfe97823e3aa1da5b340ec |
+| target/verification/substitution-5916-original-watchdogs-r1.log | cf74128b23d8e40d378f41452557eeedcd30e33dc23f0f49df8126e18115541c |
+| target/verification/substitution-5916-headless-heap-report-r2.log | b6cf4c0894d50f91e6f89853d47671bd274f6a394f7dd6f6ec85f812008f1341 |
+
+**Remaining acceptance.** Task 5916 is not complete. Additive cost-event models
+and native construction/copy/work counter bindings, profile-led lifecycle
+qualification and consensus/replay gates remain. The semantic foundations in
+J-175 through J-189 are reused, not replaced by timing evidence. This checkpoint
+closes the measured non-identity unary-depth scaling and watchdog questions;
+it does not establish a universal linear bound for every family or maximal
+performance for Rholang applications.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

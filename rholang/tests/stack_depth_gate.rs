@@ -93,6 +93,8 @@ use rspace_plus_plus::rspace::serializers::cold_store_decode::ColdStoreDecode;
 mod counting_alloc;
 #[path = "support/planned_deep_fixture.rs"]
 mod planned_deep_fixture;
+#[path = "support/substitution_scaling.rs"]
+mod substitution_scaling;
 
 #[global_allocator]
 static ALLOCATOR: counting_alloc::Counting = counting_alloc::Counting;
@@ -767,6 +769,15 @@ fn subject(name: &str) -> fn(usize) {
         // -------- depth axis --------
         "substitute" => substitute_body,
         "substitute_no_sort" => substitute_no_sort_body,
+        "substitute_bound_no_sort" => {
+            |depth| substitution_scaling::run(depth, substitution_scaling::Entry::NoSort)
+        }
+        "substitute_bound_sorted" => {
+            |depth| substitution_scaling::run(depth, substitution_scaling::Entry::Sorted)
+        }
+        "substitute_bound_charged" => {
+            |depth| substitution_scaling::run(depth, substitution_scaling::Entry::Charged)
+        }
         // ★ The METERED wrapper — what the reducer calls. See
         // `subst_and_charge_body`; the name is `stack_depth_probe.rs`'s, so one
         // subject has one name across the measurement harness and the gate.

@@ -8707,6 +8707,30 @@ tests after excluding repeated shared-leaf cases. See
 [J-189](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-189--2026-09-18-bind-substitution-schedules-and-preserve-incomplete-injections).
 No scaling, allocation-rate or campaign-completion claim follows from this repair.
 
+**2026-09-18 non-identity measurement addendum.** Experiment 346 measures the
+borrowed-region traversal rather than the ground-input identity bypass. Across
+six depths from 128 to 4096 and 31 fresh-process samples per API/depth (plus
+three preregistered warmups), the upper endpoints of central 95% bootstrap
+latency-growth intervals are 0.996981 for unsorted, 0.996345 for sorted and
+0.996612 for charged substitution. All satisfy the original 1.20 threshold.
+All measured depth-4096 processes finish within 0.456 seconds, including fixture
+construction and exact output validation, on a 1 MiB worker stack with a
+20-second watchdog. Operation-only median time is about 159.4 ms. The matrix
+uses CPU 2, an 8 GiB memory cap and zero swap; the complete collection service
+reports 137.5 MiB peak. This is unary BoundVar substitution evidence, not a
+universal runtime or campaign-completion claim. **MEASURED (f).**
+
+Allocation growth is approximately linear too, but the constant remains
+substantial: 831,503–839,752 calls and 136.7–141.4 million cumulative requested
+bytes at depth 4096. Requested bytes are not live heap or RSS. Separate headless
+Heaptrack and uProf diagnostics identify guarded trie disposal/mutation and
+work-frame storage as follow-up attribution targets; they are not mixed into
+the latency population. The three original ground watchdog controls also pass.
+[J-190](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-190--2026-09-18-non-identity-substitution-scaling-and-allocation-attribution)
+records the complete method, receipts, profile limitations and failed empty
+profiling attempt. Formal cost-event bindings, scoped work/copy/construction
+counters and replay/lifecycle qualification still remain for task 5916.
+
 ---
 
 ### 5.29 ParBag family and count-domain completeness [SS-A13, SS-A14, SS-Y9]
