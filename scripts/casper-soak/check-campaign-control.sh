@@ -46,7 +46,8 @@ shasum -a 256 "${files[@]}" > "$out/source-before.sha256"
 cargo build --locked -p casper-soak --bin casper-campaign-models > "$out/build.txt" 2>&1
 failed=0
 bash scripts/casper-soak/test-campaign-control.sh "$out/fixtures" > "$out/fixtures.txt" 2>&1 || failed=1
-cargo test --locked -p casper-soak --test campaign_models --test campaign_reservation > "$out/regressions.txt" 2>&1 || failed=1
+cargo test --locked -p casper-soak --test campaign_models > "$out/regressions.txt" 2>&1 || failed=1
+bash scripts/casper-soak/check-campaign-reservation.sh "$out/reservations" > "$out/reservations.txt" 2>&1 || failed=1
 "${CARGO_TARGET_DIR:-target}/debug/casper-campaign-models" --root "$root" --output "$out/models" \
   --java "$java" --jar "$TLA_TOOLS_JAR" --timeout "$timeout_command" > "$out/models.txt" 2>&1 || failed=1
 bash scripts/casper-soak/test-campaign.sh "$out/planner" > "$out/planner.txt" 2>&1 || failed=1

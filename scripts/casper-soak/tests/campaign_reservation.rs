@@ -9,7 +9,10 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 use tempfile::TempDir;
 
-fn binary() -> &'static str { env!("CARGO_BIN_EXE_casper-campaign-reservation") }
+fn binary() -> String {
+    std::env::var("CASPER_RESERVATION_BIN")
+        .unwrap_or_else(|_| env!("CARGO_BIN_EXE_casper-campaign-reservation").to_owned())
+}
 
 struct Fixture {
     temp: TempDir,

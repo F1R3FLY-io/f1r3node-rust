@@ -7,6 +7,7 @@ scope: local-baseline-reservation-store
 artifacts:
   - scripts/casper-soak/src/bin/casper-campaign-reservation.rs
   - scripts/casper-soak/tests/campaign_reservation.rs
+  - scripts/casper-soak/check-campaign-reservation.sh
 binding: pending
 refutation: pending
 construction: not-applicable
@@ -91,3 +92,11 @@ The future controller must authenticate approvals, validate exact source and can
 The future controller must retain uncertain launch outcomes without another submission. It must independently enforce instance lifetime and confirm cleanup.
 
 No local fixture proves power-loss recovery, distributed exclusivity, real instance termination, live qualification, or a passing campaign. Source-bound verification and explicit acceptance remain pending.
+
+## Verification entry point
+
+The campaign gate runs all sixteen reservation tests on Linux. On macOS, the gate cross-compiles the same tests and runs them in an isolated Linux container.
+
+The caller must supply an immutable test image through `SOAK_CAMPAIGN_TEST_IMAGE`. The container has no network, no capabilities, a non-root user, and bounded memory and temporary storage.
+
+The suite requires sixteen passing tests. A platform with zero registered tests cannot satisfy this check.
