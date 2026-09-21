@@ -33,7 +33,7 @@ files=(
   scripts/casper-soak/Cargo.toml Cargo.toml Cargo.lock rust-toolchain.toml .cargo/config.toml
   scripts/casper-soak/src/campaign_control/*.rs
   scripts/casper-soak/src/bin/casper-campaign-*.rs
-  scripts/casper-soak/src/lib.rs scripts/casper-soak/src/models.rs
+  scripts/casper-soak/src/*.rs
   scripts/casper-soak/tests/campaign_*.rs
   scripts/casper-soak/campaign*.sh scripts/casper-soak/*campaign*.sh
   scripts/casper-soak/supervisor/*

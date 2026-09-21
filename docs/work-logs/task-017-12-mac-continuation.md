@@ -86,3 +86,37 @@ The approval environment, authoritative object, access policy, and lifetime supe
 The node prerequisite, live adapters, executable workload pins, hosted checks, and source-bound acceptance remain required. No preflight or baseline dispatch occurred.
 
 TASK-017-12 remains in progress. No node, cloud runner, remote configuration, or evidence release was created by this continuation.
+
+## Hosted verification follow-up
+
+The user requested TASK-017-12 completion after publishing `8adaa235c44cf55f93f5f236de21ae943bd0e1cc`. The branch has no uncommitted source changes at this review.
+
+The [hosted control run](https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/35643918016) passed on Linux. The retained artifact matches its GitHub SHA-256 digest and byte count.
+
+Both hosted source manifests agree. All 46 unique source hashes match this checkout. Each model log matches its retained digest.
+
+The run passed 115 planner checks, 43 Rust tests, and five model configurations. These checks do not qualify the deployed campaign execution workflow.
+
+The [hosted report](../casper/cbc-evidence/runs/casper-campaign-hosted-20260921-01/report.json) records run identity, artifact identity, source hashes, and verification results. It retains the previous failed run reference.
+
+The GitHub artifact expires on 2026-10-21. The local archive remains under `target/task-017-12-hosted-20260921-01/` until durable external retention is verified.
+
+The repeated strict audit returns exit 4. Its registry covers eight soak claims and excludes the three campaign claims. No claim status changed.
+
+## Current completion blockers
+
+Both `GITHUB_TOKEN` and `GITHUB_PERSONAL_ACCESS_TOKEN` contain the same value in this process. This result also holds in a non-login shell.
+
+Explicit selection of each variable returns HTTP 403 for maintainer-role queries. The response advertises `metadata=read`, which corrects the earlier Administration-read diagnosis.
+
+The repository metadata lists admin access. That response does not establish credential access to the role endpoint. The collaborator-list endpoint also returns HTTP 403.
+
+The OCI bucket query again returns no records in the selected compartment. The authoritative object, access policy, supervisor, and timing evidence remain required.
+
+The current `dev` revision remains `6940a5beb4aa806d3d75f6df3be9f238512fcc2f`. PR #447 remains open at the reviewed head `566a21223830eb6594467615eb45fe3e4ccb3c2e`.
+
+The [node review](https://github.com/F1R3FLY-io/f1r3node-rust/blob/566a21223830eb6594467615eb45fe3e4ccb3c2e/docs/plans/casper-node-observation-batch-b.md) records unresolved Batch B1 findings. Batch B2 and Batch C still require separate approval.
+
+The live adapters and workload pins depend on those node interfaces. Current source acceptance, deployment qualification, a separate passing preflight, and both full baselines remain required.
+
+This follow-up changes evidence and task records only. It creates no node, cloud runner, remote configuration, commit, or claim acceptance.

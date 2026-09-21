@@ -7,6 +7,14 @@
     "repository": "F1R3FLY-io/f1r3node-rust",
     "environment": "casper-campaign",
     "observed_environment_exists": false,
+    "credential_review": {
+      "variables_tested": ["GITHUB_TOKEN", "GITHUB_PERSONAL_ACCESS_TOKEN"],
+      "same_value_in_process": true,
+      "role_endpoint_status": 403,
+      "role_endpoint_required_permission": "metadata=read",
+      "repository_metadata_reports_admin": true,
+      "credential_values_retained": false
+    },
     "reviewers": [
       {
         "login": "leithaus",
@@ -136,7 +144,7 @@
     }
   },
   "activation_blockers": [
-    "GitHub maintainer roles remain inaccessible to the current credential.",
+    "Both GitHub token variables select the same credential. Maintainer-role queries return HTTP 403.",
     "The approval environment has not been created.",
     "The authoritative object and its access policy have not been provisioned.",
     "The lifetime supervisor has not been deployed or qualified.",

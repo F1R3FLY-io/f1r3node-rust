@@ -11,7 +11,7 @@ pub mod transport;
 
 pub const REPOSITORY: &str = "F1R3FLY-io/f1r3node-rust";
 pub const SLOTS: [&str; 3] = ["preflight", "baseline-dev-amd64", "baseline-dev-arm64"];
-pub const SOURCE_PATHS: [&str; 23] = [
+pub const SOURCE_PATHS: [&str; 28] = [
     "scripts/casper-soak/src/campaign_control/mod.rs",
     "scripts/casper-soak/src/campaign_control/transport.rs",
     "scripts/casper-soak/src/campaign_control/operations.rs",
@@ -21,6 +21,11 @@ pub const SOURCE_PATHS: [&str; 23] = [
     "scripts/casper-soak/campaign-host.sh",
     "scripts/casper-soak/campaign-host-guard.sh",
     "scripts/casper-soak/src/lib.rs",
+    "scripts/casper-soak/src/host_control.rs",
+    "scripts/casper-soak/src/main.rs",
+    "scripts/casper-soak/src/manifest.rs",
+    "scripts/casper-soak/src/models.rs",
+    "scripts/casper-soak/src/runtime.rs",
     "scripts/casper-soak/src/campaign_control/results.rs",
     "scripts/casper-soak/campaign-bootstrap.sh",
     "scripts/casper-soak/campaign-finish.sh",

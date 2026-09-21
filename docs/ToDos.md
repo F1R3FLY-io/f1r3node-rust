@@ -595,15 +595,17 @@ tasks:
     completion_review: docs/work-logs/task-017-12-preparation.md#completion-review-at-859cbc36c
     claim001_reconciliation: docs/work-logs/task-017-12-preparation.md#claim001-specification-digest-reconciliation
     node_interface_prerequisite: docs/plans/casper-node-interface-prerequisite.md
-    node_interface_status: "PR #447 targets dev independently. Batch A and its shutdown correction are published at 799e2136a. The node claim remains pending. Later batches require separate approval, and campaign admission remains blocked."
+    node_interface_status: "PR #447 remains open at the reviewed head 566a21223830eb6594467615eb45fe3e4ccb3c2e. Batch B1 has an implementation with unresolved findings and pending acceptance. Batch B2 and Batch C still require separate approval. Campaign admission remains blocked."
     stack_scope: "PR #436 temporarily targets the node branch. This dependency order does not include node implementation in the harness scope. Independent harness controls can proceed before node qualification."
     reservation_work_log: docs/work-logs/task-017-12-reservations.md
     reservation_status: "All sixteen reservation tests pass in an isolated Linux container on this Mac. The authoritative OCI protocol has controlled-provider tests. Its real object and access policy remain unprovisioned."
     execution_control_plan: docs/plans/casper-campaign-execution-controls.md
     execution_control_evidence: docs/casper/cbc-evidence/runs/casper-campaign-control-20260921-01/report.json
+    hosted_control_evidence: docs/casper/cbc-evidence/runs/casper-campaign-hosted-20260921-01/report.json
     deployment_proposal: docs/plans/casper-campaign-deployment.jsonc
     continuation_work_log: docs/work-logs/task-017-12-mac-continuation.md
-    execution_control_status: "The controller, workflow route, supervisor, host checks, result finalizer, and model gate are implemented. The local gate passes. Six reviewer identities and existing OCI resources are recorded. Deployment, provider timing qualification, hosted verification, and acceptance remain pending."
+    execution_control_status: "The local and hosted control gates pass. Hosted run 35643918016 covers head 8adaa235c, with all 46 source hashes verified. Deployment, provider timing qualification, campaign execution workflow qualification, and acceptance remain pending."
+    github_access_status: "Both GitHub token variables contain the same value in this process. Explicit tests with each variable return HTTP 403 for maintainer-role queries. The endpoint advertises metadata=read. Repository metadata lists admin access but does not establish token access to this endpoint."
     compatibility_lookup_status: "The current campaign inventories have 37 pending artifact records and matching compatibility links. The strict eight-claim audit returns exit 4 with Claim001 pending. No acceptance is inferred."
     execution_gate: "Four exact-candidate probes returned blocked before node launch. Their controlled inputs are not live qualification. The legacy workload is pinned but cannot replace required Casper profiles."
     drift_review: docs/work-logs/task-017-12-drift-review-2026-09-19.md
@@ -626,7 +628,7 @@ tasks:
       - "The changed workflow and campaign artifacts have current pending records. Historical evidence remains unchanged. Claim001 and the three campaign claims still require source-bound acceptance."
       - "Pin executable workloads and review the complete campaign model and configuration inventory. Recheck candidate identities before dispatch."
       - "Qualify live adapters and their required node interfaces. Fresh authority and publication probes reject both candidate identities with explicit unqualified-adapter reasons."
-      - "The new workflow connects approval, launch, workload, and finalization jobs. Hosted execution and deployed-service qualification remain required. The legacy rebuild path remains separate."
+      - "The hosted control gate passes with verified source identities. The campaign workflow still requires approval, launch, workload, and finalization qualification against deployed services."
       - "The campaign-baseline-24h input requests 86400 workload seconds. Execution must preserve that full duration without preflight subtraction. Existing scheduled behavior remains unchanged."
       - "Provision and qualify the authoritative OCI object and independent supervisor. The implementation does not establish deployed timing guarantees. Missing activation evidence blocks execution."
       - "Record the exact candidate count and runner lifetime limits before the approved 60-hour campaign launches. Passing baseline evidence remains required."

@@ -336,6 +336,25 @@ impl Provider for Fake {
 }
 
 #[test]
+fn configuration_requires_all_library_source_pins() {
+    for path in [
+        "scripts/casper-soak/src/lib.rs",
+        "scripts/casper-soak/src/host_control.rs",
+        "scripts/casper-soak/src/main.rs",
+        "scripts/casper-soak/src/manifest.rs",
+        "scripts/casper-soak/src/models.rs",
+        "scripts/casper-soak/src/runtime.rs",
+    ] {
+        let mut value = config().value;
+        value["source_digests"]
+            .as_object_mut()
+            .unwrap()
+            .remove(path);
+        assert!(Config::new(value).is_err(), "Missing source pin: {path}");
+    }
+}
+
+#[test]
 fn approval_requires_current_maintainer_role_and_exact_request_bytes() {
     let mut fake = Fake::new();
     fake.role = "write".into();
