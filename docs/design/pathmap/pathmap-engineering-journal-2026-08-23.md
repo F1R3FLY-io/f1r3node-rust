@@ -14715,6 +14715,81 @@ backfill without using the prohibited pgmcp CLI or modifying pgmcp.
 | `classification-green-r1.log` | 3e7fd707e2cc6f1079704977d5ccd662480e3cf3e829220a843c5fd0c0f0dcd3 |
 | `classification-nextest-r1.log` | 67b19c525d503ae4b2566f6cb3dc56d781a1d3e84fd5641a78625dd03108c47b |
 
+### J-196 — 2026-09-21 Preserve transport errors through the depth search
+
+**Scope and method (DERIVED, MEASURED).** Task 5917 now carries callback errors
+through the existing cap-first search as `ProbeFailureCause::Transport(E)`, with
+the failing depth and original error value intact. Observed subprocess failures
+remain `Outcome(ProbeFailure)`. This changes neither search geometry nor the
+depth-one anti-vacuity rule. `DepthProbeSearch.v` was checked before the Rust
+change: 21 closed obligations cover bracket preservation, machine-bound midpoint
+arithmetic, error identity, terminal absorption, and whole-run termination and
+boundary correctness. The termination proof uses a decreasing rank, not a fuel
+limit. Native probe monotonicity is an explicit premise, not a proved runtime fact.
+The DPS section of the workspace invariant catalog binds every obligation to its
+executable witness and records the model boundary.
+
+**Results.** With `PROPTEST_CASES=1024 PROPTEST_RNG_SEED=5917
+CARGO_BUILD_JOBS=4`, `cargo nextest run --release -p shared --lib
+-E 'test(rust::test_process::tests)' --run-ignored all --test-threads=4
+--no-fail-fast` passes all 16 selected tests (41 unrelated tests excluded).
+Coverage includes the frozen exponential-search oracle, exhaustive small-cap
+thresholds, exact midpoint traces, caps near `usize::MAX`, all non-stack outcome
+kinds, and transport failures at base, cap and midpoint with allocation identity
+preserved and no subsequent callback. `cargo check --release -j4 -p rholang
+--test deploy_depth_ceiling -p casper --test deploy_ingress_depth_ceiling` passes
+for both updated callers; it does not execute their expensive depth gates.
+
+The final proof/kernel service took 15.100 seconds, peaked at 411.1 MiB and used
+zero swap under a 2 GiB ceiling. Caller checking took 43.854 seconds and peaked
+at 1.6 GiB with zero swap under an 8 GiB ceiling. Native acceptance used a 6 GiB
+ceiling and zero allowed swap. These are verification resource observations, not
+benchmarks. An earlier proof elaboration timed out at its 120-second watchdog
+(966.9 MiB peak); explicit proof arguments resolved it without increasing limits.
+
+**Next lifecycle design (DECISION, not implemented in this checkpoint).** The
+completed plan-agent review identified an unbounded reader-thread join when a
+descendant retains stderr, ignored capture errors, unchecked deadline addition,
+and cleanup bypasses after `try_wait` or `kill` errors. Replace the reader thread
+with single-owner bounded pipe polling, keeping no spool, runtime or new dependency.
+On Unix, preserve file flags and add `O_NONBLOCK`; on Windows, use `PeekNamedPipe`
+and ordinary `ChildStderr::read` only for positively available bytes. The Windows
+approach depends on the pinned standard library creating the parent endpoint as
+an asynchronous byte-mode pipe; that is an inspected implementation property,
+not an `AsRawHandle` guarantee. Native Windows qualification and a toolchain-change
+check remain required. The reviewed sources are the
+[Unix pipe contract](https://man7.org/linux/man-pages/man7/pipe.7.html) and
+[Microsoft PeekNamedPipe contract](https://learn.microsoft.com/en-us/windows/win32/api/namedpipeapi/nf-namedpipeapi-peeknamedpipe).
+
+Bound read attempts as well as bytes per quantum so continuous writes or repeated
+interruptions cannot starve status/deadline checks. Validate deadline arithmetic
+before spawning. Following exit, timeout or an I/O error, use a separate finite
+cleanup budget, preserving primary and cleanup failures. Classify only after the
+direct child is reaped and stderr EOF is established; an inherited writer must
+yield a bounded harness error, not a result based on incomplete capture. Retain
+exactly the last 65,536 raw bytes independent of chunk boundaries, then convert
+to lossy UTF-8 (whose resulting string may be larger). No synthetic diagnostic
+markers. Test finite over-capacity output, silent/flooding inherited writers,
+interrupted reads, setup/read/wait/kill errors and races, timeout fairness, and
+zero/overflow deadlines. The guarantee is conditional on OS-call progress; it
+does not promise process-tree containment or successful reaping after arbitrary
+OS failures. A disk spool was rejected because it substitutes unbounded disk
+growth and filesystem stalls for the reader-thread problem.
+
+**Tracking and limits.** This test-helper change affects no production traversal,
+PathMap representation, consensus bytes, hashes or accounting. Task 5917 is not
+complete: the lifecycle design, core policy, stack-gate integration, watchdog
+calibration and native Windows acceptance remain open. PgMCP STDIO tools remain
+absent from the exposed tool catalog; retain this receipt for backfill, without
+using the CLI or changing/restarting pgmcp.
+
+| Artifact under `target/verification/depth-probe-5917/` | SHA-256 |
+|---|---|
+| `search-proof-r5.log` | b41143a9215b0bec7c9871e15722bf31a8ebc2c6b5434851243ca7d07cc2eb7f |
+| `search-kernel-r5.log` | da6307fafb340eae0384e0196803a498a83bf3bd305b0c0572a705e95cac7102 |
+| `search-native-r3.log` | b8088a52724405ce6c7716e1d375ef1707f5a509d6c54b1983ade4ad222c8673 |
+| `callers-check-r1.log` | c75b4b75c0b37505db9d4ec2be3481ee5ff673be25bdf405db8c7c6228bea5ee |
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

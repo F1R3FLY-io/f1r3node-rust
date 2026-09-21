@@ -447,7 +447,12 @@ fn ingress_child() {
 const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
 fn ingress_survives(teardown: Teardown, depth: usize, stack: usize) -> bool {
-    match ingress_probe(teardown, depth, stack) {
+    match ingress_probe(teardown, depth, stack).unwrap_or_else(|error| {
+        panic!(
+            "INVALID INGRESS TRANSPORT: `{}` at depth {depth} on a {stack} byte worker: {error:?}",
+            teardown.tag()
+        )
+    }) {
         shared::rust::test_process::ProbeOutcome::Passed => true,
         shared::rust::test_process::ProbeOutcome::Failed(failure)
             if failure.kind == shared::rust::test_process::ProbeFailureKind::StackExhausted =>
@@ -468,8 +473,8 @@ fn ingress_probe(
     teardown: Teardown,
     depth: usize,
     stack: usize,
-) -> shared::rust::test_process::ProbeOutcome {
-    let exe = std::env::current_exe().expect("deploy_ingress_depth_ceiling: current_exe");
+) -> std::io::Result<shared::rust::test_process::ProbeOutcome> {
+    let exe = std::env::current_exe()?;
     let mut command = std::process::Command::new(exe);
     command
         .args(["--ignored", "--exact", "ingress_child"])
@@ -477,7 +482,6 @@ fn ingress_probe(
         .env("INGRESS_DEPTH", depth.to_string())
         .env("INGRESS_STACK", stack.to_string());
     shared::rust::test_process::run_child_probe(&mut command, PROBE_TIMEOUT)
-        .expect("deploy_ingress_depth_ceiling: failed to run child")
 }
 
 /// Greatest depth ingress survives on `stack` bytes. The anti-vacuity base and
@@ -491,11 +495,10 @@ fn max_surviving_depth(teardown: Teardown, stack: usize, cap: usize) -> Option<u
     .unwrap_or_else(|error| {
         panic!(
             "INVALID INGRESS DEPTH PROBE: `{}` at depth {} on a {} KiB worker failed with \
-             {:?}, not native-stack exhaustion: {:?}",
+             a non-ceiling failure: {:?}",
             teardown.tag(),
             error.depth,
             stack / 1024,
-            error.failure.kind,
             error.failure,
         )
     }) {

@@ -56,9 +56,15 @@ pub enum ProbeOutcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MonotoneCeilingError {
+pub enum ProbeFailureCause<E> {
+    Outcome(ProbeFailure),
+    Transport(E),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MonotoneCeilingError<E> {
     pub depth: usize,
-    pub failure: ProbeFailure,
+    pub failure: ProbeFailureCause<E>,
 }
 
 /// Find the boundary of a monotone depth predicate, probing the cap first.
@@ -73,19 +79,25 @@ pub struct MonotoneCeilingError {
 /// result is [`MonotoneCeiling::AtLeast`], and constructing exponentially
 /// larger deep fixtures merely to rediscover that fact can dominate an entire
 /// workspace test run.
-pub fn monotone_ceiling(
+pub fn monotone_ceiling<E>(
     cap: usize,
-    mut probe: impl FnMut(usize) -> ProbeOutcome,
-) -> Result<MonotoneCeiling, MonotoneCeilingError> {
+    mut probe: impl FnMut(usize) -> Result<ProbeOutcome, E>,
+) -> Result<MonotoneCeiling, MonotoneCeilingError<E>> {
     assert!(cap >= 1, "a depth-probe cap must include depth one");
+    let mut run_probe = |depth| {
+        probe(depth).map_err(|error| MonotoneCeilingError {
+            depth,
+            failure: ProbeFailureCause::Transport(error),
+        })
+    };
 
-    if let ProbeOutcome::Failed(failure) = probe(1) {
+    if let ProbeOutcome::Failed(failure) = run_probe(1)? {
         return Ok(MonotoneCeiling::BaseFailed(failure));
     }
     if cap == 1 {
         return Ok(MonotoneCeiling::AtLeast(cap));
     }
-    let mut first_failure = match probe(cap) {
+    let mut first_failure = match run_probe(cap)? {
         ProbeOutcome::Passed => return Ok(MonotoneCeiling::AtLeast(cap)),
         ProbeOutcome::Failed(failure) if failure.kind == ProbeFailureKind::StackExhausted => {
             failure
@@ -93,7 +105,7 @@ pub fn monotone_ceiling(
         ProbeOutcome::Failed(failure) => {
             return Err(MonotoneCeilingError {
                 depth: cap,
-                failure,
+                failure: ProbeFailureCause::Outcome(failure),
             });
         }
     };
@@ -102,7 +114,7 @@ pub fn monotone_ceiling(
     let mut hi = cap;
     while hi - lo > 1 {
         let mid = lo + (hi - lo) / 2;
-        match probe(mid) {
+        match run_probe(mid)? {
             ProbeOutcome::Passed => lo = mid,
             ProbeOutcome::Failed(failure) if failure.kind == ProbeFailureKind::StackExhausted => {
                 hi = mid;
@@ -111,7 +123,7 @@ pub fn monotone_ceiling(
             ProbeOutcome::Failed(failure) => {
                 return Err(MonotoneCeilingError {
                     depth: mid,
-                    failure,
+                    failure: ProbeFailureCause::Outcome(failure),
                 });
             }
         }

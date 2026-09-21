@@ -8842,6 +8842,23 @@ claims. This increment does not close stack-gate watchdog integration, callback
 I/O propagation, process cleanup, Windows-native execution or campaign acceptance.
 It changes no production traversal, consensus representation or depth limit.
 
+#### 2026-09-21 qualification addendum — typed search transport failures
+
+Task 5917 now preserves callback I/O errors and their exact probe depth through
+cap-first search. Twenty-one closed Rocq obligations and independent kernel
+checking preceded implementation; the 16-test focused nextest group passes,
+including 1,024 seeded property cases, machine-maximum caps and a frozen
+exponential-search differential. Both deployment depth-test callers type-check.
+The proof/kernel run peaked at 411.1 MiB and caller checking at 1.6 GiB, both with
+zero swap. J-196 records commands, artifact hashes, the DPS invariant bindings
+and the completed lifecycle design review. These are verification results, not
+application performance measurements or execution of the full depth gates.
+
+This closes callback error propagation and search differential obligations, not
+task 5917 as a whole. Bounded child/stderr cleanup, stack-gate integration,
+watchdog calibration and native Windows acceptance remain open. No production
+depth limit, traversal, representation or consensus behavior changes.
+
 ### 5.29 ParBag family and count-domain completeness [SS-A13, SS-A14, SS-Y9]
 
 #### 5.29.1 The defects

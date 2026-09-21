@@ -1,9 +1,16 @@
 use super::{
-    classify_probe_status, monotone_ceiling, run_child_probe, suppress_expected_probe_core_dump,
-    MonotoneCeiling, ProbeFailure, ProbeFailureKind, ProbeOutcome,
+    classify_probe_status, run_child_probe, suppress_expected_probe_core_dump, MonotoneCeiling,
+    MonotoneCeilingError, ProbeFailure, ProbeFailureCause, ProbeFailureKind, ProbeOutcome,
 };
 
 const CLASSIFIER_MODE: &str = "F1R3_TEST_PROCESS_CLASSIFIER_MODE";
+
+fn monotone_ceiling(
+    cap: usize,
+    mut probe: impl FnMut(usize) -> ProbeOutcome,
+) -> Result<MonotoneCeiling, MonotoneCeilingError<std::convert::Infallible>> {
+    super::monotone_ceiling(cap, |depth| Ok(probe(depth)))
+}
 
 fn stack_failure() -> ProbeOutcome {
     ProbeOutcome::Failed(ProbeFailure {
@@ -192,7 +199,245 @@ fn a_non_stack_failure_cannot_be_misreported_as_a_ceiling() {
     .expect_err("a panic is not evidence of a native-stack boundary");
 
     assert_eq!(error.depth, 1024);
-    assert_eq!(error.failure.kind, ProbeFailureKind::Panicked);
+    assert!(matches!(
+        error.failure,
+        ProbeFailureCause::Outcome(ProbeFailure {
+            kind: ProbeFailureKind::Panicked,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn transport_errors_preserve_identity_and_stop_at_every_search_phase() {
+    for (at, expected_trace) in [(1, vec![1]), (17, vec![1, 17]), (9, vec![1, 17, 9])] {
+        let error_value = Box::new(at);
+        let address = std::ptr::from_ref(error_value.as_ref());
+        let mut error_value = Some(error_value);
+        let mut trace = Vec::new();
+        let error = super::monotone_ceiling(17, |depth| {
+            trace.push(depth);
+            if depth == at {
+                Err(error_value.take().expect("transport error requested once"))
+            } else if depth <= 8 {
+                Ok(ProbeOutcome::Passed)
+            } else {
+                Ok(stack_failure())
+            }
+        })
+        .expect_err("a transport error is not a stack ceiling");
+        assert_eq!(error.depth, at);
+        let ProbeFailureCause::Transport(original) = error.failure else {
+            panic!("transport error was normalized into an outcome");
+        };
+        assert_eq!(std::ptr::from_ref(original.as_ref()), address);
+        assert_eq!(trace, expected_trace);
+    }
+}
+
+#[test]
+fn every_nonstack_outcome_stops_without_a_false_boundary() {
+    for kind in [
+        ProbeFailureKind::TimedOut,
+        ProbeFailureKind::MemoryExhausted,
+        ProbeFailureKind::Panicked,
+        ProbeFailureKind::ExitFailure,
+        ProbeFailureKind::Signaled,
+    ] {
+        for (at, expected_trace) in [(1, vec![1]), (17, vec![1, 17]), (9, vec![1, 17, 9])] {
+            let failure = ProbeFailure {
+                kind,
+                exit_code: Some(37),
+                signal: None,
+                stderr: format!("sentinel at depth {at}"),
+            };
+            let mut trace = Vec::new();
+            let result = monotone_ceiling(17, |depth| {
+                trace.push(depth);
+                if depth == at {
+                    ProbeOutcome::Failed(failure.clone())
+                } else if depth <= 8 {
+                    ProbeOutcome::Passed
+                } else {
+                    stack_failure()
+                }
+            });
+            if at == 1 {
+                assert_eq!(result.unwrap(), MonotoneCeiling::BaseFailed(failure));
+            } else {
+                let error = result.expect_err("nonstack outcome cannot close a bracket");
+                assert_eq!(error.depth, at);
+                assert_eq!(error.failure, ProbeFailureCause::Outcome(failure));
+            }
+            assert_eq!(trace, expected_trace);
+        }
+    }
+}
+
+fn exponential_reference(cap: usize, boundary: usize) -> MonotoneCeiling {
+    let failure = || match stack_failure() {
+        ProbeOutcome::Failed(failure) => failure,
+        ProbeOutcome::Passed => unreachable!(),
+    };
+    if boundary == 0 {
+        return MonotoneCeiling::BaseFailed(failure());
+    }
+    if cap == 1 {
+        return MonotoneCeiling::AtLeast(cap);
+    }
+    let mut lo = 1;
+    let mut hi = 2;
+    while hi < cap && hi <= boundary {
+        lo = hi;
+        hi *= 2;
+    }
+    if hi <= boundary {
+        return MonotoneCeiling::AtLeast(cap);
+    }
+    while hi - lo > 1 {
+        let mid = lo + (hi - lo) / 2;
+        if mid <= boundary {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    MonotoneCeiling::Exact {
+        greatest_survivor: lo,
+        first_failure: failure(),
+    }
+}
+
+#[test]
+fn cap_first_matches_frozen_exponential_search_on_power_of_two_caps() {
+    for exponent in 0..=10 {
+        let cap = 1 << exponent;
+        for boundary in 0..=cap {
+            let actual = monotone_ceiling(cap, |depth| {
+                if depth <= boundary {
+                    ProbeOutcome::Passed
+                } else {
+                    stack_failure()
+                }
+            })
+            .unwrap();
+            assert_eq!(
+                actual,
+                exponential_reference(cap, boundary),
+                "cap={cap}, boundary={boundary}"
+            );
+        }
+    }
+}
+
+#[test]
+fn maximum_machine_caps_preserve_bounds_and_terminate() {
+    for cap in [usize::MAX - 2, usize::MAX - 1, usize::MAX] {
+        for boundary in [1, cap / 2, cap - 1, cap] {
+            let mut trace = Vec::new();
+            let result = monotone_ceiling(cap, |depth| {
+                assert!((1..=cap).contains(&depth));
+                assert!(!trace.contains(&depth), "a probe was repeated");
+                trace.push(depth);
+                if depth <= boundary {
+                    ProbeOutcome::Passed
+                } else {
+                    stack_failure()
+                }
+            })
+            .unwrap();
+            assert!(trace.len() <= usize::BITS as usize + 2);
+            match result {
+                MonotoneCeiling::AtLeast(actual) => {
+                    assert_eq!(actual, cap);
+                    assert_eq!(boundary, cap);
+                    assert_eq!(trace, [1, cap]);
+                }
+                MonotoneCeiling::Exact {
+                    greatest_survivor, ..
+                } => assert_eq!(greatest_survivor, boundary),
+                MonotoneCeiling::BaseFailed(_) => panic!("base was successful"),
+            }
+        }
+    }
+}
+
+#[test]
+fn bisection_trace_preserves_bracket_and_first_failing_witness() {
+    for cap in 2..=128 {
+        for boundary in 1..cap {
+            let mut count = 0;
+            let (mut lo, mut hi) = (1, cap);
+            let result = monotone_ceiling(cap, |depth| {
+                let expected = match count {
+                    0 => 1,
+                    1 => cap,
+                    _ => lo + (hi - lo) / 2,
+                };
+                assert_eq!(depth, expected);
+                if count >= 2 {
+                    let previous_width = hi - lo;
+                    assert!(lo < depth && depth < hi);
+                    if depth <= boundary {
+                        lo = depth;
+                    } else {
+                        hi = depth;
+                    }
+                    assert!(hi - lo < previous_width);
+                    assert!(lo <= boundary && boundary < hi);
+                }
+                count += 1;
+                if depth <= boundary {
+                    ProbeOutcome::Passed
+                } else {
+                    ProbeOutcome::Failed(ProbeFailure {
+                        kind: ProbeFailureKind::StackExhausted,
+                        exit_code: None,
+                        signal: Some(6),
+                        stderr: format!("failure at {depth}"),
+                    })
+                }
+            })
+            .unwrap();
+            let MonotoneCeiling::Exact {
+                greatest_survivor,
+                first_failure,
+            } = result
+            else {
+                panic!("bracketed boundary must be exact");
+            };
+            assert_eq!(greatest_survivor, boundary);
+            assert_eq!(hi, lo + 1);
+            assert_eq!(first_failure.stderr, format!("failure at {hi}"));
+        }
+    }
+}
+
+proptest::proptest! {
+    #[test]
+    fn arbitrary_machine_caps_match_threshold_spec(
+        cap in 1usize..=usize::MAX,
+        boundary in proptest::prelude::any::<usize>(),
+    ) {
+        let mut calls = 0;
+        let actual = monotone_ceiling(cap, |depth| {
+            assert!((1..=cap).contains(&depth));
+            calls += 1;
+            if depth <= boundary { ProbeOutcome::Passed } else { stack_failure() }
+        }).unwrap();
+        proptest::prop_assert!(calls <= usize::BITS as usize + 2);
+        match actual {
+            MonotoneCeiling::BaseFailed(_) => proptest::prop_assert_eq!(boundary, 0),
+            MonotoneCeiling::AtLeast(actual_cap) => {
+                proptest::prop_assert_eq!(actual_cap, cap);
+                proptest::prop_assert!(cap <= boundary);
+            },
+            MonotoneCeiling::Exact { greatest_survivor, .. } => {
+                proptest::prop_assert_eq!(greatest_survivor, boundary);
+                proptest::prop_assert!(boundary < cap);
+            },
+        }
+    }
 }
 
 #[test]

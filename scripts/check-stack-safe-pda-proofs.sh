@@ -741,6 +741,10 @@ rocq_reject_placeholders theories/DepthProbeClassification.v
 rocq_compile_with_closed_count theories/DepthProbeClassification.v 14 \
   "depth-probe termination classification"
 rocq_check_modules "depth-probe termination classification" StackSafePDA.DepthProbeClassification
+rocq_reject_placeholders theories/DepthProbeSearch.v
+rocq_compile_with_closed_count theories/DepthProbeSearch.v 21 \
+  "typed cap-first depth-probe search"
+rocq_check_modules "typed depth-probe search" StackSafePDA.DepthProbeSearch
 rocq_reject_placeholders theories/SplitCarrierPrefilter.v
 rocq_compile_with_closed_count theories/SplitCarrierPrefilter.v 20 \
   "conditional split-carrier classification equivalence"

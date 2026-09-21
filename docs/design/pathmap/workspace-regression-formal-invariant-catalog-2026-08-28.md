@@ -1166,6 +1166,55 @@ production `src/` without changing their module names. J-195 records commands,
 resource observations, negative controls and artifact digests. No full-task,
 whole-workspace or cross-platform completion follows from this classifier increment.
 
+## Typed depth-probe search (DPS, task 5917)
+
+`DepthProbeSearch.v` models base, inclusive cap, bracket and terminal phases.
+It proves termination with a strictly decreasing natural-number rank, not an
+execution-fuel limit. Its boundary theorem assumes a monotone threshold for
+successful and stack-failing observations; arbitrary transport and other failures
+are terminal error observations and impose no threshold assumption. It does not
+prove that actual stack requirements are monotone or that OS calls terminate.
+The Rust bisection is unchanged; the callback now returns `Result`, with the
+original error moved into `ProbeFailureCause::Transport` and its depth retained.
+
+Native test abbreviations (all under `shared/tests/support/test_process.rs`):
+**B** = `bisection_trace_preserves_bracket_and_first_failing_witness`;
+**X** = `maximum_machine_caps_preserve_bounds_and_terminate`;
+**T** = `transport_errors_preserve_identity_and_stop_at_every_search_phase`;
+**N** = `every_nonstack_outcome_stops_without_a_false_boundary`;
+**S** = `cap_first_search_matches_the_monotone_ceiling_spec_exhaustively`;
+**O** = `cap_first_matches_frozen_exponential_search_on_power_of_two_caps`;
+**P** = `arbitrary_machine_caps_match_threshold_spec`.
+
+| ID | Closed declaration | Native binding |
+|---|---|---|
+| DPS-01 | `midpoint_strictly_inside` | B |
+| DPS-02 | `midpoint_bounded_by_machine_max` | X, P |
+| DPS-03 | `either_update_strictly_shrinks` | B |
+| DPS-04 | `close_bracket_well_formed` | B, S |
+| DPS-05 | `close_bracket_rank` | B; rank is ghost state, width is observed |
+| DPS-06 | `step_preserves_well_formed` | B, X |
+| DPS-07 | `nonterminal_step_decreases_rank` | B, X, P |
+| DPS-08 | `close_bracket_preserves_boundary` | B, S |
+| DPS-09 | `step_preserves_exact_boundary` | B, S, P |
+| DPS-10 | `terminal_is_absorbing` | T, N; no callback after error |
+| DPS-11 | `base_transport_preserves_error` | T, depth one and original allocation identity |
+| DPS-12 | `cap_transport_preserves_error` | T, inclusive cap |
+| DPS-13 | `midpoint_transport_preserves_error` | T, midpoint |
+| DPS-14 | `invalid_midpoint_is_not_a_ceiling` | N, all five non-stack kinds |
+| DPS-15 | `broken_base_is_not_a_ceiling` | `a_broken_base_probe_is_not_called_a_ceiling`, N |
+| DPS-16 | `passing_unit_cap_uses_base` | `a_unit_cap_is_both_the_base_and_cap_witness` |
+| DPS-17 | `passing_cap_needs_two_probes` | `cap_success_needs_only_the_anti_vacuity_and_cap_probes`, X |
+| DPS-18 | `finished_exact_has_correct_survivor` | B, S, O, P |
+| DPS-19 | `finished_cap_is_only_a_lower_bound` | S, X, P |
+| DPS-20 | `search_terminates_without_fuel` | B, X, P; finite native witnesses, universal proof in Rocq |
+| DPS-21 | `complete_run_preserves_exact_boundary` | S, O, P |
+
+The model abstracts failure payloads; B additionally checks that the native result
+retains the nearest failing boundary's diagnostic. T uses an owned non-Copy value
+and checks allocation identity after propagation. Real subprocess transport and
+the minimum-stack search caller remain separate lifecycle/integration obligations.
+
 ## Original workspace-regression completion gates
 
 This checkpoint is complete only when all of the following hold:

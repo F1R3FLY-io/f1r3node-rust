@@ -289,8 +289,8 @@ fn deploy_probe(
     subject: &str,
     depth: usize,
     stack: usize,
-) -> shared::rust::test_process::ProbeOutcome {
-    let exe = std::env::current_exe().expect("deploy_depth_ceiling: current_exe");
+) -> std::io::Result<shared::rust::test_process::ProbeOutcome> {
+    let exe = std::env::current_exe()?;
     let mut command = std::process::Command::new(exe);
     command
         .args(["--ignored", "--exact", "deploy_child"])
@@ -298,7 +298,6 @@ fn deploy_probe(
         .env("DEPLOY_DEPTH", depth.to_string())
         .env("DEPLOY_STACK", stack.to_string());
     shared::rust::test_process::run_child_probe(&mut command, PROBE_TIMEOUT)
-        .expect("deploy_depth_ceiling: failed to run child")
 }
 
 /// The greatest source nesting depth at which `subject` still completes on a
@@ -314,10 +313,9 @@ fn max_surviving_depth(subject: &str, stack: usize, hi_cap: usize) -> usize {
     .unwrap_or_else(|error| {
         panic!(
             "INVALID DEPTH PROBE: `{subject}` at depth {} on a {} KiB worker failed with \
-             {:?}, not native-stack exhaustion: {:?}",
+             a non-ceiling failure: {:?}",
             error.depth,
             stack / 1024,
-            error.failure.kind,
             error.failure
         )
     }) {
