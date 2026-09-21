@@ -563,24 +563,86 @@ fn classify_probe_status(
     })
 }
 
-/// Best-effort suppression of core collection for an expected-failure child.
-///
-/// Returns `true` only when suppression was installed.  Failure is deliberately
-/// non-fatal: a setup error must not masquerade as the stack-limit failure the
-/// parent is measuring.  The child still terminates with the same signal and
-/// [`std::process::ExitStatus`], so the probe's anti-vacuity contract is
-/// unchanged.
-pub fn suppress_expected_probe_core_dump() -> bool {
-    if std::env::var(ALLOW_EXPECTED_PROBE_CORE).is_ok_and(|value| value == "1") {
-        return false;
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExpectedProbeCorePolicy {
+    SuppressionInstalled,
+    ExplicitlyAllowed,
+    Unsupported,
+}
 
+enum CoreSuppression {
+    #[cfg(any(unix, test))]
+    Installed,
+    #[cfg(any(not(unix), test))]
+    Unsupported,
+}
+
+fn probe_core_opt_in(value: Option<&std::ffi::OsStr>) -> bool {
+    value == Some(std::ffi::OsStr::new("1"))
+}
+
+fn probe_core_policy_with(
+    allow: bool,
+    install: impl FnOnce() -> std::io::Result<CoreSuppression>,
+) -> std::io::Result<ExpectedProbeCorePolicy> {
+    if allow {
+        return Ok(ExpectedProbeCorePolicy::ExplicitlyAllowed);
+    }
+    install().map(|policy| match policy {
+        #[cfg(any(unix, test))]
+        CoreSuppression::Installed => ExpectedProbeCorePolicy::SuppressionInstalled,
+        #[cfg(any(not(unix), test))]
+        CoreSuppression::Unsupported => ExpectedProbeCorePolicy::Unsupported,
+    })
+}
+
+pub fn suppress_expected_probe_core_dump() -> std::io::Result<ExpectedProbeCorePolicy> {
+    let value = std::env::var_os(ALLOW_EXPECTED_PROBE_CORE);
+    probe_core_policy_with(
+        probe_core_opt_in(value.as_deref()),
+        install_probe_core_suppression,
+    )
+}
+
+pub fn prepare_expected_probe_core_dump() -> ExpectedProbeCorePolicy {
+    require_probe_core_policy(suppress_expected_probe_core_dump())
+}
+
+fn require_probe_core_policy(
+    result: std::io::Result<ExpectedProbeCorePolicy>,
+) -> ExpectedProbeCorePolicy {
+    use std::io::Write as _;
+    match result {
+        Ok(policy) => {
+            if policy == ExpectedProbeCorePolicy::Unsupported {
+                let _ = writeln!(
+                    std::io::stderr().lock(),
+                    "depth-probe core suppression is unsupported on this platform"
+                );
+            }
+            policy
+        }
+        Err(error) => {
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "depth-probe core policy failed: {error}"
+            );
+            std::process::exit(2);
+        }
+    }
+}
+
+fn install_probe_core_suppression() -> std::io::Result<CoreSuppression> {
     #[cfg(target_os = "linux")]
     {
         // SAFETY: `prctl(PR_SET_DUMPABLE, 0)` takes no pointer arguments.  It
         // changes only the calling process's dumpable flag and is documented
         // to preserve signal delivery and exit status.
-        unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) == 0 }
+        if unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) } == 0 {
+            Ok(CoreSuppression::Installed)
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
     }
 
     #[cfg(all(unix, not(target_os = "linux")))]
@@ -589,19 +651,23 @@ pub fn suppress_expected_probe_core_dump() -> bool {
         // SAFETY: `limit` is valid writable storage for `getrlimit`; on
         // success it is fully initialized before it is read by `setrlimit`.
         if unsafe { libc::getrlimit(libc::RLIMIT_CORE, limit.as_mut_ptr()) } != 0 {
-            false
+            Err(std::io::Error::last_os_error())
         } else {
             // SAFETY: established by the successful `getrlimit` above.
             let mut limit = unsafe { limit.assume_init() };
             limit.rlim_cur = 0;
             // SAFETY: `limit` is a fully initialized value for the current process.
-            unsafe { libc::setrlimit(libc::RLIMIT_CORE, &limit) == 0 }
+            if unsafe { libc::setrlimit(libc::RLIMIT_CORE, &limit) } == 0 {
+                Ok(CoreSuppression::Installed)
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
         }
     }
 
     #[cfg(not(unix))]
     {
-        false
+        Ok(CoreSuppression::Unsupported)
     }
 }
 

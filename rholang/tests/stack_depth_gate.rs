@@ -893,7 +893,7 @@ fn gate_child() {
         println!("gate_child: no GATE_SUBJECT — not a child invocation, nothing to do");
         return;
     };
-    let _ = shared::rust::test_process::suppress_expected_probe_core_dump();
+    shared::rust::test_process::prepare_expected_probe_core_dump();
     let depth: usize = std::env::var("GATE_DEPTH")
         .expect("GATE_DEPTH must accompany GATE_SUBJECT")
         .parse()
@@ -949,7 +949,8 @@ fn gate_probe(
         .args(["--ignored", "--exact", "gate_child"])
         .env("GATE_SUBJECT", subject_name)
         .env("GATE_DEPTH", depth.to_string())
-        .env("GATE_STACK", stack.to_string());
+        .env("GATE_STACK", stack.to_string())
+        .env_remove(shared::rust::test_process::ALLOW_EXPECTED_PROBE_CORE);
     shared::rust::test_process::run_child_probe(&mut command, PROBE_TIMEOUT)
 }
 

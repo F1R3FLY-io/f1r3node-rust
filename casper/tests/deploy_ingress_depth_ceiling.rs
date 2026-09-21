@@ -421,7 +421,7 @@ fn ingress_child() {
         println!("ingress_child: no INGRESS_DEPTH — not a child invocation, nothing to do");
         return;
     };
-    let _ = shared::rust::test_process::suppress_expected_probe_core_dump();
+    shared::rust::test_process::prepare_expected_probe_core_dump();
     let depth: usize = depth.parse().expect("INGRESS_DEPTH must be an integer");
     let stack: usize = std::env::var("INGRESS_STACK")
         .expect("INGRESS_STACK must accompany INGRESS_DEPTH")
@@ -467,7 +467,8 @@ fn ingress_probe(
         .args(["--ignored", "--exact", "ingress_child"])
         .env("INGRESS_TEARDOWN", teardown.tag())
         .env("INGRESS_DEPTH", depth.to_string())
-        .env("INGRESS_STACK", stack.to_string());
+        .env("INGRESS_STACK", stack.to_string())
+        .env_remove(shared::rust::test_process::ALLOW_EXPECTED_PROBE_CORE);
     shared::rust::test_process::run_child_probe(&mut command, PROBE_TIMEOUT)
 }
 

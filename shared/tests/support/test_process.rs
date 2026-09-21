@@ -1,9 +1,128 @@
 use super::{
-    classify_probe_status, run_child_probe, suppress_expected_probe_core_dump, MonotoneCeiling,
+    classify_probe_status, prepare_expected_probe_core_dump, run_child_probe, MonotoneCeiling,
     MonotoneCeilingError, ProbeFailure, ProbeFailureCause, ProbeFailureKind, ProbeOutcome,
 };
 
 const CLASSIFIER_MODE: &str = "F1R3_TEST_PROCESS_CLASSIFIER_MODE";
+
+#[test]
+fn core_policy_opt_in_skips_installation() {
+    assert_eq!(
+        super::probe_core_policy_with(true, || panic!("installer called during opt-in")).unwrap(),
+        super::ExpectedProbeCorePolicy::ExplicitlyAllowed
+    );
+}
+
+#[test]
+fn core_policy_preserves_installed_unsupported_and_original_errors() {
+    use super::{CoreSuppression, ExpectedProbeCorePolicy};
+    for (installed, expected) in [
+        (
+            CoreSuppression::Installed,
+            ExpectedProbeCorePolicy::SuppressionInstalled,
+        ),
+        (
+            CoreSuppression::Unsupported,
+            ExpectedProbeCorePolicy::Unsupported,
+        ),
+    ] {
+        let mut calls = 0;
+        let actual = super::probe_core_policy_with(false, || {
+            calls += 1;
+            Ok(installed)
+        })
+        .unwrap();
+        assert_eq!(actual, expected);
+        assert_eq!(calls, 1);
+    }
+    let error = std::io::Error::other("retained policy error");
+    let identity = error.get_ref().unwrap() as *const _;
+    let actual = super::probe_core_policy_with(false, || Err(error)).unwrap_err();
+    assert!(std::ptr::eq(
+        actual.get_ref().unwrap() as *const _,
+        identity
+    ));
+    let actual =
+        super::probe_core_policy_with(false, || Err(std::io::Error::from_raw_os_error(13)))
+            .unwrap_err();
+    assert_eq!(actual.raw_os_error(), Some(13));
+}
+
+proptest::proptest! {
+    #[test]
+    fn core_policy_requires_exact_opt_in(value in proptest::option::of(".{0,30}")) {
+        let actual = super::probe_core_opt_in(value.as_deref().map(std::ffi::OsStr::new));
+        proptest::prop_assert_eq!(actual, value.as_deref() == Some("1"));
+    }
+}
+
+#[test]
+fn failed_core_policy_exits_before_probe_body() {
+    let ProbeOutcome::Failed(failure) =
+        process_outcome("core-policy-error", std::time::Duration::from_secs(10))
+    else {
+        panic!("failed core policy ran the body");
+    };
+    assert_eq!(failure.kind, ProbeFailureKind::ExitFailure);
+    assert_eq!(failure.exit_code, Some(2));
+    assert!(failure.stderr.contains("depth-probe core policy failed"));
+    assert!(!failure.stderr.contains("probe body reached"));
+}
+
+#[test]
+fn unsupported_core_policy_reports_without_claiming_suppression() {
+    let ProbeOutcome::Failed(failure) = process_outcome(
+        "core-policy-unsupported",
+        std::time::Duration::from_secs(10),
+    ) else {
+        panic!("unsupported-policy diagnostic fixture did not finish");
+    };
+    assert_eq!(failure.kind, ProbeFailureKind::ExitFailure);
+    assert_eq!(failure.exit_code, Some(7));
+    assert!(failure.stderr.contains("core suppression is unsupported"));
+}
+
+#[test]
+fn classifier_child_without_selector_is_a_noop() {
+    let mut command = classifier_command("unused");
+    command.env_remove(CLASSIFIER_MODE);
+    assert_eq!(
+        run_child_probe(&mut command, std::time::Duration::from_secs(10)).unwrap(),
+        ProbeOutcome::Passed
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn core_policy_is_child_scoped_and_explicit_opt_in_preserves_dumpability() {
+    let before = unsafe { libc::prctl(libc::PR_GET_DUMPABLE, 0, 0, 0, 0) };
+    assert!(before >= 0);
+    for allow in [None, Some("0"), Some("1"), Some("true"), Some(" 1")] {
+        let mut command = classifier_command("core-policy-inspect");
+        if let Some(value) = allow {
+            command.env(super::ALLOW_EXPECTED_PROBE_CORE, value);
+        }
+        assert_eq!(
+            run_child_probe(&mut command, std::time::Duration::from_secs(10)).unwrap(),
+            ProbeOutcome::Passed,
+            "allow={allow:?}"
+        );
+        assert_eq!(
+            unsafe { libc::prctl(libc::PR_GET_DUMPABLE, 0, 0, 0, 0) },
+            before
+        );
+    }
+}
+
+#[test]
+fn automated_classifier_children_remove_inherited_core_opt_in() {
+    for mode in ["stack", "memory", "signal"] {
+        let command = classifier_command(mode);
+        assert!(command
+            .get_envs()
+            .any(|(key, value)| key == super::ALLOW_EXPECTED_PROBE_CORE && value.is_none()));
+    }
+}
 
 #[test]
 fn stack_survival_rejects_all_nonstack_failures_without_losing_evidence() {
@@ -261,13 +380,38 @@ fn classified_probe_child() {
         return;
     };
     match mode.as_str() {
+        "core-policy-unsupported" => {
+            assert_eq!(
+                super::require_probe_core_policy(Ok(super::ExpectedProbeCorePolicy::Unsupported)),
+                super::ExpectedProbeCorePolicy::Unsupported
+            );
+            std::process::exit(7);
+        }
+        "core-policy-error" => {
+            super::require_probe_core_policy(Err(std::io::Error::from_raw_os_error(13)));
+            panic!("probe body reached");
+        }
+        #[cfg(target_os = "linux")]
+        "core-policy-inspect" => {
+            let before = unsafe { libc::prctl(libc::PR_GET_DUMPABLE, 0, 0, 0, 0) };
+            assert!(before >= 0);
+            let policy = super::prepare_expected_probe_core_dump();
+            let after = unsafe { libc::prctl(libc::PR_GET_DUMPABLE, 0, 0, 0, 0) };
+            if std::env::var(super::ALLOW_EXPECTED_PROBE_CORE).as_deref() == Ok("1") {
+                assert_eq!(policy, super::ExpectedProbeCorePolicy::ExplicitlyAllowed);
+                assert_eq!(after, before);
+            } else {
+                assert_eq!(policy, super::ExpectedProbeCorePolicy::SuppressionInstalled);
+                assert_eq!(after, 0);
+            }
+        }
         "pass" => {}
         "panic" => panic!("synthetic classified child panic"),
         "panic-stack-text" => {
             panic!("fatal runtime error: stack overflow; has overflowed its stack")
         }
         "stack" => {
-            let _ = suppress_expected_probe_core_dump();
+            prepare_expected_probe_core_dump();
             std::thread::Builder::new()
                 .stack_size(64 * 1024)
                 .spawn(|| overflow_native_stack(0))
@@ -317,7 +461,7 @@ fn classified_probe_child() {
             std::process::exit(7);
         }
         "memory" => {
-            let _ = suppress_expected_probe_core_dump();
+            prepare_expected_probe_core_dump();
             use std::io::Write as _;
             let mut stderr = std::io::stderr().lock();
             stderr
@@ -327,7 +471,7 @@ fn classified_probe_child() {
             std::process::abort();
         }
         "signal" => {
-            let _ = suppress_expected_probe_core_dump();
+            prepare_expected_probe_core_dump();
             std::process::abort();
         }
         other => panic!("unknown classifier child mode {other:?}"),
@@ -347,7 +491,8 @@ fn classifier_command(mode: &str) -> std::process::Command {
             "--exact",
             "rust::test_process::tests::classified_probe_child",
         ])
-        .env(CLASSIFIER_MODE, mode);
+        .env(CLASSIFIER_MODE, mode)
+        .env_remove(super::ALLOW_EXPECTED_PROBE_CORE);
     command
 }
 

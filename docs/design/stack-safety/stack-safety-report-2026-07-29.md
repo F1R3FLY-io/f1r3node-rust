@@ -8904,7 +8904,16 @@ valid whole-child observation is depth-100,000 normalization at 3.866670808 seco
 on a 2 MiB worker. These controls do not calibrate the failed decoder, debug builds
 or application throughput. Windows-native behavior remains unverified; local CI
 does not establish it as an additional campaign blocker. Core-policy checking and
-whole-gate watchdog qualification remain task-5917 work.
+whole-gate watchdog qualification remain task-5917 work at this checkpoint.
+
+The subsequent J-200 increment completes checked core policy: installed suppression,
+explicit opt-in, unsupported platforms and installation errors are distinct. A
+setup error exits before the probe body and cannot count as stack exhaustion. Nine
+additional closed policy obligations precede implementation; 44/44 focused probe
+tests and 82/82 non-ignored shared-library tests pass. Linux child/parent dumpability
+and diagnostic retention are verified. This does not establish native Windows
+suppression or repair the protobuf timeout; general decoder construction and the
+unchanged whole-gate qualification remain required.
 
 ### 5.29 ParBag family and count-domain completeness [SS-A13, SS-A14, SS-Y9]
 

@@ -1302,6 +1302,43 @@ and an always-readable reader: each uses exactly sixteen attempts, each successf
 read bounded to 4,096 bytes. Lossy UTF-8 expansion is witnessed by the large-output
 native test and is deliberately outside the raw-byte retention bound.
 
+## Checked expected-probe core policy (DCP, task 5917)
+
+`DepthProbeCorePolicy` in `DepthProbeClassification.v` adds nine closed declarations,
+kernel-checked before implementation. It models selected-child dispatch, an explicit
+opt-in, a lazy installer result, and permission to execute the probe body. It does
+not prove OS syscall semantics or suppression on unsupported systems. The existing
+classifier/adapter contributes another 19 declarations in the same source.
+
+All native bindings are in `shared/tests/support/test_process.rs`. **R** denotes
+`core_policy_preserves_installed_unsupported_and_original_errors`; **E** denotes
+`failed_core_policy_exits_before_probe_body`; **L** denotes
+`core_policy_is_child_scoped_and_explicit_opt_in_preserves_dumpability` (Linux).
+
+| ID | Closed declaration | Native binding |
+|---|---|---|
+| DCP-01 | `explicit_allow_skips_installer` | `core_policy_opt_in_skips_installation`; L |
+| DCP-02 | `suppression_installed_exact` | R; L verifies `PR_GET_DUMPABLE == 0` |
+| DCP-03 | `unsupported_preserved` | R; `unsupported_core_policy_reports_without_claiming_suppression` |
+| DCP-04 | `installation_error_preserved` | R checks original allocation identity and OS error code |
+| DCP-05 | `installation_error_prevents_body` | E, real child exits 2 before the sentinel |
+| DCP-06 | `explicit_allow_permits_body` | L checks successful opt-in child and unchanged dumpability |
+| DCP-07 | `unsupported_not_installed` | R; unsupported diagnostic child |
+| DCP-08 | `failed_policy_is_not_stack_evidence` | E, typed `ExitFailure`, not `StackExhausted` |
+| DCP-09 | `unselected_child_does_not_apply_policy` | `classifier_child_without_selector_is_a_noop`; caller source guards |
+
+`core_policy_requires_exact_opt_in` additionally binds the Boolean model input to
+the exact environment value `1`, with 1,024 seeded generated cases. L supplies a
+deterministic positive opt-in witness and checks parent dumpability after each
+child. `automated_classifier_children_remove_inherited_core_opt_in` checks command
+construction for the deliberately aborting fixtures. Direct selected-child runs
+retain the developer opt-in; automated parent commands remove inherited opt-in.
+
+The focused suite passes 44/44 tests; the complete non-ignored shared-library suite
+passes 82/82 (three ignored tests excluded). J-200 records the initial diagnostic
+capture failure, its correction and verification receipts. This does not close
+the separate task-5834 decoder timeout or whole-gate watchdog qualification.
+
 ## Original workspace-regression completion gates
 
 This checkpoint is complete only when all of the following hold:

@@ -143,3 +143,78 @@ Print Assumptions panicked_exit_rejects_boolean_status_mutant.
 Print Assumptions survival_transport_error_preserved.
 
 End DepthProbeClassification.
+
+Module DepthProbeCorePolicy.
+
+Inductive InstalledPolicy := SuppressionInstalled | Unsupported.
+Inductive CorePolicy := Installed | ExplicitlyAllowed | PlatformUnsupported.
+
+Definition apply_policy {E : Type} (allow : bool)
+    (installer : unit -> InstalledPolicy + E) : (CorePolicy + E) * bool :=
+  if allow then (inl ExplicitlyAllowed, false) else
+    (match installer tt with
+     | inl SuppressionInstalled => inl Installed
+     | inl Unsupported => inl PlatformUnsupported
+     | inr error => inr error
+     end, true).
+
+Definition may_run {E : Type} (result : CorePolicy + E) : bool :=
+  match result with inl _ => true | inr _ => false end.
+
+Theorem explicit_allow_skips_installer : forall E installer,
+  @apply_policy E true installer = (inl ExplicitlyAllowed, false).
+Proof. reflexivity. Qed.
+
+Theorem suppression_installed_exact : forall E allow installer,
+  @apply_policy E allow installer = (inl Installed, true) <->
+  allow = false /\ installer tt = inl SuppressionInstalled.
+Proof.
+  intros E [] installer; cbn; try (split; intros; intuition discriminate).
+  destruct (installer tt) as [[]|error]; split; intros; intuition discriminate.
+Qed.
+
+Theorem unsupported_preserved : forall E,
+  @apply_policy E false (fun _ => inl Unsupported) =
+    (inl PlatformUnsupported, true).
+Proof. reflexivity. Qed.
+
+Theorem installation_error_preserved : forall E (error : E),
+  apply_policy false (fun _ => inr error) = (inr error, true).
+Proof. reflexivity. Qed.
+
+Theorem installation_error_prevents_body : forall E (error : E),
+  may_run (fst (apply_policy false (fun _ => inr error))) = false.
+Proof. reflexivity. Qed.
+
+Theorem explicit_allow_permits_body : forall E installer,
+  may_run (fst (@apply_policy E true installer)) = true.
+Proof. reflexivity. Qed.
+
+Theorem unsupported_not_installed : forall E,
+  fst (@apply_policy E false (fun _ => inl Unsupported)) <> inl Installed.
+Proof. discriminate. Qed.
+
+Theorem failed_policy_is_not_stack_evidence :
+  DepthProbeClassification.classify false false false false false false false false
+    <> DepthProbeClassification.StackExhausted.
+Proof. discriminate. Qed.
+
+Definition selected_policy {E : Type} (selected allow : bool)
+    (installer : unit -> InstalledPolicy + E) :=
+  if selected then Some (apply_policy allow installer) else None.
+
+Theorem unselected_child_does_not_apply_policy : forall E allow installer,
+  @selected_policy E false allow installer = None.
+Proof. reflexivity. Qed.
+
+Print Assumptions explicit_allow_skips_installer.
+Print Assumptions suppression_installed_exact.
+Print Assumptions unsupported_preserved.
+Print Assumptions installation_error_preserved.
+Print Assumptions installation_error_prevents_body.
+Print Assumptions explicit_allow_permits_body.
+Print Assumptions unsupported_not_installed.
+Print Assumptions failed_policy_is_not_stack_evidence.
+Print Assumptions unselected_child_does_not_apply_policy.
+
+End DepthProbeCorePolicy.

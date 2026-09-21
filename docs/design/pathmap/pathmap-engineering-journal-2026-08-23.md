@@ -15049,6 +15049,74 @@ with unchanged final digest/preimage identity. Restore the unchanged full releas
 stack gate without increasing its watchdog or reducing depth. No implementation,
 formal equivalence or performance acceptance is claimed by this design entry.
 
+### J-200 — 2026-09-21 Check expected-probe core policy before running the body
+
+**Scope and formal-first contract.** This completes the independent core-policy
+portion of task 5917, not the whole task. Nine closed DCP declarations were checked
+by both Rocq compilation and independent kernel checking before implementation.
+The invariant catalog maps every declaration to native witnesses. The model proves
+policy dispatch and failure refusal, not OS syscall behavior or universal dump
+suppression. No production interpreter, PathMap representation, consensus bytes,
+accounting or persistence behavior changes.
+
+**Implementation (DECISION).** The previous Boolean conflated explicit developer
+opt-in, unsupported platforms and failed installation. The helper now returns a
+typed policy or the original I/O error. Linux checks `PR_SET_DUMPABLE`; other Unix
+systems check both resource-limit operations and preserve the hard limit. Non-Unix
+systems explicitly report unsupported suppression; no unverified Windows substitute
+was introduced. The common selected-child adapter reports setup errors and exits 2
+before executing the probe body. Its callers remain behind their existing child
+selectors. Automated probe commands remove inherited opt-in so deliberate crashes
+cannot accidentally produce cores; a direct selected-child invocation still honors
+the exact developer opt-in value `1` without calling the installer.
+
+**Negative evidence and correction.** The initial focused run passes 42/43 tests
+but fails diagnostic retention: `eprintln!` enters libtest's capture buffer, and
+`process::exit(2)` bypasses the harness flush. The final implementation writes the
+short diagnostic directly to locked stderr and still exits with the non-stack
+failure status. A separate injected unsupported-platform result verifies the
+diagnostic without claiming actual native verification on that platform. The
+initial failing receipt is retained, not counted as acceptance.
+
+**Acceptance (MEASURED).** The release focused probe suite passes **44/44** with
+`PROPTEST_CASES=1024 PROPTEST_RNG_SEED=5917`, four test threads and four build jobs.
+It checks installed/unsupported/error separation, original error allocation and
+OS code, installer nonexecution during opt-in, exact opt-in parsing, no-selector
+no-op, setup-error exit before the sentinel, and inherited-opt-in removal. Real
+Linux subprocesses verify installed dumpability is zero, opt-in leaves the child's
+initial state unchanged, and every child leaves its parent's state unchanged.
+The complete non-ignored shared-library suite passes **82/82**, three ignored
+tests excluded. All three updated Rholang/Casper probe callers type-check.
+A separate Rholang integration run passes the two no-selector child entries and
+the actual unknown-subject panic-rejection regression (**3/3**, 20 tests excluded).
+It does not rerun or waive the known full-gate decoder failure.
+
+| Verification | Elapsed service time | Peak memory | Swap | Hard cap |
+|---|---:|---:|---:|---:|
+| Rocq compile, 28 total classifier/adapter/policy declarations | 1.199 s | 328.4 MiB | 0 | 2 GiB |
+| Independent kernel check | 0.312 s | 27.4 MiB | 0 | 2 GiB |
+| Focused release probe suite | 4.011 s | 287.5 MiB | 0 | 6 GiB |
+| Complete non-ignored shared library | 1.543 s | 123.7 MiB | 0 | 6 GiB |
+| Three release caller type checks | 26.901 s | 1 GiB | 0 | 8 GiB |
+| Rholang child-entry/panic integration, including rebuild | 70.405 s | 1.4 GiB | 0 | 8 GiB |
+
+These are verification resource receipts, not throughput benchmarks. All commands
+used bounded systemd units, zero swap and explicit runtime limits. J-198's complete
+stack gate still fails at the depth-4,096 protobuf decoder. The next required
+dependency is existing task 5834's general planned decoder construction; no gate
+depth or watchdog relaxation is accepted as its repair. PgMCP STDIO tools remain
+unavailable; this entry awaits tracker backfill rather than claiming an update.
+
+| Artifact under `target/verification/depth-probe-5917/` | SHA-256 |
+|---|---|
+| `core-policy-proof-r1.log` | c71fbf80996a7a646214aec169ea8098f565b012139cc8e58bbf4790b79d82d4 |
+| `core-policy-kernel-r1.log` | a0a2d00203c5a656b2158cf857ede430c9fd9a7270f861e37032f6023a13cc31 |
+| `core-policy-native-r1.log` (failed diagnostic control) | 05a6b5508c4d8ac1b9a38c3867017ed8f40fa1dc909cfad5c38d7466ccb74305 |
+| `core-policy-native-r2.log` | b5bf874c1266f8576f0469d48ba1ee23d34a3f1264bb72f2128c6f8590c38b86 |
+| `core-policy-callers-r1.log` | 1cc5d060ef87096790fdeefa352dc98cc61a4063452c4bf51badbd6d353d68fb |
+| `core-policy-shared-r1.log` | 5f25500b3b4e92a5ab27fc908dd8bd99007fad8e6aa1a9d963a9a3f8ddfd4c7a |
+| `core-policy-gate-r1.log` | 58e4a6d6a7020a7659307addc447a541d648392e6b86e0af5c10721beacd9ceb |
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
