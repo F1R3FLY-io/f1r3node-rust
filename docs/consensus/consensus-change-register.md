@@ -2376,7 +2376,10 @@ its semantic/multi-entry and validation controls pass.
 
 This is an implementation equivalence claim within the stated boundary, not
 an independent consensus-fork witness or campaign release qualification.
-Experiment 347's predecessor scaling failed; treatment scaling is pending.
+Experiment 347's predecessor scaling failed; the complete treatment now passes
+all nine families and both arms with maximum upper 95% exponent 1.012855
+against the 1.20 threshold. This performance qualification does not expand
+the semantic coverage or consensus claims above.
 The living PathMap journal J-194 records the negative result and proof/test
 correspondence. No blessed contract or persistence authority is changed.
 

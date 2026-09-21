@@ -1074,8 +1074,8 @@ unchanged. No equality or ordering axioms are needed for the dispatch proof.
 
 The 20 statements below compile with closed assumptions and pass independent
 kernel checking (`target/verification/collection-5915-proof-r5.log`). The Rust
-bindings are specified before the production optimization. A green proof is not
-yet evidence that these native tests or the scaling gate pass.
+bindings were specified before the production optimization. Proof checking
+alone is not evidence that native tests or the scaling gate pass.
 
 Native bindings in `models/tests/support/collection_collision_elision.rs`:
 **E** = `empty_singleton_observables_and_zero_identity_work`;
@@ -1119,6 +1119,14 @@ a positive identity outside capture and requires two-entry indexing as a positiv
 control. `arity_errors_precede_identity_work` binds validation before dispatch;
 `identity_counter_is_nested_panic_safe_and_thread_local` qualifies the probe.
 Whole construction/witness scaling is separately measured by experiment 347.
+
+Qualification at `f0647928f` passes all six named native tests, 19 existing
+construction tests and 44 manifest checks. Before optimization, the native
+suite fails exactly its three zero-identity-work witnesses. The full treatment
+at runner commit `5b2a5eca4` also passes experiment 347: all 18 family/arm upper
+95% time exponents are at most 1.012855, below 1.20. J-194 in the PathMap journal
+retains negative controls, raw measurement digests and the boundary between
+model claims, native observations and resource evidence.
 
 ## Original workspace-regression completion gates
 

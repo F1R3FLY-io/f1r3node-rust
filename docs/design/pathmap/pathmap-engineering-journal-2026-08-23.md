@@ -14570,8 +14570,8 @@ multi-entry algorithm remain unchanged. These handles are not decoded resident
 `Par` projections. Post-change native qualification passes all six new tests,
 all 19 existing construction tests and all 44 formal-manifest checks. The
 capped service reports 1.7 GiB peak, zero swap and 62.578 seconds elapsed.
-Full treatment scaling remains pending at this checkpoint; no speedup or
-task completion is claimed yet.
+Full treatment scaling was pending at that native checkpoint; the complete
+qualification below supplies its subsequent result.
 
 | Artifact | SHA-256 |
 |---|---|
@@ -14597,6 +14597,56 @@ controls. This changes pre-measurement availability, not the eligibility
 predicate, timed region, sample population, statistic or acceptance threshold.
 It does not guarantee absence of interference throughout an entire round.
 The metadata now also includes the production planner's source digest.
+
+**MEASURED treatment and decision.** The complete r4 population at `5b2a5eca4`
+(production correction `f0647928f`) passes all 108 family/arm/depth cells,
+each with three warmups and 31 samples: 3,672 fresh-process children and
+18,360 phase rows. The slowest whole child takes 1.321445 seconds, below the
+unchanged 20-second watchdog, on the fixed 1 MiB worker stack. The maximum
+upper 95% construction-plus-witness time exponent is **1.012855**, below 1.20.
+The maximum allocation-count and requested-byte upper exponents are 1.005740
+and 1.010431 respectively. Experiment 347 is accepted (decision 391;
+measurement run `3379b844-79c1-4233-a2ba-00a885cfbb77`). Its 18 recorded primary
+values are per-family/arm confidence bounds, not 18 raw latency observations.
+
+| Fixture-only construction + input witness, depth 4,096 | Predecessor median | Treatment median |
+|---|---:|---:|
+| ESet elapsed | 2,606.286 ms | 77.055 ms |
+| EMap elapsed | 4,964.084 ms | 90.063 ms |
+| ESet allocation calls | 2,771,923 | 407,396 |
+| EMap allocation calls | 4,930,563 | 471,590 |
+| ESet requested allocation bytes | 4,629,988,189 | 52,303,133 |
+| EMap requested allocation bytes | 5,932,789,271 | 60,020,695 |
+
+These are descriptive medians from separate complete baseline and treatment
+populations on the same selected core, not a paired end-to-end application
+speedup estimate. They measure construction and witnessing, not faster PathMap
+lookup, RSpace matching, persistence or consensus throughput. Requested bytes
+are cumulative allocation traffic, not retained heap. The full treatment
+service takes 649.830 seconds, consumes 608.771 CPU seconds and reports 146 MiB
+peak with zero swap under the 8 GiB cap. The prototype's unused collision-index
+work is eliminated; no upstream PathMap implementation change is involved.
+
+Final local requirement mapping: existing final-root builders are reused;
+the bounded legacy equivalence suite passes 3/3 (including protobuf, compact
+snapshot, Hash and Ord checks); phase-probe smoke tests pass; all nine fixture
+and operation arms retain their exact witnesses; construction/inspection/
+operation/result/release remain separate; full geometric sampling and watchdogs
+pass; stale clone/drop comments are corrected; nextest discovery succeeds.
+The native correction passes 6 new, 19 existing construction and 44 manifest
+tests after its checked 20-statement model. This completes local task 5915
+qualification, not the separate typed-probe task, trusted tracker verification,
+whole-workspace acceptance or the broader campaign.
+
+| Treatment artifact | SHA-256 |
+|---|---|
+| target/verification/fixture-5915-treatment-r4/samples.tsv | d2f6a252ca63093fd4310787b94e6c350e95f3298210658a08023cf0068aa028 |
+| target/verification/fixture-5915-treatment-r4/summary.json | 90db2d2ce16d23559a188dd02771346d1ec88c25897dc79e2602a0cde5e28808 |
+| target/verification/fixture-5915-treatment-r4/metadata.json | 1384e4419f84624d407d4c49928c62e07c79cc8bd01e3ebed0cffc485f73a8a6 |
+| target/verification/fixture-5915-treatment-r4.log | 327829d788d27d32c3b7adf9edeb38970c2ef4e39de282e305f57f7082bc0574 |
+| target/verification/collection-5915-proof-r5.log | a9c6b668cb74ed7ab4d0ab121d209aa0bb6d29d0402ce2f30b9a8daf8eee1373 |
+| target/verification/collection-5915-native-r1.log | 912931d7c0e1b9e140ff949f69662090dbe6cbed08101b1a890a310fadc246b3 |
+| target/verification/collection-5915-red-tests.log | 8121d852cd87d7ca5fc66137df00e60fb4f5e2ca5eaf4b2c8cff9317c33a1c6b |
 
 ## Upstream PathMap integration request register
 

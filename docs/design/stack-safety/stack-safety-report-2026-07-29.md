@@ -8803,6 +8803,26 @@ is not promoted to a passing qualification. See
 [J-194](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-194--2026-09-21-elide-impossible-collection-collisions-during-construction)
 for the complete boundary, negative controls and baseline receipts.
 
+**2026-09-21 completed fixture qualification.** The full treatment population
+at `5b2a5eca4` passes all nine families and both arms through depth 4,096:
+3,672 fresh-process children, three warmups and 31 samples per cell. Maximum
+upper 95% exponents are **1.012855** for construction-plus-witness elapsed time,
+1.005740 for allocation calls and 1.010431 for requested bytes. Experiment 347's
+1.20 time-exponent gate is accepted. The slowest child is 1.321445 seconds on
+the fixed 1 MiB stack; the service reports 146 MiB peak, zero swap and 649.830
+seconds elapsed. Three earlier CPU-contention-aborted populations are retained
+and excluded, not pooled. A bounded pre-round eligibility wait preserves the
+same CPU predicate, measurement protocol and full-population requirement.
+
+At depth 4,096, fixture-only Set construction plus witnessing decreases from
+2,606.286 to 77.055 ms median and Map from 4,964.084 to 90.063 ms; requested
+allocation traffic decreases from 4.630 GB to 52.303 MB and 5.933 GB to
+60.021 MB respectively (decimal units). These are separate-population fixture
+observations, not production lookup or application-throughput claims. J-194
+contains exact bytes, all artifact receipts and requirement correspondence.
+Task 5915 is locally qualified; typed-probe classification, other production
+resource gates and whole-campaign acceptance remain separate open obligations.
+
 ---
 
 ### 5.29 ParBag family and count-domain completeness [SS-A13, SS-A14, SS-Y9]
