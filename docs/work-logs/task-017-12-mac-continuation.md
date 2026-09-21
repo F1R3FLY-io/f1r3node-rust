@@ -120,3 +120,31 @@ The [node review](https://github.com/F1R3FLY-io/f1r3node-rust/blob/566a21223830e
 The live adapters and workload pins depend on those node interfaces. Current source acceptance, deployment qualification, a separate passing preflight, and both full baselines remain required.
 
 This follow-up changes evidence and task records only. It creates no node, cloud runner, remote configuration, commit, or claim acceptance.
+
+## Source coverage correction
+
+The user requested continued TASK-017-12 verification. Cargo dependency records exposed four build inputs absent from the earlier hosted manifest.
+
+The omitted files were `src/host_control.rs`, `src/main.rs`, `src/manifest.rs`, and `src/runtime.rs` under `scripts/casper-soak/`.
+
+The controller configuration also omitted these required pins and `src/models.rs`. The controller could therefore accept configuration without every library source pin.
+
+The gate now records all crate-root Rust sources. The controller requires 28 source pins. A new test rejects configuration with any missing library source pin.
+
+The test failed before the correction and passed afterward. Both results remain under `target/task-017-12-source-coverage-20260921-01/`.
+
+The shared checkout advanced to `4dd7a20126410beb3dd88cabc09ba81d286ee058` during verification. That commit includes the correction. This session issued no staging, commit, or push command.
+
+The first two gate attempts failed because the shell selected incompatible utilities. Native GNU utilities resolved those failures. Both failed attempts remain separate evidence.
+
+The final gate passed 115 planner checks, 44 Rust tests, and five model configurations. The reservation subprocess helper remains the single expected ignored entry.
+
+The 50 source hashes match before and after the gate. The manifest covers every repository dependency recorded for the controller, supervisor, and model verifier binaries.
+
+The controller configuration requires every recorded repository dependency of the controller and supervisor. Targeted Clippy and crate formatting also passed.
+
+The strict eight-claim audit still returns exit 4. Claim001 and the campaign claims remain pending. No deployed-service qualification or baseline execution occurred.
+
+The [source coverage report](../casper/cbc-evidence/runs/casper-campaign-source-coverage-20260921-01/report.json) records dependency inventories, source hashes, results, and failed attempts. Three pending artifact records now identify the corrected sources.
+
+The earlier hosted run covers `8adaa235c`, not the correction. Fresh hosted verification and the existing deployment and node prerequisites remain required.

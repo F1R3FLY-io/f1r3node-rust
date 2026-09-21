@@ -602,9 +602,10 @@ tasks:
     execution_control_plan: docs/plans/casper-campaign-execution-controls.md
     execution_control_evidence: docs/casper/cbc-evidence/runs/casper-campaign-control-20260921-01/report.json
     hosted_control_evidence: docs/casper/cbc-evidence/runs/casper-campaign-hosted-20260921-01/report.json
+    source_coverage_evidence: docs/casper/cbc-evidence/runs/casper-campaign-source-coverage-20260921-01/report.json
     deployment_proposal: docs/plans/casper-campaign-deployment.jsonc
     continuation_work_log: docs/work-logs/task-017-12-mac-continuation.md
-    execution_control_status: "The local and hosted control gates pass. Hosted run 35643918016 covers head 8adaa235c, with all 46 source hashes verified. Deployment, provider timing qualification, campaign execution workflow qualification, and acceptance remain pending."
+    execution_control_status: "The local gate passes at 4dd7a2012 with 50 source hashes and 44 Rust tests. The source-pin correction requires fresh hosted verification. Deployment, provider timing qualification, campaign execution workflow qualification, and acceptance remain pending."
     github_access_status: "Both GitHub token variables contain the same value in this process. Explicit tests with each variable return HTTP 403 for maintainer-role queries. The endpoint advertises metadata=read. Repository metadata lists admin access but does not establish token access to this endpoint."
     compatibility_lookup_status: "The current campaign inventories have 37 pending artifact records and matching compatibility links. The strict eight-claim audit returns exit 4 with Claim001 pending. No acceptance is inferred."
     execution_gate: "Four exact-candidate probes returned blocked before node launch. Their controlled inputs are not live qualification. The legacy workload is pinned but cannot replace required Casper profiles."
@@ -628,7 +629,7 @@ tasks:
       - "The changed workflow and campaign artifacts have current pending records. Historical evidence remains unchanged. Claim001 and the three campaign claims still require source-bound acceptance."
       - "Pin executable workloads and review the complete campaign model and configuration inventory. Recheck candidate identities before dispatch."
       - "Qualify live adapters and their required node interfaces. Fresh authority and publication probes reject both candidate identities with explicit unqualified-adapter reasons."
-      - "The hosted control gate passes with verified source identities. The campaign workflow still requires approval, launch, workload, and finalization qualification against deployed services."
+      - "The earlier hosted gate covers 8adaa235c. Repeat hosted verification for the source-pin correction. The campaign workflow still requires qualification against deployed services."
       - "The campaign-baseline-24h input requests 86400 workload seconds. Execution must preserve that full duration without preflight subtraction. Existing scheduled behavior remains unchanged."
       - "Provision and qualify the authoritative OCI object and independent supervisor. The implementation does not establish deployed timing guarantees. Missing activation evidence blocks execution."
       - "Record the exact candidate count and runner lifetime limits before the approved 60-hour campaign launches. Passing baseline evidence remains required."
