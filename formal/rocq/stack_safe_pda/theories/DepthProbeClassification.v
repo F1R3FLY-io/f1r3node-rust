@@ -85,6 +85,43 @@ Example timeout_rejects_false_ceiling_mutant :
   classify true false false true false true false true <> StackExhausted.
 Proof. discriminate. Qed.
 
+Definition stack_survival (outcome : Outcome) : bool + Outcome :=
+  match outcome with
+  | Passed => inl true
+  | StackExhausted => inl false
+  | failure => inr failure
+  end.
+
+Theorem survival_true_exact : forall outcome,
+  stack_survival outcome = inl true <-> outcome = Passed.
+Proof. intros []; cbn; intuition discriminate. Qed.
+
+Theorem survival_false_exact : forall outcome,
+  stack_survival outcome = inl false <-> outcome = StackExhausted.
+Proof. intros []; cbn; intuition discriminate. Qed.
+
+Theorem survival_error_preserved : forall outcome,
+  outcome <> Passed -> outcome <> StackExhausted ->
+  stack_survival outcome = inr outcome.
+Proof. intros []; cbn; intuition congruence. Qed.
+
+Example panicked_exit_rejects_boolean_status_mutant :
+  stack_survival Panicked <> inl false.
+Proof. discriminate. Qed.
+
+Definition checked_survival {E : Type} (observed : Outcome + E) : bool + (Outcome + E) :=
+  match observed with
+  | inl outcome => match stack_survival outcome with
+                  | inl survived => inl survived
+                  | inr failure => inr (inl failure)
+                  end
+  | inr error => inr (inr error)
+  end.
+
+Theorem survival_transport_error_preserved : forall E (error : E),
+  checked_survival (inr error) = inr (inr error).
+Proof. reflexivity. Qed.
+
 Print Assumptions timeout_dominates.
 Print Assumptions clean_success_ignores_diagnostics.
 Print Assumptions panic_dominates_stack_text.
@@ -99,5 +136,10 @@ Print Assumptions stack_classification_exact.
 Print Assumptions passed_classification_exact.
 Print Assumptions deceptive_panic_rejects_text_first_mutant.
 Print Assumptions timeout_rejects_false_ceiling_mutant.
+Print Assumptions survival_true_exact.
+Print Assumptions survival_false_exact.
+Print Assumptions survival_error_preserved.
+Print Assumptions panicked_exit_rejects_boolean_status_mutant.
+Print Assumptions survival_transport_error_preserved.
 
 End DepthProbeClassification.

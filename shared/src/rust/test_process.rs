@@ -67,6 +67,18 @@ pub struct MonotoneCeilingError<E> {
     pub failure: ProbeFailureCause<E>,
 }
 
+pub fn stack_survived<E>(
+    observation: Result<ProbeOutcome, E>,
+) -> Result<bool, ProbeFailureCause<E>> {
+    match observation.map_err(ProbeFailureCause::Transport)? {
+        ProbeOutcome::Passed => Ok(true),
+        ProbeOutcome::Failed(failure) if failure.kind == ProbeFailureKind::StackExhausted => {
+            Ok(false)
+        }
+        ProbeOutcome::Failed(failure) => Err(ProbeFailureCause::Outcome(failure)),
+    }
+}
+
 /// Find the boundary of a monotone depth predicate, probing the cap first.
 ///
 /// The depth-one call is the anti-vacuity witness.  If the inclusive `cap`

@@ -8879,6 +8879,33 @@ do not establish production speedups, hard OS scheduling bounds or process-tree
 containment. Windows-native verification, core policy, stack-gate integration and
 watchdog calibration remain open; the campaign is not complete.
 
+#### 2026-09-21 qualification addendum — truthful stack-gate outcomes expose decoder work
+
+The stack gate now shares typed survival interpretation with the ingress gate:
+only confirmed stack exhaustion yields a negative stack witness. A real unknown-
+subject panic previously satisfied an expected-negative assertion; the regression
+now passes by rejecting it as a harness error. Five additional closed classifier
+obligations precede the adapter; 36 focused shared tests pass. Stack search geometry,
+fixed depths, resolution and instrument-floor treatment are unchanged.
+
+**The complete release stack gate does not pass:** 15/16 tests pass, while
+`protobuf_de` at depth 4,096 on a 64 KiB worker exceeds the candidate 120-second
+watchdog. It is correctly reported as `TimedOut`, not native-stack exhaustion.
+The full service peaks at 1.5 GiB with zero swap. The timeout has not been raised,
+the depth has not been reduced and the converted-subject register is unchanged.
+Source review ties repeated nested suffix reconstruction to existing task 5834;
+J-198 preserves negative/full-run evidence and J-199 the reviewed general decoder
+plan. This is not a claim of a stack slope, nor a completed decoder repair.
+
+A separate control-only run passes 15/15 with the converted matrix excluded by an
+explicit command filter. Its preserved timing records include 68 successes, 30
+confirmed stack failures and one intentional invalid-subject control. The largest
+valid whole-child observation is depth-100,000 normalization at 3.866670808 seconds
+on a 2 MiB worker. These controls do not calibrate the failed decoder, debug builds
+or application throughput. Windows-native behavior remains unverified; local CI
+does not establish it as an additional campaign blocker. Core-policy checking and
+whole-gate watchdog qualification remain task-5917 work.
+
 ### 5.29 ParBag family and count-domain completeness [SS-A13, SS-A14, SS-Y9]
 
 #### 5.29.1 The defects

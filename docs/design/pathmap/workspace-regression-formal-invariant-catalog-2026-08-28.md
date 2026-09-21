@@ -1135,7 +1135,8 @@ the classifier correction. Its eight Boolean inputs abstract timeout, successful
 exit, panic evidence, runtime abort, native stack exception, stack diagnostic,
 allocation diagnostic and signal termination. It proves classification, not OS
 signal authenticity, stderr completeness, process cleanup or search correctness.
-Those transport/search obligations remain open under task 5917.
+The separate DPS and DPL models below cover search and capture/cleanup; this
+classifier model alone does not establish those obligations.
 
 Native bindings reside in `shared/tests/support/test_process.rs`: **M** is
 `classification_matches_termination_evidence_exhaustively` (96 Unix status/diagnostic
@@ -1165,6 +1166,28 @@ The original cap-first search tests remain intact. Test sources moved out of
 production `src/` without changing their module names. J-195 records commands,
 resource observations, negative controls and artifact digests. No full-task,
 whole-workspace or cross-platform completion follows from this classifier increment.
+
+### DPC extension: typed stack-survival observation
+
+The classifier model adds five declarations for the stack gate's Boolean adapter.
+The original 14 declarations remain unchanged. Native bindings below were written
+before implementation; all 36 focused shared probe tests pass with 1,024 seeded
+property cases. The gate's actual unknown-subject regression fails before the
+adapter and passes after it. J-198 records the separate full-gate decoder timeout,
+which remains a failure rather than a stack reading. Search geometry
+and the existing instrument-floor semantics are not changed by this extension.
+
+| ID | Closed declaration | Native binding |
+|---|---|---|
+| DPC-15 | `survival_true_exact` | `stack_survival_rejects_all_nonstack_failures_without_losing_evidence` |
+| DPC-16 | `survival_false_exact` | same full outcome table |
+| DPC-17 | `survival_error_preserved` | same table, including original diagnostic allocation identity |
+| DPC-18 | `panicked_exit_rejects_boolean_status_mutant` | same panic row; actual gate unknown-subject regression |
+| DPC-19 | `survival_transport_error_preserved` | same test, original owned transport-error identity |
+
+`watchdog_expiry_cannot_satisfy_an_expected_stack_failure` binds the real timeout
+child to this adapter. These properties validate interpretation, not the eventual
+whole-subject watchdog duration; that calibration remains a separate obligation.
 
 ## Typed depth-probe search (DPS, task 5917)
 

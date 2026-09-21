@@ -6,6 +6,57 @@ use super::{
 const CLASSIFIER_MODE: &str = "F1R3_TEST_PROCESS_CLASSIFIER_MODE";
 
 #[test]
+fn stack_survival_rejects_all_nonstack_failures_without_losing_evidence() {
+    assert_eq!(
+        super::stack_survived::<Box<u64>>(Ok(ProbeOutcome::Passed)),
+        Ok(true)
+    );
+    for kind in [
+        ProbeFailureKind::StackExhausted,
+        ProbeFailureKind::TimedOut,
+        ProbeFailureKind::MemoryExhausted,
+        ProbeFailureKind::Panicked,
+        ProbeFailureKind::ExitFailure,
+        ProbeFailureKind::Signaled,
+    ] {
+        let failure = ProbeFailure {
+            kind,
+            exit_code: Some(17),
+            signal: Some(6),
+            stderr: "original diagnostic allocation".to_owned(),
+        };
+        let text_identity = failure.stderr.as_ptr();
+        let expected = failure.clone();
+        let result = super::stack_survived::<Box<u64>>(Ok(ProbeOutcome::Failed(failure)));
+        if kind == ProbeFailureKind::StackExhausted {
+            assert_eq!(result, Ok(false));
+        } else {
+            let Err(ProbeFailureCause::Outcome(actual)) = result else {
+                panic!("non-stack failure became a measurement: {kind:?}");
+            };
+            assert_eq!(actual, expected);
+            assert_eq!(actual.stderr.as_ptr(), text_identity);
+        }
+    }
+    let error = Box::new(5917u64);
+    let identity = error.as_ref() as *const u64;
+    let Err(ProbeFailureCause::Transport(actual)) = super::stack_survived(Err(error)) else {
+        panic!("transport error became a measurement");
+    };
+    assert_eq!(actual.as_ref() as *const u64, identity);
+}
+
+#[test]
+fn watchdog_expiry_cannot_satisfy_an_expected_stack_failure() {
+    let observation = process_outcome("timeout", std::time::Duration::from_millis(25));
+    let Err(ProbeFailureCause::Outcome(failure)) = super::stack_survived::<()>(Ok(observation))
+    else {
+        panic!("watchdog expiry became a stack measurement");
+    };
+    assert_eq!(failure.kind, ProbeFailureKind::TimedOut);
+}
+
+#[test]
 fn lifecycle_decisions_match_complete_capture_and_cleanup_contract() {
     use std::time::Duration as D;
 

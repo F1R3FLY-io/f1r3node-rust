@@ -14877,6 +14877,178 @@ introduced.
 | `lifecycle-callers-r1.log` | 4ed0c199ef1f9dbcd2cecad4d5140e8d48fb22abeb3383b9665ba4c024bde35a |
 | `lifecycle-shared-lib-r1.log` | fe495b6b05721bc71c411207739035429f77f1cafa0e4646454f3092fb6a37ec |
 
+### J-198 — 2026-09-21 Make the stack gate reject non-stack failures
+
+**Negative control (MEASURED).** `stack_depth_gate::runs_within` previously reduced
+every unsuccessful child status to `false`. The new real-child regression invokes
+an unknown subject inside an expected-negative assertion: before correction the
+ordinary child panic satisfies that assertion. The negative run fails exactly
+`panicking_gate_child_is_not_a_negative_stack_witness`, at 2.5 GiB service peak
+and zero swap. This establishes the false-pass route, not a production stack bug.
+
+**Formal-first repair.** Five DPC declarations extend the classifier model to
+prove that the shared `stack_survived` adapter returns true only for `Passed`,
+false only for `StackExhausted`, and otherwise preserves the observed failure or
+original transport error. All 19 classifier/adapter declarations and independent
+kernel checking passed before implementation (1.422 seconds, 329.8 MiB peak,
+zero swap, 2 GiB ceiling). The gate now uses the bounded typed runner; Casper's
+survival helper shares the same adapter. Existing stack search, 4 KiB resolution,
+512 MiB search ceiling, fixed-depth assertions and instrument-floor semantics
+are unchanged. Only diagnostic interpretation and subprocess supervision change.
+
+**Qualified adapter results.** The focused shared probe suite passes **36/36**
+tests with `PROPTEST_CASES=1024 PROPTEST_RNG_SEED=5917`; failure-table tests check
+all six failure kinds and preserve diagnostic/transport allocation identity. A
+real timeout cannot satisfy an expected stack-failure assertion. The service takes
+10.412 seconds including build contention, peaks at 519.5 MiB and uses zero swap
+under a 6 GiB ceiling. Casper's updated integration caller type-checks at 1.1 GiB
+peak and zero swap. These are focused correctness results, not full acceptance.
+
+**Whole-gate result: FAILED, not waived.** The complete non-ignored release target
+passes 15 tests and fails `converted_traversals_are_depth_independent`. Its
+`protobuf_de` child at depth **4,096**, on a **65,536-byte** worker, exceeds the
+candidate **120-second** watchdog and is reported `TimedOut`, not a stack ceiling.
+The full service takes 203.309 seconds, peaks at 1.5 GiB and uses zero swap under
+an 8 GiB ceiling. No depth, stack-search bound, test registration or timeout was
+relaxed in response. The candidate watchdog is **not calibrated for the whole
+gate**; this failure must be resolved before claiming acceptance. J-199 records
+the reviewed source diagnosis and its existing task-5834 owner.
+
+**Timing receipts and evidence boundary.** `GATE_PROBE_TIMINGS=1` emits whole-child
+receipts including construction, operation, witnesses, teardown and polling.
+Nextest stripped tab separators in the first population, so its concatenated
+records are not accepted as a machine-readable timing dataset. The format is now
+`GATE_PROBE|subject|parameter|stack_bytes|elapsed_ns|outcome`. A control rerun with
+`-E 'not test(converted_traversals_are_depth_independent)'` passes **15/15**, with
+six tests excluded; this filter is only a focused verification command, not a
+source-level exclusion or a full-gate pass. It records 68 passing, 30 confirmed
+stack-failure and one intentionally invalid unknown-subject probe. The longest
+valid observation is `normalize`, depth 100,000, 2 MiB worker: **3.866670808 s**;
+the corresponding metering-handshake child takes **3.826987189 s**. This one-run
+control population does not characterize unrun decoder cells or debug builds.
+The control service takes 16.452 seconds including compilation, peaks at 833.5 MiB
+and uses zero swap. An in-run host sample reported 87.87% idle across 64 logical
+CPUs; that is not a guarantee of contention-free timing throughout either run.
+
+Commands use `CARGO_BUILD_JOBS=4 cargo nextest run --release -p rholang --test
+stack_depth_gate --test-threads=2 --no-fail-fast --success-output final`; the
+control invocation adds the filter above. All services have memory, zero-swap,
+CPU and wall-time limits. These watchdog observations are not throughput claims.
+
+**Scope correction and remaining work.** J-195–J-197 listed native Windows
+acceptance as outstanding. Review of local CI/release configuration finds Linux
+jobs and Linux amd64/arm64 matrices, not an original Windows acceptance mandate.
+Windows remains an explicitly unverified adapter boundary, not a newly invented
+campaign blocker; the original PgMCP task record must be checked when its tools
+return. Do not add a speculative Windows core-suppression implementation:
+disabling WER does not guarantee configured local dumps are disabled.
+
+The reviewed remaining core-policy change is small: return checked installed,
+explicit-opt-in or unsupported outcomes, preserve syscall errors, and fail the
+selected child before intentional failure if installation fails. Preserve the
+parent and no-selector no-op, and explicitly remove the opt-in from automated
+crash controls. Complete that independent 5917 work, then address its existing
+5834 decoder dependency and return to full release/debug watchdog qualification.
+No production codec change has been made in this checkpoint. PgMCP STDIO tools
+remain unavailable; retain these receipts for backfill without creating duplicate
+tasks or using its CLI.
+
+| Artifact under `target/verification/depth-probe-5917/` | SHA-256 |
+|---|---|
+| `survival-proof-r2.log` | 81f586bfbd3f35f05ac2932a6cd4ef157b02ce0c30264f58f2f74067791cf9bf |
+| `survival-kernel-r2.log` | b48c265322c3c0600fa2b73629e7f0dad3ad0f50bec3d5aa20562b3494598fab |
+| `gate-red-r1.log` | c3b7507adc81a8015efb1d10ee29db9c0fbcf8f1317802a50f44d081d30369e4 |
+| `gate-release-r1.log` | 7b89b766671e0f7cc8c337139d7631109c6402dffc6a2cfb7542bdcaa44b5eba |
+| `gate-controls-r1.log` | 2fbdd326ec916e23b0e2c0a70825a851c004b71ac2c437258ce8c860eb82c712 |
+| `survival-native-r1.log` | c5bd3f849afab84c0d150afa71fe64b632cc695747230e0f7bc23dc78b2dcdc9 |
+| `survival-callers-r1.log` | 2852e8838d792e7b5fdd51cd39369bcda9e0634b97ea58075761e28f15ae3fb5 |
+
+### J-199 — 2026-09-21 Preserve the task-5834 decoder-construction review
+
+**Status: DERIVED design, implementation and qualification pending.** A read-only
+plan agent traced J-198's timeout through `Par::decode` to Prost's default `merge`
+and the handwritten `Par::merge_field` in `models/src/rust/par.rs`. Expr tag 5's
+field importer recognizes unary ENot, whereas the existing whole-Par importer
+also recognizes unary EList/GInt and other exact shapes. EList therefore falls
+through generated `decode_expr`. Each nested Par attachment generated by
+`models/codegen/schema.rs` calls `merge_protobuf_component`, which reaches
+`ParBag::insert`, key-suffix construction, complete child-score copying and complete
+child-protobuf emission. Unary depths rebuild suffixes of lengths proportional to
+1 through d: quadratic score/body traffic before additional trie work. The timeout
+is not an isolated decode timing; exact allocation/CPU attribution still requires
+phase measurements. Native PathMap point lookup is not the diagnosed mechanism.
+
+The fixture already uses final-root unary construction and the witness already
+scans canonical regions. Replacing either again would duplicate completed work.
+J-169's consumer audit and J-172 already assign general schema-driven construction,
+production legacy decoding, map-value validation and decoded descent to **5834**.
+Its old 100% self-report is explicitly not verified closure. Link the new evidence
+to that existing task and 5917 when PgMCP returns; do not create a duplicate task.
+
+**Rejected incomplete fixes.** Overriding `Par::decode` to reuse generated
+`decode_par` would close one entry-point gap, not the general reconstruction defect.
+Prost 0.14.3's nested message merge and length-delimited merge call `merge_field`
+directly, bypassing whole-message overrides. A field callback owns one payload,
+not the enclosing buffer; replacing `self` with a new decoded root would break
+nonempty merges, explicit-default metadata, consumed offsets and visible committed
+prefixes on later errors. Strict canonical admission/region cursors are not
+substitutes for permissive protobuf parsing. Adding another EList-specific fast
+path cannot close 5834 or establish general decoder complexity.
+
+**Construction-algebra plan.** Retain generated wire parsing, frame/attachment
+scheduling, scalar merging, buffer limits, unknown-field skipping and error
+decoration. Generate transient message builders whose recursive Par slots hold
+`ParConstruction` arena handles, with scalar data and ordered child slots retained
+separately. Completed nested nodes add planned occurrences and immutable score/body
+fragments; they do not materialize resident suffix tries, reserialize children or
+compute final digests. Materialize only the requested boundary: root Par endpoints,
+a committed component field, or immediate Par fields required by an externally
+returned typed message. Whole-root and field/component entries share this backend.
+Existing exact canonical importers remain accelerators, not the correctness or
+complexity foundation. Preserve PathMap-backed EPathMap plans and current snapshot/
+key admission; no alternate authority, wire format or upstream PathMap changes.
+
+**Planner gap to close explicitly.** Valid protobuf may represent semantically
+incomplete AST nodes. Current ParBag preserves their wire image with a reserved
+nonsemantic score, while some semantic `ParConstruction` constructors require full
+child arity. The planner needs an incomplete-shell lane preserving actual child
+absence/presence; neither rejection nor substitution of an absent child with empty
+Par is equivalent. Canonical-region import alone does not cover permissive input.
+
+**Formal-first requirements.** Model input cursor/limits, generated frames,
+mutable builder slots, arena ownership, committed resident output and error trace.
+Refine each transition against the frozen fieldwise decoder: repeated append,
+singular-message merge, same-arm oneof merge/different-arm replacement, map-entry
+merge and duplicate-key winner/order, unknown groups, explicit defaults, metadata
+last writes, malformed-field precedence, consumed position and committed state on
+failure. Prove immutable finalized fragments, no nested resident construction and
+stack-safe success/error/replacement teardown. Bound resource work by parsing,
+actual comparisons/admission and final output bytes; do not claim unconditional
+linear sorting or prefix comparison. Reuse existing construction proofs within
+their boundaries; unary framing proofs do not prove this permissive decoder.
+
+**Independent implementation evidence.** Freeze the fieldwise oracle before sharing
+routes: `protobuf_decoder_differential.rs` currently aliases `RecursivePar` to the
+production `Par`, which could turn tests into self-comparisons. Reuse the independent
+generated recursive-oracle registry for bounded differentials. Compare protobuf,
+bincode, compact keys/snapshots, metadata, multiplicities, Eq/Ord/Hash and consensus
+preimages, not equality alone. Cover nonempty merges, duplicate fields/maps/oneofs,
+absent versus explicit empty/default values, incomplete shapes, unknown groups,
+truncation/overrun/nonminimal aliases, fragmented `Buf` and all envelope entries.
+Compare errors, remaining input and visible merged state. Keep original small-stack
+depths for deep success, late failure, replacement, cancellation/drop and teardown.
+
+**Resource qualification.** Separate construction, encode, decode, witness and
+drop; retain paired frozen/successor observations through depth 4,096 and existing
+20,000-depth decoder cases under fixed caps. Include metadata-bearing and mixed
+terms, alternate terminals, valid noncanonical aliases, fragmented input, maps and
+outer envelopes so a single-shape shortcut cannot satisfy the gate. Count arena
+nodes, nested resident materializations, copied/emitted score/body bytes, trie
+insertions and digest work. Require elimination of repeated suffix materialization
+with unchanged final digest/preimage identity. Restore the unchanged full release
+stack gate without increasing its watchdog or reducing depth. No implementation,
+formal equivalence or performance acceptance is claimed by this design entry.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

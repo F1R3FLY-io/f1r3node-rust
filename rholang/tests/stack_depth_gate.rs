@@ -936,19 +936,58 @@ fn phase7_measurement_manifest() {
     );
 }
 
-/// Run one probe point in a child process. `true` iff it survived.
-fn runs_within(stack: usize, depth: usize, subject_name: &str) -> bool {
-    let exe = std::env::current_exe().expect("stack_depth_gate: current_exe");
-    std::process::Command::new(exe)
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+fn gate_probe(
+    stack: usize,
+    depth: usize,
+    subject_name: &str,
+) -> std::io::Result<shared::rust::test_process::ProbeOutcome> {
+    let exe = std::env::current_exe()?;
+    let mut command = std::process::Command::new(exe);
+    command
         .args(["--ignored", "--exact", "gate_child"])
         .env("GATE_SUBJECT", subject_name)
         .env("GATE_DEPTH", depth.to_string())
-        .env("GATE_STACK", stack.to_string())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .expect("stack_depth_gate: failed to run child")
-        .success()
+        .env("GATE_STACK", stack.to_string());
+    shared::rust::test_process::run_child_probe(&mut command, PROBE_TIMEOUT)
+}
+
+fn runs_within(stack: usize, depth: usize, subject_name: &str) -> bool {
+    let start = std::time::Instant::now();
+    let result = shared::rust::test_process::stack_survived(gate_probe(stack, depth, subject_name));
+    if std::env::var("GATE_PROBE_TIMINGS").is_ok_and(|value| value == "1") {
+        let outcome = match &result {
+            Ok(true) => "passed",
+            Ok(false) => "stack",
+            Err(_) => "invalid",
+        };
+        eprintln!(
+            "GATE_PROBE|{subject_name}|{depth}|{stack}|{}|{outcome}",
+            start.elapsed().as_nanos()
+        );
+    }
+    result.unwrap_or_else(|failure| panic!(
+        "INVALID STACK PROBE: `{subject_name}` at parameter {depth} on a {stack} byte worker: {failure:?}"
+    ))
+}
+
+#[test]
+fn panicking_gate_child_is_not_a_negative_stack_witness() {
+    let panic = std::panic::catch_unwind(|| {
+        !runs_within(1024 * 1024, 4, "invalid-subject-for-probe-regression")
+    })
+    .expect_err("an ordinary child panic satisfied an expected stack-failure assertion");
+    let diagnostic = panic
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| panic.downcast_ref::<&str>().copied())
+        .expect("string panic diagnostic");
+    assert!(diagnostic.contains("Panicked"), "{diagnostic}");
+    assert!(
+        diagnostic.contains("invalid-subject-for-probe-regression"),
+        "{diagnostic}"
+    );
 }
 
 // ---------------------------------------------------------------------------

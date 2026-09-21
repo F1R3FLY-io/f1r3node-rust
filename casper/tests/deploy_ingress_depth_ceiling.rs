@@ -447,26 +447,13 @@ fn ingress_child() {
 const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
 fn ingress_survives(teardown: Teardown, depth: usize, stack: usize) -> bool {
-    match ingress_probe(teardown, depth, stack).unwrap_or_else(|error| {
-        panic!(
-            "INVALID INGRESS TRANSPORT: `{}` at depth {depth} on a {stack} byte worker: {error:?}",
+    shared::rust::test_process::stack_survived(ingress_probe(teardown, depth, stack))
+        .unwrap_or_else(|failure| {
+            panic!(
+            "INVALID INGRESS PROBE: `{}` at depth {depth} on a {stack} byte worker: {failure:?}",
             teardown.tag()
         )
-    }) {
-        shared::rust::test_process::ProbeOutcome::Passed => true,
-        shared::rust::test_process::ProbeOutcome::Failed(failure)
-            if failure.kind == shared::rust::test_process::ProbeFailureKind::StackExhausted =>
-        {
-            false
-        }
-        shared::rust::test_process::ProbeOutcome::Failed(failure) => panic!(
-            "INVALID INGRESS PROBE: `{}` at depth {depth} on a {} KiB worker failed with \
-             {:?}, not native-stack exhaustion: {failure:?}",
-            teardown.tag(),
-            stack / 1024,
-            failure.kind,
-        ),
-    }
+        })
 }
 
 fn ingress_probe(
