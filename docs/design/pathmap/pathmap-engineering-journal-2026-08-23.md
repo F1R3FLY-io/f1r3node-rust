@@ -15117,6 +15117,58 @@ unavailable; this entry awaits tracker backfill rather than claiming an update.
 | `core-policy-shared-r1.log` | 5f25500b3b4e92a5ab27fc908dd8bd99007fad8e6aa1a9d963a9a3f8ddfd4c7a |
 | `core-policy-gate-r1.log` | 58e4a6d6a7020a7659307addc447a541d648392e6b86e0af5c10721beacd9ceb |
 
+### J-201 — 2026-09-21 General decoder prerequisite and oracle independence
+
+**Continuation, not a new workstream.** The task-5834 plan-agent follow-up resumes
+J-199's source review. The first implementation boundary is planned construction
+of semantically incomplete but valid protobuf components. This is a prerequisite
+of the general decoder, not an EList fast path or a claimed timeout repair.
+
+**Existing mechanisms (OBSERVED).** `ParConstruction::component` already walks
+the generated protobuf shell program, substitutes planned Par handles in actual
+wire-slot order, checks missing/excess handles, computes lengths bottom-up and
+emits via its shared cursor. The existing admitted-incomplete-region importer
+preserves trusted canonical bytes; it does not construct a permissively decoded
+shell with planned descendants. Existing complete-family semantic planners assume
+required operands exist, which valid protobuf does not guarantee.
+
+**Chosen boundary (DECISION).** Add a generic incomplete-component planner using
+the existing `ParBagComponent::semantic_shape_is_complete` predicate, existing
+nonsemantic score and existing component planner. Complete shells decline before
+arena mutation. Incomplete shells preserve actual optional-field presence,
+repeated order, duplicate entries and metadata; they must not synthesize missing
+Pars or invoke semantic sorting. Descendants remain immutable handles. Failed
+construction may leave unreachable private fragments, but cannot publish a
+component or change earlier handle denotations. No new parser, field table, byte
+format, dependency or alternative resident authority is needed at this boundary.
+
+The pre-implementation model covers ordered shell-hole substitution, exact slot
+consumption, absence versus present-empty, stable prior denotations, framing and
+endpoint identity. Native tests will compare with bounded resident component-key
+compilation and exercise all incomplete families, operand-presence permutations,
+missing/excess handles and fixed-stack mixed-family construction. It is not a
+proof of the subsequent protobuf field/merge machine; J-199's merge/error/cursor
+requirements remain separate and required.
+
+**Oracle qualification correction (OBSERVED).** `models/build.rs` extern-maps
+both Par and EPathMap before saving `rhoapi_recursive_oracle.rs`. Its preparation
+function only removes duplicate derives. Thus that source independently covers
+ordinary-message Prost behavior but still reaches production Par/EPathMap at
+recursive cut points. `protobuf_decoder_differential.rs` additionally aliases
+`RecursivePar = Par`. Neither is an independent end-to-end Par oracle after
+rerouting those production entry points. Before that rerouting, freeze the legacy
+fieldwise/generated decoding behavior as a test-only reference or generate a
+separate test-only wire-Par binding. Do not count a self-comparison as refinement.
+The construction prerequisite can use resident component-key compilation without
+changing decoder dispatch, so that bounded comparison remains independent now.
+
+**Sequence.** Checked task-5917 core policy is committed as `193cfed73`. Complete
+the formal construction boundary, its invariant-derived native tests and the
+generic incomplete planner, then port generated decoder construction to handles
+with the independent oracle and merge/error refinement. Return to the unchanged
+full depth gate afterward. PgMCP backfill must attach this work to existing 5834
+and its 5917 dependency; no duplicate task or tracker update is claimed here.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
