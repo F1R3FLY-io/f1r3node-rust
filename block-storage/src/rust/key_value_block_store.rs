@@ -358,9 +358,14 @@ impl KeyValueBlockStore {
             });
         }
         let mut output = vec![0u8; decompressed_length];
-        lz4_flex::decompress_into(compressed_data, &mut output).map_err(|err| {
+        let written = lz4_flex::decompress_into(compressed_data, &mut output).map_err(|err| {
             SnapshotError::Malformed(format!("block decompression failed: {err}"))
         })?;
+        if written != decompressed_length {
+            return Err(SnapshotError::Malformed(format!(
+                "block length prefix declares {decompressed_length} bytes but decompression produced {written}"
+            )));
+        }
         let proto = BlockMessageProto::decode(output.as_slice())
             .map_err(|err| SnapshotError::Malformed(format!("block proto decode failed: {err}")))?;
         BlockMessage::from_proto(proto).map_err(|err| {

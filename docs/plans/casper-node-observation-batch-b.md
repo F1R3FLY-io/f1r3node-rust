@@ -1,6 +1,6 @@
 # Casper Node Observation: Batch B Review
 
-**Status:** Batch B1 confirmed and implemented locally on 2026-09-21. Its claim remains pending. Batch B2 and Batch C still require confirmation.
+**Status:** Batch B1 has a local implementation and partial corrections. Its claim remains pending. Batch B2 and Batch C still require confirmation.
 
 **Branch:** `feature/casper-node-observation`.
 
@@ -220,3 +220,13 @@ The user confirmed the nine-file Batch B1 scope, the pending claim, and the four
 The [Batch B1 work log](../work-logs/casper-node-observation-batch-b1.md) records the implementation, the local results, and the registered claim `CLAIM-CASPER-NODE-OBSERVATION-002`.
 
 The confirmation does not authorize Batch B2, Batch C, merges, claim acceptance, or cloud launches. Commits and pushes require their separate consent.
+
+## B1 continuation review
+
+The review at `2ccc4ae0ac1045232c247ecd76925e13fabd0ade` found reader-budget and decompression defects. Local corrections address those defects within the nine-file B1 scope.
+
+The [continuation work log](../work-logs/casper-node-observation-batch-b1.md#continuation-review-on-2026-09-21) records failing controls, passing regressions, and unresolved findings.
+
+Nested decode limits, complete work accounting, block-store scratch construction, and canonical field coverage remain open. Do not use the current capture as an accepted B2 prerequisite.
+
+The earlier local test counts do not establish those properties. This review does not approve B2 or C, discharge the capture claim, or qualify a live adapter.

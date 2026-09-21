@@ -445,6 +445,146 @@ fn separate_environments_are_opened_and_validated_together() {
 }
 
 #[test]
+fn failed_scan_retains_consumed_work_and_record_budget() {
+    let fixture = open_env();
+    let (store, _) = open_store(&fixture.env, "s");
+    store.put(kv(&[("a", "1"), ("b", "2")])).unwrap();
+    let before = store.to_map().unwrap();
+    let mut reader = BoundedLmdbReader::open(&[&store], ReadLimits {
+        max_records: 1,
+        max_operations: 2,
+        ..limits()
+    })
+    .unwrap();
+
+    assert!(matches!(
+        reader.scan(&store),
+        Err(SnapshotError::LimitExceeded {
+            kind: "records",
+            ..
+        })
+    ));
+    assert_eq!(reader.usage().records, 1);
+    assert_eq!(reader.usage().operations, 2);
+    assert_eq!(reader.usage().bytes, 2 * (LENGTH_PREFIX_BYTES + 1));
+    assert!(matches!(
+        reader.scan(&store),
+        Err(SnapshotError::LimitExceeded {
+            kind: "operations",
+            ..
+        })
+    ));
+    reader.validate().unwrap();
+    assert_eq!(store.to_map().unwrap(), before);
+}
+
+#[test]
+fn empty_scans_consume_operation_budget() {
+    let fixture = open_env();
+    let (store, _) = open_store(&fixture.env, "s");
+    let mut reader = BoundedLmdbReader::open(&[&store], ReadLimits {
+        max_operations: 1,
+        ..limits()
+    })
+    .unwrap();
+    assert!(reader.scan(&store).unwrap().is_empty());
+    assert_eq!(reader.usage().operations, 1);
+    assert!(matches!(
+        reader.scan(&store),
+        Err(SnapshotError::LimitExceeded {
+            kind: "operations",
+            ..
+        })
+    ));
+}
+
+#[test]
+fn scan_keys_obey_the_per_buffer_limit() {
+    let fixture = open_env();
+    let (store, _) = open_store(&fixture.env, "s");
+    store.put(vec![(vec![7; 64], vec![1])]).unwrap();
+    let mut reader = BoundedLmdbReader::open(&[&store], ReadLimits {
+        max_value_bytes: 32,
+        ..limits()
+    })
+    .unwrap();
+    assert_eq!(
+        reader.scan(&store),
+        Err(SnapshotError::LimitExceeded {
+            kind: "key bytes",
+            limit: 32,
+            observed: LENGTH_PREFIX_BYTES + 64,
+        })
+    );
+    assert_eq!(reader.usage().records, 0);
+    assert_eq!(reader.usage().bytes, 0);
+    assert_eq!(reader.usage().operations, 1);
+}
+
+#[test]
+fn lookup_keys_are_bounded_before_encoding() {
+    let fixture = open_env();
+    let (store, _) = open_store(&fixture.env, "s");
+    let mut reader = BoundedLmdbReader::open(&[&store], ReadLimits {
+        max_value_bytes: 32,
+        ..limits()
+    })
+    .unwrap();
+    assert_eq!(
+        reader.read_raw(&store, &vec![7; 64]),
+        Err(SnapshotError::LimitExceeded {
+            kind: "key bytes",
+            limit: 32,
+            observed: LENGTH_PREFIX_BYTES + 64,
+        })
+    );
+    assert_eq!(reader.usage().operations, 1);
+    assert_eq!(reader.usage().records, 0);
+}
+
+#[test]
+fn store_list_is_bounded_before_backend_inspection() {
+    let memory: Arc<dyn KeyValueStore> = Arc::new(MemoryStore {
+        map: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
+    });
+    assert_eq!(
+        BoundedLmdbReader::open(&[&memory, &memory], ReadLimits {
+            max_operations: 1,
+            ..limits()
+        })
+        .err(),
+        Some(SnapshotError::LimitExceeded {
+            kind: "stores",
+            limit: 1,
+            observed: 2,
+        })
+    );
+}
+
+#[test]
+fn malformed_scan_charges_only_the_attempted_prefix() {
+    let fixture = open_env();
+    let (store, lmdb) = open_store(&fixture.env, "s");
+    store
+        .put(kv(&[("a", "1"), ("b", "2"), ("c", "3")]))
+        .unwrap();
+    let mut writer = fixture.env.write_txn().unwrap();
+    lmdb.db
+        .remap_types::<Bytes, Bytes>()
+        .put(&mut writer, &encode_length_prefixed(b"a"), &[0])
+        .unwrap();
+    writer.commit().unwrap();
+    let mut reader = BoundedLmdbReader::open(&[&store], limits()).unwrap();
+    assert!(matches!(
+        reader.scan(&store),
+        Err(SnapshotError::Malformed(_))
+    ));
+    assert_eq!(reader.usage().operations, 1);
+    assert_eq!(reader.usage().records, 1);
+    assert_eq!(reader.usage().bytes, LENGTH_PREFIX_BYTES + 2);
+}
+
+#[test]
 fn store_outside_the_opened_set_is_refused() {
     let first = open_env();
     let second = open_env();

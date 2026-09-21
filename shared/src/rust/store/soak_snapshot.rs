@@ -72,6 +72,8 @@ pub enum SnapshotError {
     LockTimeout(Duration),
     #[error("incomplete evidence: {0}")]
     Incomplete(String),
+    #[error("{0} counter overflowed")]
+    CounterOverflow(&'static str),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,6 +89,46 @@ pub struct ReadUsage {
     pub operations: usize,
     pub records: usize,
     pub bytes: usize,
+}
+
+fn check_limit(kind: &'static str, observed: usize, limit: usize) -> Result<(), SnapshotError> {
+    if observed > limit {
+        return Err(SnapshotError::LimitExceeded {
+            kind,
+            limit,
+            observed,
+        });
+    }
+    Ok(())
+}
+
+fn checked_total(
+    kind: &'static str,
+    current: usize,
+    amount: usize,
+) -> Result<usize, SnapshotError> {
+    current
+        .checked_add(amount)
+        .ok_or(SnapshotError::CounterOverflow(kind))
+}
+
+impl ReadUsage {
+    fn charge_operation(&mut self, limits: &ReadLimits) -> Result<(), SnapshotError> {
+        let observed = checked_total("operations", self.operations, 1)?;
+        check_limit("operations", observed, limits.max_operations)?;
+        self.operations = observed;
+        Ok(())
+    }
+
+    fn charge_record(&mut self, limits: &ReadLimits, raw_len: usize) -> Result<(), SnapshotError> {
+        let records = checked_total("records", self.records, 1)?;
+        check_limit("records", records, limits.max_records)?;
+        let bytes = checked_total("total bytes", self.bytes, raw_len)?;
+        check_limit("total bytes", bytes, limits.max_total_bytes)?;
+        self.records = records;
+        self.bytes = bytes;
+        Ok(())
+    }
 }
 
 struct EnvSession {
@@ -111,6 +153,10 @@ pub fn encode_length_prefixed(payload: &[u8]) -> Vec<u8> {
 }
 
 pub fn decode_length_prefixed(raw: &[u8]) -> Result<Vec<u8>, SnapshotError> {
+    length_prefixed_payload(raw).map(<[u8]>::to_vec)
+}
+
+fn length_prefixed_payload(raw: &[u8]) -> Result<&[u8], SnapshotError> {
     if raw.len() < LENGTH_PREFIX_BYTES {
         return Err(SnapshotError::Malformed(format!(
             "raw value of {} bytes is shorter than its length prefix",
@@ -126,7 +172,7 @@ pub fn decode_length_prefixed(raw: &[u8]) -> Result<Vec<u8>, SnapshotError> {
             "length prefix declares {declared} bytes but {actual} bytes follow"
         )));
     }
-    Ok(raw[LENGTH_PREFIX_BYTES..].to_vec())
+    Ok(&raw[LENGTH_PREFIX_BYTES..])
 }
 
 fn lmdb_store(store: &Arc<dyn KeyValueStore>) -> Result<&LmdbKeyValueStore, SnapshotError> {
@@ -146,6 +192,7 @@ impl BoundedLmdbReader {
         limits: ReadLimits,
     ) -> Result<Self, SnapshotError> {
         limits.validate()?;
+        check_limit("stores", stores.len(), limits.max_operations)?;
         let mut lmdb_stores = Vec::with_capacity(stores.len());
         for store in stores {
             lmdb_stores.push(lmdb_store(store)?);
@@ -218,60 +265,16 @@ impl BoundedLmdbReader {
         Ok((session, lmdb.db.remap_types::<Bytes, Bytes>()))
     }
 
-    fn charge_operation(&mut self) -> Result<(), SnapshotError> {
-        let observed = self.usage.operations + 1;
-        if observed > self.limits.max_operations {
-            return Err(SnapshotError::LimitExceeded {
-                kind: "operations",
-                limit: self.limits.max_operations,
-                observed,
-            });
-        }
-        self.usage.operations = observed;
-        Ok(())
-    }
-
-    fn check_value_length(&self, raw_len: usize) -> Result<(), SnapshotError> {
-        if raw_len > self.limits.max_value_bytes {
-            return Err(SnapshotError::LimitExceeded {
-                kind: "value bytes",
-                limit: self.limits.max_value_bytes,
-                observed: raw_len,
-            });
-        }
-        let total = self.usage.bytes + raw_len;
-        if total > self.limits.max_total_bytes {
-            return Err(SnapshotError::LimitExceeded {
-                kind: "total bytes",
-                limit: self.limits.max_total_bytes,
-                observed: total,
-            });
-        }
-        Ok(())
-    }
-
-    fn charge_record(&mut self, raw_len: usize) -> Result<(), SnapshotError> {
-        let records = self.usage.records + 1;
-        if records > self.limits.max_records {
-            return Err(SnapshotError::LimitExceeded {
-                kind: "records",
-                limit: self.limits.max_records,
-                observed: records,
-            });
-        }
-        self.usage.records = records;
-        self.usage.bytes += raw_len;
-        Ok(())
-    }
-
     pub fn read_raw(
         &mut self,
         store: &Arc<dyn KeyValueStore>,
         key: &ByteBuffer,
     ) -> Result<Option<Vec<u8>>, SnapshotError> {
-        self.charge_operation()?;
+        self.usage.charge_operation(&self.limits)?;
+        let key_len = checked_total("key bytes", key.len(), LENGTH_PREFIX_BYTES)?;
+        check_limit("key bytes", key_len, self.limits.max_value_bytes)?;
         let encoded_key = encode_length_prefixed(key);
-        let raw_len;
+        let mut usage = self.usage;
         let copied = {
             let (session, db) = self.session_for(store)?;
             let found = db
@@ -280,13 +283,13 @@ impl BoundedLmdbReader {
             match found {
                 None => return Ok(None),
                 Some(raw) => {
-                    raw_len = raw.len();
-                    self.check_value_length(raw_len)?;
+                    check_limit("value bytes", raw.len(), self.limits.max_value_bytes)?;
+                    usage.charge_record(&self.limits, raw.len())?;
                     raw.to_vec()
                 }
             }
         };
-        self.charge_record(raw_len)?;
+        self.usage = usage;
         Ok(Some(copied))
     }
 
@@ -305,62 +308,32 @@ impl BoundedLmdbReader {
         &mut self,
         store: &Arc<dyn KeyValueStore>,
     ) -> Result<BTreeMap<ByteBuffer, ByteBuffer>, SnapshotError> {
-        let mut out = BTreeMap::new();
-        let mut pending: Vec<(Vec<u8>, Vec<u8>, usize)> = Vec::new();
-        {
+        let mut usage = self.usage;
+        let result = (|| {
+            usage.charge_operation(&self.limits)?;
             let (session, db) = self.session_for(store)?;
-            let iter = db
+            let mut iter = db
                 .iter(&session.txn)
                 .map_err(|error| SnapshotError::ReadFailed(error.to_string()))?;
-            let mut records = self.usage.records;
-            let mut operations = self.usage.operations;
-            let mut bytes = self.usage.bytes;
-            for item in iter {
+            let mut out = BTreeMap::new();
+            loop {
+                let Some(item) = iter.next() else {
+                    return Ok(out);
+                };
                 let (raw_key, raw_value) =
                     item.map_err(|error| SnapshotError::ReadFailed(error.to_string()))?;
-                operations += 1;
-                if operations > self.limits.max_operations {
-                    return Err(SnapshotError::LimitExceeded {
-                        kind: "operations",
-                        limit: self.limits.max_operations,
-                        observed: operations,
-                    });
-                }
-                records += 1;
-                if records > self.limits.max_records {
-                    return Err(SnapshotError::LimitExceeded {
-                        kind: "records",
-                        limit: self.limits.max_records,
-                        observed: records,
-                    });
-                }
-                let raw_len = raw_key.len() + raw_value.len();
-                if raw_value.len() > self.limits.max_value_bytes {
-                    return Err(SnapshotError::LimitExceeded {
-                        kind: "value bytes",
-                        limit: self.limits.max_value_bytes,
-                        observed: raw_value.len(),
-                    });
-                }
-                bytes += raw_len;
-                if bytes > self.limits.max_total_bytes {
-                    return Err(SnapshotError::LimitExceeded {
-                        kind: "total bytes",
-                        limit: self.limits.max_total_bytes,
-                        observed: bytes,
-                    });
-                }
-                pending.push((raw_key.to_vec(), raw_value.to_vec(), raw_len));
+                check_limit("key bytes", raw_key.len(), self.limits.max_value_bytes)?;
+                check_limit("value bytes", raw_value.len(), self.limits.max_value_bytes)?;
+                let raw_len = checked_total("record bytes", raw_key.len(), raw_value.len())?;
+                usage.charge_record(&self.limits, raw_len)?;
+                let key = length_prefixed_payload(raw_key)?;
+                let value = length_prefixed_payload(raw_value)?;
+                out.insert(key.to_vec(), value.to_vec());
+                usage.charge_operation(&self.limits)?;
             }
-        }
-        for (raw_key, raw_value, raw_len) in pending {
-            self.charge_operation()?;
-            self.charge_record(raw_len)?;
-            let key = decode_length_prefixed(&raw_key)?;
-            let value = decode_length_prefixed(&raw_value)?;
-            out.insert(key, value);
-        }
-        Ok(out)
+        })();
+        self.usage = usage;
+        result
     }
 
     pub fn validate(self) -> Result<Vec<TransactionIdentity>, SnapshotError> {

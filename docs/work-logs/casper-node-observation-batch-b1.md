@@ -1,11 +1,12 @@
 # Casper Node Observation: Batch B1 Implementation
 
 ---
-handoff_status: ready
+handoff_status: paused
 next_steps:
-  - Commit the Batch B1 change with separate user consent.
+  - Complete the remaining Batch B1 bounds, canonical identity, and scratch construction checks.
   - Run source-bound verification and obtain explicit acceptance of CLAIM-CASPER-NODE-OBSERVATION-002.
   - Prepare the Batch B2 final file list, limits, reference algorithm, and tests for separate approval.
+  - Complete the Batch C writer review and publication contract before requesting implementation approval.
 ---
 
 ## Authorization
@@ -63,3 +64,79 @@ Pending records exist for the four tagged files and for the DAG storage file. Th
 The tests use LMDB environments on the local filesystem and a test executable. No node, live adapter, campaign image, or consensus result was qualified.
 
 The assistant did not commit, push, switch branches, merge, publish images, or repin candidates.
+
+## Continuation review on 2026-09-21
+
+The user requested continuation on this branch after another writer supplied the initial B1 implementation.
+
+The checkout was clean at `2ccc4ae0ac1045232c247ecd76925e13fabd0ade`. The local branch was two commits ahead of its remote.
+
+Commit `a38d44185c73923a769bd204ed5f6ba0e110ca39` contains the initial B1 implementation. Commit `2ccc4ae0ac1045232c247ecd76925e13fabd0ade` contains the separate dependency update.
+
+Both commits existed before this continuation. This continuation made no commit or push.
+
+### Corrections and retained failures
+
+The reader tests reproduced five failures against the existing implementation:
+
+- Failed scans did not retain consumed record, byte, or operation budgets.
+- Empty scans did not consume an operation.
+- Scans did not apply the per-buffer limit to keys.
+- Lookups encoded oversized keys without a length check.
+- Reader construction inspected backends before checking the supplied store count.
+
+The reader now checks these limits before the applicable allocation or store operation. Failed scans retain their consumed budgets.
+
+The reader now checks record budgets before copying lookup values. Checked arithmetic rejects counter overflow.
+
+Scans decode each row directly into the result map. Scans no longer allocate an intermediate copy of every raw row.
+
+The byte counter retains its existing accounting scope. Lookup records count raw values, and scanned records count raw keys and values.
+
+The operation counter includes empty scans and the final cursor step. The operation limit also bounds the supplied store count.
+
+A separate decoder test reproduced acceptance of incomplete decompression. Zero-filled buffer bytes completed a valid Protocol Buffers field despite the incorrect declared length.
+
+The observer decoder now requires the decompressor's returned byte count to equal the declared length. The production decoder remains unchanged.
+
+### Current verification
+
+The [continuation report](../cbc-evidence/runs/casper-node-snapshot-hardening-2ccc4ae0a-01/report.json) binds the tested working-tree sources and retained evidence.
+
+| Check | Result |
+| --- | --- |
+| Initial reader regression run | Five failures and twelve passes reproduced the reader defects. |
+| Initial decoder regression run | One failure reproduced the decompression defect. |
+| `cargo test --locked -p shared -p block-storage` | All 290 test executions passed, including 17 reader tests and 15 capture tests. |
+| `cargo clippy --locked -p shared -p block-storage --all-targets -- -D warnings` | Passed. |
+| `cargo fmt --check -p shared -p block-storage` | Passed. |
+| `cargo check --locked --workspace` | Passed. |
+| Active language-server checks for four changed Rust files | Three checks completed without findings. One check timed out. |
+| Changed-artifact CbC gate | Exit 4. All three changed mandatory artifacts remain pending. |
+
+The total includes the DAG tests that two test targets execute. It is not a count of unique behaviors.
+
+The STE Check passed against the unchanged legacy baseline. No human STE Review or full ASD-STE100 conformance is claimed.
+
+The tests ran natively on Linux/aarch64. No isolated rebuild, live node, hosted proof, campaign, or enforcement test ran.
+
+The retained evidence includes failing source snapshots, logs, final source hashes, and post-run copies of the two snapshot test executables.
+
+The failing executables were not retained separately. The source snapshots and logs identify those failures, not the later executable copies.
+
+### Remaining B1 work
+
+These source findings remain open. The passing regression suites do not establish the complete capture claim.
+
+- Metadata decoding still precedes parent-count checks. Nested justifications and electorate maps need limits before allocation.
+- Capture work does not yet account for every collection traversal and output copy.
+- Scratch construction creates metadata and cache stores but does not create a block store from captured bodies.
+- Canonical encoding does not independently encode the public duplicate hash and parent fields that detached blocks expose.
+
+The canonical identity review must cover every field that scratch construction and evaluation consume. It must also check duration encoding and mutable snapshot inputs.
+
+Batch B2 remains dependent on corrected capture bounds, independent reference evaluation, adopted configuration, and an approved final file list.
+
+Batch C still requires a complete writer inventory and a publication consistency contract. This continuation does not approve either batch.
+
+`CLAIM-CASPER-NODE-OBSERVATION-002` remains pending. No live capability, harness guard, candidate pin, or cloud budget changed.

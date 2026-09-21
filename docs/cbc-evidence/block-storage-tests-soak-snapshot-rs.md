@@ -7,10 +7,10 @@ The capture claim remains pending. Local tests do not discharge the claim or qua
   "artifact": {
     "path": "block-storage/tests/soak_snapshot.rs",
     "id": "block-storage-tests-soak-snapshot-rs",
-    "commit": "799e2136adc6e0100b289945d9a5a6851e81c91f",
+    "commit": "2ccc4ae0ac1045232c247ecd76925e13fabd0ade",
     "commit_is_base": true,
     "working_tree": true,
-    "sha256": "4c070564190e86cc6c0ee9720b0550038b5ce448bd1da5ceb91d0c856dd131c8"
+    "sha256": "480081605126ca5a966bb6ab8f1ba2b5ec88a50ce26bfc6f4601166a91bb2203"
   },
   "claim": "docs/claims/casper-node-authority-snapshot.md",
   "claim_ids": [
@@ -24,10 +24,14 @@ The capture claim remains pending. Local tests do not discharge the claim or qua
   "scope": "batch-b1-bounded-detached-capture",
   "evidence": {
     "kind": "local-tests-not-discharge",
-    "ref": "docs/cbc-evidence/runs/casper-node-snapshot-batch-b1-799e2136a-01/report.json",
-    "sha256": "8d3067ed1b184d204465b8d52ca2d610d44e46d67b591f1d08e56cce55bfa4d3"
+    "ref": "docs/cbc-evidence/runs/casper-node-snapshot-hardening-2ccc4ae0a-01/report.json",
+    "sha256": "e0d607f7fb2f8a2f4eea29b9cd2f4ffdb2de4949aa99432439c3c0fe94d01a04"
   },
-  "previous_record": null,
+  "previous_record": {
+    "commit": "2ccc4ae0ac1045232c247ecd76925e13fabd0ade",
+    "path": "docs/cbc-evidence/block-storage-tests-soak-snapshot-rs.md",
+    "sha256": "0d496d28e537155bda953a2dcf5ed3b514b4cef02a62751264237b313b21a90b"
+  },
   "tiers": {
     "refutation": "pending",
     "construction": "pending",

@@ -747,6 +747,28 @@ fn bounded_block_decoding_rejects_oversized_lengths_before_allocation() {
 }
 
 #[test]
+fn bounded_block_decoding_rejects_short_decompression_with_valid_zero_padding() {
+    let block = genesis();
+    let mut truncated = prost::Message::encode_to_vec(&block.to_proto());
+    prost::encoding::encode_varint((2047 << 3) | 2, &mut truncated);
+    prost::encoding::encode_varint(8, &mut truncated);
+    let declared = truncated.len() + 8;
+    let mut raw = Vec::new();
+    prost::encoding::encode_varint(declared as u64, &mut raw);
+    raw.extend_from_slice(&lz4_flex::compress(&truncated));
+
+    let mut padded = truncated;
+    padded.resize(declared, 0);
+    let proto =
+        <models::casper::BlockMessageProto as prost::Message>::decode(padded.as_slice()).unwrap();
+    assert!(BlockMessage::from_proto(proto).is_ok());
+    assert!(matches!(
+        KeyValueBlockStore::decode_block_bounded(&raw, &limits().block_decode),
+        Err(SnapshotError::Malformed(_))
+    ));
+}
+
+#[test]
 fn stored_block_round_trips_through_bounded_decoding() {
     let fx = fixture("roundtrip");
     let b1 = &fx.chain[1];
