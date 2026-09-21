@@ -16,7 +16,7 @@ use rholang::rust::interpreter::external_services::ExternalServices;
 
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
-use crate::util::rholang::resources::mk_test_rnode_store_manager_shared;
+use crate::util::rholang::resources::mk_test_rnode_store_manager;
 
 #[tokio::test]
 async fn reporting_casper_should_behave_the_same_way_as_multi_parent_casper() {
@@ -47,10 +47,10 @@ async fn reporting_casper_should_behave_the_same_way_as_multi_parent_casper() {
         .await
         .expect("Failed to add block");
 
-    // The node shares its RSpace history under `genesis.rspace_scope_id`. Open a store manager on the
+    // The node shares its RSpace history under `genesis.rspace_scope`. Open a store manager on the
     // same scope to hand the reporting runtime the committed pre-state (the genesis post-state) that
     // it resets to before replaying the block's deploys.
-    let mut rspace_kvm = mk_test_rnode_store_manager_shared(genesis.rspace_scope_id.clone());
+    let mut rspace_kvm = mk_test_rnode_store_manager(&genesis.rspace_scope);
     let rspace_store = rspace_kvm
         .r_space_stores()
         .await
@@ -134,7 +134,7 @@ async fn reporting_a_block_with_a_failed_deploy_still_produces_a_report() {
         "premise: the deploy must be recorded as failed for this test to mean anything"
     );
 
-    let mut rspace_kvm = mk_test_rnode_store_manager_shared(genesis.rspace_scope_id.clone());
+    let mut rspace_kvm = mk_test_rnode_store_manager(&genesis.rspace_scope);
     let rspace_store = rspace_kvm
         .r_space_stores()
         .await
@@ -183,7 +183,7 @@ async fn reporting_waits_for_consensus_replay() {
         .add_block_from_deploys(&[deploy])
         .await
         .expect("Failed to add block");
-    let mut rspace_kvm = mk_test_rnode_store_manager_shared(genesis.rspace_scope_id.clone());
+    let mut rspace_kvm = mk_test_rnode_store_manager(&genesis.rspace_scope);
     let rspace_store = rspace_kvm
         .r_space_stores()
         .await

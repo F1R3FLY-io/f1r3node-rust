@@ -11,7 +11,7 @@ use rspace_plus_plus::rspace::shared::lmdb_dir_store_manager::{
 };
 
 use crate::util::in_memory_key_value_store_spec::KeyValueStoreSut;
-use crate::util::rholang::resources::{generate_scope_id, get_shared_lmdb_path};
+use crate::util::rholang::resources::TestScope;
 
 // Optimization: proptest! macro generates sync functions but our tests are async.
 // Creating a new Runtime for each test case is expensive (proptest runs 256 cases by default).
@@ -25,18 +25,16 @@ where
     F: FnOnce(KeyValueStoreSut) -> Fut,
     Fut: std::future::Future<Output = Result<(), Box<dyn std::error::Error>>>,
 {
-    let scope_id = generate_scope_id();
-    let scoped_db_id = format!("{}-test", scope_id);
+    let scope = TestScope::new();
+    let db_id = "test".to_string();
 
-    let db_config =
-        LmdbEnvConfig::new("test-db".to_string(), 1024 * 1024 * 1024).with_max_dbs(10_000);
+    let db_config = LmdbEnvConfig::new("test-db".to_string(), 1024 * 1024 * 1024);
     let mut db_mappings = HashMap::new();
-    db_mappings.insert(Db::new(scoped_db_id.clone(), None), db_config);
+    db_mappings.insert(Db::new(db_id.clone(), None), db_config);
 
-    let shared_path = get_shared_lmdb_path();
-    let kvm = LmdbDirStoreManager::new(shared_path, db_mappings);
+    let kvm = LmdbDirStoreManager::new(scope.path().to_path_buf(), db_mappings);
 
-    let sut = KeyValueStoreSut::new_scoped(Box::new(kvm), scoped_db_id);
+    let sut = KeyValueStoreSut::new_scoped(Box::new(kvm), db_id);
 
     f(sut).await?;
 

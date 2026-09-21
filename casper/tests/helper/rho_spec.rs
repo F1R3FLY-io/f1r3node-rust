@@ -30,7 +30,7 @@ use crate::helper::{
     secp256k1_sign_contract, sys_auth_token_contract,
 };
 use crate::util::genesis_builder::{GenesisBuilder, GenesisParameters};
-use crate::util::rholang::resources::mk_test_rnode_store_manager_shared;
+use crate::util::rholang::resources::mk_test_rnode_store_manager;
 
 const SHARD_ID: &str = "root-shard";
 const RHO_SPEC_PRIVATE_KEY: &str =
@@ -343,8 +343,7 @@ pub async fn get_results(
             // and every genesis spec passes VACUOUSLY. Open the same shared RSpace scope genesis was
             // written into and reset the runtime to the genesis root below.
             set_phase("store-open");
-            let mut kvs_manager =
-                mk_test_rnode_store_manager_shared(genesis.rspace_scope_id.clone());
+            let mut kvs_manager = mk_test_rnode_store_manager(&genesis.rspace_scope);
             let r_store = kvs_manager.r_space_stores().await.map_err(|e| {
                 InterpreterError::BugFoundError(format!("Failed to create RSpaceStore: {}", e))
             })?;

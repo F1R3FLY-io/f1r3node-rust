@@ -2,7 +2,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
-use std::path::PathBuf;
+use std::ops::{Deref, DerefMut};
+use std::path::Path;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -24,64 +25,124 @@ use prost::bytes::Bytes;
 use rholang::rust::interpreter::rho_runtime::RhoHistoryRepository;
 use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
-use rspace_plus_plus::rspace::shared::lmdb_dir_store_manager::{
-    Db, LmdbDirStoreManager, LmdbEnvConfig, GB,
-};
+use rspace_plus_plus::rspace::shared::lmdb_dir_store_manager::{LmdbDirStoreManager, GB};
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use tempfile::{Builder, TempDir};
-use uuid::Uuid;
 
 use crate::init_logger;
 use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
 
 static CACHED_GENESIS: OnceLock<Arc<Mutex<Option<GenesisContext>>>> = OnceLock::new();
 
-// Shared LMDB environment for all tests.
-//
-// This single environment is shared across all tests to avoid exhausting OS resources.
-// Test isolation is achieved through scoped database names (UUID prefixes) rather than
-// separate environments. This allows hundreds of tests to run efficiently without
-// hitting file descriptor or LMDB environment limits.
-//
-// Resource Management:
-// - Single LMDB environment instead of 300+ separate environments
-// - Automatic cleanup when TempDir is dropped (at program exit)
-// - Global lock ensures test isolation when using shared LMDB
 lazy_static! {
-    static ref SHARED_LMDB_ENV: (PathBuf, TempDir) = {
-        let temp_dir = Builder::new()
-            .prefix("casper-shared-lmdb-")
-            .tempdir()
-            .expect("Failed to create shared LMDB temp dir");
-        let path = temp_dir.path().to_path_buf();
-        (path, temp_dir)
-    };
-
-    /// Global lock to ensure test isolation when using shared LMDB.
-    ///
-    /// ## Why is this needed?
-    ///
-    /// Unlike Scala tests where each test creates its own LMDB database, Rust tests share
-    /// a single LMDB environment (SHARED_LMDB_ENV) for performance. This creates a race condition:
-    ///
-    /// 1. Each test creates its own BlockDagKeyValueStorage with its own global_lock
-    /// 2. These per-test locks only serialize operations WITHIN a single test
-    /// 3. Multiple tests can write to the same shared LMDB concurrently
-    /// 4. Result: Test A inserts block_A, Test B inserts block_B concurrently,
-    ///    Test A tries to read block_B → CRASH: "DAG storage is missing hash"
-    ///
-    /// ## Solution:
-    ///
-    /// SHARED_LMDB_LOCK is a single global Mutex that ALL tests must acquire before
-    /// accessing shared LMDB (via with_genesis/with_storage helpers). This ensures
-    /// tests run sequentially when using shared storage, preventing race conditions.
-    ///
-    /// ## Trade-off:
-    ///
-    /// - Sequential execution is slower than parallel
-    /// - But still faster than creating 300+ separate LMDB databases (Scala approach)
-    /// - And guaranteed correctness is more important than speed
+    /// Serializes the block-DAG storage fixtures, which share the cached
+    /// genesis RSpace stores.
     pub static ref SHARED_LMDB_LOCK: Mutex<()> = Mutex::new(());
+}
+
+static TEST_LMDB_ROOT: OnceLock<TempDir> = OnceLock::new();
+
+extern "C" fn remove_test_lmdb_root() {
+    if let Some(root) = TEST_LMDB_ROOT.get() {
+        if let Err(e) = std::fs::remove_dir_all(root.path()) {
+            eprintln!("Failed to remove {}: {}", root.path().display(), e);
+        }
+    }
+}
+
+/// Each test scope opens its own LMDB environments, so concurrent tests hold
+/// more files than common default soft limits allow.
+fn raise_open_file_limit() {
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: getrlimit only writes the provided struct.
+    let read = unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) };
+    assert_eq!(read, 0, "getrlimit(RLIMIT_NOFILE) failed");
+    limit.rlim_cur = max_open_files(limit.rlim_max);
+    // SAFETY: setrlimit only reads the provided struct.
+    let written = unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) };
+    assert_eq!(written, 0, "setrlimit(RLIMIT_NOFILE) failed");
+}
+
+#[cfg(not(target_os = "macos"))]
+fn max_open_files(hard_limit: libc::rlim_t) -> libc::rlim_t { hard_limit }
+
+/// macOS rejects a soft limit above `kern.maxfilesperproc`, even when the hard
+/// limit is unlimited.
+#[cfg(target_os = "macos")]
+fn max_open_files(hard_limit: libc::rlim_t) -> libc::rlim_t {
+    let mut per_process: libc::c_int = 0;
+    let mut size = std::mem::size_of::<libc::c_int>();
+    // SAFETY: the name is NUL-terminated and `size` matches the output buffer.
+    let read = unsafe {
+        libc::sysctlbyname(
+            c"kern.maxfilesperproc".as_ptr(),
+            (&mut per_process as *mut libc::c_int).cast(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    assert_eq!(read, 0, "sysctlbyname(kern.maxfilesperproc) failed");
+    hard_limit.min(per_process as libc::rlim_t)
+}
+
+/// Parent of every test LMDB directory. Cached genesis scopes live in statics,
+/// which are never dropped, so the root is removed at process exit instead.
+fn test_lmdb_root() -> &'static Path {
+    TEST_LMDB_ROOT
+        .get_or_init(|| {
+            raise_open_file_limit();
+            let root = Builder::new()
+                .prefix("casper-test-lmdb-")
+                .tempdir()
+                .expect("Failed to create test LMDB root");
+            // SAFETY: the callback is a plain function that captures no state.
+            let registered = unsafe { libc::atexit(remove_test_lmdb_root) };
+            assert_eq!(registered, 0, "Failed to register test LMDB root cleanup");
+            root
+        })
+        .path()
+}
+
+/// An LMDB data directory owned by a test, removed when the last clone drops.
+#[derive(Clone)]
+pub struct TestScope(Arc<TempDir>);
+
+impl TestScope {
+    pub fn new() -> Self {
+        Self(Arc::new(
+            Builder::new()
+                .prefix("scope-")
+                .tempdir_in(test_lmdb_root())
+                .expect("Failed to create test LMDB dir"),
+        ))
+    }
+
+    pub fn path(&self) -> &Path { self.0.path() }
+}
+
+impl Default for TestScope {
+    fn default() -> Self { Self::new() }
+}
+
+/// A store manager that keeps its data directory alive for as long as it can
+/// open environments in it.
+pub struct TestStoreManager {
+    manager: Box<dyn KeyValueStoreManager>,
+    _scope: TestScope,
+}
+
+impl Deref for TestStoreManager {
+    type Target = dyn KeyValueStoreManager;
+
+    fn deref(&self) -> &Self::Target { &*self.manager }
+}
+
+impl DerefMut for TestStoreManager {
+    fn deref_mut(&mut self) -> &mut Self::Target { &mut *self.manager }
 }
 
 #[allow(clippy::await_holding_lock)]
@@ -110,7 +171,7 @@ where
     let genesis_context = genesis_context().await?;
     let genesis_block = genesis_context.genesis_block.clone();
 
-    // Use the same scope_id as genesis to access all genesis data including RSpace history
+    // Use the genesis scope to access all genesis data including RSpace history
     // This ensures tests can reset to the genesis state root hash
     let mut kvm = mk_test_rnode_store_manager_from_genesis(&genesis_context);
     // Use create_with_history to ensure tests can reset to genesis state root hash
@@ -119,159 +180,35 @@ where
     Ok(f(runtime_manager, genesis_context, genesis_block).await)
 }
 
-/// LMDB named-DB slot budget for the shared, process-cached test
-/// environments. Scoped DB names accumulate monotonically across
-/// store-manager creations (each mints a fresh `{scope}-{db}` name set,
-/// ~10 slots in the worst env per creation, never reclaimed), and the
-/// slashing-tests CI job runs uncapped proptests at PROPTEST_CASES=10000
-/// with a store manager per case: 10k cases x ~2 managers x ~10 slots
-/// = ~200k. Slot bookkeeping is ~100 bytes each (~20 MB per env at this
-/// cap). Durable fix — reusing or evicting scoped DBs per case — is
-/// tracked in the PR #125 findings comment.
-const TEST_LMDB_MAX_DBS: u32 = 200_000;
-
-pub fn mk_test_rnode_store_manager_with_scope(
-    dir_path: PathBuf,
-    scope_id: Option<String>,
-) -> impl KeyValueStoreManager {
-    // Cap on the shared LMDB env's map_size. heed 0.22's env cache locks the
-    // map_size at first open per path, so the entire casper test suite shares
-    // one env at this size — not 500 MB per test like legacy heed 0.11. Bumped
-    // to 4 GB to give the suite headroom (virtual address space; real disk
-    // usage matches data written).
+/// Creates the production store layout in `scope`'s directory.
+pub fn mk_test_rnode_store_manager(scope: &TestScope) -> TestStoreManager {
+    // Production env map sizes reach terabytes of address space; tests hold
+    // many directories open at once, so each env is capped.
     let limit_size = 4 * GB;
 
-    let db_mappings: Vec<(Db, LmdbEnvConfig)> = rnode_db_mapping(None)
+    let db_mapping = rnode_db_mapping(None)
         .into_iter()
         .map(|(db, mut conf)| {
-            let new_conf = if conf.max_env_size > limit_size {
-                conf.max_env_size = limit_size;
-                conf
-            } else {
-                conf
-            }
-            .with_max_dbs(TEST_LMDB_MAX_DBS);
-
-            // If scope_id is provided, create a scoped database name using name_override
-            // This ensures test isolation while keeping the original ID for lookup
-            let scoped_db = if let Some(ref scope) = scope_id {
-                let scoped_name = format!("{}-{}", scope, db.id());
-                Db::new(db.id().to_string(), Some(scoped_name))
-            } else {
-                db
-            };
-
-            (scoped_db, new_conf)
+            conf.max_env_size = conf.max_env_size.min(limit_size);
+            (db, conf)
         })
         .collect();
 
-    LmdbDirStoreManager::new(dir_path, db_mappings.into_iter().collect())
+    TestStoreManager {
+        manager: Box::new(LmdbDirStoreManager::new(
+            scope.path().to_path_buf(),
+            db_mapping,
+        )),
+        _scope: scope.clone(),
+    }
 }
 
-/// Creates a test store manager using a shared LMDB environment.
-///
-/// This is the recommended approach for tests to avoid exhausting OS resources
-/// (file descriptors, LMDB environments). All tests share a single LMDB environment,
-/// with test isolation achieved through scoped database names (UUID prefixes).
-///
-/// # Best Practices
-/// - Always use this function instead of `mk_test_rnode_store_manager()` for tests
-/// - Each test gets a unique scope_id via `generate_scope_id()`
-/// - The shared environment is automatically cleaned up when tests complete
-/// - Works efficiently with parallel test execution (test-threads=4-8 recommended)
-pub fn mk_test_rnode_store_manager_shared(scope_id: String) -> Box<dyn KeyValueStoreManager> {
-    let (shared_path, _temp_dir) = &*SHARED_LMDB_ENV;
-    // Create the manager with scoped database names in the mapping
-    // This ensures isolation at the LMDB level while keeping lookup by original name
-    Box::new(mk_test_rnode_store_manager_with_scope(
-        shared_path.clone(),
-        Some(scope_id),
-    ))
-}
-
-/// Generates a unique scope ID for test isolation.
-///
-/// Each test should use a unique scope ID to ensure database isolation
-/// within the shared LMDB environment.
-pub fn generate_scope_id() -> String { Uuid::new_v4().to_string() }
-
-/// Returns the path to the shared LMDB environment.
-///
-/// This is useful for logging/debugging purposes when tests need a path
-/// to reference, but actual LMDB storage is in the shared environment.
-pub fn get_shared_lmdb_path() -> PathBuf {
-    let (shared_path, _temp_dir) = &*SHARED_LMDB_ENV;
-    shared_path.clone()
-}
-
-/// Creates a test store manager with dual scoping for RSpace and other stores.
-///
-/// This function creates a manager where:
-/// - RSpace stores (rspace-history, rspace-roots, rspace-cold) use `rspace_scope`
-/// - All other stores (blocks, DAG, deploys, etc.) use `node_scope`
-///
-/// This allows multiple nodes within a test to share RSpace state (see each other's
-/// committed roots) while maintaining isolation for block and DAG stores.
-pub fn mk_test_rnode_store_manager_with_dual_scope(
-    node_scope: String,
-    rspace_scope: String,
-) -> impl KeyValueStoreManager {
-    let (shared_path, _temp_dir) = &*SHARED_LMDB_ENV;
-    // Dual-scope variant — same shared-env consideration as
-    // mk_test_rnode_store_manager_with_scope. Bumped from 100 MB to 1 GB,
-    // then to 4 GB (matching with_scope): scoped-DB data accumulates in the
-    // shared env across store-manager creations, and the slashing proptest
-    // suite filled 1 GB mid-job (MDB_MAP_FULL). map_size is virtual address
-    // space; real disk usage matches data written.
-    let limit_size = 4 * GB;
-
-    let db_mappings: Vec<(Db, LmdbEnvConfig)> = rnode_db_mapping(None)
-        .into_iter()
-        .map(|(db, mut conf)| {
-            let new_conf = if conf.max_env_size > limit_size {
-                conf.max_env_size = limit_size;
-                conf
-            } else {
-                conf
-            }
-            .with_max_dbs(TEST_LMDB_MAX_DBS);
-
-            // Determine which scope to use based on database type
-            let scope_to_use = if db.id().starts_with("rspace-") {
-                &rspace_scope
-            } else {
-                &node_scope
-            };
-
-            // Create scoped database name
-            let scoped_name = format!("{}-{}", scope_to_use, db.id());
-            let scoped_db = Db::new(db.id().to_string(), Some(scoped_name));
-
-            (scoped_db, new_conf)
-        })
-        .collect();
-
-    LmdbDirStoreManager::new(shared_path.clone(), db_mappings.into_iter().collect())
-}
-
-/// Creates a test store manager with genesis data and shared RSpace scope.
-///
-/// This function:
-/// 1. Generates a new unique scope for this node's blocks/DAG stores
-/// 2. Uses the shared RSpace scope from genesis for RSpace stores
-/// 3. Copies genesis block and DAG data to the new node's stores
-///
-/// This ensures all nodes in the same test can see each other's RSpace state
-/// (committed roots) while maintaining isolation for block and DAG data.
-pub async fn mk_test_rnode_store_manager_with_shared_rspace(
+/// Creates a store manager for a new node in its own directory, seeded with
+/// the genesis block. The node's RSpace stores come from the genesis scope.
+pub async fn mk_test_node_store_manager(
     genesis_context: &GenesisContext,
-    shared_rspace_scope: &str,
-) -> Result<Box<dyn KeyValueStoreManager>, CasperError> {
-    let new_node_scope = generate_scope_id();
-    let mut new_kvm = Box::new(mk_test_rnode_store_manager_with_dual_scope(
-        new_node_scope,
-        shared_rspace_scope.to_string(),
-    ));
+) -> Result<TestStoreManager, CasperError> {
+    let mut new_kvm = mk_test_rnode_store_manager(&TestScope::new());
 
     // Copy genesis block to the new scope's block store
     let new_block_store = KeyValueBlockStore::create_from_kvm(&mut *new_kvm).await?;
@@ -292,21 +229,13 @@ pub async fn mk_test_rnode_store_manager_with_shared_rspace(
     Ok(new_kvm)
 }
 
-/// Creates a test store manager using the genesis rspace_scope_id directly.
-///
-/// This function reuses the same RSpace scope where genesis was created,
-/// giving direct access to the genesis RSpace history and roots without copying.
-///
-/// CRITICAL: Uses rspace_scope_id, not scope_id! Genesis RSpace data is stored
-/// in the rspace_scope_id, which ensures tests can access the genesis state and
-/// its committed roots in the RootsStore.
+/// Opens the genesis scope, where genesis RSpace history and roots live.
 ///
 /// Note: Multiple tests using this will share the same RSpace state.
-/// Use `mk_test_rnode_store_manager_with_genesis` for complete test isolation.
 pub fn mk_test_rnode_store_manager_from_genesis(
     genesis_context: &GenesisContext,
-) -> Box<dyn KeyValueStoreManager> {
-    mk_test_rnode_store_manager_shared(genesis_context.rspace_scope_id.clone())
+) -> TestStoreManager {
+    mk_test_rnode_store_manager(&genesis_context.rspace_scope)
 }
 
 type MergeableStore = shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl<
@@ -503,8 +432,7 @@ pub async fn mk_runtime_manager(
         >,
     >,
 ) -> RuntimeManager {
-    let scope_id = generate_scope_id();
-    let mut kvm = mk_test_rnode_store_manager_shared(scope_id);
+    let mut kvm = mk_test_rnode_store_manager(&TestScope::new());
 
     mk_runtime_manager_at(&mut *kvm, mergeable_tags).await
 }

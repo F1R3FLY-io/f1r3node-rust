@@ -56,3 +56,4 @@ features = [
 [dev-dependencies]
 test-env-helpers = "0.2.2"
 metrics-util = { workspace = true }
+tempfile = { workspace = true }

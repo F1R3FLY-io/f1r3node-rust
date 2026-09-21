@@ -1,7 +1,6 @@
 // See casper/src/test/scala/coop/rchain/casper/util/GenesisBuilder.scala
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::errors::CasperError;
@@ -23,9 +22,8 @@ use models::rust::casper::protocol::casper_message::{
 };
 use prost::bytes;
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
-use tempfile::TempDir;
 
-use crate::util::rholang::resources::{generate_scope_id, mk_test_rnode_store_manager_shared};
+use crate::util::rholang::resources::{mk_test_rnode_store_manager, TestScope};
 
 pub type GenesisParameters = (
     Vec<(PrivateKey, PublicKey)>,
@@ -294,19 +292,11 @@ impl GenesisBuilder {
             genesis_parameters.vaults = vaults.clone();
         }
 
-        // With shared LMDB, we don't need to create a separate directory for storage.
-        // Use the shared LMDB path instead. The directory is kept for backward compatibility
-        // and logging purposes, but actual LMDB storage is in the shared environment.
-        let storage_directory_path = crate::util::rholang::resources::get_shared_lmdb_path();
-        // No TempDir guard needed since we're using the shared environment
-
-        // Generate a shared RSpace scope_id that will be used by all nodes in this test
-        let rspace_scope_id = generate_scope_id();
+        let rspace_scope = TestScope::new();
 
         // Build genesis in a scoped block to ensure LMDB handles are closed
         let genesis = {
-            // Create genesis with rspace_scope_id so TestNodes can share the same RSpace stores
-            let mut kvs_manager = mk_test_rnode_store_manager_shared(rspace_scope_id.clone());
+            let mut kvs_manager = mk_test_rnode_store_manager(&rspace_scope);
             let r_store = (*kvs_manager)
                 .r_space_stores()
                 .await
@@ -339,46 +329,22 @@ impl GenesisBuilder {
             // ← kvs_manager drops here, closing LMDB handles
         };
 
-        // Return context with scope_id.
-        // With shared LMDB, storage_directory points to the shared environment path.
-        // No TempDir guard needed since we're using the shared environment.
         Ok(GenesisContext {
             genesis_block: genesis,
             validator_key_pairs,
             genesis_vaults,
-            storage_directory: storage_directory_path,
-            rspace_scope_id,
-            _tempdir_guard: None, // No tempdir guard needed with shared LMDB
+            rspace_scope,
         })
     }
 }
 
+#[derive(Clone)]
 pub struct GenesisContext {
     pub genesis_block: BlockMessage,
     pub validator_key_pairs: Vec<(PrivateKey, PublicKey)>,
     pub genesis_vaults: Vec<(PrivateKey, PublicKey)>,
-    pub storage_directory: PathBuf,
-    /// The shared RSpace scope_id for all nodes in the same test.
-    /// All TestNodes in this test share the same RSpace stores to see each other's state.
-    pub rspace_scope_id: String,
-    // Keep TempDir guard alive to prevent auto-cleanup while context is in use
-    // Only the original context holds Some(tempdir), clones have None
-    _tempdir_guard: Option<TempDir>,
-}
-
-// Manual Clone implementation: clones don't get the TempDir guard
-// This is intentional - only the original context (stored in cache) keeps the directory alive
-impl Clone for GenesisContext {
-    fn clone(&self) -> Self {
-        Self {
-            genesis_block: self.genesis_block.clone(),
-            validator_key_pairs: self.validator_key_pairs.clone(),
-            genesis_vaults: self.genesis_vaults.clone(),
-            storage_directory: self.storage_directory.clone(),
-            rspace_scope_id: self.rspace_scope_id.clone(),
-            _tempdir_guard: None, // Clones don't own the directory
-        }
-    }
+    /// All TestNodes in this test share these RSpace stores to see each other's state.
+    pub rspace_scope: TestScope,
 }
 
 impl GenesisContext {

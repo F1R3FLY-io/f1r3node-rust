@@ -22,7 +22,7 @@ use rspace_plus_plus::rspace::reporting_transformer::ReportingTransformer;
 
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
-use crate::util::rholang::resources::mk_test_rnode_store_manager_shared;
+use crate::util::rholang::resources::mk_test_rnode_store_manager;
 
 /// Reconstruct the transfer unforgeable channel exactly as
 /// `node/src/rust/web/transaction::transfer_unforgeable` does, so this test
@@ -174,7 +174,7 @@ async fn cost_accounted_user_deploy_report_starts_with_precharge_batch() {
 
     // Open the shared RSpace stores on the genesis scope and replay the block
     // through the reporting runtime, exactly as the node's BlockReportAPI does.
-    let mut rspace_kvm = mk_test_rnode_store_manager_shared(genesis.rspace_scope_id.clone());
+    let mut rspace_kvm = mk_test_rnode_store_manager(&genesis.rspace_scope);
     let rspace_store = rspace_kvm
         .r_space_stores()
         .await
@@ -315,7 +315,7 @@ async fn genesis_report_carries_only_user_markers() {
         .await
         .expect("Failed to create standalone node");
 
-    let mut rspace_kvm = mk_test_rnode_store_manager_shared(genesis.rspace_scope_id.clone());
+    let mut rspace_kvm = mk_test_rnode_store_manager(&genesis.rspace_scope);
     let rspace_store = rspace_kvm
         .r_space_stores()
         .await

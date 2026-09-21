@@ -224,14 +224,14 @@ async fn resolve_returns_typed_err_for_claimed_but_missing_from_body() {
     use models::rust::block_implicits;
 
     use crate::util::rholang::resources::{
-        block_dag_storage_from_dyn, generate_scope_id, mk_test_rnode_store_manager_shared,
+        block_dag_storage_from_dyn, mk_test_rnode_store_manager, TestScope,
     };
 
     let ctx = TestContext::new().await;
     let genesis_block = ctx.genesis.genesis_block.clone();
     let genesis_hash = genesis_block.block_hash.clone();
 
-    let mut kvm = mk_test_rnode_store_manager_shared(generate_scope_id());
+    let mut kvm = mk_test_rnode_store_manager(&TestScope::new());
     let block_store = KeyValueBlockStore::create_from_kvm(&mut *kvm)
         .await
         .expect("block store");
@@ -311,14 +311,14 @@ async fn resolve_uses_known_block_fallback_when_the_register_misses() {
     use models::rust::casper::protocol::casper_message::ProcessedDeploy;
 
     use crate::util::rholang::resources::{
-        block_dag_storage_from_dyn, generate_scope_id, mk_test_rnode_store_manager_shared,
+        block_dag_storage_from_dyn, mk_test_rnode_store_manager, TestScope,
     };
 
     let ctx = TestContext::new().await;
     let genesis_block = ctx.genesis.genesis_block.clone();
     let genesis_hash = genesis_block.block_hash.clone();
 
-    let mut kvm = mk_test_rnode_store_manager_shared(generate_scope_id());
+    let mut kvm = mk_test_rnode_store_manager(&TestScope::new());
     let block_store = KeyValueBlockStore::create_from_kvm(&mut *kvm)
         .await
         .expect("block store");
@@ -481,14 +481,14 @@ async fn resolve_finds_sig_in_secondary_parent_branch() {
     use models::rust::casper::protocol::casper_message::ProcessedDeploy;
 
     use crate::util::rholang::resources::{
-        block_dag_storage_from_dyn, generate_scope_id, mk_test_rnode_store_manager_shared,
+        block_dag_storage_from_dyn, mk_test_rnode_store_manager, TestScope,
     };
 
     let ctx = TestContext::new().await;
     let genesis_block = ctx.genesis.genesis_block.clone();
     let genesis_hash = genesis_block.block_hash.clone();
 
-    let mut kvm = mk_test_rnode_store_manager_shared(generate_scope_id());
+    let mut kvm = mk_test_rnode_store_manager(&TestScope::new());
     let block_store = KeyValueBlockStore::create_from_kvm(&mut *kvm)
         .await
         .expect("block store");

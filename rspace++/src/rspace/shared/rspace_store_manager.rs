@@ -11,10 +11,6 @@ use crate::rspace::rspace::RSpaceStore;
 use crate::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use crate::rspace::shared::lmdb_dir_store_manager::LmdbDirStoreManager;
 
-// max_dbs limit for shared envs (history + roots live in the same env).
-// Increased to support parallel test execution with scoped database names.
-const RSPACE_MAX_DBS: u32 = 10000;
-
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/RholangCLI.scala
 pub fn mk_rspace_store_manager(dir_path: PathBuf, map_size: usize) -> impl KeyValueStoreManager {
     let rspace_history_env_config = LmdbEnvConfig::new("history".to_owned(), map_size);
@@ -84,7 +80,7 @@ fn create_lmdb_store(
     // Route through env_cache so a second create_lmdb_store call for the same
     // path (e.g. rspace-history + rspace-roots both in rspace/history) reuses
     // the same Env handle instead of tripping EnvAlreadyOpened under heed 0.22.
-    let env = env_cache::get_or_open_env(Path::new(lmdb_path), max_env_size, RSPACE_MAX_DBS)?;
+    let env = env_cache::get_or_open_env(Path::new(lmdb_path), max_env_size)?;
     let mut wtxn = env.write_txn()?;
     let db = env.create_database(&mut wtxn, Some(db_name))?;
     wtxn.commit()?;
@@ -96,7 +92,7 @@ fn open_lmdb_store(
     db_name: &str,
     max_env_size: usize,
 ) -> Result<LmdbKeyValueStore, heed::Error> {
-    let env = env_cache::get_or_open_env(Path::new(lmdb_path), max_env_size, RSPACE_MAX_DBS)?;
+    let env = env_cache::get_or_open_env(Path::new(lmdb_path), max_env_size)?;
     let rtxn = env.read_txn()?;
     let db = env.open_database(&rtxn, Some(db_name))?;
     drop(rtxn);

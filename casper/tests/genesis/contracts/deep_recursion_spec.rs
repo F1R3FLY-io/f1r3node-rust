@@ -10,11 +10,10 @@ use rholang::rust::interpreter::rho_runtime::create_runtime_from_kv_store;
 use rspace_plus_plus::rspace::r#match::Match;
 
 use crate::genesis::contracts::test_util::TestUtil;
-use crate::util::rholang::resources::{generate_scope_id, mk_test_rnode_store_manager_shared};
+use crate::util::rholang::resources::{mk_test_rnode_store_manager, TestScope};
 
 async fn eval_rholang_code(code: &str, timeout: Duration) -> Result<(), String> {
-    let scope_id = generate_scope_id();
-    let mut kvs_manager = mk_test_rnode_store_manager_shared(scope_id);
+    let mut kvs_manager = mk_test_rnode_store_manager(&TestScope::new());
     let r_store = kvs_manager
         .r_space_stores()
         .await

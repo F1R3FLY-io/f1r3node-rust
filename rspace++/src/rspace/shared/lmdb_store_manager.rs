@@ -18,7 +18,6 @@ use crate::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 pub struct LmdbStoreManager {
     dir_path: PathBuf,
     max_env_size: usize,
-    max_dbs: u32,
     env: Arc<Mutex<Option<Arc<Env>>>>,
     dbs: Arc<Mutex<HashMap<String, DbEnv>>>,
 }
@@ -30,15 +29,10 @@ struct DbEnv {
 }
 
 impl LmdbStoreManager {
-    pub fn new(
-        dir_path: PathBuf,
-        max_env_size: usize,
-        max_dbs: u32,
-    ) -> Box<dyn KeyValueStoreManager> {
+    pub fn new(dir_path: PathBuf, max_env_size: usize) -> Box<dyn KeyValueStoreManager> {
         Box::new(LmdbStoreManager {
             dir_path,
             max_env_size,
-            max_dbs,
             env: Arc::new(Mutex::new(None)),
             dbs: Arc::new(Mutex::new(HashMap::new())),
         })
@@ -54,16 +48,11 @@ impl LmdbStoreManager {
 
         // Obtain a shared Arc<Env> for this path from the workspace-level
         // env_cache. Multiple LmdbStoreManager instances targeting the same
-        // dir_path (e.g. the casper shared-LMDB test pattern) all observe the
-        // same Env via the cache.
+        // dir_path all observe the same Env via the cache.
         let env = {
             let mut env_slot = self.env.lock().await;
             if env_slot.is_none() {
-                *env_slot = Some(env_cache::get_or_open_env(
-                    &self.dir_path,
-                    self.max_env_size,
-                    self.max_dbs,
-                )?);
+                *env_slot = Some(env_cache::get_or_open_env(&self.dir_path, self.max_env_size)?);
             }
             env_slot.as_ref().unwrap().clone()
         };

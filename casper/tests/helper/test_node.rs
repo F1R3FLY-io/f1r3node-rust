@@ -966,18 +966,9 @@ impl TestNode {
         let tls =
             TransportLayerServerTestImpl::new(current_peer_node.clone(), test_network.clone());
 
-        // With shared LMDB, we don't need to copy storage directories.
-        // Use the shared LMDB path for data_dir (for logging/debugging purposes only).
-        let _new_storage_dir = resources::get_shared_lmdb_path();
-        // Use mk_test_rnode_store_manager_with_shared_rspace to get a new scope with genesis data copied
-        // This ensures test isolation for blocks/DAG (each TestNode has its own scope)
-        // while sharing RSpace scope so all nodes in this test can see each other's state
-        let mut kvm = resources::mk_test_rnode_store_manager_with_shared_rspace(
-            genesis_context,
-            &genesis_context.rspace_scope_id,
-        )
-        .await
-        .expect("Failed to create store manager with shared RSpace");
+        let mut kvm = resources::mk_test_node_store_manager(genesis_context)
+            .await
+            .expect("Failed to create node store manager");
 
         let block_store_base = KeyValueBlockStore::create_from_kvm(&mut *kvm)
             .await
@@ -1016,7 +1007,10 @@ impl TestNode {
             .await
             .unwrap();
 
-        let rspace_store = (*kvm).r_space_stores().await.unwrap();
+        let rspace_store = resources::mk_test_rnode_store_manager_from_genesis(genesis_context)
+            .r_space_stores()
+            .await
+            .unwrap();
         let mergeable_store = resources::mergeable_store_from_dyn(&mut *kvm)
             .await
             .unwrap();

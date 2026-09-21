@@ -45,7 +45,6 @@ use crate::helper::block_dag_storage_fixture::with_storage;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::{GenesisBuilder, DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS};
 use crate::util::rholang::resources;
-use crate::util::rholang::resources::generate_scope_id;
 
 const AUTOGEN_SHARD_SIZE: usize = 5;
 const RCHAIN_SHARD_ID: &str = "root";
@@ -61,7 +60,6 @@ where
     F: FnOnce(RuntimeManager, PathBuf, LogStub, LogicalTime) -> Fut,
     Fut: Future<Output = R>,
 {
-    let scope_id = generate_scope_id();
     let gp = genesis_path();
 
     // Scala uses MetricsNOP, and this class in turn is empty, if it is used it means that the test does not log metrics.
@@ -71,7 +69,7 @@ where
     let time = LogicalTime::new();
     let log = LogStub::new();
 
-    let mut kvs_manager = resources::mk_test_rnode_store_manager_shared(scope_id.clone());
+    let mut kvs_manager = resources::mk_test_rnode_store_manager(&resources::TestScope::new());
 
     let m_store = RuntimeManager::mergeable_store(&mut *kvs_manager)
         .await
@@ -93,7 +91,6 @@ where
 
     // Note: Scala uses PathOps.recursivelyDelete() with FileVisitor pattern.
     // Rust fs::remove_dir_all does the same - recursively removes directory with all contents.
-    let _ = fs::remove_dir_all(&scope_id);
     let _ = fs::remove_dir_all(&gp);
 
     result

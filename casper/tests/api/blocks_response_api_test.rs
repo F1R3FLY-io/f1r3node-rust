@@ -18,7 +18,7 @@ use models::rust::validator::Validator;
 use crate::helper::no_ops_casper_effect::NoOpsCasperEffect;
 use crate::helper::{block_generator, block_util};
 use crate::util::rholang::resources::{
-    generate_scope_id, mk_runtime_manager_at, mk_test_rnode_store_manager_shared,
+    mk_runtime_manager_at, mk_test_rnode_store_manager, TestScope,
 };
 use crate::util::test_mocks::MockKeyValueStore;
 
@@ -47,8 +47,7 @@ fn create_validators_and_bonds() -> (Validator, Validator, Validator, Bond, Bond
 
 // Helper function to create storage components (similar to Scala's BlockDagStorageFixture)
 async fn create_storage(_prefix: &str) -> IndexedBlockDagStorage {
-    let scope_id = generate_scope_id();
-    let mut kvm = mk_test_rnode_store_manager_shared(scope_id);
+    let mut kvm = mk_test_rnode_store_manager(&TestScope::new());
     let dag = crate::util::rholang::resources::block_dag_storage_from_dyn(&mut *kvm)
         .await
         .unwrap();
@@ -294,8 +293,7 @@ async fn show_main_chain_should_return_only_blocks_in_the_main_chain() {
         .await
         .unwrap();
 
-    let scope_id = generate_scope_id();
-    let mut kvm = mk_test_rnode_store_manager_shared(scope_id);
+    let mut kvm = mk_test_rnode_store_manager(&TestScope::new());
     let runtime_manager = mk_runtime_manager_at(&mut *kvm, None).await;
 
     let casper_effect = NoOpsCasperEffect::new_with_shared_kvm(
@@ -350,8 +348,7 @@ async fn get_blocks_should_return_all_blocks() {
         .await
         .unwrap();
 
-    let scope_id = generate_scope_id();
-    let mut kvm = mk_test_rnode_store_manager_shared(scope_id);
+    let mut kvm = mk_test_rnode_store_manager(&TestScope::new());
     let runtime_manager = mk_runtime_manager_at(&mut *kvm, None).await;
 
     let casper_effect = NoOpsCasperEffect::new_with_shared_kvm(
@@ -404,8 +401,7 @@ async fn get_blocks_should_return_until_depth() {
         .await
         .unwrap();
 
-    let scope_id = generate_scope_id();
-    let mut kvm = mk_test_rnode_store_manager_shared(scope_id);
+    let mut kvm = mk_test_rnode_store_manager(&TestScope::new());
     let runtime_manager = mk_runtime_manager_at(&mut *kvm, None).await;
 
     let casper_effect = NoOpsCasperEffect::new_with_shared_kvm(
@@ -463,8 +459,7 @@ async fn get_blocks_by_heights_should_return_blocks_between_start_and_end() {
         .await
         .unwrap();
 
-    let scope_id = generate_scope_id();
-    let mut kvm = mk_test_rnode_store_manager_shared(scope_id);
+    let mut kvm = mk_test_rnode_store_manager(&TestScope::new());
     let runtime_manager = mk_runtime_manager_at(&mut *kvm, None).await;
 
     let casper_effect = NoOpsCasperEffect::new_with_shared_kvm(

@@ -38,22 +38,10 @@ pub const TB: usize = 1024 * GB;
 pub struct LmdbEnvConfig {
     pub name: String,
     pub max_env_size: usize,
-    pub max_dbs: u32,
 }
 
 impl LmdbEnvConfig {
-    pub fn new(name: String, max_env_size: usize) -> Self {
-        LmdbEnvConfig {
-            name,
-            max_env_size,
-            max_dbs: 20,
-        }
-    }
-
-    pub fn with_max_dbs(mut self, max_dbs: u32) -> Self {
-        self.max_dbs = max_dbs;
-        self
-    }
+    pub fn new(name: String, max_env_size: usize) -> Self { LmdbEnvConfig { name, max_env_size } }
 }
 
 // See shared/src/main/scala/coop/rchain/store/LmdbDirStoreManager.scala
@@ -103,7 +91,6 @@ impl KeyValueStoreManager for LmdbDirStoreManager {
                     let manager = LmdbStoreManager::new(
                         self.dir_path.join(&man_cfg.name),
                         man_cfg.max_env_size,
-                        man_cfg.max_dbs,
                     );
                     Arc::new(Mutex::new(manager))
                 })
