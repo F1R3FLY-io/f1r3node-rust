@@ -24,6 +24,22 @@ SEED = 5915
 FIELDS = ["population", "repeat", "family", "arm", "depth", "phase", "executed",
           "elapsed_ns", "allocations", "requested_bytes", "process_ns"]
 PATTERN = re.compile(r"FIXTURE_SAMPLE\t(\w+)\t(\w+)\t(\d+)\t(\w+)\t([01])\t(\d+)\t(\d+)\t(\d+)")
+IDLE_SNAPSHOTS = 30
+
+
+def await_idle(cpu, record, sampler=cpu_snapshot):
+    for attempt in range(IDLE_SNAPSHOTS):
+        raw, idle = sampler(cpu)
+        record(attempt, raw, idle)
+        if idle:
+            return
+    raise RuntimeError("CPU contention after 30 snapshots; partial population retained, not qualified")
+
+
+def record_idle(directory, label, attempt, raw, eligible):
+    (directory / f"cpu-{label}-attempt-{attempt}.json").write_text(raw)
+    with (directory / "idle-decisions.tsv").open("a") as output:
+        output.write(f"{label}\t{attempt}\t{int(eligible)}\n")
 
 
 def validate(rows):
@@ -82,13 +98,11 @@ def collect(binary, directory, cpu, pilot):
     if os.environ.get("FIXTURE_CAPPED") != "1":
         raise ValueError("run inside the prescribed systemd resource envelope")
     directory.mkdir(parents=True, exist_ok=False)
-    raw, idle = cpu_snapshot(cpu)
-    (directory / "cpu-before.json").write_text(raw)
-    if not idle:
-        raise RuntimeError("insufficient idle physical cores or selected core busy")
+    await_idle(cpu, lambda attempt, raw, idle: record_idle(directory, "before", attempt, raw, idle))
     sources = [Path(__file__), Path(__file__).with_name("benchmark_host.py"),
                Path(__file__).with_name("paired_benchmark_statistics.py"),
-               Path("rholang/tests/stack_depth_gate.rs")]
+               Path("rholang/tests/stack_depth_gate.rs"),
+               Path("models/src/rust/par_construction.rs")]
     sources.extend(Path("rholang/tests/support") / name for name in
                    ["deep_fixture_scaling.rs", "planned_deep_fixture.rs", "counting_alloc.rs"])
     metadata = {
@@ -97,6 +111,7 @@ def collect(binary, directory, cpu, pilot):
         "source_sha256": {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in sources},
         "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
         "cpu": cpu, "stack_bytes": 1_048_576, "watchdog_seconds": 20,
+        "pre_round_idle_snapshots_max": IDLE_SNAPSHOTS,
         "repeats": 1 if pilot else REPEATS, "warmups": 0 if pilot else WARMUPS,
         "families": FAMILIES, "arms": ARMS, "depths": DEPTHS,
         "topology": subprocess.check_output(["lscpu", "-e=CPU,CORE,SOCKET,NODE"], text=True),
@@ -111,10 +126,8 @@ def collect(binary, directory, cpu, pilot):
         writer.writerow(FIELDS)
         for population, repeats in populations:
             for repeat in range(repeats):
-                raw, idle = cpu_snapshot(cpu)
-                (directory / f"cpu-{population}-{repeat}.json").write_text(raw)
-                if not idle:
-                    raise RuntimeError("CPU contention; partial population retained, not qualified")
+                await_idle(cpu, lambda attempt, raw, idle:
+                           record_idle(directory, f"{population}-{repeat}", attempt, raw, idle))
                 cells = list(itertools.product(FAMILIES, DEPTHS))
                 rng.shuffle(cells)
                 for family, depth in cells:
@@ -150,6 +163,24 @@ def collect(binary, directory, cpu, pilot):
 
 
 def self_test():
+    for decisions in [[True], [False, False, True], [False] * IDLE_SNAPSHOTS]:
+        pending, observed = iter(decisions), []
+        try:
+            await_idle(2, lambda attempt, raw, idle: observed.append((attempt, raw, idle)),
+                       lambda cpu: (str(cpu), next(pending)))
+        except RuntimeError:
+            assert not any(decisions)
+        else:
+            assert decisions[-1]
+        assert observed == [(index, "2", idle) for index, idle in enumerate(decisions)]
+    def broken_sampler(cpu):
+        raise OSError("snapshot unavailable")
+    try:
+        await_idle(2, lambda *args: None, broken_sampler)
+    except OSError:
+        pass
+    else:
+        raise AssertionError("snapshot failure must not permit measurement")
     rows = []
     for population, count in [("warmup", WARMUPS), ("sample", REPEATS)]:
         for repeat, family, arm, depth, phase in itertools.product(range(count), FAMILIES, ARMS, DEPTHS, PHASES):

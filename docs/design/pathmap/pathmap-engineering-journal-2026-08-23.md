@@ -14583,6 +14583,21 @@ Additional logs: `target/verification/collection-5915-proof-r5.log`,
 same verification directory. Experiment 347 retains the baseline measurement;
 the failed scaling result is not overwritten by a subsequent treatment.
 
+**Pre-round eligibility refinement, before treatment acceptance.** Treatment
+attempts r1/r2/r3 terminate at the unchanged idle predicate after seven sample
+rounds, three warmup rounds and two warmup rounds respectively. No child fails;
+the selected physical core or its SMT sibling briefly falls below 90% idle.
+Those partial populations remain unqualified and are not pooled. The runner
+now waits for eligibility for at most 30 total one-second snapshots before
+each round, recording every snapshot and its decision. It starts no child and
+does not advance randomized ordering until eligibility passes; persistent
+contention or sampling errors still stop the run. Immediate eligibility,
+delayed eligibility, bounded refusal and sampler errors have deterministic
+controls. This changes pre-measurement availability, not the eligibility
+predicate, timed region, sample population, statistic or acceptance threshold.
+It does not guarantee absence of interference throughout an entire round.
+The metadata now also includes the production planner's source digest.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
