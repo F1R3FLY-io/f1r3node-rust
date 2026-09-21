@@ -8765,8 +8765,11 @@ accepted, without claiming universal allocation bounds or new timing results.
 records the source/accounting limits and receipts. The five default-build
 runtime replay/producer tests also pass, including depth-4,096 replay and
 EPathMap event/hash, charge and checkpoint-root equality, with 1.2 GiB reported
-peak and zero swap. The separate Casper deploy-log boundary and task acceptance
-record are not implied by those runtime checks.
+peak and zero swap. The separate Casper deploy-log boundary also passes all
+11 tests, with 2.4 GiB reported peak under the 8 GiB cap and zero swap. J-192
+maps the original task requirements to retained formal, semantic, scaling and
+replay evidence. This completes local task qualification, not trusted pgmcp
+verification or the still-open whole-workspace/campaign release gates.
 
 ---
 

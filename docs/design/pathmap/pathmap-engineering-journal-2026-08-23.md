@@ -14411,9 +14411,14 @@ controls. The EPathMap test requires real COMM events, complete consumption of
 the recorded replay log, identical charges and equal checkpoint roots. The
 service takes 53.598 seconds including compilation, 177.297 CPU seconds and a
 reported 1.2 GiB peak under the same 8 GiB hard cap with zero swap. No external
-service calls are required by the producer controls. The existing separate
-Casper deploy-log canonicalization/replay target is being checked for the
-remaining consensus boundary; these five runtime tests do not replace it.
+service calls are required by the producer controls. The separate existing
+Casper deploy-log canonicalization/replay target subsequently passes all 11
+tests in 0.27 seconds. Its capped service takes 175.214 seconds including
+compilation, 558.215 CPU seconds and a reported 2.4 GiB peak with zero swap.
+The tests check deterministic/total canonical keys, permutation and idempotence
+properties, real replay-rig multiset behavior and discriminating negative
+controls. No Casper source changes are made. Together, these gates supply
+79 distinct passing tests, with the default corpus rerun an additional execution.
 
 **Source review and limits.** The construction occurrence tree coalesces equal
 complete tag/score/body keys before `finish`, so the output-key census remains
@@ -14433,12 +14438,28 @@ No universal allocation bound is inferred or added as a new task requirement.
 | target/verification/substitution-5916-family-cost-r1.log | 176b967cd89528b83cce22cc6d3a34620397073170a84a6fb901e794c92c7b67 |
 | target/verification/substitution-5916-family-cost-r2.log | a5f82b8c785ec7a3366a7f7edd0222f718f85f4b054052d33cdaaad7e192bddd |
 | target/verification/substitution-5916-replay-r1.log | f7cdf34794a8fecbe37d0c3a9139605b4430c92477f93b0e6cf006814a2310c6 |
+| target/verification/substitution-5916-consensus-r1.log | fd7114e3dd1e63ff1ccb476d4ccff3fdd9299a2804d04c12f50b503ae11bd863 |
 
-**Task boundary.** This is native cost/semantic qualification, not a production
-behavior change or a new performance win. Task 5916 remains open for its
-original formal/refinement and consensus/replay acceptance audit. Required
-campaign release and persistence gates remain separate; no optional research
-is introduced as a new prerequisite.
+**Task acceptance audit.** This checkpoint completes the local evidence for
+the original task 5916 requirements, not the broader campaign:
+
+| Requirement | Evidence retained |
+|---|---|
+| Borrowed-region ownership, framing and malformed-input handling | J-175 through J-179, generated-region and admission bindings |
+| EPathMap set/map traversal and snapshot source correspondence | J-180 through J-187 |
+| Binder scheduling, early errors and preserved incomplete components | J-188 and J-189; current recursive oracle rerun |
+| Exact output bytes, hashes and metering observables | Existing oracle comparisons retained in the 20-test feature run |
+| Depth-4,096 watchdog and geometric growth threshold | J-190, accepted experiment 346, decision 390 |
+| Allocation/copy attribution and native construction/work counters | J-190 profiles; J-191 SCA model and positive controls; J-192 heterogeneous census |
+| Current runtime and deploy-log consensus/replay boundaries | Five Rholang tests and eleven Casper tests above |
+| Reproducible source, tests and reports | Checkpoints `7d22240b9` and `a9cb41984`, followed by this final receipt |
+
+No production behavior changes in the cost-test extension and no new
+performance win is claimed. PgMCP's legacy task has no structured acceptance
+criteria at this audit, so local completion evidence does not itself establish
+trusted verified status. Submission and verified roll-up remain distinct.
+Required whole-workspace, campaign release and persistence gates remain open;
+no optional research is introduced as a new prerequisite.
 
 ## Upstream PathMap integration request register
 
