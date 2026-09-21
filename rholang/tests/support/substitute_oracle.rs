@@ -766,6 +766,90 @@ mod differential_substitute_worklist {
             .map_err(|error| format!("{:?}", error))
     }
 
+    #[cfg(feature = "protobuf-projection-experiment")]
+    fn encoded_cost_census(term: &Par) -> (usize, usize, usize, u16) {
+        let (mut copies, mut payload_bytes, mut key_bytes, mut families) = (0, 0, 0, 0);
+        macro_rules! visit {
+            ($ty:ty, $index:expr, $region:expr) => {
+                term.visit_encoded::<$ty>(|entry| {
+                    families |= 1 << $index;
+                    if $region(&entry) {
+                        copies += 1;
+                        payload_bytes += entry.payload().len();
+                    }
+                    key_bytes += models::rust::par_bag::PAR_BAG_KEY_DOMAIN.len()
+                        + 1
+                        + entry.score().len()
+                        + entry.payload().len()
+                        + std::mem::size_of::<u64>();
+                });
+            };
+        }
+        visit!(Send, 0, |_| true);
+        visit!(Receive, 1, |_| true);
+        visit!(New, 2, |_| true);
+        visit!(
+            Expr,
+            3,
+            |entry: &models::rust::par_bag::EncodedParComponent<'_, Expr>| entry
+                .to_owned_canonical_ezipper()
+                .is_none()
+        );
+        visit!(Match, 4, |_| true);
+        visit!(GUnforgeable, 5, |_| true);
+        visit!(Bundle, 6, |_| true);
+        visit!(Connective, 7, |_| true);
+        visit!(If, 8, |_| true);
+        (copies, payload_bytes, key_bytes, families)
+    }
+
+    #[cfg(feature = "protobuf-projection-experiment")]
+    fn measured_par_substitution(
+        production: &Substitute,
+        term: Par,
+        depth: i32,
+        env: &Env<Par>,
+    ) -> (
+        Result<Par, InterpreterError>,
+        models::rust::par_construction::substitution_cost::Totals,
+    ) {
+        use models::rust::par_construction::substitution_cost::{capture, Metric, Totals};
+        let identity = models::rust::pathmap_crate_type_mapper::substitution_identity(&term);
+        let (copies, bytes, _, _) = encoded_cost_census(&term);
+        let (result, totals) = capture(|| production.substitute_no_sort(term, depth, env));
+        if identity {
+            assert!(result.is_ok());
+            assert_eq!(totals, Totals::default());
+        } else {
+            assert_eq!(totals.get(Metric::RootCopies), copies, "{totals:?}");
+            assert_eq!(totals.get(Metric::RootBytes), bytes, "{totals:?}");
+            assert_eq!(totals.get(Metric::ArenaCount), 1, "{totals:?}");
+            assert!(totals.get(Metric::WorkSteps) > 0, "{totals:?}");
+            assert_eq!(totals.get(Metric::OriginalBytes), 0, "{totals:?}");
+            match &result {
+                Ok(output) => {
+                    assert_eq!(totals.get(Metric::FinishAttempts), 1, "{totals:?}");
+                    assert_eq!(totals.get(Metric::FinishSuccesses), 1, "{totals:?}");
+                    assert_eq!(
+                        totals.get(Metric::RootKeys),
+                        output.distinct_len(),
+                        "{totals:?}"
+                    );
+                    assert_eq!(
+                        totals.get(Metric::RootKeyBytes),
+                        encoded_cost_census(output).2,
+                        "{totals:?}"
+                    );
+                }
+                Err(_) => {
+                    assert_eq!(totals.get(Metric::FinishAttempts), 0, "{totals:?}");
+                    assert_eq!(totals.get(Metric::FinishSuccesses), 0, "{totals:?}");
+                }
+            }
+        }
+        (result, totals)
+    }
+
     /// Run one case through BOTH paths on FRESH budgets and compare the audit's
     /// §8.1 observables.
     fn assert_agree(case: &SubstitutionCase, env: &Env<Par>, env_name: &str) {
@@ -776,7 +860,10 @@ mod differential_substitute_worklist {
         let trace_rec = trace_of(&oracle, rec);
 
         let production = subject();
+        #[cfg(not(feature = "protobuf-projection-experiment"))]
         let tr = production.substitute_no_sort(case.term.clone(), case.depth, env);
+        #[cfg(feature = "protobuf-projection-experiment")]
+        let (tr, _) = measured_par_substitution(&production, case.term.clone(), case.depth, env);
         let trace_tr = trace_of(&production, tr);
 
         assert_eq!(
@@ -801,6 +888,119 @@ mod differential_substitute_worklist {
         for case in &corpus {
             assert_agree(case, &populated, "populated");
             assert_agree(case, &empty, "empty");
+        }
+    }
+
+    #[cfg(feature = "protobuf-projection-experiment")]
+    #[test]
+    fn region_cost_census_exercises_all_nine_nonidentity_root_families() {
+        use models::rhoapi::g_unforgeable::UnfInstance;
+        use models::rhoapi::GSysAuthToken;
+
+        use crate::rust::interpreter::test_utils::substitution_corpus::bound_var;
+
+        let env = populated_env();
+        let mut families = 0;
+        for case in substitution_corpus() {
+            if !models::rust::pathmap_crate_type_mapper::substitution_identity(&case.term) {
+                let input_families = encoded_cost_census(&case.term).3;
+                let (result, _) =
+                    measured_par_substitution(&subject(), case.term, case.depth, &env);
+                if result.is_ok() {
+                    families |= input_families;
+                }
+            }
+        }
+        let term = bound_var(0).with_unforgeables(vec![GUnforgeable {
+            unf_instance: Some(UnfInstance::GSysAuthTokenBody(GSysAuthToken {})),
+        }]);
+        assert!(!models::rust::pathmap_crate_type_mapper::substitution_identity(&term));
+        let input_families = encoded_cost_census(&term).3;
+        let expected = par_recursive(term.clone(), SubCtx::root(0), EnvView::new(&env)).unwrap();
+        let (actual, _) = measured_par_substitution(&subject(), term, 0, &env);
+        assert_eq!(actual.unwrap().encode_to_vec(), expected.encode_to_vec());
+        families |= input_families;
+        assert_eq!(families, (1 << 9) - 1);
+    }
+
+    #[cfg(feature = "protobuf-projection-experiment")]
+    #[test]
+    fn region_cost_collision_merges_keys_without_multiplicity_work() {
+        use models::rust::par_construction::substitution_cost::Metric;
+
+        use crate::rust::interpreter::test_utils::substitution_corpus::bound_var;
+
+        let input = bound_var(0).append(bound_var(1));
+        let env = Env::new().put(gint(7)).put(gint(7));
+        assert_eq!(input.distinct_len(), 2);
+        let expected = par_recursive(input.clone(), SubCtx::root(0), EnvView::new(&env)).unwrap();
+        assert_eq!(expected.distinct_len(), 1);
+        assert_eq!(expected.cardinality(), 2);
+        let mut baseline = None;
+        for count in [1, 2, 1_000_000] {
+            let (actual, totals) = measured_par_substitution(
+                &subject(),
+                input.clone().scale_occurrences(count).unwrap(),
+                0,
+                &env,
+            );
+            let actual = actual.unwrap();
+            assert_eq!(
+                actual.components().compact_bytes(),
+                expected
+                    .clone()
+                    .scale_occurrences(count)
+                    .unwrap()
+                    .components()
+                    .compact_bytes()
+            );
+            assert_eq!(totals.get(Metric::RootCopies), 2);
+            assert_eq!(totals.get(Metric::RootKeys), 1);
+            assert_eq!(totals.get(Metric::ResidentBytes), 0);
+            if let Some(first) = baseline {
+                assert_eq!(totals, first);
+            }
+            baseline = Some(totals);
+        }
+    }
+
+    #[cfg(feature = "protobuf-projection-experiment")]
+    #[test]
+    fn region_cost_terminal_splices_preserve_unresolved_children() {
+        use models::rust::par_construction::substitution_cost::Metric;
+
+        use crate::rust::interpreter::test_utils::substitution_corpus::bound_var;
+
+        let child = bound_var(0);
+        let replacements = [
+            Par::default().with_bundles(vec![Bundle {
+                body: Some(child.clone()),
+                read_flag: true,
+                write_flag: true,
+            }]),
+            Par::default().with_connectives(vec![Connective {
+                connective_instance: Some(ConnectiveInstance::ConnAndBody(ConnectiveBody {
+                    ps: vec![child.clone(), gint(13)],
+                })),
+            }]),
+            Par::default().with_connectives(vec![Connective {
+                connective_instance: Some(ConnectiveInstance::ConnOrBody(ConnectiveBody {
+                    ps: vec![child, gint(17)],
+                })),
+            }]),
+        ];
+        for replacement in replacements {
+            let original = replacement.components().compact_bytes();
+            let env = Env::new().put(replacement);
+            let input = bound_var(0);
+            let expected =
+                par_recursive(input.clone(), SubCtx::root(0), EnvView::new(&env)).unwrap();
+            let (actual, totals) = measured_par_substitution(&subject(), input, 0, &env);
+            let actual = actual.unwrap();
+            assert_eq!(actual.encode_to_vec(), expected.encode_to_vec());
+            assert_eq!(actual.components().compact_bytes(), original);
+            assert!(totals.get(Metric::ResidentBytes) > 0, "{totals:?}");
+            assert_eq!(totals.get(Metric::RootCopies), 1);
         }
     }
 
@@ -1356,8 +1556,11 @@ mod differential_substitute_worklist {
                 .map(|p| p.encode_to_vec())
                 .map_err(|e| format!("{:?}", e));
             let s = subject();
-            let actual = s
-                .substitute_no_sort(term.clone(), depth, &env)
+            #[cfg(not(feature = "protobuf-projection-experiment"))]
+            let actual = s.substitute_no_sort(term.clone(), depth, &env);
+            #[cfg(feature = "protobuf-projection-experiment")]
+            let (actual, _) = measured_par_substitution(&s, term.clone(), depth, &env);
+            let actual = actual
                 .map(|p| p.encode_to_vec())
                 .map_err(|e| format!("{:?}", e));
 

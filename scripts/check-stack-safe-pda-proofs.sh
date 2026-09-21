@@ -1005,6 +1005,15 @@ rpb3_run_tests 8 --release -j4 --features protobuf-projection-experiment \
   --test protobuf_region_differential
 rholang_run_tests 4 --features protobuf-projection-experiment \
   --test stack_depth_gate substitution_scaling::costs
+rholang_run_tests 1 --features protobuf-projection-experiment \
+  --lib every_corpus_case_agrees_under_both_environments
+rholang_run_tests 3 --features protobuf-projection-experiment \
+  --lib region_cost_
+rholang_run_tests 1 --features protobuf-projection-experiment \
+  --lib substitute_oracle::differential_substitute_worklist::error_paths_agree
+rholang_run_tests 1 --test epathmap_replay_equivalence_spec
+rholang_run_tests 1 --test replay_output_value_stack_safety
+rholang_run_tests 3 --test output_value_write_side_reachability
 rholang_run_tests 4 --lib scalar_projection
 rholang_run_tests 1 --features epathmap-fusion-differential \
   --test epathmap_fusion_equivalence_spec \

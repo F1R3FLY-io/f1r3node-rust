@@ -993,7 +993,7 @@ is an obligation inventory established before its native counter implementation.
 | SCA-03 | prefix_cost_never_exceeds_complete_trace | Same property checks every component is monotone over appended events |
 | SCA-04 | shared_references_copy_no_body_bytes | `shared_regions_record_handles_without_body_copies` and `actual_shared_import_records_no_body_copy`: verify actual operation hooks, pointer sharing and zero copied/emitted/decoded bytes |
 | SCA-05 | disjoint_root_partition_copies_exact_source | `nonidentity_costs_track_distinct_endpoints_and_single_finish`: copied bytes equal admitted endpoint payload bytes |
-| SCA-06 | one_root_copy_per_endpoint | Same native probe counts one copy for its one endpoint; heterogeneous fixtures remain separately required |
+| SCA-06 | one_root_copy_per_endpoint | Unary probe plus `measured_par_substitution` independently census distinct encoded root bodies across the recursive oracle corpus; `region_cost_census_exercises_all_nine_nonidentity_root_families` requires non-vacuous nine-family coverage |
 | SCA-07 | multiplicity_change_preserves_input_work | `root_multiplicity_does_not_repeat_region_traversal`: vary only root multiplicity and compare work/copy/emission counters |
 | SCA-08 | no_finish_trace_has_zero_counters | `scoped_cost_fold_matches_event_reference` excludes arena/finish events and checks zeros |
 | SCA-09 | successful_machine_has_one_arena_and_finish | Native non-identity probe observes actual arena creation and finish attempt/success, not wrapper calls |
@@ -1026,6 +1026,41 @@ an independent byte-length expectation. Successful unsorted substitution and
 prefinish error counts are tested separately; the sorted public API may have
 additional legitimate construction stages. These scope distinctions are part
 of the binding, not universal source-wide complexity claims.
+
+### Heterogeneous endpoint binding obligations
+
+The next native binding reuses SCA-05/06/09/10/11 for the existing recursive
+substitution corpus, with capture restricted to public unsorted `Par`
+substitution. Before capture, an independent nine-family encoded endpoint
+census excludes resident opaque zipper entries, which do not use region copies.
+For a non-identity input, copied endpoint count and bytes must equal that census;
+the root enumeration occurs before any descendant semantic error. A successful
+run must create one arena and finish once, with emitted key count and bytes
+equal to an independent census of the returned resident Bag. The planned
+occurrence tree merges equal complete component keys before finalization, so
+distinct variables resolving to the same value must yield one emitted key with
+combined multiplicity. Identity bypass must record zero events. Prefinish
+semantic errors must not record a finish. All oracle work, construction,
+inspection and serialization stay outside capture.
+
+Required non-vacuity witnesses are actual non-identity visits covering all nine
+root families, including an unforgeable beside a variable, and two distinct
+variables resolving to one integer. Scaling that collision input's root
+multiplicities must preserve all work counters and scale only output counts.
+The corpus's simple replacement environment permits zero resident decoder
+bytes; arbitrary replacement environments do not: singleton Bundle/Connective
+imports inspect their merge/flatten shape. Original reconstruction emission
+must remain absent on the tested region paths. These bindings do not cover
+all generated decoders, all arena fragment copies, elapsed time, or source-wide
+local budgets, and do not turn SCA-13's conditional bound into a universal one.
+
+The final J-192 gate passes all 20 feature-enabled oracle tests, including
+`region_cost_collision_merges_keys_without_multiplicity_work`,
+`region_cost_terminal_splices_preserve_unresolved_children`, and the existing
+`error_paths_agree` with scoped counters. All 43 manifest bindings and a
+default-build corpus rerun pass. The terminal-splice control observes positive
+resident-decoder bytes while retaining unresolved child variables exactly;
+this prevents treating all environment imports as the simple unary case.
 
 ## Original workspace-regression completion gates
 

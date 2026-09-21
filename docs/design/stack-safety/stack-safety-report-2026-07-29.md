@@ -8748,7 +8748,25 @@ to 63 tests. Default builds compile out the recorder and hooks.
 records event scopes, actual-operation positive controls, resources and the
 incorrect error-fixture correction. These are finite-fixture work observations,
 not a universal proof of linear time or a new benchmark population. General
-cost correspondence and remaining replay/lifecycle acceptance stay open.
+cost correspondence remains outside that claim; the original task still
+requires heterogeneous cost qualification and replay/lifecycle acceptance.
+
+**2026-09-21 heterogeneous cost qualification.** The existing all-family
+recursive oracle now also checks native endpoint-copy and final-key accounting.
+Successful non-identity captures cover all nine root families. Two distinct
+variables resolving to one value emit one final key; scaling input multiplicity
+to one million does not repeat measured work. Terminal Bundle/Connective
+replacements retain unresolved child variables and expose their legitimate
+decoder activity. All 20 instrumented oracle tests, 43 manifest checks and the
+default-build corpus rerun pass, with 1.9 GiB reported peak under the 8 GiB cap
+and zero swap. Experiment 346's preregistered depth-scaling verdict is now
+accepted, without claiming universal allocation bounds or new timing results.
+[J-192](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-192--2026-09-21-qualify-heterogeneous-substitution-endpoint-costs)
+records the source/accounting limits and receipts. The five default-build
+runtime replay/producer tests also pass, including depth-4,096 replay and
+EPathMap event/hash, charge and checkpoint-root equality, with 1.2 GiB reported
+peak and zero swap. The separate Casper deploy-log boundary and task acceptance
+record are not implied by those runtime checks.
 
 ---
 

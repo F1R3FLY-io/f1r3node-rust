@@ -14333,11 +14333,112 @@ acceptance obligations.
 
 **Remaining task boundary.** These observations bind the unary non-identity
 copy/construction question and the recorder itself. Whole-family substitution
-cost qualification, full source-wide local-budget correspondence and required
-replay/lifecycle acceptance are not discharged merely by this table.
+cost qualification and required replay/lifecycle acceptance are not discharged
+merely by this table. Full source-wide local-budget correspondence is a limit
+of the conditional cost model, not an additional universal-complexity gate
+introduced into task 5916's original expected-linear-depth requirement.
 The existing semantic oracle/proof evidence is reused. Guarded teardown
 allocation churn remains owned by 6441/PMU-005, and no PathMap fork or guard
 bypass is introduced. The campaign and task 5916 are not marked complete.
+
+### J-192 — 2026-09-21 Qualify heterogeneous substitution endpoint costs
+
+**Question and preregistered binding.** J-191 measures a non-identity unary
+carrier. Task 5916 also requires the generated region machine to cover the
+heterogeneous Rholang schema. The SCA inventory's heterogeneous endpoint
+obligations were written before the native test extension. This continuation
+uses the existing recursive-oracle corpus, not a replacement implementation or
+new benchmark framework. The exact tested scope is public unsorted `Par`
+substitution; sorted and typed component roots retain their distinct contracts.
+
+**Method.** Before capture, nine encoded-family visitors independently count
+distinct input endpoint bodies. Resident opaque zipper entries are excluded
+from the copy census because they enter through retained canonical state.
+Only the production call runs inside the feature-only recorder. Fixture
+construction, the recursive oracle, serialization, cost-trace inspection and
+output census remain outside. For every successful non-identity run, the
+test requires one arena and one final finish. Copied input bytes/counts must
+equal the independent census, and emitted RPB3 key bytes/counts must equal the
+returned Bag's exact encoded endpoints. Original reconstruction emission must
+remain absent. Identity bypass records zero events; prefinish errors record
+partial work without finalization. Existing oracle comparisons retain exact
+protobuf/bincode output, error identity and ordered charge observations.
+
+The all-family witness requires successful non-identity visits across every
+one of the nine root families, adding an actual unforgeable beside a bound
+variable because the existing corpus had no unforgeable component. A separate
+collision witness maps two distinct variables to the same integer: two input
+endpoints must produce one output key with multiplicity two. Counts 1, 2 and
+1,000,000 must leave all seventeen event totals identical while scaling output
+multiplicity. Expected large results are compared as compressed Bags, never
+expanded to a million-entry protobuf projection. Terminal Bundle, conjunction
+and disjunction replacement controls preserve unresolved child variables;
+their real resident-decoder activity is allowed and explicitly observed.
+
+**Initial result.** The r1 gate passes the feature-enabled corpus test, two
+all-family/collision tests and all 43 manifest tests: 46 checks, no failures.
+Service runtime is 100.375 seconds, CPU time 297.689 seconds and reported peak
+1.8 GiB with zero swap. Its hard cap is 8 GiB, high threshold 6 GiB, quota four
+cores and build/test parallelism four. These include compilation and are not
+substitution latency measurements. The later terminal-splice and error-scope
+extensions require the final complete oracle run; r1 does not certify those
+subsequent edits.
+
+**Complete oracle result.** The final r2 gate passes all 20 feature-enabled
+recursive-oracle tests, including all three cost witnesses and the early-error
+capture. The oracle suite takes 181.13 seconds including its existing deep
+fixture construction. All 43 manifest tests pass, and the corpus test passes
+again without instrumentation: 64 successful executions representing 63
+distinct tests across those configurations. The capped service terminates
+successfully after 355.834 seconds, using 879.172 CPU seconds and a reported
+1.9 GiB peak with zero swap. Default behavior is unchanged; these edits are
+test and verification bindings only.
+
+Experiment 346's five recorded arms are finalized with sample digests. Decision
+390 (observation 2524) accepts the preregistered threshold using the maximum of
+the three API growth upper bounds, 0.996981187169017, below 1.20. The decision
+consumes already-derived confidence endpoints, not three raw timing samples;
+the raw latency, allocation and process-time series remain separately stored.
+No new timing samples were collected by these counter tests. Acceptance applies
+to the stated depth workload and watchdog, not universal complexity or broader
+task/campaign completion. The threshold check has no new p-value or additional
+multiple-comparison confidence claim.
+
+**Runtime replay result.** The default-feature, locked-dependency r1 replay
+gate passes all five existing tests: EPathMap record/replay equality, the
+depth-4,096 output-value replay regression and three producer-reachability
+controls. The EPathMap test requires real COMM events, complete consumption of
+the recorded replay log, identical charges and equal checkpoint roots. The
+service takes 53.598 seconds including compilation, 177.297 CPU seconds and a
+reported 1.2 GiB peak under the same 8 GiB hard cap with zero swap. No external
+service calls are required by the producer controls. The existing separate
+Casper deploy-log canonicalization/replay target is being checked for the
+remaining consensus boundary; these five runtime tests do not replace it.
+
+**Source review and limits.** The construction occurrence tree coalesces equal
+complete tag/score/body keys before `finish`, so the output-key census remains
+valid when substitutions collide. Singleton Bundle/Connective environment
+imports inspect their semantic merge/flatten shape, so zero resident decode
+bytes is not a universal substitution invariant. Separately,
+`import_par_opaque` copies score/body fragments and builds canonical path and
+segment representations. Those copies are not `RootBytes` events. Repeated
+imports of the same large replacement therefore cannot be bounded solely by
+distinct input region bytes plus compressed final output. This observation is
+not a measured regression, not attributed to the guarded-teardown issue, and
+does not invalidate the depth-scaling experiment with one terminal replacement.
+No universal allocation bound is inferred or added as a new task requirement.
+
+| Artifact | SHA-256 |
+|---|---|
+| target/verification/substitution-5916-family-cost-r1.log | 176b967cd89528b83cce22cc6d3a34620397073170a84a6fb901e794c92c7b67 |
+| target/verification/substitution-5916-family-cost-r2.log | a5f82b8c785ec7a3366a7f7edd0222f718f85f4b054052d33cdaaad7e192bddd |
+| target/verification/substitution-5916-replay-r1.log | f7cdf34794a8fecbe37d0c3a9139605b4430c92477f93b0e6cf006814a2310c6 |
+
+**Task boundary.** This is native cost/semantic qualification, not a production
+behavior change or a new performance win. Task 5916 remains open for its
+original formal/refinement and consensus/replay acceptance audit. Required
+campaign release and persistence gates remain separate; no optional research
+is introduced as a new prerequisite.
 
 ## Upstream PathMap integration request register
 

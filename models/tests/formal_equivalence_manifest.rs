@@ -1032,6 +1032,16 @@ fn substitution_cost_model_binds_scoped_native_events() {
         assert!(model_tests.contains(&format!("fn {witness}(")));
     }
     let runtime_tests = read_repository_file("rholang/tests/support/substitution_scaling.rs");
+    let oracle = read_repository_file("rholang/tests/support/substitute_oracle.rs");
+    assert!(has_runner_command(&runner, &["rholang_run_tests", "1", "--features", "protobuf-projection-experiment", "--lib", "every_corpus_case_agrees_under_both_environments"]));
+    assert!(has_runner_command(&runner, &["rholang_run_tests", "3", "--features", "protobuf-projection-experiment", "--lib", "region_cost_"]));
+    assert!(has_runner_command(&runner, &["rholang_run_tests", "1", "--features", "protobuf-projection-experiment", "--lib", "substitute_oracle::differential_substitute_worklist::error_paths_agree"]));
+    for witness in ["measured_par_substitution", "encoded_cost_census",
+        "region_cost_census_exercises_all_nine_nonidentity_root_families",
+        "region_cost_collision_merges_keys_without_multiplicity_work",
+        "region_cost_terminal_splices_preserve_unresolved_children"] {
+        assert!(oracle.contains(&format!("fn {witness}(")));
+    }
     for witness in ["nonidentity_costs_track_distinct_endpoints_and_single_finish",
         "root_multiplicity_does_not_repeat_region_traversal",
         "substitution_error_records_partial_work_without_finish",
