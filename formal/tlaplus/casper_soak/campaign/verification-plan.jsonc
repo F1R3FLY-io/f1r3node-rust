@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "scope": "bounded-campaign-control-refutation",
+  "model": "CampaignControl.tla",
+  "tlc_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+  "properties": [
+    "TypeOK",
+    "OneSubmission",
+    "AuthorizedLaunch",
+    "ScheduledLaunch",
+    "ConfirmedCleanup",
+    "PreservedFailure"
+  ],
+  "controls": [
+    {
+      "configuration": "MC_CampaignControl.cfg",
+      "property": null,
+      "knob": null,
+      "expected_exit": 0
+    },
+    {
+      "configuration": "MC_CampaignControl_approval_unsafe.cfg",
+      "property": "AuthorizedLaunch",
+      "knob": "BreakApproval",
+      "expected_exit": 12
+    },
+    {
+      "configuration": "MC_CampaignControl_reservation_unsafe.cfg",
+      "property": "OneSubmission",
+      "knob": "BreakReservation",
+      "expected_exit": 12
+    },
+    {
+      "configuration": "MC_CampaignControl_schedule_unsafe.cfg",
+      "property": "ScheduledLaunch",
+      "knob": "BreakSchedule",
+      "expected_exit": 12
+    },
+    {
+      "configuration": "MC_CampaignControl_termination_unsafe.cfg",
+      "property": "ConfirmedCleanup",
+      "knob": "BreakTermination",
+      "expected_exit": 12
+    }
+  ]
+}

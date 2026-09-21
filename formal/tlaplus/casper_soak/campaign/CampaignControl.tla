@@ -72,6 +72,16 @@ Next ==
   \/ \E s \in Slots: LoseResponse(s) \/ Observe(s) \/ ProductFailure(s)
   \/ \E s \in Slots, observed \in BOOLEAN: Terminate(s,observed)
 Spec == Init /\ [][Next]_vars
+TypeOK ==
+  /\ phase \in [Slots -> {"empty", "reserved", "armed", "submitted", "unknown", "running", "done"}]
+  /\ owner \in [Slots -> Controllers \cup {"none"}]
+  /\ submissions \in [Slots -> 0..2]
+  /\ approval \in [Slots -> BOOLEAN]
+  /\ schedule \in [Slots -> BOOLEAN]
+  /\ terminated \in [Slots -> BOOLEAN]
+  /\ cleanup \in [Slots -> BOOLEAN]
+  /\ productFailure \in [Slots -> BOOLEAN]
+  /\ retainedFailure \in [Slots -> BOOLEAN]
 OneSubmission == \A s \in Slots: submissions[s] <= 1
 AuthorizedLaunch == \A s \in Slots: submissions[s] > 0 => approval[s]
 ScheduledLaunch == \A s \in Slots: submissions[s] > 0 => schedule[s]

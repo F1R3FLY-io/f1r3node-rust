@@ -223,7 +223,7 @@ awk 'BEGIN {for(i=0;i<1048577;i++) printf " "; print "{}"}' > "$OUT/api/campaign
 pack_result
 expect prior_expanded_size_limit 2 bash "$HELPER" dispatch "$FIXTURE" "$OUT/dispatch-request.json" campaign-baseline-24h "$OUT/prior-expanded-size"
 WORKFLOW="$ROOT/.github/workflows/merge-recovery-soak.yml"
-awk '/^  campaign_admission:/ {copy=1} /^  schedule_gate:/ {copy=0} copy' "$WORKFLOW" > "$OUT/campaign-job.yml"
+awk 'copy && /^  [a-z_]+:/ {exit} /^  campaign_admission:/ {copy=1} copy' "$WORKFLOW" > "$OUT/campaign-job.yml"
 expect workflow_hosted_only 0 grep -Fq 'runs-on: ubuntu-latest' "$OUT/campaign-job.yml"
 expect workflow_no_cloud_credentials 1 grep -Eq 'secrets\.|environment:|self-hosted|actions: write|contents: write|continue-on-error:|needs:' "$OUT/campaign-job.yml"
 expect workflow_always_retain 0 grep -Fq 'if: always()' "$OUT/campaign-job.yml"

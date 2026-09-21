@@ -28,6 +28,7 @@ struct Fake {
     lose_launch_response: bool,
     no_termination: bool,
     first_read_barrier: Option<Arc<Barrier>>,
+    worker_artifact: Option<Value>,
 }
 
 struct Cloud {
@@ -110,6 +111,7 @@ impl Fake {
             lose_launch_response: false,
             no_termination: false,
             first_read_barrier: None,
+            worker_artifact: None,
         }
     }
 
@@ -160,6 +162,20 @@ impl Provider for Fake {
     fn now(&self) -> u64 { self.now }
     fn pause(&mut self, seconds: u64) { self.now += seconds }
     fn github(&mut self, path: &str) -> Result<Value> {
+        if path.contains("/artifacts/") {
+            return self
+                .worker_artifact
+                .clone()
+                .ok_or_else(|| eyre!("No worker artifact exists."));
+        }
+        if path.contains("/attempts/1/jobs") {
+            let slot = self.slot();
+            let label = format!("casper-{}", slot["reservation_id"].as_str().unwrap());
+            return Ok(
+                json!({"total_count":1,"jobs":[{"name":"Campaign Workload","runner_id":slot["runner_id"],
+                "runner_name":label,"status":"completed","labels":["self-hosted",label]}]}),
+            );
+        }
         if path.ends_with("/approvals") {
             return Ok(self.review_override.clone().unwrap_or(json!([{"state":"approved",
                 "comment":campaign_control::approval_comment(&self.config,&self.request,&self.plan,&self.run)?,
@@ -623,6 +639,15 @@ fn host_admission_requires_identity_protection_and_full_workload_window() {
         "memory_available_mib":8192,"disk_free_mib":8192,"disk_floor_mib":4096,
         "disk_guardian_active":true,"memory_guardian_active":true,"metadata_access_blocked":true});
     campaign_control::host_admission(&fake.config, &slot, &host, fake.now).unwrap();
+    let mut preflight = slot.clone();
+    preflight["plan"]["duration_seconds"] = json!(0);
+    let admission =
+        campaign_control::host_admission(&fake.config, &preflight, &host, fake.now).unwrap();
+    assert!(admission["workload_deadline_epoch"].as_u64().unwrap() > fake.now);
+    assert_eq!(
+        admission["workload_deadline_epoch"].as_u64().unwrap() + 600,
+        slot["termination_epoch"]
+    );
     assert!(campaign_control::host_admission(&fake.config, &slot, &host, fake.now + 4000).is_err());
     for field in [
         "runner_exclusive",
@@ -663,5 +688,195 @@ fn utc_timestamp_roundtrips_and_rejects_invalid_dates() {
         "invalid",
     ] {
         assert!(campaign_control::epoch(&json!(value)).is_err());
+    }
+}
+
+fn worker(fake: &Fake) -> Value {
+    let slot = fake.slot();
+    json!({"schema_version":1,"repository":campaign_control::REPOSITORY,"run_id":fake.run,"run_attempt":1,
+        "reservation_id":slot["reservation_id"],"config_digest":fake.config.digest,"plan_sha256":hash(&encoded(&slot["plan"]).unwrap()),
+        "instance_id":slot["instance_id"],"runner_label":format!("casper-{}",slot["reservation_id"].as_str().unwrap()),
+        "admission":"admitted","host_protection":"passed","evidence_kind":"node_observation","node_launch_count":1,
+        "started_epoch":slot["reserved_epoch"],"finished_epoch":fake.now,"workload_elapsed_seconds":0,
+        "integration_preflight":"passed","measurement_completeness":"complete",
+        "profile_verdicts":{"authority_finality":"passed","publication":"passed"},"product_failures":[],"result":"passed"})
+}
+
+fn artifact(fake: &Fake) -> Value {
+    json!({"id":1,"name":format!("casper-campaign-worker-{}-1",fake.run),"expired":false,"size_in_bytes":100,
+        "digest":format!("sha256:{}","a".repeat(64)),"workflow_run":{"id":fake.run.parse::<u64>().unwrap(),"head_sha":fake.config.value["control_revision"]}})
+}
+
+#[test]
+fn finalizer_requires_worker_identity_and_confirmed_termination() {
+    let mut fake = Fake::new();
+    fake.dispatch().unwrap();
+    let result = worker(&fake);
+    let artifact = artifact(&fake);
+    fake.worker_artifact = Some(artifact.clone());
+    let report = campaign_control::results::finish(
+        &mut fake,
+        &config(),
+        &Fake::new().request,
+        &Fake::new().plan,
+        "101",
+        Some((&result, &artifact)),
+    )
+    .unwrap();
+    assert_eq!(report["result"], "passed");
+    assert_eq!(report["cleanup"]["complete"], true);
+    assert_eq!(fake.cloud.lock().unwrap().launches, 1);
+    assert_eq!(fake.slot()["worker_result"], result);
+    assert_eq!(fake.slot()["worker_artifact"], artifact);
+}
+
+#[test]
+fn finalizer_retains_late_product_failures_when_cleanup_fails() {
+    let mut fake = Fake::new();
+    fake.dispatch().unwrap();
+    fake.due();
+    let mut result = worker(&fake);
+    result["result"] = json!("failed");
+    result["product_failures"] = json!(["publication_failed"]);
+    let artifact = artifact(&fake);
+    fake.worker_artifact = Some(artifact.clone());
+    fake.no_termination = true;
+    let report = campaign_control::results::finish(
+        &mut fake,
+        &config(),
+        &Fake::new().request,
+        &Fake::new().plan,
+        "101",
+        Some((&result, &artifact)),
+    )
+    .unwrap();
+    assert_eq!(report["result"], "product_failure");
+    assert_eq!(report["product_failures"], json!(["publication_failed"]));
+    assert_eq!(report["cleanup"]["complete"], false);
+}
+
+#[test]
+fn invalid_or_missing_worker_evidence_still_requests_cleanup() {
+    for malformed in [false, true] {
+        let mut fake = Fake::new();
+        fake.dispatch().unwrap();
+        let mut result = worker(&fake);
+        result["reservation_id"] = json!("b".repeat(64));
+        let artifact = artifact(&fake);
+        fake.worker_artifact = Some(artifact.clone());
+        let report = campaign_control::results::finish(
+            &mut fake,
+            &config(),
+            &Fake::new().request,
+            &Fake::new().plan,
+            "101",
+            if malformed {
+                Some((&result, &artifact))
+            } else {
+                None
+            },
+        )
+        .unwrap();
+        assert_eq!(report["cleanup"]["complete"], true);
+        assert_ne!(report["result"], "passed");
+        assert_eq!(fake.slot()["result"], "incomplete");
+    }
+}
+
+#[test]
+fn passing_worker_requires_a_complete_baseline_and_cleanup_window() {
+    let mut fake = Fake::new();
+    fake.dispatch().unwrap();
+    let mut slot = fake.slot();
+    slot["plan"]["duration_seconds"] = json!(86400);
+    slot["termination_epoch"] = json!(fake.now + 90000);
+    let mut result = worker(&fake);
+    result["plan_sha256"] = json!(hash(&encoded(&slot["plan"]).unwrap()));
+    result["finished_epoch"] = json!(fake.now + 86400);
+    result["workload_elapsed_seconds"] = json!(86400);
+    assert!(campaign_control::results::validate_worker(
+        &fake.config,
+        &slot,
+        &result,
+        fake.now + 86400
+    )
+    .is_ok());
+    for (field, value) in [
+        ("workload_elapsed_seconds", json!(86399)),
+        ("evidence_kind", json!("synthetic_fixture")),
+        ("host_protection", json!("failed")),
+        ("finished_epoch", json!(fake.now + 90000)),
+        ("product_failures", json!(["failure"])),
+    ] {
+        let mut invalid = result.clone();
+        invalid[field] = value;
+        assert!(campaign_control::results::validate_worker(
+            &fake.config,
+            &slot,
+            &invalid,
+            fake.now + 90000
+        )
+        .is_err());
+    }
+}
+
+#[test]
+fn worker_archive_binds_bytes_and_rejects_extra_files_and_links() {
+    use std::io::{Cursor, Write};
+
+    use zip::write::SimpleFileOptions;
+    use zip::ZipWriter;
+    let root = tempfile::tempdir().unwrap();
+    for kind in [
+        "valid",
+        "extra",
+        "traversal",
+        "symlink",
+        "oversized",
+        "duplicate_json",
+    ] {
+        let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+        let options = SimpleFileOptions::default().unix_permissions(0o600);
+        if kind == "symlink" {
+            writer
+                .add_symlink("worker-result.json", "outside.json", options)
+                .unwrap();
+        } else {
+            writer
+                .start_file(
+                    if kind == "traversal" {
+                        "../worker-result.json"
+                    } else {
+                        "worker-result.json"
+                    },
+                    options,
+                )
+                .unwrap();
+            if kind == "oversized" {
+                writer.write_all(&vec![b' '; 16385]).unwrap();
+            } else if kind == "duplicate_json" {
+                writer
+                    .write_all(b"{\"result\":\"failed\",\"result\":\"passed\"}")
+                    .unwrap();
+            } else {
+                writer.write_all(b"{\"result\":\"failed\"}").unwrap();
+            }
+            if kind == "extra" {
+                writer.start_file("extra.json", options).unwrap();
+            }
+        }
+        let bytes = writer.finish().unwrap().into_inner();
+        let path = root.path().join(format!("{kind}.zip"));
+        std::fs::write(&path, &bytes).unwrap();
+        let mut artifact =
+            json!({"size_in_bytes":bytes.len(),"digest":format!("sha256:{}",hash(&bytes))});
+        let result = campaign_control::results::archive_result(&path, &artifact);
+        if kind == "valid" {
+            assert_eq!(result.unwrap(), json!({"result":"failed"}));
+            artifact["digest"] = json!(format!("sha256:{}", "0".repeat(64)));
+            assert!(campaign_control::results::archive_result(&path, &artifact).is_err());
+        } else {
+            assert!(result.is_err(), "{kind}");
+        }
     }
 }

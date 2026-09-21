@@ -26,7 +26,12 @@ done
 binary="$root/target/debug/casper-campaign-control"
 [[ -x "$binary" ]] || { printf 'Build the campaign controller before dispatch.\n' >&2; exit 2; }
 bash "$root/scripts/casper-soak/campaign.sh" plan "$root" "$request" > "$out/plan.json"
-[[ "${CAMPAIGN_SELECTION:-}" == "campaign-$(jq -er .stage "$out/plan.json")" ]] || exit 2
+case "$(jq -er .stage "$out/plan.json")" in
+  preflight) selection=campaign-preflight ;;
+  baseline) selection=campaign-baseline-24h ;;
+  *) exit 2 ;;
+esac
+[[ "${CAMPAIGN_SELECTION:-}" == "$selection" ]] || exit 2
 bash "$root/scripts/casper-soak/campaign.sh" verify-priors "$out/plan.json" "$out"
 "$binary" "$action" --root "$root" --config "$configuration" --request "$request" \
   --plan "$out/plan.json" --run "$GITHUB_RUN_ID" --evidence "$out/control" > "$out/receipt.json"

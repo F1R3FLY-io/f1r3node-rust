@@ -11,7 +11,7 @@ pub mod transport;
 
 pub const REPOSITORY: &str = "F1R3FLY-io/f1r3node-rust";
 pub const SLOTS: [&str; 3] = ["preflight", "baseline-dev-amd64", "baseline-dev-arm64"];
-pub const SOURCE_PATHS: [&str; 18] = [
+pub const SOURCE_PATHS: [&str; 23] = [
     "scripts/casper-soak/src/campaign_control/mod.rs",
     "scripts/casper-soak/src/campaign_control/transport.rs",
     "scripts/casper-soak/src/campaign_control/operations.rs",
@@ -28,8 +28,13 @@ pub const SOURCE_PATHS: [&str; 18] = [
     "scripts/casper-soak/campaign.sh",
     "scripts/casper-soak/supervisor/Dockerfile",
     "scripts/casper-soak/supervisor/start.sh",
+    "scripts/casper-soak/supervisor/func.yaml",
     ".github/workflows/merge-recovery-soak.yml",
+    "scripts/casper-soak/Cargo.toml",
+    "Cargo.toml",
     "Cargo.lock",
+    "rust-toolchain.toml",
+    ".cargo/config.toml",
 ];
 
 #[derive(Clone, Debug)]
@@ -940,7 +945,7 @@ pub fn host_admission(config: &Config, slot: &Value, observed: &Value, now: u64)
         "The complete workload and cleanup do not fit before independent termination."
     );
     Ok(
-        json!({"admission":"admitted","workload_start_epoch":now,"workload_deadline_epoch":now+duration,"duration_seconds":duration,"reservation_id":slot["reservation_id"]}),
+        json!({"admission":"admitted","workload_start_epoch":now,"workload_deadline_epoch":number(&slot["termination_epoch"])?-600,"duration_seconds":duration,"reservation_id":slot["reservation_id"]}),
     )
 }
 

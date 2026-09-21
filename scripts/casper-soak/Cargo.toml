@@ -14,3 +14,4 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = "0.10"
 tempfile = { workspace = true }
+zip = { version = "=3.0.0", default-features = false, features = ["deflate"] }

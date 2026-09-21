@@ -1,4 +1,38 @@
+use std::io::{Cursor, Read};
+
 use super::*;
+
+pub fn archive_result(archive: &Path, artifact: &Value) -> Result<Value> {
+    let bytes = casper_soak::regular(archive, casper_soak::MAX_BYTES)?;
+    ensure!(
+        bytes.len() as u64 == number(&artifact["size_in_bytes"])?
+            && format!("sha256:{}", hash(&bytes)) == text(&artifact["digest"])?,
+        "The worker archive differs from its authenticated identity."
+    );
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes))?;
+    ensure!(
+        archive.len() == 1,
+        "The worker archive must contain one result."
+    );
+    let member = archive.by_index(0)?;
+    ensure!(
+        member.name() == "worker-result.json"
+            && member.is_file()
+            && member
+                .unix_mode()
+                .is_some_and(|mode| mode & 0o170000 == 0o100000)
+            && member.size() <= 16384,
+        "The worker archive member is invalid."
+    );
+    let size = member.size();
+    let mut bytes = Vec::new();
+    member.take(16385).read_to_end(&mut bytes)?;
+    ensure!(
+        bytes.len() as u64 == size && bytes.len() <= 16384,
+        "The worker result exceeds its declared size."
+    );
+    parse(&bytes)
+}
 
 pub fn validate_worker(config: &Config, slot: &Value, worker: &Value, now: u64) -> Result<()> {
     keys(worker, &[
@@ -59,8 +93,7 @@ pub fn validate_worker(config: &Config, slot: &Value, worker: &Value, now: u64) 
         start >= number(&slot["reserved_epoch"])?
             && finish >= start
             && finish <= now
-            && elapsed <= finish - start
-            && finish + 600 <= number(&slot["termination_epoch"])?,
+            && elapsed <= finish - start,
         "The workload timestamps exceed the reservation."
     );
     if worker["result"] == "passed" {
@@ -74,7 +107,12 @@ pub fn validate_worker(config: &Config, slot: &Value, worker: &Value, now: u64) 
                 && worker["measurement_completeness"] == "complete"
                 && worker["profile_verdicts"]["authority_finality"] == "passed"
                 && worker["profile_verdicts"]["publication"] == "passed"
-                && elapsed >= number(&slot["plan"]["duration_seconds"])?,
+                && elapsed >= number(&slot["plan"]["duration_seconds"])?
+                && finish
+                    .checked_add(600)
+                    .is_some_and(|deadline| slot["termination_epoch"]
+                        .as_u64()
+                        .is_some_and(|limit| deadline <= limit)),
             "The worker result does not prove the complete workload."
         );
     }
@@ -91,7 +129,8 @@ pub fn authenticate_worker<P: Provider>(
     let base = format!("repos/{REPOSITORY}/actions");
     let execution = provider.github(&format!("{base}/runs/{run}"))?;
     ensure!(
-        execution["run_attempt"] == 1
+        execution["id"].as_u64().map(|id| id.to_string()).as_deref() == Some(run)
+            && execution["run_attempt"] == 1
             && execution["head_sha"] == config.value["control_revision"]
             && execution["repository"]["full_name"] == REPOSITORY
             && execution["event"] == "workflow_dispatch"

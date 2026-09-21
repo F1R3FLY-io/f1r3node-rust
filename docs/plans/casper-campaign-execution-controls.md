@@ -1,6 +1,6 @@
 # Casper Campaign Execution Controls
 
-**Status:** The user approved the design. Repository maintainers may approve campaigns, and OCI will host the supervisor. Deployment settings and verification remain required.
+**Status:** The user authorized continued implementation on 2026-09-21. Control scaffolding exists. Deployment settings, execution qualification, and source-bound acceptance remain required.
 
 **Task:** TASK-017-12 on `formal/soak-casper-consensus`.
 
@@ -194,6 +194,14 @@ Fixtures establish controlled behavior only. They do not establish deployed serv
 
 ## Current boundary
 
-The review made no executable changes and no remote configuration changes. No node, cloud instance, campaign workflow, or infrastructure deployment started.
+The continuation starts at `2530b83853e946dd32a850d78dbbc9491fc23c3f`. It adds a campaign verification gate, complete source inventories, result validation tests, and the missing job integration.
 
-The approval authority and OCI hosting choices are confirmed. Executable implementation has not started. Campaign execution remains blocked throughout preparation and verification.
+The added verification files are `check-campaign-control.sh`, `src/campaign_control/models.rs`, and `tests/campaign_models.rs` under `scripts/casper-soak/`. A dedicated campaign workflow will run this gate.
+
+The campaign model directory gains a verification plan and a README. The gate must retain the positive search and four exact negative-control results.
+
+The missing `scripts/casper-soak/campaign-job.sh` connects controller receipts to the existing host wrapper. Result verification must bind extracted bytes to their authenticated archive.
+
+Local evidence cannot accept claims or qualify deployed services. The workflow must reject missing activation evidence, configuration pins, qualified workloads, and node interfaces before launch.
+
+The approval authority and OCI hosting choices are confirmed. No node, cloud instance, campaign workflow, or infrastructure deployment has started in this continuation.

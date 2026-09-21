@@ -156,14 +156,15 @@ fn run() -> Result<()> {
         if args.command == "finish" {
             let worker = (|| -> Result<(Value, Value)> {
                 let artifact = record(&required(args.artifact)?)?;
-                let archive = required(args.archive)?;
-                ensure!(
-                    format!("sha256:{}", file_hash(&archive)?) == text(&artifact["digest"])?
-                        && std::fs::metadata(&archive)?.len()
-                            == casper_soak::number(&artifact["size_in_bytes"])?,
-                    "The worker archive differs from its authenticated digest."
-                );
-                Ok((record(&required(args.worker_result)?)?, artifact))
+                let result =
+                    campaign_control::results::archive_result(&required(args.archive)?, &artifact)?;
+                if let Some(path) = args.worker_result {
+                    ensure!(
+                        record(&path)? == result,
+                        "The extracted result differs from the authenticated archive."
+                    );
+                }
+                Ok((result, artifact))
             })()
             .ok();
             let result = campaign_control::results::finish(

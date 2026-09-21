@@ -6,17 +6,40 @@ status: pending
 scope: campaign-controller-and-oci-supervisor
 binding: pending
 refutation: pending
+construction: not-applicable
 soak: pending
 artifacts:
   - scripts/casper-soak/src/campaign_control/mod.rs
   - scripts/casper-soak/src/campaign_control/transport.rs
+  - scripts/casper-soak/src/campaign_control/operations.rs
+  - scripts/casper-soak/src/campaign_control/results.rs
+  - scripts/casper-soak/src/campaign_control/models.rs
   - scripts/casper-soak/src/bin/casper-campaign-control.rs
   - scripts/casper-soak/src/bin/casper-campaign-supervisor.rs
+  - scripts/casper-soak/src/bin/casper-campaign-models.rs
   - scripts/casper-soak/tests/campaign_control.rs
+  - scripts/casper-soak/tests/campaign_models.rs
   - scripts/casper-soak/campaign-control.sh
+  - scripts/casper-soak/campaign-bootstrap.sh
+  - scripts/casper-soak/campaign-host.sh
+  - scripts/casper-soak/campaign-host-guard.sh
+  - scripts/casper-soak/campaign-job.sh
+  - scripts/casper-soak/campaign-finish.sh
+  - scripts/casper-soak/check-campaign-control.sh
   - scripts/casper-soak/test-campaign-control.sh
   - scripts/casper-soak/supervisor/Dockerfile
+  - scripts/casper-soak/supervisor/start.sh
   - scripts/casper-soak/supervisor/func.yaml
+  - .github/workflows/casper-campaign-control.yml
+  - .github/workflows/merge-recovery-soak.yml
+  - formal/tlaplus/casper_soak/campaign/CampaignControl.tla
+  - formal/tlaplus/casper_soak/campaign/MC_CampaignControl.cfg
+  - formal/tlaplus/casper_soak/campaign/MC_CampaignControl_approval_unsafe.cfg
+  - formal/tlaplus/casper_soak/campaign/MC_CampaignControl_reservation_unsafe.cfg
+  - formal/tlaplus/casper_soak/campaign/MC_CampaignControl_schedule_unsafe.cfg
+  - formal/tlaplus/casper_soak/campaign/MC_CampaignControl_termination_unsafe.cfg
+  - formal/tlaplus/casper_soak/campaign/verification-plan.jsonc
+  - formal/tlaplus/casper_soak/campaign/README.md
 ```
 
 ## Requirements
@@ -40,6 +63,20 @@ The supervisor must use Compute termination and then observe `TERMINATED`. A sto
 Scheduling, invocation, clock, API, and termination allowances must fit within the approved instance lifetime. Unsupported timing evidence must block execution.
 
 The controller must preserve product failures when infrastructure or cleanup subsequently fails. Public evidence must not contain credentials or launch metadata.
+
+The finalizer must parse the result from the authenticated archive. A separately supplied JSON record must not replace the archived result.
+
+Late or failed workload evidence must retain authenticated product failures. Missing worker evidence must request cleanup and produce a non-passing result.
+
+## Verification gate
+
+The [campaign gate](../../scripts/casper-soak/check-campaign-control.sh) executes controller fixtures, local reservation tests, planner regressions, and all five model configurations.
+
+The [verification plan](../../formal/tlaplus/casper_soak/campaign/verification-plan.jsonc) binds each negative configuration to one required invariant. Unexpected exits, missing traces, and incomplete positive searches fail.
+
+The [hosted workflow](../../.github/workflows/casper-campaign-control.yml) runs the gate without cloud credentials. Its output remains verification evidence, not an acceptance decision.
+
+The execution workflow requires the configured approval environment, trusted configuration digest, accepted source evidence, and qualified workloads. An unset configuration digest retains the admission-only route.
 
 ## Verification boundaries
 
