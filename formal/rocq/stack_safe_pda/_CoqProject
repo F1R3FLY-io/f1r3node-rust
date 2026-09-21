@@ -26,6 +26,7 @@ theories/SingletonMapConstruction.v
 theories/CollectionCollisionElision.v
 theories/DepthProbeClassification.v
 theories/DepthProbeSearch.v
+theories/DepthProbeLifecycle.v
 theories/SplitCarrierPrefilter.v
 theories/SubstitutionRegionRanges.v
 theories/SubstitutionRegionEmission.v

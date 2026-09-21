@@ -1215,6 +1215,70 @@ retains the nearest failing boundary's diagnostic. T uses an owned non-Copy valu
 and checks allocation identity after propagation. Real subprocess transport and
 the minimum-stack search caller remain separate lifecycle/integration obligations.
 
+## Bounded depth-probe lifecycle (DPL, task 5917)
+
+`DepthProbeLifecycle.v` has 29 closed declarations, independently kernel-checked
+before runner implementation. The model covers sticky evidence, a nonrenewable
+cleanup start time, status-before-timeout observation, classification versus
+harness-error completion, bounded read attempts and exact chunk-independent
+raw-byte suffix retention. Expired cleanup cannot poll again. Liveness depends
+on clock and OS-call progress; this is not a kernel scheduling bound or a promise
+of successful reaping after arbitrary OS failures. Error completion may close
+the pipe without EOF, but classified completion may not. Completion observed
+at the cleanup boundary takes priority over expiry. Zero execution timeout and
+unrepresentable deadlines are rejected before spawning in the intended binding.
+
+Native bindings under `shared/tests/support/test_process.rs`: **D** =
+`lifecycle_decisions_match_complete_capture_and_cleanup_contract`; **O** =
+`lifecycle_observations_latch_evidence_without_renewing_cleanup`; **T** =
+`diagnostic_tail_is_exact_across_chunk_boundaries` and
+`diagnostic_tail_matches_suffix_spec`; **Q** =
+`interrupted_reads_consume_the_quantum_and_pending_stops_it`.
+The initial model publication preceded runner implementation. The final Linux
+focused acceptance passes all 34 selected tests with 1,024 seeded property cases;
+J-197 records the artifacts. **F** below denotes tests in the `lifecycle_faults`
+module; all other names are in the surrounding support module. Scripted adapter
+failures exercise the driver's error path, not every possible kernel failure.
+Windows-native adapter execution remains outstanding.
+
+| ID | Closed declaration | Binding/required evidence |
+|---|---|---|
+| DPL-01 | `initial_polls` | D |
+| DPL-02 | `first_error_preserved` | F: `original_io_error_allocation_survives_secondary_failures` |
+| DPL-03 | `failed_capture_disables_reads` | D; F: `first_error_survives_cleanup_and_capture_is_disabled` |
+| DPL-04 | `eof_disables_reads` | D; F: `observed_exit_wins_at_deadline_and_eof_is_not_read_again` |
+| DPL-05 | `reaped_is_sticky` | O |
+| DPL-06 | `eof_is_sticky` | O |
+| DPL-07 | `failure_is_sticky` | O |
+| DPL-08 | `timeout_is_sticky` | O; F: `timeout_survives_failed_kill_racing_with_successful_exit` |
+| DPL-09 | `cleanup_is_never_renewed` | O; F: `output_never_renews_cleanup_and_reaped_status_is_not_polled_again` |
+| DPL-10 | `exit_starts_cleanup` | O |
+| DPL-11 | `failure_starts_cleanup` | O; F: `first_error_survives_cleanup_and_capture_is_disabled`, `wait_failure_preserves_original_error_after_reaping` |
+| DPL-12 | `live_deadline_latches_timeout` | O; `continuous_output_cannot_starve_the_execution_deadline` |
+| DPL-13 | `live_deadline_starts_cleanup` | O |
+| DPL-14 | `observed_exit_precedes_timeout` | O; F: `observed_exit_wins_at_deadline_and_eof_is_not_read_again` |
+| DPL-15 | `classify_requires_complete_capture` | D; `inherited_stderr_writers_cannot_hold_cleanup_open` |
+| DPL-16 | `complete_capture_classifies` | D; `finite_output_larger_than_pipe_capacity_has_exact_raw_tail` |
+| DPL-17 | `reaped_error_needs_no_eof` | D; F: `first_error_survives_cleanup_and_capture_is_disabled` |
+| DPL-18 | `eof_alone_cannot_classify` | D; `stderr_eof_does_not_mean_the_child_exited` |
+| DPL-19 | `expired_cleanup_cannot_poll` | D; F: `slow_termination_cannot_start_a_read_after_cleanup_expiry`, `failed_termination_reports_unresolved_child_with_bounded_work` |
+| DPL-20 | `failed_capture_never_classifies` | D; F: `first_error_survives_cleanup_and_capture_is_disabled` |
+| DPL-21 | `inherited_writer_expiry_is_error` | D; `inherited_stderr_writers_cannot_hold_cleanup_open` |
+| DPL-22 | `retained_length` | T |
+| DPL-23 | `retained_suffix` | T |
+| DPL-24 | `short_capture_is_unchanged` | T |
+| DPL-25 | `retain_is_idempotent` | T |
+| DPL-26 | `retention_is_chunk_independent` | T |
+| DPL-27 | `attempts_bounded` | Q; continuous readable input |
+| DPL-28 | `interruptions_consume_quota` | Q |
+| DPL-29 | `pending_stops_quantum` | Q |
+
+`invalid_deadlines_are_rejected_before_spawn` additionally binds the native
+positive/representable deadline precondition. Q covers both an interrupted reader
+and an always-readable reader: each uses exactly sixteen attempts, each successful
+read bounded to 4,096 bytes. Lossy UTF-8 expansion is witnessed by the large-output
+native test and is deliberately outside the raw-byte retention bound.
+
 ## Original workspace-regression completion gates
 
 This checkpoint is complete only when all of the following hold:

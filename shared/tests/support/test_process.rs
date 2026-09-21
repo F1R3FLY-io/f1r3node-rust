@@ -5,6 +5,168 @@ use super::{
 
 const CLASSIFIER_MODE: &str = "F1R3_TEST_PROCESS_CLASSIFIER_MODE";
 
+#[test]
+fn lifecycle_decisions_match_complete_capture_and_cleanup_contract() {
+    use std::time::Duration as D;
+
+    use super::{ProbeDecision, ProbeLifecycle};
+    for flags in 0u8..16 {
+        for cleanup in [None, Some(D::from_millis(5))] {
+            for now in [0, 5, 14, 15, 16] {
+                let state = ProbeLifecycle {
+                    reaped: flags & 1 != 0,
+                    eof: flags & 2 != 0,
+                    failed: flags & 4 != 0,
+                    timed_out: flags & 8 != 0,
+                    cleanup_started: cleanup,
+                };
+                let decision = state.decide(D::from_millis(10), D::from_millis(now));
+                let expected = if state.reaped && state.failed {
+                    ProbeDecision::HarnessError
+                } else if state.reaped && state.eof {
+                    ProbeDecision::Classify(state.timed_out)
+                } else if cleanup.is_some() && now >= 15 {
+                    ProbeDecision::HarnessError
+                } else {
+                    ProbeDecision::Poll
+                };
+                assert_eq!(
+                    decision, expected,
+                    "flags={flags}, cleanup={cleanup:?}, now={now}"
+                );
+                assert_eq!(state.can_read(), !state.eof && !state.failed);
+            }
+        }
+    }
+}
+
+#[test]
+fn lifecycle_observations_latch_evidence_without_renewing_cleanup() {
+    use std::time::Duration as D;
+
+    use super::ProbeLifecycle;
+    for flags in 0u8..16 {
+        for observations in 0u8..8 {
+            for cleanup in [None, Some(D::from_millis(2))] {
+                for now in [4, 5, 6, 100] {
+                    let before = ProbeLifecycle {
+                        reaped: flags & 1 != 0,
+                        eof: flags & 2 != 0,
+                        failed: flags & 4 != 0,
+                        timed_out: flags & 8 != 0,
+                        cleanup_started: cleanup,
+                    };
+                    let mut after = before;
+                    after.observe(
+                        D::from_millis(5),
+                        D::from_millis(now),
+                        observations & 1 != 0,
+                        observations & 2 != 0,
+                        observations & 4 != 0,
+                    );
+                    assert_eq!(after.reaped, before.reaped || observations & 1 != 0);
+                    assert_eq!(after.eof, before.eof || observations & 2 != 0);
+                    assert_eq!(after.failed, before.failed || observations & 4 != 0);
+                    assert_eq!(
+                        after.timed_out,
+                        before.timed_out || (!after.reaped && cleanup.is_none() && now >= 5)
+                    );
+                    let expected_cleanup = cleanup.or_else(|| {
+                        (after.reaped || after.failed || after.timed_out)
+                            .then_some(D::from_millis(now))
+                    });
+                    assert_eq!(after.cleanup_started, expected_cleanup);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn diagnostic_tail_is_exact_across_chunk_boundaries() {
+    for length in [0usize, 1, 65535, 65536, 65537, 262177] {
+        let source: Vec<u8> = (0..length).map(|i| (i % 251) as u8).collect();
+        for chunk_size in [1, 31, 4096, 65536, 70000] {
+            let mut tail = std::collections::VecDeque::new();
+            for chunk in source.chunks(chunk_size) {
+                super::retain_probe_stderr(&mut tail, chunk);
+                assert!(tail.len() <= super::PROBE_STDERR_LIMIT);
+            }
+            let retained = tail.clone();
+            super::retain_probe_stderr(&mut tail, &[]);
+            assert_eq!(tail, retained);
+            let actual: Vec<_> = tail.into_iter().collect();
+            assert_eq!(actual, source[length.saturating_sub(65536)..]);
+        }
+    }
+}
+
+proptest::proptest! {
+    #[test]
+    fn diagnostic_tail_matches_suffix_spec(
+        source in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..150_000),
+        chunks in proptest::collection::vec(1usize..80_000, 1..12),
+    ) {
+        let mut tail = std::collections::VecDeque::new();
+        let mut position = 0;
+        for chunk in chunks.iter().cycle() {
+            let end = (position + chunk).min(source.len());
+            super::retain_probe_stderr(&mut tail, &source[position..end]);
+            position = end;
+            if position == source.len() { break; }
+        }
+        let actual: Vec<_> = tail.into_iter().collect();
+        proptest::prop_assert_eq!(actual, &source[source.len().saturating_sub(65536)..]);
+    }
+}
+
+#[test]
+fn interrupted_reads_consume_the_quantum_and_pending_stops_it() {
+    struct Interrupted(usize);
+    impl std::io::Read for Interrupted {
+        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+            self.0 += 1;
+            Err(std::io::ErrorKind::Interrupted.into())
+        }
+    }
+    let mut reader = Interrupted(0);
+    let mut tail = std::collections::VecDeque::new();
+    let progress = super::read_probe_quantum(&mut reader, &mut tail).unwrap();
+    assert_eq!(reader.0, super::PROBE_READ_ATTEMPTS);
+    assert!(!progress.eof);
+    assert!(!progress.made_progress);
+
+    assert!(tail.is_empty());
+    struct Continuous(usize);
+    impl std::io::Read for Continuous {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            self.0 += 1;
+            assert_eq!(buffer.len(), 4096);
+            buffer.fill(b'x');
+            Ok(buffer.len())
+        }
+    }
+    let mut reader = Continuous(0);
+    let progress = super::read_probe_quantum(&mut reader, &mut tail).unwrap();
+    assert_eq!(reader.0, super::PROBE_READ_ATTEMPTS);
+    assert!(progress.made_progress);
+    assert!(!progress.eof);
+    assert_eq!(tail.len(), super::PROBE_STDERR_LIMIT);
+
+    struct Pending(usize);
+    impl std::io::Read for Pending {
+        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+            self.0 += 1;
+            Err(std::io::ErrorKind::WouldBlock.into())
+        }
+    }
+    let mut reader = Pending(0);
+    let progress = super::read_probe_quantum(&mut reader, &mut tail).unwrap();
+    assert_eq!(reader.0, 1);
+    assert!(!progress.eof);
+    assert!(!progress.made_progress);
+}
+
 fn monotone_ceiling(
     cap: usize,
     mut probe: impl FnMut(usize) -> ProbeOutcome,
@@ -63,6 +225,46 @@ fn classified_probe_child() {
                 .expect("stack-exhaustion thread unexpectedly returned");
         }
         "timeout" => std::thread::sleep(std::time::Duration::from_secs(10)),
+        "large-output" => {
+            use std::io::Write as _;
+            let bytes: Vec<_> = (0..262177).map(|i| (i % 251) as u8).collect();
+            std::io::stderr().write_all(&bytes).unwrap();
+            std::process::exit(7);
+        }
+        "flood" | "hold-flood" => {
+            use std::io::Write as _;
+            let started = std::time::Instant::now();
+            let mut stderr = std::io::stderr().lock();
+            while started.elapsed() < std::time::Duration::from_secs(3) {
+                if stderr.write_all(&[b'x'; 4096]).is_err() {
+                    break;
+                }
+            }
+            std::process::exit(7);
+        }
+        "hold-silent" => {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            std::process::exit(7);
+        }
+        "descendant-silent" | "descendant-flood" => {
+            let mut command = classifier_command(if mode == "descendant-silent" {
+                "hold-silent"
+            } else {
+                "hold-flood"
+            });
+            let _descendant = command
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::inherit())
+                .spawn()
+                .unwrap();
+            std::process::exit(7);
+        }
+        #[cfg(unix)]
+        "closed-stderr-live-child" => {
+            assert_eq!(unsafe { libc::close(libc::STDERR_FILENO) }, 0);
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            std::process::exit(7);
+        }
         "memory" => {
             let _ = suppress_expected_probe_core_dump();
             use std::io::Write as _;
@@ -82,6 +284,10 @@ fn classified_probe_child() {
 }
 
 fn process_outcome(mode: &str, timeout: std::time::Duration) -> ProbeOutcome {
+    run_child_probe(&mut classifier_command(mode), timeout).expect("run classifier child")
+}
+
+fn classifier_command(mode: &str) -> std::process::Command {
     let executable = std::env::current_exe().expect("shared unit-test executable");
     let mut command = std::process::Command::new(executable);
     command
@@ -91,7 +297,388 @@ fn process_outcome(mode: &str, timeout: std::time::Duration) -> ProbeOutcome {
             "rust::test_process::tests::classified_probe_child",
         ])
         .env(CLASSIFIER_MODE, mode);
-    run_child_probe(&mut command, timeout).expect("run classifier child")
+    command
+}
+
+#[test]
+fn finite_output_larger_than_pipe_capacity_has_exact_raw_tail() {
+    let ProbeOutcome::Failed(failure) =
+        process_outcome("large-output", std::time::Duration::from_secs(10))
+    else {
+        panic!("large-output child unexpectedly passed");
+    };
+    let bytes: Vec<_> = (0..262177).map(|i| (i % 251) as u8).collect();
+    assert_eq!(failure.exit_code, Some(7));
+    assert_eq!(
+        failure.stderr,
+        String::from_utf8_lossy(&bytes[bytes.len() - 65536..])
+    );
+    assert!(failure.stderr.len() > 65536);
+}
+
+#[test]
+fn continuous_output_cannot_starve_the_execution_deadline() {
+    let ProbeOutcome::Failed(failure) =
+        process_outcome("flood", std::time::Duration::from_millis(100))
+    else {
+        panic!("continuous writer unexpectedly passed");
+    };
+    assert_eq!(failure.kind, ProbeFailureKind::TimedOut);
+}
+
+#[test]
+fn inherited_stderr_writers_cannot_hold_cleanup_open() {
+    for mode in ["descendant-silent", "descendant-flood"] {
+        let error = super::run_child_probe_with_cleanup(
+            &mut classifier_command(mode),
+            std::time::Duration::from_secs(10),
+            std::time::Duration::from_millis(100),
+        )
+        .unwrap_err();
+        let failure = error
+            .get_ref()
+            .unwrap()
+            .downcast_ref::<super::ProbeIoFailure>()
+            .unwrap();
+        assert!(failure.reaped, "{mode}: {failure}");
+        assert!(!failure.eof, "{mode}: {failure}");
+        assert!(failure.primary.is_none());
+        assert!(failure.termination.is_none());
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn stderr_eof_does_not_mean_the_child_exited() {
+    let ProbeOutcome::Failed(failure) = process_outcome(
+        "closed-stderr-live-child",
+        std::time::Duration::from_millis(100),
+    ) else {
+        panic!("live child with closed stderr unexpectedly passed");
+    };
+    assert_eq!(failure.kind, ProbeFailureKind::TimedOut);
+}
+
+#[test]
+fn invalid_deadlines_are_rejected_before_spawn() {
+    for timeout in [std::time::Duration::ZERO, std::time::Duration::MAX] {
+        let mut command = std::process::Command::new("this-depth-probe-executable-does-not-exist");
+        let error = run_child_probe(&mut command, timeout).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    }
+}
+
+#[cfg(any(unix, windows))]
+mod lifecycle_faults {
+    use std::cell::Cell;
+    use std::collections::VecDeque;
+    use std::io;
+    use std::process::ExitStatus;
+    use std::rc::Rc;
+    use std::time::Duration;
+
+    use super::*;
+
+    fn success() -> ExitStatus {
+        #[cfg(unix)]
+        use std::os::unix::process::ExitStatusExt;
+        #[cfg(windows)]
+        use std::os::windows::process::ExitStatusExt;
+        ExitStatus::from_raw(0)
+    }
+
+    #[derive(Default)]
+    struct Clock(Cell<Duration>);
+    impl super::super::ProbeClock for Clock {
+        fn elapsed(&self) -> Duration {
+            let now = self.0.get() + Duration::from_millis(1);
+            self.0.set(now);
+            now
+        }
+        fn sleep(&self, time: Duration) { self.0.set(self.0.get() + time); }
+    }
+
+    struct Child {
+        statuses: VecDeque<io::Result<Option<ExitStatus>>>,
+        kill_error: Option<io::Error>,
+        waits: usize,
+        kills: usize,
+    }
+    impl Child {
+        fn new(statuses: impl IntoIterator<Item = io::Result<Option<ExitStatus>>>) -> Self {
+            Self {
+                statuses: statuses.into_iter().collect(),
+                kill_error: None,
+                waits: 0,
+                kills: 0,
+            }
+        }
+    }
+    impl super::super::ProbeChildControl for Child {
+        fn id(&self) -> u32 { 5917 }
+        fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
+            self.waits += 1;
+            self.statuses.pop_front().unwrap_or(Ok(None))
+        }
+        fn kill(&mut self) -> io::Result<()> {
+            self.kills += 1;
+            self.kill_error.take().map_or(Ok(()), Err)
+        }
+    }
+
+    enum Mode {
+        Eof,
+        Pending,
+        Flood,
+        Interrupted,
+        Error,
+    }
+    struct Reader {
+        mode: Mode,
+        reads: Rc<Cell<usize>>,
+        dropped: Rc<Cell<bool>>,
+    }
+    impl Reader {
+        fn new(mode: Mode) -> Self {
+            Self {
+                mode,
+                reads: Rc::new(Cell::new(0)),
+                dropped: Rc::new(Cell::new(false)),
+            }
+        }
+    }
+    impl io::Read for Reader {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            self.reads.set(self.reads.get() + 1);
+            match self.mode {
+                Mode::Eof => Ok(0),
+                Mode::Pending => Err(io::ErrorKind::WouldBlock.into()),
+                Mode::Interrupted => Err(io::ErrorKind::Interrupted.into()),
+                Mode::Error => Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "capture-original",
+                )),
+                Mode::Flood => {
+                    buffer.fill(b'x');
+                    Ok(buffer.len())
+                }
+            }
+        }
+    }
+    impl Drop for Reader {
+        fn drop(&mut self) { self.dropped.set(true); }
+    }
+
+    fn run(
+        child: &mut Child,
+        reader: Reader,
+        initial: Option<io::Error>,
+    ) -> (io::Result<ProbeOutcome>, Duration) {
+        let clock = Clock::default();
+        let result = super::super::drive_child_probe(
+            child,
+            Some(reader),
+            Duration::from_millis(5),
+            Duration::from_millis(10),
+            &clock,
+            initial,
+        );
+        (result, clock.0.get())
+    }
+
+    #[test]
+    fn first_error_survives_cleanup_and_capture_is_disabled() {
+        for initial in [false, true] {
+            let reader = Reader::new(Mode::Error);
+            let reads = reader.reads.clone();
+            let dropped = reader.dropped.clone();
+            let primary =
+                initial.then(|| io::Error::new(io::ErrorKind::InvalidData, "setup-original"));
+            let mut child = Child::new([Ok(None), Ok(None), Ok(Some(success()))]);
+            let (result, _) = run(&mut child, reader, primary);
+            let error = result.unwrap_err();
+            let failure = error
+                .get_ref()
+                .unwrap()
+                .downcast_ref::<super::super::ProbeIoFailure>()
+                .unwrap();
+            assert_eq!(
+                failure.primary.as_ref().unwrap().to_string(),
+                if initial {
+                    "setup-original"
+                } else {
+                    "capture-original"
+                }
+            );
+            assert!(failure.reaped);
+            assert!(!failure.eof);
+            assert!(dropped.get());
+            assert_eq!(reads.get(), if initial { 0 } else { 1 });
+            assert_eq!(child.kills, 1);
+        }
+    }
+
+    #[test]
+    fn wait_failure_preserves_original_error_after_reaping() {
+        let reader = Reader::new(Mode::Pending);
+        let reads = reader.reads.clone();
+        let mut child = Child::new([
+            Err(io::Error::new(io::ErrorKind::Other, "wait-original")),
+            Err(io::Error::new(io::ErrorKind::Other, "wait-secondary")),
+            Ok(Some(success())),
+        ]);
+        let (result, _) = run(&mut child, reader, None);
+        let error = result.unwrap_err();
+        let failure = error
+            .get_ref()
+            .unwrap()
+            .downcast_ref::<super::super::ProbeIoFailure>()
+            .unwrap();
+        assert_eq!(
+            failure.primary.as_ref().unwrap().to_string(),
+            "wait-original"
+        );
+        assert!(failure.reaped);
+        assert_eq!(reads.get(), 0);
+        assert_eq!(child.kills, 1);
+    }
+
+    #[test]
+    fn timeout_survives_failed_kill_racing_with_successful_exit() {
+        let clock = Clock(Cell::new(Duration::from_millis(5)));
+        let mut child = Child::new([Ok(None), Ok(Some(success()))]);
+        child.kill_error = Some(io::ErrorKind::InvalidInput.into());
+        let result = super::super::drive_child_probe(
+            &mut child,
+            Some(Reader::new(Mode::Eof)),
+            Duration::from_millis(5),
+            Duration::from_millis(10),
+            &clock,
+            None,
+        );
+        let ProbeOutcome::Failed(failure) = result.unwrap() else {
+            panic!("timeout disappeared");
+        };
+        assert_eq!(failure.kind, ProbeFailureKind::TimedOut);
+        assert_eq!(failure.exit_code, Some(0));
+        assert_eq!(child.kills, 1);
+    }
+
+    #[test]
+    fn failed_termination_reports_unresolved_child_with_bounded_work() {
+        for mode in [Mode::Pending, Mode::Flood, Mode::Interrupted] {
+            let reader = Reader::new(mode);
+            let reads = reader.reads.clone();
+            let mut child = Child::new([]);
+            child.kill_error = Some(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "kill-original",
+            ));
+            let (result, elapsed) = run(&mut child, reader, None);
+            let error = result.unwrap_err();
+            let failure = error
+                .get_ref()
+                .unwrap()
+                .downcast_ref::<super::super::ProbeIoFailure>()
+                .unwrap();
+            assert!(!failure.reaped);
+            assert_eq!(
+                failure.termination.as_ref().unwrap().to_string(),
+                "kill-original"
+            );
+            assert_eq!(child.kills, 1);
+            assert!(elapsed <= Duration::from_millis(20));
+            assert!(reads.get() <= 20 * super::super::PROBE_READ_ATTEMPTS);
+        }
+    }
+
+    #[test]
+    fn output_never_renews_cleanup_and_reaped_status_is_not_polled_again() {
+        for mode in [Mode::Pending, Mode::Flood, Mode::Interrupted] {
+            let mut child = Child::new([Ok(Some(success()))]);
+            let (result, elapsed) = run(&mut child, Reader::new(mode), None);
+            assert!(result.is_err());
+            assert_eq!(child.waits, 1);
+            assert_eq!(child.kills, 0);
+            assert!(elapsed <= Duration::from_millis(14));
+        }
+    }
+
+    #[test]
+    fn observed_exit_wins_at_deadline_and_eof_is_not_read_again() {
+        let clock = Clock(Cell::new(Duration::from_secs(10)));
+        let mut child = Child::new([Ok(Some(success()))]);
+        let reader = Reader::new(Mode::Eof);
+        let reads = reader.reads.clone();
+        let result = super::super::drive_child_probe(
+            &mut child,
+            Some(reader),
+            Duration::from_millis(5),
+            Duration::from_millis(10),
+            &clock,
+            None,
+        )
+        .unwrap();
+        assert_eq!(result, ProbeOutcome::Passed);
+        assert_eq!(child.waits, 1);
+        assert_eq!(child.kills, 0);
+        assert_eq!(reads.get(), 1);
+    }
+
+    #[test]
+    fn slow_termination_cannot_start_a_read_after_cleanup_expiry() {
+        struct SlowKill<'a>(&'a Clock);
+        impl super::super::ProbeChildControl for SlowKill<'_> {
+            fn id(&self) -> u32 { 5917 }
+            fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> { Ok(None) }
+            fn kill(&mut self) -> io::Result<()> {
+                self.0 .0.set(Duration::from_secs(1));
+                Ok(())
+            }
+        }
+        let clock = Clock::default();
+        let mut child = SlowKill(&clock);
+        let reader = Reader::new(Mode::Flood);
+        let reads = reader.reads.clone();
+        let error = super::super::drive_child_probe(
+            &mut child,
+            Some(reader),
+            Duration::from_millis(1),
+            Duration::from_millis(10),
+            &clock,
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert_eq!(reads.get(), 0);
+    }
+
+    #[test]
+    fn original_io_error_allocation_survives_secondary_failures() {
+        #[derive(Debug)]
+        struct Original(u64);
+        impl std::fmt::Display for Original {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "original-{}", self.0)
+            }
+        }
+        impl std::error::Error for Original {}
+        let original = io::Error::new(io::ErrorKind::InvalidData, Original(5917));
+        let identity = original.get_ref().unwrap() as *const _;
+        let mut child = Child::new([Err(io::Error::other("secondary")), Ok(Some(success()))]);
+        let (result, _) = run(&mut child, Reader::new(Mode::Pending), Some(original));
+        let error = result.unwrap_err();
+        let failure = error
+            .get_ref()
+            .unwrap()
+            .downcast_ref::<super::super::ProbeIoFailure>()
+            .unwrap();
+        assert!(std::ptr::eq(
+            failure.primary.as_ref().unwrap().get_ref().unwrap(),
+            identity
+        ));
+    }
 }
 
 #[test]

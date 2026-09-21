@@ -14790,6 +14790,93 @@ using the CLI or changing/restarting pgmcp.
 | `search-native-r3.log` | b8088a52724405ce6c7716e1d375ef1707f5a509d6c54b1983ade4ad222c8673 |
 | `callers-check-r1.log` | c75b4b75c0b37505db9d4ec2be3481ee5ff673be25bdf405db8c7c6228bea5ee |
 
+### J-197 — 2026-09-21 Bound child-probe capture and cleanup without a reader thread
+
+**Problem and scope (DERIVED).** Task 5917's previous reader-thread join could
+wait indefinitely after the direct child exited if a descendant inherited stderr.
+Reader failures were discarded, and status/termination errors could return before
+cleanup. The correction is restricted to shared test-process infrastructure and
+its existing callers; it does not change Rholang evaluation or persistence.
+
+**Formal-first design.** `DepthProbeLifecycle.v` and the DPL invariant catalog
+define 29 closed obligations, checked by both `coqc` and independent `coqchk`
+before implementing the runner. They cover sticky exit/EOF/error/timeout evidence,
+first-error preservation, disabled capture after error/EOF, nonrenewable cleanup,
+classification only with reaping and complete capture, expiry refusal, exact raw
+suffix retention independent of chunking, and bounded read attempts including
+interruptions. The model deliberately assumes advancing time and returning OS
+calls. It does not prove hard-real-time scheduling, successful reaping after
+arbitrary OS failures, or descendant termination.
+
+**Implementation (DECISION).** The caller owns the child, pipe, bounded diagnostic
+tail and lifecycle state. There is no reader thread, disk spool or new dependency.
+Unix uses the existing `libc` dependency to preserve pipe flags while enabling
+nonblocking reads. Windows uses the reviewed peek-before-read adapter; J-196's
+pinned asynchronous-pipe implementation premise remains an explicit qualification
+boundary. At most sixteen attempts of at most 4,096 bytes precede another status
+and deadline check. A `VecDeque` retains the final 65,536 raw bytes without moving
+the entire tail for each append. Lossy UTF-8 conversion occurs only at completion
+and may expand the resulting string beyond that raw-byte limit.
+
+Status is observed before execution-time expiry. A normal observed exit therefore
+wins that race; once timeout is latched it cannot be cleared by a later successful
+status. Exit, timeout or error starts one cleanup budget (one second in the public
+helper), which later output and errors cannot renew. Primary errors preserve their
+original allocation and source. A failed kill is provisional: confirmed subsequent
+reaping satisfies termination, whereas unresolved cleanup reports both the original
+failure and termination evidence. Error completion drops the pipe without requiring
+EOF; classified completion requires both direct-child reaping and EOF. Zero or
+unrepresentable execution deadlines are rejected before spawning. This bounds the
+helper's application-level loops, not the duration of arbitrary OS calls.
+
+**Independent review and correction.** The completed plan-agent implementation
+review found one stale-clock gap after `kill()`: its duration could exhaust cleanup
+before the next read. The driver now samples time again for its decision; an injected
+slow-kill test requires zero subsequent reads. The first injected timeout/exit test
+did not actually cross its deadline before observing exit; the corrected fixture
+forces timeout before the successful exit and preserves the status-first policy.
+The earlier failing run is retained as `lifecycle-native-r2.log`, not counted as
+acceptance.
+
+**Acceptance (MEASURED).** `PROPTEST_CASES=1024 PROPTEST_RNG_SEED=5917
+CARGO_BUILD_JOBS=4 cargo nextest run --release -p shared --lib
+-E 'test(rust::test_process::tests)' --run-ignored all --test-threads=4
+--no-fail-fast` passes all 34 selected tests. These include exhaustive Boolean
+state/observation matrices, seeded raw-tail and search properties, fault-injected
+setup/read/wait/kill errors, original error allocation identity, interrupted and
+continuous readers, a finite 262,177-byte native writer, silent/flooding inherited
+writers, a live child with closed stderr, timeout fairness, and unchanged real
+stack/panic/exit classification controls. All test sources remain under `tests/`.
+
+The final proof/kernel service took 14.492 seconds and peaked at 398.8 MiB; final
+focused native acceptance took 3.621 seconds including compilation and peaked at
+352.2 MiB. Both used zero swap (2 GiB and 6 GiB ceilings respectively). Both real
+deployment depth-test callers type-check in 25.094 seconds, at 1 GiB peak and zero
+swap under an 8 GiB ceiling. These are verification resource observations, not
+performance benchmarks or execution of the expensive production depth gates.
+
+The complete shared-library nextest target also passes **72/72** non-ignored
+tests (three ignored tests excluded), with the same 1,024-case seeded property
+settings and four test threads. Its service took 1.504 seconds, peaked at
+123.7 MiB and used zero swap. This broadens the shared-library regression scope,
+not the campaign or workspace acceptance claim.
+
+**Open obligations and tracking.** Native Windows execution, checked core-dump
+policy, stack-gate integration and subject-specific watchdog calibration remain
+open under task 5917. No consensus bytes, cryptographic hashes, accounting, PathMap
+representation or production traversal changes. PgMCP STDIO tools are still absent
+from this session; J-195 through J-197 retain the receipts for backfill. No pgmcp
+CLI, server restart, branch, worktree, dependency or upstream PathMap change was
+introduced.
+
+| Artifact under `target/verification/depth-probe-5917/` | SHA-256 |
+|---|---|
+| `lifecycle-proof-r5.log` | 748b2c0c3d75c6342cdd6884fb6883c6817547a199518477718c897f0c0433c1 |
+| `lifecycle-kernel-r5.log` | f19009538254e06bfbdc619465688a89f53a5057c3ea832ba8b064bfef944f92 |
+| `lifecycle-native-r4.log` | 2bb61fb9a5752d2afff52fb2a3911501acaf024f2188fa43a5772ba8eb76ad76 |
+| `lifecycle-callers-r1.log` | 4ed0c199ef1f9dbcd2cecad4d5140e8d48fb22abeb3383b9665ba4c024bde35a |
+| `lifecycle-shared-lib-r1.log` | fe495b6b05721bc71c411207739035429f77f1cafa0e4646454f3092fb6a37ec |
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

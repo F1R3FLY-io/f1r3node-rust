@@ -8859,6 +8859,26 @@ task 5917 as a whole. Bounded child/stderr cleanup, stack-gate integration,
 watchdog calibration and native Windows acceptance remain open. No production
 depth limit, traversal, representation or consensus behavior changes.
 
+#### 2026-09-21 qualification addendum — bounded subprocess capture lifecycle
+
+Task 5917's shared probe runner no longer joins a stderr reader thread that can
+remain blocked by an inherited writer. It uses bounded nonblocking read batches,
+an exact 64 KiB raw-byte tail, a nonrenewable cleanup budget and preserved original
+I/O errors. Classification requires confirmed reaping and stderr EOF; incomplete
+capture or cleanup is a harness error. Twenty-nine closed lifecycle/suffix/read
+obligations were kernel-checked before implementation. The final focused nextest
+group passes 34 tests, including 1,024 seeded property cases, injected cleanup
+faults, real silent/flooding descendants and a large invalid-UTF-8 output stream.
+The complete shared-library target passes 72/72 non-ignored tests, with three
+ignored tests excluded, at 123.7 MiB service peak and zero swap.
+
+J-197 records invariant bindings, independent review, negative-fixture correction
+and artifact digests. Proof/kernel peak was 398.8 MiB, native test/build peak
+352.2 MiB and caller type-check peak 1 GiB, all with zero swap. These observations
+do not establish production speedups, hard OS scheduling bounds or process-tree
+containment. Windows-native verification, core policy, stack-gate integration and
+watchdog calibration remain open; the campaign is not complete.
+
 ### 5.29 ParBag family and count-domain completeness [SS-A13, SS-A14, SS-Y9]
 
 #### 5.29.1 The defects
