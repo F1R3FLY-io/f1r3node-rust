@@ -1,6 +1,6 @@
 # Casper Node Observation: Batch B Review
 
-**Status:** Source review and revised proposal. Batch B implementation requires confirmation.
+**Status:** Batch B1 confirmed and implemented locally on 2026-09-21. Its claim remains pending. Batch B2 and Batch C still require confirmation.
 
 **Branch:** `feature/casper-node-observation`.
 
@@ -213,8 +213,10 @@ No node capability, campaign guard, candidate image, workload pin, or cloud budg
 
 Merge, image publication, candidate repinning, preflight, full baselines, and later stability approval remain separate actions.
 
-## Requested confirmation
+## Batch B1 confirmation record
 
-Confirm the nine-file Batch B1 implementation scope, its pending claim, and the four proposed high-weight mandatory tags.
+The user confirmed the nine-file Batch B1 scope, the pending claim, and the four high-weight mandatory tags on 2026-09-21.
 
-Confirmation does not authorize Batch B2, Batch C, commits, pushes, merges, claim acceptance, or cloud launches.
+The [Batch B1 work log](../work-logs/casper-node-observation-batch-b1.md) records the implementation, the local results, and the registered claim `CLAIM-CASPER-NODE-OBSERVATION-002`.
+
+The confirmation does not authorize Batch B2, Batch C, merges, claim acceptance, or cloud launches. Commits and pushes require their separate consent.

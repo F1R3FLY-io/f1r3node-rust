@@ -57,6 +57,7 @@ use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreMana
 use shared::rust::store::key_value_store::{KvStoreError, MissingBlockContext};
 use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
+use shared::rust::store::soak_snapshot::SnapshotError;
 
 use super::block_metadata_store::BlockMetadataStore;
 use super::carrier_index::CarrierIndex;
@@ -1064,6 +1065,25 @@ impl BlockDagKeyValueStorage {
     /// Can be used by caches to detect whether the DAG has changed since the last snapshot.
     pub fn current_generation(&self) -> u64 { self.dag_generation.load(Ordering::Relaxed) }
 
+    pub(crate) fn soak_capture_access(
+        &self,
+        wait: std::time::Duration,
+    ) -> Result<SoakCaptureAccess<'_>, SnapshotError> {
+        let global = self
+            .global_lock
+            .try_read_for(wait)
+            .ok_or(SnapshotError::LockTimeout(wait))?;
+        let metadata = self
+            .block_metadata_index
+            .try_read_for(wait)
+            .ok_or(SnapshotError::LockTimeout(wait))?;
+        Ok(SoakCaptureAccess {
+            _global: global,
+            metadata,
+            storage: self,
+        })
+    }
+
     /// Public method to get DAG representation with global lock protection.
     /// Matches Scala's lock.withPermit(representation).
     ///
@@ -1609,6 +1629,38 @@ impl BlockDagKeyValueStorage {
             .store(ft_value.to_bits(), Ordering::Relaxed);
         Ok(())
     }
+}
+
+pub(crate) struct SoakCaptureAccess<'a> {
+    _global: parking_lot::RwLockReadGuard<'a, ()>,
+    metadata: parking_lot::RwLockReadGuard<'a, BlockMetadataStore>,
+    storage: &'a BlockDagKeyValueStorage,
+}
+
+impl SoakCaptureAccess<'_> {
+    pub(crate) fn metadata_store(&self) -> &BlockMetadataStore { &self.metadata }
+
+    pub(crate) fn latest_messages_index(
+        &self,
+    ) -> &KeyValueTypedStoreImpl<ValidatorSerde, BlockHashSerde> {
+        &self.storage.latest_messages_index
+    }
+
+    pub(crate) fn invalid_blocks_index(
+        &self,
+    ) -> &KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata> {
+        &self.storage.invalid_blocks_index
+    }
+
+    pub(crate) fn floor_index(&self) -> &KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde> {
+        &self.storage.floor_index
+    }
+
+    pub(crate) fn frontier_index(&self) -> &KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde> {
+        &self.storage.frontier_index
+    }
+
+    pub(crate) fn generation(&self) -> u64 { self.storage.current_generation() }
 }
 
 // EquivocationsAccess trait impl — delegates to the inherent method.
