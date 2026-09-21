@@ -4,7 +4,9 @@
 
 This handoff is prepared for review, not accepted. TASK-017-13 remains in progress and blocked on TASK-017-12 results and the remaining acceptance requirements.
 
-The current preparation uses commit `5cc4e665b52f0cc5279ec577ac5075b5b9897caf`. The [current review report](../casper/cbc-evidence/runs/casper-handoff-preparation-20260919-02/report.json) records source identities and gate outcomes.
+The latest review uses commit `2530b83853e946dd32a850d78dbbc9491fc23c3f`. The [TASK-017-13 work log](../work-logs/task-017-13-gate-handoff-2026-09-21.md) records the ownership transfer, current gates, and delivery blockers.
+
+The previous preparation used commit `5cc4e665b52f0cc5279ec577ac5075b5b9897caf`. Its [review report](../casper/cbc-evidence/runs/casper-handoff-preparation-20260919-02/report.json) retains that checkpoint's source identities and gate outcomes.
 
 The [initial review report](../casper/cbc-evidence/runs/casper-pre-merge-review-20260919-01/report.json) retains the checkpoint at `3aa79d0c1c91988be781c8380d8f6952b7d72868`. Historical sections below retain their original counts and outcomes.
 
@@ -25,11 +27,13 @@ Post-merge claim discharge still requires the actual merge revision. Neither the
 | Evidence class | Current result | Limit |
 | --- | --- | --- |
 | Bounded models | The eight accepted claim inventories cite passing finite safety checks and named negative controls. | The models do not prove node correctness or unbounded liveness. |
-| Executable bindings | All eight source-bound claim audits pass. | Controlled fixtures do not qualify live adapters. |
+| Executable bindings | The current audit reports Claim001 pending and seven profile claims discharged. All soak fields remain pending. | Controlled fixtures do not qualify live adapters. |
 | Product observations | TASK-017-12 has not supplied completed baseline evidence to this review. | No campaign result, seed, or run identity is inferred. |
-| Full changed scope | The default gate has three gaps among 125 artifacts. The canonical diagnostic has two gaps. Both exit 4. | Two new campaign helpers lack records. The independent governance claim remains pending. |
+| Full changed scope | The default gate has 29 gaps among 149 artifacts. The canonical diagnostic has 28 gaps. Both exit 4. | Campaign claims, missing records, and the independent governance claim require current evidence. |
 
-This review executes metadata audits, not models, fixtures, or nodes. Earlier execution revisions remain unchanged.
+The claim audit checks metadata, not node behavior. The separate gate-only candidate has controlled fixture checks, not hosted verification or protection enforcement.
+
+Earlier execution revisions remain unchanged.
 
 The accepted claims use `bounded-safety-pass`, `not-applicable`, and `passed` for refutation, construction, and binding. Every claim retains `soak: pending`.
 
@@ -37,9 +41,9 @@ The accepted claims use `bounded-safety-pass`, `not-applicable`, and `passed` fo
 
 The [claim index](../claims/casper-soak-harness.md) links all eight specifications. The source-bound audit checks 123 declared artifacts across these claims.
 
-The [current source manifest](../casper/cbc-evidence/runs/casper-handoff-preparation-20260919-02/source-artifacts.sha256) records 127 artifact hashes. It covers the accepted inventories and the expanded mandatory scope.
+The [previous source manifest](../casper/cbc-evidence/runs/casper-handoff-preparation-20260919-02/source-artifacts.sha256) records 127 artifact hashes. It covers the accepted inventories and the expanded mandatory scope.
 
-The [current input manifest](../casper/cbc-evidence/runs/casper-handoff-preparation-20260919-02/reviewed-inputs.sha256) records the reviewed specifications, reports, and coordination documents at the stated revision.
+The [previous input manifest](../casper/cbc-evidence/runs/casper-handoff-preparation-20260919-02/reviewed-inputs.sha256) records the reviewed specifications, reports, and coordination documents at that earlier revision.
 
 The initial review package retains its earlier 125-source and 142-input manifests. Those historical manifests do not describe the new campaign helpers.
 
@@ -126,9 +130,9 @@ A maintainer must resolve that applicability question and review current evidenc
 
 ## Current closure requirements
 
-The [hosted renewal](../work-logs/soak-formal-gate-hosted-renewal.md) restores Claim001 and both formal-area documentation records. The current eight-claim audit passes without changing soak status.
+The earlier [hosted renewal](../work-logs/soak-formal-gate-hosted-renewal.md) restored Claim001 and both formal-area documentation records. The current review reports Claim001 pending and seven profile claims discharged.
 
-The default gate still reports these gaps:
+At the earlier checkpoint, the default gate reported these gaps:
 
 | Artifact | Current requirement | Responsible role |
 | --- | --- | --- |
@@ -142,11 +146,15 @@ The [authorization record](../work-logs/soak-formal-gate-authorization.md) appro
 
 At the latest recorded check, `dev` lacks `Formal verification gate`. Baseline availability remains the activation prerequisite, and Git publication or merge requires separate authorization.
 
-No deferral of this governance requirement has been approved. A separate gate PR is an option, not a merge instruction.
+No deferral of this governance requirement has been approved. The user now requests independent gate delivery to `dev` and the approved protection change.
+
+The [current work log](../work-logs/task-017-13-gate-handoff-2026-09-21.md) records the gate-only candidate and its limits. No merge, protection update, or acceptance has occurred.
 
 ## Baseline inputs still required
 
-TASK-017-12 remains with `pi-soak-carrier-index-linux`. The [dispatch preparation](../work-logs/task-017-12-preparation.md) defines its resource approval and qualification requirements.
+The user transferred TASK-017-12 to another agent. The replacement owner's identity has not been supplied to this session.
+
+The [dispatch preparation](../work-logs/task-017-12-preparation.md) retains the resource approval and qualification requirements.
 
 The approved baseline budget now covers one four-hour preflight runner and two 26-hour baseline runners. Each runner has 64 GB of memory.
 

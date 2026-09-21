@@ -650,18 +650,19 @@ tasks:
     title: "Close pre-merge CbC scope and hand off post-merge obligations"
     claim_index: docs/claims/casper-soak-harness.md
     status: in_progress
-    claimed_by: pi-casper-handoff-mac
-    claimed_at: 2026-09-19T20:21:28Z
-    execution_scope: "Prepare the evidence review and post-merge handoff. Final closure requires TASK-017-12 results and all remaining acceptance gates."
-    work_log: docs/work-logs/task-017-13-preparation.md
+    claimed_by: pi-session-01a0afde-d35c-70a2-b8c9-39aa11cbdfca
+    claimed_at: 2026-09-21T14:31:52Z
+    execution_scope: "Deliver the independent formal gate on dev and verify the approved protection change. Review TASK-017-12 evidence before final handoff acceptance."
+    work_log: docs/work-logs/task-017-13-gate-handoff-2026-09-21.md
+    preparation_log: docs/work-logs/task-017-13-preparation.md
     handoff_note: docs/handoffs/casper-pre-merge-to-post-merge-20260919.md
     handoff_preparation_status: "Prepared for review, not accepted. Baseline delivery and named recipients remain pending."
     handoff_preparation_review: docs/casper/cbc-evidence/runs/casper-handoff-preparation-20260919-02/report.json
     evidence_review: docs/casper/cbc-evidence/runs/casper-pre-merge-review-20260919-01/report.json
     canonical_record_review: docs/casper/cbc-evidence/runs/casper-formal-gate-documentation-20260919-01/report.json
-    canonical_record_status: "Claim001 and both documentation records are renewed after hosted verification. All eight executable claims pass strict source-bound audits."
+    canonical_record_status: "The review at 2530b8385 reports Claim001 pending and seven profile claims discharged. All eight soak fields remain pending."
     compatibility_review: docs/casper/cbc-evidence/runs/casper-compatibility-routing-20260919-01/report.json
-    compatibility_status: "Four lookup repairs remain intact. The independent governance claim remains pending."
+    compatibility_status: "The current default gate reports 29 gaps across 149 changed mandatory artifacts. The canonical diagnostic reports 28 gaps. Both gates exit 4."
     formal_gate_implementation: docs/work-logs/soak-formal-gate-implementation.md
     formal_gate_hosted_renewal: docs/work-logs/soak-formal-gate-hosted-renewal.md
     formal_gate_authorization: docs/work-logs/soak-formal-gate-authorization.md
@@ -669,7 +670,7 @@ tasks:
     remaining_prerequisites:
       - "Make the verified formal gate available on dev. Then apply the approved protection change, verify enforcement, and record evidence-backed acceptance."
       - "Complete CLAIM-SOAK-GATE-001 under docs/claims/soak-formal-gate.md. The approved finalized-floor scope remains local-only."
-      - "Review current-source registration and discharge for the two mandatory campaign helpers owned by TASK-017-12."
+      - "Review current-source registration and discharge for all campaign controls owned by TASK-017-12, including CLAIM-CASPER-CAMPAIGN-001, CLAIM-CASPER-CAMPAIGN-002, and CLAIM-CASPER-CAMPAIGN-003."
       - "Review baseline results, scan benchmark evidence, and concurrency-gate evidence. Record the required scope of the approved 60-hour phase."
       - "Confirm TASK-018 owners and obtain acceptance of the completed handoff. Stacked branch preparation does not satisfy post-merge discharge requirements."
     decisions: [D-11]
