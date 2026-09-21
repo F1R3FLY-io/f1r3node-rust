@@ -1,0 +1,343 @@
+From Stdlib Require Import List Bool Arith Lia.
+From StackSafePDA Require Import StackSafePDA EPM1.
+
+Import ListNotations.
+Set Implicit Arguments.
+
+Module DecodedComponentConstruction.
+
+Definition bytes := list nat.
+Definition arena := list bytes.
+Definition lookup (values : arena) (handle : nat) : bytes :=
+  match nth_error values handle with Some body => body | None => [] end.
+
+Definition field (tag body : bytes) : bytes :=
+  tag ++ EPM1.encode_varint (length body) ++ body.
+
+Inductive label :=
+| Literal (body : bytes)
+| Slot (tag : bytes) (ordinal : nat)
+| Delimited (tag : bytes)
+| Sequence.
+
+Definition shell := @tree label.
+
+Definition slot_algebra (part : label) (children : list (list nat)) : list nat :=
+  match part with
+  | Slot _ ordinal => ordinal :: concat children
+  | _ => concat children
+  end.
+
+Definition slots (subject : shell) := fold_tree slot_algebra subject.
+
+Definition planned_body (values : arena) (handles : list nat) (ordinal : nat) : bytes :=
+  match nth_error handles ordinal with
+  | Some handle => lookup values handle
+  | None => []
+  end.
+
+Definition emit_algebra (body_at : nat -> bytes) (part : label)
+    (children : list bytes) : bytes :=
+  match part with
+  | Literal body => body ++ concat children
+  | Slot tag ordinal => field tag (body_at ordinal) ++ concat children
+  | Delimited tag => field tag (concat children)
+  | Sequence => concat children
+  end.
+
+Definition resident_children (values : arena) (handles : list nat) : arena :=
+  map (lookup values) handles.
+
+Definition resident_emit (values : arena) (subject : shell) (handles : list nat) :=
+  fold_tree (emit_algebra (lookup (resident_children values handles))) subject.
+
+Definition planned_emit (values : arena) (subject : shell) (handles : list nat) :=
+  fold_tree (emit_algebra (planned_body values handles)) subject.
+
+Lemma planned_body_matches_resident values handles ordinal :
+  planned_body values handles ordinal =
+  lookup (resident_children values handles) ordinal.
+Proof.
+  unfold planned_body, lookup, resident_children.
+  rewrite nth_error_map. destruct (nth_error handles ordinal); reflexivity.
+Qed.
+
+Lemma emission_algebra_respects_lookup left right :
+  (forall ordinal, left ordinal = right ordinal) ->
+  forall part children,
+    emit_algebra left part children = emit_algebra right part children.
+Proof. intros same part children. destruct part; cbn; auto. now rewrite same. Qed.
+
+Lemma emission_fold_respects_lookup left right :
+  (forall ordinal, left ordinal = right ordinal) ->
+  (forall subject, fold_tree (emit_algebra left) subject =
+                   fold_tree (emit_algebra right) subject) /\
+  (forall subjects, fold_forest (emit_algebra left) subjects =
+                    fold_forest (emit_algebra right) subjects).
+Proof.
+  intros same. apply tree_forest_induction.
+  - intros part children IH.
+    change (emit_algebra left part (fold_forest (emit_algebra left) children) =
+      emit_algebra right part (fold_forest (emit_algebra right) children)).
+    rewrite IH. apply emission_algebra_respects_lookup. exact same.
+  - reflexivity.
+  - intros subject IH subjects IHs.
+    change (fold_tree (emit_algebra left) subject :: fold_forest (emit_algebra left) subjects =
+      fold_tree (emit_algebra right) subject :: fold_forest (emit_algebra right) subjects).
+    now rewrite IH, IHs.
+Qed.
+
+Theorem ordered_hole_substitution_is_exact values subject handles :
+  planned_emit values subject handles = resident_emit values subject handles.
+Proof.
+  unfold planned_emit, resident_emit.
+  apply (proj1 (emission_fold_respects_lookup
+    (planned_body values handles) (lookup (resident_children values handles))
+    (planned_body_matches_resident values handles))).
+Qed.
+
+Definition emission_machine values subject handles :=
+  run (emit_algebra (planned_body values handles)) (compile_tree subject) [].
+
+Theorem worklist_emission_refines_resident_substitution values subject handles :
+  emission_machine values subject handles = Some [resident_emit values subject handles].
+Proof.
+  unfold emission_machine.
+  rewrite pda_fold_equivalent_to_recursive_fold.
+  change (Some [planned_emit values subject handles] =
+    Some [resident_emit values subject handles]).
+  now rewrite ordered_hole_substitution_is_exact.
+Qed.
+
+Theorem emitted_program_has_one_instruction_per_shell_node (subject : shell) :
+  length (compile_tree subject) = tree_nodes subject.
+Proof. exact (proj1 compiled_program_has_one_instruction_per_node subject). Qed.
+
+Record plan := Plan {
+  plan_shell : shell;
+  plan_handles : list nat
+}.
+
+Definition slots_exact (subject : shell) (handles : list nat) : bool :=
+  if list_eq_dec Nat.eq_dec (slots subject) (seq 0 (length handles))
+  then true else false.
+
+Definition handles_valid (values : arena) (handles : list nat) : bool :=
+  forallb (fun handle => handle <? length values) handles.
+
+Inductive result := Declined | Rejected | Ready (pending : plan).
+
+Definition prepare (values : arena) (complete : bool) (subject : shell)
+    (handles : list nat) : arena * result :=
+  (values,
+    if complete then Declined
+    else if slots_exact subject handles && handles_valid values handles
+    then Ready (Plan subject handles)
+    else Rejected).
+
+Theorem successful_plan_has_exact_ordered_slots values subject handles pending :
+  snd (prepare values false subject handles) = Ready pending ->
+  pending = Plan subject handles /\
+  slots subject = seq 0 (length handles) /\
+  handles_valid values handles = true.
+Proof.
+  unfold prepare, slots_exact; cbn.
+  destruct (list_eq_dec Nat.eq_dec (slots subject) (seq 0 (length handles)))
+    as [ordered|unordered]; cbn; [|discriminate].
+  destruct (handles_valid values handles) eqn:valid; [|discriminate].
+  intros accepted. inversion accepted. subst. auto.
+Qed.
+
+Theorem successful_plan_consumes_exactly_all_children values subject handles pending :
+  snd (prepare values false subject handles) = Ready pending ->
+  length (slots subject) = length handles.
+Proof.
+  intros accepted.
+  destruct (@successful_plan_has_exact_ordered_slots values subject handles pending accepted)
+    as [_ [ordered _]].
+  rewrite ordered, length_seq. reflexivity.
+Qed.
+
+Theorem missing_or_extra_children_are_rejected values subject handles :
+  length (slots subject) <> length handles ->
+  snd (prepare values false subject handles) = Rejected.
+Proof.
+  intros different. unfold prepare, slots_exact; cbn.
+  destruct (list_eq_dec Nat.eq_dec (slots subject) (seq 0 (length handles)))
+    as [ordered|unordered]; cbn; [|reflexivity].
+  exfalso. apply different. rewrite ordered, length_seq. reflexivity.
+Qed.
+
+Theorem permuted_or_repeated_slots_are_rejected values subject handles :
+  slots subject <> seq 0 (length handles) ->
+  snd (prepare values false subject handles) = Rejected.
+Proof.
+  intros different. unfold prepare, slots_exact; cbn.
+  destruct (list_eq_dec Nat.eq_dec (slots subject) (seq 0 (length handles)));
+    [contradiction|reflexivity].
+Qed.
+
+Theorem accepted_handles_refer_to_existing_children values subject handles pending :
+  snd (prepare values false subject handles) = Ready pending ->
+  forall handle, In handle handles -> exists body, nth_error values handle = Some body.
+Proof.
+  intros accepted handle member.
+  destruct (@successful_plan_has_exact_ordered_slots values subject handles pending accepted)
+    as [_ [_ valid]].
+  unfold handles_valid in valid. rewrite forallb_forall in valid.
+  specialize (valid handle member). apply Nat.ltb_lt in valid.
+  destruct (nth_error values handle) eqn:found; [eauto|].
+  apply nth_error_None in found. lia.
+Qed.
+
+Theorem complete_shell_declines_without_arena_change values subject handles :
+  prepare values true subject handles = (values, Declined).
+Proof. reflexivity. Qed.
+
+Theorem every_prepare_preserves_prior_arena values complete subject handles :
+  fst (prepare values complete subject handles) = values.
+Proof. reflexivity. Qed.
+
+Theorem prior_denotations_survive_arena_extension (values extra : arena) handle body :
+  nth_error values handle = Some body ->
+  nth_error (values ++ extra) handle = Some body.
+Proof.
+  intros present. rewrite nth_error_app1; [exact present|].
+  apply nth_error_Some. rewrite present. discriminate.
+Qed.
+
+Inductive event := RetainSlot (handle : nat) | SemanticSort | MaterializeChild.
+
+Definition planning_events pending := map RetainSlot (plan_handles pending).
+
+Theorem modeled_plan_never_sorts_or_materializes pending :
+  ~ In SemanticSort (planning_events pending) /\
+  ~ In MaterializeChild (planning_events pending).
+Proof.
+  unfold planning_events. split; intros member;
+    apply in_map_iff in member; destruct member as [handle [bad _]]; discriminate.
+Qed.
+
+Theorem modeled_plan_retains_each_handle_once pending :
+  length (planning_events pending) = length (plan_handles pending).
+Proof. unfold planning_events. apply length_map. Qed.
+
+Definition leaf part : shell := Node part FNil.
+Definition absent : shell := leaf Sequence.
+Definition present_empty : shell := leaf (Slot [10] 0).
+
+Theorem absent_and_present_empty_are_distinct :
+  planned_emit [[]] absent [] = [] /\
+  planned_emit [[]] present_empty [0] = [10; 0].
+Proof. split; reflexivity. Qed.
+
+Record endpoint := Endpoint {
+  endpoint_family : nat;
+  endpoint_score : bytes;
+  endpoint_body : bytes;
+  endpoint_score_length : nat;
+  endpoint_multiplicity : nat;
+  endpoint_locally_free : bytes;
+  endpoint_connective : bool
+}.
+
+Definition finish values pending family score multiplicity locally_free connective :=
+  Endpoint family score
+    (planned_emit values (plan_shell pending) (plan_handles pending))
+    (length score) multiplicity locally_free connective.
+
+Definition resident_endpoint values subject handles family score multiplicity locally_free connective :=
+  Endpoint family score (resident_emit values subject handles)
+    (length score) multiplicity locally_free connective.
+
+Theorem final_endpoint_equals_resident values subject handles pending
+    family score multiplicity locally_free connective :
+  snd (prepare values false subject handles) = Ready pending ->
+  finish values pending family score multiplicity locally_free connective =
+  resident_endpoint values subject handles family score multiplicity locally_free connective.
+Proof.
+  intros accepted.
+  destruct (@successful_plan_has_exact_ordered_slots values subject handles pending accepted)
+    as [-> _].
+  change (Endpoint family score (planned_emit values subject handles)
+    (length score) multiplicity locally_free connective =
+    Endpoint family score (resident_emit values subject handles)
+    (length score) multiplicity locally_free connective).
+  now rewrite ordered_hole_substitution_is_exact.
+Qed.
+
+Theorem successful_plan_uses_supplied_nonsemantic_score values subject handles pending
+    family score multiplicity locally_free connective :
+  snd (prepare values false subject handles) = Ready pending ->
+  endpoint_score (finish values pending family score multiplicity locally_free connective) = score.
+Proof. intros. reflexivity. Qed.
+
+Theorem nested_field_length_prefix_round_trips tag body :
+  skipn (length tag) (field tag body) = EPM1.encode_varint (length body) ++ body /\
+  EPM1.decode_varint (EPM1.encode_varint (length body) ++ body) =
+    Some (length body, body).
+Proof.
+  split.
+  - unfold field. apply EPM1.skipn_length_app.
+  - apply EPM1.canonical_varint_round_trip.
+Qed.
+
+Definition two_slots first second : shell :=
+  Node Sequence (FCons (leaf (Slot [10] first))
+    (FCons (leaf (Slot [10] second)) FNil)).
+
+Theorem ordered_distinct_handles_are_accepted :
+  snd (prepare [[7]; [9]] false (two_slots 0 1) [0; 1]) =
+    Ready (Plan (two_slots 0 1) [0; 1]).
+Proof. reflexivity. Qed.
+
+Theorem misordered_slot_mutant_is_rejected :
+  snd (prepare [[7]; [9]] false (two_slots 1 0) [0; 1]) = Rejected.
+Proof. reflexivity. Qed.
+
+Theorem missing_slot_mutant_is_rejected :
+  snd (prepare [[7]; [9]] false (leaf (Slot [10] 0)) [0; 1]) = Rejected.
+Proof. reflexivity. Qed.
+
+Theorem duplicated_slot_mutant_is_rejected :
+  snd (prepare [[7]; [9]] false (two_slots 0 0) [0; 1]) = Rejected.
+Proof. reflexivity. Qed.
+
+Theorem reordered_or_duplicated_children_change_observation :
+  planned_emit [[7]; [9]] (two_slots 0 1) [0; 1] <>
+    planned_emit [[7]; [9]] (two_slots 0 1) [1; 0] /\
+  planned_emit [[7]; [9]] (two_slots 0 1) [0; 1] <>
+    planned_emit [[7]; [9]] (two_slots 0 1) [0; 0].
+Proof. split; discriminate. Qed.
+
+Theorem bad_framing_mutant_changes_body_extent :
+  field [10] [7; 9] = [10; 2; 7; 9] /\
+  field [10] [7; 9] <> [10; 1; 7; 9] /\
+  EPM1.decode_varint [1; 7; 9] = Some (1, [7; 9]).
+Proof. repeat split; discriminate. Qed.
+
+Print Assumptions ordered_hole_substitution_is_exact.
+Print Assumptions worklist_emission_refines_resident_substitution.
+Print Assumptions emitted_program_has_one_instruction_per_shell_node.
+Print Assumptions successful_plan_has_exact_ordered_slots.
+Print Assumptions successful_plan_consumes_exactly_all_children.
+Print Assumptions missing_or_extra_children_are_rejected.
+Print Assumptions permuted_or_repeated_slots_are_rejected.
+Print Assumptions accepted_handles_refer_to_existing_children.
+Print Assumptions complete_shell_declines_without_arena_change.
+Print Assumptions every_prepare_preserves_prior_arena.
+Print Assumptions prior_denotations_survive_arena_extension.
+Print Assumptions modeled_plan_never_sorts_or_materializes.
+Print Assumptions modeled_plan_retains_each_handle_once.
+Print Assumptions absent_and_present_empty_are_distinct.
+Print Assumptions final_endpoint_equals_resident.
+Print Assumptions successful_plan_uses_supplied_nonsemantic_score.
+Print Assumptions nested_field_length_prefix_round_trips.
+Print Assumptions ordered_distinct_handles_are_accepted.
+Print Assumptions misordered_slot_mutant_is_rejected.
+Print Assumptions missing_slot_mutant_is_rejected.
+Print Assumptions duplicated_slot_mutant_is_rejected.
+Print Assumptions reordered_or_duplicated_children_change_observation.
+Print Assumptions bad_framing_mutant_changes_body_extent.
+
+End DecodedComponentConstruction.

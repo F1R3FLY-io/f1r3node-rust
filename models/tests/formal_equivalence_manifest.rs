@@ -1105,13 +1105,59 @@ fn admitted_incomplete_preservation_binds_shared_bytes_and_recursive_oracle() {
     ]));
     assert!(has_runner_command(&runner, &[
         "rpb3_run_tests",
-        "2",
+        "9",
         "--lib",
         "incomplete_preservation_tests"
     ]));
     let native = read_repository_file("models/tests/support/incomplete_component_preservation.rs");
     assert!(native.contains("fn incomplete_import_shares_body_and_preserves_canonical_image("));
     assert!(native.contains("fn complete_shell_declines_opaque_import_without_arena_mutation("));
+}
+
+#[test]
+fn decoded_component_construction_has_proof_and_native_witnesses() {
+    let theory = read_repository_file("formal/rocq/stack_safe_pda/theories/DecodedComponentConstruction.v");
+    for theorem in [
+        "ordered_hole_substitution_is_exact",
+        "worklist_emission_refines_resident_substitution",
+        "successful_plan_consumes_exactly_all_children",
+        "missing_or_extra_children_are_rejected",
+        "complete_shell_declines_without_arena_change",
+        "prior_denotations_survive_arena_extension",
+        "modeled_plan_never_sorts_or_materializes",
+        "absent_and_present_empty_are_distinct",
+        "final_endpoint_equals_resident",
+        "nested_field_length_prefix_round_trips",
+        "misordered_slot_mutant_is_rejected",
+        "missing_slot_mutant_is_rejected",
+        "duplicated_slot_mutant_is_rejected",
+        "bad_framing_mutant_changes_body_extent",
+    ] {
+        assert!(theory.contains(&format!("Print Assumptions {theorem}.")));
+    }
+    let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
+    assert!(has_runner_command(&runner, &["rocq_compile_with_closed_count",
+        "theories/DecodedComponentConstruction.v", "23"]));
+    assert!(has_runner_kernel_check(&runner, &["StackSafePDA.DecodedComponentConstruction"]));
+    assert!(has_runner_command(&runner, &["rpb3_run_tests", "9", "--lib", "incomplete_preservation_tests"]));
+    assert!(read_repository_file("formal/rocq/stack_safe_pda/_CoqProject").lines()
+        .any(|line| line == "theories/DecodedComponentConstruction.v"));
+    let native = read_repository_file("models/tests/support/incomplete_component_preservation.rs");
+    for witness in ["planned_incomplete_top_level_families_match_resident_endpoints",
+        "planned_incomplete_expr_presence_matrix_matches_resident_endpoints",
+        "incomplete_collection_keeps_duplicate_pairs_and_order",
+        "incomplete_nested_shells_preserve_guards_patterns_and_injections",
+        "incomplete_slot_order_and_presence_mutants_change_bytes",
+        "incomplete_plans_preserve_arbitrary_ordered_children",
+        "incomplete_mixed_family_construction_keeps_handles_on_a_fixed_stack",
+        "incomplete_planning_has_no_resident_finish_events"] {
+        assert!(native.contains(&format!("fn {witness}(")));
+    }
+    let production = read_repository_file("models/src/rust/par_construction.rs");
+    assert!(production.contains("pub fn incomplete_component<T: ParBagComponent>"));
+    assert!(production.contains("self.component(shell, wire_children, score, false).map(Some)"));
+    assert!(has_runner_command(&runner, &["rpb3_run_tests", "1", "--release", "-j4",
+        "--features", "protobuf-projection-experiment", "--lib", "incomplete_planning_has_no_resident_finish_events"]));
 }
 
 fn read_repository_file(relative: &str) -> String {

@@ -1339,6 +1339,67 @@ passes 82/82 (three ignored tests excluded). J-200 records the initial diagnosti
 capture failure, its correction and verification receipts. This does not close
 the separate task-5834 decoder timeout or whole-gate watchdog qualification.
 
+## Decoded incomplete-component construction (DCC, task 5834)
+
+`DecodedComponentConstruction.v` has 23 closed declarations, compiled and independently
+kernel-checked before native tests and implementation. It reuses `StackSafePDA`'s
+fold-machine equivalence and `EPM1`'s varint framing. It models ordered Par holes in
+a finite generated shell, planned handles and resident substitution, and final
+component observations. It does **not** prove the full protobuf parser/merge machine,
+native integer addressability, cryptographic primitives or the concrete score codec.
+
+The native correspondence assumes valid handles from the same construction arena
+and a correct generated shell program. Rust derives slot ordinals by visiting actual
+schema fields; it does not accept an arbitrary caller-supplied ordinal program or
+dynamically validate handle provenance. Model rejection of permuted ordinal programs
+therefore specifies the schema contract; native endpoint comparisons detect schema
+order mistakes. The model's arena is prior Par denotations, not all private scratch
+allocations: failed attempts may append unreachable protobuf/score fragments.
+
+Bindings are in `models/tests/support/incomplete_component_preservation.rs`:
+**T** = `planned_incomplete_top_level_families_match_resident_endpoints`;
+**E** = `planned_incomplete_expr_presence_matrix_matches_resident_endpoints`;
+**N** = `incomplete_nested_shells_preserve_guards_patterns_and_injections`;
+**P** = `incomplete_plans_preserve_arbitrary_ordered_children`;
+**M** = `incomplete_slot_order_and_presence_mutants_change_bytes`;
+**D** = `incomplete_mixed_family_construction_keeps_handles_on_a_fixed_stack`;
+**C** = `incomplete_collection_keeps_duplicate_pairs_and_order`;
+**F** = `incomplete_planning_has_no_resident_finish_events` (existing experiment feature).
+Their shared `check_shell` compares resident construction with planned construction,
+including exact compact endpoints, protobuf, bincode, metadata, multiplicity, order
+and hash; it also checks complete-shell decline, missing/excess slots, no failed
+component publication and prior-handle preservation.
+
+| ID | Closed declaration | Native binding / boundary |
+|---|---|---|
+| DCC-01 | `ordered_hole_substitution_is_exact` | T, E, N, P; exact component body |
+| DCC-02 | `worklist_emission_refines_resident_substitution` | T, E, N, P, D |
+| DCC-03 | `emitted_program_has_one_instruction_per_shell_node` | modeled shell-program bound; D checks bounded retained fragments |
+| DCC-04 | `successful_plan_has_exact_ordered_slots` | T, E, N; generated-schema premise |
+| DCC-05 | `successful_plan_consumes_exactly_all_children` | shared missing/excess checks |
+| DCC-06 | `missing_or_extra_children_are_rejected` | shared typed errors; no component publication |
+| DCC-07 | `permuted_or_repeated_slots_are_rejected` | model schema-negative witnesses; M detects wrong child order/duplication natively |
+| DCC-08 | `accepted_handles_refer_to_existing_children` | same-arena handle premise; tests allocate all handles in their arena |
+| DCC-09 | `complete_shell_declines_without_arena_change` | complete mask cases check all seven arena lengths |
+| DCC-10 | `every_prepare_preserves_prior_arena` | prior bytes unchanged after successful and failed construction |
+| DCC-11 | `prior_denotations_survive_arena_extension` | shared prior/root replay after both arity failures |
+| DCC-12 | `modeled_plan_never_sorts_or_materializes` | C preserves pairs/order; F counts zero resident finishes during planning |
+| DCC-13 | `modeled_plan_retains_each_handle_once` | D counts exact Par references and bounded inline bytes |
+| DCC-14 | `absent_and_present_empty_are_distinct` | M; T/E presence matrices |
+| DCC-15 | `final_endpoint_equals_resident` | exact compact endpoint, protobuf, bincode, metadata, count/order/hash comparisons |
+| DCC-16 | `successful_plan_uses_supplied_nonsemantic_score` | compact endpoint equality against existing resident key compiler |
+| DCC-17 | `nested_field_length_prefix_round_trips` | exact protobuf comparisons, P includes metadata across varint-size boundaries |
+| DCC-18 | `ordered_distinct_handles_are_accepted` | T, N, M |
+| DCC-19 | `misordered_slot_mutant_is_rejected` | formal schema mutant; M has distinct child order witnesses |
+| DCC-20 | `missing_slot_mutant_is_rejected` | shared missing/excess arity checks; M dropped child differs |
+| DCC-21 | `duplicated_slot_mutant_is_rejected` | formal schema mutant; M duplicate child differs |
+| DCC-22 | `reordered_or_duplicated_children_change_observation` | M |
+| DCC-23 | `bad_framing_mutant_changes_body_extent` | formal wrong-length witness; native full encoded-byte equality |
+
+The final helper is a shared construction primitive, not yet a replacement decoder.
+Task 5834 still requires planned generated decode/merge frames, an independent legacy
+oracle, malformed/error-state refinement and the unchanged full depth-gate rerun.
+
 ## Original workspace-regression completion gates
 
 This checkpoint is complete only when all of the following hold:

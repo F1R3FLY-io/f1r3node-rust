@@ -8915,6 +8915,17 @@ and diagnostic retention are verified. This does not establish native Windows
 suppression or repair the protobuf timeout; general decoder construction and the
 unchanged whole-gate qualification remain required.
 
+J-202 qualifies the first general-decoder construction prerequisite: valid protobuf
+components with absent semantic operands can retain their children as planned
+handles without synthesizing fields or sorting incomplete payloads. Twenty-three
+closed construction obligations precede implementation. The final construction
+and manifest run passes 44/44 selected tests; a mixed incomplete-family ladder
+reaches depth 8,192 on a 256 KiB stack. Retained-fragment bounds and existing counters
+check that planning emits no resident root and final construction finishes once.
+These are bounded construction witnesses, **not** a production decode improvement:
+generated decoder routing remains unchanged and the depth-4,096 timeout remains
+open under task 5834 until the complete construction-path replacement is qualified.
+
 ### 5.29 ParBag family and count-domain completeness [SS-A13, SS-A14, SS-Y9]
 
 #### 5.29.1 The defects

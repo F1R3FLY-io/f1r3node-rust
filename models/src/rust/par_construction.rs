@@ -1895,6 +1895,18 @@ impl ParConstruction {
         ))
     }
 
+    pub fn incomplete_component<T: ParBagComponent>(
+        &mut self,
+        shell: &T,
+        wire_children: &[PlannedPar],
+    ) -> Result<Option<PlannedComponent>, ParConstructionError> {
+        if T::semantic_shape_is_complete(shell) {
+            return Ok(None);
+        }
+        let score = semantics::nonsemantic_score(self)?;
+        self.component(shell, wire_children, score, false).map(Some)
+    }
+
     pub fn import_admitted_incomplete_component_region<T: ParBagComponent>(
         &mut self,
         shallow_shell: &T,

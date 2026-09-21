@@ -24,6 +24,7 @@ theories/UnaryEListConstruction.v
 theories/UnaryEListConstructionMutants.v
 theories/SingletonMapConstruction.v
 theories/CollectionCollisionElision.v
+theories/DecodedComponentConstruction.v
 theories/DepthProbeClassification.v
 theories/DepthProbeSearch.v
 theories/DepthProbeLifecycle.v

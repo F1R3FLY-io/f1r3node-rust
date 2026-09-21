@@ -15169,6 +15169,75 @@ with the independent oracle and merge/error refinement. Return to the unchanged
 full depth gate afterward. PgMCP backfill must attach this work to existing 5834
 and its 5917 dependency; no duplicate task or tracker update is claimed here.
 
+### J-202 — 2026-09-21 Verify planned construction of incomplete protobuf components
+
+**Outcome and scope.** Task 5834's first construction prerequisite is implemented
+and locally verified. `ParConstruction::incomplete_component` uses the existing
+completeness predicate, nonsemantic score algebra and generated shell planner.
+It adds no field table, decoder, format, dependency or resident representation.
+Complete shells decline without mutation; incomplete shells retain planned
+children and exact wire-field presence. **Production decoder dispatch is unchanged;
+J-198's depth-4,096 decode timeout is not repaired by this increment.**
+
+**Formal-first sequence.** `DecodedComponentConstruction.v` was implemented and
+verified first: 23 closed declarations and independent kernel checking, with an
+observed 14.676-second verification unit and 396.5 MiB peak (2 GiB cap, zero swap,
+one-core quota, 120-second watchdog). Initial proof elaboration and artifact
+load-path failures remain in the verification directory; only revision 11 is
+acceptance. The complete DCC invariant-to-native-test table follows in the invariant
+catalog. Valid same-arena handles, correct generated shell programs and the existing
+score codec are explicit correspondence premises. This is a construction proof,
+not full permissive protobuf merge/error refinement or a cryptographic proof.
+
+**Native verification (MEASURED).** Tests were added before the 12-line production
+helper. The bounded resident reference compiles the original typed component;
+planned construction supplies shallow shells and distinct child handles. Exact
+component bodies, compact endpoints, protobuf/bincode bytes, metadata, multiplicity,
+ordering and hash agree. Required-operand presence matrices cover incomplete
+top-level families and every binary Expr family, with unary/variable/zipper absence,
+map duplicates, guard/pattern fields and New injections. Missing/excess handles
+refuse component publication; previous handles and successful roots retain their
+bytes after either failure. Complete-shell decline leaves all seven arena lengths
+unchanged. A 1,024-case seeded property varies child order/values and metadata across
+length-prefix boundaries.
+
+The mixed incomplete Send/If/Expr/Match ladder reaches depths 256, 1,024, 4,096 and
+8,192 on a 256 KiB stack. Its actual Par-reference count equals depth and its inline
+bytes/node counts remain within the asserted linear bounds. Existing event counters
+separately observe **zero** finish attempts, emitted root keys or resident-decoded
+bytes during depth-4,096 planning, followed by exactly **one** final finish and root
+key. These are construction correctness/resource witnesses, not a decoder benchmark
+or a claim that all campaign memory slopes are resolved.
+
+| Release verification | Result | Service elapsed | Peak memory | Swap |
+|---|---|---:|---:|---:|
+| Initial focused construction tests | 8/8; 553 excluded | 72.633 s | 2.1 GiB | 0 |
+| Default construction regressions plus two manifests | 36/36; 571 excluded | 48.843 s | 2.6 GiB | 0 |
+| Final construction/event-counter regressions plus manifests | 44/44; 571 excluded | 49.458 s | 2.6 GiB | 0 |
+
+All native commands used four build/test workers, `PROPTEST_CASES=1024`, seed 5834,
+systemd memory ceilings (6 GiB initially, 8 GiB for broader checks), zero swap,
+four-core CPU quota and 900-second watchdogs. Elapsed service times include builds.
+The existing proof runner and manifest register the 23 declarations, independent
+kernel check, nine default incomplete-preservation tests and the feature-gated
+no-materialization witness. Unrelated pre-existing compiler warnings were not
+silenced or repaired as part of this boundary.
+
+**Next required work.** Preserve an independent legacy decoder reference before
+changing the generated construction machine; replace resident nested completion
+with planned handles, including nonempty merge/error/remaining-input semantics;
+then rerun the unchanged release/depth qualification. Task 5917 and the campaign
+remain incomplete. PgMCP STDIO access is still absent; J-200–J-202 preserve receipts
+for backfill under existing task IDs, not new or falsely updated tracker records.
+
+| Artifact under `target/verification/decoded-component-5834/` | SHA-256 |
+|---|---|
+| `coqc-r11.log` | 028c8f49fbae48ce3d2157c4fc70e7365ec811a36aa2f6ea05708feed1750ce6 |
+| `coqchk-r11.log` | 81f68757fac9da1e29af06291e7be14609a1610cbc4a67da9c50c18841fe05c5 |
+| `native-r1.log` | 2abdf88855135b16d4831509c955fc52e9bc14290c66ce6c95256b5943feddca |
+| `native-r2.log` | 6d07e9e9b6ba91d4b730ff61f7ff5cf3d5f2b843a40ede217df4bc71745a5bc6 |
+| `native-r3.log` | 8cfd790fe8e83d475046ce83ccac45305ff71607fdcceac3a4ebd71093305341 |
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
