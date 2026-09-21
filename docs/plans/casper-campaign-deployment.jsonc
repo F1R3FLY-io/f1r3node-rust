@@ -1,0 +1,166 @@
+{
+  "schema_version": 1,
+  "task": "TASK-017-12",
+  "status": "proposed-not-deployed",
+  "review_date": "2026-09-21",
+  "github": {
+    "repository": "F1R3FLY-io/f1r3node-rust",
+    "environment": "casper-campaign",
+    "observed_environment_exists": false,
+    "reviewers": [
+      {
+        "login": "leithaus",
+        "id": 76650,
+        "current_repository_role": "unverified-http-403"
+      },
+      {
+        "login": "metaweta",
+        "id": 857592,
+        "current_repository_role": "unverified-http-403"
+      },
+      {
+        "login": "spreston8",
+        "id": 60404443,
+        "current_repository_role": "unverified-http-403"
+      },
+      {
+        "login": "jltatbeach",
+        "id": 93545754,
+        "current_repository_role": "unverified-http-403"
+      },
+      {
+        "login": "dylon",
+        "id": 516519,
+        "current_repository_role": "unverified-http-403"
+      },
+      {
+        "login": "jeffrey-l-turner",
+        "id": 1573697,
+        "current_repository_role": "unverified-http-403"
+      }
+    ],
+    "environment_request": {
+      "wait_timer": 0,
+      "prevent_self_review": true,
+      "can_admins_bypass": false,
+      "reviewers": [
+        {
+          "type": "User",
+          "id": 76650
+        },
+        {
+          "type": "User",
+          "id": 857592
+        },
+        {
+          "type": "User",
+          "id": 60404443
+        },
+        {
+          "type": "User",
+          "id": 93545754
+        },
+        {
+          "type": "User",
+          "id": 516519
+        },
+        {
+          "type": "User",
+          "id": 1573697
+        }
+      ],
+      "deployment_branch_policy": {
+        "protected_branches": false,
+        "custom_branch_policies": true
+      }
+    },
+    "branch_policy_request": {
+      "name": "formal/soak-casper-consensus",
+      "type": "branch"
+    },
+    "activation_variables": {
+      "CASPER_CAMPAIGN_CONFIG_PATH": null,
+      "CASPER_CAMPAIGN_CONFIG_SHA256": null
+    }
+  },
+  "oci": {
+    "region": "us-sanjose-1",
+    "namespace": "axd0qezqa9z3",
+    "compartment_id": "ocid1.compartment.oc1..aaaaaaaalq6bh2a6dmq4h6i3nrripxlcevv7fa3goaf7wxve52qiuocmehia",
+    "compartment_name": "ci-runner",
+    "application_id": "ocid1.fnapp.oc1.us-sanjose-1.amaaaaaafozi5pyaykhq3ohaku7xmyozddhm6jas7nfcmuoq5p5xz5l43hka",
+    "application_name": "f1r3node-ci-schedulers",
+    "subnet_id": "ocid1.subnet.oc1.us-sanjose-1.aaaaaaaaowangcfvfzpk27wmghb5d63ee2rsvbzmtyawkvpt7pjsdaw42z2a",
+    "observed_functions": [
+      "f1r3node-soak-scheduler"
+    ],
+    "observed_schedules": [
+      "f1r3node-soak-230-utc",
+      "f1r3node-soak-330-utc"
+    ],
+    "bucket_list": {
+      "exit_code": 0,
+      "records_returned": 0,
+      "scope": "ci-runner"
+    },
+    "policy_list": {
+      "exit_code": 0,
+      "records_returned": 0,
+      "scope": "ci-runner",
+      "tenancy_inheritance_reviewed": false
+    },
+    "proposed_storage": {
+      "bucket": "f1r3node-casper-campaign",
+      "object": "task-017-12-baseline.json",
+      "public_access_type": "NoPublicAccess",
+      "versioning": "Enabled",
+      "initial_write_condition": "If-None-Match: *",
+      "subsequent_write_condition": "If-Match: previous-etag",
+      "policy_id": null,
+      "policy_sha256": null,
+      "principals_verified": false
+    },
+    "proposed_supervisor": {
+      "name": "casper-campaign-supervisor",
+      "function_id": null,
+      "image_digest": null,
+      "memory_mib": 256,
+      "sync_timeout_seconds": 120,
+      "detached_timeout_seconds": 3600,
+      "timing_bounds": null,
+      "verification_sha256": null
+    },
+    "boot_images": {
+      "dev-amd64": null,
+      "dev-arm64": null
+    }
+  },
+  "activation_blockers": [
+    "GitHub maintainer roles remain inaccessible to the current credential.",
+    "The approval environment has not been created.",
+    "The authoritative object and its access policy have not been provisioned.",
+    "The lifetime supervisor has not been deployed or qualified.",
+    "Provider timing bounds have no accepted deployment evidence.",
+    "The boot images require host capability verification.",
+    "Node interfaces and live workload qualification remain incomplete.",
+    "Source-bound claim acceptance remains pending."
+  ],
+  "machine_budget": {
+    "preflight": {
+      "count": 1,
+      "memory_gb": 64,
+      "maximum_lifetime_seconds": 14400
+    },
+    "baselines": {
+      "count": 2,
+      "memory_gb": 64,
+      "maximum_lifetime_seconds": 93600,
+      "workload_seconds_each": 86400
+    },
+    "replacement_launches": 0,
+    "repeat_launches": 0
+  },
+  "remote_writes": 0,
+  "node_launches": 0,
+  "cloud_launches": 0
+}

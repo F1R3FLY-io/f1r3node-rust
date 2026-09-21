@@ -1,15 +1,15 @@
 # CbC Evidence: scripts/casper-soak/test-campaign.sh
 
-The campaign planning claim remains pending. Fixture checks do not supply formal discharge or dispatch approval.
+Local checks supply review evidence. Source-bound acceptance, hosted verification, and live qualification remain pending.
 
 ```json
 {
   "artifact": {
     "path": "scripts/casper-soak/test-campaign.sh",
     "id": "scripts-casper-soak-test-campaign-sh",
-    "commit": "5e26ba4c545ff8dafcf9ca9b20767703fa96f437",
+    "commit": "ee468f5db3fa007ecde9b104eda545a544f1354a",
     "commit_is_base": true,
-    "sha256": "95534b4e8d9592995a23a7aae0055ab4b1fe2b6628315b5acde032ffe0ebe75e",
+    "sha256": "c9432c74cbf592b4e1e608b90b7bbedc12cbc6e4428232fb19e44d428bd0375f",
     "working_tree": true
   },
   "claim": "docs/claims/casper-soak-campaign.md",
@@ -21,11 +21,11 @@ The campaign planning claim remains pending. Fixture checks do not supply formal
   },
   "adapter": null,
   "status": "pending",
-  "scope": "campaign-planning-and-dispatch-admission",
+  "scope": "campaign-verification-awaiting-source-bound-acceptance",
   "evidence": {
-    "kind": "synthetic-fixtures-not-formal-discharge",
-    "ref": "docs/casper/cbc-evidence/runs/casper-campaign-dispatch-5e26ba4c5-01/report.json",
-    "sha256": "853909cfd9f9b16380585b5e8c852f1468103826d44274605d4ecaaaeef23452"
+    "kind": "local-verification-not-acceptance",
+    "ref": "docs/casper/cbc-evidence/runs/casper-campaign-control-20260921-01/report.json",
+    "sha256": "27e1a2980f81360199826944dd413284a36669c2646b78237632309de1d0fb6f"
   },
   "tiers": {
     "refutation": "pending",
@@ -40,9 +40,9 @@ The campaign planning claim remains pending. Fixture checks do not supply formal
   "waiver": null,
   "verified_at": null,
   "previous_ledger": {
-    "commit": "5e26ba4c545ff8dafcf9ca9b20767703fa96f437",
+    "commit": "ee468f5db3fa007ecde9b104eda545a544f1354a",
     "path": "docs/casper/cbc-evidence/scripts-casper-soak-test-campaign-sh.md",
-    "sha256": "c4b270875caa42d3baf4bab01c923a7f857008d4cc2304f42856f1d0b6526d98"
+    "sha256": "c19f0768d12580b33119285af40081291f905af81d45662c87451ebbfff6c894"
   }
 }
 ```

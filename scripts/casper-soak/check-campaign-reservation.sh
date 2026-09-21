@@ -30,8 +30,6 @@ if [[ "$(uname -s)" == Linux ]]; then
   cargo test --locked -p casper-soak --test campaign_reservation > "$out/tests.txt" 2>&1
 else
   scope=isolated-linux
-  image="${SOAK_CAMPAIGN_TEST_IMAGE:?Set an immutable Linux test image for the host architecture.}"
-  [[ "$image" =~ @sha256:[a-f0-9]{64}$ || "$image" =~ ^sha256:[a-f0-9]{64}$ ]] || exit 2
   case "$(uname -m)" in
     arm64|aarch64) target=aarch64-unknown-linux-musl ;;
     x86_64) target=x86_64-unknown-linux-musl ;;
@@ -48,14 +46,19 @@ else
   cp "$test_binary" "$out/bin/test"
   chmod 555 "$out/bin/"*
   shasum -a 256 "$out/bin/"* > "$out/binaries.sha256"
+  printf 'FROM scratch\nCOPY --chmod=555 reservation test /case/\n' > "$out/bin/Dockerfile"
+  docker build --network none --iidfile "$out/image-id.txt" "$out/bin" > "$out/image-build.txt" 2>&1
+  image="$(cat "$out/image-id.txt")"
+  [[ "$image" =~ ^sha256:[a-f0-9]{64}$ ]]
   container="$(docker create --pull=never --network none --read-only --cap-drop ALL \
     --security-opt no-new-privileges --memory 512m --cpus 2 --pids-limit 128 --user 65534:65534 \
     --tmpfs /tmp:rw,nosuid,nodev,size=134217728 --env CASPER_RESERVATION_BIN=/case/reservation \
     --entrypoint /case/test "$image")"
-  docker cp "$out/bin" "$container:/case"
   docker inspect "$container" > "$out/container.json"
   timeout --signal=TERM --kill-after=5 120 docker start -a "$container" > "$out/tests.txt" 2>&1
   docker inspect "$container" > "$out/stopped.json"
   jq -e '.[0].State|.Running==false and .OOMKilled==false and .ExitCode==0' "$out/stopped.json" >/dev/null
 fi
-grep -Fq 'test result: ok. 16 passed; 0 failed; 0 ignored;' "$out/tests.txt"
+grep -Fq 'test result: ok. 16 passed; 0 failed; 1 ignored;' "$out/tests.txt"
+grep -Fxq 'test lock_holder_process ... ignored' "$out/tests.txt"
+grep -Fxq 'test lock_contention_rejects_and_killed_holder_releases_the_lock ... ok' "$out/tests.txt"

@@ -15,9 +15,9 @@ Run `scripts/casper-soak/check-campaign-control.sh OUTPUT` with `TLA_TOOLS_JAR` 
 
 The gate retains verifier logs, process exits, exact input digests, fixture results, and source manifests. Timeouts, incomplete searches, wrong invariants, and tool errors fail verification.
 
-On macOS, add GNU coreutils to `PATH` and set `SOAK_CAMPAIGN_TEST_IMAGE` to an immutable Linux image for the host architecture. Docker runs only reservation fixtures.
+On macOS, add GNU coreutils to `PATH`. Docker runs only reservation fixtures in a minimal image built from two hashed static executables.
 
-The reservation check requires the matching Rust musl target. The node image can supply the container filesystem without executing its node binary.
+The reservation check requires the matching Rust musl target. No node binary enters the test image.
 
 The model abstracts approval authentication, conditional storage writes, and provider operations. It does not prove those interfaces or establish deployed timing guarantees.
 

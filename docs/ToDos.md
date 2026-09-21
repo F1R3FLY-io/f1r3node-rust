@@ -588,7 +588,7 @@ tasks:
     completed_date: 2026-09-19
   - id: TASK-017-12
     title: "Pin executable workloads, qualify candidates, and run the pre-merge baseline soak"
-    candidate_review_note: "Both platform identities were verified for dev 6940a5beb and harness 1f749aa83 on 2026-09-19. Push run 35423285859 supplied the image artifacts. The matrix retains blocked admission and null workload pins. Recheck current dev before dispatch."
+    candidate_review_note: "Both immutable platform images and node binaries were reverified on 2026-09-21 against dev 6940a5beb. Their digests match the earlier review. Workload pins and live qualification remain incomplete."
     candidate_identity_evidence: docs/casper/cbc-evidence/runs/casper-candidate-repin-20260919-01/report.json
     live_admission_evidence: docs/casper/cbc-evidence/runs/casper-linux-admission-7509c831c-01/report.json
     manual_dispatch_evidence: docs/casper/cbc-evidence/runs/casper-campaign-dispatch-5e26ba4c5-01/report.json
@@ -598,13 +598,16 @@ tasks:
     node_interface_status: "PR #447 targets dev independently. Batch A and its shutdown correction are published at 799e2136a. The node claim remains pending. Later batches require separate approval, and campaign admission remains blocked."
     stack_scope: "PR #436 temporarily targets the node branch. This dependency order does not include node implementation in the harness scope. Independent harness controls can proceed before node qualification."
     reservation_work_log: docs/work-logs/task-017-12-reservations.md
-    reservation_status: "A local three-slot reservation guard has native and isolated fixture checks. It does not provide global accounting or launch enforcement. Approval authentication and independent lifetime enforcement remain unimplemented."
+    reservation_status: "All sixteen reservation tests pass in an isolated Linux container on this Mac. The authoritative OCI protocol has controlled-provider tests. Its real object and access policy remain unprovisioned."
     execution_control_plan: docs/plans/casper-campaign-execution-controls.md
-    execution_control_status: "The user approved the design, maintainer approvals, and OCI supervisor hosting. OCI Functions with Resource Scheduler can provide the service. Reviewer identities, deployment settings, timing bounds, implementation, and verification remain outstanding."
-    compatibility_lookup_status: "Both campaign helper links resolve to canonical records. Default and canonical gates each return exit 4 with three pending records. No lookup is missing in this scope."
+    execution_control_evidence: docs/casper/cbc-evidence/runs/casper-campaign-control-20260921-01/report.json
+    deployment_proposal: docs/plans/casper-campaign-deployment.jsonc
+    continuation_work_log: docs/work-logs/task-017-12-mac-continuation.md
+    execution_control_status: "The controller, workflow route, supervisor, host checks, result finalizer, and model gate are implemented. The local gate passes. Six reviewer identities and existing OCI resources are recorded. Deployment, provider timing qualification, hosted verification, and acceptance remain pending."
+    compatibility_lookup_status: "The current campaign inventories have 37 pending artifact records and matching compatibility links. The strict eight-claim audit returns exit 4 with Claim001 pending. No acceptance is inferred."
     execution_gate: "Four exact-candidate probes returned blocked before node launch. Their controlled inputs are not live qualification. The legacy workload is pinned but cannot replace required Casper profiles."
     drift_review: docs/work-logs/task-017-12-drift-review-2026-09-19.md
-    claims: [CLAIM-CASPER-SOAK-001, CLAIM-CASPER-SOAK-004, CLAIM-CASPER-CAMPAIGN-001, CLAIM-CASPER-CAMPAIGN-002]
+    claims: [CLAIM-CASPER-SOAK-001, CLAIM-CASPER-SOAK-004, CLAIM-CASPER-CAMPAIGN-001, CLAIM-CASPER-CAMPAIGN-002, CLAIM-CASPER-CAMPAIGN-003]
     claim_index: docs/claims/casper-soak-harness.md
     campaign_claim_index: docs/claims/casper-soak-campaign.md
     reservation_claim_index: docs/claims/casper-campaign-reservation.md
@@ -620,12 +623,12 @@ tasks:
     work_log: docs/work-logs/task-017-12-preparation.md
     blocked_by: []
     remaining_prerequisites:
-      - "The workflow specification digest now matches current Claim001. Historical evidence remains unchanged. Claim001 still requires source-bound renewal and acceptance. The strict claim audit returns exit 4, and both campaign helper records remain pending."
+      - "The changed workflow and campaign artifacts have current pending records. Historical evidence remains unchanged. Claim001 and the three campaign claims still require source-bound acceptance."
       - "Pin executable workloads and review the complete campaign model and configuration inventory. Recheck candidate identities before dispatch."
       - "Qualify live adapters and their required node interfaces. Fresh authority and publication probes reject both candidate identities with explicit unqualified-adapter reasons."
-      - "The manual campaign planner selects immutable platform references for both architectures. Cloud execution integration remains incomplete and cannot use the legacy rebuild path."
+      - "The new workflow connects approval, launch, workload, and finalization jobs. Hosted execution and deployed-service qualification remain required. The legacy rebuild path remains separate."
       - "The campaign-baseline-24h input requests 86400 workload seconds. Execution must preserve that full duration without preflight subtraction. Existing scheduled behavior remains unchanged."
-      - "Integrate one authoritative reservation store and independent instance lifetime enforcement for the three-machine budget. Local reservation fixtures do not establish cross-run enforcement. Campaign admission still launches nothing and cannot reach legacy replacement or retry jobs."
+      - "Provision and qualify the authoritative OCI object and independent supervisor. The implementation does not establish deployed timing guarantees. Missing activation evidence blocks execution."
       - "Record the exact candidate count and runner lifetime limits before the approved 60-hour campaign launches. Passing baseline evidence remains required."
       - "The memory decision is resolved at 64 GB per runner. Preserve the approved limits and host controls."
       - "Recovery adapter qualification for CLAIM-CASPER-SOAK-004 waits for the PR #216 merge. The ratifiers confirmed D-07 Reading A on 2026-09-19, so a pre-merge dev node has no occurrence store to observe. The authority and publication adapters do not wait."
@@ -634,7 +637,7 @@ tasks:
     resource_approval_original: "A maintainer approved the resource proposal on 2026-09-19 at 2026-09-19T07:03:24Z. The approval covered two candidates, one preflight, and two runner virtual machines for 26 hours each. The later approval amends that machine count and authorizes the 60-hour campaign."
     resource_approval_memory: "The maintainer approved 64 GB per runner on 2026-09-19, which corrects the 48 GB figure in the original proposal. The soak workflow already sets RUNNER_MEM_GB_OVERRIDE to 64. The sizing invariant needs about 60,416 MB, from a 45,056 MB ceiling, about 7,168 MB of host overhead, and an 8,192 MB floor. A 48 GB machine overruns that by about 11 GB, and a ceiling small enough to fit falls below the measured 36,008 MB healthy peak. No workflow or runtime file changes."
     resource_approval_record: docs/work-logs/task-017-12-preparation.md
-    first_dispatch_step: "After admission and execution controls pass, run a separate campaign-preflight before either baseline. The current manual route checks admission only and cannot execute preflight. A non-passing preflight must block both baseline dispatches."
+    first_dispatch_step: "After source acceptance, deployment qualification, and live admission pass, run campaign-preflight before either baseline. A non-passing preflight blocks both baseline dispatches."
     acceptance:
       - "The maintainer approves the resource budget, durations, repetitions, and candidate matrix before dispatch."
       - "A preflight-only dispatch on this branch passes before any baseline soak dispatch. Its run ID and outcome are recorded."

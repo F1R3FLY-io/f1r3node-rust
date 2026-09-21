@@ -97,6 +97,6 @@ No local fixture proves power-loss recovery, distributed exclusivity, real insta
 
 The campaign gate runs all sixteen reservation tests on Linux. On macOS, the gate cross-compiles the same tests and runs them in an isolated Linux container.
 
-The caller must supply an immutable test image through `SOAK_CAMPAIGN_TEST_IMAGE`. The container has no network, no capabilities, a non-root user, and bounded memory and temporary storage.
+The check builds a minimal image from two hashed static executables. The container has no network, no capabilities, a non-root user, and bounded memory and temporary storage.
 
 The suite requires sixteen passing tests. A platform with zero registered tests cannot satisfy this check.

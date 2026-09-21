@@ -1,25 +1,23 @@
-# CbC Evidence: .github/workflows/merge-recovery-soak.yml
+# CbC Evidence: scripts/casper-soak/check-campaign-reservation.sh
 
 Local checks supply review evidence. Source-bound acceptance, hosted verification, and live qualification remain pending.
 
 ```json
 {
   "artifact": {
-    "path": ".github/workflows/merge-recovery-soak.yml",
-    "id": "github-workflows-merge-recovery-soak-yml",
+    "path": "scripts/casper-soak/check-campaign-reservation.sh",
+    "id": "scripts-casper-soak-check-campaign-reservation-sh",
     "commit": "ee468f5db3fa007ecde9b104eda545a544f1354a",
     "commit_is_base": true,
-    "sha256": "4ae6cf3dd11b122123e9dff529dbc788f616be129e5e457b47594259c09c2e7b",
+    "sha256": "1f01d7fe1ba9adfa5d1a657d7993ffa259349b7a6638ef607f9ad335a9100666",
     "working_tree": true
   },
-  "claim": "docs/claims/casper-campaign-execution.md",
+  "claim": "docs/claims/casper-campaign-reservation.md",
   "claim_ids": [
-    "CLAIM-CASPER-CAMPAIGN-003",
-    "CLAIM-CASPER-SOAK-001"
+    "CLAIM-CASPER-CAMPAIGN-002"
   ],
   "claim_digests": {
-    "docs/claims/casper-campaign-execution.md": "8014cdb6d99964e38175f2b1500f8d3ed3d0425ed50b8c33f367702dec4636f2",
-    "docs/claims/casper-soak-harness.md": "b6d4f83f958af79037c9b938edd52f0a91ef6f4e8858d6a85a2e4aa8b6346faf"
+    "docs/claims/casper-campaign-reservation.md": "8f040e6d0f514575e9d832ba05b9cd4e46f9b5a1947cf1c31cadd1cf3d049f4d"
   },
   "adapter": null,
   "status": "pending",
@@ -40,11 +38,6 @@ Local checks supply review evidence. Source-bound acceptance, hosted verificatio
   },
   "soak": "pending",
   "waiver": null,
-  "verified_at": null,
-  "previous_ledger": {
-    "commit": "ee468f5db3fa007ecde9b104eda545a544f1354a",
-    "path": "docs/casper/cbc-evidence/github-workflows-merge-recovery-soak-yml.md",
-    "sha256": "5d384fce9a87818246c80eb607fcd279bf4575212aa7e59c6a9c71e68dc8d2af"
-  }
+  "verified_at": null
 }
 ```

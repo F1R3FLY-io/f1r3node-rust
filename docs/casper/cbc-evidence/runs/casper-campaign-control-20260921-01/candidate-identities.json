@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "resolved_from": "docker-hub",
+  "index_digest_note": "the :dev pointer is mutable; the git-describe tag is immutable",
+  "candidates": [
+    {
+      "candidate_id": "dev-amd64",
+      "node_revision": "6940a5beb4aa806d3d75f6df3be9f238512fcc2f",
+      "platform": "linux/amd64",
+      "harness_revision": "2530b83853e946dd32a850d78dbbc9491fc23c3f",
+      "image_tag": "f1r3flyindustries/f1r3fly-rust:dev-v0.4.46-canary.1758-183-g6940a5be",
+      "image_digest": "sha256:607751b4db7ecf3e1e3354b2163bf84b5cfb918ad1a780539b374f3ada368663",
+      "image_digest_kind": "oci-platform-manifest",
+      "image_config_digest": "sha256:bd1d291e690f256a022bb7c684cd7cb5fbdc17056ec1fe4cce60bdb606b18cc2",
+      "node_binary_digest": "sha256:5e3c3b3181fb24e04ee1e1da183c4bf03069bbca31e7ad9e4bbda7e3215863af",
+      "node_binary_path": "opt/docker/bin/node",
+      "node_binary_bytes": 76260512,
+      "workload_configuration_digest": null,
+      "workload_configuration_status": "blocked-unimplemented-profile-request",
+      "admission": "blocked"
+    },
+    {
+      "candidate_id": "dev-arm64",
+      "node_revision": "6940a5beb4aa806d3d75f6df3be9f238512fcc2f",
+      "platform": "linux/arm64",
+      "harness_revision": "2530b83853e946dd32a850d78dbbc9491fc23c3f",
+      "image_tag": "f1r3flyindustries/f1r3fly-rust:dev-v0.4.46-canary.1758-183-g6940a5be",
+      "image_digest": "sha256:4f944006f0f5288bc10fe0a2ee1bea7b60728982c2a2ca4278d5aa43d12f743c",
+      "image_digest_kind": "oci-platform-manifest",
+      "image_config_digest": "sha256:6af530f8c3b0291dce60003f4dae04cf67295aca8036f113f6668fdb5ea6ed73",
+      "node_binary_digest": "sha256:b078605600cbfda69922cbf32adb60512d93c9917c07fa56669b7ba03d4936f3",
+      "node_binary_path": "opt/docker/bin/node",
+      "node_binary_bytes": 74792168,
+      "workload_configuration_digest": null,
+      "workload_configuration_status": "blocked-unimplemented-profile-request",
+      "admission": "blocked"
+    }
+  ]
+}
