@@ -317,7 +317,6 @@ fn capture_copies_the_held_dag_with_ordered_parents_and_availability_states() {
     }
 
     let captured_b3 = &snapshot.blocks[&b3.block_hash];
-    assert_eq!(captured_b3.parents, b3.header.parents_hash_list);
     assert_eq!(captured_b3.metadata.parents, b3.header.parents_hash_list);
     assert_eq!(captured_b3.floor, Availability::Absent);
     assert_eq!(captured_b3.frontier, Availability::Absent);
@@ -342,7 +341,10 @@ fn capture_copies_the_held_dag_with_ordered_parents_and_availability_states() {
 
     assert_eq!(snapshot.bodies.len(), 2);
     match &snapshot.bodies[&b3.block_hash] {
-        BlockBody::Held(block) => assert_eq!(block, b3),
+        BlockBody::Held(bytes) => assert_eq!(
+            &KeyValueBlockStore::decode_block_bounded(bytes, &limits().block_decode).unwrap(),
+            b3
+        ),
         other => panic!("expected held body, got {other:?}"),
     }
     assert_eq!(snapshot.bodies[&unknown], BlockBody::NotHeld);
@@ -632,14 +634,14 @@ fn production_store_bytes_are_unchanged_by_successful_and_rejected_captures() {
         limits: tight_work,
         bodies: &[],
     });
-    assert_eq!(
-        rejected_work.err(),
-        Some(SnapshotError::LimitExceeded {
+    assert!(matches!(
+        rejected_work,
+        Err(SnapshotError::LimitExceeded {
             kind: "capture work",
             limit: 2,
-            observed: 3,
+            ..
         })
-    );
+    ));
     assert_eq!(fx.store_bytes(), before);
 }
 
@@ -766,6 +768,254 @@ fn bounded_block_decoding_rejects_short_decompression_with_valid_zero_padding() 
         KeyValueBlockStore::decode_block_bounded(&raw, &limits().block_decode),
         Err(SnapshotError::Malformed(_))
     ));
+}
+
+#[test]
+fn metadata_collections_are_bounded_before_typed_decoding() {
+    let fx = fixture("nested-limits");
+    let typed = metadata_store(fx.handle("block-metadata"));
+    let hash = fx.chain[1].block_hash.clone();
+    let mut metadata = typed.get_unsafe(&BlockHashSerde(hash.clone())).unwrap();
+    metadata.weight_map = (0..5).map(|n| (BlockHash::from(vec![n; 32]), 1)).collect();
+    typed
+        .put_one(BlockHashSerde(hash.clone()), metadata.clone())
+        .unwrap();
+    let mut bounded = limits();
+    bounded.max_validators = 4;
+    assert!(matches!(
+        capture(&fx.dag, &fx.blocks, &CaptureRequest {
+            limits: bounded,
+            bodies: &[],
+        }),
+        Err(SnapshotError::LimitExceeded {
+            kind: "metadata validators",
+            ..
+        })
+    ));
+
+    metadata.weight_map.clear();
+    metadata.justifications = vec![
+        Justification {
+            validator: hash.clone(),
+            latest_block_hash: hash.clone(),
+        };
+        11
+    ];
+    typed
+        .put_one(BlockHashSerde(hash.clone()), metadata)
+        .unwrap();
+    let mut bounded = limits();
+    bounded.max_edges = 10;
+    assert!(matches!(
+        capture(&fx.dag, &fx.blocks, &CaptureRequest {
+            limits: bounded,
+            bodies: &[],
+        }),
+        Err(SnapshotError::LimitExceeded {
+            kind: "metadata justifications",
+            ..
+        })
+    ));
+
+    let key = typed.encode_key(&BlockHashSerde(hash.clone())).unwrap();
+    let mut raw = typed.raw_store().get_one(&key).unwrap().unwrap();
+    let parent_count_offset = 8 + hash.len();
+    raw[parent_count_offset..parent_count_offset + 8].copy_from_slice(&u64::MAX.to_le_bytes());
+    typed.raw_store().put_one(key, raw).unwrap();
+    assert!(matches!(
+        capture(&fx.dag, &fx.blocks, &request(&[])),
+        Err(SnapshotError::LimitExceeded {
+            kind: "metadata parents",
+            ..
+        })
+    ));
+}
+
+#[test]
+fn capture_work_includes_canonical_output_bytes() {
+    let fx = fixture("work-coverage");
+    let snapshot = capture(&fx.dag, &fx.blocks, &request(&[])).unwrap();
+    assert!(snapshot.work >= snapshot.canonical_bytes().len());
+}
+
+#[test]
+fn duration_identity_does_not_truncate_to_u64_nanoseconds() {
+    let fx = fixture("duration");
+    let first = capture(&fx.dag, &fx.blocks, &request(&[])).unwrap();
+    let mut different = limits();
+    different.lock_wait += Duration::new(18_446_744_073, 709_551_616);
+    let second = capture(&fx.dag, &fx.blocks, &CaptureRequest {
+        limits: different,
+        bodies: &[],
+    })
+    .unwrap();
+    assert_ne!(first.digest(), second.digest());
+}
+
+#[test]
+fn body_request_count_is_checked_before_capture() {
+    let fx = fixture("body-count");
+    let bodies = vec![fx.chain[1].block_hash.clone(); 5];
+    let mut bounded = limits();
+    bounded.max_blocks = 4;
+    let mut phases = Vec::new();
+    let result = capture_observed(
+        &fx.dag,
+        &fx.blocks,
+        &CaptureRequest {
+            limits: bounded,
+            bodies: &bodies,
+        },
+        |phase| phases.push(phase),
+    );
+    assert!(matches!(
+        result,
+        Err(SnapshotError::LimitExceeded {
+            kind: "requested bodies",
+            limit: 4,
+            observed: 5,
+        })
+    ));
+    assert!(phases.is_empty());
+}
+
+#[test]
+fn scratch_block_stores_use_captured_bytes_and_are_independent() {
+    let fx = fixture("scratch-blocks");
+    let hash = fx.chain[1].block_hash.clone();
+    let snapshot = capture(&fx.dag, &fx.blocks, &request(std::slice::from_ref(&hash))).unwrap();
+    let a = snapshot.scratch_view().unwrap();
+    let b = snapshot.scratch_view().unwrap();
+    assert_eq!(a.blocks.get(&hash).unwrap(), Some(fx.chain[1].clone()));
+    assert_eq!(b.blocks.get(&hash).unwrap(), Some(fx.chain[1].clone()));
+    assert_eq!(a.blocks.get(&fx.chain[2].block_hash).unwrap(), None);
+    let mut changed = fx.chain[1].clone();
+    changed.seq_num += 1;
+    a.blocks.put(hash.clone(), &changed).unwrap();
+    assert_eq!(a.blocks.get(&hash).unwrap(), Some(changed));
+    assert_eq!(b.blocks.get(&hash).unwrap(), Some(fx.chain[1].clone()));
+    assert_eq!(fx.blocks.get(&hash).unwrap(), Some(fx.chain[1].clone()));
+    assert_eq!(
+        snapshot.scratch_view().unwrap().blocks.get(&hash).unwrap(),
+        Some(fx.chain[1].clone())
+    );
+}
+
+#[test]
+fn complete_capture_work_boundary_is_exact() {
+    let fx = fixture("work-boundary");
+    let snapshot = capture(&fx.dag, &fx.blocks, &request(&[])).unwrap();
+    let mut bounded = limits();
+    bounded.max_work = snapshot.work;
+    let exact = capture(&fx.dag, &fx.blocks, &CaptureRequest {
+        limits: bounded.clone(),
+        bodies: &[],
+    })
+    .unwrap();
+    assert_eq!(exact.work, snapshot.work);
+    bounded.max_work -= 1;
+    assert!(matches!(
+        capture(&fx.dag, &fx.blocks, &CaptureRequest {
+            limits: bounded,
+            bodies: &[]
+        }),
+        Err(SnapshotError::LimitExceeded { .. })
+    ));
+    assert_eq!(
+        snapshot.canonical_bytes(),
+        snapshot.clone().canonical_bytes()
+    );
+}
+
+#[test]
+fn canonical_output_has_an_exact_byte_bound() {
+    let fx = fixture("canonical-limit");
+    let snapshot = capture(&fx.dag, &fx.blocks, &request(&[])).unwrap();
+    let size = snapshot.canonical_bytes().len();
+    let mut bounded = limits();
+    bounded.read.max_total_bytes = size;
+    bounded.read.max_value_bytes = size.min(bounded.read.max_value_bytes);
+    let exact = capture(&fx.dag, &fx.blocks, &CaptureRequest {
+        limits: bounded.clone(),
+        bodies: &[],
+    })
+    .unwrap();
+    assert_eq!(exact.canonical_bytes().len(), size);
+    bounded.read.max_total_bytes -= 1;
+    bounded.read.max_value_bytes = bounded.read.max_total_bytes;
+    assert!(matches!(
+        capture(&fx.dag, &fx.blocks, &CaptureRequest {
+            limits: bounded,
+            bodies: &[]
+        }),
+        Err(SnapshotError::LimitExceeded {
+            kind: "snapshot bytes",
+            ..
+        })
+    ));
+}
+
+#[test]
+fn malformed_nested_metadata_lengths_and_trailing_bytes_are_rejected() {
+    let fx = fixture("metadata-wire");
+    let typed = metadata_store(fx.handle("block-metadata"));
+    let hash = fx.chain[1].block_hash.clone();
+    let key = typed.encode_key(&BlockHashSerde(hash.clone())).unwrap();
+    let good = typed.raw_store().get_one(&key).unwrap().unwrap();
+    for length in [0, 7, 8, good.len() - 1] {
+        typed
+            .raw_store()
+            .put_one(key.clone(), good[..length].to_vec())
+            .unwrap();
+        assert!(capture(&fx.dag, &fx.blocks, &request(&[])).is_err());
+    }
+    let mut extra = good.clone();
+    extra.push(0);
+    typed.raw_store().put_one(key.clone(), extra).unwrap();
+    assert!(matches!(
+        capture(&fx.dag, &fx.blocks, &request(&[])),
+        Err(SnapshotError::Malformed(_))
+    ));
+    typed.raw_store().put_one(key, good).unwrap();
+    assert!(capture(&fx.dag, &fx.blocks, &request(&[])).is_ok());
+}
+
+#[test]
+fn aggregate_parent_limit_precedes_decoding_of_later_metadata() {
+    let fx = fixture("parent-budget");
+    let snapshot = capture(&fx.dag, &fx.blocks, &request(&[])).unwrap();
+    let typed = metadata_store(fx.handle("block-metadata"));
+    for (index, (hash, block)) in snapshot.blocks.iter().take(2).enumerate() {
+        let mut metadata = block.metadata.clone();
+        metadata.parents = vec![fx.chain[0].block_hash.clone(); 3];
+        let mut bytes = typed.encode_value(&metadata).unwrap();
+        if index == 1 {
+            bytes.truncate(
+                8 + metadata.block_hash.len() + 8 + 3 * (8 + fx.chain[0].block_hash.len()),
+            );
+        }
+        typed
+            .raw_store()
+            .put_one(
+                typed.encode_key(&BlockHashSerde(hash.clone())).unwrap(),
+                bytes,
+            )
+            .unwrap();
+    }
+    let mut bounded = limits();
+    bounded.max_edges = 5;
+    assert_eq!(
+        capture(&fx.dag, &fx.blocks, &CaptureRequest {
+            limits: bounded,
+            bodies: &[]
+        })
+        .unwrap_err(),
+        SnapshotError::LimitExceeded {
+            kind: "parent edges",
+            limit: 5,
+            observed: 6
+        }
+    );
 }
 
 #[test]

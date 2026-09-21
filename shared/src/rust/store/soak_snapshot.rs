@@ -304,11 +304,37 @@ impl BoundedLmdbReader {
         }
     }
 
+    pub fn restrict_remaining(
+        &mut self,
+        bytes: usize,
+        operations: usize,
+    ) -> Result<(), SnapshotError> {
+        self.limits.max_total_bytes =
+            self.limits
+                .max_total_bytes
+                .min(checked_total("total bytes", self.usage.bytes, bytes)?);
+        self.limits.max_operations = self.limits.max_operations.min(checked_total(
+            "operations",
+            self.usage.operations,
+            operations,
+        )?);
+        Ok(())
+    }
+
     pub fn scan(
         &mut self,
         store: &Arc<dyn KeyValueStore>,
     ) -> Result<BTreeMap<ByteBuffer, ByteBuffer>, SnapshotError> {
+        self.scan_limited(store, usize::MAX)
+    }
+
+    pub fn scan_limited(
+        &mut self,
+        store: &Arc<dyn KeyValueStore>,
+        max_records: usize,
+    ) -> Result<BTreeMap<ByteBuffer, ByteBuffer>, SnapshotError> {
         let mut usage = self.usage;
+        let initial_records = usage.records;
         let result = (|| {
             usage.charge_operation(&self.limits)?;
             let (session, db) = self.session_for(store)?;
@@ -325,6 +351,11 @@ impl BoundedLmdbReader {
                 check_limit("key bytes", raw_key.len(), self.limits.max_value_bytes)?;
                 check_limit("value bytes", raw_value.len(), self.limits.max_value_bytes)?;
                 let raw_len = checked_total("record bytes", raw_key.len(), raw_value.len())?;
+                check_limit(
+                    "scan records",
+                    checked_total("scan records", usage.records - initial_records, 1)?,
+                    max_records,
+                )?;
                 usage.charge_record(&self.limits, raw_len)?;
                 let key = length_prefixed_payload(raw_key)?;
                 let value = length_prefixed_payload(raw_value)?;

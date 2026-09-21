@@ -585,6 +585,48 @@ fn malformed_scan_charges_only_the_attempted_prefix() {
 }
 
 #[test]
+fn per_scan_limit_checks_before_copy_and_retains_consumption() {
+    let fixture = open_env();
+    let (store, _) = open_store(&fixture.env, "s");
+    store.put(kv(&[("a", "1"), ("b", "2")])).unwrap();
+    let mut reader = BoundedLmdbReader::open(&[&store], limits()).unwrap();
+    assert!(matches!(
+        reader.scan_limited(&store, 1),
+        Err(SnapshotError::LimitExceeded {
+            kind: "scan records",
+            ..
+        })
+    ));
+    assert_eq!(reader.usage().records, 1);
+    assert_eq!(reader.usage().operations, 2);
+    assert_eq!(reader.usage().bytes, 18);
+}
+
+#[test]
+fn remaining_budget_cannot_be_increased() {
+    let fixture = open_env();
+    let (store, _) = open_store(&fixture.env, "s");
+    store.put(kv(&[("a", "1")])).unwrap();
+    let mut reader = BoundedLmdbReader::open(&[&store], limits()).unwrap();
+    reader.restrict_remaining(0, 1).unwrap();
+    reader.restrict_remaining(100, 100).unwrap();
+    assert!(matches!(
+        reader.read_value(&store, &key("a")),
+        Err(SnapshotError::LimitExceeded {
+            kind: "total bytes",
+            ..
+        })
+    ));
+    assert!(matches!(
+        reader.read_value(&store, &key("missing")),
+        Err(SnapshotError::LimitExceeded {
+            kind: "operations",
+            ..
+        })
+    ));
+}
+
+#[test]
 fn store_outside_the_opened_set_is_refused() {
     let first = open_env();
     let second = open_env();

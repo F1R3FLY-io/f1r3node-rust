@@ -3,7 +3,7 @@
 ---
 handoff_status: paused
 next_steps:
-  - Complete the remaining Batch B1 bounds, canonical identity, and scratch construction checks.
+  - Review the source-bound evidence for the completed B1 corrections before claim acceptance.
   - Run source-bound verification and obtain explicit acceptance of CLAIM-CASPER-NODE-OBSERVATION-002.
   - Prepare the Batch B2 final file list, limits, reference algorithm, and tests for separate approval.
   - Complete the Batch C writer review and publication contract before requesting implementation approval.
@@ -124,9 +124,9 @@ The retained evidence includes failing source snapshots, logs, final source hash
 
 The failing executables were not retained separately. The source snapshots and logs identify those failures, not the later executable copies.
 
-### Remaining B1 work
+### Remaining B1 work at the hardening checkpoint
 
-These source findings remain open. The passing regression suites do not establish the complete capture claim.
+These source findings remained open at that checkpoint. The completion review below records the subsequent corrections.
 
 - Metadata decoding still precedes parent-count checks. Nested justifications and electorate maps need limits before allocation.
 - Capture work does not yet account for every collection traversal and output copy.
@@ -140,3 +140,68 @@ Batch B2 remains dependent on corrected capture bounds, independent reference ev
 Batch C still requires a complete writer inventory and a publication consistency contract. This continuation does not approve either batch.
 
 `CLAIM-CASPER-NODE-OBSERVATION-002` remains pending. No live capability, harness guard, candidate pin, or cloud budget changed.
+
+## B1 completion review
+
+The user requested completion of the four B1 corrections. The user also requested a minimum-code review in the final epic task.
+
+The tested working-tree sources derive from `6198821283b960c3aafae1e8c35966b883dfd2f3`. Source manifests identify the tested bytes.
+
+Another writer committed `566a21223830eb6594467615eb45fe3e4ccb3c2e` during this work. That commit added EPIC-019 and changed only `docs/ToDos.md`.
+
+The initial evidence check rejected the changed HEAD. Review confirmed that the commit changed no Rust source, dependency, or claim file.
+
+Per-command checkout revisions were not recorded. The evidence retains both revisions and does not attribute all tests to either commit.
+
+The [completion report](../cbc-evidence/runs/casper-node-snapshot-completion-619882128-01/report.json) binds the source files and retained evidence.
+
+### Corrections
+
+- Metadata wire checks now bound nested byte strings, parents, justifications, and electorate maps before typed decoding.
+- Capture checks requested body counts before acquiring guards. Scans have per-store record limits and decreasing read budgets.
+- Work accounting includes state traversal, copied bytes, decoded input, canonical output, and digest input. Checked arithmetic rejects overflow.
+- Canonical output has a byte limit. The encoder checks each append before extending its buffer.
+- Scratch block stores use captured encoded bodies. Each scratch view receives independent block, metadata, floor, and frontier stores.
+- Snapshot schema 2 removes duplicate block hashes and parent lists. Metadata supplies those fields.
+- The canonical identity includes all detached inputs, usage, work, and the complete duration. Captured data exposes no mutable access.
+- The approved-block store joins the declared exclusions. Empty lifecycle, carrier, and approved-block stores do not represent durable observations.
+
+Work units count logical visits and bytes. They do not count processor instructions, allocator overhead, or elapsed time.
+
+The work limit applies to capture. Scratch construction uses bounded retained data, but it is not a metered B2 evaluator.
+
+Metadata wire checks follow the pinned bincode schema. The existing codec and compression libraries remain trusted dependencies.
+
+### Verification
+
+Four new regressions failed before implementation. They covered nested metadata bounds, canonical work, duration truncation, and requested-body limits.
+
+The final run passed 301 test executions, including 19 reader tests and 24 capture tests. This count includes repeated DAG tests across targets.
+
+Exact-boundary tests cover work and canonical bytes. Additional tests cover malformed metadata, decreasing budgets, and independent scratch block mutations.
+
+Later review moved aggregate parent-budget checks before typed decoding. The new regression initially used an edge limit below the five child edges in the fixture.
+
+The corrected test requires aggregate parent rejection before a later malformed field can reach decoding. The evidence retains both failed runs with the incorrect fixture limit.
+
+A positive compile check accepted read-only access. A negative compile check rejected mutable snapshot access with `E0596`.
+
+Clippy, formatting, and the workspace build passed. All four final language-server checks completed without findings.
+
+The tests ran natively on Linux/aarch64. No allocation instrumentation, independent rebuild, formal proof, hosted verification, live node, or campaign ran.
+
+The evidence retains red sources, logs, source archives, and final executable copies. Final executable copies do not identify the earlier failing executable.
+
+### Remaining gates
+
+The four implementation findings have local corrections and regression coverage. The claim and all verification tiers remain pending.
+
+The changed-artifact CbC gate returned exit 4. All four changed mandatory artifacts remain pending.
+
+The STE Check passed against the unchanged baseline. No human STE Review or full ASD-STE100 conformance is claimed.
+
+The final node-epic task, [`TASK-019-6`](../ToDos.md#epic-019-casper-node-observation-interface), now requires a review of the minimum necessary codebase changes.
+
+This direct requirement replaces the initial linked proposal for the separate harness epic. Task ownership and completion status remain unchanged.
+
+Batch B2 and Batch C remain unapproved. This continuation made no commit or push.

@@ -126,6 +126,7 @@ tasks:
     evidence:
       - docs/cbc-evidence/runs/casper-node-snapshot-batch-b1-799e2136a-01/report.json
       - docs/cbc-evidence/runs/casper-node-snapshot-hardening-2ccc4ae0a-01/report.json
+      - docs/cbc-evidence/runs/casper-node-snapshot-completion-619882128-01/report.json
     work_log: docs/work-logs/casper-node-observation-batch-b1.md
     blocked_by: []
     files:
@@ -142,11 +143,10 @@ tasks:
       - "The user confirmed the nine-file scope, the pending claim, and four high-weight mandatory tags on 2026-09-21."
       - "Bounded LMDB reader, transaction identity checks, detached snapshot with canonical digest, scratch construction, and observer-only bounded block decoding landed in a38d44185."
       - "The continuation at 38d083bff corrected reader budget retention, key bounds, checked arithmetic, and short-decompression acceptance, with red tests retained."
+      - "The completion review addresses all four source findings. It records 301 passing test executions and a negative compile check for mutable snapshot access."
     remaining_work:
-      - "Bound nested justification and electorate collections before metadata decoding allocates them."
-      - "Account for every collection traversal and output copy in the capture work meter."
-      - "Construct a scratch block store from captured bodies alongside the metadata and cache stores."
-      - "Encode the public duplicate hash and parent fields of detached blocks in the canonical identity, and review duration encoding and mutable snapshot inputs."
+      - "Review the completion evidence and obtain source-bound claim acceptance under TASK-019-4."
+      - "Keep task ownership and completion status unchanged until the required review finishes."
     acceptance:
       - "Every limit is checked before the allocation or store operation it bounds."
       - "Capture rejects any environment or generation change between open and validation, including restored values."
@@ -193,18 +193,24 @@ tasks:
       - "Occurrence identity is never inferred from deploy signatures."
       - "The contract and inventory are reviewed before any Batch C implementation approval."
   - id: TASK-019-6
-    title: "Merge PR #447 to dev and return PR #436 to dev"
+    title: "Review minimum necessary scope, merge PR #447 to dev, and return PR #436 to dev"
     status: pending
     claimed_by: null
     blocked_by: [TASK-019-4]
     acceptance:
+      - "Review every branch change before merge and justify why each retained component is necessary for an approved requirement."
+      - "Identify components that can be removed, combined, or moved into test tooling instead of the production node."
+      - "Review duplicate data, custom serialization, scratch stores, public interfaces, configuration, tests, documentation, and evidence files."
+      - "Preserve required safety checks, negative tests, evidence identities, and reachable historical evidence during any approved reduction."
+      - "Record source, test, documentation, and total diff sizes before and after reduction."
+      - "Run affected checks and obtain maintainer acceptance of the minimum necessary codebase scope before merge."
       - "PR #447 merges with all accepted claims and the pre-commit gate passing without a skip."
       - "PR #436 on formal/soak-casper-consensus retargets dev after the merge."
       - "EPIC-017 TASK-017-12 updates its node interface status to the merged revision."
 ---
 ```
 
-**Current state:** Batch A is implemented and Batch B1 is implemented with four open findings. Both claims are pending. Batch B2 and Batch C are unapproved. The branch is at `619882128` and PR #447 is open against `dev`.
+**Current state:** Batch A is implemented. Local B1 corrections address the four source findings, with 301 passing test executions. Both claims remain pending. Batch B2 and Batch C remain unapproved. PR #447 targets `dev`.
 
 **Scope:** This epic owns node-side interfaces only. Harness verification, profile qualification, campaign execution, and baseline soaks belong to EPIC-017.
 

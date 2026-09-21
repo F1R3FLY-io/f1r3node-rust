@@ -1,6 +1,6 @@
 # Casper Node Observation: Batch B Review
 
-**Status:** Batch B1 has a local implementation and partial corrections. Its claim remains pending. Batch B2 and Batch C still require confirmation.
+**Status:** Local B1 corrections address the four remaining source findings. Its claim remains pending. Batch B2 and Batch C still require confirmation.
 
 **Branch:** `feature/casper-node-observation`.
 
@@ -227,6 +227,8 @@ The review at `2ccc4ae0ac1045232c247ecd76925e13fabd0ade` found reader-budget and
 
 The [continuation work log](../work-logs/casper-node-observation-batch-b1.md#continuation-review-on-2026-09-21) records failing controls, passing regressions, and unresolved findings.
 
-Nested decode limits, complete work accounting, block-store scratch construction, and canonical field coverage remain open. Do not use the current capture as an accepted B2 prerequisite.
+The [B1 completion review](../work-logs/casper-node-observation-batch-b1.md#b1-completion-review) records subsequent corrections for nested bounds, work accounting, scratch blocks, and canonical identity.
+
+Formal claim acceptance remains pending. Do not use the current capture as an accepted B2 prerequisite.
 
 The earlier local test counts do not establish those properties. This review does not approve B2 or C, discharge the capture claim, or qualify a live adapter.
