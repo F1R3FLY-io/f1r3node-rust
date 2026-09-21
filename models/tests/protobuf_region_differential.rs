@@ -24,7 +24,27 @@ fn verify_family<T: ParBagComponent>(
 ) {
     par.visit_encoded::<T>(|entry| {
         let input = ProtobufRegion::copy_from_slice(entry.payload());
+        #[cfg(not(feature = "protobuf-projection-experiment"))]
         let plan = cut_at_par(input, program).expect("canonical component region cuts");
+        #[cfg(feature = "protobuf-projection-experiment")]
+        let plan = {
+            use models::rust::par_construction::substitution_cost::{capture, Metric};
+            let (plan, costs) = capture(|| cut_at_par(input, program).expect("canonical component region cuts"));
+            assert_eq!(costs.get(Metric::FieldVisits), plan.stats().field_visits);
+            assert_eq!(costs.get(Metric::MessageNodes), plan.stats().message_nodes);
+            assert_eq!(costs.get(Metric::ParCuts), plan.cuts().len());
+            assert_eq!(costs.get(Metric::RootBytes), 0);
+            let (original, a) = capture(|| plan.reconstructed_bytes());
+            let (shallow, b) = capture(|| plan.shallow_bytes());
+            let (compact, c) = capture(|| plan.compact_shell_bytes());
+            assert_eq!(a.get(Metric::OriginalBytes), original.len());
+            assert_eq!(b.get(Metric::ShallowBytes), shallow.len());
+            assert_eq!(c.get(Metric::CompactBytes), compact.len());
+            assert_eq!(a.get(Metric::ShallowBytes) + a.get(Metric::CompactBytes), 0);
+            assert_eq!(b.get(Metric::OriginalBytes) + b.get(Metric::CompactBytes), 0);
+            assert_eq!(c.get(Metric::OriginalBytes) + c.get(Metric::ShallowBytes), 0);
+            plan
+        };
         assert_eq!(plan.reconstructed_bytes().as_ref(), entry.payload());
         decode(plan.shallow_bytes().as_ref()).expect("the generated decoder accepts the shell");
         let stats = plan.stats();

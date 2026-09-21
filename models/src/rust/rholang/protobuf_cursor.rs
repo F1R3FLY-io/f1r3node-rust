@@ -61,7 +61,13 @@ impl ProtobufRegion {
     }
 
     #[inline]
-    pub fn copy_from_slice(bytes: &[u8]) -> Self { Self::new(Bytes::copy_from_slice(bytes)) }
+    pub fn copy_from_slice(bytes: &[u8]) -> Self {
+        #[cfg(feature = "protobuf-projection-experiment")]
+        crate::rust::par_construction::substitution_cost::record(
+            crate::rust::par_construction::substitution_cost::Event::CopyRoot(bytes.len()),
+        );
+        Self::new(Bytes::copy_from_slice(bytes))
+    }
 
     #[inline]
     pub fn as_bytes(&self) -> &[u8] { &self.backing[self.range.clone()] }
@@ -81,6 +87,10 @@ impl ProtobufRegion {
         }
         let start = self.range.start.checked_add(relative.start)?;
         let end = self.range.start.checked_add(relative.end)?;
+        #[cfg(feature = "protobuf-projection-experiment")]
+        crate::rust::par_construction::substitution_cost::record(
+            crate::rust::par_construction::substitution_cost::Event::BorrowRegion,
+        );
         Some(Self {
             backing: self.backing.clone(),
             range: start..end,

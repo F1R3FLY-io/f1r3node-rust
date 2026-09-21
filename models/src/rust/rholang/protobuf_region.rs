@@ -424,6 +424,10 @@ impl Builder {
         let index = self.cuts.len();
         self.cuts.push(ProtobufParCut { region, path_leaf });
         self.stats.par_cuts += 1;
+        #[cfg(feature = "protobuf-projection-experiment")]
+        crate::rust::par_construction::substitution_cost::record(
+            crate::rust::par_construction::substitution_cost::Event::CutPar,
+        );
         index
     }
 
@@ -919,6 +923,10 @@ pub fn cut_at_par(
             .next_field()?;
         if let Some(field) = next {
             builder.stats.field_visits += 1;
+            #[cfg(feature = "protobuf-projection-experiment")]
+            crate::rust::par_construction::substitution_cost::record(
+                crate::rust::par_construction::substitution_cost::Event::VisitField,
+            );
             let (schema, path_leaf, occurrence) = {
                 let frame = frames
                     .last_mut()
@@ -978,6 +986,10 @@ pub fn cut_at_par(
         #[cfg(test)]
         emission_tests::record_publication(node_index, &frame.region, frame.schema, frame.path_leaf, &builder);
         builder.stats.message_nodes += 1;
+        #[cfg(feature = "protobuf-projection-experiment")]
+        crate::rust::par_construction::substitution_cost::record(
+            crate::rust::par_construction::substitution_cost::Event::PublishNode,
+        );
         if let Some(tag) = return_tag {
             frames
                 .last_mut()
@@ -1101,6 +1113,15 @@ impl ProtobufCutPlan {
             }
         }
         debug_assert_eq!(out.len(), root_len);
+        #[cfg(feature = "protobuf-projection-experiment")]
+        {
+            use crate::rust::par_construction::substitution_cost::{record, Event};
+            record(match mode {
+                EmitMode::Original => Event::EmitOriginal(out.len()),
+                EmitMode::Shallow => Event::EmitShallow(out.len()),
+                EmitMode::Compact => Event::EmitCompact(out.len()),
+            });
+        }
         Bytes::from(out)
     }
 }

@@ -24,6 +24,10 @@
 use std::cmp::Ordering;
 use std::fmt;
 
+#[cfg(feature = "protobuf-projection-experiment")]
+#[path = "../../tests/support/substitution_cost.rs"]
+pub mod substitution_cost;
+
 use pathmap::zipper::{ZipperIteration, ZipperMoving, ZipperReadOnlyIteration};
 use pathmap::PathMap;
 use prost::encoding::{encoded_len_varint, key_len};
@@ -934,6 +938,8 @@ impl Default for ParConstruction {
 
 impl ParConstruction {
     pub fn new() -> Self {
+        #[cfg(feature = "protobuf-projection-experiment")]
+        substitution_cost::record(substitution_cost::Event::CreateArena);
         Self {
             byte_fragments: Vec::new(),
             scores: Vec::new(),
@@ -1891,6 +1897,8 @@ impl ParConstruction {
         }
         let score = semantics::nonsemantic_score(self)?;
         let encoded_protobuf = region.into_bytes();
+        #[cfg(feature = "protobuf-projection-experiment")]
+        substitution_cost::record(substitution_cost::Event::ImportShared);
         let protobuf = self.push_proto_node(if encoded_protobuf.is_empty() {
             Vec::new()
         } else {
@@ -3420,6 +3428,8 @@ impl ParConstruction {
 
     /// Emit the root planned `Par` into its sole resident representation.
     pub fn finish(&self, root: PlannedPar) -> Result<Par, ParConstructionError> {
+        #[cfg(feature = "protobuf-projection-experiment")]
+        substitution_cost::record(substitution_cost::Event::BeginFinish);
         let planned = &self.pars[root.0];
         let mut components = ParBag::new();
         for occurrence in OccurrenceIter::new(&self.occurrence_nodes, planned.occurrence_root) {
@@ -3432,11 +3442,14 @@ impl ParConstruction {
                 component.canonical_path_stable,
             )?;
         }
-        Ok(Par::from_parts(
+        let result = Par::from_parts(
             components,
             planned.locally_free.clone(),
             planned.connective_used,
-        ))
+        );
+        #[cfg(feature = "protobuf-projection-experiment")]
+        substitution_cost::record(substitution_cost::Event::FinishOk);
+        Ok(result)
     }
 
     /// Emit the canonical protobuf body of a planned `Par` without first
@@ -3468,6 +3481,8 @@ impl ParConstruction {
             .map_err(|_| ParConstructionError::LengthOverflow("RPB3 score trailer"))?;
         out.extend_from_slice(&score_len.to_be_bytes());
         debug_assert_eq!(out.len(), capacity);
+        #[cfg(feature = "protobuf-projection-experiment")]
+        substitution_cost::record(substitution_cost::Event::EmitRootKey(out.len()));
         Ok(out)
     }
 

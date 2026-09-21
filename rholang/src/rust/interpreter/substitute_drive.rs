@@ -647,6 +647,10 @@ impl Substitute {
         work.push(root);
 
         while let Some(w) = work.pop() {
+            #[cfg(feature = "protobuf-projection-experiment")]
+            models::rust::par_construction::substitution_cost::record(
+                models::rust::par_construction::substitution_cost::Event::VisitWork,
+            );
             match w {
                 SubWork::Par(slot, ctx) => {
                     let term = match slot {

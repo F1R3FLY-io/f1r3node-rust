@@ -8731,6 +8731,25 @@ records the complete method, receipts, profile limitations and failed empty
 profiling attempt. Formal cost-event bindings, scoped work/copy/construction
 counters and replay/lifecycle qualification still remain for task 5916.
 
+**2026-09-21 cost-event binding addendum.** Sixteen kernel-checked SCA
+obligations now specify additive counters and their conditional source-budget
+boundary before feature-only native instrumentation. The actual unsorted
+depth-4096 traversal records one 74,727-byte region copy, 32,771 shared-region
+handles, 4,096 recursive cuts, 24,581 outer work-item visits, 32,775 shallow
+emitted bytes and one final construction finish. No Original reconstruction
+emission or resident decode_exact input bytes are observed in that scope.
+Changing only root multiplicity from 1 to 1,000,000 leaves the counters
+unchanged. Exact protobuf/compact output remains checked outside capture.
+The combined native gate passes 62 checks; the extended depth-4096 counter
+gate passes separately. The final binding gate adds a passing actual-decoder
+positive control and reruns all 43 manifest tests, bringing distinct coverage
+to 63 tests. Default builds compile out the recorder and hooks.
+[J-191](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-191--2026-09-21-bind-substitution-cost-events-to-native-operations)
+records event scopes, actual-operation positive controls, resources and the
+incorrect error-fixture correction. These are finite-fixture work observations,
+not a universal proof of linear time or a new benchmark population. General
+cost correspondence and remaining replay/lifecycle acceptance stay open.
+
 ---
 
 ### 5.29 ParBag family and count-domain completeness [SS-A13, SS-A14, SS-Y9]

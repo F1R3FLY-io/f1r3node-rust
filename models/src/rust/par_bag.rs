@@ -974,6 +974,10 @@ where T: ParBagComponent {
 }
 
 fn decode_exact<T: ParBagComponent>(payload: &[u8]) -> Result<T, ParBagCodecError> {
+    #[cfg(feature = "protobuf-projection-experiment")]
+    crate::rust::par_construction::substitution_cost::record(
+        crate::rust::par_construction::substitution_cost::Event::DecodeResident(payload.len()),
+    );
     #[cfg(test)]
     crate::rust::par_to_sexpr::tests::record_component_decode();
     T::decode_protobuf_deferred_epathmap_validation(payload).map_err(|source| {

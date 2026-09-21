@@ -101,3 +101,122 @@ fn nonidentity_measurement_fixtures_have_exact_changed_outputs() {
         }
     }
 }
+
+#[cfg(feature = "protobuf-projection-experiment")]
+mod costs {
+    use models::rust::par_construction::substitution_cost::{capture, Metric};
+
+    use super::*;
+
+    #[test]
+    fn nonidentity_costs_track_distinct_endpoints_and_single_finish() {
+        let mut previous = None;
+        for depth in [1, 7, 64, 512, 4096] {
+            let input = bound_list(depth);
+            let mut payload_bytes = 0;
+            input.visit_encoded::<Expr>(|entry| payload_bytes += entry.payload().len());
+            let expected =
+                Par::wrap_unary_elist(depth, new_gint_par(123, Vec::new(), false)).unwrap();
+            let env = Env::new().put(new_gint_par(123, Vec::new(), false));
+            let subject = substitute_instance();
+            let (output, totals) = capture(|| subject.substitute_no_sort(input, 0, &env));
+            let output = output.unwrap();
+            assert_eq!(output.encode_to_vec(), expected.encode_to_vec());
+            assert_eq!(
+                output.components().compact_bytes(),
+                expected.components().compact_bytes()
+            );
+            assert_eq!(totals.get(Metric::RootCopies), 1, "{totals:?}");
+            assert_eq!(totals.get(Metric::RootBytes), payload_bytes, "{totals:?}");
+            assert_eq!(totals.get(Metric::ArenaCount), 1, "{totals:?}");
+            assert_eq!(totals.get(Metric::FinishAttempts), 1, "{totals:?}");
+            assert_eq!(totals.get(Metric::FinishSuccesses), 1, "{totals:?}");
+            assert_eq!(totals.get(Metric::RootKeys), 1, "{totals:?}");
+            let mut expected_key_bytes = 0;
+            output.visit_encoded::<Expr>(|entry| {
+                expected_key_bytes += models::rust::par_bag::PAR_BAG_KEY_DOMAIN.len()
+                    + 1
+                    + entry.score().len()
+                    + entry.payload().len()
+                    + std::mem::size_of::<u64>();
+            });
+            assert_eq!(
+                totals.get(Metric::RootKeyBytes),
+                expected_key_bytes,
+                "{totals:?}"
+            );
+            assert_eq!(totals.get(Metric::OriginalBytes), 0, "{totals:?}");
+            assert_eq!(totals.get(Metric::ResidentBytes), 0, "{totals:?}");
+            assert_eq!(totals.get(Metric::ParCuts), depth);
+            assert_eq!(totals.get(Metric::MessageNodes), 2 * depth + 3);
+            assert_eq!(totals.get(Metric::WorkSteps), 6 * depth + 5);
+            assert_eq!(totals.get(Metric::ShallowBytes), 8 * depth + 7);
+            for metric in [
+                Metric::BorrowedRegions,
+                Metric::FieldVisits,
+                Metric::MessageNodes,
+                Metric::ParCuts,
+                Metric::WorkSteps,
+                Metric::ShallowBytes,
+            ] {
+                assert!(totals.get(metric) > 0, "{metric:?}: {totals:?}");
+            }
+            if let Some((last_depth, last_shallow)) = previous {
+                assert!(totals.get(Metric::ShallowBytes) * last_depth <= last_shallow * depth * 2);
+            }
+            previous = Some((depth, totals.get(Metric::ShallowBytes)));
+            println!("SUBSTITUTION_COST depth={depth} {totals:?}");
+        }
+    }
+
+    #[test]
+    fn root_multiplicity_does_not_repeat_region_traversal() {
+        let mut baseline = None;
+        for count in [1, 2, 1_000_000] {
+            let input = bound_list(7).scale_occurrences(count).unwrap();
+            let expected = Par::wrap_unary_elist(7, new_gint_par(123, Vec::new(), false))
+                .unwrap()
+                .scale_occurrences(count)
+                .unwrap();
+            let env = Env::new().put(new_gint_par(123, Vec::new(), false));
+            let subject = substitute_instance();
+            let (output, totals) = capture(|| subject.substitute_no_sort(input, 0, &env));
+            assert_eq!(
+                output.unwrap().components().compact_bytes(),
+                expected.components().compact_bytes()
+            );
+            if let Some(first) = baseline {
+                assert_eq!(totals, first);
+            }
+            baseline = Some(totals);
+        }
+    }
+
+    #[test]
+    fn substitution_error_records_partial_work_without_finish() {
+        let input = Par::default().with_exprs(vec![Expr::default()]);
+        assert!(!substitution_identity(&input));
+        let subject = substitute_instance();
+        let (result, totals) = capture(|| subject.substitute_no_sort(input, 0, &Env::new()));
+        assert!(matches!(result, Err(rholang::rust::interpreter::errors::InterpreterError::UndefinedRequiredProtobufFieldError(_))));
+        assert!(totals.get(Metric::WorkSteps) > 0);
+        assert_eq!(totals.get(Metric::ArenaCount), 1);
+        assert_eq!(totals.get(Metric::FinishAttempts), 0);
+        assert_eq!(totals.get(Metric::FinishSuccesses), 0);
+    }
+
+    #[test]
+    fn identity_substitution_has_no_construction_events() {
+        let input = Par::wrap_unary_elist(64, new_gint_par(123, Vec::new(), false)).unwrap();
+        assert!(substitution_identity(&input));
+        let expected = input.components().compact_bytes();
+        let subject = substitute_instance();
+        let (output, totals) = capture(|| subject.substitute_no_sort(input, 0, &Env::new()));
+        assert_eq!(output.unwrap().components().compact_bytes(), expected);
+        assert_eq!(totals.get(Metric::ArenaCount), 0);
+        assert_eq!(totals.get(Metric::FinishAttempts), 0);
+        assert_eq!(totals.get(Metric::FinishSuccesses), 0);
+        assert_eq!(totals.get(Metric::RootCopies), 0);
+        assert_eq!(totals.get(Metric::WorkSteps), 0);
+    }
+}

@@ -988,6 +988,59 @@ fn substitution_family_schedules_bind_actual_dispatch_and_combine() {
 }
 
 #[test]
+fn substitution_cost_model_binds_scoped_native_events() {
+    let theory = read_repository_file("formal/rocq/stack_safe_pda/theories/SubstitutionCost.v");
+    for theorem in [
+        "accumulation_refines_reference",
+        "concatenation_adds_costs",
+        "prefix_cost_never_exceeds_complete_trace",
+        "shared_references_copy_no_body_bytes",
+        "disjoint_root_partition_copies_exact_source",
+        "one_root_copy_per_endpoint",
+        "multiplicity_change_preserves_input_work",
+        "no_finish_trace_has_zero_counters",
+        "successful_machine_has_one_arena_and_finish",
+        "prefinish_error_has_no_finish_attempt",
+        "identity_bypass_has_no_arena_or_finish",
+        "local_budget_implies_total_budget",
+        "declared_linear_partition_bounds_observed_cost",
+        "shallow_cuts_emit_no_descendant_payload",
+        "compact_cuts_emit_no_descendant_payload",
+        "original_cut_payload_cost_is_exact",
+    ] {
+        assert!(theory.contains(&format!("Print Assumptions {theorem}.")));
+    }
+    assert_eq!(theory.matches("Print Assumptions ").count(), 16);
+    for forbidden in ["Admitted.", "admit.", "Axiom ", "Parameter "] {
+        assert!(!theory.contains(forbidden));
+    }
+    let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
+    assert!(has_runner_command(&runner, &["rocq_compile_with_closed_count", "theories/SubstitutionCost.v", "16"]));
+    assert!(has_runner_kernel_check(&runner, &["StackSafePDA.SubstitutionCost"]));
+    assert!(read_repository_file("formal/rocq/stack_safe_pda/_CoqProject")
+        .lines().any(|line| line == "theories/SubstitutionCost.v"));
+    assert!(has_runner_command(&runner, &["rpb3_run_tests", "7", "--release", "-j4", "--features", "protobuf-projection-experiment", "--lib", "substitution_cost"]));
+    assert!(has_runner_command(&runner, &["rholang_run_tests", "4", "--features", "protobuf-projection-experiment", "--test", "stack_depth_gate", "substitution_scaling::costs"]));
+    let model_tests = read_repository_file("models/tests/support/substitution_cost.rs");
+    for witness in ["scoped_cost_fold_matches_event_reference",
+        "cost_scopes_are_isolated_panic_safe_and_checked",
+        "shared_regions_record_handles_without_body_copies",
+        "repeated_finish_calls_are_observable",
+        "actual_shared_import_records_no_body_copy",
+        "actual_resident_decode_records_input_bytes",
+        "actual_emission_modes_and_planning_counts_match_returned_bytes"] {
+        assert!(model_tests.contains(&format!("fn {witness}(")));
+    }
+    let runtime_tests = read_repository_file("rholang/tests/support/substitution_scaling.rs");
+    for witness in ["nonidentity_costs_track_distinct_endpoints_and_single_finish",
+        "root_multiplicity_does_not_repeat_region_traversal",
+        "substitution_error_records_partial_work_without_finish",
+        "identity_substitution_has_no_construction_events"] {
+        assert!(runtime_tests.contains(&format!("fn {witness}(")));
+    }
+}
+
+#[test]
 fn admitted_incomplete_preservation_binds_shared_bytes_and_recursive_oracle() {
     let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
     let oracle = read_repository_file("rholang/tests/support/substitute_oracle.rs");

@@ -975,6 +975,58 @@ The formal source bridge assumes the existing canonical-writer certificate
 domain; logical emptiness and universal Rust/native admission are not inferred
 from count alone. See [J-187](pathmap-engineering-journal-2026-08-23.md#j-187--2026-09-18-bind-cached-act-summaries-to-source-preorder).
 
+## Substitution cost-event accounting (SCA, task 5916)
+
+The model `SubstitutionCost.v` counts explicit events, not elapsed time or
+allocator behavior. Natural-number counters require checked native addition.
+A source partition, a complete native event trace and a linear local budget
+are premises to the resource bound, not conclusions about arbitrary Rust input.
+In particular, overlapping retained region lengths are not bytes copied.
+Endpoint multiplicity invariance concerns distinct top-level input traversal,
+not mandatory protobuf repetition of nested repeated fields. Each row below
+is an obligation inventory established before its native counter implementation.
+
+| ID | Closed model declaration | Native binding / executable obligation |
+|---|---|---|
+| SCA-01 | accumulation_refines_reference | `scoped_cost_fold_matches_event_reference`: compare every counter with an independent event fold |
+| SCA-02 | concatenation_adds_costs | Same property splits arbitrary event sequences and adds the separate totals |
+| SCA-03 | prefix_cost_never_exceeds_complete_trace | Same property checks every component is monotone over appended events |
+| SCA-04 | shared_references_copy_no_body_bytes | `shared_regions_record_handles_without_body_copies` and `actual_shared_import_records_no_body_copy`: verify actual operation hooks, pointer sharing and zero copied/emitted/decoded bytes |
+| SCA-05 | disjoint_root_partition_copies_exact_source | `nonidentity_costs_track_distinct_endpoints_and_single_finish`: copied bytes equal admitted endpoint payload bytes |
+| SCA-06 | one_root_copy_per_endpoint | Same native probe counts one copy for its one endpoint; heterogeneous fixtures remain separately required |
+| SCA-07 | multiplicity_change_preserves_input_work | `root_multiplicity_does_not_repeat_region_traversal`: vary only root multiplicity and compare work/copy/emission counters |
+| SCA-08 | no_finish_trace_has_zero_counters | `scoped_cost_fold_matches_event_reference` excludes arena/finish events and checks zeros |
+| SCA-09 | successful_machine_has_one_arena_and_finish | Native non-identity probe observes actual arena creation and finish attempt/success, not wrapper calls |
+| SCA-10 | prefinish_error_has_no_finish_attempt | `substitution_error_records_partial_work_without_finish`: semantic error retains partial work and no root finish |
+| SCA-11 | identity_bypass_has_no_arena_or_finish | `identity_substitution_has_no_construction_events`: ground identity probe |
+| SCA-12 | local_budget_implies_total_budget | Proof-only additive inequality; native complete-hook coverage remains required |
+| SCA-13 | declared_linear_partition_bounds_observed_cost | Conditional proof-only bound; experiment 346 is finite-workload scaling evidence, not premise discharge |
+| SCA-14 | shallow_cuts_emit_no_descendant_payload | `actual_emission_modes_and_planning_counts_match_returned_bytes` and the feature-enabled all-family region differential compare actual Shallow bytes; existing SRE byte differentials remain binding |
+| SCA-15 | compact_cuts_emit_no_descendant_payload | Same real-emitter tests plus existing SRE compact byte differentials; separate mode counters must not merge modes |
+| SCA-16 | original_cut_payload_cost_is_exact | Same real-emitter tests plus SRE reconstruction equality bind actual Original byte lengths |
+
+Additional executable-only recorder requirements: thread-local isolation,
+rejected nesting, panic cleanup, checked overflow, repeated finish visibility
+and no events outside capture. Hooks and collector are compiled only with the
+existing `protobuf-projection-experiment` feature; the collector lives under
+`models/tests/support/`. Certificate-publication observation must not be active
+inside a cost capture because its deliberate reconstruction would contaminate
+emission counters. Feature builds are attribution instruments, not the latency
+population. No proof of cryptographic, allocator, OS scheduling or Rust compiler
+behavior is implied.
+
+`RootBytes` records every `ProtobufRegion::copy_from_slice` request inside the
+scope; it is not restricted to the designated root call sites. Unexpected
+additional region copies therefore remain observable. `ResidentBytes` covers
+entry bytes to `par_bag::decode_exact`, not every generated decoder; `WorkSteps`
+counts outer substitution work-item pops, not all constructor, comparison or
+allocator operations. `RootKeyBytes` counts complete emitted RPB3 keys including
+score and trailer, not protobuf length. Actual output endpoint slices provide
+an independent byte-length expectation. Successful unsorted substitution and
+prefinish error counts are tested separately; the sorted public API may have
+additional legitimate construction stages. These scope distinctions are part
+of the binding, not universal source-wide complexity claims.
+
 ## Original workspace-regression completion gates
 
 This checkpoint is complete only when all of the following hold:

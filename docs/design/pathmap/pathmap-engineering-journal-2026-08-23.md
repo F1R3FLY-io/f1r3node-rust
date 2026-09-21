@@ -14201,6 +14201,144 @@ closes the measured non-identity unary-depth scaling and watchdog questions;
 it does not establish a universal linear bound for every family or maximal
 performance for Rholang applications.
 
+### J-191 — 2026-09-21 Bind substitution cost events to native operations
+
+**Question (task 5916).** Do the approximately linear non-identity timings in
+J-190 correspond to one input copy per resident endpoint, shared child regions
+and one final output construction, rather than repeated ancestor reconstruction?
+
+**Formal-first boundary.** SubstitutionCost.v defines seventeen counters over
+fifteen event constructors. Sixteen closed declarations establish additive
+fold/accumulator agreement, prefix monotonicity, zero body-copy cost for shared
+handles, exact copied-byte totals under a source-partition premise,
+multiplicity-independent endpoint traces, separate arena/finish attempt/success
+counts, and a conditional sum-of-local-budgets bound. The model reuses SRE's
+Original/Shallow/Compact payload semantics. The final r4 compile and explicit
+kernel check pass before native hooks are implemented: 13.892 seconds wall,
+13.705 CPU seconds, 401.2 MiB reported peak, a 1536 MiB hard cap, zero swap,
+one-core quota and 600-second watchdog. Earlier syntax/unfolding proof-script
+failures are retained and are not qualification.
+
+The complete [SCA inventory](workspace-regression-formal-invariant-catalog-2026-08-28.md#substitution-cost-event-accounting-sca-task-5916)
+was recorded before implementation. These are cost-observation refinements,
+not a whole-interpreter complexity proof. The budget theorem requires a
+complete trace, local event budgets and a linear partition bound; this
+checkpoint does not assume that every Rust allocation, comparison or library
+operation has already been accounted for.
+
+**Implementation.** The existing protobuf-projection-experiment feature
+mounts a fixed-size thread-local recorder from models/tests/support/. Every
+production hook is separately feature-gated; ordinary builds contain no
+recorder calls. Checked additions fail explicitly on overflow. A scope guard
+clears state on success and unwind, rejects nested scopes without corrupting
+an outer scope, and excludes activity on other threads. No event vector,
+global atomics, file I/O or traversal is added by the recorder.
+
+Actual hooks observe region copying and subregion creation; successful field,
+node and cut planning; returned byte lengths separately for each emission
+mode; construction arena creation; finish attempts and successful finishes;
+emitted root-key lengths; resident decode_exact entry bytes; shared incomplete
+imports; and outer substitution work-item pops. A region handle is not a body
+copy, and overlapping referenced byte extents are never summed as copied bytes.
+RootBytes covers every region copy request within the scope, not only copies
+at the expected root sites, so an unexpected nested copy remains visible.
+
+ResidentBytes is deliberately narrower than all protobuf decoding: it observes
+par_bag::decode_exact. WorkSteps is narrower than all interpreter work: it
+observes the outer substitution worklist. Generated shallow decoders and
+constructor/score-comparison operations have their own existing semantic
+verification, but are not falsely described as individually counted here.
+RootKeyBytes includes RPB3 domain, family, canonical score, protobuf body and
+trailer; it is not output protobuf size. The sorted public API may create
+additional legitimate sorting constructions; the single-arena counter
+assertion here is for unsorted substitution.
+
+**Native counter evidence.** The exact-output unary fixture from experiment
+346 is reused with all setup and validation outside capture. Each measured
+depth has one region copy, one arena, one finish attempt/success and one output
+key, zero Original or Compact emission bytes, and zero resident decode_exact
+bytes. Shared-import count is zero for this complete non-identity list fixture.
+
+| Depth | Copied region bytes | Shared-region handles | Fields / message nodes / Par cuts | Outer work items | Shallow emitted bytes | Emitted RPB3 key bytes |
+|---:|---:|---:|---|---:|---:|---:|
+| 1 | 20 | 11 | 6 / 5 / 1 | 11 | 15 | 99 |
+| 7 | 98 | 59 | 24 / 17 / 7 | 47 | 63 | 465 |
+| 64 | 1,003 | 515 | 195 / 131 / 64 | 389 | 519 | 4,080 |
+| 512 | 8,171 | 4,099 | 1,539 / 1,027 / 512 | 3,077 | 4,103 | 32,752 |
+| 4,096 | 74,727 | 32,771 | 12,291 / 8,195 / 4,096 | 24,581 | 32,775 | 269,485 |
+
+The test asserts the fixture-specific recurrences: cuts equal depth, message
+nodes equal twice depth plus three, outer work items equal six times depth
+plus five, and shallow bytes equal eight times depth plus seven. These are
+native regression expectations for this fixture, not a universal theorem.
+The copied region excludes outer Par framing, hence 74,727 rather than
+J-190's complete input protobuf length of 74,734. Root multiplicities 1, 2 and
+1,000,000 produce identical counter totals at depth seven and the exact expected
+compact output; the test never expands those occurrences into a vector or a
+million-entry protobuf buffer.
+
+**Non-vacuity and scope checks.** Recorder properties independently fold
+generated event sequences, split traces and compare all seventeen counters.
+Actual operations, not only synthetic record calls, test shared-import pointer
+identity, all three emission lengths, planning counts and repeated finish
+calls. Output endpoint slices independently determine emitted key length.
+The existing all-family region corpus also compares real planner and emitter
+counters. Ground identity substitution records no arena, root copy, work item
+or finish. A missing Expr variant records partial work and the specific
+required-field error without a finish.
+
+Independent review found no event-weight, scope-restoration or default-build
+behavior mismatch. It prompted positive actual-operation tests for import,
+emission and decoded input, preventing absent hooks from masquerading as zero
+work. An initial error fixture incorrectly expected an unmatched bound variable
+in an empty environment to fail; the existing semantics legitimately retain
+it. Only the fixture was corrected, using the established recursive-oracle
+missing-variant case. No production semantic repair was necessary.
+
+**Verification receipts.** Combined native r3 passes 62 tests: six recorder
+tests, all 43 formal-manifest tests, all eight region differential tests, four
+substitution-cost tests and the default-feature fixture regression. It reports
+207.274 seconds wall, 594.003 CPU seconds and 1.9 GiB peak. The final extended
+depth-4096 r4 gate passes all four cost tests in 0.51 seconds of test execution;
+including compilation, it reports 37.718 seconds wall, 121.116 CPU seconds and
+1.2 GiB peak. Both use 8 GiB hard/6 GiB soft caps, zero swap and four build/test
+workers. These are verification runs, not new latency populations.
+
+The final binding r5 gate passes all seven recorder tests and all 43 manifest
+tests. Its added positive control observes the actual resident decoder's input
+length, so a missing decode hook cannot satisfy the zero-decode assertions
+vacuously. Together with r3 and r4, this establishes 63 distinct passing tests,
+not 112: repeated tests are counted once. The capped service terminates with
+Result=success and ExecMainStatus=0; its final resource counters are no longer
+available, so no r5 peak-memory or CPU-time measurement is claimed.
+
+The first build stopped on an absent cached libz-ng-sys static archive.
+Cleaning only that package's regenerable artifacts removed 97 files/4.2 MiB;
+rebuilding repaired the build without dependency or source changes. Earlier
+r2 retained the incorrect error-fixture failure. No failed run is counted as
+passing evidence, and repeated executions add no distinct test coverage.
+
+Experiment 346 now stores all seventeen counter series across the five depths
+in a separate no_sort_cost_instrumentation arm, distinct from its latency
+population. The hypothesis and task remain open pending their remaining
+acceptance obligations.
+
+| Artifact | SHA-256 |
+|---|---|
+| formal/rocq/stack_safe_pda/theories/SubstitutionCost.v | 16063ea1f8374d1653f0f0eaca2c9f472ad6a1b2b46adf67ae12d492880bc9fe |
+| target/verification/substitution-5916-cost-formal-r4.log | b36f3ee7b0d653aec94c680bb8ed02afe2ec998c70d1489545bac5473ca1f102 |
+| target/verification/substitution-5916-cost-native-r3.log | cce2472accea29e7cc3df730724ac08f661fae89de312434d6e00c6c9113eed6 |
+| target/verification/substitution-5916-cost-depth4096-r4.log | 5b5676cef81c7d0f249f0c004cfa1eaff95bcb60ed8b7ba9a2db9cdfcc9c0a37 |
+| target/verification/substitution-5916-cost-bindings-r5.log | d877cf858689abdbb59758a386a5cde32cb1ba2b48defd5dbc061e9451df40d2 |
+
+**Remaining task boundary.** These observations bind the unary non-identity
+copy/construction question and the recorder itself. Whole-family substitution
+cost qualification, full source-wide local-budget correspondence and required
+replay/lifecycle acceptance are not discharged merely by this table.
+The existing semantic oracle/proof evidence is reused. Guarded teardown
+allocation churn remains owned by 6441/PMU-005, and no PathMap fork or guard
+bypass is introduced. The campaign and task 5916 are not marked complete.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

@@ -765,6 +765,10 @@ rocq_reject_placeholders theories/SubstitutionSchedule.v
 rocq_compile_with_closed_count theories/SubstitutionSchedule.v 21 \
   "substitution binder-family schedules and result placement"
 rocq_check_modules "substitution binder-family schedules" StackSafePDA.SubstitutionSchedule
+rocq_reject_placeholders theories/SubstitutionCost.v
+rocq_compile_with_closed_count theories/SubstitutionCost.v 16 \
+  "substitution cost-event accounting and conditional partition budget"
+rocq_check_modules "substitution cost-event accounting" StackSafePDA.SubstitutionCost
 rocq_reject_placeholders theories/SubstitutionRegionTables.v
 rocq_compile_with_closed_count theories/SubstitutionRegionTables.v 30 \
   "append-only substitution tables and supported publication transport"
@@ -996,6 +1000,11 @@ TLC_MEMORY_HIGH=4G TLC_RSS=6G TLC_CPU_QUOTA=400% TLC_TASKS_MAX=512 \
 rholang_run_tests 9 --lib region_slot_tests
 rholang_run_tests 3 --lib new_injection_preserves_
 rpb3_run_tests 2 --lib incomplete_preservation_tests
+rpb3_run_tests 7 --release -j4 --features protobuf-projection-experiment --lib substitution_cost
+rpb3_run_tests 8 --release -j4 --features protobuf-projection-experiment \
+  --test protobuf_region_differential
+rholang_run_tests 4 --features protobuf-projection-experiment \
+  --test stack_depth_gate substitution_scaling::costs
 rholang_run_tests 4 --lib scalar_projection
 rholang_run_tests 1 --features epathmap-fusion-differential \
   --test epathmap_fusion_equivalence_spec \
