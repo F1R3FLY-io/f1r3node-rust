@@ -737,6 +737,10 @@ rocq_reject_placeholders theories/CollectionCollisionElision.v
 rocq_compile_with_closed_count theories/CollectionCollisionElision.v 20 \
   "empty and singleton collection collision-elision equivalence"
 rocq_check_modules "collection collision elision" StackSafePDA.CollectionCollisionElision
+rocq_reject_placeholders theories/DepthProbeClassification.v
+rocq_compile_with_closed_count theories/DepthProbeClassification.v 14 \
+  "depth-probe termination classification"
+rocq_check_modules "depth-probe termination classification" StackSafePDA.DepthProbeClassification
 rocq_reject_placeholders theories/SplitCarrierPrefilter.v
 rocq_compile_with_closed_count theories/SplitCarrierPrefilter.v 20 \
   "conditional split-carrier classification equivalence"

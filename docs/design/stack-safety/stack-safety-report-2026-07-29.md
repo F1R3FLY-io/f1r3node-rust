@@ -8825,6 +8825,23 @@ resource gates and whole-campaign acceptance remain separate open obligations.
 
 ---
 
+#### 2026-09-21 qualification addendum — termination evidence for depth probes
+
+Task 5917's shared classifier no longer accepts diagnostic text alone as stack
+exhaustion. A pre-correction control reproduced a false ceiling for exit code 1
+with overflow text. Fourteen Rocq obligations and independent kernel checking
+preceded the repair; the Linux native group now passes 9 tests, including 96
+status/diagnostic combinations and real child-process failure controls. Panics
+containing overflow text remain panics, timeouts override diagnostics, and an
+ambiguous SIGKILL is not claimed to establish OOM. J-195 and the DPC invariant
+catalog retain exact bindings, commands, scope and artifact digests.
+
+The proof service peaked at 329.9 MiB; native incremental build/tests peaked at
+298.4 MiB, both with zero swap. These are verification observations, not benchmark
+claims. This increment does not close stack-gate watchdog integration, callback
+I/O propagation, process cleanup, Windows-native execution or campaign acceptance.
+It changes no production traversal, consensus representation or depth limit.
+
 ### 5.29 ParBag family and count-domain completeness [SS-A13, SS-A14, SS-Y9]
 
 #### 5.29.1 The defects

@@ -1128,6 +1128,44 @@ at runner commit `5b2a5eca4` also passes experiment 347: all 18 family/arm upper
 retains negative controls, raw measurement digests and the boundary between
 model claims, native observations and resource evidence.
 
+## Depth-probe termination classification (DPC, task 5917)
+
+`DepthProbeClassification.v` was compiled and independently kernel-checked before
+the classifier correction. Its eight Boolean inputs abstract timeout, successful
+exit, panic evidence, runtime abort, native stack exception, stack diagnostic,
+allocation diagnostic and signal termination. It proves classification, not OS
+signal authenticity, stderr completeness, process cleanup or search correctness.
+Those transport/search obligations remain open under task 5917.
+
+Native bindings reside in `shared/tests/support/test_process.rs`: **M** is
+`classification_matches_termination_evidence_exhaustively` (96 Unix status/diagnostic
+combinations); **C** is `child_process_outcomes_are_classified_distinctly`; **P** is
+`panic_with_stack_text_is_not_stack_exhaustion`; **W** is
+`windows_exception_status_requires_compatible_diagnostics`. M, C and P passed
+on Linux; W is present but has not been executed on Windows in this qualification.
+
+| ID | Closed declaration | Binding and evidence boundary |
+|---|---|---|
+| DPC-01 | `timeout_dominates` | M, C; watchdog overrides every diagnostic |
+| DPC-02 | `clean_success_ignores_diagnostics` | M; successful child is not failed by text |
+| DPC-03 | `panic_dominates_stack_text` | M, P; includes signal plus panic text |
+| DPC-04 | `native_stack_status_qualifies` | W; native Windows execution outstanding |
+| DPC-05 | `abort_and_stack_text_qualify` | M, C; actual small-stack abort |
+| DPC-06 | `unqualified_stack_text_is_not_a_ceiling` | M; ordinary exits, SIGSEGV and SIGKILL |
+| DPC-07 | `abort_without_diagnostics_is_not_a_ceiling` | M, C; bare abort is not stack evidence |
+| DPC-08 | `allocation_failure_is_not_a_ceiling` | M, C; simulated allocator abort, not a real OOM |
+| DPC-09 | `ambiguous_signal_remains_signal` | M; SIGKILL does not prove OOM |
+| DPC-10 | `ordinary_failure_remains_failure` | M; unqualified allocation/stack text |
+| DPC-11 | `stack_classification_exact` | M and W; Boolean theorem exhaustive, platform adapter coverage distinct |
+| DPC-12 | `passed_classification_exact` | M; success requires no timeout |
+| DPC-13 | `deceptive_panic_rejects_text_first_mutant` | P, M; pre-correction matrix fails |
+| DPC-14 | `timeout_rejects_false_ceiling_mutant` | M, C; no timeout-to-ceiling conversion |
+
+The original cap-first search tests remain intact. Test sources moved out of
+production `src/` without changing their module names. J-195 records commands,
+resource observations, negative controls and artifact digests. No full-task,
+whole-workspace or cross-platform completion follows from this classifier increment.
+
 ## Original workspace-regression completion gates
 
 This checkpoint is complete only when all of the following hold:

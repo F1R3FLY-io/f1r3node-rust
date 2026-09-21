@@ -14648,6 +14648,73 @@ whole-workspace acceptance or the broader campaign.
 | target/verification/collection-5915-native-r1.log | 912931d7c0e1b9e140ff949f69662090dbe6cbed08101b1a890a310fadc246b3 |
 | target/verification/collection-5915-red-tests.log | 8121d852cd87d7ca5fc66137df00e60fb4f5e2ca5eaf4b2c8cff9317c33a1c6b |
 
+### J-195 — 2026-09-21 Require termination evidence for stack-probe classification
+
+**Question and scope.** Task 5917 must not report a timeout, panic or resource
+failure as a native-stack ceiling. The existing helper already provides typed
+outcomes and cap-first search; neither is replaced in this increment. The source
+classifier nevertheless accepted overflow text before panic evidence and without
+checking the termination status.
+
+**Formal-first method.** `DepthProbeClassification.v` defines the precedence and
+proves all 14 DPC obligations listed in the workspace invariant catalog. Both
+`coqc -Q theories StackSafePDA theories/DepthProbeClassification.v` and independent
+`coqchk -Q theories StackSafePDA StackSafePDA.DepthProbeClassification` passed
+before the correction. The bounded service used 329.9 MiB peak and zero swap,
+with a 2 GiB memory ceiling. This is a classification proof over observed evidence,
+not a proof that a subprocess cannot print misleading diagnostics.
+
+**Negative control and repair.** The unchanged classifier fails the new Unix
+matrix at exit code 1 with overflow text: it reports `StackExhausted` instead of
+`ExitFailure`. The repaired classifier gives timeout and panic evidence priority,
+requires SIGABRT plus a stack diagnostic on Unix, and preserves unknown signals
+as `Signaled`. SIGKILL alone is not labeled OOM. Simulated allocator failure also
+requires a compatible abort. Windows recognizes the native stack exception
+`0xC00000FD`; `0xC0000409` fast-fail additionally requires the relevant diagnostic.
+The latter code is documented by [Microsoft's fast-fail reference](https://learn.microsoft.com/en-us/cpp/intrinsics/fastfail?view=msvc-170).
+The installed pinned Rust standard-library sources confirm its Windows stack
+handler and fast-fail abort path. Windows-native test execution remains outstanding.
+
+**Native results.** The release command
+`cargo test --release -j4 -p shared --lib rust::test_process::tests -- --test-threads=4`
+passes 9 tests, with one ignored subprocess entry point invoked by the parent
+tests. This covers 96 Unix status/diagnostic combinations, real stack exhaustion,
+ordinary and deceptive panics, simulated allocation failure, bare abort and
+timeout, alongside unchanged exhaustive small-cap search tests. The service used
+298.4 MiB peak, zero swap and 1.941 seconds including incremental compilation;
+these are verification resource observations, not performance benchmark results.
+The initial negative-control build used 1.2 GiB peak under the same 6 GiB ceiling.
+Nextest discovery and execution also pass all 10 selected tests with
+`--run-ignored all`, including the no-selector child no-op, at 137.9 MiB peak
+and zero swap. The invocation uses `CARGO_BUILD_JOBS=4 cargo nextest run --release
+-p shared --lib -E 'test(rust::test_process::tests)' --run-ignored all
+--test-threads=4 --no-fail-fast`; this is a focused gate, not a workspace verdict.
+
+**Source separation and recovery.** Existing tests now reside under
+`shared/tests/support/`, included only with `cfg(test)`. The ignored child is a
+no-op without its selector environment. Expected abort controls suppress core
+collection. An interrupted multi-file patch left the source include before its
+destination existed; the unchanged tests were recovered from Git and the missing
+directory created with approved filesystem access. No branch, reset or server
+restart was used.
+
+**Remaining obligations.** Generic callback I/O propagation, bounded child/stderr
+cleanup, calibrated watchdogs and typed outcomes in the stack gate, expected-failure
+core policy at callers, old/new search differentials and native Windows acceptance
+remain open. The test-only correction changes no Rholang semantics, consensus bytes,
+hashes, accounting or PathMap representation. PgMCP task 5917 was claimed against
+scheduler revision 1223 before interruption; its STDIO tools are absent from the
+resumed session's exposed catalog. This entry preserves the progress receipt for
+backfill without using the prohibited pgmcp CLI or modifying pgmcp.
+
+| Artifact under `target/verification/depth-probe-5917/` | SHA-256 |
+|---|---|
+| `classification-proof-r1.log` | 59c23790f64fd4e8dbbd1c6a8801a48f582933679e259fd935894ed47cdd8a60 |
+| `classification-kernel-r1.log` | 90803092ffac7e3a4e8f17fa7afde6db4c05accd144a8c6eca377387036319c3 |
+| `classification-red-r1.log` | 03665c4ed6466813b1419f1535c90123f13c560662590abd05744bc47de21fa1 |
+| `classification-green-r1.log` | 3e7fd707e2cc6f1079704977d5ccd662480e3cf3e829220a843c5fd0c0f0dcd3 |
+| `classification-nextest-r1.log` | 67b19c525d503ae4b2566f6cb3dc56d781a1d3e84fd5641a78625dd03108c47b |
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

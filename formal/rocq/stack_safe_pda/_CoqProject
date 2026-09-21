@@ -24,6 +24,7 @@ theories/UnaryEListConstruction.v
 theories/UnaryEListConstructionMutants.v
 theories/SingletonMapConstruction.v
 theories/CollectionCollisionElision.v
+theories/DepthProbeClassification.v
 theories/SplitCarrierPrefilter.v
 theories/SubstitutionRegionRanges.v
 theories/SubstitutionRegionEmission.v
