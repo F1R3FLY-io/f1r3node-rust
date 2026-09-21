@@ -988,6 +988,47 @@ fn substitution_family_schedules_bind_actual_dispatch_and_combine() {
 }
 
 #[test]
+fn collection_collision_elision_binds_model_and_native_observations() {
+    let theory = read_repository_file("formal/rocq/stack_safe_pda/theories/CollectionCollisionElision.v");
+    for theorem in [
+        "set_empty_exact", "set_singleton_exact", "set_dispatch_refines",
+        "set_multi_entry_unchanged", "set_observables_unchanged", "set_first_representative",
+        "map_empty_exact", "map_singleton_exact", "map_dispatch_refines",
+        "map_multi_entry_unchanged", "map_observables_unchanged", "map_first_key_and_strict_winner",
+        "empty_identity_work_zero", "singleton_identity_work_zero", "singleton_removed_work_exact",
+        "multi_entry_identity_work_unchanged", "identity_work_never_increases",
+        "nested_singleton_identity_work_zero", "rejecting_duplicate_set_dispatch_mutant",
+        "rejecting_map_winner_dispatch_mutant",
+    ] {
+        assert!(theory.contains(&format!("Print Assumptions {theorem}.")));
+    }
+    assert_eq!(theory.matches("Print Assumptions ").count(), 20);
+    for forbidden in ["Admitted.", "admit.", "Axiom ", "Parameter "] {
+        assert!(!theory.contains(forbidden));
+    }
+    let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
+    assert!(has_runner_command(&runner, &["rocq_compile_with_closed_count", "theories/CollectionCollisionElision.v", "20"]));
+    assert!(has_runner_kernel_check(&runner, &["StackSafePDA.CollectionCollisionElision"]));
+    assert!(read_repository_file("formal/rocq/stack_safe_pda/_CoqProject")
+        .lines().any(|line| line == "theories/CollectionCollisionElision.v"));
+    assert!(has_runner_command(&runner, &["rpb3_run_tests", "6", "--release", "-j4", "--lib", "collection_collision_elision"]));
+    assert!(has_runner_command(&runner, &["rpb3_run_tests", "2", "--release", "-j4", "--lib", "par_construction::tests::ac_"]));
+    let native = read_repository_file("models/tests/support/collection_collision_elision.rs");
+    for witness in ["empty_singleton_observables_and_zero_identity_work",
+        "multi_entry_identity_work_and_observables_unchanged",
+        "singleton_all_schema_families_preserve_score_and_bytes",
+        "nested_singletons_elide_positive_identity_work",
+        "arity_errors_precede_identity_work",
+        "identity_counter_is_nested_panic_safe_and_thread_local"] {
+        assert!(native.contains(&format!("fn {witness}(")));
+    }
+    let catalog = read_repository_file("docs/design/pathmap/workspace-regression-formal-invariant-catalog-2026-08-28.md");
+    for index in 1..=20 {
+        assert_eq!(catalog.matches(&format!("| CCE-{index:02} |")).count(), 1);
+    }
+}
+
+#[test]
 fn substitution_cost_model_binds_scoped_native_events() {
     let theory = read_repository_file("formal/rocq/stack_safe_pda/theories/SubstitutionCost.v");
     for theorem in [

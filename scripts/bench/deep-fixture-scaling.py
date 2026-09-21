@@ -52,9 +52,8 @@ def validate(rows):
     return [row for row in rows if row["population"] == "sample"]
 
 
-def analyze(directory):
-    with (directory / "samples.tsv").open() as source:
-        rows = validate(list(csv.DictReader(source, delimiter="\t")))
+def summarize(rows):
+    rows = validate(rows)
     indexed = {(r["family"], r["arm"], int(r["depth"]), int(r["repeat"]), r["phase"]): r for r in rows}
     results = {}
     for family, arm in itertools.product(FAMILIES, ARMS):
@@ -67,8 +66,13 @@ def analyze(directory):
                                                 for repeat in range(REPEATS))
         results[f"{family}/{arm}"] = result
     upper = max(result["elapsed_ns"]["upper95"] for result in results.values())
-    summary = {"cells": results, "maximum_latency_upper95": upper,
-               "fixture_latency_pass": upper <= 1.20, "samples_per_cell": REPEATS}
+    return {"cells": results, "maximum_latency_upper95": upper,
+            "fixture_latency_pass": upper <= 1.20, "samples_per_cell": REPEATS}
+
+
+def analyze(directory):
+    with (directory / "samples.tsv").open() as source:
+        summary = summarize(list(csv.DictReader(source, delimiter="\t")))
     (directory / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     print(json.dumps(summary, indent=2), flush=True)
     return summary["fixture_latency_pass"]
@@ -167,6 +171,14 @@ def self_test():
     for exponent in [1.0, 2.0]:
         estimate = stratified_loglog_slope(DEPTHS, [[float(d) ** exponent] * REPEATS for d in DEPTHS], seed=SEED)
         assert abs(estimate["upper95"] - exponent) < 1e-12
+    linear = [dict(r, **{metric: r["executed"] * r["depth"]
+                        for metric in ["elapsed_ns", "allocations", "requested_bytes"]}) for r in rows]
+    assert summarize(linear)["fixture_latency_pass"]
+    quadratic = [dict(r, elapsed_ns=r["elapsed_ns"] * r["depth"])
+                 if r["family"] == "map" and r["arm"] == "fixture" else r for r in linear]
+    rejection = summarize(quadratic)
+    assert not rejection["fixture_latency_pass"]
+    assert abs(rejection["maximum_latency_upper95"] - 2.0) < 1e-12
     print("deep fixture scaling analyzer self-tests passed")
 
 

@@ -1062,6 +1062,64 @@ default-build corpus rerun pass. The terminal-splice control observes positive
 resident-decoder bytes while retaining unresolved child variables exactly;
 this prevents treating all environment imports as the simple unary case.
 
+## Collection collision-elision obligations (task 5915)
+
+`CollectionCollisionElision.v` formalizes retaining the input handles of empty
+and singleton collections without constructing a collision index. The model's
+reference retains the first set representative and the first map key, selecting
+a replacement map value only when it is strictly greater. Its ordering model
+does not claim a general refinement of Rust's sorting implementation: ordering
+zero or one element is the identity, and the multi-entry implementation remains
+unchanged. No equality or ordering axioms are needed for the dispatch proof.
+
+The 20 statements below compile with closed assumptions and pass independent
+kernel checking (`target/verification/collection-5915-proof-r5.log`). The Rust
+bindings are specified before the production optimization. A green proof is not
+yet evidence that these native tests or the scaling gate pass.
+
+Native bindings in `models/tests/support/collection_collision_elision.rs`:
+**E** = `empty_singleton_observables_and_zero_identity_work`;
+**M** = `multi_entry_identity_work_and_observables_unchanged`;
+**S** = `singleton_all_schema_families_preserve_score_and_bytes`;
+**N** = `nested_singletons_elide_positive_identity_work`.
+All observation checks compare the complete component key (including score),
+protobuf body and final compact snapshot against the existing typed canonical
+sorter. Existing all-permutation collision tests additionally bind representative
+selection, root-only locally-free quotienting and strict full-wire map winners.
+
+| Obligation | Formal statement | Native binding |
+|---|---|---|
+| CCE-01 | `set_empty_exact` | E, set empty |
+| CCE-02 | `set_singleton_exact` | E and S, set singleton |
+| CCE-03 | `set_dispatch_refines` | E, M and S |
+| CCE-04 | `set_multi_entry_unchanged` | M and existing permutation test |
+| CCE-05 | `set_observables_unchanged` | E, M and S, complete byte observations |
+| CCE-06 | `set_first_representative` | M and existing permutation test |
+| CCE-07 | `map_empty_exact` | E, map empty |
+| CCE-08 | `map_singleton_exact` | E and S, map singleton |
+| CCE-09 | `map_dispatch_refines` | E, M and S |
+| CCE-10 | `map_multi_entry_unchanged` | M and existing permutation test |
+| CCE-11 | `map_observables_unchanged` | E, M and S, complete byte observations |
+| CCE-12 | `map_first_key_and_strict_winner` | M and existing permutation test |
+| CCE-13 | `empty_identity_work_zero` | E, zero cursor openings |
+| CCE-14 | `singleton_identity_work_zero` | E, S and N, zero cursor openings |
+| CCE-15 | `singleton_removed_work_exact` | N, positive independent identity length; exact byte count is source-level correspondence |
+| CCE-16 | `multi_entry_identity_work_unchanged` | M and N, one cursor per input key; unchanged exhaustion loop is source-level correspondence |
+| CCE-17 | `identity_work_never_increases` | E and M across dispatch cases |
+| CCE-18 | `nested_singleton_identity_work_zero` | N, 256 nested constructors |
+| CCE-19 | `rejecting_duplicate_set_dispatch_mutant` | Existing duplicate-set collision witness |
+| CCE-20 | `rejecting_map_winner_dispatch_mutant` | Existing strict-winner collision witness |
+
+For maps, modeled identity size is **key** identity size, not key/value pair
+size. The counter observes actual `ParSemanticIdentity` cursor construction,
+scoped only around collection planning after child import. Zero cursor openings
+implies zero bytes streamed through that identity path; it does not claim zero
+serialization, zero allocation or linear total runtime. The nested test measures
+a positive identity outside capture and requires two-entry indexing as a positive
+control. `arity_errors_precede_identity_work` binds validation before dispatch;
+`identity_counter_is_nested_panic_safe_and_thread_local` qualifies the probe.
+Whole construction/witness scaling is separately measured by experiment 347.
+
 ## Original workspace-regression completion gates
 
 This checkpoint is complete only when all of the following hold:

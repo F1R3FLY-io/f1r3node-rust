@@ -23,6 +23,7 @@ theories/ChannelImage.v
 theories/UnaryEListConstruction.v
 theories/UnaryEListConstructionMutants.v
 theories/SingletonMapConstruction.v
+theories/CollectionCollisionElision.v
 theories/SplitCarrierPrefilter.v
 theories/SubstitutionRegionRanges.v
 theories/SubstitutionRegionEmission.v

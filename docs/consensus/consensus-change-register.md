@@ -2350,6 +2350,36 @@ The focused suite passes **3/3** without the feature and **6/6** with
 their digest were already removed from consensus; `EvaluateResult::cost` remains exactly the
 evaluated `Send`/`Receive` prefix count.
 
+**CBR-044 implementation qualification (2026-09-21, task 5915, collection
+collision elision).** Transient construction now skips the identity trie and
+ordering pass for zero/one-entry ESet and EMap. Exact arity validation precedes
+dispatch; the multi-entry first-representative/strict-value-winner algorithm,
+metadata, remainder, score and emitted schema are unchanged. No PathMap crate,
+wire format, hash algorithm, storage-metering formula or language API changes.
+
+The 20 closed `CollectionCollisionElision` obligations and independent kernel
+check precede implementation. Six native model-binding tests, all 19 existing
+construction tests (including metadata-alias permutations), and 44 formal
+manifest checks pass. Native comparisons cover full component keys (including
+score), protobuf and compact snapshots, not merely semantic `Par` equality.
+The pre-change implementation fails the three zero-identity-work tests, while
+its semantic/multi-entry and validation controls pass.
+
+| Axis | Qualification for this repair |
+|---|---|
+| 1 · computed value | NO change in modeled dispatch and tested observations |
+| 2 · verdict | NO semantic or arity-rule change; physical resource exhaustion can differ |
+| 3 · bytes, both lanes | NO format change; byte/snapshot equality witnessed for the corpus and generated cases, not every possible input |
+| 4 · post-state hash | No preimage/hash construction change; a separate whole-chain replay qualification is not supplied by this local gate |
+| 5 · accepted programs | No grammar/admission-rule change; previously resource-exhausting construction can become executable |
+| 6 · metering | NO compute/storage formula change; no new charged event |
+
+This is an implementation equivalence claim within the stated boundary, not
+an independent consensus-fork witness or campaign release qualification.
+Experiment 347's predecessor scaling failed; treatment scaling is pending.
+The living PathMap journal J-194 records the negative result and proof/test
+correspondence. No blessed contract or persistence authority is changed.
+
 **CBR-044 implementation qualification (2026-09-18, native ordinal width;
 task 5916).** Region construction and its printer/receive-matcher consumers now
 use `usize` for local occurrence indices. These are resident slice/arena

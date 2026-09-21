@@ -8785,6 +8785,24 @@ and both runner self-tests pass. Production code is unchanged. See
 [J-193](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-193--2026-09-21-separate-deep-fixture-costs-from-gated-operations)
 for phase ownership, skipped-control semantics, source receipts and limitations.
 
+**2026-09-21 full fixture baseline and construction correction in progress.**
+Experiment 347 has now completed its 31-sample population at `efa338376`.
+Every child finishes within its 20-second watchdog, but construction plus
+input-witness scaling fails: the largest upper 95% growth exponent is 1.90977,
+above 1.20. The service reports 406.1 MiB peak, zero swap and 22 minutes
+15.465 seconds elapsed. This is a time/allocation-growth defect, not a measured
+stack overflow. Empty/singleton Set/Map planning unnecessarily streamed complete
+child identities at every nested level. A 20-statement closed Rocq model and
+kernel check precede a dispatch correction that preserves multi-entry collision
+rules and avoids that work when no collision is possible. The pre-change native
+suite fails exactly its three zero-work assertions and passes its other three
+checks. Post-change native qualification passes six new tests, 19 existing
+construction tests and 44 formal-manifest checks (1.7 GiB service peak, zero
+swap). Treatment scaling acceptance remains outstanding; the earlier pilot
+is not promoted to a passing qualification. See
+[J-194](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-194--2026-09-21-elide-impossible-collection-collisions-during-construction)
+for the complete boundary, negative controls and baseline receipts.
+
 ---
 
 ### 5.29 ParBag family and count-domain completeness [SS-A13, SS-A14, SS-Y9]

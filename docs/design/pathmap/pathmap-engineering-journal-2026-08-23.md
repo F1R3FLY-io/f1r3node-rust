@@ -14520,6 +14520,69 @@ leaks are corrected against the current implementation.
 | target/verification/fixture-5915-pilot-r2/children.log | d0589e8f64103c396b30a8ea97210331052bf07c86c9c75874e9e0d25c226bcd |
 | target/verification/fixture-5915-runner-pilot-r2.log | 70e8e1d1219dc663f883addccde267379a0af2a56d49fad52ab41f18c49da98a |
 
+### J-194 — 2026-09-21 Elide impossible collection collisions during construction
+
+**MEASURED baseline and rejection.** Experiment 347's complete preregistered
+population at `efa338376` finishes all warmup and sample cells without a child
+timeout. It fails the construction-plus-witness scaling gate: the maximum
+upper 95% exponent is 1.90977, versus the required 1.20. ESet's fixture-arm
+estimate is 1.82846 (upper 1.83036); EMap's is 1.90354 (upper 1.90643).
+The capped service takes 22 minutes 15.465 seconds, consumes 21 minutes
+36.610 seconds of CPU, and reports 406.1 MiB peak with zero swap. Peak service
+memory is not cumulative allocation traffic or an individual operation's RSS.
+The pilot above remains a separate, earlier observation, not acceptance.
+
+**Root cause.** `ParConstruction::expr_component` previously streamed every
+child's complete semantic identity into a temporary PathMap collision index,
+even for a singleton ESet or one-pair EMap. In a nested singleton chain that
+revisits each child suffix at every ancestor. The trie implementation is not
+being replaced or patched: no collision or ordering decision exists at
+cardinality zero or one. The native multi-entry algorithm still streams exact
+identities through PathMap zippers and preserves its existing winners.
+
+**Formal-first correction.** `CollectionCollisionElision.v` proves empty and
+singleton identity, observational equivalence, unchanged multi-entry dispatch,
+first-representative and strict-value-winner rules, and identity-work laws.
+All 20 printed statements are closed; independent kernel checking passes in
+13.519 seconds with reported 388.7 MiB peak and zero swap under a 2 GiB cap.
+The model does not assert general equivalence between its insertion ordering
+and Rust sorting; zero/singleton ordering is trivial and the other arm is
+unchanged. The [CCE invariant table](workspace-regression-formal-invariant-catalog-2026-08-28.md#collection-collision-elision-obligations-task-5915)
+was extracted before the production optimization.
+
+**Native negative control.** Before changing dispatch, the new six-test suite
+passes three tests (arity refusal, multi-entry observations and counter scope)
+and fails precisely the three zero-identity-work tests. A depth-256 singleton
+chain opens 256 identity cursors, and the minimal property counterexample is
+one integer-zero entry. The seed is retained under `models/tests/support`.
+The tests compare exact component keys, protobuf bodies and compact snapshots;
+they count real cursor openings only during planning, excluding oracle work.
+The source exhaustion loop binds exact identity-byte work; the counter itself
+does not measure streamed-byte totals. The complete analyzer now accepts a
+synthetic linear population and rejects one quadratic family among otherwise
+linear cells, in addition to its malformed-population controls.
+
+**Implementation and outstanding evidence.** After successful proof checking
+and the native negative control, empty/singleton dispatch retains planned
+integer handles without identity indexing or sorting. Exact arity validation,
+collection metadata, remainder, score construction, schema emission and the
+multi-entry algorithm remain unchanged. These handles are not decoded resident
+`Par` projections. Post-change native qualification passes all six new tests,
+all 19 existing construction tests and all 44 formal-manifest checks. The
+capped service reports 1.7 GiB peak, zero swap and 62.578 seconds elapsed.
+Full treatment scaling remains pending at this checkpoint; no speedup or
+task completion is claimed yet.
+
+| Artifact | SHA-256 |
+|---|---|
+| target/verification/fixture-5915-qualification-r1/samples.tsv | 5682cf7444aa4f7da100ac091f65de2ec778cc59762566babea06960955c7ebf |
+| target/verification/fixture-5915-qualification-r1/summary.json | 77f3f400af191ed65a5a4410dd0f90e5d421da5e5f9517b84bd2e43885dae446 |
+
+Additional logs: `target/verification/collection-5915-proof-r5.log`,
+`collection-5915-red-tests.log` and `fixture-5915-analyzer-controls.log` in the
+same verification directory. Experiment 347 retains the baseline measurement;
+the failed scaling result is not overwritten by a subsequent treatment.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

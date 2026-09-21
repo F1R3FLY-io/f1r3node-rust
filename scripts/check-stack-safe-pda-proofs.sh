@@ -733,6 +733,10 @@ rocq_reject_placeholders theories/SingletonMapConstruction.v
 rocq_compile_with_closed_count theories/SingletonMapConstruction.v 18 \
   "fixed-key singleton EPathMap construction and checked publication"
 rocq_check_modules "singleton EPathMap construction" StackSafePDA.SingletonMapConstruction
+rocq_reject_placeholders theories/CollectionCollisionElision.v
+rocq_compile_with_closed_count theories/CollectionCollisionElision.v 20 \
+  "empty and singleton collection collision-elision equivalence"
+rocq_check_modules "collection collision elision" StackSafePDA.CollectionCollisionElision
 rocq_reject_placeholders theories/SplitCarrierPrefilter.v
 rocq_compile_with_closed_count theories/SplitCarrierPrefilter.v 20 \
   "conditional split-carrier classification equivalence"
@@ -1000,6 +1004,8 @@ TLC_MEMORY_HIGH=4G TLC_RSS=6G TLC_CPU_QUOTA=400% TLC_TASKS_MAX=512 \
 rholang_run_tests 9 --lib region_slot_tests
 rholang_run_tests 3 --lib new_injection_preserves_
 rpb3_run_tests 2 --lib incomplete_preservation_tests
+rpb3_run_tests 6 --release -j4 --lib collection_collision_elision
+rpb3_run_tests 2 --release -j4 --lib par_construction::tests::ac_
 rpb3_run_tests 7 --release -j4 --features protobuf-projection-experiment --lib substitution_cost
 rpb3_run_tests 8 --release -j4 --features protobuf-projection-experiment \
   --test protobuf_region_differential

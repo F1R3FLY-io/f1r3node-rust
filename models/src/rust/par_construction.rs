@@ -318,6 +318,10 @@ struct ScoreNode {
 #[path = "../../tests/support/incomplete_component_preservation.rs"]
 mod incomplete_preservation_tests;
 
+#[cfg(test)]
+#[path = "../../tests/support/collection_collision_elision.rs"]
+mod collection_collision_elision;
+
 enum ProtoPiece {
     Bytes(Box<[u8]>),
     SharedBytes(Box<prost::bytes::Bytes>),
@@ -467,6 +471,10 @@ struct WireByteCursor<'a> {
 
 impl<'a> WireByteCursor<'a> {
     fn new(arena: &'a ParConstruction, root: WireRoot) -> Self {
+        #[cfg(test)]
+        if matches!(root, WireRoot::ParSemanticIdentity(_)) {
+            collection_collision_elision::record_identity_cursor();
+        }
         let root = match root {
             WireRoot::Par(par) => WireCursorOp::Par(par),
             WireRoot::ParSemanticIdentity(par) => WireCursorOp::ParSemanticIdentity(par),
@@ -2585,20 +2593,25 @@ impl ParConstruction {
             }
             ExprInstance::ESetBody(set) => {
                 exact("ESet", set.ps.len(), par_children.len())?;
-                let mut identities = PathMap::new();
-                let mut canonical: Vec<_> = par_children
-                    .iter()
-                    .copied()
-                    .filter(|par| {
-                        insert_semantic_par_identity(
-                            &mut identities,
-                            WireByteCursor::new(self, WireRoot::ParSemanticIdentity(*par)),
-                            (),
-                        )
-                        .is_none()
-                    })
-                    .collect();
-                canonical.sort_by(|left, right| self.compare_pars(*left, *right));
+                let canonical = if par_children.len() <= 1 {
+                    par_children.to_vec()
+                } else {
+                    let mut identities = PathMap::new();
+                    let mut canonical: Vec<_> = par_children
+                        .iter()
+                        .copied()
+                        .filter(|par| {
+                            insert_semantic_par_identity(
+                                &mut identities,
+                                WireByteCursor::new(self, WireRoot::ParSemanticIdentity(*par)),
+                                (),
+                            )
+                            .is_none()
+                        })
+                        .collect();
+                    canonical.sort_by(|left, right| self.compare_pars(*left, *right));
+                    canonical
+                };
 
                 let mut canonical_shell = shell.clone();
                 let ExprInstance::ESetBody(canonical_set) = canonical_shell
@@ -2639,37 +2652,43 @@ impl ParConstruction {
                     value: Some(Par::default()),
                 };
                 let mut pairs: Vec<Pair> = Vec::with_capacity(map.kvs.len());
-                let mut identities = PathMap::new();
-                for children in par_children.chunks_exact(2) {
-                    let key = children[0];
-                    let value = children[1];
-                    if let Some(resident) = insert_semantic_par_identity(
-                        &mut identities,
-                        WireByteCursor::new(self, WireRoot::ParSemanticIdentity(key)),
-                        pairs.len(),
-                    ) {
-                        if WireByteCursor::new(self, WireRoot::Par(value)).cmp(WireByteCursor::new(
-                            self,
-                            WireRoot::Par(pairs[resident].value),
-                        )) == Ordering::Greater
-                        {
-                            pairs[resident].value = value;
-                        }
-                    } else {
-                        pairs.push(Pair { key, value });
+                if map.kvs.len() <= 1 {
+                    if let [key, value] = par_children {
+                        pairs.push(Pair { key: *key, value: *value });
                     }
+                } else {
+                    let mut identities = PathMap::new();
+                    for children in par_children.chunks_exact(2) {
+                        let key = children[0];
+                        let value = children[1];
+                        if let Some(resident) = insert_semantic_par_identity(
+                            &mut identities,
+                            WireByteCursor::new(self, WireRoot::ParSemanticIdentity(key)),
+                            pairs.len(),
+                        ) {
+                            if WireByteCursor::new(self, WireRoot::Par(value)).cmp(WireByteCursor::new(
+                                self,
+                                WireRoot::Par(pairs[resident].value),
+                            )) == Ordering::Greater
+                            {
+                                pairs[resident].value = value;
+                            }
+                        } else {
+                            pairs.push(Pair { key, value });
+                        }
+                    }
+                    pairs.sort_by(|left, right| {
+                        ScoreByteCursor::new(self, self.par_score(left.key))
+                            .cmp(ScoreByteCursor::new(self, self.par_score(right.key)))
+                            .then_with(|| {
+                                WireByteCursor::new(self, WireRoot::KeyValuePair(left.key, left.value))
+                                    .cmp(WireByteCursor::new(
+                                        self,
+                                        WireRoot::KeyValuePair(right.key, right.value),
+                                    ))
+                            })
+                    });
                 }
-                pairs.sort_by(|left, right| {
-                    ScoreByteCursor::new(self, self.par_score(left.key))
-                        .cmp(ScoreByteCursor::new(self, self.par_score(right.key)))
-                        .then_with(|| {
-                            WireByteCursor::new(self, WireRoot::KeyValuePair(left.key, left.value))
-                                .cmp(WireByteCursor::new(
-                                    self,
-                                    WireRoot::KeyValuePair(right.key, right.value),
-                                ))
-                        })
-                });
                 let canonical = pairs;
 
                 let mut canonical_shell = shell.clone();
