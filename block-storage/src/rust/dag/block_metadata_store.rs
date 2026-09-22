@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Duration;
 
 use models::rust::block_hash::{BlockHash, BlockHashSerde};
 use models::rust::block_metadata::BlockMetadata;
@@ -14,6 +15,18 @@ use parking_lot::RwLock;
 use shared::rust::store::key_value_store::KvStoreError;
 use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
+use shared::rust::store::soak_snapshot::SnapshotError;
+
+pub(crate) struct DagStateCopy {
+    pub(crate) dag_set: imbl::HashSet<BlockHash>,
+    pub(crate) child_map: imbl::HashMap<BlockHash, imbl::HashSet<BlockHash>>,
+    pub(crate) height_map: imbl::OrdMap<i64, imbl::HashSet<BlockHash>>,
+    pub(crate) block_number_map: imbl::HashMap<BlockHash, i64>,
+    pub(crate) main_parent_map: imbl::HashMap<BlockHash, BlockHash>,
+    pub(crate) self_justification_map: imbl::HashMap<BlockHash, BlockHash>,
+    pub(crate) last_finalized_block: Option<(BlockHash, i64)>,
+    pub(crate) finalized_block_set: imbl::HashSet<BlockHash>,
+}
 
 pub struct BlockMetadataStore {
     store: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata>,
@@ -86,6 +99,46 @@ impl BlockMetadataStore {
         for hash in evict {
             state.finalized_block_set.remove(&hash);
         }
+    }
+
+    pub fn try_new(
+        block_metadata_store: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata>,
+    ) -> Result<Self, KvStoreError> {
+        let blocks_info = block_metadata_store.collect(|(hash, metadata)| {
+            Some((
+                hash.0.clone(),
+                Self::block_metadata_to_info(&hash.0, metadata),
+            ))
+        })?;
+        let blocks_info_map = blocks_info.into_iter().collect::<HashMap<_, _>>();
+        let dag_state = Self::recreate_in_memory_state(blocks_info_map);
+        Ok(Self {
+            store: block_metadata_store,
+            dag_state,
+        })
+    }
+
+    pub(crate) fn capture_typed_store(
+        &self,
+    ) -> &KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata> {
+        &self.store
+    }
+
+    pub(crate) fn capture_state(&self, wait: Duration) -> Result<DagStateCopy, SnapshotError> {
+        let guard = self
+            .dag_state
+            .try_read_for(wait)
+            .ok_or(SnapshotError::LockTimeout(wait))?;
+        Ok(DagStateCopy {
+            dag_set: guard.dag_set.clone(),
+            child_map: guard.child_map.clone(),
+            height_map: guard.height_map.clone(),
+            block_number_map: guard.block_number_map.clone(),
+            main_parent_map: guard.main_parent_map.clone(),
+            self_justification_map: guard.self_justification_map.clone(),
+            last_finalized_block: guard.last_finalized_block.clone(),
+            finalized_block_set: guard.finalized_block_set.clone(),
+        })
     }
 
     pub fn new(

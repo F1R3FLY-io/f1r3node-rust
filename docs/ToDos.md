@@ -1,7 +1,7 @@
 ---
 doc_type: todos
 version: "1.1"
-last_updated: 2026-09-16
+last_updated: 2026-09-21
 mr_status:
   ready: false
   target_branch: master
@@ -68,6 +68,153 @@ mr_status:
 ## Active Epics
 
 <!-- Epics are ordered by priority. Work on the highest priority epic first. -->
+
+---
+
+### EPIC-019: Casper Node Observation Interface
+
+```yaml
+---
+epic_id: EPIC-019
+title: "Casper Node Observation Interface"
+status: in_progress
+priority: p0
+user_story: US-006
+blocked_by: []
+created_at: 2026-09-21
+updated_at: 2026-09-21
+claimed_by: claude-session-7015f552
+claimed_at: 2026-09-21T16:40:00Z
+branch: feature/casper-node-observation
+pull_request: 447
+pr_base_branch: dev
+consumer: "EPIC-017 TASK-017-12 on formal/soak-casper-consensus. PR #436 temporarily targets this branch."
+plans:
+  - docs/plans/casper-node-observation-batch-b.md
+claims:
+  - docs/claims/casper-node-observation.md
+  - docs/claims/casper-node-authority-snapshot.md
+execution_contract:
+  base_branch: dev
+  base_revision: 6940a5beb4aa806d3d75f6df3be9f238512fcc2f
+  scope: "Deliver the node-side observation interfaces that the soak harness consumes: local capability interface, bounded detached DAG capture, observer evaluation, and publication controls. The node remains the system under test."
+  batch_policy: "Each batch requires its own file-scope confirmation before implementation. Confirmation of one batch does not authorize the next."
+  git_policy: "Do not merge, push, or create a PR without separate user authorization. Commits require /quick-commit consent."
+  evidence_policy: "Every batch registers a pending claim before implementation, keeps compact records under docs/cbc-evidence/, and keeps bulk evidence outside Git."
+  completion_policy: "Close after every batch claim is accepted, PR #447 merges to dev, and PR #436 returns to dev."
+tasks:
+  - id: TASK-019-1
+    title: "Batch A: local capability interface and runtime shutdown correction"
+    status: complete
+    claimed_by: pi-casper-node-observation
+    completed_at: 2026-09-19
+    claims: [CLAIM-CASPER-NODE-OBSERVATION-001]
+    revisions: [877cea722, d021a1d53, 799e2136a]
+    evidence:
+      - docs/cbc-evidence/runs/casper-node-observer-batch-a-877cea722-01/report.json
+      - docs/cbc-evidence/runs/casper-node-observer-shutdown-d021a1d53-01/report.json
+    work_log: docs/work-logs/casper-node-observer-shutdown-review.md
+    notes:
+      - "Opt-in local socket observer with session identity, bounded frames, peer credentials, and capability reporting. All five profile capabilities report unsupported."
+      - "The shutdown correction returns the node-program result before observer cleanup. The regression checks source ordering, not an end-to-end node shutdown."
+      - "Implementation is complete. The claim remains pending until source-bound verification and explicit acceptance under TASK-019-4."
+  - id: TASK-019-2
+    title: "Batch B1: bounded detached DAG capture"
+    status: in_progress
+    claimed_by: claude-session-7015f552
+    claimed_at: 2026-09-21T14:00:00Z
+    claims: [CLAIM-CASPER-NODE-OBSERVATION-002]
+    revisions: [a38d44185, 38d083bff, 619882128]
+    evidence:
+      - docs/cbc-evidence/runs/casper-node-snapshot-batch-b1-799e2136a-01/report.json
+      - docs/cbc-evidence/runs/casper-node-snapshot-hardening-2ccc4ae0a-01/report.json
+      - docs/cbc-evidence/runs/casper-node-snapshot-completion-619882128-01/report.json
+    work_log: docs/work-logs/casper-node-observation-batch-b1.md
+    blocked_by: []
+    files:
+      - shared/src/rust/store/soak_snapshot.rs
+      - shared/src/rust/store/mod.rs
+      - shared/tests/soak_snapshot.rs
+      - block-storage/src/rust/dag/soak_snapshot.rs
+      - block-storage/src/rust/dag/mod.rs
+      - block-storage/src/rust/dag/block_dag_key_value_storage.rs
+      - block-storage/src/rust/dag/block_metadata_store.rs
+      - block-storage/src/rust/key_value_block_store.rs
+      - block-storage/tests/soak_snapshot.rs
+    notes:
+      - "The user confirmed the nine-file scope, the pending claim, and four high-weight mandatory tags on 2026-09-21."
+      - "Bounded LMDB reader, transaction identity checks, detached snapshot with canonical digest, scratch construction, and observer-only bounded block decoding landed in a38d44185."
+      - "The continuation at 38d083bff corrected reader budget retention, key bounds, checked arithmetic, and short-decompression acceptance, with red tests retained."
+      - "The completion review addresses all four source findings. It records 301 passing test executions and a negative compile check for mutable snapshot access."
+    remaining_work:
+      - "Review the completion evidence and obtain source-bound claim acceptance under TASK-019-4."
+      - "Keep task ownership and completion status unchanged until the required review finishes."
+    acceptance:
+      - "Every limit is checked before the allocation or store operation it bounds."
+      - "Capture rejects any environment or generation change between open and validation, including restored values."
+      - "Production store bytes are unchanged by successful and rejected captures."
+      - "Two scratch views share no mutable store with each other or with production."
+      - "The canonical identity covers every field that scratch construction and evaluation consume."
+  - id: TASK-019-3
+    title: "Batch B2: observer handle, detached evaluation, and reference comparison"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-019-2]
+    prerequisites:
+      - "A final file list covering the runtime, engine cell, Casper constructor, dispatch, and the six test fixtures that need the observer field."
+      - "A reference evaluation path that differs from the measured path. Repeating the production tips computation is not independent coverage."
+      - "Separate fields for the exact oracle decision, the original fault-tolerance result, and the display projection, each naming its input snapshot."
+      - "Counters that increment at actual traversal and clique-search operations, with missing counters reported as unavailable."
+      - "A registered pending claim and ratified tags before implementation."
+    acceptance:
+      - "Attachment installs no observer state by default and never invokes the finalizer, the production snapshot, or validator identity."
+      - "An instance rejects conflicting handle attachment. Coverage begins at successful attachment."
+      - "Record overflow or observer failure never blocks consensus or invents a successful observation."
+      - "A derivation, an attempted effect, and persisted finalization are distinct records."
+  - id: TASK-019-4
+    title: "Source-bound verification and acceptance of the Batch A and Batch B claims"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-019-2, TASK-019-3]
+    claims: [CLAIM-CASPER-NODE-OBSERVATION-001, CLAIM-CASPER-NODE-OBSERVATION-002]
+    acceptance:
+      - "Strict source-bound audits pass for every artifact in both claim inventories at the accepted revision."
+      - "Refutation, construction, and binding tiers are recorded with retained failing controls."
+      - "An isolated rebuild runs the interface and capture suites. The Batch A and B1 reports record native runs only."
+      - "Acceptance is recorded by a named maintainer. Passing tests alone do not discharge a claim."
+  - id: TASK-019-5
+    title: "Batch C: publication writer inventory and consistency contract"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-019-3]
+    prerequisites:
+      - "A complete inventory of publication writers across the DAG and block environments."
+      - "A publication consistency contract that states which intermediate states a consistent read can expose."
+      - "PR #216 merged to dev. Occurrence-level recovery qualification has no occurrence store to observe before that merge."
+    acceptance:
+      - "Occurrence identity is never inferred from deploy signatures."
+      - "The contract and inventory are reviewed before any Batch C implementation approval."
+  - id: TASK-019-6
+    title: "Review minimum necessary scope, merge PR #447 to dev, and return PR #436 to dev"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-019-4]
+    acceptance:
+      - "Review every branch change before merge and justify why each retained component is necessary for an approved requirement."
+      - "Identify components that can be removed, combined, or moved into test tooling instead of the production node."
+      - "Review duplicate data, custom serialization, scratch stores, public interfaces, configuration, tests, documentation, and evidence files."
+      - "Preserve required safety checks, negative tests, evidence identities, and reachable historical evidence during any approved reduction."
+      - "Record source, test, documentation, and total diff sizes before and after reduction."
+      - "Run affected checks and obtain maintainer acceptance of the minimum necessary codebase scope before merge."
+      - "PR #447 merges with all accepted claims and the pre-commit gate passing without a skip."
+      - "PR #436 on formal/soak-casper-consensus retargets dev after the merge."
+      - "EPIC-017 TASK-017-12 updates its node interface status to the merged revision."
+---
+```
+
+**Current state:** Batch A is implemented. Local B1 corrections address the four source findings, with 301 passing test executions. Both claims remain pending. Batch B2 and Batch C remain unapproved. PR #447 targets `dev`.
+
+**Scope:** This epic owns node-side interfaces only. Harness verification, profile qualification, campaign execution, and baseline soaks belong to EPIC-017.
 
 ---
 
@@ -2302,6 +2449,7 @@ PR #390 meeting record + PR #216 candidate ─> EPIC-017 pre-merge plan and base
 PR #430 ─> PR #431 ─> PR #432 ─> PR #433 ─> EPIC-017 harness prerequisites
 EPIC-010 / EPIC-012 / EPIC-015 / EPIC-016 ─> EPIC-017 shared evidence and fixtures
 EPIC-017 handoff + PR #216 merged into dev ─> EPIC-018 post-merge formal harness PR
+EPIC-019 (node observation, PR #447 -> dev) ─> EPIC-017 TASK-017-12 node prerequisite (soak branch)
 EPIC-011 (TLA exhaustive baseline, complete) ─> EPIC-012 / TASK-012-22
 EPIC-012 (open-issue PR queue)              (all other lanes start independently)
 PR #299 ─> PR #312 ─> EPIC-016 (key-contention close-out) ─> PR #311 (formal, merges last)

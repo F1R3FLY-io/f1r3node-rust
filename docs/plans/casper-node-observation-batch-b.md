@@ -1,6 +1,6 @@
 # Casper Node Observation: Batch B Review
 
-**Status:** Source review and revised proposal. Batch B implementation requires confirmation.
+**Status:** Local B1 corrections address the four remaining source findings. Its claim remains pending. Batch B2 and Batch C still require confirmation.
 
 **Branch:** `feature/casper-node-observation`.
 
@@ -213,8 +213,22 @@ No node capability, campaign guard, candidate image, workload pin, or cloud budg
 
 Merge, image publication, candidate repinning, preflight, full baselines, and later stability approval remain separate actions.
 
-## Requested confirmation
+## Batch B1 confirmation record
 
-Confirm the nine-file Batch B1 implementation scope, its pending claim, and the four proposed high-weight mandatory tags.
+The user confirmed the nine-file Batch B1 scope, the pending claim, and the four high-weight mandatory tags on 2026-09-21.
 
-Confirmation does not authorize Batch B2, Batch C, commits, pushes, merges, claim acceptance, or cloud launches.
+The [Batch B1 work log](../work-logs/casper-node-observation-batch-b1.md) records the implementation, the local results, and the registered claim `CLAIM-CASPER-NODE-OBSERVATION-002`.
+
+The confirmation does not authorize Batch B2, Batch C, merges, claim acceptance, or cloud launches. Commits and pushes require their separate consent.
+
+## B1 continuation review
+
+The review at `2ccc4ae0ac1045232c247ecd76925e13fabd0ade` found reader-budget and decompression defects. Local corrections address those defects within the nine-file B1 scope.
+
+The [continuation work log](../work-logs/casper-node-observation-batch-b1.md#continuation-review-on-2026-09-21) records failing controls, passing regressions, and unresolved findings.
+
+The [B1 completion review](../work-logs/casper-node-observation-batch-b1.md#b1-completion-review) records subsequent corrections for nested bounds, work accounting, scratch blocks, and canonical identity.
+
+Formal claim acceptance remains pending. Do not use the current capture as an accepted B2 prerequisite.
+
+The earlier local test counts do not establish those properties. This review does not approve B2 or C, discharge the capture claim, or qualify a live adapter.
