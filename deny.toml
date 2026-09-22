@@ -56,7 +56,6 @@ wildcards = "deny"
 allow-wildcard-paths = true
 highlight = "all"
 deny = [
-  { crate = "bitmaps:>=3.2.0", reason = "RUSTSEC-2025-0167 affects byte conversions introduced in 3.2.0. Use 3.1.0 until a reviewed replacement is available." },
   { crate = "rustls-webpki:<0.103.13", reason = "The legacy certificate verifier has been removed. Require the patched version." },
   { crate = "h2:<0.3.27", reason = "Only h2 0.3.27 has a legacy HTTP exception." },
   { crate = "h2:>0.3.27,<0.4.16", reason = "The maintained HTTP stack must include the empty DATA frame fix." },
