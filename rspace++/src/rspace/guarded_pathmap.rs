@@ -50,20 +50,34 @@ pub trait TeardownBarrier<V> {
     fn discard_barrier(barrier: V) { drop(barrier); }
 }
 
-struct SyntheticBarrier<V, B>
-where B: TeardownBarrier<V>
-{
-    value: Option<V>,
-    barrier: PhantomData<fn() -> B>,
+pub trait BarrierProvider<V> {
+    fn make_barrier(&self) -> V;
+
+    fn discard_barrier(&self, barrier: V) { drop(barrier); }
 }
 
-impl<V, B> SyntheticBarrier<V, B>
-where B: TeardownBarrier<V>
+struct StaticBarrier<B>(PhantomData<fn() -> B>);
+
+impl<V, B: TeardownBarrier<V>> BarrierProvider<V> for StaticBarrier<B> {
+    fn make_barrier(&self) -> V { B::make_barrier() }
+
+    fn discard_barrier(&self, barrier: V) { B::discard_barrier(barrier); }
+}
+
+struct SyntheticBarrier<'a, V, B>
+where B: BarrierProvider<V>
 {
-    fn new() -> Self {
+    value: Option<V>,
+    barrier: &'a B,
+}
+
+impl<'a, V, B> SyntheticBarrier<'a, V, B>
+where B: BarrierProvider<V>
+{
+    fn new(barrier: &'a B) -> Self {
         Self {
-            value: Some(B::make_barrier()),
-            barrier: PhantomData,
+            value: Some(barrier.make_barrier()),
+            barrier,
         }
     }
 
@@ -72,16 +86,14 @@ where B: TeardownBarrier<V>
             .take()
             .expect("a synthetic PathMap barrier is installed exactly once")
     }
-
-    fn retire(value: V) { B::discard_barrier(value); }
 }
 
-impl<V, B> Drop for SyntheticBarrier<V, B>
-where B: TeardownBarrier<V>
+impl<V, B> Drop for SyntheticBarrier<'_, V, B>
+where B: BarrierProvider<V>
 {
     fn drop(&mut self) {
         if let Some(value) = self.value.take() {
-            B::discard_barrier(value);
+            self.barrier.discard_barrier(value);
         }
     }
 }
@@ -804,6 +816,30 @@ where
     drain_pathmap_observed::<V, B, D, _>(map, dispose, &mut observer)
 }
 
+pub fn retire_pathmap<V, B, D>(map: PathMap<V>, dispose: &D, barrier: &B) -> usize
+where
+    V: Clone + Send + Sync + Unpin + 'static,
+    B: BarrierProvider<V>,
+    D: DisposeValue<V>,
+{
+    let mut quarantined = ManuallyDrop::new(map);
+    let outcome = catch_unwind(AssertUnwindSafe(|| {
+        let removed = drain_pathmap_with_provider(
+            &mut quarantined,
+            dispose,
+            barrier,
+            &mut NoopDrainObserver,
+        );
+        assert!(quarantined.is_empty());
+        unsafe { ManuallyDrop::drop(&mut quarantined) };
+        removed
+    }));
+    match outcome {
+        Ok(removed) => removed,
+        Err(_) => std::process::abort(),
+    }
+}
+
 fn descend_to_rightmost_leaf<V>(
     zipper: &mut WriteZipperUntracked<'_, '_, V>,
     suffix: &mut Vec<u8>,
@@ -839,6 +875,21 @@ fn drain_pathmap_observed<V, B, D, O>(map: &mut PathMap<V>, dispose: &D, observe
 where
     V: Clone + Send + Sync + Unpin + 'static,
     B: TeardownBarrier<V>,
+    D: DisposeValue<V>,
+    O: DrainObserver,
+{
+    drain_pathmap_with_provider(map, dispose, &StaticBarrier::<B>(PhantomData), observer)
+}
+
+fn drain_pathmap_with_provider<V, B, D, O>(
+    map: &mut PathMap<V>,
+    dispose: &D,
+    barrier: &B,
+    observer: &mut O,
+) -> usize
+where
+    V: Clone + Send + Sync + Unpin + 'static,
+    B: BarrierProvider<V>,
     D: DisposeValue<V>,
     O: DrainObserver,
 {
@@ -893,14 +944,16 @@ where
             }
 
             debug_assert!(!zipper.is_val(), "Phase B starts from value-free provenance");
-            let replaced = zipper.set_val(SyntheticBarrier::<V, B>::new().into_value());
+            let replaced = zipper.set_val(SyntheticBarrier::new(barrier).into_value());
             debug_assert!(replaced.is_none());
             stats.installed_barriers += 1;
-            let step = remove_valued_leaf_and_bubble::<V, B, D>(
+            let step = remove_valued_leaf_and_bubble_with_provider(
                 &mut zipper,
                 ValuedLeafOrigin::Synthetic,
                 None,
                 dispose,
+                None,
+                barrier,
             );
             stats.real_values += step.real_values;
             stats.pruned_edges += step.pruned_edges;
@@ -925,6 +978,7 @@ where
     removed_values
 }
 
+#[cfg(test)]
 fn remove_valued_leaf_and_bubble<V, B, D>(
     zipper: &mut WriteZipperUntracked<'_, '_, V>,
     origin: ValuedLeafOrigin,
@@ -982,14 +1036,32 @@ where
 
 fn remove_valued_leaf_and_bubble_counted<V, B, D>(
     zipper: &mut WriteZipperUntracked<'_, '_, V>,
-    mut origin: ValuedLeafOrigin,
+    origin: ValuedLeafOrigin,
     floor_depth: Option<usize>,
     dispose: &D,
-    mut count: Option<&mut usize>,
+    count: Option<&mut usize>,
 ) -> BarrierPruneStats
 where
     V: Clone + Send + Sync + Unpin + 'static,
     B: TeardownBarrier<V>,
+    D: DisposeValue<V>,
+{
+    remove_valued_leaf_and_bubble_with_provider(
+        zipper, origin, floor_depth, dispose, count, &StaticBarrier::<B>(PhantomData),
+    )
+}
+
+fn remove_valued_leaf_and_bubble_with_provider<V, B, D>(
+    zipper: &mut WriteZipperUntracked<'_, '_, V>,
+    mut origin: ValuedLeafOrigin,
+    floor_depth: Option<usize>,
+    dispose: &D,
+    mut count: Option<&mut usize>,
+    barrier: &B,
+) -> BarrierPruneStats
+where
+    V: Clone + Send + Sync + Unpin + 'static,
+    B: BarrierProvider<V>,
     D: DisposeValue<V>,
 {
     debug_assert!(zipper.path_exists());
@@ -1011,7 +1083,7 @@ where
                     stats.real_values += 1;
                 }
                 ValuedLeafOrigin::Synthetic => {
-                    SyntheticBarrier::<V, B>::retire(removed);
+                    barrier.discard_barrier(removed);
                     stats.retired_barriers += 1;
                 }
             }
@@ -1036,7 +1108,7 @@ where
         let parent_origin = if parent_had_real_value {
             ValuedLeafOrigin::Real
         } else {
-            let replaced = zipper.set_val(SyntheticBarrier::<V, B>::new().into_value());
+            let replaced = zipper.set_val(SyntheticBarrier::new(barrier).into_value());
             debug_assert!(replaced.is_none());
             stats.installed_barriers += 1;
             ValuedLeafOrigin::Synthetic
@@ -1068,7 +1140,7 @@ where
                 let removed = zipper
                     .remove_val(false)
                     .expect("bounded synthetic pruning starts from a valued leaf");
-                SyntheticBarrier::<V, B>::retire(removed);
+                barrier.discard_barrier(removed);
                 stats.retired_barriers += 1;
                 let pruned = zipper.prune_ascend();
                 debug_assert_eq!(pruned, 1);
@@ -1080,9 +1152,9 @@ where
 
         if reached_floor || parent_had_real_value || parent_had_surviving_fork {
             if matches!(parent_origin, ValuedLeafOrigin::Synthetic) {
-                let barrier = remove_value_preserving_path(zipper)
+                let removed_barrier = remove_value_preserving_path(zipper)
                     .expect("the temporary synthetic parent remains at the stopping frame");
-                SyntheticBarrier::<V, B>::retire(barrier);
+                barrier.discard_barrier(removed_barrier);
                 stats.retired_barriers += 1;
             }
             break;
@@ -2191,3 +2263,7 @@ mod tests {
 #[cfg(test)]
 #[path = "../../tests/guarded_pathmap/two_phase_teardown_properties.rs"]
 mod two_phase_teardown_properties;
+
+#[cfg(test)]
+#[path = "../../tests/guarded_pathmap/stateful_retirement.rs"]
+mod stateful_retirement;

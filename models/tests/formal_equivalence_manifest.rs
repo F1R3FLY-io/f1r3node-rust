@@ -1306,6 +1306,54 @@ fn protobuf_owned_slots_have_proof_and_native_bindings() {
     }
 }
 
+#[test]
+fn epm_owned_retirement_has_explicit_proof_boundaries_and_native_bindings() {
+    let theory = read_repository_file("formal/rocq/stack_safe_pda/theories/EpmOwnedRetirement.v");
+    let names = [
+        "stateful_provider_preserves_every_event",
+        "stateful_provider_preserves_valid_same_arena_values",
+        "stateful_terminal_drain_preserves_existing_semantics",
+        "repeat_scaffold_needs_only_validity",
+        "every_settlement_consumes_source",
+        "live_source_has_exactly_one_terminal_event",
+        "consumed_source_cannot_retire_or_transfer_again",
+        "retirement_and_transfer_are_exclusive",
+        "zipper_adoption_preserves_subject_and_authority",
+        "replacement_retires_old_before_adopting_new",
+        "replacing_with_absence_retires_without_publication",
+        "scope_disposal_consumes_each_owned_slot_once",
+        "scope_disposal_preserves_order_and_drain_traces",
+        "returning_failure_preserves_selected_error",
+        "refusal_and_projection_failure_do_not_publish",
+        "cleanup_panic_is_terminal",
+        "cleanup_allocation_failure_is_terminal",
+        "retirement_reuses_existing_raw_drop_quarantine",
+    ];
+    assert_eq!(names.len(), 18);
+    assert_eq!(theory.matches("Print Assumptions ").count(), names.len());
+    let catalog = read_repository_file("docs/design/pathmap/workspace-regression-formal-invariant-catalog-2026-08-28.md");
+    for name in names {
+        assert!(theory.contains(&format!("Print Assumptions {name}.")));
+        assert!(catalog.contains(&format!("`{name}`")));
+    }
+    let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
+    assert!(has_runner_command(&runner, &["rocq_compile_with_closed_count", "theories/EpmOwnedRetirement.v", "18"]));
+    assert!(has_runner_kernel_check(&runner, &["StackSafePDA.EpmOwnedRetirement"]));
+    assert!(has_runner_command(&runner, &["rspace_preparation_run_tests", "5", "--lib", "stateful_retirement"]));
+    assert!(read_repository_file("formal/rocq/stack_safe_pda/_CoqProject").lines()
+        .any(|line| line == "theories/EpmOwnedRetirement.v"));
+    let native = read_repository_file("rspace++/tests/guarded_pathmap/stateful_retirement.rs");
+    for witness in [
+        "stateful_factory_is_lazy_and_uninstalled_barriers_are_retired",
+        "stateful_retirement_preserves_cow_sibling_and_value_free_topology",
+        "stateful_deep_branching_and_value_free_retirement_use_256k_stack",
+        "stateful_retirement_panics_fail_stop_without_raw_unwind",
+        "stateful_provider_erases_to_static_drain_with_exact_real_values",
+    ] {
+        assert!(native.contains(&format!("fn {witness}(")));
+    }
+}
+
 fn read_repository_file(relative: &str) -> String {
     let path = repository_root().join(relative);
     std::fs::read_to_string(&path)

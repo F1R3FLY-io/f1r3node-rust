@@ -8980,6 +8980,19 @@ catalog enumerates the proof premises, native bindings and remaining attachment
 obligations. Neither this representation prerequisite nor its passing focused tests
 closes the depth-4,096 protobuf timeout or establishes a decoding speedup.
 
+J-209 completes the shared stateful-barrier retirement prerequisite after 18 closed
+ownership/provider statements pass independent kernel checking. The existing static
+and new stateful policies share one reverse-prune implementation; no default planned
+handle or upstream fork is introduced. The focused RSpace run passes 39 tests with
+one pre-existing measurement-only ignore, including 8,192-level branching and
+topology-only cleanup on a 256 KiB stack, CoW preservation and three fail-stop
+callback controls. Peak memory is 1.7 GiB. The decoder/reference/manifest selection
+passes 30/30 tests at 2.4 GiB peak. Both runs use 8 GiB limits and zero swap; J-209
+records exact selections, negative attempts, elapsed times and receipt hashes.
+The pending decoder, planned-node and public-recipient ownership integrations are
+not yet covered by this shared facade. In particular, these results do not close
+task 5834, the unchanged depth-4,096 timeout, or establish a decoding speedup.
+
 ### 5.29 ParBag family and count-domain completeness [SS-A13, SS-A14, SS-Y9]
 
 #### 5.29.1 The defects

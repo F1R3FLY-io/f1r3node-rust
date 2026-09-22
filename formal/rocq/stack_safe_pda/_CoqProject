@@ -49,6 +49,7 @@ theories/SubstitutionSnapshotPrefix.v
 theories/PathMapPhysicalOwnership.v
 theories/PathMapPhysicalOwnershipMutants.v
 theories/PathMapReversePruneTeardown.v
+theories/EpmOwnedRetirement.v
 theories/PathMapReversePruneTeardownMutants.v
 theories/PathMapLeafExtension.v
 theories/CandidateProductPathContinuation.v

@@ -15684,6 +15684,80 @@ the task/experiment backfill is pending, not claimed completed.
 | `target/verification/protobuf-owned-slots-5834/native-r2.log` | 8740ab89e2b6738aace0fba33d650bf1b0f722534f3c29cdb518184613b77b91 |
 | `target/verification/protobuf-owned-slots-5834/native-r3.log` | a3781cae44dcfa76e609d8707bee6e74d6567c407f0a3e3b472750e583d6c7eb |
 
+### J-209 — 2026-09-22 Stateful barrier retirement prerequisite for owned EPM decoding
+
+**Formal-first prerequisite (VERIFIED).** The saved `EpmOwnedRetirement.v` draft
+was not verified at resume: r1 failed at an implicit argument and r2 at scope
+disposal. Completing those proofs and one explicit-argument corollary produced
+r4: 18 exported statements closed under the global context, two helper lemmas,
+and a successful independent kernel check. Unit `epm-owned-retirement-5834-r4`
+used 13.822 seconds service time, 13.584 CPU seconds, 376.8 MiB peak and zero swap,
+under MemoryMax=2 GiB, CPUQuota=100% and RuntimeMaxSec=180. The EOR invariant
+catalog records every statement, native binding, precondition and unbound decoder
+ownership obligation. Neither trace annotation nor affine abstract slots prove
+the Rust implementation or upstream consuming conversions automatically.
+
+**Implementation (DECISION).** Extend the existing shared two-phase drain with
+`BarrierProvider<V>`; the previous `TeardownBarrier<V>` remains a zero-sized static
+adapter. Both execute the same reverse-prune algorithm. The consuming
+`retire_pathmap` facade quarantines its raw header before callbacks, drains values
+and topology, destroys only the empty header, and fails-stop on unexpected unwind.
+Arena-local payloads need no default value, per-payload Arc, map reconstruction or
+second drain algorithm. Production provider/disposer policies must remain named,
+bounded and non-panicking; the failure tests deliberately violate that premise.
+
+**Native evidence (MEASURED).** `epm-stateful-retirement-5834-native-r2` passes
+39 tests, with one existing measurement-only test ignored and 693 excluded.
+The five added witnesses cover generated static/stateful erasure, independent
+ordered real-value observations, barrier retirement balance, same-arena opaque
+non-Default values, factory laziness, CoW sibling values/topology, 8,192-level
+branching and topology-only retirement on a 256 KiB stack, and SIGABRT on provider,
+barrier-retirement or real-value-disposal panic. Existing reverse-prune, mutation,
+alias and failure controls also pass. Test time is 0.92 seconds, service time
+58.048 seconds, CPU time 169.123 seconds, peak memory 1.7 GiB, swap zero.
+The initial native r1 did not run tests: the new witness used `path_exists` instead
+of the actual `path_exists_at` map API. The corrected test retained its assertion.
+
+`epm-stateful-retirement-5834-models-r2` passes 30/30 selected tests across 50
+binaries, with 1,191 excluded. This includes all thirteen frozen decoder witnesses,
+eight owned-slot witnesses, eight EPM payload witnesses and the new proof manifest.
+Test time is 24.082 seconds, service time 146.702 seconds, CPU time 471.984 seconds,
+peak memory 2.4 GiB, swap zero. The first models invocation was rejected before
+compilation because nextest interprets `-j` as test concurrency; the corrected run
+uses `CARGO_BUILD_JOBS=4` and one `--test-threads=4` option. Both accepted native runs
+use MemoryHigh=6 GiB, MemoryMax=8 GiB, MemorySwapMax=0, CPUQuota=400%,
+RuntimeMaxSec=900 and LimitCORE=0; property cases=1,024, seed=5834. No benchmark,
+throughput improvement or full-workspace completion is inferred from these runs.
+
+**Integration review (DERIVED; next required work).** Pending writers need an
+affine owned-zipper guard through semantic rejection, final canonicality rejection,
+partial-frame disposal and first-edge construction. Retained planned EPM nodes and
+their pre-publication builders need guarded representations; guarding only the
+published node misses fallible key construction and length checks. Retire these
+tries before clearing their arena's Par handles. Partially built tries can retain
+construction scaffolds, so their retired-cell count is not `decoded_values`.
+The PathMap 0.2.2 `into_map` implementation only drops pointer/buffer cursor state
+and moves its boxed map; root-only `into_write_zipper([])` does not descend or call
+payload cloning. These are pinned source-review premises, not upstream guarantees
+proved by the companion model. Public raw EPM recipients remain a separate audit.
+
+This checkpoint is the shared cleanup prerequisite, not completion of task 5834.
+Production decoding still uses resident Pars; planned routing, guarded builders,
+public materialization and the unchanged depth-4,096 gate remain required.
+No consensus encoding, public language behavior, upstream PathMap or dependency
+changed. PgMCP STDIO tools are unavailable in this session; task 5834 progress and
+experiment backfill remain pending, rather than being represented as recorded.
+
+| Artifact | SHA-256 |
+|---|---|
+| `formal/rocq/stack_safe_pda/theories/EpmOwnedRetirement.v` | 5fdc41db3f640d25d622c6475bbb8c7ff4341e44aedf080748e2ff3da8d34dbc |
+| `target/verification/epm-owned-retirement-5834/coqc-r4.log` | 53a84fa91c301f9a3d5554ff0d8744a3dff1b23e389b1ca8e22d1559ac84e315 |
+| `target/verification/epm-owned-retirement-5834/coqchk-r4.log` | d182676bea6086a38ae68f44fda9d8a0b11e71f9c60785a359e7d70ab3c90ad2 |
+| `target/verification/epm-owned-retirement-5834/native-r1.log` (compile error) | 3b8b64839f3d86e46918358871f8d79e4e5d930b2b3a5629e42ba851748983a1 |
+| `target/verification/epm-owned-retirement-5834/native-r2.log` | 303f0849625e379489d5ccac05b9c5d7cb55e3d28e3e6ba429540ae5bf19afb3 |
+| `target/verification/epm-owned-retirement-5834/models-r1.log` (argument error) | 9d3b897e8b959ba8448962ae85e424f5ce5d53630f19b7306b8565ebe2f30c42 |
+| `target/verification/epm-owned-retirement-5834/models-r2.log` | 66162e640b8fd1f94c659cee9cbaa88826f8762d78b760fb681688d084ec4abf |
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

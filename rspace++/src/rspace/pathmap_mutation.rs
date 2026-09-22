@@ -16,7 +16,7 @@ enum ExtensionPhase {
     Grafted,
     Restored,
 }
-pub use super::guarded_pathmap::{DisposeValue, TeardownBarrier};
+pub use super::guarded_pathmap::{BarrierProvider, DisposeValue, TeardownBarrier, retire_pathmap};
 
 enum EndpointAuthority<'a> {
     Uncounted,

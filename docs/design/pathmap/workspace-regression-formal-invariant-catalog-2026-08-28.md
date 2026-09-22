@@ -1581,6 +1581,40 @@ production performance theorem is claimed. Public EPM materialization and compon
 planning policies still require integration; D's empty-EPM callback is a test double,
 not a production implementation.
 
+## EPM stateful ownership retirement (EOR, task 5834)
+
+`EpmOwnedRetirement.v` has 18 exported closed statements and two helper lemmas.
+Compilation and independent kernel checking completed before the shared provider
+implementation. It extends the existing reverse-prune trace model; it does not
+replace that algorithm or establish a Rust/compiler refinement theorem.
+
+Native witnesses in `rspace++/tests/guarded_pathmap/stateful_retirement.rs`:
+P = generated static/stateful trace erasure and independently ordered real values;
+L = lazy factory and uninstalled barrier disposal; C = CoW sibling preservation;
+D = 8,192-level branching and topology-only cleanup on a 256 KiB stack;
+F = subprocess fail-stop controls for manufacture, retirement and disposal panics.
+The current shared facade consumes a raw root under quarantine. Decoder source-slot
+and guarded-recipient integration is a separate, still-required binding.
+
+| Obligation | Formal statements | Native binding and scope |
+|---|---|---|
+| Provider erasure and validity | `stateful_provider_preserves_every_event`, `stateful_provider_preserves_valid_same_arena_values`, `stateful_terminal_drain_preserves_existing_semantics`, `repeat_scaffold_needs_only_validity` | P compares observer events with the static adapter, checks one-byte prune width and exact real values. L checks absence of factory calls for empty/root-only maps and disposal before installation. Stateful test values have no Default and carry one arena identity. |
+| Affine settlement | `every_settlement_consumes_source`, `live_source_has_exactly_one_terminal_event`, `consumed_source_cannot_retire_or_transfer_again`, `retirement_and_transfer_are_exclusive` | Consuming root facade is the first native boundary; pending decoder slots and all publication paths still require binding. |
+| Zipper adoption | `zipper_adoption_preserves_subject_and_authority` | Abstract source consumption/guarded recipient only; upstream into_map unwind behavior and integration remain separately audited obligations. |
+| Replacement | `replacement_retires_old_before_adopting_new`, `replacing_with_absence_retires_without_publication` | Decoder replacement binding pending; the shared drain alone does not prove it. |
+| Frame/arena disposal | `scope_disposal_consumes_each_owned_slot_once`, `scope_disposal_preserves_order_and_drain_traces` | D establishes branching drain behavior, not complete frame or arena ownership integration. |
+| Returning errors | `returning_failure_preserves_selected_error`, `refusal_and_projection_failure_do_not_publish` | Decoder refusal/projection binding pending; ordinary cleanup must not replace an already-selected parser error. |
+| Terminal cleanup failures | `cleanup_panic_is_terminal`, `cleanup_allocation_failure_is_terminal`, `retirement_reuses_existing_raw_drop_quarantine` | F requires SIGABRT at all three callback sites, not merely test failure. C checks sibling survival. Allocation failure is inherited from the existing quarantine model; no new allocator-failure injection is claimed. |
+
+Premises: provider state remains valid and every barrier belongs to the same live
+arena; value manufacture, retirement and real-value disposal must be bounded and
+non-panicking in production. Test callbacks deliberately violate the latter premise
+to exercise quarantine. Affine model slots must not be duplicated, and transfer
+recipients must already own a cleanup guard. Existing terminal-root authority and
+reverse-prune topology assumptions remain prerequisites. The abstract model does
+not prove arena lifetime, private PathMap callees, arbitrary user-defined payload
+Drop, serialized bytes, full parser equivalence or production performance.
+
 ## Original workspace-regression completion gates
 
 This checkpoint is complete only when all of the following hold:
