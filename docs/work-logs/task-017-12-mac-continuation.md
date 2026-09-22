@@ -311,3 +311,19 @@ Source hashes, report links, and environment request checks passed. The strict a
 The STE Check passed for the added prose. The whitespace check also passed. Human STE Review remains necessary.
 
 No node, cloud runner, remote configuration, commit, push, or claim acceptance occurred in this continuation.
+
+## Campaign environment creation: 2026-09-22
+
+The user authorized creation of `casper-campaign` from the prepared JSON requests. The environment and its single branch policy are now configured.
+
+The environment ID is `22500101516`. The branch policy ID is `60724033`.
+
+The readback confirms all six configured reviewers, self-review prevention, disabled administrator bypass, and no wait timer. Deployment is restricted to `formal/soak-casper-consensus`.
+
+The first creation request returned HTTP 403 with the default credential. Explicit `GITHUB_PERSONAL_ACCESS_TOKEN` selection completed both writes.
+
+The [configuration report](../casper/cbc-evidence/runs/casper-campaign-environment-20260922-01/report.json) retains the request digests, settings, authorization, and verified readback. It records the rejected request separately.
+
+The deployment proposal and candidate blockers now reflect the configured environment. The authoritative object, access policy, supervisor, and deployed qualification remain incomplete.
+
+No campaign workflow, node, or cloud runner started. Claim acceptance remains pending. This continuation created no commit or push.

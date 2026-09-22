@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
   "task": "TASK-017-12",
-  "status": "proposed-not-deployed",
+  "status": "github-environment-configured-oci-pending",
   "review_date": "2026-09-22",
   "github": {
     "repository": "F1R3FLY-io/f1r3node-rust",
     "environment": "casper-campaign",
-    "observed_environment_exists": false,
+    "observed_environment_exists": true,
     "credential_review": {
       "selected_variable": "GITHUB_PERSONAL_ACCESS_TOKEN",
       "repository_role_endpoint_status": 200,
@@ -87,6 +87,12 @@
     "activation_variables": {
       "CASPER_CAMPAIGN_CONFIG_PATH": null,
       "CASPER_CAMPAIGN_CONFIG_SHA256": null
+    },
+    "environment_id": 22500101516,
+    "branch_policy_id": 60724033,
+    "environment_configuration_evidence": {
+      "report": "docs/casper/cbc-evidence/runs/casper-campaign-environment-20260922-01/report.json",
+      "sha256": "6b34e8596b9d37080389203566088bb3f8ebf1dcaca2c91bea916cc409139698"
     }
   },
   "oci": {
@@ -150,7 +156,6 @@
     }
   },
   "activation_blockers": [
-    "The approval environment has not been created.",
     "The authoritative object and its access policy have not been provisioned.",
     "The lifetime supervisor has not been deployed or qualified.",
     "Provider timing bounds have no accepted deployment evidence.",
@@ -186,7 +191,7 @@
     },
     "total_count": 5
   },
-  "remote_writes": 0,
+  "remote_writes": 2,
   "node_launches": 0,
   "cloud_launches": 0,
   "review_evidence": {

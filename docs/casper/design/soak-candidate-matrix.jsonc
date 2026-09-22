@@ -302,7 +302,7 @@
     "Profile adapters and required node interfaces remain unqualified.",
     "The refreshed campaign model and configuration inventory requires source-bound acceptance.",
     "The campaign execution path requires hosted and deployed qualification.",
-    "The approval environment, authoritative object, and lifetime supervisor remain unconfigured.",
+    "The authoritative object and lifetime supervisor remain unconfigured.",
     "B44 containment remains open."
   ],
   "post_merge_gate": {
