@@ -45,12 +45,6 @@ versions = ["1.0.15"]
 owner = "@F1R3FLY-io/ci-maintainers"
 review-by = 2026-10-06
 
-[exceptions.RUSTSEC-2026-0247]
-package = "bitmaps"
-versions = ["3.1.0"]
-owner = "@F1R3FLY-io/ci-maintainers"
-review-by = 2026-10-06
-
 [exceptions.RUSTSEC-2024-0384]
 package = "instant"
 versions = ["0.1.13"]
