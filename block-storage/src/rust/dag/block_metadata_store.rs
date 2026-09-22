@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use models::rust::block_hash::{BlockHash, BlockHashSerde};
 use models::rust::block_metadata::BlockMetadata;
@@ -124,10 +124,14 @@ impl BlockMetadataStore {
         &self.store
     }
 
-    pub(crate) fn capture_state(&self, wait: Duration) -> Result<DagStateCopy, SnapshotError> {
+    pub(crate) fn capture_state(
+        &self,
+        deadline: Instant,
+        wait: Duration,
+    ) -> Result<DagStateCopy, SnapshotError> {
         let guard = self
             .dag_state
-            .try_read_for(wait)
+            .try_read_until(deadline)
             .ok_or(SnapshotError::LockTimeout(wait))?;
         Ok(DagStateCopy {
             dag_set: guard.dag_set.clone(),

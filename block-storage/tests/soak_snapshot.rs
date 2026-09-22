@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use block_storage::rust::dag::block_dag_key_value_storage::{BlockDagKeyValueStorage, InsertMode};
 use block_storage::rust::dag::soak_snapshot::{
@@ -260,6 +260,31 @@ fn invalid_limits_are_rejected_before_guards_or_reads() {
         CaptureLimits::validate(&zero_wait),
         Err(SnapshotError::InvalidLimits(_))
     ));
+}
+
+#[test]
+fn lock_wait_without_a_representable_deadline_is_invalid() {
+    let mut invalid = limits();
+    invalid.lock_wait = Duration::MAX;
+    assert!(Instant::now().checked_add(invalid.lock_wait).is_none());
+    assert!(matches!(
+        invalid.validate(),
+        Err(SnapshotError::InvalidLimits(_))
+    ));
+    assert!(limits().validate().is_ok());
+}
+
+#[test]
+fn invalid_lock_deadline_is_rejected_before_guards_or_reads() {
+    let fx = fixture("lock-deadline");
+    let before = fx.store_bytes();
+    let mut request = request(&[]);
+    request.limits.lock_wait = Duration::MAX;
+    let mut phases = Vec::new();
+    let result = capture_observed(&fx.dag, &fx.blocks, &request, |phase| phases.push(phase));
+    assert!(matches!(result, Err(SnapshotError::InvalidLimits(_))));
+    assert!(phases.is_empty());
+    assert_eq!(fx.store_bytes(), before);
 }
 
 #[test]

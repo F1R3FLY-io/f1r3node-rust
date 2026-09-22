@@ -139,6 +139,9 @@ async fn capabilities_are_bound_and_never_claim_live_qualification() {
     let directory = Directory::new();
     let mut conf = configuration(&directory, true);
     conf.casper.validator_private_key = Some("synthetic-secret-sentinel".to_owned());
+    let executable = fs::read("/proc/self/exe").unwrap();
+    let executable_sha256 =
+        hex::encode(crypto::rust::hash::sha_256::Sha256Hasher::hash(executable));
     let observer = Observer::bind(&conf).unwrap().unwrap().spawn();
     let (mut stream, hello) = connect(&directory.socket()).await;
     assert_eq!(hello["permission"], "read-only");
@@ -146,11 +149,7 @@ async fn capabilities_are_bound_and_never_claim_live_qualification() {
         hello["identity"]["configuration_scope"],
         "batch-a-public-config-v1"
     );
-    let executable = fs::read("/proc/self/exe").unwrap();
-    assert_eq!(
-        hello["identity"]["executable_sha256"],
-        hex::encode(crypto::rust::hash::sha_256::Sha256Hasher::hash(executable))
-    );
+    assert_eq!(hello["identity"]["executable_sha256"], executable_sha256);
     assert_eq!(hello["identity"]["pid"], std::process::id());
     assert_eq!(
         hello["identity"]["process_start_ticks"],

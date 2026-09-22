@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Deref;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crypto::rust::hash::sha_256::Sha256Hasher;
 use models::rust::block_hash::{BlockHash, BlockHashSerde};
@@ -63,7 +63,14 @@ impl CaptureLimits {
                 "lock_wait must be positive".to_string(),
             ));
         }
+        self.lock_deadline()?;
         Ok(())
+    }
+
+    fn lock_deadline(&self) -> Result<Instant, SnapshotError> {
+        Instant::now().checked_add(self.lock_wait).ok_or_else(|| {
+            SnapshotError::InvalidLimits("lock_wait exceeds the clock range".to_string())
+        })
     }
 }
 
@@ -331,10 +338,13 @@ pub fn capture_observed(
         work.charge(hash.len())?;
     }
     work.charge(8)?;
-    let access = dag.soak_capture_access(limits.lock_wait)?;
+    let deadline = limits.lock_deadline()?;
+    let access = dag.soak_capture_access(deadline, limits.lock_wait)?;
     observe(CapturePhase::GuardsHeld);
     let generation_before = access.generation();
-    let state = access.metadata_store().capture_state(limits.lock_wait)?;
+    let state = access
+        .metadata_store()
+        .capture_state(deadline, limits.lock_wait)?;
     observe(CapturePhase::StateCopied);
 
     let held_blocks = state.dag_set.len();
@@ -953,5 +963,53 @@ impl DetachedDagSnapshot {
             blocks,
             excluded_stores: &EXCLUDED_STORES,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+
+    use super::*;
+
+    #[test]
+    fn all_capture_guards_use_the_supplied_deadline() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let dag = runtime.block_on(async {
+            BlockDagKeyValueStorage::new(&mut InMemoryStoreManager::new())
+                .await
+                .unwrap()
+        });
+        let deadline = Instant::now();
+        let wait = Duration::MAX;
+        {
+            let _global = dag.global_lock.write();
+            assert!(matches!(
+                dag.soak_capture_access(deadline, wait),
+                Err(SnapshotError::LockTimeout(value)) if value == wait
+            ));
+        }
+        {
+            let _metadata = dag.block_metadata_index.write();
+            assert!(matches!(
+                dag.soak_capture_access(deadline, wait),
+                Err(SnapshotError::LockTimeout(value)) if value == wait
+            ));
+            assert!(dag.global_lock.try_write().is_some());
+        }
+        {
+            let access = dag.soak_capture_access(deadline, wait).unwrap();
+            let metadata = access.metadata_store();
+            let _state = metadata.dag_state().write();
+            assert!(matches!(
+                metadata.capture_state(deadline, wait),
+                Err(SnapshotError::LockTimeout(value)) if value == wait
+            ));
+        }
+        let access = dag.soak_capture_access(deadline, wait).unwrap();
+        assert!(access
+            .metadata_store()
+            .capture_state(deadline, wait)
+            .is_ok());
     }
 }
