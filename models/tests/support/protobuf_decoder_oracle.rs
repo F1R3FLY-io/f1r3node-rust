@@ -343,3 +343,121 @@ fn repeated_fields_oneof_replacement_and_groups_preserve_observations() {
         }
     }
 }
+
+fn attached_component<T: crate::rust::par_bag::ParBagComponent>(tag: u32, body: &[u8]) -> T {
+    let mut bytes = Vec::new();
+    prost::encoding::bytes::encode(tag, &body.to_vec(), &mut bytes);
+    let old = poisoned(|| legacy(|| decoder::decode_par(bytes.as_slice()))).unwrap();
+    let new = decoder::decode_par(bytes.as_slice()).unwrap();
+    assert_eq!(old.encode_to_vec(), new.encode_to_vec());
+    new.first::<T>().unwrap().unwrap().0
+}
+
+#[test]
+fn public_new_keeps_uri_order_until_attachment_to_par() {
+    use crate::rhoapi::New;
+
+    let source = New {
+        p: Some(Par::default()),
+        uri: vec!["z".into(), "a".into(), "z".into()],
+        ..Default::default()
+    };
+    let bytes = source.encode_to_vec();
+    let raw = decoder::decode_new(bytes.as_slice()).unwrap();
+    let reference = poisoned(|| legacy(|| decoder::decode_new(bytes.as_slice()))).unwrap();
+    assert_eq!(raw.encode_to_vec(), reference.encode_to_vec());
+    assert_eq!(raw.uri, source.uri);
+    let canonical = attached_component::<New>(4, &bytes);
+    assert_eq!(canonical.uri, ["a", "z", "z"]);
+    assert_ne!(raw.encode_to_vec(), canonical.encode_to_vec());
+}
+
+#[test]
+fn public_collection_expr_keeps_order_and_duplicates_until_attachment_to_par() {
+    use crate::rhoapi::expr::ExprInstance;
+    use crate::rhoapi::{EMap, ESet, Expr, KeyValuePair};
+
+    let sources = [
+        Expr {
+            expr_instance: Some(ExprInstance::ESetBody(ESet {
+                ps: vec![corpus::gint(2), corpus::gint(1), corpus::gint(2)],
+                ..Default::default()
+            })),
+        },
+        Expr {
+            expr_instance: Some(ExprInstance::EMapBody(EMap {
+                kvs: vec![
+                    KeyValuePair {
+                        key: Some(corpus::gint(2)),
+                        value: Some(corpus::gint(20)),
+                    },
+                    KeyValuePair {
+                        key: Some(corpus::gint(1)),
+                        value: Some(corpus::gint(10)),
+                    },
+                ],
+                ..Default::default()
+            })),
+        },
+    ];
+    for source in sources {
+        let bytes = source.encode_to_vec();
+        let raw = decoder::decode_expr(bytes.as_slice()).unwrap();
+        let reference = poisoned(|| legacy(|| decoder::decode_expr(bytes.as_slice()))).unwrap();
+        assert_eq!(raw.encode_to_vec(), reference.encode_to_vec());
+        assert_eq!(raw.encode_to_vec(), bytes);
+        let canonical = attached_component::<Expr>(5, &bytes);
+        assert_ne!(raw.encode_to_vec(), canonical.encode_to_vec());
+        match canonical.expr_instance.unwrap() {
+            ExprInstance::ESetBody(set) => {
+                assert_eq!(set.ps, [corpus::gint(1), corpus::gint(2)]);
+            }
+            ExprInstance::EMapBody(map) => {
+                assert_eq!(map.kvs[0].key, Some(corpus::gint(1)));
+                assert_eq!(map.kvs[1].key, Some(corpus::gint(2)));
+            }
+            _ => panic!("collection constructor changed"),
+        }
+    }
+}
+
+#[test]
+fn public_receive_keeps_explicit_empty_condition_until_attachment_to_par() {
+    use crate::rhoapi::Receive;
+
+    let source = Receive {
+        body: Some(Par::default()),
+        condition: Some(Par::default()),
+        ..Default::default()
+    };
+    let bytes = source.encode_to_vec();
+    let raw = decoder::decode_receive(bytes.as_slice()).unwrap();
+    let reference = poisoned(|| legacy(|| decoder::decode_receive(bytes.as_slice()))).unwrap();
+    assert_eq!(raw.encode_to_vec(), reference.encode_to_vec());
+    assert!(raw.condition.is_some());
+    assert!(attached_component::<Receive>(2, &bytes).condition.is_none());
+}
+
+#[test]
+fn public_match_keeps_explicit_empty_guard_until_attachment_to_par() {
+    use crate::rhoapi::{Match, MatchCase};
+
+    let source = Match {
+        target: Some(corpus::gint(3)),
+        cases: vec![MatchCase {
+            pattern: Some(corpus::gint(3)),
+            source: Some(corpus::gint(4)),
+            guard: Some(Par::default()),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let bytes = source.encode_to_vec();
+    let raw = decoder::decode_match(bytes.as_slice()).unwrap();
+    let reference = poisoned(|| legacy(|| decoder::decode_match(bytes.as_slice()))).unwrap();
+    assert_eq!(raw.encode_to_vec(), reference.encode_to_vec());
+    assert!(raw.cases[0].guard.is_some());
+    assert!(attached_component::<Match>(6, &bytes).cases[0]
+        .guard
+        .is_none());
+}

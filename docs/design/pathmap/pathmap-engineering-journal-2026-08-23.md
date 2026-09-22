@@ -15534,6 +15534,75 @@ task/experiment backfill is pending, not claimed completed.
 Theory SHA-256:
 `b5582d2e61fdecd1037e53645dde22c2fd05fd141b7eefc1742cf6c107174f79`.
 
+### J-207 — 2026-09-22 Generated owned decoder slots and conversion boundaries
+
+**Implementation design (DECISION, verification pending).** Continue task 5834
+from `40016c5a9`. The follow-up plan review selects generated private transient
+message/oneof records rather than a mutable shell plus a parallel links tree.
+Each field has one owner: Par slots own `ProtobufParBuilder`, EPathMap state owns
+`EPathMapRepr<PlannedPar>` and its metadata, and ordinary protobuf container/scalar
+shapes are preserved. These are decoder work records, not a second public AST;
+they have no Prost/serialization/order/Clone implementation. The generator must
+derive fields and variants from its existing resolved schema rather than maintaining
+another message list.
+
+The existing `SchemaGraph`, already computed once for SCC and traversal generation,
+is the source of the residual ownership check. Par and EPathMap are explicit cut
+vertices. Require unique leaf-to-qualified-descriptor resolution, reject residual
+cycles, and derive a decreasing rank in SCC completion order. Emit rank/edge
+witnesses for native validation. This is a schema-derived native ownership bound,
+not a data-dependent recursion budget or runtime traversal-depth limit.
+
+**Two frontiers, not interchangeable.** Public `decode_expr`, `decode_send` and
+other ordinary-message returns must preserve their own raw decoded fields, including
+ESet/EMap ordering, New URI order and explicit guard presence. Finish their direct
+Par cuts only as needed to return the declared production type. Canonical component
+planning occurs only when a successfully decoded component attaches to an enclosing
+Par. At that boundary, consume immediate Par builders into plans, preserve exact
+optional/container shape in a shallow shell, use `incomplete_component` for incomplete
+payloads, and apply the complete-family planner's documented child order. In
+particular EMethod arguments precede the target in planner order; Match/Receive
+use explicit empty handles for absent semantic guards. Do not carry descendant
+handle vectors through Par ancestors.
+
+EPathMap/EZipper component planning needs representation-aware adapters, not a
+conversion to a resident map or a list of key/value Pars. Public materialization
+must preserve topology-only paths as well as values. PathMap 0.2.2's public
+anamorphism prunes topology-only leaves (existing regression witness); it is not
+an interchangeable implementation for this boundary. Native zipper reconstruction
+or a topology-preserving existing adapter is required, with temporary-value erasure
+covered by J-206. This does not authorize upstream PathMap changes.
+
+**Required correspondence.** Verify default/presence, take-and-reopen, ordered
+append, map-entry defaults and successful replacement, same/different oneof arms,
+successful attachment and failure preservation of the committed parent. Scalar
+parsing, length checks, input switching and error decoration remain structurally
+unchanged during payload replacement. Add native raw-public-versus-component
+frontier counterexamples before routing changes. Reuse PPA, incomplete-component
+construction and EPR obligations at their actual boundaries; do not label container
+parametricity as a proof of the entire byte parser.
+
+**Native boundary baseline (MEASURED).** Four release regression tests in
+`models/tests/support/protobuf_decoder_oracle.rs` pass against both the current
+decoder and the independently frozen decoder with successor routing poisoned.
+They pin standalone New URI order, ESet order/duplicates, EMap entry order, and
+explicit empty Receive/Match guards, and separately assert their different
+canonical form after attachment to Par. These are counterexamples to using the
+component planner for standalone public decode results, not just equivalence
+checks against two implementations sharing the same assumption.
+
+The capped `protobuf-frontier-5834-r1` run passed 4/4 selected tests, with 587
+excluded: 0.008 seconds testing, 50.301 seconds service time including compilation,
+139.591 CPU seconds, and 2 GiB peak memory with zero swap under an 8 GiB hard cap,
+6 GiB high threshold, 400% CPU quota, four build/test workers, and 900-second
+service ceiling. Receipt `target/verification/protobuf-frontier-5834/native-r1.log`
+has SHA-256 `b85126827049929f21542183665f22d6796033773eec0e830e4e24915dd6ea05`.
+
+This entry records the reviewed integration design and boundary baseline, not a
+decoder completion or performance improvement. Production routing and the
+full-depth timeout are unchanged.
+PgMCP STDIO backfill for task 5834 remains pending tool availability.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
