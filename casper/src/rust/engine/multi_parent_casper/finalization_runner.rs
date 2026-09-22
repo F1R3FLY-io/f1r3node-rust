@@ -449,7 +449,8 @@ pub(crate) async fn compute_last_finalized_block(
                 tracing::debug!(
                     missing = %PrettyPrinter::build_string_bytes(&missing),
                     "finalizer holds this cycle: the floor walk needs a block \
-                     this node does not hold; catch-up delivers it"
+                     this node does not hold. Nothing requests it here, so the \
+                     hold lasts until catch-up fetches it for another reason"
                 );
                 None
             }
