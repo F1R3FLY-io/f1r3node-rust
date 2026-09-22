@@ -8926,6 +8926,15 @@ These are bounded construction witnesses, **not** a production decode improvemen
 generated decoder routing remains unchanged and the depth-4,096 timeout remains
 open under task 5834 until the complete construction-path replacement is qualified.
 
+J-203 closes the predecessor-decoder self-comparison gap with a checked-in, test-only
+frozen PDA and field adapters. Ten closed routing declarations precede implementation;
+independent successor-body assertions detect bypassed entry guards. The expanded
+10-test run passes under an 8 GiB cap (2 GiB observed peak, zero swap), including exact
+error/input/partial-state comparisons and EPathMap map-value/legacy-field coverage.
+The final compatibility/manifest run passes 24/24 selected tests (2.3 GiB peak,
+zero swap, 82.551 seconds including compilation), with receipts in J-203. These are verification
+infrastructure results, not a production decoding speedup or closure of the timeout.
+
 ### 5.29 ParBag family and count-domain completeness [SS-A13, SS-A14, SS-Y9]
 
 #### 5.29.1 The defects

@@ -1335,6 +1335,10 @@ fn par_decode_error(description: impl Into<std::borrow::Cow<'static, str>>) -> D
     DecodeError::new(description)
 }
 
+#[cfg(test)]
+#[path = "../../tests/support/protobuf_par_frozen.rs"]
+mod protobuf_field_oracle;
+
 impl Message for Par {
     fn encode_raw(&self, buf: &mut impl BufMut) {
         self.encode_protobuf(buf)
@@ -1355,6 +1359,14 @@ impl Message for Par {
                 self.merge_protobuf_component(&value)
             }};
         }
+
+        #[cfg(test)]
+        if crate::protobuf_decoder_oracle::enter_decoder() {
+            let mut erased: &mut dyn Buf = buf;
+            return protobuf_field_oracle::merge_field(self, tag, wire_type, &mut erased, ctx);
+        }
+        #[cfg(test)]
+        crate::protobuf_decoder_oracle::assert_successor_body();
 
         match tag {
             1 => merge_component!(Send, crate::rust::rholang::protobuf_decoder::decode_send),

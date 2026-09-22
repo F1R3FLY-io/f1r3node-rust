@@ -3080,6 +3080,10 @@ impl fmt::Debug for EPathMap {
     }
 }
 
+#[cfg(test)]
+#[path = "../../tests/support/protobuf_epathmap_frozen.rs"]
+mod protobuf_field_oracle;
+
 impl prost::Message for EPathMap {
     /// Emit protobuf field 9 from EPM1 through the generated stack-safe encoder.
     fn encode_raw(&self, buf: &mut impl BufMut) {
@@ -3100,6 +3104,13 @@ impl prost::Message for EPathMap {
         /// prost-derive parity: the error-context struct name pushed onto
         /// `DecodeError` paths.
         const STRUCT_NAME: &str = "EPathMap";
+        #[cfg(test)]
+        if crate::protobuf_decoder_oracle::enter_decoder() {
+            let mut erased: &mut dyn Buf = buf;
+            return protobuf_field_oracle::merge_field(self, tag, protobuf_wire_type, &mut erased, ctx);
+        }
+        #[cfg(test)]
+        crate::protobuf_decoder_oracle::assert_successor_body();
         match tag {
             1u32 => {
                 let mut payload = Vec::new();

@@ -1,8 +1,9 @@
 //! # Generated protobuf decoder: semantic and stack-safety differential
 //!
-//! The generated decoder is required to implement the same protobuf state
-//! transition as Prost for every input on which Prost's depth budget does not
-//! intervene. This target checks both sides of that contract:
+//! This target checks compatibility between handwritten Message entry paths
+//! and the generated decoder. Both use production decoding at recursive Par
+//! boundaries; independent decoder execution is tested in the unit-only
+//! protobuf_decoder_oracle support module. This target checks:
 //!
 //! 1. the existing exhaustive `rhoapi` corpus covers every `Expr` and
 //!    `Connective` oneof arm, every `Par` field, `EPathMap`, maps, repeated
@@ -39,17 +40,17 @@ use par_corpus as corpus;
 // separate entry paths over the same protobuf contract. The former is the
 // compatibility oracle now that `.rhoapi.Par` is an external PathMap-backed
 // type and therefore intentionally absent from prost-build's recursive output.
-type RecursivePar = Par;
+type CompatibilityPar = Par;
 
 fn assert_par_decode_equivalent(label: &str, bytes: &[u8]) {
-    let oracle = RecursivePar::decode(bytes);
+    let oracle = CompatibilityPar::decode(bytes);
     let machine = decode_par(bytes);
     match (oracle, machine) {
         (Ok(oracle), Ok(machine)) => {
             assert_eq!(
                 protobuf_encoder::encode_to_vec(&machine),
                 oracle.encode_to_vec(),
-                "{label}: the generated decoder and recursive Prost returned values with \
+                "{label}: the generated decoder and Message entry returned values with \
                  different canonical protobuf encodings"
             );
         }
@@ -58,7 +59,7 @@ fn assert_par_decode_equivalent(label: &str, bytes: &[u8]) {
         // generated whole-schema PDA can reject the same malformed byte at
         // different internal frames. What must be equivalent is the accept
         // set; exact error-stack equality would couple two intentionally
-        // independent parsers without strengthening the wire contract.
+        // entry paths without strengthening this compatibility check.
         (Err(oracle), Err(machine)) => {
             assert!(
                 !oracle.to_string().is_empty(),
@@ -87,11 +88,11 @@ fn assert_valid_par_roundtrip(label: &str, expected: &Par) {
         "{label}: generated decoder changed the valid protobuf byte representation"
     );
 
-    match RecursivePar::decode(bytes.as_slice()) {
+    match CompatibilityPar::decode(bytes.as_slice()) {
         Ok(oracle) => assert_eq!(
             protobuf_encoder::encode_to_vec(&machine),
             oracle.encode_to_vec(),
-            "{label}: decoded value differs from recursive Prost"
+            "{label}: decoded value differs from the Message entry"
         ),
         Err(error) => assert!(
             error.to_string().contains("recursion limit"),
@@ -250,7 +251,7 @@ fn twenty_thousand_levels_decode_and_drop_on_a_small_stack() {
 
     let bytes = nested_not_bytes(depth);
     if depth > 100 {
-        RecursivePar::decode(bytes.as_slice())
+        CompatibilityPar::decode(bytes.as_slice())
             .expect("the repository-owned compatibility decoder is also stack-safe");
     }
 

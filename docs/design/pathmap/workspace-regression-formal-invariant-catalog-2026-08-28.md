@@ -1397,8 +1397,47 @@ component publication and prior-handle preservation.
 | DCC-23 | `bad_framing_mutant_changes_body_extent` | formal wrong-length witness; native full encoded-byte equality |
 
 The final helper is a shared construction primitive, not yet a replacement decoder.
-Task 5834 still requires planned generated decode/merge frames, an independent legacy
-oracle, malformed/error-state refinement and the unchanged full depth-gate rerun.
+Task 5834 still requires planned generated decode/merge frames, malformed/error-state
+refinement and the unchanged full depth-gate rerun. The independent legacy decoder
+execution reference is qualified by the following DOR boundary and J-203.
+
+## Independent decoder execution reference (DOR, task 5834)
+
+`DecoderOracleRouting.v` proves ten routing statements. Its model selects a frozen
+or successor implementation, or refuses successor execution under poison. It does
+not prove either parser correct. Native routing must cover every decoder entry and
+indirect re-entry; that correspondence premise is challenged by independent body
+guards and executable missing-public-guard controls, not assumed from equal output.
+The model treats observations as arbitrary values, so preservation includes errors,
+remaining input and partially merged state without redefining their contents.
+
+The test-only sources live under `models/tests/support/`. **S** denotes
+`routing_scope_restores_nested_state_and_unwind`; **P** denotes
+`successor_poison_is_live_and_legacy_route_bypasses_it`; **D** denotes the descriptor
+corpus; **E** denotes EPathMap map values, legacy fields and mode conflicts;
+**O** denotes root/partial-merge observations and arbitrary-buffer properties;
+**M** denotes the two missing-public-guard controls inside the generated decoder.
+
+| ID | Closed declaration | Native witness / limitation |
+|---|---|---|
+| DOR-01 | `legacy_routes_frozen` | P, D, E; decoder entry counters |
+| DOR-02 | `poisoned_legacy_routes_frozen` | P, D, E under successor poison |
+| DOR-03 | `poison_detects_successor` | P's treatment negative control |
+| DOR-04 | `ordinary_routes_successor` | P; zero frozen entries outside legacy scope |
+| DOR-05 | `scope_restores_exact_state` | S; normal and unwind RAII restoration |
+| DOR-06 | `nested_scope_restores_legacy` | S; nested saved state |
+| DOR-07 | `routing_preserves_observation` | O; exact errors, bytes and input extent |
+| DOR-08 | `closed_reentry_stays_frozen` | D, E plus independent successor-body assertions; coverage remains a native premise |
+| DOR-09 | `disjoint_thread_state` | S; fresh thread does not inherit active legacy scope |
+| DOR-10 | `missing_guard_poison_witness` | M deliberately bypasses public guards before fast import and machine execution |
+
+The frozen reference shares unchanged Bag canonicalization, encoding, hashing,
+PathMap and EPM primitives. Independence applies to decoder execution, not to those
+shared algorithms. Tests retain legacy scope through observations that may decode
+resident components. A borrowed `&mut dyn Buf` bounds frozen-machine monomorphization
+without flattening input or hiding `advance`/`remaining` behavior. The frozen source
+is checked against a pinned digest; it is not regenerated from the treatment schema.
+J-203 records provenance, native qualification and remaining decoder work.
 
 ## Original workspace-regression completion gates
 

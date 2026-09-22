@@ -741,6 +741,10 @@ rocq_reject_placeholders theories/DecodedComponentConstruction.v
 rocq_compile_with_closed_count theories/DecodedComponentConstruction.v 23 \
   "decoded incomplete-component planned construction"
 rocq_check_modules "decoded incomplete-component construction" StackSafePDA.DecodedComponentConstruction
+rocq_reject_placeholders theories/DecoderOracleRouting.v
+rocq_compile_with_closed_count theories/DecoderOracleRouting.v 10 \
+  "test-only frozen decoder routing"
+rocq_check_modules "test-only frozen decoder routing" StackSafePDA.DecoderOracleRouting
 rocq_reject_placeholders theories/DepthProbeClassification.v
 rocq_compile_with_closed_count theories/DepthProbeClassification.v 28 \
   "depth-probe termination classification"
@@ -1020,6 +1024,8 @@ TLC_MEMORY_HIGH=4G TLC_RSS=6G TLC_CPU_QUOTA=400% TLC_TASKS_MAX=512 \
 rholang_run_tests 9 --lib region_slot_tests
 rholang_run_tests 3 --lib new_injection_preserves_
 rpb3_run_tests 9 --lib incomplete_preservation_tests
+rpb3_run_tests 9 --lib protobuf_decoder_oracle::
+rpb3_run_tests 2 --lib oracle_body_guards::
 rpb3_run_tests 1 --release -j4 --features protobuf-projection-experiment --lib incomplete_planning_has_no_resident_finish_events
 rpb3_run_tests 6 --release -j4 --lib collection_collision_elision
 rpb3_run_tests 2 --release -j4 --lib par_construction::tests::ac_

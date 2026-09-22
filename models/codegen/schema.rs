@@ -11145,6 +11145,13 @@ pub fn skip_unknown_field(
     tag: u32,
     buf: &mut impl Buf,
 ) -> Result<(), DecodeError> {
+    #[cfg(test)]
+    if crate::protobuf_decoder_oracle::enter_decoder() {
+        let mut erased: &mut dyn Buf = buf;
+        return crate::protobuf_decoder_oracle::frozen::skip_unknown_field(protobuf_wire_type, tag, &mut erased);
+    }
+    #[cfg(test)]
+    crate::protobuf_decoder_oracle::assert_successor_body();
     // ★ THE EXPLICIT STACK — the tags of the groups currently open, outermost
     // first. This IS prost's recursion, with the frames named: prost's
     // `skip_field(_, tag, _, ctx.enter_recursion())` carries `tag` down the
@@ -11814,6 +11821,8 @@ impl<B: Buf> Machine<B> {
     }
 
     fn run(&mut self) -> Result<(), DecodeError> {
+        #[cfg(test)]
+        crate::protobuf_decoder_oracle::assert_successor_body();
         while let Some(frame) = self.frames.pop() {
             let result = match frame {
                 Frame::Node(node) => self.step_node(node),
@@ -12969,6 +12978,8 @@ fn emit_protobuf_decoder_entries(
         writeln!(
             src,
             "pub fn {function}<B: Buf>(buf: B) -> Result<crate::rhoapi::{ty}, DecodeError> {{\n\
+                 #[cfg(test)]\n\
+                 crate::protobuf_decoder_oracle::route!({function}, buf);\n\
                  {helper}(buf, true)\n\
              }}\n"
         )
@@ -12977,6 +12988,8 @@ fn emit_protobuf_decoder_entries(
             writeln!(
                 src,
                 "pub(crate) fn {deferred}<B: Buf>(buf: B) -> Result<crate::rhoapi::{ty}, DecodeError> {{\n\
+                     #[cfg(test)]\n\
+                     crate::protobuf_decoder_oracle::route!({deferred}, buf);\n\
                      {helper}(buf, false)\n\
                  }}\n"
             )
@@ -13009,6 +13022,8 @@ fn emit_protobuf_decoder_entries(
 
     src.push_str(
         r#"pub fn decode_epath_map<B: Buf>(buf: B) -> Result<EPathMap, DecodeError> {
+    #[cfg(test)]
+    crate::protobuf_decoder_oracle::route!(decode_epath_map, buf);
     let mut machine = Machine::new(
         buf,
         Node::EPathMap {
@@ -13039,16 +13054,29 @@ fn emit_protobuf_decoder_entries(
 }
 
 pub fn decode_par<B: Buf>(buf: B) -> Result<Par, DecodeError> {
+    #[cfg(test)]
+    crate::protobuf_decoder_oracle::route!(decode_par, buf);
     decode_par_with_stats(buf).map(|(value, _stats)| value)
 }
 
 pub(crate) fn decode_par_deferred_epathmap_validation<B: Buf>(buf: B) -> Result<Par, DecodeError> {
+    #[cfg(test)]
+    crate::protobuf_decoder_oracle::route!(decode_par_deferred_epathmap_validation, buf);
     decode_par_with_epathmap_validation(buf, false).map(|(value, _stats)| value)
 }
 
 pub fn decode_par_with_stats<B: Buf>(
     buf: B,
 ) -> Result<(Par, DecodeStats), DecodeError> {
+    #[cfg(test)]
+    if crate::protobuf_decoder_oracle::enter_decoder() {
+        let mut erased = buf;
+        return crate::protobuf_decoder_oracle::frozen::decode_par_with_stats(&mut erased as &mut dyn Buf)
+            .map(|(value, stats)| (value, DecodeStats {
+                max_frames: stats.max_frames,
+                max_values: stats.max_values,
+            }));
+    }
     decode_par_with_epathmap_validation(buf, true)
 }
 
@@ -13056,6 +13084,8 @@ fn decode_par_with_epathmap_validation<B: Buf>(
     buf: B,
     validate_epathmaps: bool,
 ) -> Result<(Par, DecodeStats), DecodeError> {
+    #[cfg(test)]
+    crate::protobuf_decoder_oracle::assert_successor_body();
     // Exact canonical recursive shapes with a byte-native proof can be
     // imported directly as one authoritative ParBag endpoint. Reconstructing
     // every nested Par would copy, hash, and discard all encoded suffixes,
@@ -13109,6 +13139,11 @@ fn decode_par_with_epathmap_validation<B: Buf>(
             panic!("protobuf decoder invariant: expected Par, found {found}");
         }
     }
+}
+
+#[cfg(test)]
+mod oracle_body_guards {
+    include!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/support/protobuf_decoder_body_guards.rs"));
 }
 
 "#,

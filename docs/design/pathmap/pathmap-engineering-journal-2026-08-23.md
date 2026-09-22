@@ -15238,6 +15238,100 @@ for backfill under existing task IDs, not new or falsely updated tracker records
 | `native-r2.log` | 6d07e9e9b6ba91d4b730ff61f7ff5cf3d5f2b843a40ede217df4bc71745a5bc6 |
 | `native-r3.log` | 8cfd790fe8e83d475046ce83ccac45305ff71607fdcceac3a4ebd71093305341 |
 
+### J-203 — 2026-09-21 Freeze an independent decoder execution reference
+
+**Decision and scope.** Existing task 5834 needs an independent predecessor before
+the generated decoder changes nested resident construction. J-201 identified that
+the old integration differential's `RecursivePar = Par` alias re-entered production
+decoding. It is now named `CompatibilityPar`, and its presentation explicitly limits
+the claim to entry-path compatibility. The new reference freezes decoder execution,
+not shared Bag canonicalization, score/hash algorithms, encoding, PathMap or EPM
+primitives. Those shared dependencies must remain unchanged during this decoder
+migration; changing one requires revisiting the reference boundary.
+
+The reviewed choice is the emitted pre-treatment PDA plus handwritten Par/EPathMap
+field adapters, stored only under `models/tests/support/`. Separate Prost wire types
+followed by conversion were rejected as the primary reference: delayed conversion
+would move canonicalization/mode errors relative to later wire fields, changing
+remaining input and committed merge state. Freezing the existing output avoids
+depending on an evolving emitter. The original generated header remains historical
+source content: **this checked-in snapshot must not be regenerated with treatment**.
+
+**Provenance.** The 8,706-line, 372,526-byte decoder was captured from the verified
+`fd03054f9` baseline's emitted `rhoapi_protobuf_decoder.rs`, before test guards were
+added. Its SHA-256 is
+`9b47784f40096e11d3185a9a2d01a8b4b27beef4184f844ca1f90c81ec6bc69c`.
+The manifest pins its full BLAKE2b-512 digest. Field adapters preserve the baseline
+dispatch and errors with only receiver/path qualification and formatting changes;
+the Par length-delimited field helper is frozen too. No new dependency, format,
+resident type, feature, or normal-build decoder behavior is introduced.
+
+**Formal-first boundary.** `DecoderOracleRouting.v` compiled with ten closed
+declarations and passed independent kernel checking before the native routing code
+was added. The accepted proof run took 12.516 seconds, peaked at 242.1 MiB under a
+2 GiB cap and used zero swap. Two initial proof elaboration errors are retained as
+negative receipts. The DOR table in the invariant catalog binds every declaration.
+This small model proves routing/restoration rules, not protobuf parser correctness
+or Rust thread-local implementation semantics.
+
+**Independence mechanism.** A test-only thread-local scope redirects all generated
+public/deferred decoder entries and handwritten Par/EPathMap field dispatch to the
+frozen implementation. This also closes indirect re-entry from canonical-key and
+EPM map-value validation. RAII restores routing on normal return and unwind; another
+thread does not inherit the scope. Oracle boundaries borrow `&mut dyn Buf` instead
+of flattening bytes, retaining fragmented-buffer behavior while avoiding one frozen
+machine monomorphization per input wrapper. The scope remains active during output
+observations that may read resident Bag components.
+
+The first review caught a mechanically renamed receiver shadowed by a decoded local;
+the compiler rejected it before any test ran. A second review found that entry poison
+alone would miss a missing entry guard, and that initial EPathMap fixtures covered
+sets but not map values. Independent assertions now protect successor machine bodies,
+the canonical fast importer, handwritten adapters and unknown-field skipping.
+Two deliberate public-guard bypasses must trigger the exact body assertion. Map-mode
+fixtures contain non-fast nested Send keys/values and legacy fields 1/8, including
+mode conflicts. Public `Par::decode` is observed explicitly as well as generated root,
+ordinary merge and length-delimited merge entry points.
+
+**Observed baseline quirk (MEASURED).** Generated `decode_par`'s successful canonical
+fast import leaves a borrowed input buffer unadvanced. The handwritten `Par::decode`
+entry consumes its corresponding message. A named test preserves both observations
+without normalizing the input; any successor correction must be explicit and justified,
+not disguised as equivalence. This is local decoder behavior, not an Internet error.
+
+**Qualification.** Expanded run r3 passes 10/10 selected tests with 1,024 seeded
+arbitrary-buffer cases: exact errors, remaining input, partial merge bytes/compact
+images, descriptor corpus, EPathMap truncations, routing restoration and both body
+mutants. The service took 77.191 seconds including compilation, peaked at 2 GiB under
+an 8 GiB cap and used zero swap. The added repeated-field/oneof/group and frozen-digest
+manifest witnesses pass in final run r4 together with the existing decoder compatibility
+and unknown-group regressions: **24/24 selected tests**, 608 excluded, 25.375-second
+test phase and 82.551-second service including compilation. Peak memory was 2.3 GiB
+under the same 8 GiB cap, zero swap and four-core quota. This is not a full workspace
+run or a benchmark. The plan agent confirmed the corrected source boundary without
+additional necessary changes. No consensus register entry is required for this
+test-only increment: production bytes, hashes, matching and persistence are unchanged.
+
+| Artifact under `target/verification/decoder-oracle-5834/` | SHA-256 |
+|---|---|
+| `coqc-r3.log` (10 closed declarations) | f990327820c7e0de2c2185fa0c21ec662d961c689506a2b21b1afe9a2f285d04 |
+| `coqchk-r3.log` (silent success; exit 0) | e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 |
+| `native-r3.log` (10/10) | 69a7b65124458ea4ce8b33b5f61fc041cbff0f5b6016fa6efa25f33c31c46696 |
+| `native-r4.log` (24/24) | 1ca8f71eced1864006fab21edaef7da14241e52ad2f7d49fe3462394649d31a9 |
+
+Final theory SHA-256:
+`e08e399ef3bba2c1aac6ed3aba5942646e7eee0f7ca73ec35b202a441a04a3db`.
+Frozen field-adapter SHA-256 values are
+`f90fb996ec71e83259f670b344b5c0f8eb11abd4673224cc322fbe8649ccea51` (Par)
+and `a949323c56907023a4c04bc84bb4516bcc32e28d3faa68e4835a9843eecbefdc`
+(EPathMap).
+
+**Remaining work.** This checkpoint is test infrastructure, not the decoder performance
+repair. Replace nested resident construction with general planned handles while
+preserving merge/error/remaining-input contracts, then rerun the unchanged full depth
+gate. Task 5834, its dependent 5917 and the campaign remain open. PgMCP tools remain
+absent from this session; these receipts await backfill under those existing IDs.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

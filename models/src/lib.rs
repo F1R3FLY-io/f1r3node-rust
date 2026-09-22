@@ -132,6 +132,10 @@ pub(crate) mod rhoapi_recursive_oracle {
     include!(concat!(env!("OUT_DIR"), "/rhoapi_recursive_oracle.rs"));
 }
 
+#[cfg(test)]
+#[path = "../tests/support/protobuf_decoder_oracle.rs"]
+pub(crate) mod protobuf_decoder_oracle;
+
 pub mod rholang_scala_rust_types {
     include!(concat!(env!("OUT_DIR"), "/rholang_scala_rust_types.rs"));
 }

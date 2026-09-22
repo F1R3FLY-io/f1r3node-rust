@@ -1160,6 +1160,39 @@ fn decoded_component_construction_has_proof_and_native_witnesses() {
         "--features", "protobuf-projection-experiment", "--lib", "incomplete_planning_has_no_resident_finish_events"]));
 }
 
+#[test]
+fn frozen_decoder_oracle_has_provenance_proof_and_native_bindings() {
+    use blake2::{Blake2b512, Digest};
+    let baseline = include_bytes!("support/protobuf_decoder_frozen.rs");
+    assert_eq!(format!("{:x}", Blake2b512::digest(baseline)),
+        "0345508b4e4ee4002f5b17cdb0adc143186fd78cb11846bd733d67ec8940919daac48097e7dafff4cec6e81422d01589ae0e032af198f3c4f9db5c5316f0c10f");
+    let theory = read_repository_file("formal/rocq/stack_safe_pda/theories/DecoderOracleRouting.v");
+    for theorem in ["legacy_routes_frozen", "poisoned_legacy_routes_frozen",
+        "poison_detects_successor", "ordinary_routes_successor", "scope_restores_exact_state",
+        "nested_scope_restores_legacy", "routing_preserves_observation", "closed_reentry_stays_frozen",
+        "disjoint_thread_state", "missing_guard_poison_witness"] {
+        assert!(theory.contains(&format!("Print Assumptions {theorem}.")));
+    }
+    let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
+    assert!(has_runner_command(&runner, &["rocq_compile_with_closed_count", "theories/DecoderOracleRouting.v", "10"]));
+    assert!(has_runner_kernel_check(&runner, &["StackSafePDA.DecoderOracleRouting"]));
+    assert!(has_runner_command(&runner, &["rpb3_run_tests", "9", "--lib", "protobuf_decoder_oracle::"]));
+    assert!(has_runner_command(&runner, &["rpb3_run_tests", "2", "--lib", "oracle_body_guards::"]));
+    assert!(read_repository_file("formal/rocq/stack_safe_pda/_CoqProject").lines()
+        .any(|line| line == "theories/DecoderOracleRouting.v"));
+    let controller = read_repository_file("models/tests/support/protobuf_decoder_oracle.rs");
+    for witness in ["routing_scope_restores_nested_state_and_unwind", "successor_poison_is_live_and_legacy_route_bypasses_it",
+        "descriptor_corpus_routes_all_generated_decoders_independently", "root_and_partial_merge_observations_match_frozen_reference",
+        "late_failure_preserves_committed_fields_and_exact_error", "epathmap_adapter_and_indirect_value_decoders_are_isolated",
+        "arbitrary_buffers_preserve_root_merge_and_consumption", "canonical_fast_import_retains_baseline_borrowed_input_observation",
+        "repeated_fields_oneof_replacement_and_groups_preserve_observations"] {
+        assert!(controller.contains(&format!("fn {witness}(")));
+    }
+    let guards = read_repository_file("models/tests/support/protobuf_decoder_body_guards.rs");
+    assert!(guards.contains("fn missing_public_guard_is_detected_before_canonical_fast_import("));
+    assert!(guards.contains("fn missing_public_guard_is_detected_before_machine_execution("));
+}
+
 fn read_repository_file(relative: &str) -> String {
     let path = repository_root().join(relative);
     std::fs::read_to_string(&path)
