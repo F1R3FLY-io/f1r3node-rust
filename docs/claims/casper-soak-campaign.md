@@ -51,7 +51,11 @@ The helper must require the declared workload and qualification identities to ag
 
 The resulting plan must retain `requires-external-checks` admission. Supplied qualification declarations do not establish successful live qualification.
 
-The planner supports the `current-dev-load` workload declaration. That legacy declaration does not satisfy the missing Casper-profile requirements.
+The planner supports `casper-authority-finality` for `pre_pr216_merge`. Its only required capability is `authority_finality`.
+
+The plan and workload explicitly defer `publication` and `recovery` to `post_pr216_merge`. Qualification must record both deferred capabilities as pending.
+
+The planner also supports the `current-dev-load` declaration for planning. That legacy declaration cannot satisfy Casper execution admission.
 
 ### C4: Full workload window
 
@@ -85,7 +89,11 @@ Exactly one unexpired result artifact must match the prior run. Its retained arc
 
 The archive must contain exactly one regular result file. Its bounded JSON record must match the campaign identity and the expected stage and candidate.
 
-The prior record must declare successful cleanup and host protection. A baseline record must declare at least 86,400 elapsed workload seconds and passing required profiles.
+The prior record must declare successful cleanup and host protection. A baseline record must declare at least 86,400 elapsed workload seconds and passing authority/finality.
+
+Every prior record must retain the pre-merge phase and exact profile scope. Publication and recovery verdicts must remain explicitly pending.
+
+A missing deferred verdict, a claimed deferred pass, or a changed phase must block advancement.
 
 Failed, incomplete, mismatched, expired, malformed, or unavailable evidence must block advancement. The command must retain download failures and rejected evidence.
 

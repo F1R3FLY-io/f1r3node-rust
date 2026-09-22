@@ -136,6 +136,14 @@ The independent node claim [CLAIM-FINALITY-002](../claims/repeat-deploy-carrier-
 
 PR #216's merge is not a blocker for this phase. Optional candidate experiments remain separate from baseline evidence.
 
+The user confirmed the merge order on 2026-09-22: this branch merges first, then PR #216 integrates.
+
+Occurrence-dependent publication and recovery qualification belong to EPIC-018 after that integration. These obligations do not block this branch on PR #216.
+
+Campaign admission now requires authority/finality for the pre-merge phase. Publication and recovery qualification remain explicitly pending for EPIC-018.
+
+Deferred qualification remains pending. A deferred profile cannot contribute a passing verdict, and signature identities cannot replace occurrence identities.
+
 ## Approved implementation sequence
 
 On 2026-09-17, the user approved profile implementation alongside unfinished common-driver bindings. TASK-017-4 and TASK-017-5 through TASK-017-11 no longer wait for each other.

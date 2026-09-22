@@ -29,6 +29,7 @@ bash "$root/scripts/casper-soak/campaign.sh" plan "$root" "$request" > "$out/pla
 case "$(jq -er .stage "$out/plan.json")" in
   preflight) selection=campaign-preflight ;;
   baseline) selection=campaign-baseline-24h ;;
+  stability) selection=campaign-stability-60h ;;
   *) exit 2 ;;
 esac
 [[ "${CAMPAIGN_SELECTION:-}" == "$selection" ]] || exit 2

@@ -510,7 +510,7 @@ jobs:
     needs: campaign_launch
     if: needs.campaign_launch.outputs.runner_label != ''
     runs-on: [self-hosted, '${{ needs.campaign_launch.outputs.runner_label }}']
-    timeout-minutes: ${{ inputs.duration == 'campaign-preflight' && 240 || 1560 }}
+    timeout-minutes: ${{ inputs.duration == 'campaign-preflight' && 240 || inputs.duration == 'campaign-stability-60h' && 3840 || 1560 }}
     permissions:
       contents: read
       actions: read

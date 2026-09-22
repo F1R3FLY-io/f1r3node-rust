@@ -148,3 +148,99 @@ The strict eight-claim audit still returns exit 4. Claim001 and the campaign cla
 The [source coverage report](../casper/cbc-evidence/runs/casper-campaign-source-coverage-20260921-01/report.json) records dependency inventories, source hashes, results, and failed attempts. Three pending artifact records now identify the corrected sources.
 
 The earlier hosted run covers `8adaa235c`, not the correction. Fresh hosted verification and the existing deployment and node prerequisites remain required.
+
+
+## Restart checkpoint: 2026-09-22
+
+The current base is `515a011598c9db66ff5a1b2b014b2a2894f7c409`. Local stability controls and the snapshot fixture correction remain uncommitted.
+
+The user authorized both architectures for the later campaign. Each architecture receives one 64 GB runner with a 64-hour maximum lifetime.
+
+The controller requires both full 24-hour baselines to pass before either 60-hour workload. It also requires confirmed baseline termination and exact prior run identifiers.
+
+Five durable slots cover one preflight, two baselines, and two stability runners. Consumed slots cannot be reused or replaced.
+
+The authoritative object uses schema version 2. Version 1 and incomplete slot sets fail validation. No deployment or migration occurred.
+
+The user directed publication qualification to wait for the actual PR #216 merge. Signature-keyed records cannot replace occurrence records.
+
+PR #216 remains open at `619beb4a4a7ad3f8967d4586daf0f5c552bd150e`. This branch must merge before PR #216 integrates.
+
+The phase correction below replaces unconditional publication admission. It preserves the approved merge order.
+
+The local [stability report](../casper/cbc-evidence/runs/casper-campaign-stability-20260922-01/report.json) retains source hashes, test logs, model traces, and failure evidence.
+
+The final gate passed 115 planner checks, 48 Rust tests, and six model configurations. All 51 source hashes match before and after verification.
+
+The new model control detects incomplete prerequisites. The tests reject failed baselines, changed resources, reused run identifiers, incomplete records, and shortened workload coverage.
+
+Targeted Clippy and workflow checks passed. The strict eight-claim audit returns exit 4, with Claim001 pending. Campaign claims remain pending separately.
+
+The Batch B1 snapshot tests passed: 24 capture tests and 19 reader tests. The fixture now resolves its temporary directory before comparing storage identities.
+
+The retained first attempt failed because sandbox access blocked LMDB. The second attempt exposed three macOS path comparisons involving `/var` and `/private/var`.
+
+The correction changes only the test fixture. Native tests do not provide isolated-build evidence, formal acceptance, or live adapter qualification.
+
+[Hosted run 35736460538](https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/35736460538) passed at the committed base. That run does not cover these local stability changes.
+
+The user will load the updated GitHub credential and restart Codex. This process cannot verify the replacement credential before that restart.
+
+### Work after restart
+
+1. Verify that the new credential can read repository roles.
+2. Review and publish the local changes through the requested Git procedure.
+3. Run hosted verification for the published stability revision.
+4. Complete the source-bound Batch B1 review and the Batch B2 observer prerequisites.
+5. Review the verified pre-merge admission scope and its explicit deferred profiles.
+6. Complete the node claim evidence and named maintainer acceptance.
+7. Review PR #447 and the dependent PR #436 target sequence.
+8. Refresh the campaign model inventory and workload pins before candidate qualification.
+9. Qualify both candidate images and all required live adapters.
+10. Provision and qualify the authoritative object, access policy, supervisor, and timing bounds.
+11. Verify workflow evidence delivery across the full 24-hour and 60-hour workloads.
+12. After all admission requirements pass, run the separate preflight and both full baselines.
+13. After both baselines pass and terminate, run both approved stability workloads.
+14. Complete this branch review and merge through the approved Git procedure.
+15. After this branch merges, integrate PR #216.
+16. Under EPIC-018, review Batch C and qualify publication and recovery against actual occurrence records.
+
+The candidate matrix remains non-dispatchable. Its earlier campaign model hashes require review against the six current configurations before final pinning.
+
+Items 2 and 3 from the branch review remain incomplete overall. The admission phase mismatch is corrected. PR #216 is not a branch prerequisite.
+
+Credential verification requires the restart. Occurrence-dependent qualification remains pending for EPIC-018.
+
+No node, runner, remote configuration, commit, push, or claim acceptance occurred in this checkpoint.
+
+
+## Merge-order correction
+
+The previous response incorrectly treated deferred publication qualification as a prerequisite for this branch. The user corrected that interpretation.
+
+The approved order is this branch first, then PR #216 integration, then occurrence-dependent qualification under EPIC-018.
+
+The plan, task tracker, and restart checklist now preserve that order. The implementation checkpoint below supplies the corresponding phase distinction.
+
+This correction changes records only. It does not bypass admission, alter recorded test results, or report deferred qualification as passed.
+
+
+## Phase correction implementation
+
+The user authorized the admission correction. Pre-merge execution now accepts the qualified `casper-authority-finality` workload and requires passing authority/finality results.
+
+Plans, workloads, and qualification records explicitly defer publication and recovery to `post_pr216_merge`. The controller checks the phase and profile scope before reservation.
+
+Passing worker reports must retain pending publication and recovery verdicts. The finalizer preserves these verdicts. Prior-run checks enforce them before baseline or stability advancement.
+
+The controller rejects combined publication workloads, legacy load execution, missing deferrals, changed phases, and claimed deferred passes. No occurrence identities are inferred from signatures.
+
+The [phase correction report](../casper/cbc-evidence/runs/casper-campaign-phase-20260922-01/report.json) records 133 planner checks, 51 Rust tests, and six model configurations.
+
+The two new phase regressions failed before correction. The final gate, targeted Clippy, and formatting checks passed after correction.
+
+The first standalone planner attempt failed because the sandbox denied a fixture write to `/dev/stdout`. The complete gate passed outside that sandbox.
+
+The candidate matrix remains non-dispatchable. Live authority qualification, workload pins, node review, source acceptance, deployment qualification, and actual campaign execution remain incomplete.
+
+No hosted run covers this local correction yet. No node, cloud runner, remote configuration, commit, or push occurred.

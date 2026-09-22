@@ -302,13 +302,17 @@
     "The refreshed campaign model and configuration inventory requires source-bound acceptance.",
     "The campaign execution path requires hosted and deployed qualification.",
     "The approval environment, authoritative object, and lifetime supervisor remain unconfigured.",
-    "Recovery qualification waits for the actual PR #216 merge under D-07 Reading A.",
     "B44 containment remains open."
   ],
   "post_merge_gate": {
     "actual_pr216_merge_revision": null,
     "selected_dev_revision": null,
-    "accepted_handoff": false
+    "accepted_handoff": false,
+    "qualification_scope": [
+      "publication",
+      "recovery"
+    ],
+    "merge_order": "This branch merges before PR #216 integrates."
   },
   "latest_identity_review": {
     "report": "docs/casper/cbc-evidence/runs/casper-campaign-control-20260921-01/report.json",
@@ -317,5 +321,12 @@
     "harness_working_tree": true,
     "executable_workload_pins_complete": false,
     "dispatch_authorized": false
+  },
+  "required_profiles": [
+    "authority_finality"
+  ],
+  "deferred_profiles": {
+    "publication": "post_pr216_merge",
+    "recovery": "post_pr216_merge"
   }
 }

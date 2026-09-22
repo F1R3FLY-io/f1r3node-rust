@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 
 pub const DIRECTORY: &str = "formal/tlaplus/casper_soak/campaign";
 pub const JAR_SHA256: &str = "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88";
-pub const CONTROLS: [(&str, Option<&str>, Option<&str>); 5] = [
+pub const CONTROLS: [(&str, Option<&str>, Option<&str>); 6] = [
     ("MC_CampaignControl.cfg", None, None),
     (
         "MC_CampaignControl_approval_unsafe.cfg",
@@ -32,12 +32,17 @@ pub const CONTROLS: [(&str, Option<&str>, Option<&str>); 5] = [
         Some("ConfirmedCleanup"),
         Some("BreakTermination"),
     ),
+    (
+        "MC_CampaignControl_prerequisites_unsafe.cfg",
+        Some("PriorStagesPassed"),
+        Some("BreakPrerequisites"),
+    ),
 ];
 
 pub fn registration() -> Value {
     json!({"schema_version":1,"scope":"bounded-campaign-control-refutation",
         "model":"CampaignControl.tla","tlc_sha256":JAR_SHA256,
-        "properties":["TypeOK","OneSubmission","AuthorizedLaunch","ScheduledLaunch","ConfirmedCleanup","PreservedFailure"],
+        "properties":["TypeOK","OneSubmission","AuthorizedLaunch","ScheduledLaunch","ConfirmedCleanup","PreservedFailure","PriorStagesPassed"],
         "controls":CONTROLS.iter().map(|(name, property, knob)| json!({
             "configuration":name,"property":property,"knob":knob,
             "expected_exit":if property.is_some(){12}else{0}})).collect::<Vec<_>>()})
@@ -50,13 +55,14 @@ pub fn configuration(knob: Option<&str>) -> String {
         "BreakApproval",
         "BreakSchedule",
         "BreakTermination",
+        "BreakPrerequisites",
     ] {
         body.push_str(&format!(
             "  {name} = {}\n",
             if knob == Some(name) { "TRUE" } else { "FALSE" }
         ));
     }
-    body.push_str("INVARIANTS TypeOK OneSubmission AuthorizedLaunch ScheduledLaunch ConfirmedCleanup PreservedFailure\nCHECK_DEADLOCK FALSE\n");
+    body.push_str("INVARIANTS TypeOK OneSubmission AuthorizedLaunch ScheduledLaunch ConfirmedCleanup PreservedFailure PriorStagesPassed\nCHECK_DEADLOCK FALSE\n");
     body
 }
 

@@ -38,6 +38,7 @@ artifacts:
   - formal/tlaplus/casper_soak/campaign/MC_CampaignControl_reservation_unsafe.cfg
   - formal/tlaplus/casper_soak/campaign/MC_CampaignControl_schedule_unsafe.cfg
   - formal/tlaplus/casper_soak/campaign/MC_CampaignControl_termination_unsafe.cfg
+  - formal/tlaplus/casper_soak/campaign/MC_CampaignControl_prerequisites_unsafe.cfg
   - formal/tlaplus/casper_soak/campaign/verification-plan.jsonc
   - formal/tlaplus/casper_soak/campaign/README.md
 ```
@@ -48,13 +49,25 @@ The controller must authenticate the exact request digest, control revision, con
 
 The approving account must have the current `maintain` or `admin` repository role. Ordinary write access is insufficient. Self-review and administrator bypass must be disabled.
 
-One trusted OCI Object Storage record must contain the complete three-slot budget. Every write must compare the current entity tag. Missing state must block execution.
+One trusted OCI Object Storage record must contain the complete five-slot budget. Every write must compare the current entity tag. Missing state must block execution.
+
+The user authorized two stability runners on 2026-09-22. Each architecture receives one 64 GB runner for 216,000 workload seconds within 230,400 lifetime seconds.
+
+Both baseline slots must contain passing results and confirmed termination before either stability reservation. Requests must identify the exact preflight and both baseline runs.
+
+The five slots permit one preflight, two baselines, and two stability launches. A consumed slot cannot be replaced or reused.
 
 A consumed slot must remain consumed after a crash, ambiguous write, failed launch, or lost response. No operation may reset, refund, replace, or repeat a launch.
 
 The controller must persist submission intent before its single Compute launch call. Transport retries must be disabled. Recovery must observe the existing instance without another launch.
 
 The controller must bind the boot image, container image, executable, architecture, memory, workload, and exclusive runner identity before workload admission.
+
+Pre-merge admission requires the qualified `casper-authority-finality` workload. The plan must require authority/finality and defer publication and recovery to EPIC-018.
+
+Passing worker results must contain passing authority/finality and pending publication and recovery verdicts. Missing scope, changed phase, and claimed deferred passes must fail.
+
+The result means that the required pre-merge scope passed. It does not qualify deferred profiles or require PR #216 before this branch.
 
 The supervisor must read deadlines from trusted storage. Individual deadline schedules must invoke the pinned OCI Function before launch is permitted.
 
@@ -70,7 +83,7 @@ Late or failed workload evidence must retain authenticated product failures. Mis
 
 ## Verification gate
 
-The [campaign gate](../../scripts/casper-soak/check-campaign-control.sh) executes controller fixtures, local reservation tests, planner regressions, and all five model configurations.
+The [campaign gate](../../scripts/casper-soak/check-campaign-control.sh) executes controller fixtures, local reservation tests, planner regressions, and all six model configurations.
 
 The [verification plan](../../formal/tlaplus/casper_soak/campaign/verification-plan.jsonc) binds each negative configuration to one required invariant. Unexpected exits, missing traces, and incomplete positive searches fail.
 

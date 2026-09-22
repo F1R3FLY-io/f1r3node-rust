@@ -1,0 +1,8 @@
+{
+  "scope": "isolated-linux",
+  "exit_code": 0,
+  "status": "passed",
+  "node_launches": 0,
+  "cloud_launches": 0,
+  "claim_discharge": "pending"
+}

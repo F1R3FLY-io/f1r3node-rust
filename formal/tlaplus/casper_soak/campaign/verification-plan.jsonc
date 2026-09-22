@@ -9,7 +9,8 @@
     "AuthorizedLaunch",
     "ScheduledLaunch",
     "ConfirmedCleanup",
-    "PreservedFailure"
+    "PreservedFailure",
+    "PriorStagesPassed"
   ],
   "controls": [
     {
@@ -40,6 +41,12 @@
       "configuration": "MC_CampaignControl_termination_unsafe.cfg",
       "property": "ConfirmedCleanup",
       "knob": "BreakTermination",
+      "expected_exit": 12
+    },
+    {
+      "configuration": "MC_CampaignControl_prerequisites_unsafe.cfg",
+      "property": "PriorStagesPassed",
+      "knob": "BreakPrerequisites",
       "expected_exit": 12
     }
   ]

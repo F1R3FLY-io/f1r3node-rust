@@ -1,0 +1,30 @@
+   Compiling casper-soak v0.1.0 (/Users/jeff/src/CurrentProjects/FF/f1r3node-rust/scripts/casper-soak)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.85s
+     Running tests/campaign_control.rs (target/debug/deps/campaign_control-4d94b942cceadd5d)
+
+running 2 tests
+test premerge_dispatch_rejects_a_changed_phase_or_profile_scope ... FAILED
+test premerge_results_require_authority_and_explicit_pending_occurrence_profiles ... FAILED
+
+failures:
+
+---- premerge_dispatch_rejects_a_changed_phase_or_profile_scope stdout ----
+
+thread 'premerge_dispatch_rejects_a_changed_phase_or_profile_scope' (21456486) panicked at scripts/casper-soak/tests/campaign_control.rs:1068:9:
+phase
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- premerge_results_require_authority_and_explicit_pending_occurrence_profiles stdout ----
+
+thread 'premerge_results_require_authority_and_explicit_pending_occurrence_profiles' (21456487) panicked at scripts/casper-soak/tests/campaign_control.rs:1044:5:
+assertion failed: campaign_control::results::validate_worker(&fake.config, &slot, &result,
+        fake.now).is_ok()
+
+
+failures:
+    premerge_dispatch_rejects_a_changed_phase_or_profile_scope
+    premerge_results_require_authority_and_explicit_pending_occurrence_profiles
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 27 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p casper-soak --test campaign_control`

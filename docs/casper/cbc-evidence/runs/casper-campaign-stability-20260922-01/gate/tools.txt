@@ -1,0 +1,12 @@
+rustc 1.95.0-nightly (6efa357bf 2026-02-08)
+cargo 1.95.0-nightly (fe2f314ae 2026-01-30)
+openjdk version "26.0.2.1" 2026-08-18
+OpenJDK Runtime Environment Homebrew (build 26.0.2.1)
+OpenJDK 64-Bit Server VM Homebrew (build 26.0.2.1, mixed mode, sharing)
+timeout (GNU coreutils) 9.12
+Copyright (C) 2026 Free Software Foundation, Inc.
+License GPLv3+: GNU GPL version 3 or later <https://gnu.org/licenses/gpl.html>.
+This is free software: you are free to change and redistribute it.
+There is NO WARRANTY, to the extent permitted by law.
+
+Written by Padraig Brady.

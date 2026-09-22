@@ -169,7 +169,7 @@ EOF
 chmod +x "$OUT/api-tools/gh"
 bash "$HELPER" plan "$FIXTURE" "$OUT/dispatch-request.json" > "$OUT/dispatch-plan.json"
 jq -n --arg revision "$REV" '{id:101,run_attempt:1,path:".github/workflows/merge-recovery-soak.yml",repository:{full_name:"F1R3FLY-io/f1r3node-rust"},head_sha:$revision,event:"workflow_dispatch",status:"completed",conclusion:"success"}' > "$OUT/api/run.json"
-jq -n --slurpfile p "$OUT/dispatch-plan.json" '{schema_version:1,run_id:"101",run_attempt:1,repository:"F1R3FLY-io/f1r3node-rust",plan:($p[0]+{stage:"preflight",duration_seconds:0}),admission:"admitted",result:"passed",evidence_kind:"node_observation",cloud_launch_count:1,node_launch_count:1,cleanup:{complete:true},host_protection:{status:"passed"},integration_preflight:"passed"}' > "$OUT/api/campaign-result.json"
+jq -n --slurpfile p "$OUT/dispatch-plan.json" '{schema_version:1,run_id:"101",run_attempt:1,repository:"F1R3FLY-io/f1r3node-rust",plan:($p[0]+{stage:"preflight",duration_seconds:0}),admission:"admitted",result:"passed",evidence_kind:"node_observation",cloud_launch_count:1,node_launch_count:1,cleanup:{complete:true},host_protection:{status:"passed"},integration_preflight:"passed",profile_verdicts:{authority_finality:"passed",publication:"pending",recovery:"pending"}}' > "$OUT/api/campaign-result.json"
 pack_result() {
   local zipfile
   zipfile="$(mktemp "$OUT/api/archive-XXXXXX.zip")"
@@ -203,9 +203,9 @@ for entry in 'fixture|.evidence_kind="synthetic_fixture"' 'not_passed|.result="n
 done
 cp "$OUT/api/result-original.json" "$OUT/api/campaign-result.json"
 pack_result
-jq '.plan.stage="baseline" | .plan.duration_seconds=86400 | .workload_elapsed_seconds=86400 | .soak_verdict="passed" | .measurement_completeness="complete" | .profile_verdicts={authority_finality:"passed",publication:"passed"}' "$OUT/api/result-original.json" > "$OUT/baseline-result.json"
+jq '.plan.stage="baseline" | .plan.duration_seconds=86400 | .workload_elapsed_seconds=86400 | .soak_verdict="passed" | .measurement_completeness="complete" | .profile_verdicts={authority_finality:"passed",publication:"pending",recovery:"pending"}' "$OUT/api/result-original.json" > "$OUT/baseline-result.json"
 expect baseline_record 0 bash "$HELPER" prior "$OUT/dispatch-plan.json" "$OUT/api/run.json" "$OUT/baseline-result.json" baseline dev-amd64
-for entry in 'short|.workload_elapsed_seconds=86399' 'preflight_subtracted|.plan.duration_seconds=79200' 'missing_time|del(.workload_elapsed_seconds)' 'missing_measurements|.measurement_completeness="incomplete"' 'product_failure|.profile_verdicts.publication="product_failure"' 'missing_profile|del(.profile_verdicts.authority_finality)' 'no_verdict|del(.soak_verdict)'; do
+for entry in 'short|.workload_elapsed_seconds=86399' 'preflight_subtracted|.plan.duration_seconds=79200' 'missing_time|del(.workload_elapsed_seconds)' 'missing_measurements|.measurement_completeness="incomplete"' 'product_failure|.profile_verdicts.publication="product_failure"' 'missing_profile|del(.profile_verdicts.authority_finality)' 'no_verdict|del(.soak_verdict)' 'false_publication_pass|.profile_verdicts.publication="passed"' 'false_recovery_pass|.profile_verdicts.recovery="passed"' 'missing_deferred|del(.profile_verdicts.recovery)' 'postmerge|.plan.phase="post_pr216_merge"' 'missing_scope|del(.plan.deferred_profiles)' 'changed_scope|.plan.required_profiles=[]'; do
   name="${entry%%|*}"; filter="${entry#*|}"
   jq "$filter" "$OUT/baseline-result.json" > "$OUT/short-result.json"
   expect "baseline_$name" 2 bash "$HELPER" prior "$OUT/dispatch-plan.json" "$OUT/api/run.json" "$OUT/short-result.json" baseline dev-amd64
@@ -291,5 +291,33 @@ zip -q -y -j "$OUT/api/symlink.zip" "$OUT/api/symlink-archive/campaign-result.js
 cp "$OUT/api/symlink.zip" "$OUT/api/result.zip"
 jq --arg digest "sha256:$(hash "$OUT/api/result.zip")" --argjson size "$(stat -c %s "$OUT/api/result.zip")" '.artifacts[0].digest=$digest | .artifacts[0].size_in_bytes=$size' "$OUT/api/artifacts-original.json" > "$OUT/api/artifacts.json"
 expect prior_symlink_member 2 bash "$HELPER" dispatch "$FIXTURE" "$OUT/request-baseline-amd64.json" campaign-baseline-24h "$OUT/prior-symlink-member"
+jq -n --arg suite "$SUITE" --arg digest "$DIGEST" '{schema_version:1,phase:"pre_pr216_merge",profile_id:"casper-authority-finality",external_harness_revision:$suite,required_capabilities:["authority_finality"],deferred_profiles:{publication:"post_pr216_merge",recovery:"post_pr216_merge"},entrypoint:{path:"fixture.sh",sha256:$digest},providers:["docker"],policy_variant:"current-dev-load"}' > "$OUT/premerge-workload.json"
+bind_premerge_workload() {
+  cp "$1" "$FIXTURE/docs/campaign/workload.json"
+  for arch in amd64 arm64; do
+    jq -n --arg candidate "dev-$arch" --arg node "$NODE" --arg digest "$DIGEST" --arg workload "$(hash "$FIXTURE/docs/campaign/workload.json")" '{schema_version:1,phase:"pre_pr216_merge",candidate_id:$candidate,node_revision:$node,node_binary_digest:("sha256:"+$digest),image_digest:("sha256:"+$digest),workload_sha256:$workload,evidence_kind:"node_observation",status:"qualified",capabilities:{authority_finality:"qualified",publication:"pending",recovery:"pending"},deferred_profiles:{publication:"post_pr216_merge",recovery:"post_pr216_merge"}}' > "$FIXTURE/docs/campaign/$arch-qualification.json"
+  done
+  jq --arg workload "$(hash "$FIXTURE/docs/campaign/workload.json")" --arg amd64 "$(hash "$FIXTURE/docs/campaign/amd64-qualification.json")" --arg arm64 "$(hash "$FIXTURE/docs/campaign/arm64-qualification.json")" '.candidates[].workload.sha256=$workload | .candidates["dev-amd64"].qualification.sha256=$amd64 | .candidates["dev-arm64"].qualification.sha256=$arm64' "$OUT/current-approval.json" > "$FIXTURE/docs/campaign/approval.json"
+  make_request baseline dev-amd64 > "$OUT/premerge-request.json"
+}
+bind_premerge_workload "$OUT/premerge-workload.json"
+expect premerge_authority_without_occurrences 0 bash "$HELPER" plan "$FIXTURE" "$OUT/premerge-request.json"
+jq -e '.phase=="pre_pr216_merge" and .required_profiles==["authority_finality"] and .deferred_profiles=={publication:"post_pr216_merge",recovery:"post_pr216_merge"}' "$OUT/premerge_authority_without_occurrences.stdout" >/dev/null
+for entry in 'old_combined|.profile_id="casper-authority-publication"' 'postmerge|.phase="post_pr216_merge"' 'missing_deferred|del(.deferred_profiles)' 'missing_authority|.required_capabilities=[]' 'occurrence_required|.required_capabilities=["authority_finality","publication"]'; do
+  name="${entry%%|*}"; filter="${entry#*|}"
+  jq "$filter" "$OUT/premerge-workload.json" > "$OUT/changed-workload.json"
+  bind_premerge_workload "$OUT/changed-workload.json"
+  expect "premerge_$name" 2 bash "$HELPER" plan "$FIXTURE" "$OUT/premerge-request.json"
+done
+for entry in 'authority_unqualified|.capabilities.authority_finality="pending"' 'publication_claimed|.capabilities.publication="qualified"' 'recovery_claimed|.capabilities.recovery="qualified"' 'missing_pending|del(.capabilities.recovery)' 'wrong_qualification_phase|.phase="post_pr216_merge"' 'wrong_qualification_scope|.deferred_profiles={}'; do
+  name="${entry%%|*}"; filter="${entry#*|}"
+  bind_premerge_workload "$OUT/premerge-workload.json"
+  jq "$filter" "$FIXTURE/docs/campaign/arm64-qualification.json" > "$OUT/changed-qualification.json"
+  cp "$OUT/changed-qualification.json" "$FIXTURE/docs/campaign/arm64-qualification.json"
+  jq --arg digest "$(hash "$FIXTURE/docs/campaign/arm64-qualification.json")" '.candidates["dev-arm64"].qualification.sha256=$digest' "$FIXTURE/docs/campaign/approval.json" > "$OUT/changed-approval.json"
+  cp "$OUT/changed-approval.json" "$FIXTURE/docs/campaign/approval.json"
+  make_request baseline dev-amd64 > "$OUT/premerge-request.json"
+  expect "premerge_$name" 2 bash "$HELPER" plan "$FIXTURE" "$OUT/premerge-request.json"
+done
 jq -n --argjson count "$passed" '{schema_version:1,status:"passed",checks:$count,evidence_kind:"synthetic_fixture",node_launch_count:0,cloud_launch_count:0,claim_discharge:"pending"}' > "$OUT/summary.json"
 printf 'PASS: %s campaign admission and duration checks. No node or cloud runner launched.\n' "$passed"

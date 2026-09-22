@@ -10,7 +10,13 @@ pub mod results;
 pub mod transport;
 
 pub const REPOSITORY: &str = "F1R3FLY-io/f1r3node-rust";
-pub const SLOTS: [&str; 3] = ["preflight", "baseline-dev-amd64", "baseline-dev-arm64"];
+pub const SLOTS: [&str; 5] = [
+    "preflight",
+    "baseline-dev-amd64",
+    "baseline-dev-arm64",
+    "stability-dev-amd64",
+    "stability-dev-arm64",
+];
 pub const SOURCE_PATHS: [&str; 28] = [
     "scripts/casper-soak/src/campaign_control/mod.rs",
     "scripts/casper-soak/src/campaign_control/transport.rs",
@@ -563,7 +569,59 @@ pub fn authenticate<P: Provider>(
     )
 }
 
+pub fn validate_phase(plan: &Value) -> Result<()> {
+    ensure!(
+        plan["phase"] == "pre_pr216_merge"
+            && plan["required_profiles"] == json!(["authority_finality"])
+            && plan["deferred_profiles"]
+                == json!({"publication":"post_pr216_merge","recovery":"post_pr216_merge"}),
+        "The pre-merge campaign profile scope differs."
+    );
+    Ok(())
+}
+
+pub fn qualified(root: &Path, plan: &Value) -> Result<()> {
+    validate_phase(plan)?;
+    for key in ["workload", "qualification"] {
+        let reference = &plan[key];
+        let path = relative(root, text(&reference["path"])?)?;
+        ensure!(
+            file_hash(&path)? == text(&reference["sha256"])?,
+            "The executable workload or qualification differs from its pin."
+        );
+        let value = record(&path)?;
+        if key == "workload" {
+            ensure!(
+                value["profile_id"] == "casper-authority-finality"
+                    && value["phase"] == plan["phase"]
+                    && value["deferred_profiles"] == plan["deferred_profiles"]
+                    && value["providers"] == json!(["docker"])
+                    && value["required_capabilities"] == plan["required_profiles"],
+                "The required executable Casper workload is not available."
+            );
+        } else {
+            ensure!(
+                value["phase"] == plan["phase"]
+                    && value["deferred_profiles"] == plan["deferred_profiles"]
+                    && value["evidence_kind"] == "node_observation"
+                    && value["status"] == "qualified"
+                    && value["candidate_id"] == plan["candidate_id"]
+                    && value["node_revision"] == plan["node_revision"]
+                    && value["node_binary_digest"] == plan["node_binary_digest"]
+                    && value["image_digest"] == plan["image_digest"]
+                    && value["workload_sha256"] == plan["workload"]["sha256"]
+                    && value["capabilities"]["authority_finality"] == "qualified"
+                    && value["capabilities"]["publication"] == "pending"
+                    && value["capabilities"]["recovery"] == "pending",
+                "The required live adapters are not qualified."
+            );
+        }
+    }
+    Ok(())
+}
+
 pub fn validate_plan(config: &Config, request: &[u8], plan: &Value) -> Result<String> {
+    validate_phase(plan)?;
     let request = parse(request)?;
     ensure!(
         request["campaign_id"] == config.value["campaign_id"]
@@ -622,7 +680,22 @@ pub fn validate_plan(config: &Config, request: &[u8], plan: &Value) -> Result<St
             );
             Ok(format!("baseline-{candidate}"))
         }
-        _ => Err(eyre!("Stability and replacement launches are not enabled.")),
+        "stability" => {
+            ensure!(
+                plan["duration_seconds"] == 216000 && plan["runner_max_seconds"] == 230400,
+                "The full stability resource tuple is required."
+            );
+            keys(&request["baseline_run_ids"], &["dev-amd64", "dev-arm64"])?;
+            let preflight = identifier(&request["preflight_run_id"])?;
+            let amd64 = identifier(&request["baseline_run_ids"]["dev-amd64"])?;
+            let arm64 = identifier(&request["baseline_run_ids"]["dev-arm64"])?;
+            ensure!(
+                preflight != amd64 && preflight != arm64 && amd64 != arm64,
+                "Prior workflow runs must be distinct."
+            );
+            Ok(format!("stability-{candidate}"))
+        }
+        _ => Err(eyre!("The campaign stage is not supported.")),
     }
 }
 
@@ -635,7 +708,7 @@ pub fn validate_state(config: &Config, state: &Value) -> Result<()> {
         "slots",
     ])?;
     ensure!(
-        state["schema_version"] == 1
+        state["schema_version"] == 2
             && state["config_digest"] == config.digest
             && state["campaign_id"] == config.value["campaign_id"]
             && number(&state["sequence"])? <= 100000,
@@ -666,10 +739,16 @@ pub fn validate_state(config: &Config, state: &Value) -> Result<()> {
         digest(&slot["reservation_id"], 64)?;
         array(&slot["product_failures"])?;
         array(&slot["infrastructure_failures"])?;
+        validate_phase(&slot["plan"])?;
         let reserved = number(&slot["reserved_epoch"])?;
         let lifetime = number(&slot["plan"]["runner_max_seconds"])?;
         ensure!(
-            lifetime == if name == "preflight" { 14400 } else { 93600 }
+            lifetime
+                == match name {
+                    "preflight" => 14400,
+                    "baseline-dev-amd64" | "baseline-dev-arm64" => 93600,
+                    _ => 230400,
+                }
                 && number(&slot["deadline_epoch"])? == reserved + lifetime
                 && number(&slot["termination_epoch"])? + config.allowance()? == reserved + lifetime,
             "The stored deadline differs from the fixed budget."
@@ -683,7 +762,7 @@ pub fn validate_state(config: &Config, state: &Value) -> Result<()> {
     ensure!(
         state["slots"]["preflight"].is_object()
             || SLOTS[1..].iter().all(|s| state["slots"][s].is_null()),
-        "A baseline has no preflight reservation."
+        "A campaign stage has no preflight reservation."
     );
     Ok(())
 }
@@ -851,11 +930,26 @@ pub fn reserve<P: Provider>(
         ensure!(
             previous["state"] == "terminated"
                 && previous["result"] == "passed"
+                && previous["termination_confirmed"] == true
                 && previous["run_id"] == request["preflight_run_id"]
                 && array(&previous["product_failures"])?.is_empty()
                 && array(&previous["infrastructure_failures"])?.is_empty(),
             "A passing and terminated preflight is required."
         );
+        if plan["stage"] == "stability" {
+            for candidate in ["dev-amd64", "dev-arm64"] {
+                let baseline = &state["slots"][format!("baseline-{candidate}")];
+                ensure!(
+                    baseline["state"] == "terminated"
+                        && baseline["result"] == "passed"
+                        && baseline["termination_confirmed"] == true
+                        && baseline["run_id"] == request["baseline_run_ids"][candidate]
+                        && array(&baseline["product_failures"])?.is_empty()
+                        && array(&baseline["infrastructure_failures"])?.is_empty(),
+                    "Both passing and terminated baselines are required."
+                );
+            }
+        }
     }
     let now = provider.now();
     stamp(now)?;

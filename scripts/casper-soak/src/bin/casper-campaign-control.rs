@@ -3,7 +3,7 @@ pub mod campaign_control;
 
 use std::fs::{self, DirBuilder};
 use std::os::unix::fs::DirBuilderExt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use campaign_control::{Config, Provider};
 use casper_soak::{encoded, exclusive, file_hash, record, regular, relative, text, MAX_BYTES};
@@ -46,40 +46,6 @@ fn required<T>(value: Option<T>) -> Result<T> {
     value.ok_or_else(|| eyre!("A required command input is missing."))
 }
 
-fn qualified(root: &Path, plan: &Value) -> Result<()> {
-    for key in ["workload", "qualification"] {
-        let reference = &plan[key];
-        let path = relative(root, text(&reference["path"])?)?;
-        ensure!(
-            file_hash(&path)? == text(&reference["sha256"])?,
-            "The executable workload or qualification differs from its pin."
-        );
-        let value = record(&path)?;
-        if key == "workload" {
-            ensure!(
-                value["profile_id"] == "casper-authority-publication"
-                    && value["required_capabilities"]
-                        == json!(["authority_finality", "publication"]),
-                "The required executable Casper workload is not available."
-            );
-        } else {
-            ensure!(
-                value["evidence_kind"] == "node_observation"
-                    && value["status"] == "qualified"
-                    && value["candidate_id"] == plan["candidate_id"]
-                    && value["node_revision"] == plan["node_revision"]
-                    && value["node_binary_digest"] == plan["node_binary_digest"]
-                    && value["image_digest"] == plan["image_digest"]
-                    && value["workload_sha256"] == plan["workload"]["sha256"]
-                    && value["capabilities"]["authority_finality"] == "qualified"
-                    && value["capabilities"]["publication"] == "qualified",
-                "The required live adapters are not qualified."
-            );
-        }
-    }
-    Ok(())
-}
-
 fn run() -> Result<()> {
     let args = Args::parse();
     let config = Config::new(record(&args.config)?)?;
@@ -117,7 +83,7 @@ fn run() -> Result<()> {
         );
         if args.command != "finish" {
             config.verify_sources(&args.root)?;
-            qualified(&args.root, &plan)?;
+            campaign_control::qualified(&args.root, &plan)?;
         }
         let mut provider = campaign_control::transport::Cli::new(config.clone(), &evidence)?;
         if args.command == "host-admission" {

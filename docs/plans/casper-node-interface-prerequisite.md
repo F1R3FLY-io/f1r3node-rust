@@ -121,6 +121,10 @@ Do not repair storage atomicity to manufacture a passing observation. Report a t
 
 Keep unavailable occurrence-level capabilities unsupported before the actual PR #216 merge. Signature-keyed records cannot satisfy D-07 Reading A.
 
+On 2026-09-22, the user confirmed that this branch merges before PR #216 integrates.
+
+Occurrence-dependent publication qualification waits in EPIC-018. This deferred qualification does not make PR #216 a prerequisite for this branch.
+
 Before implementing publication capture, define the existing effect identity and the supported publication consistency boundary. If either is absent, report the capability as unsupported.
 
 ## File-level implementation sequence

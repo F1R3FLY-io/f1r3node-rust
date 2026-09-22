@@ -35,6 +35,7 @@ pub fn archive_result(archive: &Path, artifact: &Value) -> Result<Value> {
 }
 
 pub fn validate_worker(config: &Config, slot: &Value, worker: &Value, now: u64) -> Result<()> {
+    validate_phase(&slot["plan"])?;
     keys(worker, &[
         "schema_version",
         "repository",
@@ -105,8 +106,8 @@ pub fn validate_worker(config: &Config, slot: &Value, worker: &Value, now: u64) 
                 && worker["integration_preflight"] == "passed"
                 && failures.is_empty()
                 && worker["measurement_completeness"] == "complete"
-                && worker["profile_verdicts"]["authority_finality"] == "passed"
-                && worker["profile_verdicts"]["publication"] == "passed"
+                && worker["profile_verdicts"]
+                    == json!({"authority_finality":"passed","publication":"pending","recovery":"pending"})
                 && elapsed >= number(&slot["plan"]["duration_seconds"])?
                 && finish
                     .checked_add(600)

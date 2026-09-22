@@ -1,0 +1,256 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 81 and seed 1 with 1 worker on 16 cores with 455MB heap and 64MB offheap memory [pid: 15016] (Mac OS X 27.0 aarch64, Homebrew 26.0.2.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /Users/jeff/src/CurrentProjects/FF/f1r3node-rust/formal/tlaplus/casper_soak/campaign/CampaignControl.tla
+Parsing file /private/var/folders/4n/_7jzrd1x0p5fdmqhkm9cbmmr0000gq/T/Naturals.tla
+Parsing file /private/var/folders/4n/_7jzrd1x0p5fdmqhkm9cbmmr0000gq/T/FiniteSets.tla
+Parsing file /private/var/folders/4n/_7jzrd1x0p5fdmqhkm9cbmmr0000gq/T/TLC.tla
+Parsing file /private/var/folders/4n/_7jzrd1x0p5fdmqhkm9cbmmr0000gq/T/Sequences.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module CampaignControl
+Starting... (2026-09-22 07:31:27)
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-09-22 07:31:27.
+Error: Invariant OneSubmission is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ owner = ( "preflight" :> "none" @@
+  "amd64" :> "none" @@
+  "arm64" :> "none" @@
+  "stability-amd64" :> "none" @@
+  "stability-arm64" :> "none" )
+/\ productFailure = ( "preflight" :> FALSE @@
+  "amd64" :> FALSE @@
+  "arm64" :> FALSE @@
+  "stability-amd64" :> FALSE @@
+  "stability-arm64" :> FALSE )
+/\ cleanup = ( "preflight" :> FALSE @@
+  "amd64" :> FALSE @@
+  "arm64" :> FALSE @@
+  "stability-amd64" :> FALSE @@
+  "stability-arm64" :> FALSE )
+/\ phase = ( "preflight" :> "empty" @@
+  "amd64" :> "empty" @@
+  "arm64" :> "empty" @@
+  "stability-amd64" :> "empty" @@
+  "stability-arm64" :> "empty" )
+/\ submissions = ( "preflight" :> 0 @@
+  "amd64" :> 0 @@
+  "arm64" :> 0 @@
+  "stability-amd64" :> 0 @@
+  "stability-arm64" :> 0 )
+/\ approval = ( "preflight" :> FALSE @@
+  "amd64" :> FALSE @@
+  "arm64" :> FALSE @@
+  "stability-amd64" :> FALSE @@
+  "stability-arm64" :> FALSE )
+/\ retainedFailure = ( "preflight" :> FALSE @@
+  "amd64" :> FALSE @@
+  "arm64" :> FALSE @@
+  "stability-amd64" :> FALSE @@
+  "stability-arm64" :> FALSE )
+/\ schedule = ( "preflight" :> FALSE @@
+  "amd64" :> FALSE @@
+  "arm64" :> FALSE @@
+  "stability-amd64" :> FALSE @@
+  "stability-arm64" :> FALSE )
+/\ terminated = ( "preflight" :> FALSE @@
+  "amd64" :> FALSE @@
+  "arm64" :> FALSE @@
+  "stability-amd64" :> FALSE @@
+  "stability-arm64" :> FALSE )
+
+State 2: <Reserve line 26, col 3 to line 33, col 50 of module CampaignControl>
+/\ owner = ( "preflight" :> "first" @@
+  "amd64" :> "none" @@
+  "arm64" :> "none" @@
+  "stability-amd64" :> "none" @@
+  "stability-arm64" :> "none" )
+/\ productFailure = ( "preflight" :> FALSE @@
+  "amd64" :> FALSE @@
+  "arm64" :> FALSE @@
+  "stability-amd64" :> FALSE @@
+  "stability-arm64" :> FALSE )
+/\ cleanup = ( "preflight" :> FALSE @@
+  "amd64" :> FALSE @@
+  "arm64" :> FALSE @@
+  "stability-amd64" :> FALSE @@
+  "stability-arm64" :> FALSE )
+/\ phase = ( "preflight" :> "reserved" @@
+  "amd64" :> "empty" @@
+  "arm64" :> "empty" @@
+  "stability-amd64" :> "empty" @@
+  "stability-arm64" :> "empty" )
+/\ submissions = ( "preflight" :> 0 @@
+  "amd64" :> 0 @@
+  "arm64" :> 0 @@
+  "stability-amd64" :> 0 @@
+  "stability-arm64" :> 0 )
+/\ approval = ( "preflight" :> TRUE @@
+  "amd64" :> FALSE @@
+  "arm64" :> FALSE @@
+  "stability-amd64" :> FALSE @@
+  "stability-arm64" :> FALSE )
+/\ retainedFailure = ( "preflight" :> FALSE @@
+  "amd64" :> FALSE @@
+  "arm64" :> FALSE @@
+  "stability-amd64" :> FALSE @@
+  "stability-arm64" :> FALSE )
+/\ schedule = ( "preflight" :> FALSE @@
+  "amd64" :> FALSE @@
+  "arm64" :> FALSE @@
+  "stability-amd64" :> FALSE @@
+  "stability-arm64" :> FALSE )
+/\ terminated = ( "preflight" :> FALSE @@
+  "amd64" :> FALSE @@
+  "arm64" :> FALSE @@
+  "stability-amd64" :> FALSE @@
+  "stability-arm64" :> FALSE )
+
+State 3: <Arm line 35, col 3 to line 39, col 50 of module CampaignControl>
+/\ owner = ( "preflight" :> "first" @@
+  "amd64" :> "none" @@
+  "arm64" :> "none" @@
+  "stability-amd64" :> "none" @@
+  "stability-arm64" :> "none" )
+/\ productFailure = ( "preflight" :> FALSE @@
+  "amd64" :> FALSE @@
+  "arm64" :> FALSE @@
+  "stability-amd64" :> FALSE @@
+  "stability-arm64" :> FALSE )
+/\ cleanup = ( "preflight" :> FALSE @@
+  "amd64" :> FALSE @@
+  "arm64" :> FALSE @@
+  "stability-amd64" :> FALSE @@
+  "stability-arm64" :> FALSE )
+/\ phase = ( "preflight" :> "armed" @@
+  "amd64" :> "empty" @@
+  "arm64" :> "empty" @@
+  "stability-amd64" :> "empty" @@
+  "stability-arm64" :> "empty" )
+/\ submissions = ( "preflight" :> 0 @@
+  "amd64" :> 0 @@
+  "arm64" :> 0 @@
+  "stability-amd64" :> 0 @@
+  "stability-arm64" :> 0 )
+/\ approval = ( "preflight" :> TRUE @@
+  "amd64" :> FALSE @@
+  "arm64" :> FALSE @@
+  "stability-amd64" :> FALSE @@
+  "stability-arm64" :> FALSE )
+/\ retainedFailure = ( "preflight" :> FALSE @@
+  "amd64" :> FALSE @@
+  "arm64" :> FALSE @@
+  "stability-amd64" :> FALSE @@
+  "stability-arm64" :> FALSE )
+/\ schedule = ( "preflight" :> TRUE @@
+  "amd64" :> FALSE @@
+  "arm64" :> FALSE @@
+  "stability-amd64" :> FALSE @@
+  "stability-arm64" :> FALSE )
+/\ terminated = ( "preflight" :> FALSE @@
+  "amd64" :> FALSE @@
+  "arm64" :> FALSE @@
+  "stability-amd64" :> FALSE @@
+  "stability-arm64" :> FALSE )
+
+State 4: <Submit line 41, col 3 to line 48, col 50 of module CampaignControl>
+/\ owner = ( "preflight" :> "first" @@
+  "amd64" :> "none" @@
+  "arm64" :> "none" @@
+  "stability-amd64" :> "none" @@
+  "stability-arm64" :> "none" )
+/\ productFailure = ( "preflight" :> FALSE @@
+  "amd64" :> FALSE @@
+  "arm64" :> FALSE @@
+  "stability-amd64" :> FALSE @@
+  "stability-arm64" :> FALSE )
+/\ cleanup = ( "preflight" :> FALSE @@
+  "amd64" :> FALSE @@
+  "arm64" :> FALSE @@
+  "stability-amd64" :> FALSE @@
+  "stability-arm64" :> FALSE )
+/\ phase = ( "preflight" :> "submitted" @@
+  "amd64" :> "empty" @@
+  "arm64" :> "empty" @@
+  "stability-amd64" :> "empty" @@
+  "stability-arm64" :> "empty" )
+/\ submissions = ( "preflight" :> 1 @@
+  "amd64" :> 0 @@
+  "arm64" :> 0 @@
+  "stability-amd64" :> 0 @@
+  "stability-arm64" :> 0 )
+/\ approval = ( "preflight" :> TRUE @@
+  "amd64" :> FALSE @@
+  "arm64" :> FALSE @@
+  "stability-amd64" :> FALSE @@
+  "stability-arm64" :> FALSE )
+/\ retainedFailure = ( "preflight" :> FALSE @@
+  "amd64" :> FALSE @@
+  "arm64" :> FALSE @@
+  "stability-amd64" :> FALSE @@
+  "stability-arm64" :> FALSE )
+/\ schedule = ( "preflight" :> TRUE @@
+  "amd64" :> FALSE @@
+  "arm64" :> FALSE @@
+  "stability-amd64" :> FALSE @@
+  "stability-arm64" :> FALSE )
+/\ terminated = ( "preflight" :> FALSE @@
+  "amd64" :> FALSE @@
+  "arm64" :> FALSE @@
+  "stability-amd64" :> FALSE @@
+  "stability-arm64" :> FALSE )
+
+State 5: <Submit line 41, col 3 to line 48, col 50 of module CampaignControl>
+/\ owner = ( "preflight" :> "first" @@
+  "amd64" :> "none" @@
+  "arm64" :> "none" @@
+  "stability-amd64" :> "none" @@
+  "stability-arm64" :> "none" )
+/\ productFailure = ( "preflight" :> FALSE @@
+  "amd64" :> FALSE @@
+  "arm64" :> FALSE @@
+  "stability-amd64" :> FALSE @@
+  "stability-arm64" :> FALSE )
+/\ cleanup = ( "preflight" :> FALSE @@
+  "amd64" :> FALSE @@
+  "arm64" :> FALSE @@
+  "stability-amd64" :> FALSE @@
+  "stability-arm64" :> FALSE )
+/\ phase = ( "preflight" :> "submitted" @@
+  "amd64" :> "empty" @@
+  "arm64" :> "empty" @@
+  "stability-amd64" :> "empty" @@
+  "stability-arm64" :> "empty" )
+/\ submissions = ( "preflight" :> 2 @@
+  "amd64" :> 0 @@
+  "arm64" :> 0 @@
+  "stability-amd64" :> 0 @@
+  "stability-arm64" :> 0 )
+/\ approval = ( "preflight" :> TRUE @@
+  "amd64" :> FALSE @@
+  "arm64" :> FALSE @@
+  "stability-amd64" :> FALSE @@
+  "stability-arm64" :> FALSE )
+/\ retainedFailure = ( "preflight" :> FALSE @@
+  "amd64" :> FALSE @@
+  "arm64" :> FALSE @@
+  "stability-amd64" :> FALSE @@
+  "stability-arm64" :> FALSE )
+/\ schedule = ( "preflight" :> TRUE @@
+  "amd64" :> FALSE @@
+  "arm64" :> FALSE @@
+  "stability-amd64" :> FALSE @@
+  "stability-arm64" :> FALSE )
+/\ terminated = ( "preflight" :> FALSE @@
+  "amd64" :> FALSE @@
+  "arm64" :> FALSE @@
+  "stability-amd64" :> FALSE @@
+  "stability-arm64" :> FALSE )
+
+12 states generated, 8 distinct states found, 1 states left on queue.
+The depth of the complete state graph search is 5.
+The average outdegree of the complete state graph is 1 (minimum is 1, the maximum 2 and the 95th percentile is 2).
+Finished in 00s at (2026-09-22 07:31:27)

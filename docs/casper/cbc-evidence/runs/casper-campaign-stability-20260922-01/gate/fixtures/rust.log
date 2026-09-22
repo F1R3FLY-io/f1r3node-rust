@@ -1,0 +1,43 @@
+   Compiling casper-soak v0.1.0 (/Users/jeff/src/CurrentProjects/FF/f1r3node-rust/scripts/casper-soak)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.69s
+     Running unittests src/bin/casper-campaign-supervisor.rs (target/debug/deps/casper_campaign_supervisor-4313fcd626d50ecd)
+
+running 2 tests
+test tests::http_body_accepts_bounded_fixed_and_chunked_payloads ... ok
+test tests::http_body_rejects_ambiguous_or_truncated_framing ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/campaign_control.rs (target/debug/deps/campaign_control-4d94b942cceadd5d)
+
+running 27 tests
+test old_or_incomplete_authoritative_state_cannot_reset_the_budget ... ok
+test plan_rejects_mutable_images_wrong_architecture_and_short_workloads ... ok
+test authority_binds_plan_configuration_revision_and_run ... ok
+test approval_requires_current_maintainer_role_and_exact_request_bytes ... ok
+test schedule_is_individual_and_armed_before_submission ... ok
+test missing_replaced_and_corrupt_authoritative_records_block_dispatch ... ok
+test host_admission_requires_identity_protection_and_full_workload_window ... ok
+test configuration_requires_all_library_source_pins ... ok
+test product_failures_survive_cleanup_failure ... ok
+test lost_launch_response_is_reconciled_without_another_submission ... ok
+test utc_timestamp_roundtrips_and_rejects_invalid_dates ... ok
+test self_review_missing_protection_and_ambiguous_approvals_are_rejected ... ok
+test two_controllers_share_one_authoritative_slot ... ok
+test unsupported_or_excessive_timing_bounds_reject_configuration ... ok
+test finalizer_requires_worker_identity_and_confirmed_termination ... ok
+test worker_archive_binds_bytes_and_rejects_extra_files_and_links ... ok
+test passing_worker_requires_full_baseline_or_stability_duration ... ok
+test supervisor_uses_storage_deadlines_and_observed_termination ... ok
+test finalizer_retains_late_product_failures_when_cleanup_fails ... ok
+test lost_write_acknowledgments_consume_slots_without_launch_retries ... ok
+test invalid_or_missing_worker_evidence_still_requests_cleanup ... ok
+test stability_rejects_changed_resources_and_reused_run_identifiers ... ok
+test stopped_missing_and_unobservable_instances_never_count_as_terminated ... ok
+test three_fixed_slots_require_passing_preflight_and_never_refund ... ok
+test stability_uses_two_additional_slots_after_both_baselines ... ok
+test every_provider_boundary_fails_without_duplicate_launch ... ok
+test stability_rejects_missing_failed_or_unterminated_baselines ... ok
+
+test result: ok. 27 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
+

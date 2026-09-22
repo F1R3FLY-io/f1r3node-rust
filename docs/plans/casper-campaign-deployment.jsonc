@@ -8,7 +8,10 @@
     "environment": "casper-campaign",
     "observed_environment_exists": false,
     "credential_review": {
-      "variables_tested": ["GITHUB_TOKEN", "GITHUB_PERSONAL_ACCESS_TOKEN"],
+      "variables_tested": [
+        "GITHUB_TOKEN",
+        "GITHUB_PERSONAL_ACCESS_TOKEN"
+      ],
       "same_value_in_process": true,
       "role_endpoint_status": 403,
       "role_endpoint_required_permission": "metadata=read",
@@ -126,7 +129,15 @@
       "subsequent_write_condition": "If-Match: previous-etag",
       "policy_id": null,
       "policy_sha256": null,
-      "principals_verified": false
+      "principals_verified": false,
+      "record_schema_version": 2,
+      "slots": [
+        "preflight",
+        "baseline-dev-amd64",
+        "baseline-dev-arm64",
+        "stability-dev-amd64",
+        "stability-dev-arm64"
+      ]
     },
     "proposed_supervisor": {
       "name": "casper-campaign-supervisor",
@@ -166,7 +177,20 @@
       "workload_seconds_each": 86400
     },
     "replacement_launches": 0,
-    "repeat_launches": 0
+    "repeat_launches": 0,
+    "stability": {
+      "count": 2,
+      "candidates": [
+        "dev-amd64",
+        "dev-arm64"
+      ],
+      "memory_gb": 64,
+      "maximum_lifetime_seconds": 230400,
+      "workload_seconds_each": 216000,
+      "requires_both_baselines_passed": true,
+      "approved_on": "2026-09-22"
+    },
+    "total_count": 5
   },
   "remote_writes": 0,
   "node_launches": 0,

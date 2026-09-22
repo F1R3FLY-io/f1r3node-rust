@@ -26,7 +26,7 @@ pub fn verify_service<P: Provider>(provider: &mut P, config: &Config) -> Result<
             && function["imageDigest"] == supervisor["image_digest"]
             && function["lifecycleState"] == "ACTIVE"
             && number(&function["detachedModeTimeoutInSeconds"])?
-                >= 3 * number(&supervisor["timing"]["termination_seconds"])? + 120
+                >= SLOTS.len() as u64 * number(&supervisor["timing"]["termination_seconds"])? + 120
             && function["config"]["CASPER_CAMPAIGN_CONFIG_SHA256"] == config.digest,
         "The deployed supervisor identity or timeout is not verified."
     );

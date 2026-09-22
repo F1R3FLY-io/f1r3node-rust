@@ -1,0 +1,2 @@
+    Checking casper-soak v0.1.0 (/Users/jeff/src/CurrentProjects/FF/f1r3node-rust/scripts/casper-soak)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.69s

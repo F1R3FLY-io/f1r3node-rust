@@ -1,0 +1,10 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s
+     Running tests/campaign_models.rs (target/debug/deps/campaign_models-9f68bff29f31ee40)
+
+running 3 tests
+test controls_require_the_exact_violation_and_a_counterexample ... ok
+test setup_failure_retains_a_nonpassing_report_without_execution ... ok
+test registration_rejects_missing_controls_and_disabled_invariants ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+

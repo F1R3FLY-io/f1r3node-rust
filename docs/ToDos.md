@@ -184,13 +184,14 @@ tasks:
       - "Acceptance is recorded by a named maintainer. Passing tests alone do not discharge a claim."
   - id: TASK-019-5
     title: "Batch C: publication writer inventory and consistency contract"
+    phase_boundary: "Occurrence-dependent qualification follows this branch merge and PR #216 integration. It does not block this branch on PR #216."
     status: pending
     claimed_by: null
     blocked_by: [TASK-019-3]
     prerequisites:
       - "A complete inventory of publication writers across the DAG and block environments."
       - "A publication consistency contract that states which intermediate states a consistent read can expose."
-      - "PR #216 merged to dev. Occurrence-level recovery qualification has no occurrence store to observe before that merge."
+      - "PR #216 merged to dev. The user directed publication qualification to wait on 2026-09-22. Publication and recovery require occurrence records."
     acceptance:
       - "Occurrence identity is never inferred from deploy signatures."
       - "The contract and inventory are reviewed before any Batch C implementation approval."
@@ -742,7 +743,7 @@ tasks:
     completion_review: docs/work-logs/task-017-12-preparation.md#completion-review-at-859cbc36c
     claim001_reconciliation: docs/work-logs/task-017-12-preparation.md#claim001-specification-digest-reconciliation
     node_interface_prerequisite: docs/plans/casper-node-interface-prerequisite.md
-    node_interface_status: "PR #447 remains open at the reviewed head 566a21223830eb6594467615eb45fe3e4ccb3c2e. Batch B1 has an implementation with unresolved findings and pending acceptance. Batch B2 and Batch C still require separate approval. Campaign admission remains blocked."
+    node_interface_status: "PR #447 remains open at 6ea6bf029. Batch B1 corrections pass 43 snapshot tests on this Mac. Source-bound acceptance and Batch B2 remain pending. Occurrence-dependent publication qualification belongs to EPIC-018 after this branch merges."
     stack_scope: "PR #436 temporarily targets the node branch. This dependency order does not include node implementation in the harness scope. Independent harness controls can proceed before node qualification."
     reservation_work_log: docs/work-logs/task-017-12-reservations.md
     reservation_status: "All sixteen reservation tests pass in an isolated Linux container on this Mac. The authoritative OCI protocol has controlled-provider tests. Its real object and access policy remain unprovisioned."
@@ -750,11 +751,15 @@ tasks:
     execution_control_evidence: docs/casper/cbc-evidence/runs/casper-campaign-control-20260921-01/report.json
     hosted_control_evidence: docs/casper/cbc-evidence/runs/casper-campaign-hosted-20260921-01/report.json
     source_coverage_evidence: docs/casper/cbc-evidence/runs/casper-campaign-source-coverage-20260921-01/report.json
+    stability_control_evidence: docs/casper/cbc-evidence/runs/casper-campaign-stability-20260922-01/report.json
+    publication_gate: "Deferred to EPIC-018 after this branch merges and PR #216 integrates. This is not a PR #216 dependency for this branch."
+    phase_boundary_status: "Implemented and locally verified. Pre-merge admission requires authority/finality. Publication and recovery remain explicitly pending for EPIC-018 and cannot count as passed."
+    phase_boundary_evidence: docs/casper/cbc-evidence/runs/casper-campaign-phase-20260922-01/report.json
     deployment_proposal: docs/plans/casper-campaign-deployment.jsonc
     continuation_work_log: docs/work-logs/task-017-12-mac-continuation.md
-    execution_control_status: "The local gate passes at 4dd7a2012 with 50 source hashes and 44 Rust tests. The source-pin correction requires fresh hosted verification. Deployment, provider timing qualification, campaign execution workflow qualification, and acceptance remain pending."
-    github_access_status: "Both GitHub token variables contain the same value in this process. Explicit tests with each variable return HTTP 403 for maintainer-role queries. The endpoint advertises metadata=read. Repository metadata lists admin access but does not establish token access to this endpoint."
-    compatibility_lookup_status: "The current campaign inventories have 37 pending artifact records and matching compatibility links. The strict eight-claim audit returns exit 4 with Claim001 pending. No acceptance is inferred."
+    execution_control_status: "Hosted run 35736460538 verifies the source-pin correction at 515a01159. The local stability report records subsequent changes. Deployment, timing qualification, live execution, and acceptance remain pending."
+    github_access_status: "Both GitHub token variables contain the same value in this process. Explicit tests with each variable return HTTP 403 for maintainer-role queries. The endpoint advertises metadata=read. The user will load a new credential and restart Codex. Verify role access after restart."
+    compatibility_lookup_status: "The three campaign inventories have 37 unique pending artifact records and matching compatibility links. The strict eight-claim audit returns exit 4 with Claim001 pending. No acceptance is inferred."
     execution_gate: "Four exact-candidate probes returned blocked before node launch. Their controlled inputs are not live qualification. The legacy workload is pinned but cannot replace required Casper profiles."
     drift_review: docs/work-logs/task-017-12-drift-review-2026-09-19.md
     claims: [CLAIM-CASPER-SOAK-001, CLAIM-CASPER-SOAK-004, CLAIM-CASPER-CAMPAIGN-001, CLAIM-CASPER-CAMPAIGN-002, CLAIM-CASPER-CAMPAIGN-003]
@@ -767,7 +772,7 @@ tasks:
     previous_claimed_by: claude-session-9f19b46c
     previous_claimed_at: 2026-09-19T06:35:51Z
     handoff_note: docs/handoffs/claude-session-9f19b46c--pi-soak-carrier-index-linux--20260919T192000Z.md
-    execution_scope: "Execution remains blocked. The owner repins both candidates and qualifies authority and publication adapters. Recovery qualification waits for PR #216 to merge. A separate passing preflight must precede both 24-hour baselines. The three-machine baseline budget is approved."
+    execution_scope: "Qualify the pre-merge candidate capabilities under the corrected campaign phase boundary. This branch merges before PR #216 integrates. Occurrence-dependent publication and recovery qualification belong to EPIC-018. A passing preflight must precede both full baselines."
     repin_tool: scripts/ci/resolve-dev-candidate.sh
     dispatch_preconditions: "docs/work-logs/task-017-12-preparation.md#dispatch-preconditions"
     work_log: docs/work-logs/task-017-12-preparation.md
@@ -775,15 +780,17 @@ tasks:
     remaining_prerequisites:
       - "The changed workflow and campaign artifacts have current pending records. Historical evidence remains unchanged. Claim001 and the three campaign claims still require source-bound acceptance."
       - "Pin executable workloads and review the complete campaign model and configuration inventory. Recheck candidate identities before dispatch."
-      - "Qualify live adapters and their required node interfaces. Fresh authority and publication probes reject both candidate identities with explicit unqualified-adapter reasons."
-      - "The earlier hosted gate covers 8adaa235c. Repeat hosted verification for the source-pin correction. The campaign workflow still requires qualification against deployed services."
+      - "Qualify the required pre-merge adapters and node interfaces. The corrected admission requires authority/finality and retains pending occurrence profiles. Preserve the earlier blocked probe evidence."
+      - "Hosted run 35736460538 passed at 515a01159. The stability changes need hosted verification after publication. The campaign workflow still requires qualification against deployed services."
       - "The campaign-baseline-24h input requests 86400 workload seconds. Execution must preserve that full duration without preflight subtraction. Existing scheduled behavior remains unchanged."
       - "Provision and qualify the authoritative OCI object and independent supervisor. The implementation does not establish deployed timing guarantees. Missing activation evidence blocks execution."
-      - "Record the exact candidate count and runner lifetime limits before the approved 60-hour campaign launches. Passing baseline evidence remains required."
+      - "The user authorized both architectures on 2026-09-22. Each stability runner has 64 GB and a 64-hour maximum lifetime. Both full baselines must pass first."
       - "The memory decision is resolved at 64 GB per runner. Preserve the approved limits and host controls."
-      - "Recovery adapter qualification for CLAIM-CASPER-SOAK-004 waits for the PR #216 merge. The ratifiers confirmed D-07 Reading A on 2026-09-19, so a pre-merge dev node has no occurrence store to observe. The authority and publication adapters do not wait."
+    deferred_after_branch_merge:
+      - "Integrate PR #216 after this branch merges. Qualify occurrence-dependent publication and recovery under EPIC-018 with actual occurrence records."
+      - "Keep unavailable occurrence profiles pending. Do not report deferred qualification as a pass or infer occurrences from deploy signatures."
     related_epics: [EPIC-010, EPIC-013]
-    resource_approval: "The user amended the approval on 2026-09-19. Separate preflight and baseline dispatches may use one 64 GB preflight runner for four hours and two 64 GB baseline runners for 26 hours each. Each candidate receives one full 24-hour baseline. The user also approved a 60-hour TASK-017-12 campaign after a passing baseline. Its candidate count and runner lifetime limits must be explicit before launch. Additional repetitions remain unapproved."
+    resource_approval: "The user amended the approval on 2026-09-19. Separate preflight and baseline dispatches may use one 64 GB preflight runner for four hours and two 64 GB baseline runners for 26 hours each. Each candidate receives one full 24-hour baseline. The user also approved a 60-hour TASK-017-12 campaign after a passing baseline. On 2026-09-22, the user authorized one 64 GB stability runner per architecture, each with a 64-hour maximum lifetime. Both baselines must pass first. Additional repetitions remain unapproved."
     resource_approval_original: "A maintainer approved the resource proposal on 2026-09-19 at 2026-09-19T07:03:24Z. The approval covered two candidates, one preflight, and two runner virtual machines for 26 hours each. The later approval amends that machine count and authorizes the 60-hour campaign."
     resource_approval_memory: "The maintainer approved 64 GB per runner on 2026-09-19, which corrects the 48 GB figure in the original proposal. The soak workflow already sets RUNNER_MEM_GB_OVERRIDE to 64. The sizing invariant needs about 60,416 MB, from a 45,056 MB ceiling, about 7,168 MB of host overhead, and an 8,192 MB floor. A 48 GB machine overruns that by about 11 GB, and a ceiling small enough to fit falls below the measured 36,008 MB healthy peak. No workflow or runtime file changes."
     resource_approval_record: docs/work-logs/task-017-12-preparation.md

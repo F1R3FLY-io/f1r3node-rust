@@ -1,0 +1,23 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 21 and seed 1 with 1 worker on 16 cores with 455MB heap and 64MB offheap memory [pid: 15012] (Mac OS X 27.0 aarch64, Homebrew 26.0.2.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /Users/jeff/src/CurrentProjects/FF/f1r3node-rust/formal/tlaplus/casper_soak/campaign/CampaignControl.tla
+Parsing file /private/var/folders/4n/_7jzrd1x0p5fdmqhkm9cbmmr0000gq/T/Naturals.tla
+Parsing file /private/var/folders/4n/_7jzrd1x0p5fdmqhkm9cbmmr0000gq/T/FiniteSets.tla
+Parsing file /private/var/folders/4n/_7jzrd1x0p5fdmqhkm9cbmmr0000gq/T/TLC.tla
+Parsing file /private/var/folders/4n/_7jzrd1x0p5fdmqhkm9cbmmr0000gq/T/Sequences.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module CampaignControl
+Starting... (2026-09-22 07:31:25)
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-09-22 07:31:26.
+Model checking completed. No error has been found.
+  Estimates of the probability that TLC did not check all reachable states
+  because two distinct states had the same fingerprint:
+  calculated (optimistic):  val = 7.2E-13
+7503 states generated, 2897 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 25.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 6 and the 95th percentile is 4).
+Finished in 00s at (2026-09-22 07:31:26)

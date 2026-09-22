@@ -77,15 +77,18 @@ impl Fake {
             "candidate_id":"dev-amd64","preflight_run_id":null}),
         )
         .unwrap();
-        let plan = json!({"campaign_id":config.value["campaign_id"],"stage":"preflight","candidate_id":"dev-amd64",
+        let plan = json!({"campaign_id":config.value["campaign_id"],"stage":"preflight",
+            "phase":"pre_pr216_merge","required_profiles":["authority_finality"],
+            "deferred_profiles":{"publication":"post_pr216_merge","recovery":"post_pr216_merge"},"candidate_id":"dev-amd64",
             "identity_digest":config.value["identity_digest"],"approval_digest":config.value["approval_digest"],
             "harness_revision":config.value["control_revision"],"platform":"linux/amd64",
             "memory_gb":64,"cleanup_reserve_seconds":600,"max_launches":1,"duration_seconds":0,
             "runner_max_seconds":14400,"image_digest":candidate["image_digest"],
             "image_config_digest":candidate["image_config_digest"],"node_binary_digest":candidate["node_binary_digest"],
             "image_reference":format!("docker.io/f1r3flyindustries/f1r3fly-rust@{}",candidate["image_digest"].as_str().unwrap())});
-        let state = json!({"schema_version":1,"config_digest":config.digest,"campaign_id":config.value["campaign_id"],
-            "sequence":0,"slots":{"preflight":null,"baseline-dev-amd64":null,"baseline-dev-arm64":null}});
+        let state = json!({"schema_version":2,"config_digest":config.digest,"campaign_id":config.value["campaign_id"],
+            "sequence":0,"slots":{"preflight":null,"baseline-dev-amd64":null,"baseline-dev-arm64":null,
+                "stability-dev-amd64":null,"stability-dev-arm64":null}});
         Self {
             config,
             cloud: Arc::new(Mutex::new(Cloud {
@@ -594,6 +597,120 @@ fn product_failures_survive_cleanup_failure() {
 }
 
 #[test]
+fn stability_uses_two_additional_slots_after_both_baselines() {
+    let mut fake = completed_baselines();
+    for (candidate, run) in [("dev-amd64", "104"), ("dev-arm64", "105")] {
+        stability(&mut fake, candidate, run);
+        let receipt = fake.dispatch().unwrap();
+        assert_eq!(receipt["slot"], format!("stability-{candidate}"));
+        let slot = &receipt["snapshot"]["slots"][format!("stability-{candidate}")];
+        assert_eq!(slot["plan"]["duration_seconds"], 216000);
+        assert_eq!(slot["deadline_epoch"].as_u64().unwrap() - fake.now, 230400);
+        assert!(fake.dispatch().is_err());
+    }
+    assert_eq!(fake.cloud.lock().unwrap().launches, 5);
+    for candidate in ["dev-amd64", "dev-arm64"] {
+        stability(&mut fake, candidate, "106");
+        assert!(fake.dispatch().is_err());
+    }
+    assert_eq!(fake.cloud.lock().unwrap().launches, 5);
+}
+
+fn completed_baselines() -> Fake {
+    let mut fake = Fake::new();
+    fake.dispatch().unwrap();
+    fake.due();
+    operations::supervise(&mut fake, &config()).unwrap();
+    fake.cloud.lock().unwrap().state["slots"]["preflight"]["result"] = json!("passed");
+    fake.baseline("dev-amd64", "102");
+    fake.dispatch().unwrap();
+    fake.baseline("dev-arm64", "103");
+    fake.dispatch().unwrap();
+    fake.now = fake.cloud.lock().unwrap().state["slots"]["baseline-dev-arm64"]["termination_epoch"]
+        .as_u64()
+        .unwrap();
+    operations::supervise(&mut fake, &config()).unwrap();
+    for name in ["baseline-dev-amd64", "baseline-dev-arm64"] {
+        fake.cloud.lock().unwrap().state["slots"][name]["result"] = json!("passed");
+    }
+    fake
+}
+
+fn stability(fake: &mut Fake, candidate: &str, run: &str) {
+    fake.baseline(candidate, run);
+    fake.plan["stage"] = json!("stability");
+    fake.plan["duration_seconds"] = json!(216000);
+    fake.plan["runner_max_seconds"] = json!(230400);
+    let mut request: Value = serde_json::from_slice(&fake.request).unwrap();
+    request["stage"] = json!("stability");
+    request["baseline_run_ids"] = json!({"dev-amd64":"102","dev-arm64":"103"});
+    fake.request = encoded(&request).unwrap();
+}
+
+#[test]
+fn stability_rejects_missing_failed_or_unterminated_baselines() {
+    for name in ["baseline-dev-amd64", "baseline-dev-arm64"] {
+        for (field, value) in [
+            ("result", json!("pending")),
+            ("result", json!("failed")),
+            ("state", json!("launched")),
+            ("termination_confirmed", json!(false)),
+            ("product_failures", json!(["mismatch"])),
+            ("infrastructure_failures", json!(["cleanup_failed"])),
+            ("run_id", json!("999")),
+        ] {
+            let mut fake = completed_baselines();
+            fake.cloud.lock().unwrap().state["slots"][name][field] = value;
+            stability(&mut fake, "dev-amd64", "104");
+            assert!(fake.dispatch().is_err(), "{name}: {field}");
+            assert_eq!(fake.cloud.lock().unwrap().launches, 3);
+        }
+        let mut fake = completed_baselines();
+        fake.cloud.lock().unwrap().state["slots"][name] = Value::Null;
+        stability(&mut fake, "dev-arm64", "105");
+        assert!(fake.dispatch().is_err());
+        assert_eq!(fake.cloud.lock().unwrap().launches, 3);
+    }
+}
+
+#[test]
+fn stability_rejects_changed_resources_and_reused_run_identifiers() {
+    let mut fake = completed_baselines();
+    stability(&mut fake, "dev-amd64", "104");
+    assert!(campaign_control::validate_plan(&fake.config, &fake.request, &fake.plan).is_ok());
+    for (field, value) in [
+        ("duration_seconds", 215999),
+        ("duration_seconds", 216001),
+        ("runner_max_seconds", 230399),
+        ("runner_max_seconds", 230401),
+        ("memory_gb", 65),
+        ("max_launches", 2),
+    ] {
+        let mut plan = fake.plan.clone();
+        plan[field] = json!(value);
+        assert!(campaign_control::validate_plan(&fake.config, &fake.request, &plan).is_err());
+    }
+    for run in ["101", "102", "103"] {
+        fake.run = run.to_owned();
+        assert!(fake.dispatch().is_err());
+    }
+    for value in [
+        Value::Null,
+        json!({"dev-amd64":"102"}),
+        json!({"dev-amd64":"102","dev-arm64":"102"}),
+    ] {
+        let mut request: Value = serde_json::from_slice(&fake.request).unwrap();
+        request["baseline_run_ids"] = value;
+        assert!(campaign_control::validate_plan(
+            &fake.config,
+            &encoded(&request).unwrap(),
+            &fake.plan
+        )
+        .is_err());
+    }
+}
+
+#[test]
 fn three_fixed_slots_require_passing_preflight_and_never_refund() {
     let mut fake = Fake::new();
     fake.dispatch().unwrap();
@@ -718,7 +835,7 @@ fn worker(fake: &Fake) -> Value {
         "admission":"admitted","host_protection":"passed","evidence_kind":"node_observation","node_launch_count":1,
         "started_epoch":slot["reserved_epoch"],"finished_epoch":fake.now,"workload_elapsed_seconds":0,
         "integration_preflight":"passed","measurement_completeness":"complete",
-        "profile_verdicts":{"authority_finality":"passed","publication":"passed"},"product_failures":[],"result":"passed"})
+        "profile_verdicts":{"authority_finality":"passed","publication":"pending","recovery":"pending"},"product_failures":[],"result":"passed"})
 }
 
 fn artifact(fake: &Fake) -> Value {
@@ -743,6 +860,15 @@ fn finalizer_requires_worker_identity_and_confirmed_termination() {
     )
     .unwrap();
     assert_eq!(report["result"], "passed");
+    assert_eq!(report["plan"]["phase"], "pre_pr216_merge");
+    assert_eq!(
+        report["plan"]["deferred_profiles"],
+        json!({"publication":"post_pr216_merge","recovery":"post_pr216_merge"})
+    );
+    assert_eq!(
+        report["profile_verdicts"],
+        json!({"authority_finality":"passed","publication":"pending","recovery":"pending"})
+    );
     assert_eq!(report["cleanup"]["complete"], true);
     assert_eq!(fake.cloud.lock().unwrap().launches, 1);
     assert_eq!(fake.slot()["worker_result"], result);
@@ -803,39 +929,41 @@ fn invalid_or_missing_worker_evidence_still_requests_cleanup() {
 }
 
 #[test]
-fn passing_worker_requires_a_complete_baseline_and_cleanup_window() {
-    let mut fake = Fake::new();
-    fake.dispatch().unwrap();
-    let mut slot = fake.slot();
-    slot["plan"]["duration_seconds"] = json!(86400);
-    slot["termination_epoch"] = json!(fake.now + 90000);
-    let mut result = worker(&fake);
-    result["plan_sha256"] = json!(hash(&encoded(&slot["plan"]).unwrap()));
-    result["finished_epoch"] = json!(fake.now + 86400);
-    result["workload_elapsed_seconds"] = json!(86400);
-    assert!(campaign_control::results::validate_worker(
-        &fake.config,
-        &slot,
-        &result,
-        fake.now + 86400
-    )
-    .is_ok());
-    for (field, value) in [
-        ("workload_elapsed_seconds", json!(86399)),
-        ("evidence_kind", json!("synthetic_fixture")),
-        ("host_protection", json!("failed")),
-        ("finished_epoch", json!(fake.now + 90000)),
-        ("product_failures", json!(["failure"])),
-    ] {
-        let mut invalid = result.clone();
-        invalid[field] = value;
+fn passing_worker_requires_full_baseline_or_stability_duration() {
+    for duration in [86400, 216000] {
+        let mut fake = Fake::new();
+        fake.dispatch().unwrap();
+        let mut slot = fake.slot();
+        slot["plan"]["duration_seconds"] = json!(duration);
+        slot["termination_epoch"] = json!(fake.now + duration + 3600);
+        let mut result = worker(&fake);
+        result["plan_sha256"] = json!(hash(&encoded(&slot["plan"]).unwrap()));
+        result["finished_epoch"] = json!(fake.now + duration);
+        result["workload_elapsed_seconds"] = json!(duration);
         assert!(campaign_control::results::validate_worker(
             &fake.config,
             &slot,
-            &invalid,
-            fake.now + 90000
+            &result,
+            fake.now + duration
         )
-        .is_err());
+        .is_ok());
+        for (field, value) in [
+            ("workload_elapsed_seconds", json!(duration - 1)),
+            ("evidence_kind", json!("synthetic_fixture")),
+            ("host_protection", json!("failed")),
+            ("finished_epoch", json!(fake.now + duration + 3600)),
+            ("product_failures", json!(["failure"])),
+        ] {
+            let mut invalid = result.clone();
+            invalid[field] = value;
+            assert!(campaign_control::results::validate_worker(
+                &fake.config,
+                &slot,
+                &invalid,
+                fake.now + duration + 3600
+            )
+            .is_err());
+        }
     }
 }
 
@@ -898,4 +1026,154 @@ fn worker_archive_binds_bytes_and_rejects_extra_files_and_links() {
             assert!(result.is_err(), "{kind}");
         }
     }
+}
+
+#[test]
+fn old_or_incomplete_authoritative_state_cannot_reset_the_budget() {
+    let fake = Fake::new();
+    let original = fake.cloud.lock().unwrap().state.clone();
+    let mut old = original.clone();
+    old["schema_version"] = json!(1);
+    assert!(campaign_control::validate_state(&fake.config, &old).is_err());
+    for name in campaign_control::SLOTS {
+        let mut incomplete = original.clone();
+        incomplete["slots"].as_object_mut().unwrap().remove(name);
+        assert!(campaign_control::validate_state(&fake.config, &incomplete).is_err());
+    }
+}
+
+#[test]
+fn premerge_results_require_authority_and_explicit_pending_occurrence_profiles() {
+    let mut fake = Fake::new();
+    fake.plan["phase"] = json!("pre_pr216_merge");
+    fake.plan["required_profiles"] = json!(["authority_finality"]);
+    fake.plan["deferred_profiles"] =
+        json!({"publication":"post_pr216_merge","recovery":"post_pr216_merge"});
+    fake.dispatch().unwrap();
+    let slot = fake.slot();
+    let mut result = worker(&fake);
+    result["profile_verdicts"] =
+        json!({"authority_finality":"passed","publication":"pending","recovery":"pending"});
+    assert!(
+        campaign_control::results::validate_worker(&fake.config, &slot, &result, fake.now).is_ok()
+    );
+    for profile in ["authority_finality", "publication", "recovery"] {
+        let values = if profile == "authority_finality" {
+            vec![json!("pending"), json!("failed"), Value::Null]
+        } else {
+            vec![
+                json!("passed"),
+                json!("skipped"),
+                json!("failed"),
+                Value::Null,
+            ]
+        };
+        for value in values {
+            let mut invalid = result.clone();
+            invalid["profile_verdicts"][profile] = value;
+            assert!(campaign_control::results::validate_worker(
+                &fake.config,
+                &slot,
+                &invalid,
+                fake.now
+            )
+            .is_err());
+        }
+    }
+}
+
+#[test]
+fn premerge_dispatch_rejects_a_changed_phase_or_profile_scope() {
+    for (field, value) in [
+        ("phase", json!("post_pr216_merge")),
+        ("phase", Value::Null),
+        ("required_profiles", json!([])),
+        ("required_profiles", json!(["publication"])),
+        ("deferred_profiles", json!({})),
+        (
+            "deferred_profiles",
+            json!({"publication":"post_pr216_merge"}),
+        ),
+    ] {
+        let mut fake = Fake::new();
+        fake.plan[field] = value;
+        assert!(fake.dispatch().is_err(), "{field}");
+        assert_eq!(fake.cloud.lock().unwrap().launches, 0);
+    }
+}
+
+#[test]
+fn qualification_binds_premerge_scope_without_occurrence_capabilities() {
+    let root = tempfile::tempdir().unwrap();
+    let mut plan = Fake::new().plan;
+    plan["node_revision"] = json!("9".repeat(40));
+    let workload = json!({"schema_version":1,"profile_id":"casper-authority-finality",
+        "phase":"pre_pr216_merge","providers":["docker"],"required_capabilities":["authority_finality"],
+        "deferred_profiles":plan["deferred_profiles"]});
+    let qualification = json!({"schema_version":1,"phase":"pre_pr216_merge",
+        "deferred_profiles":plan["deferred_profiles"],"evidence_kind":"node_observation","status":"qualified",
+        "candidate_id":plan["candidate_id"],"node_revision":plan["node_revision"],
+        "node_binary_digest":plan["node_binary_digest"],"image_digest":plan["image_digest"],
+        "capabilities":{"authority_finality":"qualified","publication":"pending","recovery":"pending"}});
+    let bind = |plan: &mut Value, w: &Value, q: &Value| {
+        let bytes = encoded(w).unwrap();
+        std::fs::write(root.path().join("workload.json"), &bytes).unwrap();
+        plan["workload"] = json!({"path":"workload.json","sha256":hash(&bytes)});
+        let mut q = q.clone();
+        q["workload_sha256"] = plan["workload"]["sha256"].clone();
+        let bytes = encoded(&q).unwrap();
+        std::fs::write(root.path().join("qualification.json"), &bytes).unwrap();
+        plan["qualification"] = json!({"path":"qualification.json","sha256":hash(&bytes)});
+    };
+    bind(&mut plan, &workload, &qualification);
+    campaign_control::qualified(root.path(), &plan).unwrap();
+    for (field, value) in [
+        ("profile_id", json!("casper-authority-publication")),
+        ("profile_id", json!("current-dev-load")),
+        ("phase", json!("post_pr216_merge")),
+        (
+            "required_capabilities",
+            json!(["authority_finality", "publication"]),
+        ),
+        ("required_capabilities", json!([])),
+        ("deferred_profiles", json!({})),
+    ] {
+        let mut invalid = workload.clone();
+        invalid[field] = value;
+        bind(&mut plan, &invalid, &qualification);
+        assert!(
+            campaign_control::qualified(root.path(), &plan).is_err(),
+            "{field}"
+        );
+    }
+    for (field, value) in [
+        ("phase", json!("post_pr216_merge")),
+        ("deferred_profiles", json!({})),
+        ("evidence_kind", json!("synthetic_fixture")),
+        ("node_revision", json!("0".repeat(40))),
+        (
+            "capabilities",
+            json!({"authority_finality":"pending","publication":"pending","recovery":"pending"}),
+        ),
+        (
+            "capabilities",
+            json!({"authority_finality":"qualified","publication":"qualified","recovery":"pending"}),
+        ),
+        (
+            "capabilities",
+            json!({"authority_finality":"qualified","publication":"pending","recovery":"qualified"}),
+        ),
+        ("capabilities", json!({"authority_finality":"qualified"})),
+    ] {
+        let mut invalid = qualification.clone();
+        invalid[field] = value;
+        bind(&mut plan, &workload, &invalid);
+        assert!(
+            campaign_control::qualified(root.path(), &plan).is_err(),
+            "{field}"
+        );
+    }
+    bind(&mut plan, &workload, &qualification);
+    std::fs::write(root.path().join("qualification.json"), b"{}").unwrap();
+    assert!(campaign_control::qualified(root.path(), &plan).is_err());
 }

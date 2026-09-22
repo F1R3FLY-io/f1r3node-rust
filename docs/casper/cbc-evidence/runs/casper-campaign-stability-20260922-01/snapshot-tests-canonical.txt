@@ -1,0 +1,57 @@
+   Compiling block-storage v0.1.0 (/Users/jeff/src/CurrentProjects/FF/f1r3node-rust/block-storage)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.58s
+     Running tests/soak_snapshot.rs (target/debug/deps/soak_snapshot-d8a0d3d8ba4372bb)
+
+running 24 tests
+test bounded_block_decoding_rejects_oversized_lengths_before_allocation ... ok
+test bounded_block_decoding_rejects_short_decompression_with_valid_zero_padding ... ok
+test in_memory_backend_is_unsupported ... ok
+test held_block_without_metadata_row_is_incomplete_evidence ... ok
+test body_request_count_is_checked_before_capture ... ok
+test cache_row_write_without_global_lock_is_rejected ... ok
+test canonical_output_has_an_exact_byte_bound ... ok
+test held_block_without_body_row_is_incomplete_but_unknown_block_is_not_held ... ok
+test complete_capture_work_boundary_is_exact ... ok
+test captured_data_survives_later_live_mutations ... ok
+test finalization_row_write_without_generation_change_is_rejected ... ok
+test duration_identity_does_not_truncate_to_u64_nanoseconds ... ok
+test invalid_limits_are_rejected_before_guards_or_reads ... ok
+test capture_copies_the_held_dag_with_ordered_parents_and_availability_states ... ok
+test block_store_environment_change_is_reported_separately ... ok
+test aggregate_parent_limit_precedes_decoding_of_later_metadata ... ok
+test capture_work_includes_canonical_output_bytes ... ok
+test metadata_collections_are_bounded_before_typed_decoding ... ok
+test malformed_nested_metadata_lengths_and_trailing_bytes_are_rejected ... ok
+test production_store_bytes_are_unchanged_by_successful_and_rejected_captures ... ok
+test scratch_block_stores_use_captured_bytes_and_are_independent ... ok
+test present_cache_seeds_are_captured_and_absent_seeds_stay_absent ... ok
+test scratch_views_share_no_mutable_stores_with_each_other_or_production ... ok
+test stored_block_round_trips_through_bounded_decoding ... ok
+
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.04s
+
+     Running tests/soak_snapshot.rs (target/debug/deps/soak_snapshot-6a1973af01e5bd25)
+
+running 19 tests
+test store_list_is_bounded_before_backend_inspection ... ok
+test invalid_limits_are_rejected_before_any_store_access ... ok
+test malformed_length_prefix_is_rejected ... ok
+test remaining_budget_cannot_be_increased ... ok
+test empty_scans_consume_operation_budget ... ok
+test total_bytes_records_and_operations_budgets_are_enforced ... ok
+test lookup_keys_are_bounded_before_encoding ... ok
+test unsupported_backend_is_rejected_instead_of_substituted ... ok
+test scan_keys_obey_the_per_buffer_limit ... ok
+test unchanged_environment_validates_and_stored_bytes_are_untouched ... ok
+test stores_in_one_environment_share_one_transaction_and_a_second_same_thread_reader_fails ... ok
+test raw_length_is_checked_before_the_value_is_copied ... ok
+test per_scan_limit_checks_before_copy_and_retains_consumption ... ok
+test malformed_scan_charges_only_the_attempted_prefix ... ok
+test failed_scan_retains_consumed_work_and_record_budget ... ok
+test store_outside_the_opened_set_is_refused ... ok
+test write_between_open_and_validation_is_rejected ... ok
+test separate_environments_are_opened_and_validated_together ... ok
+test value_changed_back_to_original_bytes_is_still_rejected ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.22s
+

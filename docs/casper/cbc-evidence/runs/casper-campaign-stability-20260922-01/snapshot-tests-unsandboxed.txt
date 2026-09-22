@@ -1,0 +1,60 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.15s
+     Running tests/soak_snapshot.rs (target/debug/deps/soak_snapshot-d8a0d3d8ba4372bb)
+
+running 24 tests
+test bounded_block_decoding_rejects_oversized_lengths_before_allocation ... ok
+test bounded_block_decoding_rejects_short_decompression_with_valid_zero_padding ... ok
+test in_memory_backend_is_unsupported ... ok
+test canonical_output_has_an_exact_byte_bound ... ok
+test capture_work_includes_canonical_output_bytes ... ok
+test finalization_row_write_without_generation_change_is_rejected ... FAILED
+test body_request_count_is_checked_before_capture ... ok
+test cache_row_write_without_global_lock_is_rejected ... ok
+test complete_capture_work_boundary_is_exact ... ok
+test duration_identity_does_not_truncate_to_u64_nanoseconds ... ok
+test captured_data_survives_later_live_mutations ... ok
+test held_block_without_body_row_is_incomplete_but_unknown_block_is_not_held ... ok
+test aggregate_parent_limit_precedes_decoding_of_later_metadata ... ok
+test capture_copies_the_held_dag_with_ordered_parents_and_availability_states ... FAILED
+test held_block_without_metadata_row_is_incomplete_evidence ... ok
+test block_store_environment_change_is_reported_separately ... FAILED
+test invalid_limits_are_rejected_before_guards_or_reads ... ok
+test malformed_nested_metadata_lengths_and_trailing_bytes_are_rejected ... ok
+test metadata_collections_are_bounded_before_typed_decoding ... ok
+test production_store_bytes_are_unchanged_by_successful_and_rejected_captures ... ok
+test present_cache_seeds_are_captured_and_absent_seeds_stay_absent ... ok
+test scratch_block_stores_use_captured_bytes_and_are_independent ... ok
+test stored_block_round_trips_through_bounded_decoding ... ok
+test scratch_views_share_no_mutable_stores_with_each_other_or_production ... ok
+
+failures:
+
+---- finalization_row_write_without_generation_change_is_rejected stdout ----
+
+thread 'finalization_row_write_without_generation_change_is_rejected' (21381357) panicked at block-storage/tests/soak_snapshot.rs:397:13:
+assertion `left == right` failed
+  left: "/private/var/folders/4n/_7jzrd1x0p5fdmqhkm9cbmmr0000gq/T/f1r3-soak-snapshot-finalization-90757-1790085430783883000/dagstorage"
+ right: "/var/folders/4n/_7jzrd1x0p5fdmqhkm9cbmmr0000gq/T/f1r3-soak-snapshot-finalization-90757-1790085430783883000/dagstorage"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- capture_copies_the_held_dag_with_ordered_parents_and_availability_states stdout ----
+
+thread 'capture_copies_the_held_dag_with_ordered_parents_and_availability_states' (21381352) panicked at block-storage/tests/soak_snapshot.rs:313:5:
+assertion failed: environments.contains(&fx.dag_env_path().as_str())
+
+---- block_store_environment_change_is_reported_separately stdout ----
+
+thread 'block_store_environment_change_is_reported_separately' (21381346) panicked at block-storage/tests/soak_snapshot.rs:458:13:
+assertion `left == right` failed
+  left: "/private/var/folders/4n/_7jzrd1x0p5fdmqhkm9cbmmr0000gq/T/f1r3-soak-snapshot-blocks-env-90757-1790085430783347000/blockstorage"
+ right: "/var/folders/4n/_7jzrd1x0p5fdmqhkm9cbmmr0000gq/T/f1r3-soak-snapshot-blocks-env-90757-1790085430783347000/blockstorage"
+
+
+failures:
+    block_store_environment_change_is_reported_separately
+    capture_copies_the_held_dag_with_ordered_parents_and_availability_states
+    finalization_row_write_without_generation_change_is_rejected
+
+test result: FAILED. 21 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.70s
+
+error: test failed, to rerun pass `-p block-storage --test soak_snapshot`

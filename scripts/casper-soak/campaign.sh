@@ -77,9 +77,10 @@ plan() {
       ((.profile_id=="current-dev-load" and .providers==["docker","subprocess"] and
         .test_path=="integration-tests/test/tests/custom/test_load.py" and (.test_sha256|type=="string" and test("^[a-f0-9]{64}$")) and
         .preflight_profile_path=="integration-tests/test/full-suite.txt" and (.preflight_profile_sha256|type=="string" and test("^[a-f0-9]{64}$"))) or
-       (.profile_id=="casper-authority-publication" and .providers==["docker"] and
+       (.profile_id=="casper-authority-finality" and .phase=="pre_pr216_merge" and
+        .deferred_profiles=={publication:"post_pr216_merge",recovery:"post_pr216_merge"} and .providers==["docker"] and
         (.entrypoint.path|type=="string") and (.entrypoint.sha256|type=="string" and test("^[a-f0-9]{64}$")) and
-        .required_capabilities==["authority_finality","publication"])) and
+        .required_capabilities==["authority_finality"])) and
       (.required_capabilities|type=="array" and length>0 and length<=32) and
       all(.required_capabilities[];type=="string" and test("^[a-z][a-z0-9_-]{0,63}$")) and
       (.required_capabilities|length)==(.required_capabilities|unique|length)
@@ -88,7 +89,10 @@ plan() {
       $a[0].candidates[$id] as $c | . as $q |
       .schema_version==1 and .status=="qualified" and .evidence_kind=="node_observation" and .candidate_id==$id and
       .node_revision==$c.node_revision and .node_binary_digest==$c.node_binary_digest and .image_digest==$c.image_digest and
-      .workload_sha256==$c.workload.sha256 and all($w[0].required_capabilities[]; $q.capabilities[.]=="qualified")
+      .workload_sha256==$c.workload.sha256 and all($w[0].required_capabilities[]; $q.capabilities[.]=="qualified") and
+      (if $w[0].profile_id=="casper-authority-finality" then
+        .phase==$a[0].phase and .deferred_profiles==$w[0].deferred_profiles and
+        .capabilities.publication=="pending" and .capabilities.recovery=="pending" else true end)
     ' "$qualification" >/dev/null 2>&1 || fail 'A required live capability is not qualified for these exact inputs.'
   done
   local identity
@@ -96,7 +100,8 @@ plan() {
   jq -n --slurpfile a "$approval" --slurpfile r "$request" --arg identity "$identity" --arg approval_digest "$(hash_file "$approval")" '
     $a[0] as $a | $r[0] as $r | $a.candidates[$r.candidate_id] as $c | $a.stages[$r.stage] as $s |
     {schema_version:1,campaign_id:$r.campaign_id,stage:$r.stage,candidate_id:$r.candidate_id,
-     phase:$a.phase,campaign_candidates:$a.candidates,
+     phase:$a.phase,required_profiles:["authority_finality"],
+     deferred_profiles:{publication:"post_pr216_merge",recovery:"post_pr216_merge"},campaign_candidates:$a.candidates,
      identity_digest:$identity,approval_digest:$approval_digest,harness_revision:$a.harness_revision,
      external_harness_revision:$a.external_harness_revision,node_revision:$c.node_revision,platform:$c.platform,
      runner_arch:(if $c.platform=="linux/amd64" then "x64" else "arm64" end),
@@ -142,14 +147,18 @@ prior() {
     .cleanup.complete==true and .host_protection.status=="passed" and
     .plan.identity_digest==$p.identity_digest and .plan.campaign_id==$p.campaign_id and
     .plan.harness_revision==$p.harness_revision and .plan.external_harness_revision==$p.external_harness_revision and
-    .plan.phase==$p.phase and .plan.stage==$stage and .plan.candidate_id==$candidate and
+    .plan.phase=="pre_pr216_merge" and .plan.phase==$p.phase and
+    .plan.required_profiles==["authority_finality"] and .plan.required_profiles==$p.required_profiles and
+    .plan.deferred_profiles=={publication:"post_pr216_merge",recovery:"post_pr216_merge"} and .plan.deferred_profiles==$p.deferred_profiles and
+    .profile_verdicts=={authority_finality:"passed",publication:"pending",recovery:"pending"} and
+    .plan.stage==$stage and .plan.candidate_id==$candidate and
     .plan.node_revision==$c.node_revision and .plan.platform==$c.platform and
     .plan.image_digest==$c.image_digest and .plan.image_config_digest==$c.image_config_digest and
     .plan.node_binary_digest==$c.node_binary_digest and .plan.workload==$c.workload and .plan.qualification==$c.qualification and
     (if $stage=="preflight" then .plan.duration_seconds==0 and .integration_preflight=="passed"
      elif $stage=="baseline" then .plan.duration_seconds==86400 and .soak_verdict=="passed" and
        (.workload_elapsed_seconds|type=="number" and floor==. and .>=86400) and
-       .measurement_completeness=="complete" and .profile_verdicts.authority_finality=="passed" and .profile_verdicts.publication=="passed"
+       .measurement_completeness=="complete"
      else false end)
   ' "$result_file" >/dev/null 2>&1 || fail 'The prior result does not satisfy this campaign stage.'
 }
@@ -231,7 +240,7 @@ dispatch() (
   prior_runs=verified-records-only
   if [[ "$stage" == preflight ]]; then prior_runs=not-required; fi
   reason=campaign_execution_not_implemented
-  jq -n '{schema_version:1,blockers:["eligible_casper_workload_missing","authority_publication_live_adapters_unqualified","source_bound_acceptance_pending","approval_authentication_missing","persistent_launch_reservation_missing","independent_instance_lifetime_enforcement_missing"],baseline_machine_limit:3,replacement_launches:0,repeat_launches:0,stability_resource_decision:"required",recovery_qualification:"requires_actual_pr216_merge"}' > "$out/blockers.json"
+  jq -n '{schema_version:1,blockers:["eligible_casper_workload_missing","authority_live_adapter_unqualified","source_bound_acceptance_pending","approval_authentication_missing","persistent_launch_reservation_missing","independent_instance_lifetime_enforcement_missing"],baseline_machine_limit:3,replacement_launches:0,repeat_launches:0,stability_resource_decision:"approved_both_architectures_64h_lifetime",deferred_profiles:{publication:"post_pr216_merge",recovery:"post_pr216_merge"}}' > "$out/blockers.json"
   printf 'Campaign blocked: execution prerequisites remain unmet. No node or cloud runner launched.\n' >&2
   exit 3
 )

@@ -7,10 +7,10 @@ The capture claim remains pending. Local tests do not discharge the claim or qua
   "artifact": {
     "path": "block-storage/tests/soak_snapshot.rs",
     "id": "block-storage-tests-soak-snapshot-rs",
-    "commit": "6198821283b960c3aafae1e8c35966b883dfd2f3",
+    "commit": "515a011598c9db66ff5a1b2b014b2a2894f7c409",
     "commit_is_base": true,
     "working_tree": true,
-    "sha256": "7e3c1571eac4d6b9517a6e956c98240a341631d35359923e571952c6f6effa77"
+    "sha256": "1503fb0497becd0b9ac7ec706c621268a7fe0a3e6aefaa0acbd8d80adf042403"
   },
   "claim": "docs/claims/casper-node-authority-snapshot.md",
   "claim_ids": [
@@ -24,8 +24,8 @@ The capture claim remains pending. Local tests do not discharge the claim or qua
   "scope": "batch-b1-bounded-detached-capture",
   "evidence": {
     "kind": "local-tests-not-discharge",
-    "ref": "docs/cbc-evidence/runs/casper-node-snapshot-completion-619882128-01/report.json",
-    "sha256": "73848a230f169a62736d60c5440fa2ea24b991ab7a6f80b0d138718547c9d5a7"
+    "ref": "docs/casper/cbc-evidence/runs/casper-campaign-stability-20260922-01/report.json",
+    "sha256": "bdfd4e878489e618de82bcf2a69e913e0ea6d525aaabcdc16d3f992f652fccb7"
   },
   "previous_record": {
     "commit": "6198821283b960c3aafae1e8c35966b883dfd2f3",
@@ -39,6 +39,23 @@ The capture claim remains pending. Local tests do not discharge the claim or qua
   },
   "soak": "pending",
   "waiver": null,
-  "verified_at": null
+  "verified_at": null,
+  "prior_records": [
+    {
+      "artifact": {
+        "path": "block-storage/tests/soak_snapshot.rs",
+        "id": "block-storage-tests-soak-snapshot-rs",
+        "commit": "6198821283b960c3aafae1e8c35966b883dfd2f3",
+        "commit_is_base": true,
+        "working_tree": true,
+        "sha256": "7e3c1571eac4d6b9517a6e956c98240a341631d35359923e571952c6f6effa77"
+      },
+      "evidence": {
+        "kind": "local-tests-not-discharge",
+        "ref": "docs/cbc-evidence/runs/casper-node-snapshot-completion-619882128-01/report.json",
+        "sha256": "73848a230f169a62736d60c5440fa2ea24b991ab7a6f80b0d138718547c9d5a7"
+      }
+    }
+  ]
 }
 ```

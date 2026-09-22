@@ -54,5 +54,5 @@ bash scripts/casper-soak/test-campaign.sh "$out/planner" > "$out/planner.txt" 2>
 shasum -a 256 "${files[@]}" > "$out/source-after.sha256"
 cmp "$out/source-before.sha256" "$out/source-after.sha256" || failed=1
 [[ "$failed" == 0 ]]
-jq -e '.status=="passed" and (.results|length)==5 and all(.results[];.outcome=="passed")' "$out/models/report.json" >/dev/null
+jq -e '.status=="passed" and (.results|length)==6 and all(.results[];.outcome=="passed")' "$out/models/report.json" >/dev/null
 completed=true

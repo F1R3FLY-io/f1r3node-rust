@@ -55,7 +55,7 @@ The environment does not yet exist as a verified campaign approval mechanism. Th
 
 The approved backend is one pre-provisioned OCI Object Storage object for the approved campaign budget. Its location must come from trusted controller configuration.
 
-The record contains the campaign binding, all three slots, all used run identifiers, and each slot state. One conditional update checks the complete record.
+The record contains the campaign binding, all five slots, all used run identifiers, and each slot state. One conditional update checks the complete record.
 
 Separate objects for separate slots cannot independently enforce cross-slot run uniqueness. The controller must not use a local filesystem lock as distributed serialization.
 
@@ -73,7 +73,7 @@ Resource Scheduler supports function invocation through its Start action. The fu
 
 Scheduled functions use detached invocation. Function completion and instance termination remain separate observations.
 
-The operator must identify the deployment, permissions, scheduling bounds, and failure response. No additional supervisor machine is included in the approved three-machine budget.
+The operator must identify the deployment, permissions, scheduling bounds, and failure response. No additional supervisor machine is included in the approved five-machine budget.
 
 A GitHub job timeout, runner-local timer, tag, or termination request does not prove that an instance terminated.
 
@@ -136,12 +136,17 @@ Cleanup requests may retry within explicit bounds against the same verified inst
 | --- | --- | --- | --- | --- |
 | Preflight | One | 64 GB | Four hours | Separate integration preflight |
 | Baseline | One per selected architecture | 64 GB | 26 hours | 86,400 seconds each |
+| Stability | One per selected architecture | 64 GB | 64 hours | 216,000 seconds each |
 
 Both baselines require passing preflight evidence. A reservation alone cannot satisfy that gate.
 
 The 600-second cleanup reserve remains separate from workload duration. Insufficient lifetime rejects execution rather than shortening a baseline.
 
-The later 60-hour phase remains disabled until its candidate count and runner lifetime receive explicit confirmation.
+The user confirmed the stability budget on 2026-09-22. Both architecture baselines must pass before either stability launch.
+
+The stability implementation extends the controller, workflow routing, host admission, and campaign model. Five durable slots enforce the total approved machine count.
+
+The original local reservation helper remains a three-machine baseline guard. The authoritative controller owns the complete five-machine budget.
 
 ## Image and host controls
 
@@ -205,3 +210,24 @@ The missing `scripts/casper-soak/campaign-job.sh` connects controller receipts t
 Local evidence cannot accept claims or qualify deployed services. The workflow must reject missing activation evidence, configuration pins, qualified workloads, and node interfaces before launch.
 
 The approval authority and OCI hosting choices are confirmed. No node, cloud instance, campaign workflow, or infrastructure deployment has started in this continuation.
+
+The authoritative record uses schema version 2 with five explicit slots. The controller rejects version 1 and incomplete slot sets.
+
+No automatic migration or budget reset is permitted. Any deployed earlier record requires a reviewed migration that preserves every consumed reservation.
+
+
+## Campaign phase boundary
+
+This branch merges before PR #216 integrates. Occurrence-dependent publication and recovery qualification belong to EPIC-018.
+
+The pre-merge executable workload uses `profile_id: casper-authority-finality` and `phase: pre_pr216_merge`. Its `required_capabilities` array contains only `authority_finality`.
+
+The workload, qualification, and plan contain `deferred_profiles: {publication: post_pr216_merge, recovery: post_pr216_merge}`. The plan also contains `required_profiles: [authority_finality]`.
+
+Live qualification must bind the exact candidate and workload. Its authority/finality capability must be qualified, while publication and recovery remain pending.
+
+Every passing worker result contains `profile_verdicts: {authority_finality: passed, publication: pending, recovery: pending}`. Prior-run checks enforce the same scope before stage advancement.
+
+The final report retains these pending verdicts and the bound plan. A passing campaign result applies only to its required pre-merge scope.
+
+The controller rejects legacy load execution, combined publication workloads, changed phases, missing scope, and claimed deferred passes. Existing duration, identity, protection, and cleanup requirements remain mandatory.

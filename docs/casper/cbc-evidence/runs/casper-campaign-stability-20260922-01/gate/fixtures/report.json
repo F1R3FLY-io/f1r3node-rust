@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "status": "passed",
+  "exit_code": 0,
+  "evidence_kind": "controlled_provider_fixture",
+  "node_launches": 0,
+  "cloud_launches": 0,
+  "claim_discharge": "pending"
+}

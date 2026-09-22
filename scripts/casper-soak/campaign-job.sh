@@ -16,7 +16,8 @@ jq -e --arg run "$GITHUB_RUN_ID" --arg config "${CASPER_CAMPAIGN_CONFIG_SHA256:?
   .schema_version==1 and .control_result=="passed" and .config_digest==$config and
   (.receipt as $r | $r.scope=="campaign-launch-control" and $r.launch_submissions==1 and
     $r.workload_admitted==false and $r.termination_confirmed==false and $r.config_digest==$config and
-    ($r.slot=="preflight" or $r.slot=="baseline-dev-amd64" or $r.slot=="baseline-dev-arm64") and
+    ($r.slot=="preflight" or $r.slot=="baseline-dev-amd64" or $r.slot=="baseline-dev-arm64" or
+      $r.slot=="stability-dev-amd64" or $r.slot=="stability-dev-arm64") and
     ($r.reservation_id|type=="string" and test("^[a-f0-9]{64}$")) and
     $r.snapshot.slots[$r.slot].run_id==$run and $r.snapshot.slots[$r.slot].reservation_id==$r.reservation_id and
     $r.snapshot.slots[$r.slot].instance_id==$r.instance_id and $r.snapshot.slots[$r.slot].state=="launched")

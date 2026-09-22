@@ -10,7 +10,7 @@ plan="$(realpath -e -- "$4")"
 slot="$5" reservation="$6" out="$7"
 snapshot="$(realpath -e -- "$8")"
 [[ "$reservation" =~ ^[a-f0-9]{64}$ ]] || fail 'The reservation identifier is invalid.'
-[[ "$slot" == preflight || "$slot" == baseline-dev-amd64 || "$slot" == baseline-dev-arm64 ]] || fail 'The reservation slot is invalid.'
+[[ "$slot" == preflight || "$slot" == baseline-dev-amd64 || "$slot" == baseline-dev-arm64 || "$slot" == stability-dev-amd64 || "$slot" == stability-dev-arm64 ]] || fail 'The reservation slot is invalid.'
 [[ ! -e "$out" && ! -L "$out" ]] || fail 'The output directory already exists.'
 mkdir -m 700 -- "$out"
 out="$(realpath -e -- "$out")"

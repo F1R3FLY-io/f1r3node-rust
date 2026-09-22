@@ -1,7 +1,7 @@
 ------------------------- MODULE CampaignControl -------------------------
 EXTENDS Naturals, FiniteSets, TLC
-CONSTANTS BreakReservation, BreakApproval, BreakSchedule, BreakTermination
-Slots == {"preflight", "amd64", "arm64"}
+CONSTANTS BreakReservation, BreakApproval, BreakSchedule, BreakTermination, BreakPrerequisites
+Slots == {"preflight", "amd64", "arm64", "stability-amd64", "stability-arm64"}
 Controllers == {"first", "second"}
 VARIABLES phase, owner, submissions, approval, schedule, terminated, cleanup,
           productFailure, retainedFailure
@@ -17,10 +17,15 @@ Init ==
   /\ cleanup = [s \in Slots |-> FALSE]
   /\ productFailure = [s \in Slots |-> FALSE]
   /\ retainedFailure = [s \in Slots |-> FALSE]
+Passed(s) == phase[s] = "done" /\ terminated[s] /\ ~productFailure[s]
+Prerequisites(s) ==
+  IF s = "preflight" THEN TRUE
+  ELSE IF s \in {"amd64", "arm64"} THEN Passed("preflight")
+  ELSE Passed("preflight") /\ Passed("amd64") /\ Passed("arm64")
 Reserve(s, c, approved) ==
   /\ phase[s] = "empty"
   /\ approved \/ BreakApproval
-  /\ s = "preflight" \/ phase["preflight"] = "done"
+  /\ Prerequisites(s) \/ BreakPrerequisites
   /\ phase' = [phase EXCEPT ![s] = "reserved"]
   /\ owner' = [owner EXCEPT ![s] = c]
   /\ approval' = [approval EXCEPT ![s] = approved]
@@ -86,5 +91,6 @@ OneSubmission == \A s \in Slots: submissions[s] <= 1
 AuthorizedLaunch == \A s \in Slots: submissions[s] > 0 => approval[s]
 ScheduledLaunch == \A s \in Slots: submissions[s] > 0 => schedule[s]
 ConfirmedCleanup == \A s \in Slots: cleanup[s] => terminated[s]
+PriorStagesPassed == \A s \in Slots: phase[s] # "empty" => Prerequisites(s)
 PreservedFailure == \A s \in Slots: productFailure[s] => retainedFailure[s]
 =============================================================================
