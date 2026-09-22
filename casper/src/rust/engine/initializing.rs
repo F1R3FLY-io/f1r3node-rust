@@ -135,12 +135,10 @@ pub struct Initializing<T: TransportLayer + Send + Sync + Clone + 'static> {
 /// indices. Only entries that were SOLICITED and whose block this node holds
 /// are written — a peer cannot seed floors for blocks we did not ask about.
 ///
-/// An entry is a pointer, so its VALUES must be held too: a cached floor or
-/// frontier naming history below the restore horizon turns every later walk
-/// that reads it into a demand for a block nothing fetches. The same rule
-/// [`Initializing::seed_floor_caches`] applies to the anchor's seed, which is
-/// solicited here like every other restored block — so an entry never replaces
-/// a floor this node already has.
+/// An entry's VALUES must be held too: one naming history below the restore
+/// horizon turns every walk that reads it into a demand for a block nothing
+/// fetches. The anchor's verified seed is solicited like any other restored
+/// block, so an entry never replaces a floor this node already has.
 fn apply_floor_cache_entries(
     dag: &block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation,
     solicited: &HashSet<BlockHash>,
@@ -170,11 +168,21 @@ fn apply_floor_cache_entries(
     Ok(written)
 }
 
-/// The lowest height above which the restore holds EVERY height — the only
-/// claim the carrier index may make. Walks down from the top while heights are
-/// contiguous, so a shipped genesis sitting at 0 behind the restore gap is not
-/// mistaken for the bottom of held history.
-fn contiguous_coverage_start(height_map: &BTreeMap<i64, HashSet<BlockHash>>) -> Option<i64> {
+/// The lowest height above which the restore holds EVERY block it will ever
+/// need — the only claim the carrier index may make. Walks down from the top
+/// while heights are contiguous, so a shipped genesis sitting at 0 behind the
+/// restore gap is not mistaken for the bottom of held history.
+///
+/// Never below `accept_bound - 1`. A block's number exceeds its parents', so
+/// every in-cone block one row under the bound has all its children at or above
+/// it; those are accepted, and an accepted block requests all of its parents.
+/// One row lower that breaks: a block whose only children were saved but never
+/// accepted is never requested, so a deep secondary parent can fill the row
+/// without the rest of it being reachable.
+fn contiguous_coverage_start(
+    height_map: &BTreeMap<i64, HashSet<BlockHash>>,
+    accept_bound: i64,
+) -> Option<i64> {
     let mut heights = height_map.keys().rev();
     let mut lowest = *heights.next()?;
     for height in heights {
@@ -183,7 +191,7 @@ fn contiguous_coverage_start(height_map: &BTreeMap<i64, HashSet<BlockHash>>) -> 
         }
         lowest = *height;
     }
-    Some(lowest)
+    Some(lowest.max(accept_bound - 1))
 }
 
 /// Land the shipped genesis block on a truncated node: verified against the
@@ -1305,7 +1313,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         // height map dropped never reaches the DAG. `min_height` is the
         // requester's bound, reported because the DAG now reaches below it.
         let lowest_height = height_map.keys().next().copied();
-        let coverage_from = contiguous_coverage_start(&height_map);
+        let coverage_from = contiguous_coverage_start(&height_map, min_height);
         if let Some(lowest_held) = coverage_from {
             self.block_dag_storage
                 .record_carrier_coverage_from(lowest_held)?;
@@ -1980,12 +1988,8 @@ mod tests {
         );
     }
 
-    /// A shipped entry is a pointer, and a pointer into history this node does
-    /// not hold is worse than no entry: the walk that follows it asks for a
-    /// block below the horizon, which nothing fetches. The anchor's seed —
-    /// written moments earlier and verified against exactly this rule — is
-    /// solicited like every other restored block, so an unchecked entry would
-    /// overwrite it with the peer's own.
+    /// The anchor's seed is written moments earlier and verified against this
+    /// same rule, then solicited like every other restored block.
     #[test]
     fn a_shipped_entry_naming_unheld_history_is_refused_and_never_replaces_a_seed() {
         use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
@@ -2237,16 +2241,22 @@ mod tests {
         let mut restored = band(156_165, 156_241);
         restored.insert(0, HashSet::from([BlockHash::from(vec![0xba; 32])]));
         assert_eq!(
-            contiguous_coverage_start(&restored),
+            contiguous_coverage_start(&restored, 156_165),
             Some(156_165),
             "the shipped genesis is not the bottom of held history"
         );
 
         assert_eq!(
-            contiguous_coverage_start(&band(0, 12)),
+            contiguous_coverage_start(&band(5, 12), 8),
+            Some(7),
+            "the row under the bound is complete; the rows under that are not"
+        );
+
+        assert_eq!(
+            contiguous_coverage_start(&band(0, 12), 0),
             Some(0),
             "a genesis-rooted node holds every height and claims from 0"
         );
-        assert_eq!(contiguous_coverage_start(&BTreeMap::new()), None);
+        assert_eq!(contiguous_coverage_start(&BTreeMap::new(), 0), None);
     }
 }
