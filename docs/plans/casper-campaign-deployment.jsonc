@@ -119,7 +119,8 @@
       "exit_code": 0,
       "records_returned": 0,
       "scope": "ci-runner",
-      "tenancy_inheritance_reviewed": false
+      "tenancy_inheritance_reviewed": true,
+      "tenancy_policy_count": 8
     },
     "proposed_storage": {
       "bucket": "f1r3node-casper-campaign",
@@ -138,7 +139,17 @@
         "baseline-dev-arm64",
         "stability-dev-amd64",
         "stability-dev-arm64"
-      ]
+      ],
+      "preparation": {
+        "configuration": "docs/plans/casper-campaign-storage.jsonc",
+        "configuration_sha256": "8dad2740e17cc31ac3da0b39c9780982edd8a9f258619f00d195f5ff3acb8a65",
+        "report": "docs/casper/cbc-evidence/runs/casper-campaign-storage-preparation-20260922-01/report.json",
+        "report_sha256": "c19b7dd025a01443fa9c0f28bb3f85dc4e0d1dc783f8892dcb1941d96f9068d9",
+        "status": "prepared-not-applied"
+      },
+      "controller_user_id": "ocid1.user.oc1..aaaaaaaaszbg5udehtriel4cqhrx5xhhqqyt6lxhzspdntoksdtzqzkdq36a",
+      "controller_group_id": "ocid1.group.oc1..aaaaaaaaelq2kduax34emgh56c53shhfpgkvjcmxw7goiybizhnemnskgfba",
+      "policy_statements_sha256": "142cad2cd935aa941248cae307048366c7e19ce627ab86744a24e6d8bc1b7e9a"
     },
     "proposed_supervisor": {
       "name": "casper-campaign-supervisor",

@@ -736,7 +736,10 @@ tasks:
     completed_date: 2026-09-19
   - id: TASK-017-12
     title: "Pin executable workloads, qualify candidates, and run the pre-merge baseline soak"
-    candidate_review_note: "Image and binary verification still covers dev 6940a5beb. The 2026-09-22 review found dev at b465313a2. Candidate identities require refresh before dispatch. Workload pins and live qualification remain incomplete."
+    candidate_review_note: "Current dev b465313a2 has no matching published candidate tag. CI run 35677113121 failed the amd64 subprocess validator lifecycle test and skipped image release. Verified candidate pins still cover 6940a5beb."
+    readiness_evidence: docs/casper/cbc-evidence/runs/casper-campaign-readiness-20260922-01/report.json
+    integration_fix_evidence: docs/casper/cbc-evidence/runs/casper-integration-timeout-fix-20260922-01/report.json
+    integration_fix_status: "The validator lifecycle timeout fix is applied locally in system-integration. All 39 targeted tests pass. Publication, suite pin updates, and hosted verification remain pending."
     candidate_identity_evidence: docs/casper/cbc-evidence/runs/casper-candidate-repin-20260919-01/report.json
     live_admission_evidence: docs/casper/cbc-evidence/runs/casper-linux-admission-7509c831c-01/report.json
     manual_dispatch_evidence: docs/casper/cbc-evidence/runs/casper-campaign-dispatch-5e26ba4c5-01/report.json
@@ -756,6 +759,8 @@ tasks:
     phase_boundary_status: "Implemented and locally verified. Pre-merge admission requires authority/finality. Publication and recovery remain explicitly pending for EPIC-018 and cannot count as passed."
     phase_boundary_evidence: docs/casper/cbc-evidence/runs/casper-campaign-phase-20260922-01/report.json
     deployment_proposal: docs/plans/casper-campaign-deployment.jsonc
+    storage_deployment_preparation: docs/plans/casper-campaign-storage.md
+    storage_preparation_status: "The bucket request and object-specific policy are prepared. The controller service user and inherited policies were reviewed. Workflow credential binding, supervisor identity, final configuration, deployment, and live qualification remain pending."
     continuation_work_log: docs/work-logs/task-017-12-mac-continuation.md
     execution_control_status: "Hosted run 35752941906 passes at 58e952c6f. The archive digest and all 51 source hashes match. It covers the stability and phase changes. Deployment, timing qualification, live execution, and acceptance remain pending."
     github_access_status: "Explicit GITHUB_PERSONAL_ACCESS_TOKEN selection verifies all six reviewer roles. Default GITHUB_TOKEN selection still returns HTTP 403 for role queries. The authorized campaign environment is configured and its branch restriction is verified."
@@ -777,7 +782,7 @@ tasks:
     repin_tool: scripts/ci/resolve-dev-candidate.sh
     dispatch_preconditions: "docs/work-logs/task-017-12-preparation.md#dispatch-preconditions"
     work_log: docs/work-logs/task-017-12-preparation.md
-    blocked_by: []
+    blocked_by: [TASK-019-3, TASK-019-4]
     remaining_prerequisites:
       - "The changed workflow and campaign artifacts have current pending records. Historical evidence remains unchanged. Claim001 and the three campaign claims still require source-bound acceptance."
       - "Pin executable workloads and accept the refreshed campaign model inventory. All 225 model hashes and four configuration hashes match. Recheck candidate identities before dispatch."

@@ -298,6 +298,7 @@
     }
   ],
   "dispatch_blockers": [
+    "Current dev has no matching published candidate tag. Its CI image release was skipped after an integration test failure.",
     "Executable profile workload configurations remain unpinned.",
     "Profile adapters and required node interfaces remain unqualified.",
     "The refreshed campaign model and configuration inventory requires source-bound acceptance.",
@@ -337,5 +338,13 @@
     "model_count": 225,
     "configuration_count": 4,
     "acceptance": "pending"
+  },
+  "latest_dispatch_review": {
+    "report": "docs/casper/cbc-evidence/runs/casper-campaign-readiness-20260922-01/report.json",
+    "sha256": "a93fb0a097e5c3e106f53a290cf639c815c0701128accb3e997dea8656e78f57",
+    "node_revision_reviewed": "b465313a2d490d24b6f2e55447bd81efc0912e10",
+    "candidate_refresh_status": "blocked-no-published-tag",
+    "workload_pinning_status": "blocked-live-adapter-unimplemented",
+    "baseline_status": "not-run"
   }
 }

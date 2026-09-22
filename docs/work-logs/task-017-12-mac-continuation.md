@@ -327,3 +327,73 @@ The [configuration report](../casper/cbc-evidence/runs/casper-campaign-environme
 The deployment proposal and candidate blockers now reflect the configured environment. The authoritative object, access policy, supervisor, and deployed qualification remain incomplete.
 
 No campaign workflow, node, or cloud runner started. Claim acceptance remains pending. This continuation created no commit or push.
+
+## OCI reservation preparation: 2026-09-22
+
+The user requested completion of the OCI reservation preparation. The [deployment procedure](../plans/casper-campaign-storage.md) and [configuration](../plans/casper-campaign-storage.jsonc) are ready for review.
+
+The live inventory returned no buckets or policies in `ci-runner`. Its parent is the tenancy. The review covered all eight returned tenancy policies.
+
+The proposed service user has one returned group membership in `ci-runner-launchers`. Its current grants cover compute and network resources, with no storage grant.
+
+The policy restricts read and overwrite permissions to the fixed reservation object. A separate statement permits the controller to read its named policy.
+
+The local operator has administrator access and cannot supply runtime qualification evidence. The workflow secret identity still requires confirmation against the proposed service user.
+
+The supervisor function and its dedicated dynamic group remain absent. The prepared dynamic-group request requires the exact function identifier before it can be submitted.
+
+The schema version 2 template contains all five empty slots. Its campaign identifier and configuration digest remain unresolved because the accepted controller configuration is incomplete.
+
+The controller source requires that final digest in the authoritative record. Uploading a placeholder or an earlier configuration would fail the binding check.
+
+The [preparation report](../casper/cbc-evidence/runs/casper-campaign-storage-preparation-20260922-01/report.json) records these findings and the request digests. No live policy or conditional-update test ran.
+
+The permission design does not make IAM validate entity tags or reservation transitions. Trusted writer code and credential isolation remain required.
+
+Two local Rust checks passed against the current controller source. They verify the policy digest and the five-slot record template with synthetic configuration bindings.
+
+The checks reject the unbound template, missing or additional slots, an old schema, and changed campaign bindings. They do not qualify OCI services.
+
+The first digest check detected an omitted trailing newline. The prepared digest now uses the controller encoding. The report retains that failed check.
+
+The next deployment action requires the prepared OCI resource authorization. Object initialization must wait for the final controller configuration and supervisor identity.
+
+No OCI resources, credentials, campaign runs, or claim statuses changed. This continuation issued no staging, commit, or push command.
+
+## Workload pinning attempt: 2026-09-22
+
+The user requested workload pinning and baseline execution. The [readiness report](../casper/cbc-evidence/runs/casper-campaign-readiness-20260922-01/report.json) records the current blockers.
+
+Current `dev` is `b465313a2d490d24b6f2e55447bd81efc0912e10`. Docker Hub returned no tag matching the resolver query for this revision.
+
+CI run `35677113121` failed the amd64 subprocess validator lifecycle test. The grow-and-shrink phase reached its timeout without a terminal verdict for one of three deploys.
+
+This result does not establish deploy loss. The image release job was skipped. Unpublished build artifacts remain available.
+
+PR #447 remains open at `4561e064a70b495fe07cbcf779bff375d636aaad`. The authority observer under TASK-019-3 and source acceptance under TASK-019-4 remain prerequisites.
+
+The current authority profile rejects every live request with `live_adapter_unqualified`. Its implementation requires a live adapter after the node interface is available.
+
+The repository has no campaign activation variables. The authoritative object and independent supervisor remain undeployed.
+
+The task now lists its node prerequisites explicitly. Existing candidate pins remain unchanged because the current revision has no matching published tag.
+
+No executable workload was qualified or pinned. No campaign workflow or runner started. Both baseline runs remain pending.
+
+## Integration test correction: 2026-09-22
+
+The user requested correction of the failed integration test first. The [correction report](../casper/cbc-evidence/runs/casper-integration-timeout-fix-20260922-01/report.json) records the source and validation results.
+
+The downloaded artifact matches its GitHub digest. Its test source matches the pinned suite revision, `b3d14b27e3c6276b1eb4ab9ccef04e02b0c4e283`.
+
+All eight nodes wrote a `Finalized` verdict after about 137 seconds. The resolver stopped polling after 135 seconds. Finalized floor heights advanced during the wait.
+
+The PoS mutation helper now includes inclusion and finalization time budgets. The default limit is 225 seconds per deploy and attempt.
+
+The recorded timing regression failed at three scales before the change. All 39 targeted tests passed after the change. Ruff and whitespace checks passed.
+
+The checks retain failures for unresolved deploys, terminal failures, and conflicting verdicts. They also verify concurrent submission, expiration-only resubmission, and the attempt limit.
+
+The fix and regression files are applied in the sibling `system-integration` repository. The destination files match the verified files from the isolated checkout.
+
+The full integration test has not rerun. The fix requires publication before this repository can select its immutable suite revision. No commit or push occurred.
