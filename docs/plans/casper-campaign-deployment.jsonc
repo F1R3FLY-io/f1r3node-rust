@@ -2,52 +2,47 @@
   "schema_version": 1,
   "task": "TASK-017-12",
   "status": "proposed-not-deployed",
-  "review_date": "2026-09-21",
+  "review_date": "2026-09-22",
   "github": {
     "repository": "F1R3FLY-io/f1r3node-rust",
     "environment": "casper-campaign",
     "observed_environment_exists": false,
     "credential_review": {
-      "variables_tested": [
-        "GITHUB_TOKEN",
-        "GITHUB_PERSONAL_ACCESS_TOKEN"
-      ],
-      "same_value_in_process": true,
-      "role_endpoint_status": 403,
-      "role_endpoint_required_permission": "metadata=read",
-      "repository_metadata_reports_admin": true,
-      "credential_values_retained": false
+      "selected_variable": "GITHUB_PERSONAL_ACCESS_TOKEN",
+      "repository_role_endpoint_status": 200,
+      "default_GITHUB_TOKEN_role_endpoint_status": 403,
+      "secret_values_retained": false
     },
     "reviewers": [
       {
         "login": "leithaus",
         "id": 76650,
-        "current_repository_role": "unverified-http-403"
+        "current_repository_role": "admin"
       },
       {
         "login": "metaweta",
         "id": 857592,
-        "current_repository_role": "unverified-http-403"
+        "current_repository_role": "admin"
       },
       {
         "login": "spreston8",
         "id": 60404443,
-        "current_repository_role": "unverified-http-403"
+        "current_repository_role": "admin"
       },
       {
         "login": "jltatbeach",
         "id": 93545754,
-        "current_repository_role": "unverified-http-403"
+        "current_repository_role": "admin"
       },
       {
         "login": "dylon",
         "id": 516519,
-        "current_repository_role": "unverified-http-403"
+        "current_repository_role": "maintain"
       },
       {
         "login": "jeffrey-l-turner",
         "id": 1573697,
-        "current_repository_role": "unverified-http-403"
+        "current_repository_role": "admin"
       }
     ],
     "environment_request": {
@@ -155,7 +150,6 @@
     }
   },
   "activation_blockers": [
-    "Both GitHub token variables select the same credential. Maintainer-role queries return HTTP 403.",
     "The approval environment has not been created.",
     "The authoritative object and its access policy have not been provisioned.",
     "The lifetime supervisor has not been deployed or qualified.",
@@ -194,5 +188,9 @@
   },
   "remote_writes": 0,
   "node_launches": 0,
-  "cloud_launches": 0
+  "cloud_launches": 0,
+  "review_evidence": {
+    "report": "docs/casper/cbc-evidence/runs/casper-campaign-hosted-58e952c6f-01/report.json",
+    "sha256": "c04d4b7c8bce2bd31b670f7e6494886a80b401fbe78ad977f30bb72cf3ae85c7"
+  }
 }

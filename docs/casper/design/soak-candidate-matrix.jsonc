@@ -28,13 +28,14 @@
     "formal/tlaplus/casper_soak/MC_CasperSoakHarness_resume_unsafe.cfg": "fa2f527570a3687de48dcac826538e3aa6a9edb2332d5051a936fa34c3c4ca63",
     "formal/tlaplus/casper_soak/MC_CasperSoakHarness_samples_unsafe.cfg": "6937418bcfafd33557d27359f34e5e53e78fcfd68b43e68bfb3617d86cb6022b",
     "formal/tlaplus/casper_soak/MC_CasperSoakHarness_stop_unsafe.cfg": "5d7947fadd81556a4cfea4f4dae3a9cf3893dc3b360889c3938aff047a0c5f4b",
-    "formal/tlaplus/casper_soak/campaign/CampaignControl.tla": "94f3f56c28e2a5c2aa83eadace203f56566d24225a55ae74b94e7781480494db",
-    "formal/tlaplus/casper_soak/campaign/MC_CampaignControl.cfg": "3f399c7dd3ea24c0d49a931a84fccf8e000b8ece3a6dc4673284c485f9d13410",
-    "formal/tlaplus/casper_soak/campaign/MC_CampaignControl_approval_unsafe.cfg": "8d29aab00eb2cce597e8e0a89b6197dab07751018c1aebdcc406694c779e41b3",
-    "formal/tlaplus/casper_soak/campaign/MC_CampaignControl_reservation_unsafe.cfg": "3811c385fc87275c7ec991500c93c44f14d0e45059c1a6275c6c2475d5997abf",
-    "formal/tlaplus/casper_soak/campaign/MC_CampaignControl_schedule_unsafe.cfg": "dd9c34708467c54e5f6fe3322018b44eb21ae6e7bd554d82cbb0380dc0140635",
-    "formal/tlaplus/casper_soak/campaign/MC_CampaignControl_termination_unsafe.cfg": "d4ed0110bfe38e86049b1c5677475f9ce1534951818746851500de9e6ce023ff",
-    "formal/tlaplus/casper_soak/campaign/verification-plan.jsonc": "92facc5f197cbe8b9525503b6c174be556ea34529481250c6d9d8db9969f2c90",
+    "formal/tlaplus/casper_soak/campaign/CampaignControl.tla": "1965550f0c8531114139581c53ca2af04f572b2c0c101622fab16bc1d5f290b8",
+    "formal/tlaplus/casper_soak/campaign/MC_CampaignControl.cfg": "01a856af1bf93f8971068d71ca992ae90025bc925ba7b59ba5946b8f080b0767",
+    "formal/tlaplus/casper_soak/campaign/MC_CampaignControl_approval_unsafe.cfg": "6911aa0a8605f15dadf38b2ffc77605463fd9723e9c0fb3a424f723ed001df9d",
+    "formal/tlaplus/casper_soak/campaign/MC_CampaignControl_prerequisites_unsafe.cfg": "f535f81c05659121ceb6c6518416c4cd1879a4a32cc343a396dde21e40fb2041",
+    "formal/tlaplus/casper_soak/campaign/MC_CampaignControl_reservation_unsafe.cfg": "c4ffd9223eaca73670962ddcd22adc6d1da30ebd595a1a3a1ec44eaa046ba8ca",
+    "formal/tlaplus/casper_soak/campaign/MC_CampaignControl_schedule_unsafe.cfg": "43c901886067013d789917c31d3b7b55ac23c2f23e79441eaba4b19e4e0133bf",
+    "formal/tlaplus/casper_soak/campaign/MC_CampaignControl_termination_unsafe.cfg": "e737e0f3f76a226617ca3352922f62bdc941a9ca7b7e5601e4d2ad7b793ec31e",
+    "formal/tlaplus/casper_soak/campaign/verification-plan.jsonc": "4486a82ee8e4ecee3f0846013f9c9caf8c6644c6229b140545e82eb23d163ba6",
     "formal/tlaplus/casper_soak/profiles/authority_finality/AuthorityFinality.tla": "3a10b0683796a16feaa7fb90df679c5338e1f01bf5fcc5bffca44cce41633e43",
     "formal/tlaplus/casper_soak/profiles/authority_finality/MC_AuthorityFinality.cfg": "b667ec0af8708b150743719d18a6667b2faa5906fc4b1a6f21591e68812746b8",
     "formal/tlaplus/casper_soak/profiles/authority_finality/MC_AuthorityFinality_finality_unsafe.cfg": "3bf95d421574c52be7e5f6c1088750f1b8005bf04678c149502ec88790decda3",
@@ -328,5 +329,13 @@
   "deferred_profiles": {
     "publication": "post_pr216_merge",
     "recovery": "post_pr216_merge"
+  },
+  "model_inventory_review": {
+    "report": "docs/casper/cbc-evidence/runs/casper-campaign-hosted-58e952c6f-01/report.json",
+    "sha256": "c04d4b7c8bce2bd31b670f7e6494886a80b401fbe78ad977f30bb72cf3ae85c7",
+    "source_head_revision": "58e952c6fc780d10ee9a28f19ae563245de4a39e",
+    "model_count": 225,
+    "configuration_count": 4,
+    "acceptance": "pending"
   }
 }

@@ -736,20 +736,20 @@ tasks:
     completed_date: 2026-09-19
   - id: TASK-017-12
     title: "Pin executable workloads, qualify candidates, and run the pre-merge baseline soak"
-    candidate_review_note: "Both immutable platform images and node binaries were reverified on 2026-09-21 against dev 6940a5beb. Their digests match the earlier review. Workload pins and live qualification remain incomplete."
+    candidate_review_note: "Image and binary verification still covers dev 6940a5beb. The 2026-09-22 review found dev at b465313a2. Candidate identities require refresh before dispatch. Workload pins and live qualification remain incomplete."
     candidate_identity_evidence: docs/casper/cbc-evidence/runs/casper-candidate-repin-20260919-01/report.json
     live_admission_evidence: docs/casper/cbc-evidence/runs/casper-linux-admission-7509c831c-01/report.json
     manual_dispatch_evidence: docs/casper/cbc-evidence/runs/casper-campaign-dispatch-5e26ba4c5-01/report.json
     completion_review: docs/work-logs/task-017-12-preparation.md#completion-review-at-859cbc36c
     claim001_reconciliation: docs/work-logs/task-017-12-preparation.md#claim001-specification-digest-reconciliation
     node_interface_prerequisite: docs/plans/casper-node-interface-prerequisite.md
-    node_interface_status: "PR #447 remains open at 6ea6bf029. The Mac snapshot path fix belongs to PR #447. Source-bound acceptance and Batch B2 remain pending. Occurrence-dependent publication qualification belongs to EPIC-018 after this branch merges."
+    node_interface_status: "PR #447 remains open at 4561e064a. TASK-019-4 reports missing formal evidence and a new B1 lock-wait finding. Batch B2 planning waits for source-bound verification and named maintainer acceptance. Occurrence-dependent publication qualification belongs to EPIC-018 after this branch merges."
     stack_scope: "PR #436 temporarily targets the node branch. This dependency order does not include node implementation in the harness scope. Independent harness controls can proceed before node qualification."
     reservation_work_log: docs/work-logs/task-017-12-reservations.md
     reservation_status: "All sixteen reservation tests pass in an isolated Linux container on this Mac. The authoritative OCI protocol has controlled-provider tests. Its real object and access policy remain unprovisioned."
     execution_control_plan: docs/plans/casper-campaign-execution-controls.md
     execution_control_evidence: docs/casper/cbc-evidence/runs/casper-campaign-control-20260921-01/report.json
-    hosted_control_evidence: docs/casper/cbc-evidence/runs/casper-campaign-hosted-20260921-01/report.json
+    hosted_control_evidence: docs/casper/cbc-evidence/runs/casper-campaign-hosted-58e952c6f-01/report.json
     source_coverage_evidence: docs/casper/cbc-evidence/runs/casper-campaign-source-coverage-20260921-01/report.json
     stability_control_evidence: docs/casper/cbc-evidence/runs/casper-campaign-stability-20260922-01/report.json
     publication_gate: "Deferred to EPIC-018 after this branch merges and PR #216 integrates. This is not a PR #216 dependency for this branch."
@@ -757,8 +757,8 @@ tasks:
     phase_boundary_evidence: docs/casper/cbc-evidence/runs/casper-campaign-phase-20260922-01/report.json
     deployment_proposal: docs/plans/casper-campaign-deployment.jsonc
     continuation_work_log: docs/work-logs/task-017-12-mac-continuation.md
-    execution_control_status: "Hosted run 35736460538 verifies the source-pin correction at 515a01159. The local stability report records subsequent changes. Deployment, timing qualification, live execution, and acceptance remain pending."
-    github_access_status: "Direct tests during commit review confirmed that the two GitHub token variables contain different tokens. The classic token returned the repository role. Select that credential for role queries."
+    execution_control_status: "Hosted run 35752941906 passes at 58e952c6f. The archive digest and all 51 source hashes match. It covers the stability and phase changes. Deployment, timing qualification, live execution, and acceptance remain pending."
+    github_access_status: "Explicit GITHUB_PERSONAL_ACCESS_TOKEN selection verifies all six reviewer roles. Default GITHUB_TOKEN selection still returns HTTP 403 for role queries. The campaign environment remains absent."
     compatibility_lookup_status: "The three campaign inventories have 37 unique pending artifact records and matching compatibility links. The strict eight-claim audit returns exit 4 with Claim001 pending. No acceptance is inferred."
     execution_gate: "Four exact-candidate probes returned blocked before node launch. Their controlled inputs are not live qualification. The legacy workload is pinned but cannot replace required Casper profiles."
     drift_review: docs/work-logs/task-017-12-drift-review-2026-09-19.md
@@ -779,9 +779,9 @@ tasks:
     blocked_by: []
     remaining_prerequisites:
       - "The changed workflow and campaign artifacts have current pending records. Historical evidence remains unchanged. Claim001 and the three campaign claims still require source-bound acceptance."
-      - "Pin executable workloads and review the complete campaign model and configuration inventory. Recheck candidate identities before dispatch."
+      - "Pin executable workloads and accept the refreshed campaign model inventory. All 225 model hashes and four configuration hashes match. Recheck candidate identities before dispatch."
       - "Qualify the required pre-merge adapters and node interfaces. The corrected admission requires authority/finality and retains pending occurrence profiles. Preserve the earlier blocked probe evidence."
-      - "Hosted run 35736460538 passed at 515a01159. The stability changes need hosted verification after publication. The campaign workflow still requires qualification against deployed services."
+      - "Hosted run 35752941906 covers the published stability and phase changes at 58e952c6f. The campaign workflow still requires qualification against deployed services."
       - "The campaign-baseline-24h input requests 86400 workload seconds. Execution must preserve that full duration without preflight subtraction. Existing scheduled behavior remains unchanged."
       - "Provision and qualify the authoritative OCI object and independent supervisor. The implementation does not establish deployed timing guarantees. Missing activation evidence blocks execution."
       - "The user authorized both architectures on 2026-09-22. Each stability runner has 64 GB and a 64-hour maximum lifetime. Both full baselines must pass first."

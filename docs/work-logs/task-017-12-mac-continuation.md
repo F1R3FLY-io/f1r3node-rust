@@ -263,3 +263,51 @@ The patch applies cleanly against the PR head. Its report identifies the previou
 The tracker now records the credential result from commit review. The token variables differed, and the classic token returned the repository role.
 
 Publishing the node patch requires explicit commit and push consent. The campaign cleanup remains uncommitted.
+
+## Published revision verification: 2026-09-22
+
+The user published `58e952c6fc780d10ee9a28f19ae563245de4a39e`. The checkout was clean at this review.
+
+The [hosted campaign run](https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/35752941906) passed for that revision. It covers the stability controls and the corrected admission phase.
+
+The downloaded archive matches its GitHub digest and byte count. Every extracted file matches the archive, and both source manifests agree.
+
+All 51 unique source hashes match this checkout. All six model logs match their recorded digests and expected outcomes.
+
+The run passed 133 planner checks, 51 Rust tests, and six model configurations. The reservation helper remains the single expected ignored test.
+
+The [compact report](../casper/cbc-evidence/runs/casper-campaign-hosted-58e952c6f-01/report.json) records the archive, source identities, results, and prerequisite review. Bulk evidence remains under `target/task-017-12-hosted-58e952c6f/`.
+
+The hosted artifact has a recorded expiration date. Durable external retention remains incomplete.
+
+Explicit `GITHUB_PERSONAL_ACCESS_TOKEN` selection verified all six configured reviewer roles. Five reviewers have the `admin` role, and `dylon` has the `maintain` role.
+
+Default `GITHUB_TOKEN` selection still returns HTTP 403 for role queries. The initial sandbox attempt also failed to connect. The retry used permitted network access.
+
+The campaign environment remains absent. Repository activation variables remain absent. The deployment proposal now records the verified roles and removes the resolved credential blocker.
+
+The candidate matrix contained seven stale campaign hashes and omitted the prerequisites configuration. The matrix now includes the current hashes for all six configurations.
+
+All 225 model hashes and four configuration hashes match. Inventory acceptance, executable workload pins, and live qualification remain pending.
+
+Current `dev` is `b465313a2d490d24b6f2e55447bd81efc0912e10`. Existing image verification covers `6940a5beb`, so candidate identities require refresh before dispatch.
+
+PR #447 remains open at `4561e064a70b495fe07cbcf779bff375d636aaad`. Its two latest commits change task and review records only.
+
+The [node verification record](https://github.com/F1R3FLY-io/f1r3node-rust/blob/4561e064a70b495fe07cbcf779bff375d636aaad/docs/work-logs/task-019-4-node-claim-verification.md) reports missing formal evidence and a new B1 lock-wait finding. This continuation did not independently verify that finding.
+
+TASK-019-4 owns the node verification. Batch B2 planning waits for source-bound verification and named maintainer acceptance of Batch A and B1.
+
+The strict eight-claim audit returns exit 4. Claim001 remains pending, and claims 002 through 008 remain discharged. The separate campaign claims remain pending.
+
+The environment request and branch policy are prepared under the local evidence directory. The request retains all six reviewers, prevents self-review, and disables administrator bypass.
+
+The branch policy allows only `formal/soak-casper-consensus`. The execution-control plan requires separate authorization before remote configuration changes.
+
+The next deployment step is creation and verification of this environment. The authoritative object, access policy, supervisor, and timing qualification remain separate prerequisites.
+
+Source hashes, report links, and environment request checks passed. The strict audit result is byte-identical before and after these changes.
+
+The STE Check passed for the added prose. The whitespace check also passed. Human STE Review remains necessary.
+
+No node, cloud runner, remote configuration, commit, push, or claim acceptance occurred in this continuation.
