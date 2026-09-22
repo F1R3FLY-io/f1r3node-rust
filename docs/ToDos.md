@@ -743,7 +743,7 @@ tasks:
     completion_review: docs/work-logs/task-017-12-preparation.md#completion-review-at-859cbc36c
     claim001_reconciliation: docs/work-logs/task-017-12-preparation.md#claim001-specification-digest-reconciliation
     node_interface_prerequisite: docs/plans/casper-node-interface-prerequisite.md
-    node_interface_status: "PR #447 remains open at 6ea6bf029. Batch B1 corrections pass 43 snapshot tests on this Mac. Source-bound acceptance and Batch B2 remain pending. Occurrence-dependent publication qualification belongs to EPIC-018 after this branch merges."
+    node_interface_status: "PR #447 remains open at 6ea6bf029. The Mac snapshot path fix belongs to PR #447. Source-bound acceptance and Batch B2 remain pending. Occurrence-dependent publication qualification belongs to EPIC-018 after this branch merges."
     stack_scope: "PR #436 temporarily targets the node branch. This dependency order does not include node implementation in the harness scope. Independent harness controls can proceed before node qualification."
     reservation_work_log: docs/work-logs/task-017-12-reservations.md
     reservation_status: "All sixteen reservation tests pass in an isolated Linux container on this Mac. The authoritative OCI protocol has controlled-provider tests. Its real object and access policy remain unprovisioned."
@@ -758,7 +758,7 @@ tasks:
     deployment_proposal: docs/plans/casper-campaign-deployment.jsonc
     continuation_work_log: docs/work-logs/task-017-12-mac-continuation.md
     execution_control_status: "Hosted run 35736460538 verifies the source-pin correction at 515a01159. The local stability report records subsequent changes. Deployment, timing qualification, live execution, and acceptance remain pending."
-    github_access_status: "Both GitHub token variables contain the same value in this process. Explicit tests with each variable return HTTP 403 for maintainer-role queries. The endpoint advertises metadata=read. The user will load a new credential and restart Codex. Verify role access after restart."
+    github_access_status: "Direct tests during commit review confirmed that the two GitHub token variables contain different tokens. The classic token returned the repository role. Select that credential for role queries."
     compatibility_lookup_status: "The three campaign inventories have 37 unique pending artifact records and matching compatibility links. The strict eight-claim audit returns exit 4 with Claim001 pending. No acceptance is inferred."
     execution_gate: "Four exact-candidate probes returned blocked before node launch. Their controlled inputs are not live qualification. The legacy workload is pinned but cannot replace required Casper profiles."
     drift_review: docs/work-logs/task-017-12-drift-review-2026-09-19.md
@@ -832,7 +832,7 @@ tasks:
       - "Complete CLAIM-SOAK-GATE-001 under docs/claims/soak-formal-gate.md. The approved finalized-floor scope remains local-only."
       - "Review current-source registration and discharge for all campaign controls owned by TASK-017-12, including CLAIM-CASPER-CAMPAIGN-001, CLAIM-CASPER-CAMPAIGN-002, and CLAIM-CASPER-CAMPAIGN-003."
       - "Review baseline results, scan benchmark evidence, and concurrency-gate evidence. Record the required scope of the approved 60-hour phase."
-      - "Confirm TASK-018 owners and obtain acceptance of the completed handoff. Stacked branch preparation does not satisfy post-merge discharge requirements."
+      - "TASK-018 owners are confirmed as of 2026-09-22: @jeffrey-l-turner or @jltatbeach for each task. Obtain acceptance of the completed handoff. Stacked branch preparation does not satisfy post-merge discharge requirements."
     decisions: [D-11]
     acceptance:
       - "Every changed mandatory artifact has current pre-merge claim evidence or an explicitly approved waiver."
@@ -1002,6 +1002,9 @@ tasks:
     claims: [CLAIM-CASPER-SOAK-001]
     status: blocked
     claimed_by: null
+    assigned_to: ["@jeffrey-l-turner", "@jltatbeach"]
+    assigned_on: 2026-09-22
+    assignment_note: "The maintainer confirmed on 2026-09-22 that either handle may own any EPIC-018 task. The implementer claims the task with claimed_by when work starts."
     blocked_by: [TASK-017-13]
     external_prs: [216]
     acceptance:
@@ -1015,6 +1018,9 @@ tasks:
     claim_index: docs/claims/casper-soak-harness.md
     status: pending
     claimed_by: null
+    assigned_to: ["@jeffrey-l-turner", "@jltatbeach"]
+    assigned_on: 2026-09-22
+    assignment_note: "The maintainer confirmed on 2026-09-22 that either handle may own any EPIC-018 task. The implementer claims the task with claimed_by when work starts."
     blocked_by: [TASK-018-1]
     decisions: [D-11]
     acceptance:
@@ -1029,6 +1035,9 @@ tasks:
     claims: [CLAIM-CASPER-SOAK-002, CLAIM-CASPER-SOAK-003, CLAIM-CASPER-SOAK-004, CLAIM-CASPER-SOAK-006]
     status: pending
     claimed_by: null
+    assigned_to: ["@jeffrey-l-turner", "@jltatbeach"]
+    assigned_on: 2026-09-22
+    assignment_note: "The maintainer confirmed on 2026-09-22 that either handle may own any EPIC-018 task. The implementer claims the task with claimed_by when work starts."
     blocked_by: [TASK-018-2]
     decisions: [D-02, D-03, D-04, D-05, D-06, D-07, D-09]
     acceptance:
@@ -1041,6 +1050,9 @@ tasks:
     claims: [CLAIM-CASPER-SOAK-005, CLAIM-CASPER-SOAK-007, CLAIM-CASPER-SOAK-008]
     status: pending
     claimed_by: null
+    assigned_to: ["@jeffrey-l-turner", "@jltatbeach"]
+    assigned_on: 2026-09-22
+    assignment_note: "The maintainer confirmed on 2026-09-22 that either handle may own any EPIC-018 task. The implementer claims the task with claimed_by when work starts."
     blocked_by: [TASK-018-2]
     decisions: [D-01, D-08, D-10, D-12]
     acceptance:
@@ -1054,6 +1066,9 @@ tasks:
     claims: [CLAIM-CASPER-SOAK-001, CLAIM-CASPER-SOAK-004]
     status: pending
     claimed_by: null
+    assigned_to: ["@jeffrey-l-turner", "@jltatbeach"]
+    assigned_on: 2026-09-22
+    assignment_note: "The maintainer confirmed on 2026-09-22 that either handle may own any EPIC-018 task. The implementer claims the task with claimed_by when work starts."
     blocked_by: [TASK-018-3, TASK-018-4]
     decisions: [D-06, D-07, D-11]
     acceptance:
@@ -1068,6 +1083,9 @@ tasks:
     claim_index: docs/claims/casper-soak-harness.md
     status: pending
     claimed_by: null
+    assigned_to: ["@jeffrey-l-turner", "@jltatbeach"]
+    assigned_on: 2026-09-22
+    assignment_note: "The maintainer confirmed on 2026-09-22 that either handle may own any EPIC-018 task. The implementer claims the task with claimed_by when work starts."
     blocked_by: [TASK-018-5]
     decisions: [D-11]
     acceptance:

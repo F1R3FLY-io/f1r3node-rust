@@ -49,7 +49,7 @@ fn unique_dir(tag: &str) -> PathBuf {
         std::process::id()
     ));
     std::fs::create_dir_all(&dir).unwrap();
-    dir.canonicalize().unwrap()
+    dir
 }
 
 fn env_config(name: &str) -> LmdbEnvConfig {

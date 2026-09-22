@@ -244,3 +244,22 @@ The first standalone planner attempt failed because the sandbox denied a fixture
 The candidate matrix remains non-dispatchable. Live authority qualification, workload pins, node review, source acceptance, deployment qualification, and actual campaign execution remain incomplete.
 
 No hosted run covers this local correction yet. No node, cloud runner, remote configuration, commit, or push occurred.
+
+
+## Commit deviation cleanup
+
+Commit `0de118fcf` recorded four deviations. The cleanup leaves only `report.json` in each new campaign evidence package.
+
+Both reports remain byte-identical. Their existing evidence references and digests remain valid. The cleanup removes 51 bulk files, including all 20 files with home-directory paths.
+
+The original bulk bytes remain under `target/task-017-12-deviation-cleanup-20260922-01/bulk/`. This local copy does not establish durable external retention.
+
+The snapshot test and its node ledger now match PR #447 head `6ea6bf029`. The harness branch no longer owns the Mac path correction.
+
+The prepared patch is `target/task-017-12-deviation-cleanup-20260922-01/pr447-snapshot-path.patch`. It contains the test correction, its node ledger, and a separate node report.
+
+The patch applies cleanly against the PR head. Its report identifies the previous native test run and does not claim new execution or acceptance.
+
+The tracker now records the credential result from commit review. The token variables differed, and the classic token returned the repository role.
+
+Publishing the node patch requires explicit commit and push consent. The campaign cleanup remains uncommitted.

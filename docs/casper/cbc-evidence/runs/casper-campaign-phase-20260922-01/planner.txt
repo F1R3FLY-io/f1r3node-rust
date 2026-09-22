@@ -1,1 +1,0 @@
-FAIL dispatch_prior_consistent: expected exit 3, received 2

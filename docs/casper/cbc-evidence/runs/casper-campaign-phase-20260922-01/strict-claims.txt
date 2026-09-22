@@ -1,2 +1,0 @@
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.11s
-     Running `target/debug/check-casper-claims --strict --output target/task-017-12-phase-20260922-01/strict-claims.json`

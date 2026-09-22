@@ -205,7 +205,7 @@ A non-passing result must remain visible. Submitting a failure report does not a
 
 ## Post-merge ownership
 
-The tracker names tasks but no assigned implementers for TASK-018-1 through TASK-018-6. Owner confirmation remains a handoff blocker.
+The maintainer confirmed the implementers for TASK-018-1 through TASK-018-6 on 2026-09-22. Either @jeffrey-l-turner or @jltatbeach may own any of the six tasks. Owner confirmation is no longer a handoff blocker. Acceptance of the completed handoff remains open.
 
 The amended epic contract permits earlier branch preparation. TASK-018-1 still requires actual merge evidence for completion, and its dependent tasks retain their recorded completion gates.
 
@@ -213,12 +213,12 @@ The tracker also retains an older prose start condition that conflicts with the 
 
 | Task | Required delivery | Assigned implementer |
 | --- | --- | --- |
-| TASK-018-1 | Verify the actual merge ancestry and accepted handoff. | Unassigned |
-| TASK-018-2 | Identify changed interfaces and renew affected bindings. | Unassigned |
-| TASK-018-3 | Reverify authority, publication, recovery, and slashing profiles. | Unassigned |
-| TASK-018-4 | Reverify accounting, carrier, and Phlo profiles. | Unassigned |
-| TASK-018-5 | Run approved comparisons and both governance reruns. | Unassigned |
-| TASK-018-6 | Audit the new source-bound evidence and submit the separate PR. | Unassigned |
+| TASK-018-1 | Verify the actual merge ancestry and accepted handoff. | @jeffrey-l-turner or @jltatbeach |
+| TASK-018-2 | Identify changed interfaces and renew affected bindings. | @jeffrey-l-turner or @jltatbeach |
+| TASK-018-3 | Reverify authority, publication, recovery, and slashing profiles. | @jeffrey-l-turner or @jltatbeach |
+| TASK-018-4 | Reverify accounting, carrier, and Phlo profiles. | @jeffrey-l-turner or @jltatbeach |
+| TASK-018-5 | Run approved comparisons and both governance reruns. | @jeffrey-l-turner or @jltatbeach |
+| TASK-018-6 | Audit the new source-bound evidence and submit the separate PR. | @jeffrey-l-turner or @jltatbeach |
 
 ## Assumptions and retention
 

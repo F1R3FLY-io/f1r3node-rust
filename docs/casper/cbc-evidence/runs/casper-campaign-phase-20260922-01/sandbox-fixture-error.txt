@@ -1,1 +1,0 @@
-cp: cannot create regular file '/dev/stdout': Operation not permitted
