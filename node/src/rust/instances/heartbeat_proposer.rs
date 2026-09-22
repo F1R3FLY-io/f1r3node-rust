@@ -326,7 +326,7 @@ impl HeartbeatProposer {
                             );
                             tracing::debug!(
                                 target: "f1r3.trace.absence",
-                                missing = %hex::encode(&missing[..8.min(missing.len())]),
+                                missing = %PrettyPrinter::build_string_bytes(&missing),
                                 site = %site,
                                 "heartbeat check: absence origin"
                             );

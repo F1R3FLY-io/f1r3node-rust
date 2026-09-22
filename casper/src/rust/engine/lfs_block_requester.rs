@@ -13,6 +13,7 @@ use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
     ApprovedBlock, BlockMessage, MergeableEntryResponse,
 };
+use models::rust::validator::Validator;
 use tokio::sync::{mpsc, Semaphore};
 
 use crate::rust::errors::CasperError;
@@ -367,10 +368,22 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
     pub fn is_finished(&self) -> bool { self.latest.is_empty() && self.d.is_empty() }
 }
 
+/// Whether the block filling a latest-message slot is the testimony of the
+/// validator whose slot it is. A bonded validator that never proposed has the
+/// genesis hash there instead, which no validator signed.
+fn slot_is_own_testimony(
+    latest_messages: &HashMap<BlockHash, Validator>,
+    block: &BlockMessage,
+) -> bool {
+    latest_messages
+        .get(&block.block_hash)
+        .is_some_and(|validator| *validator == block.sender)
+}
+
 struct StreamProcessor<'a, T: BlockRequesterOps> {
     requester: &'a mut T,
     st: Arc<Mutex<ST<BlockHash>>>,
-    latest_messages: HashSet<BlockHash>,
+    latest_messages: HashMap<BlockHash, Validator>,
     response_hash_sender: mpsc::Sender<BlockHash>,
 }
 
@@ -378,7 +391,7 @@ impl<'a, T: BlockRequesterOps> StreamProcessor<'a, T> {
     fn new(
         requester: &'a mut T,
         st: Arc<Mutex<ST<BlockHash>>>,
-        latest_messages: HashSet<BlockHash>,
+        latest_messages: HashMap<BlockHash, Validator>,
         response_hash_sender: mpsc::Sender<BlockHash>,
     ) -> Self {
         Self {
@@ -423,7 +436,7 @@ impl<'a, T: BlockRequesterOps> StreamProcessor<'a, T> {
 
             // if message received is latest as per approved block - add its self justification
             // to target latest messages that has to be pulled
-            let lm_replacement = if self.latest_messages.contains(&block.block_hash) {
+            let lm_replacement = if self.latest_messages.contains_key(&block.block_hash) {
                 tracing::info!(
                     "Block {} is a latest message, checking for self-justification replacement",
                     block_hash_str
@@ -439,8 +452,7 @@ impl<'a, T: BlockRequesterOps> StreamProcessor<'a, T> {
                 None
             };
 
-            // Genesis carries no sender; a slot naming it is the placeholder.
-            let lowers_bound = !block.sender.is_empty();
+            let lowers_bound = slot_is_own_testimony(&self.latest_messages, block);
 
             let (new_state, receive_info) = state.received(
                 block.block_hash.clone(),
@@ -890,10 +902,15 @@ pub async fn stream<'a, T: BlockRequesterOps>(
 
     // Active validators as per approved block state
     // - for approved state to be complete it is required to have block from each of them
-    let latest_messages: HashSet<BlockHash> = block
+    let latest_messages: HashMap<BlockHash, Validator> = block
         .justifications
         .iter()
-        .map(|justification| justification.latest_block_hash.clone())
+        .map(|justification| {
+            (
+                justification.latest_block_hash.clone(),
+                justification.validator.clone(),
+            )
+        })
         .collect();
 
     let initial_hashes = {
@@ -905,7 +922,7 @@ pub async fn stream<'a, T: BlockRequesterOps>(
     // Requester state, fill with validators for required latest messages
     let st = Arc::new(Mutex::new(ST::new(
         initial_hashes,
-        Some(latest_messages.clone()),
+        Some(latest_messages.keys().cloned().collect()),
         Some(initial_minimum_height),
     )));
 
@@ -1427,6 +1444,50 @@ mod window_tests {
             25_214i64 < state.lower_bound,
             "a block 610 below the floor must fall outside the window"
         );
+    }
+
+    /// The slot's own validator is the test, not a non-empty sender: genesis is
+    /// the only unsigned block today, but a slot filled by a block someone else
+    /// signed is the same bookkeeping, not testimony.
+    #[test]
+    fn only_the_slot_owners_own_block_lowers_the_window() {
+        use models::rust::block_implicits::get_random_block;
+
+        let validator = Validator::from(vec![0x11; 65]);
+        let other = Validator::from(vec![0x22; 65]);
+        let block = |sender: Option<Validator>| {
+            get_random_block(
+                Some(10),
+                None,
+                None,
+                None,
+                sender,
+                None,
+                None,
+                Some(vec![]),
+                None,
+                Some(vec![]),
+                None,
+                None,
+                None,
+                None,
+            )
+        };
+
+        let signed = block(Some(validator.clone()));
+        let latest = HashMap::from([(signed.block_hash.clone(), validator.clone())]);
+        assert!(slot_is_own_testimony(&latest, &signed));
+
+        let by_someone_else = block(Some(other));
+        let latest = HashMap::from([(by_someone_else.block_hash.clone(), validator.clone())]);
+        assert!(
+            !slot_is_own_testimony(&latest, &by_someone_else),
+            "a slot filled by another validator's block is not its testimony"
+        );
+
+        let genesis = block(Some(Validator::new()));
+        let latest = HashMap::from([(genesis.block_hash.clone(), validator)]);
+        assert!(!slot_is_own_testimony(&latest, &genesis));
     }
 
     /// The lowering itself is not the defect and must survive: a validator's
