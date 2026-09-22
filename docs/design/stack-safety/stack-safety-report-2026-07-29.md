@@ -8963,6 +8963,23 @@ frame-size or throughput improvement. Generated decoder routing still uses resid
 Pars and the depth-4,096 decoder timeout remains open. J-206 and the EPR catalog
 record hashes, error-recovery distinctions, and the limited formal boundary.
 
+J-207 pins four raw-public versus canonical-component decoder boundaries before
+changing routing. J-208 adds generated move-owned decoder records and a shared
+projection layer after 34 closed container/rank statements pass kernel checking.
+The reviewed default-feature run passes 35/35 selected tests (626 excluded), with
+2.9 GiB peak memory and 129.891 seconds service time including compilation. The
+feature-enabled run passes 40/40 (617 excluded), with 2.5 GiB peak and 84.922 seconds.
+Both run under 8 GiB caps with zero swap; randomized cases use seed 5834 and 1,024
+cases. J-208 records receipt hashes, exact selection and the pre-review run separately.
+The residual ownership witness covers the complete resolved schema and separately
+checks the native Var remainder family. It does not cover physical PathMap depth.
+Review identified that pending EPM writers and retained planned EPM representations
+still need the existing reverse-prune ownership guard before production routing;
+line-depth tests alone do not establish branching-trie destructor safety. The POS
+catalog enumerates the proof premises, native bindings and remaining attachment
+obligations. Neither this representation prerequisite nor its passing focused tests
+closes the depth-4,096 protobuf timeout or establishes a decoding speedup.
+
 ### 5.29 ParBag family and count-domain completeness [SS-A13, SS-A14, SS-Y9]
 
 #### 5.29.1 The defects

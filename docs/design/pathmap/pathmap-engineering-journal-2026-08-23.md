@@ -15603,6 +15603,87 @@ decoder completion or performance improvement. Production routing and the
 full-depth timeout are unchanged.
 PgMCP STDIO backfill for task 5834 remains pending tool availability.
 
+### J-208 — 2026-09-22 Owned decoder records, projection order, and cut ownership
+
+**Formal prerequisite (VERIFIED).** `ProtobufOwnedSlots.v` supplies 34 exported,
+closed statements and two helper lemmas. Capped compilation and independent
+kernel checking passed before implementation: unit `protobuf-owned-slots-5834-r6`,
+14.300 seconds service time, 14.066 CPU seconds, 390.1 MiB peak memory, zero swap,
+under a 2 GiB limit, 100% CPU quota and 180-second ceiling. The POS section of the
+formal invariant catalog enumerates every exported statement and its native
+obligation, assumptions and remaining binding. These are container-denotation and
+schema-rank results, not a proof of the whole decoder or PathMap destruction.
+
+**Implementation (DECISION).** The single resolved schema now generates private
+move-owned message/oneof records and a shared fallible projection interface.
+Par fields carry `ProtobufParBuilder`; EPathMap fields carry planned payloads in
+their trie representation. Generated projections preserve scalar bits, optional
+presence, repeated order, map bindings and oneof arms without canonicalizing the
+enclosing message. Residual ownership ranks reuse the existing SCC decomposition
+and reject remaining cycles. The EPM remainder retains native Var, whose transitive
+family is separately checked to contain neither Par nor EPM. No public AST, codec
+format, scalar parser, dependency or upstream PathMap implementation changed.
+
+**Review correction.** Declaration order differs from protobuf order for
+TaggedContinuation. Projection now evaluates fields in protobuf order so a policy
+that collects planned children encounters its body before its guard. A distinct-value
+callback-trace witness binds this order independently of final encoded bytes.
+Oneof tests exercise take/select/attach on actual owned records as well as the frozen
+decoder; descriptor-derived scalar-arm witnesses use nondefault payloads. The first
+native run passed 19/19 selected release tests (578 excluded), but predates these
+review additions and is not the final acceptance receipt.
+
+**Final focused verification (MEASURED).** Default-feature run
+`protobuf-owned-native-5834-r2` passes 35/35 selected tests (626 excluded), including
+the eight owned-slot tests, thirteen frozen-decoder tests, thirteen schema-conformance
+tests and the new formal manifest. Test time is 24.503 seconds, service time including
+compilation 129.891 seconds, CPU time 423.969 seconds, peak memory 2.9 GiB, zero swap.
+Feature-enabled run `protobuf-owned-native-5834-r3` passes 40/40 (617 excluded),
+including slot/reference tests, EPM payload and accumulator witnesses and all four
+associated manifests. Test time is 24.087 seconds, service time 84.922 seconds,
+CPU time 235.408 seconds, peak memory 2.5 GiB, zero swap. Both runs use an 8 GiB
+hard limit, 6 GiB high threshold, zero allowed swap, 400% CPU quota, four build/test
+workers and a 900-second ceiling. Property tests use 1,024 cases and seed 5834.
+The frozen source retains SHA-256
+`9b47784f40096e11d3185a9a2d01a8b4b27beef4184f844ca1f90c81ec6bc69c`.
+Shell syntax and diff whitespace checks pass. No full-workspace or throughput
+claim follows from these selected tests.
+
+**Rank qualification (DERIVED).** The graph collapses message→oneof→payload into
+one message edge. For message rank r, expanded message/oneof nesting has at most
+2r+1 edges, including a possible terminal scalar-only wrapper. Assigning messages
+2r+2 and their oneof enums 2r+1 gives decreasing expanded edges under the checked
+child-rank inequality. This is a nesting bound, not an exact native-frame or
+whole-destructor bound; container helpers and external cuts are separate obligations.
+
+**Required cut ownership before production routing (DERIVED).** The schema proof
+stops at Par/EPM; a raw branching PathMap can still have a depth-dependent destructor.
+Review found unguarded physical trie owners in pending owned writers, the new EPM
+record and retained `PlannedEPathMapNode` values. Existing line-depth tests do not
+qualify branching destruction. Reuse the existing two-phase reverse-prune drain in
+`rspace++/src/rspace/guarded_pathmap.rs` through a narrow shared facade rather than
+copying its algorithm or changing upstream PathMap. The ownership guard must span
+zipper retirement, Discard replacement, mode errors, different-oneof replacement,
+failed projection, frame cleanup and construction-arena destruction. A stateful
+barrier provider can use a valid same-arena planned handle; inventing a default or
+invalid PlannedPar is not an acceptable substitute. Resident EntryTrie ownership
+must not be claimed covered by this transient certificate.
+
+Production frames still use the previous payload representation. Full routing,
+representation-aware EPM/EZipper planning, topology-preserving public materialization,
+legacy ingress and the unchanged depth-4,096 gate remain required. These findings
+are part of task 5834, not a separate optional campaign. PgMCP STDIO remains unavailable;
+the task/experiment backfill is pending, not claimed completed.
+
+| Artifact | SHA-256 |
+|---|---|
+| `formal/rocq/stack_safe_pda/theories/ProtobufOwnedSlots.v` | 5a0a16f95503226d84e7fed501a63d6e06098989d328dfc0ac6ac3423e0173b8 |
+| `target/verification/protobuf-owned-slots-5834/coqc-r6.log` | c61441b237accfb2394228304aa9a9ecd487fd2fe531356bc69fd024d216823e |
+| `target/verification/protobuf-owned-slots-5834/coqchk-r6.log` | 689754c422f2c012e2cf681a450a530b8d2544ce2c14de19bdb9b2b7a921962a |
+| `target/verification/protobuf-owned-slots-5834/native-r1.log` (pre-review) | f0051896e7587f55255800a20f6f50e53373fc2b668caf63d67b04250da83b49 |
+| `target/verification/protobuf-owned-slots-5834/native-r2.log` | 8740ab89e2b6738aace0fba33d650bf1b0f722534f3c29cdb518184613b77b91 |
+| `target/verification/protobuf-owned-slots-5834/native-r3.log` | a3781cae44dcfa76e609d8707bee6e74d6567c407f0a3e3b472750e583d6c7eb |
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

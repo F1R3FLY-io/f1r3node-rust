@@ -28,6 +28,7 @@ theories/DecodedComponentConstruction.v
 theories/DecoderOracleRouting.v
 theories/ProtobufParAccumulation.v
 theories/EpmPayloadRepresentation.v
+theories/ProtobufOwnedSlots.v
 theories/DepthProbeClassification.v
 theories/DepthProbeSearch.v
 theories/DepthProbeLifecycle.v

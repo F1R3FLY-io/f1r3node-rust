@@ -1534,6 +1534,53 @@ independently certify this refactor. E instead pins expected framing/canonicalit
 protocol messages, and obtains child-error wording from the isolated frozen child
 decoder, rather than from another instantiation of the modified pending core.
 
+## Protobuf owned slots (POS, task 5834)
+
+`formal/rocq/stack_safe_pda/theories/ProtobufOwnedSlots.v` proves 34 exported
+statements about payload-parametric container operations and ranked ownership.
+Kernel checking preceded the generated private-record implementation. The native
+bindings live in `models/tests/support/protobuf_owned_slots.rs`; they qualify the
+projection layer and pin existing decoder contracts before production routing.
+
+Witness abbreviations: D = descriptor-complete defaults/fields/oneof projections;
+O = optional take/reopen; P = randomized repeated children and keyed replacements;
+K = protobuf map-entry defaults, repeated values, and failed-entry nonpublication;
+A = same/different oneof arms in both owned records and the current decoder;
+F = injected projection failure; R = complete schema-edge rank validation and the
+separate native Var remainder family; T = TaggedContinuation body-before-guard
+projection trace. P runs with the recorded property-test seed and case count.
+
+| Obligations | Formal statements | Native binding and limit |
+|---|---|---|
+| Optional presence | `absent_slot_commutes`, `present_slot_commutes`, `absent_and_present_default_remain_distinct` | D, O preserve None versus Some(empty) |
+| Take/default/reopen | `take_slot_commutes`, `reopen_commutes`, `take_reopen_commutes`, `reopen_present_preserves_child` | O moves a nonempty builder, adds another component, then projects both |
+| Repeated children | `repeated_default_commutes`, `repeated_append_commutes`, `repeated_append_preserves_order` | D, P retain encounter order and duplicate values |
+| Entry assembly | `default_entry_commutes`, `entry_key_update_commutes`, `entry_value_update_commutes` | K pins omitted key/value and repeated value-field merging in the existing decoder; mirror routing remains pending |
+| Map replacement | `keyed_replacement_commutes`, `keyed_lookup_commutes`, `successful_keyed_replacement_is_last_wins`, `successful_keyed_replacement_preserves_other_keys` | P compares all ordered BTreeMap bindings after repeated keys; K pins successful empty-entry replacement |
+| Key erasure helpers | `erase_key_commutes`, `erase_preserves_other_lookup` | P supplies the corresponding observations through successful last-wins replacement; these two helper lemmas are included in kernel checking |
+| Oneof selection | `oneof_selection_commutes`, `same_oneof_arm_reopens_existing_child`, `different_oneof_arm_starts_default` | A uses distinct nonempty children and compares owned take/select/attach with the frozen decoder |
+| Oneof attachment | `successful_oneof_attach_commutes`, `successful_oneof_attach_selects_new_arm` | A and D preserve constructor/payload; scalar arms use nondefault witnesses |
+| Successful commit | `child_attachment_commutes`, `optional_attachment_commutes`, `repeated_attachment_commutes` | D, O, P establish generated structural projection, not the future PDA attachment implementation |
+| Failed commit | `failed_attachment_preserves_committed_parent` | K pins existing parser behavior; F verifies projection cannot return a partial parent |
+| Recoverable guards | `failed_attachment_allows_later_success`, `rejected_api_guard_preserves_parent`, `guarded_attachment_commutes` | EPR's recoverable protocol tests cover the existing EPM guard boundary; generated owned-PDA attachment binding remains required at cutover |
+| Negative controls | `repeated_prepend_mutant_changes_order`, `absent_collapsed_to_default_mutant_changes_presence` | P and O contain distinguishing nonempty/order/presence witnesses |
+| Schema ownership | `ownership_path_rank_budget`, `ownership_path_length_is_schema_bounded`, `strict_schema_rank_excludes_positive_cycles` | R establishes decreasing edges over the same resolved schema graph; T independently pins protobuf traversal order |
+
+**Premises and exclusions.** Defaults and successful commits must correspond under
+the selected payload denotation. Failure preserves the saved parent after any prior
+take, not a rollback of that take. The keyed formal model establishes lookup
+observations, not BTreeMap physical layout or iteration order; P supplies native
+ordered observations. R bounds only the residual generated message graph.
+Oneof wrappers subdivide a message edge at most once: rank r bounds expanded
+message/oneof nesting by 2r+1 edges, not an exact native-frame count. Par/EPM
+cut implementations, including branching PathMap destruction and panic/error
+cleanup, need their own guarantees; this model does not prove them. The EPM remainder
+is the existing native Var family, separately checked to reach neither Par nor EPM.
+No byte parser, Rust memory/resource behavior, complete decoder refinement, or
+production performance theorem is claimed. Public EPM materialization and component
+planning policies still require integration; D's empty-EPM callback is a test double,
+not a production implementation.
+
 ## Original workspace-regression completion gates
 
 This checkpoint is complete only when all of the following hold:

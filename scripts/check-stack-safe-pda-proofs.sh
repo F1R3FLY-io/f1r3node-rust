@@ -753,6 +753,10 @@ rocq_reject_placeholders theories/EpmPayloadRepresentation.v
 rocq_compile_with_closed_count theories/EpmPayloadRepresentation.v 10 \
   "EPM payload representation and scaffold erasure"
 rocq_check_modules "EPM payload representation and scaffold erasure" StackSafePDA.EpmPayloadRepresentation
+rocq_reject_placeholders theories/ProtobufOwnedSlots.v
+rocq_compile_with_closed_count theories/ProtobufOwnedSlots.v 34 \
+  "protobuf owned slot projection and schema rank"
+rocq_check_modules "protobuf owned slot projection and schema rank" StackSafePDA.ProtobufOwnedSlots
 rocq_reject_placeholders theories/DepthProbeClassification.v
 rocq_compile_with_closed_count theories/DepthProbeClassification.v 28 \
   "depth-probe termination classification"
@@ -1032,10 +1036,11 @@ TLC_MEMORY_HIGH=4G TLC_RSS=6G TLC_CPU_QUOTA=400% TLC_TASKS_MAX=512 \
 rholang_run_tests 9 --lib region_slot_tests
 rholang_run_tests 3 --lib new_injection_preserves_
 rpb3_run_tests 9 --lib incomplete_preservation_tests
-rpb3_run_tests 9 --lib protobuf_decoder_oracle::
+rpb3_run_tests 13 --lib protobuf_decoder_oracle::
 rpb3_run_tests 2 --lib oracle_body_guards::
 rpb3_run_tests 6 --lib protobuf_par_accumulation_tests
 rpb3_run_tests 8 --lib payload_representation_tests
+rpb3_run_tests 8 --lib protobuf_owned_slots_tests
 rpb3_run_tests 1 --release -j4 --features protobuf-projection-experiment --lib planned_handles_keep_exact_associations_without_resident_emission
 rpb3_run_tests 1 --release -j4 --features protobuf-projection-experiment --lib accumulation_emits_no_resident_root_until_requested
 rpb3_run_tests 1 --release -j4 --features protobuf-projection-experiment --lib incomplete_planning_has_no_resident_finish_events

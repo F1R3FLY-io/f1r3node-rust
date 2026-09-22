@@ -1176,7 +1176,7 @@ fn frozen_decoder_oracle_has_provenance_proof_and_native_bindings() {
     let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
     assert!(has_runner_command(&runner, &["rocq_compile_with_closed_count", "theories/DecoderOracleRouting.v", "10"]));
     assert!(has_runner_kernel_check(&runner, &["StackSafePDA.DecoderOracleRouting"]));
-    assert!(has_runner_command(&runner, &["rpb3_run_tests", "9", "--lib", "protobuf_decoder_oracle::"]));
+    assert!(has_runner_command(&runner, &["rpb3_run_tests", "13", "--lib", "protobuf_decoder_oracle::"]));
     assert!(has_runner_command(&runner, &["rpb3_run_tests", "2", "--lib", "oracle_body_guards::"]));
     assert!(read_repository_file("formal/rocq/stack_safe_pda/_CoqProject").lines()
         .any(|line| line == "theories/DecoderOracleRouting.v"));
@@ -1185,7 +1185,11 @@ fn frozen_decoder_oracle_has_provenance_proof_and_native_bindings() {
         "descriptor_corpus_routes_all_generated_decoders_independently", "root_and_partial_merge_observations_match_frozen_reference",
         "late_failure_preserves_committed_fields_and_exact_error", "epathmap_adapter_and_indirect_value_decoders_are_isolated",
         "arbitrary_buffers_preserve_root_merge_and_consumption", "canonical_fast_import_retains_baseline_borrowed_input_observation",
-        "repeated_fields_oneof_replacement_and_groups_preserve_observations"] {
+        "repeated_fields_oneof_replacement_and_groups_preserve_observations",
+        "public_new_keeps_uri_order_until_attachment_to_par",
+        "public_collection_expr_keeps_order_and_duplicates_until_attachment_to_par",
+        "public_receive_keeps_explicit_empty_condition_until_attachment_to_par",
+        "public_match_keeps_explicit_empty_guard_until_attachment_to_par"] {
         assert!(controller.contains(&format!("fn {witness}(")));
     }
     let guards = read_repository_file("models/tests/support/protobuf_decoder_body_guards.rs");
@@ -1251,6 +1255,53 @@ fn epm_payload_representation_has_proof_and_native_bindings() {
         "scaffold_factory_remains_lazy_and_matches_nonroot_value_free_events",
         "planned_handles_keep_exact_associations_without_resident_emission",
         "generic_topology_replay_and_drop_are_stack_safe", "arbitrary_prefix_maps_preserve_payload_association"] {
+        assert!(native.contains(&format!("fn {witness}(")));
+    }
+}
+
+#[test]
+fn protobuf_owned_slots_have_proof_and_native_bindings() {
+    let theory = read_repository_file("formal/rocq/stack_safe_pda/theories/ProtobufOwnedSlots.v");
+    let names = [
+        "absent_slot_commutes", "present_slot_commutes", "absent_and_present_default_remain_distinct",
+        "take_slot_commutes", "reopen_commutes", "take_reopen_commutes", "reopen_present_preserves_child",
+        "repeated_default_commutes", "repeated_append_commutes", "repeated_append_preserves_order",
+        "default_entry_commutes", "entry_key_update_commutes", "entry_value_update_commutes",
+        "keyed_replacement_commutes", "keyed_lookup_commutes", "successful_keyed_replacement_is_last_wins",
+        "successful_keyed_replacement_preserves_other_keys", "oneof_selection_commutes",
+        "same_oneof_arm_reopens_existing_child", "different_oneof_arm_starts_default",
+        "successful_oneof_attach_commutes", "successful_oneof_attach_selects_new_arm",
+        "child_attachment_commutes", "failed_attachment_preserves_committed_parent",
+        "failed_attachment_allows_later_success", "rejected_api_guard_preserves_parent",
+        "guarded_attachment_commutes", "optional_attachment_commutes", "repeated_attachment_commutes",
+        "repeated_prepend_mutant_changes_order", "absent_collapsed_to_default_mutant_changes_presence",
+        "ownership_path_rank_budget", "ownership_path_length_is_schema_bounded",
+        "strict_schema_rank_excludes_positive_cycles",
+    ];
+    assert_eq!(names.len(), 34);
+    assert_eq!(theory.matches("Print Assumptions ").count(), names.len());
+    let catalog = read_repository_file("docs/design/pathmap/workspace-regression-formal-invariant-catalog-2026-08-28.md");
+    for name in names {
+        assert!(theory.contains(&format!("Print Assumptions {name}.")));
+        assert!(catalog.contains(&format!("`{name}`")));
+    }
+    let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
+    assert!(has_runner_command(&runner, &["rocq_compile_with_closed_count", "theories/ProtobufOwnedSlots.v", "34"]));
+    assert!(has_runner_kernel_check(&runner, &["StackSafePDA.ProtobufOwnedSlots"]));
+    assert!(has_runner_command(&runner, &["rpb3_run_tests", "8", "--lib", "protobuf_owned_slots_tests"]));
+    assert!(read_repository_file("formal/rocq/stack_safe_pda/_CoqProject").lines()
+        .any(|line| line == "theories/ProtobufOwnedSlots.v"));
+    let native = read_repository_file("models/tests/support/protobuf_owned_slots.rs");
+    for witness in [
+        "every_descriptor_field_and_oneof_arm_projects_without_canonicalizing_its_owner",
+        "owned_rank_witness_covers_every_schema_edge_and_the_epm_native_remainder",
+        "optional_take_and_reopen_preserve_presence_and_accumulated_children",
+        "projection_failure_stops_before_later_children_and_does_not_publish_a_result",
+        "message_oneof_reopens_same_arm_but_discards_a_different_arm",
+        "tagged_continuation_projects_body_before_guard_in_protobuf_order",
+        "keyed_entry_defaults_and_failure_keep_the_existing_parent_binding",
+        "repeated_children_and_keyed_replacements_preserve_values_and_order",
+    ] {
         assert!(native.contains(&format!("fn {witness}(")));
     }
 }

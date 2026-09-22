@@ -136,6 +136,10 @@ pub(crate) mod rhoapi_recursive_oracle {
 #[path = "../tests/support/protobuf_decoder_oracle.rs"]
 pub(crate) mod protobuf_decoder_oracle;
 
+#[cfg(test)]
+#[path = "../tests/support/protobuf_owned_slots.rs"]
+mod protobuf_owned_slots_tests;
+
 pub mod rholang_scala_rust_types {
     include!(concat!(env!("OUT_DIR"), "/rholang_scala_rust_types.rs"));
 }

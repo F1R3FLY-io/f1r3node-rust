@@ -1166,6 +1166,7 @@ pub fn generate(fds: &FileDescriptorSet) -> Generated {
         &oneofs,
         &extern_set,
         par_decoder_fields,
+        &graph,
     );
     let match_schema = emit_match_schema_source(
         &messages,
@@ -10020,6 +10021,8 @@ fn emit_schema_test_adapters_source(
     )
     .expect("write explicit-default mutant floor");
 
+    emit_protobuf_owned_slot_test_adapters(&mut src, messages, all_resolved, oneofs, extern_set);
+
     assert!(
         expected_fixture_count > generated_message_count + oneof_arm_count,
         "schema: test adapter emitted too few fixtures to cover fields and oneof arms"
@@ -10032,6 +10035,79 @@ fn emit_schema_test_adapters_source(
         oneof_arm_count
     );
     src
+}
+
+fn emit_protobuf_owned_slot_test_adapters(
+    src: &mut String,
+    messages: &[Message<'_>],
+    all_resolved: &[Vec<Field>],
+    oneofs: &[Oneof],
+    extern_set: &BTreeSet<&str>,
+) {
+    src.push_str("pub(crate) fn owned_slot_projection_cases<P: protobuf_decoder::owned_slots::Projection>(projection: &mut P) -> Result<usize, P::Error> {\n    use protobuf_decoder::owned_slots;\n    let mut count = 0;\n");
+    for (index, message) in messages.iter().enumerate() {
+        if extern_set.contains(message.leaf_name()) {
+            continue;
+        }
+        let owned = format!("owned_slots::{}", rust_type_name(message.leaf_name()));
+        let native = format!("crate::rhoapi::{}", message.rust_path());
+        writeln!(src, "    assert_eq!({owned}::default().project(projection)?.encode_to_vec(), {native}::default().encode_to_vec(), {:?});\n    count += 1;", message.descriptor_name(PACKAGE)).expect("write default owned witness");
+        for field in &all_resolved[index] {
+            let name = &field.rust_name;
+            let values: Vec<(String, String)> = match &field.shape {
+                Shape::Oneof => {
+                    let oneof = certified_oneof_for_field(message, field, oneofs);
+                    let owned_oneof = protobuf_owned_oneof_name(messages, oneof);
+                    oneof
+                        .variants
+                        .iter()
+                        .map(|variant| {
+                            let arm = &variant.rust_ident;
+                            let payload = if variant.message_leaf.is_some() {
+                                "Default::default()"
+                            } else {
+                                match variant.ty {
+                                    Type::Bool => "true",
+                                    Type::String => "\"owned-arm\".into()",
+                                    Type::Bytes => "vec![3, 1, 2]",
+                                    Type::Float | Type::Double => "3.25",
+                                    _ => "37",
+                                }
+                            };
+                            (
+                                format!("Some(owned_slots::{owned_oneof}::{arm}({payload}))"),
+                                format!(
+                                    "Some(crate::rhoapi::{}::{}::{arm}({payload}))",
+                                    oneof.module, oneof.rust_ident
+                                ),
+                            )
+                        })
+                        .collect()
+                }
+                shape => {
+                    let value = match shape {
+                        Shape::Message { .. } => "Some(Default::default())",
+                        Shape::RepeatedMessage { .. } => "vec![Default::default(), Default::default()]",
+                        Shape::RepeatedString => "vec![\"z\".into(), \"a\".into()]",
+                        Shape::RepeatedBytes => "vec![vec![3, 1], vec![2]]",
+                        Shape::Map { key: Type::String, .. } => "[(\"z\".into(), Default::default()), (\"a\".into(), Default::default())].into()",
+                        Shape::Map { .. } => panic!("owned-slot test adapter needs a non-string map witness"),
+                        Shape::EmptyBytes | Shape::Scalar(Type::Bytes) => "vec![3, 1, 2]",
+                        Shape::Scalar(Type::Bool) => "true",
+                        Shape::Scalar(Type::String) => "\"owned-slot\".into()",
+                        Shape::Scalar(Type::Float | Type::Double) => "3.25",
+                        Shape::Scalar(_) => "37",
+                        Shape::Oneof => unreachable!(),
+                    };
+                    vec![(value.into(), value.into())]
+                }
+            };
+            for (own_value, native_value) in values {
+                writeln!(src, "    {{\n        let owned = {owned} {{ {name}: {own_value}, ..Default::default() }};\n        let native = {native} {{ {name}: {native_value}, ..Default::default() }};\n        assert_eq!(owned.project(projection)?.encode_to_vec(), native.encode_to_vec(), {:?});\n        count += 1;\n    }}", format!("{}.{name}", message.descriptor_name(PACKAGE))).expect("write owned field witness");
+            }
+        }
+    }
+    src.push_str("    Ok(count)\n}\n");
 }
 
 fn emit_schema_fixture_push(
@@ -11010,6 +11086,7 @@ fn emit_protobuf_decoder_source(
     oneofs: &[Oneof],
     extern_set: &BTreeSet<&str>,
     par_fields: &[Field],
+    graph: &SchemaGraph,
 ) -> String {
     let mut src = String::from(
         r##"// @generated by models/codegen/schema.rs (§8). DO NOT EDIT.
@@ -11289,6 +11366,7 @@ fn unexpected_end_group_tag() -> DecodeError {
 "##,
     );
 
+    emit_protobuf_owned_slots(&mut src, messages, resolved, oneofs, extern_set, graph);
     emit_protobuf_decoder_pda(&mut src, messages, resolved, oneofs, extern_set, par_fields);
 
     // ★ THE NON-VACUITY FLOOR, at the emitter. `models/build.rs` refuses a
@@ -11305,6 +11383,196 @@ fn unexpected_end_group_tag() -> DecodeError {
     );
 
     src
+}
+
+fn protobuf_owned_scalar(ty: Type) -> &'static str {
+    match ty {
+        Type::Bool => "bool",
+        Type::String => "String",
+        Type::Bytes => "Vec<u8>",
+        Type::Int32 | Type::Sint32 | Type::Sfixed32 => "i32",
+        Type::Uint32 | Type::Fixed32 => "u32",
+        Type::Int64 | Type::Sint64 | Type::Sfixed64 => "i64",
+        Type::Uint64 | Type::Fixed64 => "u64",
+        Type::Float => "f32",
+        Type::Double => "f64",
+        other => panic!("protobuf owned slots: unsupported scalar {other:?}"),
+    }
+}
+
+fn protobuf_owned_oneof_name(messages: &[Message<'_>], oneof: &Oneof) -> String {
+    format!(
+        "{}{}",
+        rust_type_name(&owner_of_oneof(messages, oneof)),
+        oneof.rust_ident
+    )
+}
+
+fn emit_protobuf_owned_slots(
+    src: &mut String,
+    messages: &[Message<'_>],
+    resolved: &[(usize, Vec<Field>)],
+    oneofs: &[Oneof],
+    extern_set: &BTreeSet<&str>,
+    graph: &SchemaGraph,
+) {
+    let indices: BTreeMap<_, _> = graph
+        .names
+        .iter()
+        .enumerate()
+        .map(|(index, name)| (name.as_str(), index))
+        .collect();
+    assert_eq!(
+        indices.len(),
+        messages.len(),
+        "protobuf owned slots: ambiguous message leaf"
+    );
+    assert!(
+        graph.recursive.is_empty(),
+        "protobuf owned slots: recursive residual ownership"
+    );
+    let mut ranks = vec![None::<usize>; messages.len()];
+    for component in &graph.scc {
+        assert_eq!(
+            component.len(),
+            1,
+            "protobuf owned slots: residual SCC is not a singleton"
+        );
+        let index = component[0];
+        let mut rank = 0;
+        for child in &graph.children[index] {
+            let child_index = indices[child.as_str()];
+            let child_rank =
+                ranks[child_index].expect("protobuf owned slots: child rank is not complete");
+            rank = rank.max(
+                child_rank
+                    .checked_add(1)
+                    .expect("protobuf owned slots: rank overflow"),
+            );
+        }
+        ranks[index] = Some(rank);
+    }
+    let var_index = indices["Var"];
+    let mut pending = vec![var_index];
+    let mut seen = BTreeSet::new();
+    while let Some(index) = pending.pop() {
+        if !seen.insert(index) {
+            continue;
+        }
+        assert!(
+            !extern_set.contains(graph.names[index].as_str()),
+            "protobuf owned slots: EPathMap remainder reaches an external cut"
+        );
+        pending.extend(
+            graph.children[index]
+                .iter()
+                .map(|child| indices[child.as_str()]),
+        );
+    }
+    src.push_str("\n#[allow(dead_code, unused_variables)]\npub(crate) mod owned_slots {\n");
+    src.push_str("pub(crate) type Par = crate::rust::par_construction::ProtobufParBuilder;\n");
+    src.push_str("pub(crate) struct EPathMap {\n    pub(crate) repr: crate::rust::epathmap_trie_codec::EPathMapRepr<crate::rust::par_construction::PlannedPar>,\n    pub(crate) locally_free: Vec<u8>,\n    pub(crate) connective_used: bool,\n    pub(crate) remainder: Option<crate::rhoapi::Var>,\n}\n");
+    src.push_str("impl Default for EPathMap { fn default() -> Self { Self { repr: crate::rust::epathmap_trie_codec::EPathMapRepr::Empty, locally_free: Vec::new(), connective_used: false, remainder: None } } }\n");
+    src.push_str("pub(crate) trait Projection {\n    type Error;\n    fn par(&mut self, value: Par) -> Result<crate::rhoapi::Par, Self::Error>;\n    fn epathmap(&mut self, value: EPathMap) -> Result<crate::rhoapi::EPathMap, Self::Error>;\n}\n");
+    for cut in ["Par", "EPathMap"] {
+        let method = if cut == "Par" { "par" } else { "epathmap" };
+        writeln!(src, "impl {cut} {{ pub(crate) fn project<P: Projection>(self, projection: &mut P) -> Result<crate::rhoapi::{cut}, P::Error> {{ projection.{method}(self) }} }}")
+            .expect("write owned cut projection");
+    }
+    src.push_str("pub(crate) const OWNERSHIP_RANKS: &[(&str, usize, &[&str])] = &[\n");
+    for (index, message) in messages.iter().enumerate() {
+        let name = message.descriptor_name(PACKAGE);
+        let children: Vec<_> = graph.children[index]
+            .iter()
+            .map(|child| messages[indices[child.as_str()]].descriptor_name(PACKAGE))
+            .collect();
+        writeln!(
+            src,
+            "    ({name:?}, {}, &{children:?}),",
+            ranks[index].unwrap()
+        )
+        .expect("write owned rank witness");
+    }
+    src.push_str("];\n");
+    writeln!(
+        src,
+        "pub(crate) const EPM_REMAINDER_OWNERSHIP_RANK: usize = {};",
+        ranks[var_index].unwrap()
+    )
+    .expect("write EPM remainder rank");
+    for (index, fields) in resolved {
+        let message = &messages[*index];
+        let name = rust_type_name(message.leaf_name());
+        writeln!(src, "#[derive(Default)]\npub(crate) struct {name} {{")
+            .expect("write owned message");
+        for field in fields {
+            let ty = match &field.shape {
+                Shape::Scalar(ty) => protobuf_owned_scalar(*ty).to_string(),
+                Shape::EmptyBytes => "Vec<u8>".into(),
+                Shape::Message { leaf } => format!("Option<{}>", rust_type_name(leaf)),
+                Shape::RepeatedMessage { leaf } => format!("Vec<{}>", rust_type_name(leaf)),
+                Shape::RepeatedString => "Vec<String>".into(),
+                Shape::RepeatedBytes => "Vec<Vec<u8>>".into(),
+                Shape::Map { key, value_leaf } => format!(
+                    "std::collections::BTreeMap<{}, {}>",
+                    protobuf_owned_scalar(*key),
+                    rust_type_name(value_leaf)
+                ),
+                Shape::Oneof => format!(
+                    "Option<{}>",
+                    protobuf_owned_oneof_name(
+                        messages,
+                        certified_oneof_for_field(message, field, oneofs)
+                    )
+                ),
+            };
+            writeln!(src, "    pub(crate) {}: {ty},", field.rust_name).expect("write owned field");
+        }
+        let production = format!("crate::rhoapi::{}", message.rust_path());
+        writeln!(src, "}}\nimpl {name} {{\n    pub(crate) fn project<P: Projection>(self, projection: &mut P) -> Result<{production}, P::Error> {{\n        Ok({production} {{")
+            .expect("write owned message projection");
+        for field in protobuf_order(fields) {
+            let name = &field.rust_name;
+            let value = match &field.shape {
+                Shape::Message { .. } | Shape::Oneof => format!("self.{name}.map(|value| value.project(projection)).transpose()?"),
+                Shape::RepeatedMessage { .. } => format!("self.{name}.into_iter().map(|value| value.project(projection)).collect::<Result<_, _>>()?"),
+                Shape::Map { .. } => format!("self.{name}.into_iter().map(|(key, value)| value.project(projection).map(|value| (key, value))).collect::<Result<_, _>>()?"),
+                _ => format!("self.{name}"),
+            };
+            writeln!(src, "            {name}: {value},").expect("write owned field projection");
+        }
+        src.push_str("        })\n    }\n}\n");
+    }
+    for oneof in oneofs {
+        let name = protobuf_owned_oneof_name(messages, oneof);
+        let production = format!("crate::rhoapi::{}::{}", oneof.module, oneof.rust_ident);
+        writeln!(src, "pub(crate) enum {name} {{").expect("write owned oneof");
+        for variant in &oneof.variants {
+            let ty = variant
+                .message_leaf
+                .as_ref()
+                .map(|leaf| rust_type_name(leaf))
+                .unwrap_or_else(|| protobuf_owned_scalar(variant.ty).into());
+            writeln!(src, "    {}({ty}),", variant.rust_ident).expect("write owned oneof arm");
+        }
+        writeln!(src, "}}\nimpl {name} {{\n    pub(crate) fn project<P: Projection>(self, projection: &mut P) -> Result<{production}, P::Error> {{\n        Ok(match self {{")
+            .expect("write owned oneof projection");
+        for variant in &oneof.variants {
+            let arm = &variant.rust_ident;
+            let payload = if variant.message_leaf.is_some() {
+                "value.project(projection)?"
+            } else {
+                "value"
+            };
+            writeln!(
+                src,
+                "            Self::{arm}(value) => {production}::{arm}({payload}),"
+            )
+            .expect("write owned arm projection");
+        }
+        src.push_str("        })\n    }\n}\n");
+    }
+    src.push_str("}\n");
 }
 
 /// Emit the schema-dependent half of the protobuf reader.
