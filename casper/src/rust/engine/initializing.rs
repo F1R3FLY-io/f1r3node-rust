@@ -134,8 +134,13 @@ pub struct Initializing<T: TransportLayer + Send + Sync + Clone + 'static> {
 /// Write shipped floor-cache entries into the DAG's floor and frontier
 /// indices. Only entries that were SOLICITED and whose block this node holds
 /// are written — a peer cannot seed floors for blocks we did not ask about.
-/// The floor value itself may sit below the held window; a later walk that
-/// needs it defers and names it, which is one bounded fetch, not a crawl.
+///
+/// An entry is a pointer, so its VALUES must be held too: a cached floor or
+/// frontier naming history below the restore horizon turns every later walk
+/// that reads it into a demand for a block nothing fetches. The same rule
+/// [`Initializing::seed_floor_caches`] applies to the anchor's seed, which is
+/// solicited here like every other restored block — so an entry never replaces
+/// a floor this node already has.
 fn apply_floor_cache_entries(
     dag: &block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation,
     solicited: &HashSet<BlockHash>,
@@ -144,6 +149,18 @@ fn apply_floor_cache_entries(
     let mut written = 0usize;
     for entry in entries {
         if !solicited.contains(&entry.block_hash) || !dag.contains(&entry.block_hash) {
+            continue;
+        }
+        if !dag.contains(&entry.floor_hash) || !dag.contains(&entry.frontier_hash) {
+            tracing::debug!(
+                block = %PrettyPrinter::build_string_bytes(&entry.block_hash),
+                floor = %PrettyPrinter::build_string_bytes(&entry.floor_hash),
+                frontier = %PrettyPrinter::build_string_bytes(&entry.frontier_hash),
+                "discarding a shipped floor entry naming history this node did not download"
+            );
+            continue;
+        }
+        if dag.get_cached_floor(&entry.block_hash)?.is_some() {
             continue;
         }
         dag.put_cached_floor(entry.block_hash.clone(), entry.floor_hash)?;
@@ -1906,6 +1923,7 @@ mod tests {
 
         let mut dag_set = imbl::HashSet::new();
         dag_set.insert(held.clone());
+        dag_set.insert(floor.clone());
         let dag = KeyValueDagRepresentation {
             dag_set,
             latest_messages_map: imbl::HashMap::new(),
@@ -1959,6 +1977,91 @@ mod tests {
             dag.get_cached_floor(&unheld).expect("read"),
             None,
             "a peer cannot seed finality for a block this node does not hold"
+        );
+    }
+
+    /// A shipped entry is a pointer, and a pointer into history this node does
+    /// not hold is worse than no entry: the walk that follows it asks for a
+    /// block below the horizon, which nothing fetches. The anchor's seed —
+    /// written moments earlier and verified against exactly this rule — is
+    /// solicited like every other restored block, so an unchecked entry would
+    /// overwrite it with the peer's own.
+    #[test]
+    fn a_shipped_entry_naming_unheld_history_is_refused_and_never_replaces_a_seed() {
+        use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
+        use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
+        use models::rust::casper::protocol::casper_message::FloorCacheEntry;
+        use parking_lot::RwLock as PlRwLock;
+        use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
+        use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
+
+        let anchor = BlockHash::from(vec![0x11; 32]);
+        let band = BlockHash::from(vec![0x12; 32]);
+        let seeded_floor = BlockHash::from(vec![0x13; 32]);
+        let below_horizon = BlockHash::from(vec![0x99; 32]);
+
+        let mut dag_set = imbl::HashSet::new();
+        dag_set.insert(anchor.clone());
+        dag_set.insert(band.clone());
+        dag_set.insert(seeded_floor.clone());
+        let dag = KeyValueDagRepresentation {
+            dag_set,
+            latest_messages_map: imbl::HashMap::new(),
+            child_map: imbl::HashMap::new(),
+            height_map: imbl::OrdMap::new(),
+            block_number_map: imbl::HashMap::new(),
+            main_parent_map: imbl::HashMap::new(),
+            self_justification_map: imbl::HashMap::new(),
+            invalid_blocks_set: imbl::HashSet::new(),
+            last_finalized_block_hash: prost::bytes::Bytes::new(),
+            finalized_blocks_set: imbl::HashSet::new(),
+            block_metadata_index: Arc::new(PlRwLock::new(BlockMetadataStore::new(
+                KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+            ))),
+            floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+            frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+            lifecycle: Arc::new(parking_lot::RwLock::new(
+                block_storage::rust::dag::deploy_lifecycle_types::DeployLifecycleTables::in_memory(
+                ),
+            )),
+            carrier_index: Arc::new(parking_lot::RwLock::new(
+                block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
+            )),
+        };
+
+        dag.put_cached_floor(anchor.clone(), seeded_floor.clone())
+            .expect("seed the anchor");
+        dag.put_cached_frontier(anchor.clone(), seeded_floor.clone())
+            .expect("seed the anchor");
+
+        let solicited = HashSet::from([anchor.clone(), band.clone()]);
+        let written = apply_floor_cache_entries(&dag, &solicited, vec![
+            FloorCacheEntry {
+                block_hash: band.clone(),
+                floor_hash: below_horizon.clone(),
+                frontier_hash: below_horizon.clone(),
+            },
+            FloorCacheEntry {
+                block_hash: anchor.clone(),
+                floor_hash: below_horizon.clone(),
+                frontier_hash: below_horizon.clone(),
+            },
+        ])
+        .expect("apply");
+
+        assert_eq!(
+            written, 0,
+            "an entry pointing at history the node never downloaded is refused"
+        );
+        assert_eq!(
+            dag.get_cached_floor(&band).expect("read"),
+            None,
+            "no entry is better than one whose walk cannot terminate"
+        );
+        assert_eq!(
+            dag.get_cached_floor(&anchor).expect("read"),
+            Some(seeded_floor),
+            "the verified seed survives the peer's answer for the same block"
         );
     }
 
