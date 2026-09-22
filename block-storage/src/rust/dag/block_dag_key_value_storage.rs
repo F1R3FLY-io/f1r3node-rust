@@ -1067,15 +1067,16 @@ impl BlockDagKeyValueStorage {
 
     pub(crate) fn soak_capture_access(
         &self,
+        deadline: std::time::Instant,
         wait: std::time::Duration,
     ) -> Result<SoakCaptureAccess<'_>, SnapshotError> {
         let global = self
             .global_lock
-            .try_read_for(wait)
+            .try_read_until(deadline)
             .ok_or(SnapshotError::LockTimeout(wait))?;
         let metadata = self
             .block_metadata_index
-            .try_read_for(wait)
+            .try_read_until(deadline)
             .ok_or(SnapshotError::LockTimeout(wait))?;
         Ok(SoakCaptureAccess {
             _global: global,
