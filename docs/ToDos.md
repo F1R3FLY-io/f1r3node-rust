@@ -80,7 +80,7 @@ priority: p0
 user_story: US-006
 blocked_by: []
 created_at: 2026-09-21
-updated_at: 2026-09-21
+updated_at: 2026-09-22
 claimed_by: claude-session-7015f552
 claimed_at: 2026-09-21T16:40:00Z
 branch: feature/casper-node-observation
@@ -170,6 +170,14 @@ tasks:
       - "An instance rejects conflicting handle attachment. Coverage begins at successful attachment."
       - "Record overflow or observer failure never blocks consensus or invents a successful observation."
       - "A derivation, an attempted effect, and persisted finalization are distinct records."
+    implementation_plan:
+      - "Step 1. Fix the final file list in the batch plan: node runtime and setup, engine cell, Casper constructor, multi-parent types and dispatch, the six test fixtures that need the observer field, and a work-bound review of util/clique.rs and the traversal helpers."
+      - "Step 2. Design the handle: an optional observer field on the Casper instance that defaults to none, attached once at engine installation, rejecting a second attachment, with coverage starting at successful attachment."
+      - "Step 3. Design the evaluation: an authority-snapshot request that runs the B1 capture, then evaluates floor and oracle over the scratch view with scratch stores only. The reference path must not reuse the production tips computation."
+      - "Step 4. Define the record schema: oracle decision, original fault-tolerance result, and display projection as separate fields, each naming the snapshot digest it used, plus traversal and clique counters that report unavailable when not incremented."
+      - "Step 5. Register CLAIM-CASPER-NODE-OBSERVATION-003, propose mandatory tags for the new handle and evaluation files, and create pending records before any implementation."
+      - "Step 6. Implement with tests: default startup installs nothing, conflicting attachment is rejected, record overflow never blocks consensus, and derivation, attempted effect, and persisted finalization are distinct."
+      - "Step 7. Package evidence, rerun the gate, and obtain acceptance under the same rules as TASK-019-4."
   - id: TASK-019-4
     title: "Source-bound verification and acceptance of the Batch A and Batch B1 claims"
     status: in_progress
@@ -203,6 +211,12 @@ tasks:
       - "Refutation, construction, and binding tiers are recorded with retained failing controls."
       - "An isolated rebuild runs the interface and capture suites. The Batch A and B1 reports record native runs only."
       - "Acceptance is recorded by a named maintainer. Passing tests alone do not discharge a claim."
+    implementation_plan:
+      - "Step 1. Author bounded TLA+ models under formal/tlaplus/node_observation/: MC_ObserverSession for challenge freshness, one request per session, deadline expiry, and session budget; MC_BoundedCapture for guard order, transaction-identity interval, environment-change rejection, incomplete-row rejection, and guard release. Add negative controls beside each positive configuration."
+      - "Step 2. Register both models in scripts/ci/check-tla-invariants.sh and add the model files to both claim inventories. Record the refutation tier from the negative controls and the construction tier from the positive checks."
+      - "Step 3. Rerun the gate at the corrected revision de93425ee or later: isolated rebuild, strict explicit-inventory audit, and a new package casper-node-claim-gate-<revision>-02. The binding tier comes from the source-bound audit of the executable suites."
+      - "Step 4. Request acceptance from the proposed reviewer as a PR #447 review comment that names the revision, both claim IDs, and the package path."
+      - "Step 5. Record acceptance: fill accepted_by and acceptance_record, flip both claim files from pending, set verified_at on the seven records, and run the CbC discharge so the strict gate exits clean."
   - id: TASK-019-5
     title: "Batch C: publication writer inventory and consistency contract"
     status: pending
@@ -230,10 +244,30 @@ tasks:
       - "PR #447 merges with all accepted claims and the pre-commit gate passing without a skip."
       - "PR #436 on formal/soak-casper-consensus retargets dev after the merge."
       - "EPIC-017 TASK-017-12 updates its node interface status to the merged revision."
+  - id: TASK-019-7
+    title: "Publish dev candidate images for adapter qualification"
+    status: pending
+    claimed_by: null
+    blocked_by: []
+    external_dependencies:
+      - "system-integration: the lifecycle-test fix must be committed, pushed, and merged before it can be pinned."
+    consumer: "EPIC-017 TASK-017-12 candidate repin on formal/soak-casper-consensus."
+    pin_site: .github/oci-validation.env
+    implementation_plan:
+      - "Step 1. In system-integration, commit and push the lifecycle-test fix with its own consent, and record the merged revision."
+      - "Step 2. Open a small PR to dev that updates SYSTEM_INTEGRATION_REF in .github/oci-validation.env to that revision. The soak branch keeps its own three pin sites aligned separately."
+      - "Step 3. Let dev CI publish the image for the current dev revision, and record the immutable image digests for amd64 and arm64 with the dev revision they were built from."
+      - "Step 4. Hand the digests to TASK-017-12 for candidate repin and admission. This baseline image carries no observer interface."
+      - "Step 5. After TASK-019-6 merges PR #447, repeat Step 3 for the observer-capable dev revision. Authority and publication adapter qualification needs that second image, not the baseline."
+    acceptance:
+      - "The pin names a merged system-integration revision as a 40-character SHA."
+      - "Each published image is recorded by immutable digest, platform, and source dev revision."
+      - "The baseline and observer-capable images are recorded as distinct candidates."
+      - "No candidate is repinned from a rebuilt or mutable tag."
 ---
 ```
 
-**Current state:** Batch A is implemented. Local B1 corrections address the four source findings, with 301 passing test executions. Both claims remain pending. Batch B2 and Batch C remain unapproved. PR #447 targets `dev`.
+**Current state:** Batch A is implemented. Local B1 corrections address the four source findings, with 301 passing test executions. Both claims remain pending on formal evidence and maintainer acceptance under TASK-019-4. Batch B2 and Batch C remain unapproved. Candidate image publication waits on the system-integration pin under TASK-019-7. PR #447 targets `dev`.
 
 **Scope:** This epic owns node-side interfaces only. Harness verification, profile qualification, campaign execution, and baseline soaks belong to EPIC-017.
 
