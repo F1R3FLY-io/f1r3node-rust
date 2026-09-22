@@ -1340,6 +1340,7 @@ fn epm_owned_retirement_has_explicit_proof_boundaries_and_native_bindings() {
     assert!(has_runner_command(&runner, &["rocq_compile_with_closed_count", "theories/EpmOwnedRetirement.v", "18"]));
     assert!(has_runner_kernel_check(&runner, &["StackSafePDA.EpmOwnedRetirement"]));
     assert!(has_runner_command(&runner, &["rspace_preparation_run_tests", "5", "--lib", "stateful_retirement"]));
+    assert!(has_runner_command(&runner, &["rpb3_run_tests", "7", "--lib", "owned_retirement_tests"]));
     assert!(read_repository_file("formal/rocq/stack_safe_pda/_CoqProject").lines()
         .any(|line| line == "theories/EpmOwnedRetirement.v"));
     let native = read_repository_file("rspace++/tests/guarded_pathmap/stateful_retirement.rs");
@@ -1351,6 +1352,18 @@ fn epm_owned_retirement_has_explicit_proof_boundaries_and_native_bindings() {
         "stateful_provider_erases_to_static_drain_with_exact_real_values",
     ] {
         assert!(native.contains(&format!("fn {witness}(")));
+    }
+    let pending = read_repository_file("models/tests/support/epm_owned_retirement.rs");
+    for witness in [
+        "branching_pending_map_abandonment_retires_all_suspension_states",
+        "branching_set_and_topology_only_pending_frames_retire_without_publication",
+        "branching_final_refusal_preserves_selected_error_and_retires_values",
+        "map_writer_transfer_and_replacement_keep_exact_payload_ownership",
+        "unwinding_a_partially_built_frame_retires_its_owned_map",
+        "writer_guard_reuses_existing_root_and_provider_storage",
+        "generated_abandonment_and_rejection_retire_every_created_payload",
+    ] {
+        assert!(pending.contains(&format!("fn {witness}(")));
     }
 }
 

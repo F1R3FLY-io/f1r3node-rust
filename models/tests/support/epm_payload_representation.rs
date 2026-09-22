@@ -7,6 +7,12 @@ use super::*;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Token(u64);
 
+impl payload_seal::Sealed for Token {}
+
+impl EpmPayload for Token {
+    fn dispose(self) {}
+}
+
 fn entries<V: Clone + Send + Sync + Unpin + 'static>(map: &PathMap<V>) -> Vec<(Vec<u8>, V)> {
     let mut zipper = map.read_zipper();
     let mut entries = Vec::new();

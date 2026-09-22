@@ -25,6 +25,7 @@ use rspace_plus_plus::rspace::pathmap_codec::{
     CanonicalCompactTrieTopologyCursor, CanonicalCompactTrieTopologyEvent,
     CanonicalCompactTrieValueSummary, CompactTrieError, CompactTrieTopologyEvent,
 };
+use rspace_plus_plus::rspace::pathmap_mutation::{BarrierProvider, DisposeValue, retire_pathmap};
 
 use crate::rhoapi::Par;
 use crate::rust::rholang::canonical_bytes_arena::CanonicalByteProvenance;
@@ -1355,6 +1356,36 @@ enum PendingScaffold<V> {
     New(fn() -> V),
 }
 
+mod payload_seal {
+    pub trait Sealed {}
+    impl Sealed for () {}
+    impl Sealed for crate::rhoapi::Par {}
+    impl Sealed for crate::rust::par_construction::PlannedPar {}
+}
+
+pub(crate) trait EpmPayload: payload_seal::Sealed + Clone + Send + Sync + Unpin + 'static {
+    fn dispose(self);
+}
+
+impl EpmPayload for () {
+    fn dispose(self) {}
+}
+
+impl EpmPayload for Par {
+    fn dispose(self) { crate::rust::rholang::par_children::dismantle(self); }
+}
+
+impl EpmPayload for crate::rust::par_construction::PlannedPar {
+    fn dispose(self) {}
+}
+
+#[derive(Clone, Copy)]
+struct EpmPayloadDisposer;
+
+impl<V: EpmPayload> DisposeValue<V> for EpmPayloadDisposer {
+    fn dispose(&self, value: V) { value.dispose(); }
+}
+
 impl<V: Clone> PendingScaffold<V> {
     fn value(&self) -> V {
         match self {
@@ -1364,31 +1395,95 @@ impl<V: Clone> PendingScaffold<V> {
     }
 }
 
-enum PendingWriter<V: Clone + Send + Sync + Unpin + 'static> {
+impl<V: EpmPayload> BarrierProvider<V> for PendingScaffold<V> {
+    fn make_barrier(&self) -> V { self.value() }
+
+    fn discard_barrier(&self, value: V) { value.dispose(); }
+}
+
+struct EpmMapOwner<V: EpmPayload> {
+    owned: Option<(PathMap<V>, PendingScaffold<V>)>,
+}
+
+impl<V: EpmPayload> EpmMapOwner<V> {
+    fn from_writer(writer: WriteZipperOwned<V>, scaffold: PendingScaffold<V>) -> Self {
+        Self { owned: Some((writer.into_map(), scaffold)) }
+    }
+
+    fn into_writer_parts(mut self) -> (WriteZipperOwned<V>, PendingScaffold<V>) {
+        let (map, scaffold) = self.owned.take().expect("a live EPM map owns its root");
+        (map.into_write_zipper([]), scaffold)
+    }
+}
+
+impl<V: EpmPayload> Drop for EpmMapOwner<V> {
+    fn drop(&mut self) {
+        if let Some((map, scaffold)) = self.owned.take() {
+            retire_pathmap(map, &EpmPayloadDisposer, &scaffold);
+        }
+    }
+}
+
+enum PendingWriterState<V: EpmPayload> {
     Empty,
     Set(WriteZipperOwned<()>),
     Map(WriteZipperOwned<V>, PendingScaffold<V>),
     Discard,
 }
 
-impl<V: Clone + Send + Sync + Unpin + 'static> PendingWriter<V> {
+struct PendingWriter<V: EpmPayload> {
+    state: PendingWriterState<V>,
+}
+
+impl<V: EpmPayload> Drop for PendingWriter<V> {
+    fn drop(&mut self) {
+        match std::mem::replace(&mut self.state, PendingWriterState::Discard) {
+            PendingWriterState::Set(writer) => {
+                drop(EpmMapOwner::from_writer(writer, PendingScaffold::Repeat(())));
+            }
+            PendingWriterState::Map(writer, scaffold) => {
+                drop(EpmMapOwner::from_writer(writer, scaffold));
+            }
+            PendingWriterState::Empty | PendingWriterState::Discard => {}
+        }
+    }
+}
+
+impl<V: EpmPayload> PendingWriter<V> {
+    fn discard() -> Self {
+        Self { state: PendingWriterState::Discard }
+    }
+
+    fn into_repr(mut self) -> Result<EPathMapRepr<V>, TrieCodecError> {
+        Ok(match std::mem::replace(&mut self.state, PendingWriterState::Discard) {
+            PendingWriterState::Empty => EPathMapRepr::Empty,
+            PendingWriterState::Set(zipper) => EPathMapRepr::Set(zipper.into_map()),
+            PendingWriterState::Map(zipper, _) => EPathMapRepr::Map(zipper.into_map()),
+            PendingWriterState::Discard => {
+                return Err(TrieCodecError::new(
+                    "EPM1 rejected without a retained semantic error",
+                ));
+            }
+        })
+    }
+
     fn install_scaffold_value(&mut self) {
-        match self {
-            Self::Set(zipper) => {
+        match &mut self.state {
+            PendingWriterState::Set(zipper) => {
                 zipper.set_val(());
             }
-            Self::Map(zipper, scaffold) => {
+            PendingWriterState::Map(zipper, scaffold) => {
                 zipper.set_val(scaffold.value());
             }
-            Self::Empty | Self::Discard => {}
+            PendingWriterState::Empty | PendingWriterState::Discard => {}
         }
     }
 
     fn descend_to_byte(&mut self, byte: u8) {
-        match self {
-            Self::Set(zipper) => zipper.descend_to_byte(byte),
-            Self::Map(zipper, _) => zipper.descend_to_byte(byte),
-            Self::Empty | Self::Discard => {}
+        match &mut self.state {
+            PendingWriterState::Set(zipper) => zipper.descend_to_byte(byte),
+            PendingWriterState::Map(zipper, _) => zipper.descend_to_byte(byte),
+            PendingWriterState::Empty | PendingWriterState::Discard => {}
         }
     }
 
@@ -1397,47 +1492,46 @@ impl<V: Clone + Send + Sync + Unpin + 'static> PendingWriter<V> {
     /// sentinel, while the map-level constructor is the public API that
     /// replaces that sentinel without installing a transient value.
     fn descend_first_byte(&mut self, byte: u8) {
-        match std::mem::replace(self, Self::Discard) {
-            Self::Set(zipper) => {
-                let mut map = zipper.into_map();
-                map.create_path([byte]);
-                let mut zipper = map.into_write_zipper([]);
-                zipper.descend_to_byte(byte);
-                *self = Self::Set(zipper);
+        match std::mem::replace(&mut self.state, PendingWriterState::Discard) {
+            PendingWriterState::Set(zipper) => {
+                let mut owner = EpmMapOwner::from_writer(zipper, PendingScaffold::Repeat(()));
+                owner.owned.as_mut().expect("the transferred EPM map owns its root").0.create_path([byte]);
+                let (zipper, _) = owner.into_writer_parts();
+                self.state = PendingWriterState::Set(zipper);
             }
-            Self::Map(zipper, scaffold) => {
-                let mut map = zipper.into_map();
-                map.create_path([byte]);
-                let mut zipper = map.into_write_zipper([]);
-                zipper.descend_to_byte(byte);
-                *self = Self::Map(zipper, scaffold);
+            PendingWriterState::Map(zipper, scaffold) => {
+                let mut owner = EpmMapOwner::from_writer(zipper, scaffold);
+                owner.owned.as_mut().expect("the transferred EPM map owns its root").0.create_path([byte]);
+                let (zipper, scaffold) = owner.into_writer_parts();
+                self.state = PendingWriterState::Map(zipper, scaffold);
             }
-            Self::Empty => *self = Self::Empty,
-            Self::Discard => *self = Self::Discard,
+            PendingWriterState::Empty => self.state = PendingWriterState::Empty,
+            PendingWriterState::Discard => {}
         }
+        self.descend_to_byte(byte);
     }
 
     fn ascend_byte(&mut self) {
-        match self {
-            Self::Set(zipper) => {
+        match &mut self.state {
+            PendingWriterState::Set(zipper) => {
                 zipper.ascend_byte();
             }
-            Self::Map(zipper, _) => {
+            PendingWriterState::Map(zipper, _) => {
                 zipper.ascend_byte();
             }
-            Self::Empty | Self::Discard => {}
+            PendingWriterState::Empty | PendingWriterState::Discard => {}
         }
     }
 
     fn remove_scaffold_value(&mut self) {
-        match self {
-            Self::Set(zipper) => {
+        match &mut self.state {
+            PendingWriterState::Set(zipper) => {
                 zipper.remove_val(false);
             }
-            Self::Map(zipper, _) => {
+            PendingWriterState::Map(zipper, _) => {
                 zipper.remove_val(false);
             }
-            Self::Empty | Self::Discard => {}
+            PendingWriterState::Empty | PendingWriterState::Discard => {}
         }
     }
 }
@@ -1496,7 +1590,7 @@ fn parse_pending_framing(bytes: &[u8]) -> Result<PendingFraming, TrieCodecError>
 pub(crate) struct PendingEpmDecode<
     'a,
     S: AsRef<[u8]>,
-    V: Clone + Send + Sync + Unpin + 'static = Par,
+    V: EpmPayload = Par,
 > {
     snapshot: S,
     mode: Option<EPathMapMode>,
@@ -1518,7 +1612,7 @@ pub(crate) struct PendingEpmDecode<
 
 pub(crate) type OwnedPendingEpmDecode<V = Par> = PendingEpmDecode<'static, Bytes, V>;
 
-impl<'a, S: AsRef<[u8]>, V: Clone + Send + Sync + Unpin + 'static>
+impl<'a, S: AsRef<[u8]>, V: EpmPayload>
     PendingEpmDecode<'a, S, V>
 {
     fn from_parts(
@@ -1541,12 +1635,12 @@ impl<'a, S: AsRef<[u8]>, V: Clone + Send + Sync + Unpin + 'static>
             }
         };
 
-        let mut writer = match mode {
-            Some(EPathMapMode::Empty) => PendingWriter::Empty,
-            Some(EPathMapMode::Set) => PendingWriter::Set(WriteZipperOwned::new()),
-            Some(EPathMapMode::Map) => PendingWriter::Map(WriteZipperOwned::new(), scaffold),
-            None => PendingWriter::Discard,
-        };
+        let mut writer = PendingWriter { state: match mode {
+            Some(EPathMapMode::Empty) => PendingWriterState::Empty,
+            Some(EPathMapMode::Set) => PendingWriterState::Set(WriteZipperOwned::new()),
+            Some(EPathMapMode::Map) => PendingWriterState::Map(WriteZipperOwned::new(), scaffold),
+            None => PendingWriterState::Discard,
+        } };
 
         match mode {
             Some(EPathMapMode::Empty) => {
@@ -1554,7 +1648,7 @@ impl<'a, S: AsRef<[u8]>, V: Clone + Send + Sync + Unpin + 'static>
                     first_semantic_error.get_or_insert_with(|| {
                         TrieCodecError::new("neutral empty EPathMap carries trie or values")
                     });
-                    writer = PendingWriter::Discard;
+                    writer = PendingWriter::discard();
                 }
                 topology = None;
             }
@@ -1570,7 +1664,7 @@ impl<'a, S: AsRef<[u8]>, V: Clone + Send + Sync + Unpin + 'static>
                     }
                 }
                 if topology.is_none() {
-                    writer = PendingWriter::Discard;
+                    writer = PendingWriter::discard();
                 }
             }
             None => {
@@ -1582,7 +1676,7 @@ impl<'a, S: AsRef<[u8]>, V: Clone + Send + Sync + Unpin + 'static>
             // A rejected tree is never published. We keep a valid cursor, when
             // available, only to consume its event language and preserve body
             // error precedence; rejected values are not installed.
-            writer = PendingWriter::Discard;
+            writer = PendingWriter::discard();
         }
 
         Self {
@@ -1608,7 +1702,7 @@ impl<'a, S: AsRef<[u8]>, V: Clone + Send + Sync + Unpin + 'static>
     fn latch_semantic(&mut self, error: TrieCodecError) {
         if self.first_semantic_error.is_none() {
             self.first_semantic_error = Some(error);
-            self.writer = PendingWriter::Discard;
+            self.writer = PendingWriter::discard();
         }
     }
 
@@ -1628,7 +1722,7 @@ impl<'a, S: AsRef<[u8]>, V: Clone + Send + Sync + Unpin + 'static>
                             )));
                         }
                         if self.mode == Some(EPathMapMode::Set) {
-                            if let PendingWriter::Set(zipper) = &mut self.writer {
+                            if let PendingWriterState::Set(zipper) = &mut self.writer.state {
                                 zipper.set_val(());
                             }
                         } else if self.mode == Some(EPathMapMode::Map) {
@@ -1730,7 +1824,7 @@ impl<'a, S: AsRef<[u8]>, V: Clone + Send + Sync + Unpin + 'static>
         }
 
         if self.current_topology_value {
-            if let PendingWriter::Map(zipper, _) = &mut self.writer {
+            if let PendingWriterState::Map(zipper, _) = &mut self.writer.state {
                 zipper.set_val(value);
             }
         }
@@ -1770,16 +1864,7 @@ impl<'a, S: AsRef<[u8]>, V: Clone + Send + Sync + Unpin + 'static>
             )));
         }
 
-        Ok(match self.writer {
-            PendingWriter::Empty => EPathMapRepr::Empty,
-            PendingWriter::Set(zipper) => EPathMapRepr::Set(zipper.into_map()),
-            PendingWriter::Map(zipper, _) => EPathMapRepr::Map(zipper.into_map()),
-            PendingWriter::Discard => {
-                return Err(TrieCodecError::new(
-                    "EPM1 rejected without a retained semantic error",
-                ));
-            }
-        })
+        self.writer.into_repr()
     }
 }
 
@@ -1789,7 +1874,7 @@ impl PendingEpmDecode<'static, Bytes> {
     }
 }
 
-impl<V: Clone + Send + Sync + Unpin + 'static> PendingEpmDecode<'static, Bytes, V> {
+impl<V: EpmPayload> PendingEpmDecode<'static, Bytes, V> {
     pub(crate) fn new_with_scaffold(
         snapshot: Bytes,
         validate_canonical: bool,
@@ -2282,6 +2367,10 @@ mod substitution_value_regions_tests;
 #[cfg(test)]
 #[path = "../../tests/support/epm_payload_representation.rs"]
 mod payload_representation_tests;
+
+#[cfg(test)]
+#[path = "../../tests/support/epm_owned_retirement.rs"]
+mod owned_retirement_tests;
 
 #[cfg(test)]
 mod tests {

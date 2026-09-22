@@ -1046,6 +1046,7 @@ rpb3_run_tests 6 --lib protobuf_par_accumulation_tests
 rpb3_run_tests 8 --lib payload_representation_tests
 rpb3_run_tests 8 --lib protobuf_owned_slots_tests
 rspace_preparation_run_tests 5 --lib stateful_retirement
+rpb3_run_tests 7 --lib owned_retirement_tests
 rpb3_run_tests 1 --release -j4 --features protobuf-projection-experiment --lib planned_handles_keep_exact_associations_without_resident_emission
 rpb3_run_tests 1 --release -j4 --features protobuf-projection-experiment --lib accumulation_emits_no_resident_root_until_requested
 rpb3_run_tests 1 --release -j4 --features protobuf-projection-experiment --lib incomplete_planning_has_no_resident_finish_events

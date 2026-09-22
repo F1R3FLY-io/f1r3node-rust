@@ -1593,17 +1593,21 @@ P = generated static/stateful trace erasure and independently ordered real value
 L = lazy factory and uninstalled barrier disposal; C = CoW sibling preservation;
 D = 8,192-level branching and topology-only cleanup on a 256 KiB stack;
 F = subprocess fail-stop controls for manufacture, retirement and disposal panics.
-The current shared facade consumes a raw root under quarantine. Decoder source-slot
-and guarded-recipient integration is a separate, still-required binding.
+The shared facade consumes a raw root under quarantine. Q denotes the seven
+pending-decoder witnesses in `models/tests/support/epm_owned_retirement.rs`: deep
+Map abandonment before/after attachment, Set/topology-only abandonment, final
+rejection, transfer/replacement, frame unwind, guard layout, and generated
+abandonment/rejection schedules. Q explicitly checks retained writers and deep
+scaffold state before dropping, so premature Discard cannot satisfy the depth gate.
 
 | Obligation | Formal statements | Native binding and scope |
 |---|---|---|
 | Provider erasure and validity | `stateful_provider_preserves_every_event`, `stateful_provider_preserves_valid_same_arena_values`, `stateful_terminal_drain_preserves_existing_semantics`, `repeat_scaffold_needs_only_validity` | P compares observer events with the static adapter, checks one-byte prune width and exact real values. L checks absence of factory calls for empty/root-only maps and disposal before installation. Stateful test values have no Default and carry one arena identity. |
-| Affine settlement | `every_settlement_consumes_source`, `live_source_has_exactly_one_terminal_event`, `consumed_source_cannot_retire_or_transfer_again`, `retirement_and_transfer_are_exclusive` | Consuming root facade is the first native boundary; pending decoder slots and all publication paths still require binding. |
-| Zipper adoption | `zipper_adoption_preserves_subject_and_authority` | Abstract source consumption/guarded recipient only; upstream into_map unwind behavior and integration remain separately audited obligations. |
-| Replacement | `replacement_retires_old_before_adopting_new`, `replacing_with_absence_retires_without_publication` | Decoder replacement binding pending; the shared drain alone does not prove it. |
-| Frame/arena disposal | `scope_disposal_consumes_each_owned_slot_once`, `scope_disposal_preserves_order_and_drain_traces` | D establishes branching drain behavior, not complete frame or arena ownership integration. |
-| Returning errors | `returning_failure_preserves_selected_error`, `refusal_and_projection_failure_do_not_publish` | Decoder refusal/projection binding pending; ordinary cleanup must not replace an already-selected parser error. |
+| Affine settlement | `every_settlement_consumes_source`, `live_source_has_exactly_one_terminal_event`, `consumed_source_cannot_retire_or_transfer_again`, `retirement_and_transfer_are_exclusive` | Q binds consuming pending-map/writer slots with balanced payload creation/drop counts. Generated mirrors, planned nodes and public publication remain separate obligations. |
+| Zipper adoption | `zipper_adoption_preserves_subject_and_authority` | Q exercises guarded map/writer handoff. Pinned PathMap 0.2.2 source review establishes the no-callback empty-root conversion premise; the abstract theorem does not prove upstream code. |
+| Replacement | `replacement_retires_old_before_adopting_new`, `replacing_with_absence_retires_without_publication` | Q exercises owned replacement and latched Discard. Generated oneof mirror replacement remains unbound. |
+| Frame/arena disposal | `scope_disposal_consumes_each_owned_slot_once`, `scope_disposal_preserves_order_and_drain_traces` | D and Q establish branching drain and partial pending-frame disposal; construction-arena and planned-node ownership remain unbound. |
+| Returning errors | `returning_failure_preserves_selected_error`, `refusal_and_projection_failure_do_not_publish` | Q pins deferred noncanonical rejection and first-semantic-error precedence, including generated partial schedules. General projection failure remains unbound. |
 | Terminal cleanup failures | `cleanup_panic_is_terminal`, `cleanup_allocation_failure_is_terminal`, `retirement_reuses_existing_raw_drop_quarantine` | F requires SIGABRT at all three callback sites, not merely test failure. C checks sibling survival. Allocation failure is inherited from the existing quarantine model; no new allocator-failure injection is claimed. |
 
 Premises: provider state remains valid and every barrier belongs to the same live
@@ -1614,6 +1618,14 @@ recipients must already own a cleanup guard. Existing terminal-root authority an
 reverse-prune topology assumptions remain prerequisites. The abstract model does
 not prove arena lifetime, private PathMap callees, arbitrary user-defined payload
 Drop, serialized bytes, full parser equivalence or production performance.
+Q's tracked payload uses ordinary Drop counters: this proves balanced test ownership,
+not dispatch through the named disposal policy. The sealed production policy admits
+only unit, resident Par and planned handles. The layout witness compares retained
+writer size against the existing writer/provider tuple for these types; it is not
+a throughput or allocator benchmark. The short-lived map owner has an explicit
+ownership discriminator (eight additional stack bytes for unit on the tested target),
+not a per-PDA-frame or heap allocation. Successful transfer into raw public EPathMapRepr remains the
+pre-existing, separately audited frontier, not a guarded-recipient theorem binding.
 
 ## Original workspace-regression completion gates
 

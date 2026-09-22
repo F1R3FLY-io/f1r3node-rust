@@ -8993,6 +8993,21 @@ The pending decoder, planned-node and public-recipient ownership integrations ar
 not yet covered by this shared facade. In particular, these results do not close
 task 5834, the unchanged depth-4,096 timeout, or establish a decoding speedup.
 
+J-210 binds pending decoder rejection, abandonment and map/writer handoff to that
+cleanup facade. The retained outer writer owner has the same complete enum size
+and alignment as its predecessor for unit, Par and PlannedPar; the temporary map guard has a
+separate ownership discriminator (eight stack bytes for unit on the measured
+target), with no added heap allocation or depth-scaled retention. Seven ownership
+witnesses include 8,192-byte branching trie cleanup on a 256 KiB stack and generated
+partial schedules. The earlier default selection passes 37/37 tests; after the
+complete-enum layout correction, the final feature-enabled EPathMap codec/reference
+selection passes 93/93. The latter capped service peaks at 2.7 GiB with zero swap;
+the final layout has not been rerun in the default configuration. J-210 preserves
+both failed layout hypotheses, the correction, exact receipts and proof boundaries. Planned
+builders/nodes, generated EPM mirrors and public recipients still require ownership
+integration before production planned decoding; the general depth-4,096 decoder
+timeout remains open. These cleanup results are not a decoding speedup claim.
+
 ### 5.29 ParBag family and count-domain completeness [SS-A13, SS-A14, SS-Y9]
 
 #### 5.29.1 The defects

@@ -15758,6 +15758,117 @@ experiment backfill remain pending, rather than being represented as recorded.
 | `target/verification/epm-owned-retirement-5834/models-r1.log` (argument error) | 9d3b897e8b959ba8448962ae85e424f5ce5d53630f19b7306b8565ebe2f30c42 |
 | `target/verification/epm-owned-retirement-5834/models-r2.log` | 66162e640b8fd1f94c659cee9cbaa88826f8762d78b760fb681688d084ec4abf |
 
+### J-210 — 2026-09-22 Pending EPM decoder owns branching cleanup across suspension and refusal
+
+**Implementation and proof binding (DECISION).** Following J-209's kernel-checked
+ownership model, pending EPM Set/Map writers now retain affine writer guards and
+their scaffold providers. A temporary map guard spans first-edge `create_path`
+and reconstruction at the root. Semantic Discard, final noncanonical rejection,
+partial-frame abandonment and ordinary unwind retire the owned trie through the
+shared reverse-prune implementation. Successful raw public publication remains
+unchanged and separately unqualified; this change does not silently claim a guard
+for its recipient. The EOR catalog and executable manifest bind the new witnesses.
+
+Disposal is sealed to unit, resident Par and PlannedPar, with explicit test-only
+payload implementations. Resident Par delegates to the existing dismantler: its
+ParBag has a guarded multiplicity trie, and its auxiliary cache stores flat bytes
+and metrics, not recursively retained decoded AST children. Planned handles are
+opaque flat indices; no Default or fabricated handle is introduced. Existing lazy
+scaffold factories remain lazy. No parser, marker, encoding or error-selection rule
+is changed, and no upstream PathMap or dependency is modified.
+
+**Ownership evidence (MEASURED).** Seven new witnesses cover 8,192-byte-deep
+branching trie abandonment before/after payload attachment at several suspension
+points, Set/topology-only Map abandonment, late canonicality refusal, first semantic
+error preservation, writer/map transfer and replacement, frame unwind, generated
+abandonment/rejection schedules, and retained-writer layout. Deep cases run on a
+256 KiB stack. They explicitly establish retained Map/Set topology and deep scaffold
+state before dropping, ruling out a false pass from premature Discard. Created/drop
+counts establish balanced test payload ownership, not proof that every destructor
+was called through the named policy. These are trie-topology depths, not a claim
+that the still-pending general nested-Par decoding gate passes.
+
+**Rejected layout hypothesis (MEASURED, not hidden).** An added assertion initially
+required both map and writer guards to be layout-identical to their unguarded
+root/provider tuples. The temporary unit-map guard is 32 bytes versus 24 bytes for
+its raw tuple on this target: an explicit ownership discriminator costs eight stack
+bytes. R6 subsequently strengthened the check from the inner writer tuple to the
+complete retained enum and exposed a second regression: 144 bytes versus the original
+136 bytes for unit. Nesting the inner Option consumed layout opportunities in the
+enclosing enum. That failing assertion was retained, not weakened. The corrected
+design puts Drop on an outer PendingWriter wrapper around the original raw enum,
+with Discard as its consumed state. The same seven witnesses now compare complete
+enum size and alignment for unit, Par and PlannedPar. First-edge creation remains
+inside the temporary owning Option guard, and the reconstructed writer is installed
+before any potentially unwinding descent. A reviewed borrowed-policy alternative
+would complicate lifetime and drop ordering without reducing retained PDA state.
+The short-lived map guard adds no heap allocation and does not accumulate with PDA depth.
+No allocation or runtime benchmark is inferred from Rust layout measurements.
+
+**Verification and negatives.** Initial pending r1 stopped before tests because
+the dismantler was referenced without its `rholang` module segment. Corrected r2
+passed 34/34 selected tests (570 excluded), before the strengthened retained-state,
+generated-schedule and layout checks. R3 then reported the layout hypothesis failure:
+26 passed, one failed, ten selected tests cancelled by fail-fast. That observation
+is retained; the subsequent accepted runs use `--no-fail-fast`.
+
+Before the complete-enum assertion, default-feature `epm-pending-ownership-5834-r4`
+passes 37/37 tests (619 excluded)
+across the pending ownership, prior payload, frozen decoder, owned-slot and manifest
+selections: 23.812 seconds tests, 77.516 seconds service, 180.685 CPU seconds,
+2.0 GiB peak memory, zero swap. Feature-enabled `epm-pending-ownership-5834-r5`
+broadens selection to the entire EPathMap codec module plus those reference/slot/
+manifest controls and passes 93/93 (572 excluded): 24.023 seconds tests,
+80.746 seconds service, 225.062 CPU seconds, 2.8 GiB peak memory, zero swap.
+Service resource figures include compilation. Both use MemoryHigh=6 GiB,
+MemoryMax=8 GiB, MemorySwapMax=0, CPUQuota=400%, RuntimeMaxSec=900, LimitCORE=0,
+four build/test workers, 1,024 property cases and seed 5834. R5 places compiler
+temporary files under target rather than tmpfs. Diff-whitespace and shell-syntax
+checks pass. R6's expanded assertion reports six passing ownership tests and one
+layout failure; this is a retained-space regression despite those earlier passes.
+No full-workspace or throughput claim follows from these selections.
+
+Final feature-enabled r7 verifies the outer-owner correction: **93/93 passed**,
+572 excluded, including complete retained-enum size and alignment for all three
+production payload types. Tests take 25.154 seconds; service time including
+compilation is 85.020 seconds, CPU time 238.216 seconds, peak memory 2.7 GiB,
+zero swap under the same limits. The final layout was not rerun in the default
+configuration; r4 remains the earlier default-configuration evidence. A separate
+read-only review found no unguarded mutation in the revised transfer interval.
+
+**Next required ownership boundary.** Guard the planned EPM representation from
+its first builder mutation through fallible key/length preparation, node adoption,
+generated mirror replacement/projection and construction-arena disposal. Reuse a
+valid existing arena handle for Map barriers; if the arena is empty, establish one
+neutral Par without leaving incoming raw topology unguarded across a fallible
+bootstrap. Empty/Set need no planned handle. Retire EPM nodes before clearing Pars.
+Keep layout and value-order emission borrowed from the same underlying trie; no
+Vec<Par> projection or second semantic representation is required. Public resident
+recipient ownership remains a distinct audit. These remain required work within
+5834, along with production planned routing and the unchanged depth-4,096 gate.
+PgMCP STDIO is still unavailable; this progress and its experiment receipts await
+backfill, not a claimed tracker update.
+
+**Pause handoff.** Paused at the user's request after r7 completed; no next-boundary
+implementation or heavy command was started. The plan review established that
+`empty_par()` follows only the empty occurrence-root path: its fallible score sums
+are bounded by 22 bytes, with no child lookup, occurrence insertion or metadata
+growth. A private infallible bootstrap may reuse this existing implementation;
+incoming raw topology must first enter a provisional owner/quarantine. Ordinary
+later key/length failures must remain returning errors under a fully initialized
+guard. The precise provisional-owner implementation and native witnesses are still
+required, not accepted as complete by this source audit.
+
+| Artifact under `target/verification/epm-owned-retirement-5834/` | SHA-256 |
+|---|---|
+| `pending-r1.log` (compile error) | 9de16fded232f63d06d2be236cf7d52d0efd4fcf741cb1ffbf96e3e3f19d1ff3 |
+| `pending-r2.log` (pre-review pass) | a808ca53e923d7215f16dcd8fcbabe36dccfd38358a5c5844cb431fc49ba11bf |
+| `pending-r3.log` (rejected layout hypothesis) | 1864ca5a76b29631e4ce0479204621a8938cc7e96a9a9990659b7a755aa830b9 |
+| `pending-r4.log` | f453c6e94231f7a52883d7a64f161e931aafcd140d239f4eb8a6d937bdd0b719 |
+| `pending-r5.log` | fda849641e2af6ec31c916e8716fe9e9f5efb4681083906339456f608e4eac9f |
+| `pending-r6.log` (complete-enum layout regression) | 2f7b22ff55cdd1cd43e302e2dee8e2a2d79a9c5682fad47c977a2937b080c18c |
+| `pending-r7.log` (outer-owner correction) | 2326debb9268c05bd2079c39f36e02a378ddc3800891e9b7fee20736ae6d8d81 |
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
