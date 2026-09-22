@@ -157,8 +157,9 @@ tasks:
     title: "Batch B2: observer handle, detached evaluation, and reference comparison"
     status: pending
     claimed_by: null
-    blocked_by: [TASK-019-2]
+    blocked_by: [TASK-019-2, TASK-019-4]
     prerequisites:
+      - "Do not start B2 planning until both current claims pass source-bound verification and a named maintainer explicitly accepts them."
       - "A final file list covering the runtime, engine cell, Casper constructor, dispatch, and the six test fixtures that need the observer field."
       - "A reference evaluation path that differs from the measured path. Repeating the production tips computation is not independent coverage."
       - "Separate fields for the exact oracle decision, the original fault-tolerance result, and the display projection, each naming its input snapshot."
@@ -170,11 +171,21 @@ tasks:
       - "Record overflow or observer failure never blocks consensus or invents a successful observation."
       - "A derivation, an attempted effect, and persisted finalization are distinct records."
   - id: TASK-019-4
-    title: "Source-bound verification and acceptance of the Batch A and Batch B claims"
-    status: pending
-    claimed_by: null
-    blocked_by: [TASK-019-2, TASK-019-3]
+    title: "Source-bound verification and acceptance of the Batch A and Batch B1 claims"
+    status: in_progress
+    claimed_by: pi-session-01a0afde-d35c-70a2-b8c9-39aa11cbdfca
+    claimed_at: 2026-09-22T14:13:54Z
+    blocked_by: [TASK-019-2]
+    execution_revision: 6ea6bf029dc57caf1e5fb512a0eba88a846e959a
+    work_log: docs/work-logs/task-019-4-node-claim-verification.md
     claims: [CLAIM-CASPER-NODE-OBSERVATION-001, CLAIM-CASPER-NODE-OBSERVATION-002]
+    eligible_maintainers: [spreston8, dylon, metaweta, jeffrey-l-turner, jltatbeach]
+    accepted_by: null
+    acceptance_record: null
+    notes:
+      - "The user placed this gate before B2 planning. B2 is not a prerequisite for verification of Batch A and B1."
+      - "Maintainer identities do not constitute acceptance. Approval must name the reviewed revision, both claims, and the evidence package."
+      - "The intake audit reports seven pending mandatory artifacts. No observer-specific formal proof inputs are registered."
     acceptance:
       - "Strict source-bound audits pass for every artifact in both claim inventories at the accepted revision."
       - "Refutation, construction, and binding tiers are recorded with retained failing controls."
