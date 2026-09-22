@@ -1193,6 +1193,37 @@ fn frozen_decoder_oracle_has_provenance_proof_and_native_bindings() {
     assert!(guards.contains("fn missing_public_guard_is_detected_before_machine_execution("));
 }
 
+#[test]
+fn protobuf_par_accumulation_has_proof_and_native_bindings() {
+    let theory = read_repository_file("formal/rocq/stack_safe_pda/theories/ProtobufParAccumulation.v");
+    for theorem in ["each_field_refines", "ordered_fields_refine", "earlier_arena_roots_survive",
+        "insertion_preserves_metadata", "metadata_update_preserves_authority",
+        "connective_update_preserves_authority", "explicit_empty_locally_free_replaces",
+        "explicit_false_connective_replaces", "insertion_failure_preserves_authority",
+        "refusal_preserves_committed_state", "refusal_does_not_visit_suffix",
+        "derived_metadata_mutant_changes_observation", "union_metadata_mutant_changes_explicit_reset"] {
+        assert!(theory.contains(&format!("Print Assumptions {theorem}.")));
+    }
+    let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
+    assert!(has_runner_command(&runner, &["rocq_compile_with_closed_count", "theories/ProtobufParAccumulation.v", "13"]));
+    assert!(has_runner_kernel_check(&runner, &["StackSafePDA.ProtobufParAccumulation"]));
+    assert!(has_runner_command(&runner, &["rpb3_run_tests", "6", "--lib", "protobuf_par_accumulation_tests"]));
+    assert!(has_runner_command(&runner, &["rpb3_run_tests", "1", "--release", "-j4", "--features",
+        "protobuf-projection-experiment", "--lib", "accumulation_emits_no_resident_root_until_requested"]));
+    assert!(read_repository_file("formal/rocq/stack_safe_pda/_CoqProject").lines()
+        .any(|line| line == "theories/ProtobufParAccumulation.v"));
+    let native = read_repository_file("models/tests/support/protobuf_par_accumulation.rs");
+    for witness in ["all_component_families_preserve_explicit_root_metadata",
+        "malformed_scalar_updates_keep_exact_state_error_and_consumption",
+        "failed_occurrence_insert_preserves_builder_and_prior_roots",
+        "move_reentry_and_insert_do_not_copy_metadata_or_finalize_pars",
+        "mixed_nested_accumulation_is_stack_safe_and_finalizes_each_par_once",
+        "ordered_field_events_match_frozen_committed_observations",
+        "accumulation_emits_no_resident_root_until_requested"] {
+        assert!(native.contains(&format!("fn {witness}(")));
+    }
+}
+
 fn read_repository_file(relative: &str) -> String {
     let path = repository_root().join(relative);
     std::fs::read_to_string(&path)

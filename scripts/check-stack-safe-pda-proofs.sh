@@ -745,6 +745,10 @@ rocq_reject_placeholders theories/DecoderOracleRouting.v
 rocq_compile_with_closed_count theories/DecoderOracleRouting.v 10 \
   "test-only frozen decoder routing"
 rocq_check_modules "test-only frozen decoder routing" StackSafePDA.DecoderOracleRouting
+rocq_reject_placeholders theories/ProtobufParAccumulation.v
+rocq_compile_with_closed_count theories/ProtobufParAccumulation.v 13 \
+  "ordered protobuf Par field accumulation"
+rocq_check_modules "ordered protobuf Par field accumulation" StackSafePDA.ProtobufParAccumulation
 rocq_reject_placeholders theories/DepthProbeClassification.v
 rocq_compile_with_closed_count theories/DepthProbeClassification.v 28 \
   "depth-probe termination classification"
@@ -1026,6 +1030,8 @@ rholang_run_tests 3 --lib new_injection_preserves_
 rpb3_run_tests 9 --lib incomplete_preservation_tests
 rpb3_run_tests 9 --lib protobuf_decoder_oracle::
 rpb3_run_tests 2 --lib oracle_body_guards::
+rpb3_run_tests 6 --lib protobuf_par_accumulation_tests
+rpb3_run_tests 1 --release -j4 --features protobuf-projection-experiment --lib accumulation_emits_no_resident_root_until_requested
 rpb3_run_tests 1 --release -j4 --features protobuf-projection-experiment --lib incomplete_planning_has_no_resident_finish_events
 rpb3_run_tests 6 --release -j4 --lib collection_collision_elision
 rpb3_run_tests 2 --release -j4 --lib par_construction::tests::ac_

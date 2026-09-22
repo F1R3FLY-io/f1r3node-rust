@@ -8935,6 +8935,19 @@ The final compatibility/manifest run passes 24/24 selected tests (2.3 GiB peak,
 zero swap, 82.551 seconds including compilation), with receipts in J-203. These are verification
 infrastructure results, not a production decoding speedup or closure of the timeout.
 
+J-205 verifies the owned protobuf Par accumulator before generated-decoder integration.
+Thirteen closed field-event refinement statements pass independent kernel checking.
+The final release construction/manifest/counter run passes 52/52 selected tests
+(583 excluded), taking 3.019 seconds test time and 60.980 seconds including compilation;
+the capped service peaks at 3 GiB with zero swap under an 8 GiB limit. A mixed-family
+construction ladder reaches depth 8,192 on a 256 KiB stack. A separate 4,096-step
+move/reentry witness preserves a 64 KiB metadata allocation without intermediate
+Par finalization, and the instrumented ladder emits no resident root until requested.
+These are construction and ownership results, not decoder throughput measurements.
+Production decoder routing and the depth-4,096 timeout remain unchanged. J-205 records
+receipt hashes and the precise proof boundary, including permitted unreachable private
+arena fragments following failed insertion.
+
 ### 5.29 ParBag family and count-domain completeness [SS-A13, SS-A14, SS-Y9]
 
 #### 5.29.1 The defects

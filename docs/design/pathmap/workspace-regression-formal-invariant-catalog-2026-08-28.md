@@ -1439,6 +1439,52 @@ without flattening input or hiding `advance`/`remaining` behavior. The frozen so
 is checked against a pinned digest; it is not regenerated from the treatment schema.
 J-203 records provenance, native qualification and remaining decoder work.
 
+## Ordered protobuf Par accumulation (PPA, task 5834)
+
+`ProtobufParAccumulation.v` proves 13 closed statements before the accumulator's
+implementation. Events denote completed scalar parsing or component preparation,
+including bytes already consumed and an explicit error. They are not a new wire
+parser. The model's immutable root list denotes logical occurrence histories;
+the Rust implementation reuses the existing persistent occurrence AVL dictionary.
+Canonical key comparison, AVL balance, scalar parsing and concrete addressability
+remain correspondence premises. The maximum multiplicity is parameterized, not an
+artificial traversal-depth bound. The proof does not establish allocator rollback,
+generated-schema completeness, or an unconditional linear-time bound.
+
+Native witnesses in `models/tests/support/protobuf_par_accumulation.rs`: **F** is
+`all_component_families_preserve_explicit_root_metadata`; **E** is
+`malformed_scalar_updates_keep_exact_state_error_and_consumption`; **A** is
+`failed_occurrence_insert_preserves_builder_and_prior_roots`; **M** is
+`move_reentry_and_insert_do_not_copy_metadata_or_finalize_pars`; **D** is
+`mixed_nested_accumulation_is_stack_safe_and_finalizes_each_par_once`; **P** is
+`ordered_field_events_match_frozen_committed_observations`; **C** is the existing
+experiment-feature counter witness `accumulation_emits_no_resident_root_until_requested`.
+
+| ID | Closed declaration | Native witness / exact boundary |
+|---|---|---|
+| PPA-01 | `each_field_refines` | F, E, P; component preparation is a shared prerequisite |
+| PPA-02 | `ordered_fields_refine` | P compares frozen committed observations after every event |
+| PPA-03 | `earlier_arena_roots_survive` | A compares prior planned bytes after failure and later insertion |
+| PPA-04 | `insertion_preserves_metadata` | F, M, P; no summary union from inserted components |
+| PPA-05 | `metadata_update_preserves_authority` | E compares the occurrence root before/after each scalar update |
+| PPA-06 | `connective_update_preserves_authority` | E, P |
+| PPA-07 | `explicit_empty_locally_free_replaces` | F resets nonempty LF to empty |
+| PPA-08 | `explicit_false_connective_replaces` | F resets true to false before another connective-bearing component |
+| PPA-09 | `insertion_failure_preserves_authority` | A injects early and post-node-append length-aggregate failures with nondefault root metadata; checked multiplicity refusal remains the existing occurrence primitive's premise |
+| PPA-10 | `refusal_preserves_committed_state` | E compares exact scalar errors, consumed position and surviving committed bytes |
+| PPA-11 | `refusal_does_not_visit_suffix` | E checks remaining bytes; first-error event-loop termination is modeled, with generated routing qualification still required |
+| PPA-12 | `derived_metadata_mutant_changes_observation` | F inserts components carrying metadata after explicit root defaults |
+| PPA-13 | `union_metadata_mutant_changes_explicit_reset` | F and P retain last-write rather than union semantics |
+
+M verifies pointer/capacity preservation through 4,096 owned slot moves and duplicate
+insertions after a 64 KiB LF payload. No Par node is finalized and no additional score
+or protobuf nodes are built during that accumulation; consuming freeze retains the
+metadata allocation. D verifies depths 256/1,024/4,096/8,192 on a 256 KiB stack, one
+planned Par per completed level, one occurrence node per level and a bounded linear
+protobuf-node count. C distinguishes planned freeze from resident emission: internal
+planning must emit no resident root, and the requested final root emits once.
+These resource witnesses are not formal allocation bounds or decoder benchmarks.
+
 ## Original workspace-regression completion gates
 
 This checkpoint is complete only when all of the following hold:

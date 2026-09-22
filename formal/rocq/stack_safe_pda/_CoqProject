@@ -26,6 +26,7 @@ theories/SingletonMapConstruction.v
 theories/CollectionCollisionElision.v
 theories/DecodedComponentConstruction.v
 theories/DecoderOracleRouting.v
+theories/ProtobufParAccumulation.v
 theories/DepthProbeClassification.v
 theories/DepthProbeSearch.v
 theories/DepthProbeLifecycle.v

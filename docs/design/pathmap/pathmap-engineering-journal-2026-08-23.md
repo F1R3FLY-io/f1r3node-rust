@@ -15332,6 +15332,127 @@ preserving merge/error/remaining-input contracts, then rerun the unchanged full 
 gate. Task 5834, its dependent 5917 and the campaign remain open. PgMCP tools remain
 absent from this session; these receipts await backfill under those existing IDs.
 
+### J-204 — 2026-09-21 User-requested pause during accumulator verification
+
+**Handoff, not acceptance.** The last verified checkpoint is `db2911ff2` (J-203).
+The uncommitted `ProtobufParAccumulation.v` draft models ordered field events,
+metadata replacement, consumed positions, first failure and immutable prior roots.
+It is not registered in the proof runner and has not passed verification. Runs
+r1–r6 under `target/verification/protobuf-accumulation-5834/` retain the proof
+elaboration failures; r6 stops in `each_field_refines` at line 71. Resume by inspecting
+that goal rather than assuming the `nth_middle` rewrite matches. No accumulator
+implementation or production decoder routing change has been made. All proof units
+are terminal and the plan agent has completed its review.
+
+**Reviewed next implementation.** Add an owned `ProtobufParBuilder` containing an
+immutable occurrence root plus owned LF bytes and the explicit connective flag.
+Insert a planned component using existing `insert_occurrence`, publishing the root
+only after success; call exact Prost primitives for metadata; consume the builder
+once through `par_from_occurrence_root`. Do not use `append_component`/`parallel`,
+which union summaries rather than preserve protobuf metadata. Keep direct Par slots
+as movable builders until the containing component closes; duplicate singular fields
+reopen by move, not freeze/thaw or metadata cloning.
+
+Generate shallow `Decoded<T> { shell, links }` states. Links mirror only recursive
+fields; do not propagate flattened descendant vectors through ancestors. Check that
+the schema graph is acyclic after cutting Par/EPathMap boundaries, or use flat arena
+links where it is not. At Par-component closure, collect actual slots once, try
+`incomplete_component`, then use existing complete-family planners. Match/Receive
+need empty handles for absent guards/conditions; EMethod needs arguments-before-target
+planner order. Preserve oneof/singular merges, repeated append, map-entry defaults,
+successful-entry publication and exact failure observations. Ordinary message closure
+alone must not canonicalize before a later repeated singular occurrence can merge.
+
+Generalize the existing EPM pending decoder over its value type, retaining resident
+Par callers and adding PlannedPar callers with an explicit valid scaffold handle.
+Preserve framing, topology/error precedence and `epm_depth`. Remaining required
+adapters include planned EZipper, EPathMap mode/snapshot replacement, byte-native
+legacy field-1 keys and field-8 decode/canonicalize with atomic temporary-set
+publication. Keeping legacy `decode_trie_path` resident descent cannot support a
+claim that all nested suffix construction is eliminated. Public merge publication,
+fixed-stack mixed-family/error gates and the unchanged full depth test remain open.
+PgMCP backfill remains pending because its STDIO tools are absent from this session.
+
+### J-205 — 2026-09-22 Preserve protobuf metadata during planned Par accumulation
+
+**Scope and resumed state.** Resume J-204's existing task-5834 work, not a new
+campaign branch. `ProtobufParAccumulation.v` now compiles with 13 closed statements
+and passes independent kernel checking. The accepted run is r9; earlier elaboration
+failures remain in the verification directory. Proof verification preceded the
+native tests and 55-line production accumulator addition. The proof service took
+13.125 seconds and peaked at 375.6 MiB under a 2 GiB cap, with zero swap.
+
+**Implementation (DECISION).** `ProtobufParBuilder` owns an occurrence-tree root,
+LF bytes and an explicit connective flag. `insert_protobuf_component` reuses the
+existing immutable occurrence dictionary and assigns its returned root only after
+successful insertion. It does not union or derive metadata from components.
+Metadata updates call the same Prost primitives as the current Par adapter.
+`freeze_protobuf_par` consumes the builder and moves its owned metadata into one
+immutable plan. Freeze is not resident emission. The builder deliberately has no
+Clone implementation or thaw API: repeated singular-message slots can move their
+builder back into the decoding frame until their enclosing component commits.
+
+**Formal boundary.** The PPA catalog maps every statement to its native evidence
+and limitations. This is an ordered field-event refinement with cursor/error and
+immutable-denotation preservation. Events assume component preparation/scalar parsing;
+the model does not re-prove Prost, AVL balance, canonical comparison, concrete address
+limits, consuming Rust moves or a complete permissive protobuf parser. Private
+unreachable arena fragments on failure are permitted. Root commit and prior visible
+denotations, not allocation rollback, are the invariant.
+
+**Native witnesses.** Tests compare exact protobuf and compact Bag bytes against
+the frozen decoder's field behavior after each generated event. The 1,024-case seed
+5834 property varies ordered component insertions and metadata writes. All nine
+component families preserve root metadata, including explicit empty/false resets
+followed by components carrying their own metadata. Malformed scalar inputs across
+all wire types and fragmented buffers preserve exact errors, consumed offsets and
+committed state.
+
+Move/reentry witnesses retain a 64 KiB LF allocation through 4,096 moves and duplicate
+component insertions. No Par nodes are finalized, and no additional score/protobuf
+nodes are constructed during accumulation; final freeze retains the metadata pointer.
+Mixed ENot/Send/incomplete-If construction reaches depths 256, 1,024, 4,096 and 8,192
+on a 256 KiB stack, with exact Par/component/occurrence counts and a bounded linear
+protobuf-node count. These are native construction witnesses, not a parser benchmark
+or a formal allocation-complexity theorem.
+
+Review found no production mismatch but strengthened the failure witness: it now
+starts with nonempty LF and true, and injects both an early length fault and a parent
+aggregate overflow after one new occurrence node has been appended. These synthetic
+aggregate faults are not claimed as realizable input messages. They test that private
+unreachable nodes may remain while the committed builder root, metadata and earlier
+planned bytes remain unchanged; later valid insertion still succeeds.
+
+**Verification status (MEASURED).** The initial six-test release run passes in
+51.159 seconds including compilation, with 2.3 GiB peak under an 8 GiB cap and zero
+swap. The final expanded construction/manifest/experiment-counter run passes 52/52
+selected tests (583 excluded) in 3.019 seconds test time, 60.980 seconds service
+time including compilation, and 202.998 CPU seconds. Its service peaked at 3 GiB
+under MemoryHigh=6 GiB, MemoryMax=8 GiB, MemorySwapMax=0, CPUQuota=400%, and a
+900-second service limit; swap use was zero. Build and test concurrency were four.
+This final run includes both strengthened synthetic aggregate-failure cases,
+all seven accumulator witnesses, and the construction/reference/accumulator
+manifest bindings. The experiment witness observes zero resident finishes/decoded
+bytes/root keys during internal planning, followed by exactly one requested final
+finish/root key. These focused results do not claim full-workspace acceptance.
+
+**Remaining required integration.** Generated Node/Value/Attach state has not yet
+been converted to shallow shells plus owned field links. EPM planned values, public
+merge publication and full decoder refinement remain required under 5834. The
+depth-4,096 watchdog failure under 5917 is not fixed by this primitive alone. No
+consensus bytes, runtime decoding path or persistence default has changed. PgMCP
+tools remain absent; backfill is pending rather than falsely reported complete.
+
+| Artifact under `target/verification/protobuf-accumulation-5834/` | SHA-256 |
+|---|---|
+| `coqc-r9.log` | 6695e20479979a73446b2bb74461292f076eb2f242f31e8607cb1851b9a86d98 |
+| `coqchk-r9.log` (silent success; exit 0) | e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 |
+| `native-r1.log` | 6cbfcc343cfb879ba3a0ba22530622d4ff0e66dca4bfbb7db61e02da3ecace1c |
+| `native-r2.log` | 4ac9af314d94c9c21383f392731d687c73be80dd86dfdbfbc98566d75325a070 |
+
+Theory SHA-256:
+`302347dc7512f8b942efa8b00b52ead1df2711fccaf05449be18e2443c3bf061`.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

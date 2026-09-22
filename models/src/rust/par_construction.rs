@@ -60,6 +60,33 @@ use crate::rhoapi::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PlannedPar(usize);
 
+#[derive(Default)]
+pub(crate) struct ProtobufParBuilder {
+    occurrence_root: Option<usize>,
+    locally_free: Vec<u8>,
+    connective_used: bool,
+}
+
+impl ProtobufParBuilder {
+    pub(crate) fn merge_protobuf_locally_free<B: prost::bytes::Buf>(
+        &mut self,
+        wire_type: prost::encoding::WireType,
+        buf: &mut B,
+        ctx: prost::encoding::DecodeContext,
+    ) -> Result<(), prost::DecodeError> {
+        prost::encoding::bytes::merge(wire_type, &mut self.locally_free, buf, ctx)
+    }
+
+    pub(crate) fn merge_protobuf_connective_used<B: prost::bytes::Buf>(
+        &mut self,
+        wire_type: prost::encoding::WireType,
+        buf: &mut B,
+        ctx: prost::encoding::DecodeContext,
+    ) -> Result<(), prost::DecodeError> {
+        prost::encoding::bool::merge(wire_type, &mut self.connective_used, buf, ctx)
+    }
+}
+
 /// An index into the canonical-score fragment arena.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PlannedScore(usize);
@@ -317,6 +344,10 @@ struct ScoreNode {
 #[cfg(test)]
 #[path = "../../tests/support/incomplete_component_preservation.rs"]
 mod incomplete_preservation_tests;
+
+#[cfg(test)]
+#[path = "../../tests/support/protobuf_par_accumulation.rs"]
+mod protobuf_par_accumulation_tests;
 
 #[cfg(test)]
 #[path = "../../tests/support/collection_collision_elision.rs"]
@@ -3056,6 +3087,30 @@ impl ParConstruction {
             })?;
         }
         self.par_from_occurrence_root(root, locally_free, connective_used)
+    }
+
+    pub(crate) fn insert_protobuf_component(
+        &mut self,
+        parent: &mut ProtobufParBuilder,
+        component: PlannedComponent,
+    ) -> Result<(), ParConstructionError> {
+        let root = self.insert_occurrence(parent.occurrence_root, Occurrence {
+            component,
+            multiplicity: Multiplicity::ONE,
+        })?;
+        parent.occurrence_root = root;
+        Ok(())
+    }
+
+    pub(crate) fn freeze_protobuf_par(
+        &mut self,
+        value: ProtobufParBuilder,
+    ) -> Result<PlannedPar, ParConstructionError> {
+        self.par_from_occurrence_root(
+            value.occurrence_root,
+            value.locally_free,
+            value.connective_used,
+        )
     }
 
     fn par_from_occurrence_root(
