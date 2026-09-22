@@ -1224,6 +1224,37 @@ fn protobuf_par_accumulation_has_proof_and_native_bindings() {
     }
 }
 
+#[test]
+fn epm_payload_representation_has_proof_and_native_bindings() {
+    let theory = read_repository_file("formal/rocq/stack_safe_pda/theories/EpmPayloadRepresentation.v");
+    for theorem in [
+        "erase_commutes_with_denotation", "install_commutes_with_denotation",
+        "each_writer_step_commutes", "writer_trace_commutes", "publication_commutes",
+        "operations_preserve_topology", "refusal_cannot_publish",
+        "scaffold_erasure_preserves_real_bindings", "equal_payloads_preserve_distinct_keys",
+        "scaffold_leak_mutant_is_observable",
+    ] {
+        assert!(theory.contains(&format!("Print Assumptions {theorem}.")));
+    }
+    let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
+    assert!(has_runner_command(&runner, &["rocq_compile_with_closed_count", "theories/EpmPayloadRepresentation.v", "10"]));
+    assert!(has_runner_kernel_check(&runner, &["StackSafePDA.EpmPayloadRepresentation"]));
+    assert!(has_runner_command(&runner, &["rpb3_run_tests", "8", "--lib", "payload_representation_tests"]));
+    assert!(has_runner_command(&runner, &["rpb3_run_tests", "1", "--release", "-j4", "--features",
+        "protobuf-projection-experiment", "--lib", "planned_handles_keep_exact_associations_without_resident_emission"]));
+    assert!(read_repository_file("formal/rocq/stack_safe_pda/_CoqProject").lines()
+        .any(|line| line == "theories/EpmPayloadRepresentation.v"));
+    let native = read_repository_file("models/tests/support/epm_payload_representation.rs");
+    for witness in ["opaque_payloads_preserve_modes_topology_and_remove_scaffolds",
+        "equal_payload_handles_do_not_collapse_endpoints", "malformed_frames_and_deferred_precedence_are_pinned",
+        "pending_protocol_misuse_never_publishes_incomplete_values",
+        "scaffold_factory_remains_lazy_and_matches_nonroot_value_free_events",
+        "planned_handles_keep_exact_associations_without_resident_emission",
+        "generic_topology_replay_and_drop_are_stack_safe", "arbitrary_prefix_maps_preserve_payload_association"] {
+        assert!(native.contains(&format!("fn {witness}(")));
+    }
+}
+
 fn read_repository_file(relative: &str) -> String {
     let path = repository_root().join(relative);
     std::fs::read_to_string(&path)

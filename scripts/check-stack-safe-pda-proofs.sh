@@ -749,6 +749,10 @@ rocq_reject_placeholders theories/ProtobufParAccumulation.v
 rocq_compile_with_closed_count theories/ProtobufParAccumulation.v 13 \
   "ordered protobuf Par field accumulation"
 rocq_check_modules "ordered protobuf Par field accumulation" StackSafePDA.ProtobufParAccumulation
+rocq_reject_placeholders theories/EpmPayloadRepresentation.v
+rocq_compile_with_closed_count theories/EpmPayloadRepresentation.v 10 \
+  "EPM payload representation and scaffold erasure"
+rocq_check_modules "EPM payload representation and scaffold erasure" StackSafePDA.EpmPayloadRepresentation
 rocq_reject_placeholders theories/DepthProbeClassification.v
 rocq_compile_with_closed_count theories/DepthProbeClassification.v 28 \
   "depth-probe termination classification"
@@ -1031,6 +1035,8 @@ rpb3_run_tests 9 --lib incomplete_preservation_tests
 rpb3_run_tests 9 --lib protobuf_decoder_oracle::
 rpb3_run_tests 2 --lib oracle_body_guards::
 rpb3_run_tests 6 --lib protobuf_par_accumulation_tests
+rpb3_run_tests 8 --lib payload_representation_tests
+rpb3_run_tests 1 --release -j4 --features protobuf-projection-experiment --lib planned_handles_keep_exact_associations_without_resident_emission
 rpb3_run_tests 1 --release -j4 --features protobuf-projection-experiment --lib accumulation_emits_no_resident_root_until_requested
 rpb3_run_tests 1 --release -j4 --features protobuf-projection-experiment --lib incomplete_planning_has_no_resident_finish_events
 rpb3_run_tests 6 --release -j4 --lib collection_collision_elision

@@ -1350,21 +1350,35 @@ impl PendingTopology<'_> {
     }
 }
 
-enum PendingWriter {
+enum PendingScaffold<V> {
+    Repeat(V),
+    New(fn() -> V),
+}
+
+impl<V: Clone> PendingScaffold<V> {
+    fn value(&self) -> V {
+        match self {
+            Self::Repeat(value) => value.clone(),
+            Self::New(create) => create(),
+        }
+    }
+}
+
+enum PendingWriter<V: Clone + Send + Sync + Unpin + 'static> {
     Empty,
     Set(WriteZipperOwned<()>),
-    Map(WriteZipperOwned<Par>),
+    Map(WriteZipperOwned<V>, PendingScaffold<V>),
     Discard,
 }
 
-impl PendingWriter {
+impl<V: Clone + Send + Sync + Unpin + 'static> PendingWriter<V> {
     fn install_scaffold_value(&mut self) {
         match self {
             Self::Set(zipper) => {
                 zipper.set_val(());
             }
-            Self::Map(zipper) => {
-                zipper.set_val(Par::default());
+            Self::Map(zipper, scaffold) => {
+                zipper.set_val(scaffold.value());
             }
             Self::Empty | Self::Discard => {}
         }
@@ -1373,7 +1387,7 @@ impl PendingWriter {
     fn descend_to_byte(&mut self, byte: u8) {
         match self {
             Self::Set(zipper) => zipper.descend_to_byte(byte),
-            Self::Map(zipper) => zipper.descend_to_byte(byte),
+            Self::Map(zipper, _) => zipper.descend_to_byte(byte),
             Self::Empty | Self::Discard => {}
         }
     }
@@ -1391,12 +1405,12 @@ impl PendingWriter {
                 zipper.descend_to_byte(byte);
                 *self = Self::Set(zipper);
             }
-            Self::Map(zipper) => {
+            Self::Map(zipper, scaffold) => {
                 let mut map = zipper.into_map();
                 map.create_path([byte]);
                 let mut zipper = map.into_write_zipper([]);
                 zipper.descend_to_byte(byte);
-                *self = Self::Map(zipper);
+                *self = Self::Map(zipper, scaffold);
             }
             Self::Empty => *self = Self::Empty,
             Self::Discard => *self = Self::Discard,
@@ -1408,7 +1422,7 @@ impl PendingWriter {
             Self::Set(zipper) => {
                 zipper.ascend_byte();
             }
-            Self::Map(zipper) => {
+            Self::Map(zipper, _) => {
                 zipper.ascend_byte();
             }
             Self::Empty | Self::Discard => {}
@@ -1420,7 +1434,7 @@ impl PendingWriter {
             Self::Set(zipper) => {
                 zipper.remove_val(false);
             }
-            Self::Map(zipper) => {
+            Self::Map(zipper, _) => {
                 zipper.remove_val(false);
             }
             Self::Empty | Self::Discard => {}
@@ -1479,11 +1493,15 @@ fn parse_pending_framing(bytes: &[u8]) -> Result<PendingFraming, TrieCodecError>
 /// synchronous entry point. ACT topology is replayed directly into one owned
 /// write zipper; only the current child body and traversal depth survive a PDA
 /// suspension.
-pub(crate) struct PendingEpmDecode<'a, S: AsRef<[u8]>> {
+pub(crate) struct PendingEpmDecode<
+    'a,
+    S: AsRef<[u8]>,
+    V: Clone + Send + Sync + Unpin + 'static = Par,
+> {
     snapshot: S,
     mode: Option<EPathMapMode>,
     topology: Option<PendingTopology<'a>>,
-    writer: PendingWriter,
+    writer: PendingWriter<V>,
     depth: usize,
     scaffold_frames: Vec<bool>,
     descended_once: bool,
@@ -1498,14 +1516,17 @@ pub(crate) struct PendingEpmDecode<'a, S: AsRef<[u8]>> {
     first_noncanonical_value: Option<usize>,
 }
 
-pub(crate) type OwnedPendingEpmDecode = PendingEpmDecode<'static, Bytes>;
+pub(crate) type OwnedPendingEpmDecode<V = Par> = PendingEpmDecode<'static, Bytes, V>;
 
-impl<'a, S: AsRef<[u8]>> PendingEpmDecode<'a, S> {
+impl<'a, S: AsRef<[u8]>, V: Clone + Send + Sync + Unpin + 'static>
+    PendingEpmDecode<'a, S, V>
+{
     fn from_parts(
         snapshot: S,
         framing: PendingFraming,
         topology: Result<Option<PendingTopology<'a>>, TrieCodecError>,
         validate_canonical: bool,
+        scaffold: PendingScaffold<V>,
     ) -> Self {
         let mode = EPathMapMode::try_from(framing.raw_mode);
         let mut first_semantic_error = mode.as_ref().err().cloned();
@@ -1523,7 +1544,7 @@ impl<'a, S: AsRef<[u8]>> PendingEpmDecode<'a, S> {
         let mut writer = match mode {
             Some(EPathMapMode::Empty) => PendingWriter::Empty,
             Some(EPathMapMode::Set) => PendingWriter::Set(WriteZipperOwned::new()),
-            Some(EPathMapMode::Map) => PendingWriter::Map(WriteZipperOwned::new()),
+            Some(EPathMapMode::Map) => PendingWriter::Map(WriteZipperOwned::new(), scaffold),
             None => PendingWriter::Discard,
         };
 
@@ -1687,7 +1708,7 @@ impl<'a, S: AsRef<[u8]>> PendingEpmDecode<'a, S> {
         Ok(Some(range))
     }
 
-    pub(crate) fn push_value(&mut self, value: Par) -> Result<(), TrieCodecError> {
+    pub(crate) fn push_value(&mut self, value: V) -> Result<(), TrieCodecError> {
         if self.decoded_values == self.expected_values {
             return Err(TrieCodecError::new(
                 "more map values were decoded than the EPM1 value count",
@@ -1709,7 +1730,7 @@ impl<'a, S: AsRef<[u8]>> PendingEpmDecode<'a, S> {
         }
 
         if self.current_topology_value {
-            if let PendingWriter::Map(zipper) = &mut self.writer {
+            if let PendingWriter::Map(zipper, _) = &mut self.writer {
                 zipper.set_val(value);
             }
         }
@@ -1718,7 +1739,7 @@ impl<'a, S: AsRef<[u8]>> PendingEpmDecode<'a, S> {
         Ok(())
     }
 
-    pub(crate) fn finish(mut self) -> Result<EPathMapRepr<Par>, TrieCodecError> {
+    pub(crate) fn finish(mut self) -> Result<EPathMapRepr<V>, TrieCodecError> {
         if self.remaining_values != 0
             || self.current_value_range.is_some()
             || self.decoded_values != self.expected_values
@@ -1752,7 +1773,7 @@ impl<'a, S: AsRef<[u8]>> PendingEpmDecode<'a, S> {
         Ok(match self.writer {
             PendingWriter::Empty => EPathMapRepr::Empty,
             PendingWriter::Set(zipper) => EPathMapRepr::Set(zipper.into_map()),
-            PendingWriter::Map(zipper) => EPathMapRepr::Map(zipper.into_map()),
+            PendingWriter::Map(zipper, _) => EPathMapRepr::Map(zipper.into_map()),
             PendingWriter::Discard => {
                 return Err(TrieCodecError::new(
                     "EPM1 rejected without a retained semantic error",
@@ -1764,6 +1785,24 @@ impl<'a, S: AsRef<[u8]>> PendingEpmDecode<'a, S> {
 
 impl PendingEpmDecode<'static, Bytes> {
     pub(crate) fn new(snapshot: Bytes, validate_canonical: bool) -> Result<Self, TrieCodecError> {
+        Self::new_with_provider(snapshot, validate_canonical, PendingScaffold::New(Par::default))
+    }
+}
+
+impl<V: Clone + Send + Sync + Unpin + 'static> PendingEpmDecode<'static, Bytes, V> {
+    pub(crate) fn new_with_scaffold(
+        snapshot: Bytes,
+        validate_canonical: bool,
+        scaffold: V,
+    ) -> Result<Self, TrieCodecError> {
+        Self::new_with_provider(snapshot, validate_canonical, PendingScaffold::Repeat(scaffold))
+    }
+
+    fn new_with_provider(
+        snapshot: Bytes,
+        validate_canonical: bool,
+        scaffold: PendingScaffold<V>,
+    ) -> Result<Self, TrieCodecError> {
         let framing = parse_pending_framing(snapshot.as_ref())?;
         let topology = match EPathMapMode::try_from(framing.raw_mode) {
             Ok(EPathMapMode::Set | EPathMapMode::Map) => {
@@ -1785,6 +1824,7 @@ impl PendingEpmDecode<'static, Bytes> {
             framing,
             topology,
             validate_canonical,
+            scaffold,
         ))
     }
 
@@ -1813,6 +1853,7 @@ impl<'a> PendingEpmDecode<'a, &'a [u8]> {
             framing,
             topology,
             validate_canonical,
+            PendingScaffold::New(Par::default),
         ))
     }
 }
@@ -2237,6 +2278,10 @@ mod substitution_varint_tests;
 #[cfg(test)]
 #[path = "../../tests/support/substitution_value_regions.rs"]
 mod substitution_value_regions_tests;
+
+#[cfg(test)]
+#[path = "../../tests/support/epm_payload_representation.rs"]
+mod payload_representation_tests;
 
 #[cfg(test)]
 mod tests {

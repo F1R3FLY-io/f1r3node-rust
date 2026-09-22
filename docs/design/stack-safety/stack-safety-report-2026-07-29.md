@@ -8948,6 +8948,21 @@ Production decoder routing and the depth-4,096 timeout remain unchanged. J-205 r
 receipt hashes and the precise proof boundary, including permitted unreachable private
 arena fragments following failed insertion.
 
+J-206 generalizes pending EPM replay to store planned payload handles directly in
+its owned PathMap zipper. Ten closed representation/scaffold-erasure declarations
+pass kernel checking before implementation. The release EPM/reference run passes
+54/54 selected tests (542 excluded), taking 76.320 seconds including compilation
+with 1.8 GiB peak and zero swap. The default-feature/manifest run passes 11/11
+(624 excluded), taking 56.368 seconds with 2.5 GiB peak and zero swap. Both use
+8 GiB memory caps. The new native witnesses retain topology-only paths, remove
+temporary values, preserve equal handles at distinct endpoints, and exercise
+8,192-byte trie depth on a 256 KiB stack. Planned-value replay records zero resident
+finish/byte/root-key events. Legacy scaffold factories remain lazy; the writer
+policy adds bounded structural storage, so these results do not establish a
+frame-size or throughput improvement. Generated decoder routing still uses resident
+Pars and the depth-4,096 decoder timeout remains open. J-206 and the EPR catalog
+record hashes, error-recovery distinctions, and the limited formal boundary.
+
 ### 5.29 ParBag family and count-domain completeness [SS-A13, SS-A14, SS-Y9]
 
 #### 5.29.1 The defects

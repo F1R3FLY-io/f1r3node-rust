@@ -1485,6 +1485,55 @@ protobuf-node count. C distinguishes planned freeze from resident emission: inte
 planning must emit no resident root, and the requested final root emits once.
 These resource witnesses are not formal allocation bounds or decoder benchmarks.
 
+## EPM payload representation (EPR, task 5834)
+
+`EpmPayloadRepresentation.v` is a narrow value-representation proof, kernel checked
+before production genericization. Logical endpoint identities are natural numbers;
+the binding list models point updates, not PathMap's physical nodes or traversal
+order. A denotation maps each supplied handle to its completed value. Valid same-arena
+handles and unchanged endpoint/control decisions are premises. Topology is a retained
+ghost observation: the model proves that payload edits do not change it, not that the
+ACT parser constructs it correctly. Existing V2/V6 positional authorities retain
+their documented byte/control refinement boundaries. This addition is not a complete
+parser proof or a proof of Rust ownership, PathMap internals, or resource bounds.
+Model `Refuse` denotes latched semantic rejection and discarded private storage,
+not every returned API error. Double-yield, push-without-yield and excess-push
+misuse errors leave the pending reader recoverable; U exercises that distinction.
+
+Native witnesses in `models/tests/support/epm_payload_representation.rs`: **T** is
+`opaque_payloads_preserve_modes_topology_and_remove_scaffolds`; **K** is
+`equal_payload_handles_do_not_collapse_endpoints`; **E** is
+`malformed_frames_and_deferred_precedence_are_pinned`; **U** is
+`pending_protocol_misuse_never_publishes_incomplete_values`; **L** is
+`scaffold_factory_remains_lazy_and_matches_nonroot_value_free_events`; **H** is
+`planned_handles_keep_exact_associations_without_resident_emission`; **D** is
+`generic_topology_replay_and_drop_are_stack_safe`; **P** is
+`arbitrary_prefix_maps_preserve_payload_association`.
+
+| ID | Closed declaration | Native binding and scope |
+|---|---|---|
+| EPR-01 | `erase_commutes_with_denotation` | T, P compare exact topology and final bindings after scaffold removal |
+| EPR-02 | `install_commutes_with_denotation` | T, H, P compare independently inserted source endpoints with generic replay |
+| EPR-03 | `each_writer_step_commutes` | T and E bind updates and latched semantic rejection; U separately checks recoverable API guards; framing decisions remain shared prerequisites |
+| EPR-04 | `writer_trace_commutes` | P varies prefix maps and dangling topology; it does not quantify arbitrary malformed ACT traces |
+| EPR-05 | `publication_commutes` | H compares exact same-arena handles without materializing values |
+| EPR-06 | `operations_preserve_topology` | T, P compare exact ACT layout prefix, including root values and dangling branches |
+| EPR-07 | `refusal_cannot_publish` | E checks semantic rejection prevents publication; U independently checks incomplete finish and recoverable protocol errors, not absorbing Refuse for every error |
+| EPR-08 | `scaffold_erasure_preserves_real_bindings` | T, L bind absent-focus and strict-descendant premises to actual topology events; removal retains paths |
+| EPR-09 | `equal_payloads_preserve_distinct_keys` | K retains root and two distinct endpoints carrying one equal token |
+| EPR-10 | `scaffold_leak_mutant_is_observable` | T, P use a sentinel scaffold outside the fixture's value domain and compare all endpoints |
+
+L additionally guards allocation timing: the legacy default factory is not called
+at reader creation, for Empty/Set/root-only Map, or after rejected topology. H uses
+the existing experiment counters to require zero resident finishes, bytes, or root
+keys. D covers 8,192-byte topology depth and teardown on a 256 KiB stack. These native
+resource witnesses are not consequences of the representation lemmas.
+
+The frozen protobuf decoder shares the pending EPM core. Its EPM differential cannot
+independently certify this refactor. E instead pins expected framing/canonicality/
+protocol messages, and obtains child-error wording from the isolated frozen child
+decoder, rather than from another instantiation of the modified pending core.
+
 ## Original workspace-regression completion gates
 
 This checkpoint is complete only when all of the following hold:

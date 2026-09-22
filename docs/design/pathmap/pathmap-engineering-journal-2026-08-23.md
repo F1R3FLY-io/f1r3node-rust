@@ -15453,6 +15453,87 @@ tools remain absent; backfill is pending rather than falsely reported complete.
 Theory SHA-256:
 `302347dc7512f8b942efa8b00b52ead1df2711fccaf05449be18e2443c3bf061`.
 
+### J-206 — 2026-09-22 Admit planned EPM payloads without resident materialization
+
+**Scope (DECISION).** Continue task 5834 after accumulator checkpoint `51ffee0df`.
+The existing pending EPM decoder now accepts a value parameter with PathMap's existing
+`Clone + Send + Sync + Unpin + 'static` bounds. It does not require `Default`, `Message`,
+equality, hashing, or serialization on that value. `push_value` installs the supplied
+value directly at the owned zipper focus; `finish` returns `EPathMapRepr<V>`. The
+`Par` constructors and default alias retain their existing interface. Planned callers
+must supply a valid same-arena scaffold handle; no arbitrary default arena index is
+invented. The representation remains a trie throughout replay.
+
+**Allocation decision (DERIVED).** `Par::default()` allocates its auxiliary Arc.
+Eagerly passing a default Par to every pending reader would introduce allocations
+for Empty/Set/scaffold-free images. A private map-only scaffold policy therefore
+distinguishes a repeatable supplied value from a lazy function pointer. Legacy
+constructors invoke `Par::default` only at the same non-root value-free events as
+before. Planned callers copy their supplied handle. There is no boxed closure or
+extra value table. The policy adds bounded storage to the writer enum; no claim of
+identical frame size or measured throughput improvement is made.
+
+**Formal-first boundary (MEASURED/DECISION).** Before the production refactor,
+`EpmPayloadRepresentation.v` compiled with ten closed declarations and passed
+independent kernel checking. Accepted run r5 took 11.769 seconds, 11.632 CPU seconds,
+and 280.2 MiB peak with zero swap under MemoryHigh=1 GiB, MemoryMax=2 GiB,
+MemorySwapMax=0, CPUQuota=100%, and RuntimeMaxSec=180. Earlier command/proof
+elaboration failures remain in the verification directory. The EPR invariant catalog
+maps every declaration to native witnesses. The new proof concerns denotation of
+opaque payloads under point updates and scaffold erasure at an absent focus with
+non-aliasing descendants. It does not re-prove ACT parsing, positional scheduling,
+PathMap internals, native ownership or allocation complexity. Existing positional
+authorities retain their documented assumptions and refinement limits.
+
+**Native evidence (MEASURED).** Eight new witnesses cover non-Default/non-Prost
+tokens; neutral/set/map modes; root, prefix, dense and topology-only images; equal
+handles at distinct endpoints; pinned malformed framing and error precedence;
+double-yield/push-without-yield/excess-push/incomplete-finish protocol errors; lazy
+scaffold creation; same-arena PlannedPar association; and topology replay/drop at
+depth 8,192 on a 256 KiB stack. The 1,024-case property run uses seed 5834 and varies
+prefix-map bindings and dangling topology. Experiment counters observe zero resident
+finishes, emitted resident bytes or root keys during planned-value replay.
+
+The first release invocation passes 54/54 selected tests (542 excluded), including
+the existing EPM suite and frozen-decoder routing tests. Test time is 23.877 seconds;
+service time including compilation is 76.320 seconds, CPU time 168.977 seconds,
+peak memory 1.8 GiB and swap zero. The service uses MemoryHigh=6 GiB,
+MemoryMax=8 GiB, MemorySwapMax=0, CPUQuota=400%, RuntimeMaxSec=900, and four build/test
+workers. The default-feature and manifest qualification run then passes 11/11
+selected tests (624 excluded) in 0.134 seconds test time, 56.368 seconds service
+time including compilation, and 193.766 CPU seconds. Peak memory is 2.5 GiB with
+zero swap under the same limits. This includes the eight default-feature witnesses
+and three reference/accumulator/payload manifest bindings.
+
+Read-only plan review found no production mismatch. It clarified that the model's
+absorbing `Refuse` denotes latched semantic rejection/Discard, not every API error.
+The native protocol guard test intentionally demonstrates recovery after double
+yield, push without yield and excess push; the EPR catalog preserves this distinction.
+
+**Oracle limit.** The frozen protobuf decoder shares the production pending EPM
+core; its differential alone cannot validate this genericization. Tests therefore
+compare topology and payload associations with independently inserted source maps,
+pin expected protocol/framing/canonicality errors, and obtain isolated child error
+text from the frozen child decoder. They do not derive the malformed expectations
+from another instantiation of the modified pending reader.
+
+**Remaining work.** Production generated frames still carry resident Pars. The
+shallow-shell/owned-link conversion, planned EPathMap/EZipper adapters, legacy-key
+ingress, exact public merge/error publication, general decoder differential, and
+the unchanged depth-4,096 gate remain required. No consensus-visible bytes or
+persistence default change in this slice. PgMCP STDIO tools remain unavailable;
+task/experiment backfill is pending, not claimed completed.
+
+| Artifact under `target/verification/epm-payload-5834/` | SHA-256 |
+|---|---|
+| `coqc-r5.log` | f990327820c7e0de2c2185fa0c21ec662d961c689506a2b21b1afe9a2f285d04 |
+| `coqchk-r5.log` (silent success; exit 0) | e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 |
+| `native-r1.log` | 9e89f837dfb9a1a96f8905ab968e68a8791655486f6079b0d9497bf46bc35afd |
+| `native-r2.log` | 07b1f5f1385681ef61cf6442742fd05d80e3e3b45e29f188dffde0fc99d53233 |
+
+Theory SHA-256:
+`b5582d2e61fdecd1037e53645dde22c2fd05fd141b7eefc1742cf6c107174f79`.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
