@@ -235,7 +235,7 @@ tasks:
     title: "Review minimum necessary scope, merge PR #447 to dev, and return PR #436 to dev"
     status: pending
     claimed_by: null
-    blocked_by: [TASK-019-4]
+    blocked_by: [TASK-019-4, TASK-019-8]
     acceptance:
       - "Review every branch change before merge and justify why each retained component is necessary for an approved requirement."
       - "Identify components that can be removed, combined, or moved into test tooling instead of the production node."
@@ -266,6 +266,29 @@ tasks:
       - "Each published image is recorded by immutable digest, platform, and source dev revision."
       - "The baseline and observer-capable images are recorded as distinct candidates."
       - "No candidate is repinned from a rebuilt or mutable tag."
+  - id: TASK-019-8
+    title: "Final branch cleanup before the PR #447 merge"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-019-4]
+    precedes: [TASK-019-6]
+    scope: "Remove discovery notes, work logs, plans, and CbC evidence files that are not integral to the branch's functionality or its accepted claims. Production code scope is reviewed under TASK-019-6, not here."
+    retention_rules:
+      - "Keep every file that an accepted claim, a CbC record, or the tracker cites by path or digest. Removing one breaks the source-bound audit."
+      - "Keep the claim files, the per-artifact records, and one compact report.json plus validation.json per evidence run that a record cites."
+      - "Keep the acceptance record and the handoff notes that name decisions, owners, and open findings."
+      - "Bulk evidence stays outside Git. Anything that leaves the tree is recorded with its external location and digest, following the TASK-017-14 precedent on the soak branch."
+    implementation_plan:
+      - "Step 1. Inventory every docs/, formal/, and .github change on the branch against dev, and classify each file as integral, cited, or removable."
+      - "Step 2. Consolidate the work logs to one per task, keeping decisions, acceptance records, and open findings, and dropping run-by-run narrative that a retained report already records."
+      - "Step 3. Remove superseded evidence run packages, historical red-source snapshots, and plan drafts that no claim or record cites. Record each removal with its reason."
+      - "Step 4. Run the strict claims audit, the link check, and the STE check before and after, and require identical results."
+      - "Step 5. Record the file and line counts of the diff against dev before and after, and obtain maintainer confirmation of the reduced diff before TASK-019-6 proceeds."
+    acceptance:
+      - "No removal changes a claim status, a record status, a tier field, or an audit result."
+      - "Every file an accepted claim cites is still present at its recorded digest."
+      - "Each removed file is listed with a reason, and any externalized evidence names its location and digest."
+      - "The maintainer confirms the reduced diff before the merge."
 ---
 ```
 
