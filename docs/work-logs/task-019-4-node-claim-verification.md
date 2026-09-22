@@ -29,6 +29,8 @@ The two claim inventories contain 18 source and test files. Seven files have man
 
 The explicit-inventory strict audit returned exit 4. All seven mandatory records remain pending.
 
+The source audit matched all 18 inventory files against the reviewed revision. All seven existing records match their source and claim digests.
+
 The shared ledger gate checks recorded status, not source digests or proof coverage. Its result alone cannot establish source-bound verification.
 
 No observer-specific proof inputs appear in the formal directories or CI registrations. Refutation, construction, and binding remain pending.
@@ -36,6 +38,8 @@ No observer-specific proof inputs appear in the formal directories or CI registr
 Only Java appears among the checked verifier commands on the current PATH. Tool availability does not establish claim coverage.
 
 The PR contains one approval from `@jltatbeach` for revision `799e2136adc6e0100b289945d9a5a6851e81c91f`. It does not identify the current revision or B1 evidence.
+
+The proposed acceptance reviewer is `@jltatbeach`. This proposal is not confirmation or acceptance. No review request has been sent.
 
 The permission queries for all five maintainers returned HTTP 403. The user-supplied roster remains recorded, but these queries do not verify current GitHub permissions.
 
@@ -51,12 +55,56 @@ Preparation installs the pinned Rust toolchain and obtains locked dependency sou
 
 The host already runs blockchain nodes and another memory-intensive service. Verification must not stop or modify those services.
 
-Preparation has a 2 GiB memory limit and a 30-minute timeout. The planned rebuild has a 4 GiB limit and two CPU cores.
+Preparation completed without a project build. It used a 2 GiB memory limit and a 30-minute timeout.
+
+Each rebuild attempt uses a 4 GiB memory limit, two CPU cores, one Cargo job, and a 45-minute timeout. It uses a non-root user, no network, and no Linux capabilities.
+
+The first image creation command timed out. A later command created the image successfully. Both outcomes remain retained.
+
+The first build attempt stopped on a Cargo panic before compilation. Full dependency resolution reproduced the panic for `/vendor-config.toml` but accepted `/configuration/vendor.toml`.
+
+The initial metadata probe excluded dependencies and did not reproduce the panic. That failed probe remains retained.
+
+The second build attempt stopped on an unreadable vendored file. Six public dependency files required read permission for the non-root user.
+
+The permission correction changed no source bytes. It did not grant root access to the rebuild. The third attempt started with another empty target directory.
+
+The third attempt stopped during protobuf generation because the builder lacked `libprotobuf-dev` headers. The correction installed the version that matches the pinned `protobuf-compiler` package.
+
+Direct protobuf checks passed for the model, node, and communication schemas. Only `libprotobuf-dev` and `libprotobuf-lite32` were added.
+
+The fourth attempt resumes the third attempt's isolated target after it checks 4,880 retained file hashes. It reuses only objects built inside that earlier container.
+
+Both attempts use the same source archive and Rust compiler. No host-built project objects or test executables were imported.
+
+## New source finding
+
+`CaptureLimits::validate` rejects a zero lock wait but accepts `Duration::MAX`. The lock wrappers pass that duration to `parking_lot::RwLock::try_read_for`.
+
+The pinned library converts the duration with `Instant::now().checked_add`. An overflow produces `None`, which the slow lock path treats as an untimed wait.
+
+This path conflicts with B1 properties 1 and 2. The four previous implementation corrections remain intact. This is a new acceptance finding.
+
+The dependency source copies match their pinned package checksums. A probe against the independently rebuilt library is prepared but has not run.
+
+No production correction has been made. A correction must reject invalid deadlines before guard access and prevent each lock call from receiving an untimed fallback.
+
+## Metadata advance
+
+Another writer committed the intake documents as `314368bfb7ec48c34e5eb7e5534fd1959152d346`. That commit changed only the tracker and this work log.
+
+The original source-audit guard rejected the changed HEAD. Its script and failure remain retained. The revised audit verifies the exact metadata-only change and the original source hashes.
+
+The rebuild still uses the archive of `6ea6bf029dc57caf1e5fb512a0eba88a846e959a`. No test execution is relabeled as an execution of the later commit.
+
+The tracker claim time now uses the recorded intake timestamp. The acceptance task does not depend on completion of the B1 task that needs this review.
 
 ## Evidence and blockers
 
 Bulk evidence is under `target/node-claim-gate-6ea6bf029-gQCpO2/`. Both claim files and all existing evidence records remain unchanged.
 
 A passing rebuild cannot replace missing formal evidence or maintainer acceptance. No claim is discharged, waived, or accepted.
+
+The DAG storage file also retains its existing `CLAIM-FINALITY-002` obligations. This gate cannot erase or waive those obligations.
 
 The tracker now places TASK-019-4 before TASK-019-3. Neither the task nor the epic is complete.

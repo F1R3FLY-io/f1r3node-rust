@@ -174,8 +174,8 @@ tasks:
     title: "Source-bound verification and acceptance of the Batch A and Batch B1 claims"
     status: in_progress
     claimed_by: pi-session-01a0afde-d35c-70a2-b8c9-39aa11cbdfca
-    claimed_at: 2026-09-22T14:13:54Z
-    blocked_by: [TASK-019-2]
+    claimed_at: 2026-09-22T14:15:47Z
+    blocked_by: []
     execution_revision: 6ea6bf029dc57caf1e5fb512a0eba88a846e959a
     work_log: docs/work-logs/task-019-4-node-claim-verification.md
     claims: [CLAIM-CASPER-NODE-OBSERVATION-001, CLAIM-CASPER-NODE-OBSERVATION-002]
@@ -184,6 +184,7 @@ tasks:
     acceptance_record: null
     notes:
       - "The user placed this gate before B2 planning. B2 is not a prerequisite for verification of Batch A and B1."
+      - "The implementation input is available at the execution revision. TASK-019-2 remains open for this acceptance review, not as a circular prerequisite."
       - "Maintainer identities do not constitute acceptance. Approval must name the reviewed revision, both claims, and the evidence package."
       - "The intake audit reports seven pending mandatory artifacts. No observer-specific formal proof inputs are registered."
     acceptance:
