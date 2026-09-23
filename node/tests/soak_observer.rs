@@ -207,6 +207,47 @@ async fn mismatched_identities_and_fault_commands_are_rejected() {
 }
 
 #[tokio::test]
+async fn session_sequences_match_an_independent_event_oracle() {
+    let directory = Directory::new();
+    let observer = Observer::bind(&configuration(&directory, true))
+        .unwrap()
+        .unwrap()
+        .spawn();
+    let mut expected_sequence = 0u64;
+    let mut old_request = None;
+    let mut challenges = std::collections::BTreeSet::new();
+    for action in ["accept", "replay", "disconnect", "accept", "replay"] {
+        let (mut stream, hello) = connect(&directory.socket()).await;
+        expected_sequence += 1;
+        assert_eq!(hello["sequence"], expected_sequence);
+        let challenge = hello["challenge"].as_str().unwrap();
+        let (nonce, sequence) = challenge.rsplit_once(':').unwrap();
+        assert_eq!(Uuid::parse_str(nonce).unwrap().to_string(), nonce);
+        assert_eq!(sequence, expected_sequence.to_string());
+        assert!(challenges.insert(challenge.to_owned()));
+        match action {
+            "accept" => {
+                let current = request(&hello);
+                send(&mut stream, &current).await;
+                let response = receive(&mut stream).await;
+                expected_sequence += 1;
+                assert_eq!(response["sequence"], expected_sequence);
+                assert_eq!(response["kind"], "capabilities");
+                old_request = Some(current);
+                closed(&mut stream).await;
+            }
+            "replay" => {
+                send(&mut stream, old_request.as_ref().unwrap()).await;
+                closed(&mut stream).await;
+            }
+            "disconnect" => drop(stream),
+            _ => unreachable!(),
+        }
+    }
+    observer.stop().await;
+}
+
+#[tokio::test]
 async fn replayed_challenges_and_previous_incarnations_are_rejected() {
     let directory = Directory::new();
     let conf = configuration(&directory, true);

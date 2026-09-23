@@ -1,6 +1,13 @@
 node/src/rust/instances/heartbeat_proposer.rs cbc=mandatory cbc-weight=high
 node/src/rust/soak_observer.rs cbc=mandatory cbc-weight=high
 node/tests/soak_observer.rs cbc=mandatory cbc-weight=high
+formal/tlaplus/node_observation/** cbc=mandatory cbc-weight=high
+formal/rocq/node_observation/** cbc=mandatory cbc-weight=high
+scripts/ci/check-node-observation-bindings.sh cbc=mandatory cbc-weight=high
+scripts/ci/check-tla-invariants.sh cbc=mandatory cbc-weight=high
+scripts/ci/test-check-tla-invariants.sh cbc=mandatory cbc-weight=high
+scripts/ci/check-formal-invariants.sh cbc=mandatory cbc-weight=high
+.github/workflows/slashing-tests.yml cbc=mandatory cbc-weight=high
 shared/src/rust/store/soak_snapshot.rs cbc=mandatory cbc-weight=high
 shared/tests/soak_snapshot.rs cbc=mandatory cbc-weight=high
 block-storage/src/rust/dag/soak_snapshot.rs cbc=mandatory cbc-weight=high

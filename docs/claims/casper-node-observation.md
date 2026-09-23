@@ -15,6 +15,19 @@ artifacts:
   - node/src/rust/runtime/node_runtime.rs
   - node/src/rust/diagnostics/tests.rs
   - node/tests/soak_observer.rs
+  - formal/tlaplus/node_observation/ObserverSession.tla
+  - formal/tlaplus/node_observation/MC_ObserverSession.cfg
+  - formal/tlaplus/node_observation/MC_ObserverSession_freshness_pre_fix.cfg
+  - formal/tlaplus/node_observation/README.md
+  - formal/rocq/node_observation/_CoqProject
+  - formal/rocq/node_observation/README.md
+  - formal/rocq/node_observation/theories/ObserverSession.v
+  - formal/rocq/node_observation/theories/MainTheorem.v
+  - scripts/ci/check-tla-invariants.sh
+  - scripts/ci/test-check-tla-invariants.sh
+  - scripts/ci/check-formal-invariants.sh
+  - scripts/ci/check-node-observation-bindings.sh
+  - .github/workflows/slashing-tests.yml
 refutation: pending
 construction: pending
 binding: pending
@@ -88,6 +101,10 @@ A request includes `schema_version`, `request_id`, `incarnation`, `challenge`, `
 
 The only operation is `capabilities`. The request identifier uses canonical lowercase syntax for a Universally Unique Identifier (UUID).
 
+The challenge combines a random UUID, a colon, and the decimal hello-event sequence. The peer must echo the complete challenge unchanged.
+
+The checked event counter prevents challenge reuse within one observer lifetime, even when random UUIDs repeat. Cross-incarnation freshness remains a separate verification obligation.
+
 A successful response includes the original request digest, identity, sequence, and monotonic timestamp. All five listed profile capabilities remain unsupported, and `live_profile_qualified` is false.
 
 Each connection accepts one request. The observer serves one connection at a time and closes rejected or expired sessions.
@@ -131,6 +148,14 @@ The new regression checks source ordering. It is not an end-to-end production no
 The earlier Batch A report remains unchanged. Its passing transport tests did not establish the missing runtime shutdown property.
 
 Batch B remains unapproved. The [revised proposal](../plans/casper-node-observation-batch-b.md) separates bounded storage capture from later authority evaluation.
+
+## Verification scope confirmation
+
+The user confirmed the TASK-019-4 implementation scope after the property review. This confirmation includes formal inputs, binding tests, the freshness correction, and high-weight mandatory tags.
+
+The first verification cycle concerns challenge allocation and replay within one observer lifetime. It does not discharge the other properties or establish cross-incarnation uniqueness.
+
+The added inventory names this cycle's inputs. Later cycles must register their approved inputs before implementation.
 
 ## Verification requirements
 

@@ -113,6 +113,7 @@ POST_FIX_CONFIGS=(
     soak_disk/MC_MetricSummary
     soak_disk/MC_ReserveBound
     soak_disk/MC_RetentionReserve
+    node_observation/MC_ObserverSession
 )
 
 TLC_WORKERS=auto
@@ -131,6 +132,7 @@ if [[ "$SOAK_PR" == true ]]; then
         soak_disk/MC_MetricSummary
         soak_disk/MC_ReserveBound
         soak_disk/MC_RetentionReserve
+        node_observation/MC_ObserverSession
     )
     TLC_WORKERS=2
 fi
@@ -171,6 +173,7 @@ fi
 # <subdir>/<config>:<invariant>. Each must exit 12 with exactly that invariant;
 # scripts/ci/test-check-tla-invariants.sh reads this list rather than copying it.
 NEGATIVE_CONTROLS=(
+    node_observation/MC_ObserverSession_freshness_pre_fix:FreshChallenges
     carrier_index/MC_CarrierIndex_dag_first_pre_fix:IndexCompleteForWindow
     carrier_index/MC_CarrierIndex_read_failure_pre_fix:AbsenceProofSound
     soak_disk/MC_SoakDiskAdmission_floor_only_pre_fix:AdmissionRequiresBand
@@ -239,14 +242,14 @@ NEGATIVE_CONTROLS=(
 # directories that is absent from NEGATIVE_CONTROLS is a broken registration,
 # not a manual control. Other areas keep manual controls until they opt in
 # (docs/formal-verification.md).
-REGISTERED_CONTROL_AREAS=(carrier_index deploy_storage soak_disk)
+REGISTERED_CONTROL_AREAS=(carrier_index deploy_storage soak_disk node_observation)
 for entry in "${POST_FIX_CONFIGS[@]}"; do
     area="${entry%%/*}"
-    printf '%s\n' "${REGISTERED_CONTROL_AREAS[@]}" | grep -Fxq "$area" || continue
+    printf '%s\n' "${REGISTERED_CONTROL_AREAS[@]}" | grep -Fx "$area" >/dev/null || continue
     for cfg in "$TLA_ROOT/$entry"_*_pre_fix.cfg; do
         [[ -f "$cfg" ]] || continue
         control="$area/$(basename "$cfg" .cfg)"
-        if ! printf '%s\n' "${NEGATIVE_CONTROLS[@]}" | grep -q "^$control:"; then
+        if ! printf '%s\n' "${NEGATIVE_CONTROLS[@]}" | grep "^$control:" >/dev/null; then
             echo "ERROR: $control exists but is not registered in NEGATIVE_CONTROLS" >&2
             exit 2
         fi
@@ -269,8 +272,14 @@ for check in "${POST_FIX_CONFIGS[@]}" "${NEGATIVE_CONTROLS[@]}"; do
     dir="$TLA_ROOT/${entry%/*}"
     cfg="${entry##*/}"
     log="/tmp/tlc-${entry//\//-}.log"
-    if [[ ! -f "$dir/$cfg.tla" || ! -f "$dir/$cfg.cfg" ]]; then
-        echo "FAIL   $entry (missing $cfg.tla or $cfg.cfg in $dir — registered config not found)"
+    module="$cfg"
+    case "$entry" in
+        node_observation/MC_ObserverSession|node_observation/MC_ObserverSession_*_pre_fix)
+            module=ObserverSession
+            ;;
+    esac
+    if [[ ! -f "$dir/$module.tla" || ! -f "$dir/$cfg.cfg" ]]; then
+        echo "FAIL   $entry (missing $module.tla or $cfg.cfg in $dir — registered config not found)"
         failed=$((failed + 1))
         violations=$((violations + 1))
         continue
@@ -278,7 +287,7 @@ for check in "${POST_FIX_CONFIGS[@]}" "${NEGATIVE_CONTROLS[@]}"; do
     started_epoch="$(date +%s)"
     echo "CHECK  $entry (started $(date -u +%H:%M:%SZ), cap $TLC_PER_CONFIG_TIMEOUT)"
     set +e
-    (cd "$dir" && $TIMEOUT_CMD $TLC_CMD -workers "$TLC_WORKERS" -config "$cfg.cfg" "$cfg.tla") >"$log" 2>&1
+    (cd "$dir" && $TIMEOUT_CMD $TLC_CMD -workers "$TLC_WORKERS" -config "$cfg.cfg" "$module.tla") >"$log" 2>&1
     status=$?
     set -e
     elapsed="$(($(date +%s) - started_epoch))s"

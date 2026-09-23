@@ -28,6 +28,9 @@ cp -R "$ROOT/formal/tlaplus" "$WORK/repo/formal/"
 
 fail() {
     printf 'FAIL: %s\n' "$1" >&2
+    if [[ -f "$WORK/run.log" ]]; then
+        tail -80 "$WORK/run.log" >&2
+    fi
     exit 1
 }
 
@@ -93,7 +96,7 @@ checked() { awk '$1 == "CHECK" { print $2 }' "$WORK/run.log" | sort; }
 mapfile -t AREAS < <(sed -n 's/^REGISTERED_CONTROL_AREAS=(\(.*\))$/\1/p' "$GATE" | tr ' ' '\n')
 ((${#AREAS[@]})) || fail 'The gate registers no control areas.'
 for area in "${AREAS[@]}"; do
-    check="$(printf '%s\n' "${CONTROLS[@]}" | grep -m1 "^$area/")" || fail "The area $area registers no control."
+    check="$(printf '%s\n' "${CONTROLS[@]}" | grep "^$area/" | awk 'NR == 1')" || fail "The area $area registers no control."
     target="${check%%:*}"
     for result in clean wrong-invariant tool-error wrong-exit timeout missing; do
         config="$WORK/repo/formal/tlaplus/$target.cfg"
@@ -228,7 +231,7 @@ run_gate workflow_dispatch RUN_EXHAUSTIVE_TLA=1 || fail 'The exhaustive dispatch
 comm -13 "$WORK/full" <(checked) | grep -q . || fail 'Exhaustive dispatch added no configurations.'
 
 printf '%s\n' "${CONTROLS[@]}" | sed 's/:.*//' | sort >"$WORK/control-configs"
-baseline="$(comm -23 "$WORK/pr" "$WORK/control-configs" | head -1)"
+baseline="$(comm -23 "$WORK/pr" "$WORK/control-configs" | awk 'NR == 1')"
 [[ -n "$baseline" ]] || fail 'The PR tier has no baseline configuration to violate.'
 if run_gate pull_request TEST_TLC_TARGET="${baseline##*/}.cfg" TEST_TLC_RESULT=violate; then
     fail 'A violated baseline did not fail the pull-request gate.'

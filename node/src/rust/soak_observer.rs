@@ -333,6 +333,7 @@ mod linux {
             &mut self,
             mut stream: UnixStream,
             deadline: tokio::time::Instant,
+            nonce: impl FnOnce() -> Uuid,
         ) -> Result<(), ObserverError> {
             let peer = stream.peer_cred()?;
             if peer.uid() != self.owner_uid
@@ -341,8 +342,8 @@ mod linux {
             {
                 return Err(ObserverError::PeerIdentity);
             }
-            let challenge = Uuid::new_v4().to_string();
             let (sequence, monotonic_ns) = self.event()?;
+            let challenge = format!("{}:{sequence}", nonce());
             Self::write(&mut stream, &json!({
                 "kind": "hello", "identity": self.identity, "challenge": challenge,
                 "approved_request_sha256": self.config.approved_request_sha256,
@@ -390,9 +391,141 @@ mod linux {
                 let (stream, _) = self.listener.accept().await?;
                 let deadline = tokio::time::Instant::now()
                     + Duration::from_millis(self.config.session_timeout_ms);
-                let _ = tokio::time::timeout_at(deadline, self.session(stream, deadline)).await;
+                let _ =
+                    tokio::time::timeout_at(deadline, self.session(stream, deadline, Uuid::new_v4))
+                        .await;
             }
             Err(ObserverError::ResourceLimit)
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        struct Fixture {
+            observer: Observer,
+            directory: PathBuf,
+        }
+
+        impl Drop for Fixture {
+            fn drop(&mut self) { let _ = fs::remove_dir_all(&self.directory); }
+        }
+
+        fn fixture() -> Fixture {
+            let directory = std::env::temp_dir().join(format!("nonce-{}", Uuid::new_v4()));
+            fs::create_dir(&directory).unwrap();
+            fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
+            let path = directory.join("observer.sock");
+            let listener = UnixListener::bind(&path).unwrap();
+            let metadata = fs::symlink_metadata(&path).unwrap();
+            let pid = std::process::id();
+            let start = process_start_ticks(pid).unwrap();
+            let config = SoakObserverConfig {
+                directory: directory.clone(),
+                source_revision: "a".repeat(40),
+                approved_request_sha256: "b".repeat(64),
+                peer_pid: pid,
+                peer_start_ticks: start,
+                session_timeout_ms: 500,
+                max_sessions: 128,
+            };
+            validate_config(&config).unwrap();
+            Fixture {
+                directory,
+                observer: Observer {
+                    listener,
+                    _socket: SocketGuard {
+                        path,
+                        device: metadata.dev(),
+                        inode: metadata.ino(),
+                    },
+                    config,
+                    identity: Identity {
+                        schema_version: 1,
+                        incarnation: Uuid::nil().to_string(),
+                        pid,
+                        process_start_ticks: start,
+                        declared_source_revision: "a".repeat(40),
+                        executable_sha256: "c".repeat(64),
+                        configuration_sha256: "d".repeat(64),
+                        configuration_scope: "batch-a-public-config-v1",
+                    },
+                    owner_uid: fs::metadata("/proc/self").unwrap().uid(),
+                    started: Instant::now(),
+                    sequence: 0,
+                },
+            }
+        }
+
+        async fn receive(stream: &mut UnixStream) -> std::io::Result<serde_json::Value> {
+            let size = stream.read_u32().await? as usize;
+            assert!((1..=MAX_FRAME_BYTES).contains(&size));
+            let mut bytes = vec![0; size];
+            stream.read_exact(&mut bytes).await?;
+            serde_json::from_slice(&bytes).map_err(std::io::Error::other)
+        }
+
+        #[tokio::test]
+        async fn repeated_entropy_cannot_replay_a_request() {
+            let mut fixture = fixture();
+            let observer = &mut fixture.observer;
+            let mut previous = None;
+            for attempt in 0..2 {
+                let mut client =
+                    UnixStream::connect(observer.config.directory.join("observer.sock"))
+                        .await
+                        .unwrap();
+                let (server, _) = observer.listener.accept().await.unwrap();
+                let deadline = tokio::time::Instant::now() + Duration::from_millis(500);
+                let exchange = async {
+                    let hello = receive(&mut client).await.unwrap();
+                    let request = previous.get_or_insert_with(|| {
+                        json!({
+                            "schema_version": 1,
+                            "request_id": Uuid::nil().to_string(),
+                            "incarnation": hello["identity"]["incarnation"],
+                            "challenge": hello["challenge"],
+                            "executable_sha256": hello["identity"]["executable_sha256"],
+                            "configuration_sha256": hello["identity"]["configuration_sha256"],
+                            "approved_request_sha256": hello["approved_request_sha256"],
+                            "operation": "capabilities"
+                        })
+                    });
+                    let bytes = serde_json::to_vec(request).unwrap();
+                    client.write_u32(bytes.len() as u32).await.unwrap();
+                    client.write_all(&bytes).await.unwrap();
+                    receive(&mut client).await
+                };
+                let (result, response) = tokio::time::timeout_at(deadline, async {
+                    tokio::join!(observer.session(server, deadline, Uuid::nil), exchange)
+                })
+                .await
+                .unwrap();
+                if attempt == 0 {
+                    assert!(result.is_ok());
+                    assert_eq!(response.unwrap()["kind"], "capabilities");
+                } else {
+                    assert!(matches!(result, Err(ObserverError::Request)));
+                    assert!(response.is_err());
+                }
+            }
+        }
+
+        #[tokio::test]
+        async fn exhausted_sequence_refuses_a_handshake() {
+            let mut fixture = fixture();
+            let observer = &mut fixture.observer;
+            observer.sequence = u64::MAX;
+            let mut client = UnixStream::connect(observer.config.directory.join("observer.sock"))
+                .await
+                .unwrap();
+            let (server, _) = observer.listener.accept().await.unwrap();
+            let deadline = tokio::time::Instant::now() + Duration::from_millis(500);
+            let result = observer.session(server, deadline, Uuid::nil).await;
+            assert!(matches!(result, Err(ObserverError::ResourceLimit)));
+            assert!(receive(&mut client).await.is_err());
+            assert_eq!(observer.sequence, u64::MAX);
         }
     }
 }

@@ -56,10 +56,37 @@ Retained outside Git by the agent that ran the cycles. The digests bind that raw
 {
   "artifact": {
     "path": "scripts/ci/check-tla-invariants.sh",
-    "commit": "3d2aa7904",
+    "commit": "3b1d2465a39b020426b3caa02bf5313d2b9fac5b",
+    "commit_is_base": true,
+    "working_tree": true,
+    "sha256": "5ecaa38548460fb58bd5284838f586d53b8e632c6fe9f52e8b11727f91c5ab45",
     "id": "scripts-ci-check-tla-invariants-sh"
   },
   "claim": "CLAIM-SOAK-GATE-001",
+  "claim_ids": [
+    "CLAIM-SOAK-GATE-001",
+    "CLAIM-CASPER-NODE-OBSERVATION-001"
+  ],
+  "claim_digests": {
+    "docs/claims/casper-node-observation.md": "a6cf721403133c9ac7a812d5bb58aa8391212b5cab542170708cd10ddc0adcd4"
+  },
+  "node_verification": {
+    "kind": "partial-verification-not-discharge",
+    "ref": "docs/cbc-evidence/runs/casper-node-challenge-freshness-3b1d2465a-01/report.json",
+    "sha256": "1e063eec0183aa8a51b1561c35b5078031c23bb16876867705f04ae7c4d16dd9"
+  },
+  "previous_record": {
+    "commit": "3b1d2465a39b020426b3caa02bf5313d2b9fac5b",
+    "path": "docs/cbc-evidence/scripts-ci-check-tla-invariants-sh.md",
+    "sha256": "0aa564b1f65b136429ef9f3291021c31a121c9555180e9958c5432d7bc4e1d7b"
+  },
+  "additional_claims": [
+    {
+      "path": "docs/claims/casper-node-observation.md",
+      "status": "pending",
+      "scope": "node-observation-model-registration"
+    }
+  ],
   "adapter": "embedded",
   "status": "pending",
   "evidence": {

@@ -7,30 +7,30 @@ The interface claim remains pending. Local tests do not discharge the claim or q
   "artifact": {
     "path": "node/tests/soak_observer.rs",
     "id": "node-tests-soak-observer-rs",
-    "commit": "4561e064a70b495fe07cbcf779bff375d636aaad",
+    "commit": "3b1d2465a39b020426b3caa02bf5313d2b9fac5b",
     "commit_is_base": true,
     "working_tree": true,
-    "sha256": "622d951d3ebde16dd1ecf0d1f7dfbecfc67c180d12139d343c5c3198a5c65322"
+    "sha256": "b49d6fd51be0d865d89bff5e851a219dad6b2d6d170d7ce1042a28780fe30741"
   },
   "claim": "docs/claims/casper-node-observation.md",
   "claim_ids": [
     "CLAIM-CASPER-NODE-OBSERVATION-001"
   ],
   "claim_digests": {
-    "docs/claims/casper-node-observation.md": "4f0e8b4e8f5fa7a5e55383f2d767d1dedece8cab5450e977d5e96d590141a7e1"
+    "docs/claims/casper-node-observation.md": "a6cf721403133c9ac7a812d5bb58aa8391212b5cab542170708cd10ddc0adcd4"
   },
   "adapter": null,
   "status": "pending",
   "scope": "batch-a-local-capability-interface",
   "evidence": {
-    "kind": "local-tests-not-discharge",
-    "ref": "docs/cbc-evidence/runs/casper-node-deadline-correction-4561e064a-01/report.json",
-    "sha256": "c8568def5c1d65b2a27c267335c66b56abc2ffc853735de92adeb1ae68b64340"
+    "kind": "partial-verification-not-discharge",
+    "ref": "docs/cbc-evidence/runs/casper-node-challenge-freshness-3b1d2465a-01/report.json",
+    "sha256": "1e063eec0183aa8a51b1561c35b5078031c23bb16876867705f04ae7c4d16dd9"
   },
   "previous_record": {
-    "commit": "4561e064a70b495fe07cbcf779bff375d636aaad",
+    "commit": "3b1d2465a39b020426b3caa02bf5313d2b9fac5b",
     "path": "docs/cbc-evidence/node-tests-soak-observer-rs.md",
-    "sha256": "a34b2b9cd37b71e842592cecb7ff543ee99d4ea773a3d6e366ae1c4811d5f114"
+    "sha256": "fa8e1a31d84ab493504beecfbe5beeed79f626fb41d83db306752b512a6d2101"
   },
   "tiers": {
     "refutation": "pending",

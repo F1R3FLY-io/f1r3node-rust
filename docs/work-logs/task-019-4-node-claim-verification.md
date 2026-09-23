@@ -207,4 +207,231 @@ Four pending evidence records now bind the corrected bytes. Their previous versi
 
 Both claims, all verification tiers, and maintainer acceptance remain pending. No formal proof ran, and no acceptance request was sent.
 
-The source correction remains uncommitted. TASK-019-4 and B2 planning remain blocked, and TASK-019-6 still requires the minimum-code review before merge.
+The source correction was uncommitted at that verification checkpoint. External commit `de93425ee9cbc72a6509de21b0eb009a07eb48a7` subsequently included it.
+
+TASK-019-4 and B2 planning remain blocked. TASK-019-6 still requires the minimum-code review before merge.
+
+## Current verification intake
+
+The user requested completion of TASK-019-4 after the applicability policy update. The new intake started at `27afe82365465b9b63d5d3f09f4ad75a4a0862d3`.
+
+All 23 files in the correction input manifest still match their recorded hashes. This comparison does not execute the current revision.
+
+The explicit-inventory strict audit again returned exit 4, with seven mandatory files and seven pending records. No claim status or evidence record changed.
+
+The PR API showed PR #447 open against `dev`, with head `27afe82365465b9b63d5d3f09f4ad75a4a0862d3`. Its only returned review approved the historical revision `799e2136adc6e0100b289945d9a5a6851e81c91f`.
+
+No current acceptance or observer-specific formal input was found. Java and Docker are available. Rocq, opam, and Kani commands are absent from the current PATH.
+
+Another writer advanced HEAD to `3b1d2465a` and changed the tracker during this review. Those changes affect `docs/ToDos.md` only and remain untouched.
+
+The language-server symbol query returned no results. Structural outlines and direct source reads supplied the source map below. This review does not establish clean diagnostic coverage.
+
+Bulk intake evidence is under `target/node-claim-verification-27afe8236-ILAOnB/`. It contains the audit, input check, API responses, revision records, and external tracker patch.
+
+### Challenge freshness finding
+
+Batch A properties 5 and 6 require a fresh challenge and prohibit reuse across sessions. `Observer::session` uses `Uuid::new_v4()` without recording prior challenges.
+
+The pinned `uuid` version is `1.24.0`. Its constructor masks random bits to set the UUID version and variant. It does not enforce uniqueness.
+
+Two sessions in one observer can receive equal random values. The earlier request then has the same challenge and the same checked identity fields.
+
+The request validator does not compare the request with the event sequence. The existing replay test samples two challenges and asserts that they differ.
+
+This source review identifies a proof gap, not an observed random collision or an executed replay counterexample. No production correction has been made.
+
+A model must permit repeated random outputs unless the specification supplies a justified assumption. It must not silently replace randomness with guaranteed freshness.
+
+The proposed correction must enforce challenge separation within an observer lifetime. Cross-incarnation freshness also needs an explicit domain and reviewed assumptions.
+
+### Property coverage plan
+
+This plan maps all ten Batch A properties and all thirteen Batch B1 properties. Property numbers refer to the existing claim files.
+
+Every classification below is provisional. No maintainer has reviewed this matrix, and no property receives `construction: not-applicable`.
+
+`U` proposes construction for a property over arbitrary permitted states or histories. `F` identifies a possible finite predicate within a larger property.
+
+An `F` entry still requires complete-domain coverage and an abstraction-preservation argument. It does not establish that the complete property is bounded by design.
+
+All rows require Rust binding evidence. The existing tests supply candidate regression coverage, not a complete correspondence proof.
+
+#### Common domains and assumptions
+
+Batch A includes disabled startup, invalid configurations, accepted configurations, rejected peers, arbitrary request bytes, disconnects, expiry, and normal shutdown. Every request includes rejected requests.
+
+The specified limits include 4,096 configuration bytes, 1 MiB frames, 4,096 sessions, and session timeouts from 50 through 30,000 milliseconds. Rejection cases include values outside these limits.
+
+Path, process, executable, and public-field checks retain every bound in the claim. Unrelated node configuration fields remain variable when testing disabled behavior and public serialization.
+
+Batch A retains its declared kernel, process, filesystem, and owner trust boundaries. Scheduling remains an explicit deadline assumption, not a hard execution-time guarantee.
+
+Batch B1 includes every permitted DAG, request, limit configuration, backend, row encoding, and writer history. It includes failures, restored values, and writes outside the insertion-generation mechanism.
+
+Capture limits vary by request. No small DAG fixture or finite machine integer establishes a fixed specification domain for these properties.
+
+Batch B1 retains its LMDB identity, transaction, reader-slot, and native-I/O assumptions. Codec behavior and persistent collection behavior also require explicit dependency correspondence.
+
+The proof must distinguish assumed library behavior from verified Rust behavior. A theorem over abstract transitions does not establish that Rust implements those transitions.
+
+No TLC instance bounds are selected or verified yet. Each future configuration must state its bounds independently of the property domain.
+
+#### Batch A source and evidence map
+
+| Property | Domain, bounds, and proposed classification | Rust boundary | Required correspondence and remaining gap |
+| --- | --- | --- | --- |
+| A1 | U covers all disabled startup histories and unrelated node configurations. | `Observer::bind`, `NodeRuntime::start`, and configuration defaults. | The disabled test covers socket absence. Runtime task and journal absence still need a transition argument and a shutdown-aware harness. |
+| A2 | F covers explicit activation predicates and fixed field limits. U covers configuration routes and activation histories. | `validate_config`, `Observer::bind`, CLI mapping, and configuration builder. | Existing limit and precedence tests need an independent configuration oracle and complete boundary coverage. |
+| A3 | U covers accepted directory paths, ancestor states, symlinks, ownership, and permitted namespace changes. | `safe_directory` and socket setup. | Permission tests need a path-state model under the declared owner and root assumptions. |
+| A4 | U covers peer arrivals and process replacement histories. | `process_start_ticks`, bind-time checks, and `Observer::session`. | Existing foreign-process and start-identity tests need matching process-lifetime transitions in the oracle. |
+| A5 | U covers every request identity and observer lifetime. | `Request`, `Identity`, and `Observer::session`. | Model each identity comparison independently. Resolve random challenge and incarnation assumptions before claiming freshness. |
+| A6 | U covers accepted and rejected session histories within each configured budget. | `Observer::session` and `Observer::run`. | Retain one-request and replay controls. Add repeated-random-output coverage instead of assuming unique UUIDs. |
+| A7 | F covers the fixed frame predicate. U covers partial I/O, disconnects, expiry, and scheduling histories. | `Observer::write`, `Observer::session`, and `timeout_at`. | Exact-frame and deadline tests need a reference clock and I/O model. No host scheduling bound is claimed. |
+| A8 | F covers the operation enum and capability fields. U covers all request histories and side effects. | `Operation::Capabilities` and the response construction. | Compare complete responses and effect traces. Unsupported operations must not enter evaluation, fault control, or store writes. |
+| A9 | U covers normal shutdown, cancellation, filesystem failures, and replacement objects. | `SocketGuard::drop`, `RunningObserver::stop`, and runtime exit ordering. | Replacement and cancellation tests exist. Source ordering does not replace an end-to-end normal-shutdown test. |
+| A10 | F covers the fixed public allowlist. U covers every node configuration and serialization path. | The public JSON value and `Identity` serialization in `Observer::bind`. | Secret-change tests need an independent allowlist oracle. Digest equality alone does not prove exclusion of every private field. |
+
+#### Batch B1 source and evidence map
+
+| Property | Domain, bounds, and proposed classification | Rust boundary | Required correspondence and remaining gap |
+| --- | --- | --- | --- |
+| B1 | U covers every limit configuration and request, including invalid arithmetic and deadlines. | `ReadLimits::validate`, `CaptureLimits::validate`, and `capture_observed`. | Retained invalid-limit regressions need an independent validation oracle and arithmetic harnesses. |
+| B2 | U covers global, metadata, and DAG-state lock contention under the same checked deadline. | `soak_capture_access` and `capture_state`. | The three-guard regression needs a lock-state model with timeout and partial-acquisition release controls. |
+| B3 | U covers participating stores and their environment partition. | `BoundedLmdbReader::open`. | Existing shared-transaction and separate-environment tests need a partition oracle, including open failures. |
+| B4 | U covers environment paths and commits before or during transaction open. | `BoundedLmdbReader::open` and `identities`. | Verify equality at open with explicit transaction semantics. A fixture without a racing commit does not cover that interval. |
+| B5 | U covers raw bytes, nested encodings, scan histories, and all supplied decode limits. | Reader charging, `preflight_metadata`, and `decode_block_bounded`. | Retain length, overflow, work, and short-decompression controls. Bind the actual pre-allocation arithmetic to Kani harnesses. |
+| B6 | U covers captured state shapes, guard histories, and all capture call paths. | `capture_state` and `capture_observed`. | Check copy timing and forbidden effects. Persistent collection sharing requires an explicit dependency argument, not pointer equality. |
+| B7 | U covers commits in every participating environment through its validation observation, including restoration of earlier bytes. | `BoundedLmdbReader::validate`. | Retain restored-value and separate-environment controls. Prove the transaction rule without equating it with atomic cross-environment publication. |
+| B8 | U covers insertion-generation histories and writers that do not change generation. | The two generation reads in `capture_observed`. | Existing unchanged-generation writer tests need a combined generation and transaction oracle. |
+| B9 | U covers held membership, requested bodies, metadata, and optional cache rows for every permitted DAG. | Metadata, body, floor, and frontier capture branches. | Compare every availability result with an independent row oracle. Missing required rows must remain errors. |
+| B10 | U covers successful and rejected captures and subsequent caller actions. | Reader ownership, `validate(self)`, guard release, and `DetachedDagSnapshot::seal`. | Phase and store-byte tests need failure-path resource checks. Exclude caller-injected writes from claims about capture effects. |
+| B11 | U covers captured collections, parent order, limits, transaction records, and availability states. | `CanonicalEncoder`, `SnapshotData::encode`, and `DetachedDagSnapshot::seal`. | Use an independent canonical encoder and field-mutation controls. Hash identity alone does not prove semantic completeness. |
+| B12 | U covers captured rows, construction errors, multiple scratch views, and subsequent mutations. | `DetachedDagSnapshot::scratch_view` and `EXCLUDED_STORES`. | Extend independence tests with a store-construction oracle and failure controls. Verify every mutable store, not only one cache. |
+| B13 | F covers backend classification. U covers arbitrary backend implementations and store lists. | `lmdb_store`, `BoundedLmdbReader::open`, and `session_for`. | Unsupported and foreign-store tests need proof that rejection precedes fallback operations. |
+
+The existing DAG finality claim remains outside any new exemption. Its mandatory artifact record must retain all prior obligations.
+
+### Proposed implementation scope
+
+The repository requires file-scope confirmation before code changes. The following verification scope remains a proposal, not an approval.
+
+The first formal files would be under `formal/tlaplus/node_observation/`:
+
+- `ObserverSession.tla`
+- `BoundedCapture.tla`
+- `MC_ObserverSession.cfg`
+- `MC_BoundedCapture.cfg`
+- `README.md`
+
+The negative-control configurations would use `MC_ObserverSession_<case>_pre_fix.cfg` and `MC_BoundedCapture_<case>_pre_fix.cfg`.
+
+The proposed observer cases are `activation`, `directory`, `peer`, `identity`, `freshness`, `single_request`, `frame`, `deadline`, `budget`, `effects`, `cleanup`, and `public_config`.
+
+The proposed capture cases are `limits`, `locks`, `transactions`, `open_identity`, `allocation`, `copy`, `environment`, `generation`, `incomplete`, `release`, `canonical`, `scratch`, and `backend`.
+
+Each configuration must isolate its named defect class. Additional classes would require an explicit scope update rather than an undocumented omission.
+
+The Rocq project would use these files under `formal/rocq/node_observation/`:
+
+- `_CoqProject`
+- `README.md`
+- `theories/ObserverSession.v`
+- `theories/BoundedCapture.v`
+- `theories/MainTheorem.v`
+
+The existing Rust files proposed for binding tests, arithmetic harnesses, and the smallest necessary freshness correction are:
+
+- `node/src/rust/soak_observer.rs`
+- `node/tests/soak_observer.rs`
+- `shared/src/rust/store/soak_snapshot.rs`
+- `shared/tests/soak_snapshot.rs`
+- `block-storage/src/rust/dag/soak_snapshot.rs`
+- `block-storage/src/rust/key_value_block_store.rs`
+- `block-storage/tests/soak_snapshot.rs`
+
+Arithmetic harnesses must call the same predicates as production decoding. A duplicate test-only predicate does not establish binding.
+
+The proposed gate files are `scripts/ci/check-tla-invariants.sh`, `scripts/ci/test-check-tla-invariants.sh`, and `scripts/ci/check-formal-invariants.sh`. A new `scripts/ci/check-node-observation-bindings.sh` would run the dedicated Rust binding checks.
+
+The proposed workflow change is `.github/workflows/slashing-tests.yml`. It would invoke those checks without changing branch protection or unrelated formal-gate delivery.
+
+Claim inventories, `.gitattributes`, and pending evidence records must include the approved verification artifacts before implementation. The proposed new mandatory tags use high weight and still require ratification.
+
+The two claim files, this work log, and the task tracker would record the reviewed coverage and results. Compact evidence would use a new run directory.
+
+Verifier setup would use resource-limited containers, not host package installation. Rust builds would retain isolated-cache provenance and exact input hashes.
+
+No B2 planning, B2/C implementation, cleanup deletion, campaign launch, merge, commit, or push is included. Maintainer acceptance remains a separate gate after successful verification.
+
+### Scope confirmation and first cycle
+
+The user confirmed the proposed scope and mandatory tags. This confirmation authorizes implementation, not claim acceptance or a Git operation.
+
+The first cycle addresses repeated random challenges within one observer lifetime. The private session function now accepts an entropy function for deterministic testing.
+
+Production still passes `Uuid::new_v4`. The regression supplies `Uuid::nil` twice and submits the first request in both sessions.
+
+The random-only implementation failed the required-refusal assertion with exit 101. The counter-exhaustion control passed in the same run.
+
+This RED execution used a behavior-preserving private test seam, not an unchanged historical executable. Its exact source and executable remain retained.
+
+The correction appends the checked hello-event sequence to the random UUID. The request validator compares the complete challenge string.
+
+The correction does not depend on random outputs being unique within an observer lifetime. Cross-incarnation uniqueness remains unresolved and is not covered by this theorem.
+
+An independent integration oracle checks event sequences across acceptance, replay, and disconnect. The regression and oracle invoke production session or transport code.
+
+The corrected isolated run passed 580 test executions. These comprise 304 storage tests, 257 node-library tests, and 19 interface tests.
+
+One interface helper remains ignored when invoked directly. Strict Clippy, the workspace check, and formatting passed in the same container.
+
+The build reused 21,779 hash-verified files from the isolated RED cache. It imported no host-built project objects and was not a fresh-target build.
+
+The raw interface executable contains 551,199,488 bytes. The executed debug-stripped derivative contains 18,952,880 bytes.
+
+Allocated sections and program headers match. Whole-file hashes differ, and both identities remain recorded.
+
+The clean challenge model passed TLC with 199 generated states and 127 distinct states. Its bounds are three sessions and two random values.
+
+The negative control exited 12 on `FreshChallenges`. Its trace repeats one random value across two sessions.
+
+Rocq 8.16.1 compiled four allocation theorems. `coqchk` passed, and all four assumption checks reported `Closed under the global context`.
+
+These results prove the stated allocation model, not the complete interface or capture claims. The area README keeps all 23 property classifications provisional.
+
+The actual bounded TLC gate passed 14 positive configurations and 62 expected violations. The registry fixture suite also passed with 62 controls.
+
+The dedicated binding driver checks that the new tests exist before execution. It preserves raw executables and verifies the debug-stripped interface derivative.
+
+A separate isolated driver run passed 276 executions. These repeat the 257 node-library tests and 19 interface tests, rather than adding new behaviors.
+
+That run checked 23,304 isolated-cache files before compilation. It used the retained vendor configuration as Cargo's global configuration.
+
+The workflow adds a binding job without changing existing job names or branch protection. Two existing opam command substitutions now use quotes.
+
+No hosted workflow ran, and no maintainer acceptance request was sent. The full existing Rocq suite was not rerun locally.
+
+### Evidence and remaining work
+
+The [cycle report](../cbc-evidence/runs/casper-node-challenge-freshness-3b1d2465a-01/report.json) records partial evidence, not discharge.
+
+Bulk evidence is under `target/node-observation-verification-3b1d2465a-NIXDOR/`. Earlier reports and source archives remain unchanged.
+
+Retained failures include the first Rocq tactic error and an incompatible host Java runtime. Container-installed Java resolved the runtime mismatch.
+
+The first registry fixture copied ignored historical TLC state files and exhausted its temporary filesystem. Later attempts exposed a non-executable temporary mount.
+
+The successful fixture used the source archive without ignored state files and an executable temporary mount. Those setup failures do not count as counterexamples.
+
+The index changed during this work. The assistant issued no staging or commit command and did not restore the earlier index.
+
+Active diagnostics did not confirm seven changed files as clean. Two checks timed out, and five servers could not confirm a clean result.
+
+The remaining YAML length findings concern legacy lines. The added job passes Actionlint after the two opam quoting corrections.
+
+Both claims remain pending. The added verification artifacts also remain pending, and existing finality and formal-gate obligations remain intact.
+
+Remaining work includes cross-incarnation identity, the other interface properties, all capture properties, Kani arithmetic harnesses, and complete Rust correspondence.
+
+Named maintainer review must cover every applicability decision and the final source-bound package. B2 planning and task completion remain blocked.
