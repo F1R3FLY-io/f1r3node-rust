@@ -765,8 +765,8 @@ struct NoopDrainObserver;
 
 impl DrainObserver for NoopDrainObserver {}
 
-pub(crate) fn remove_value_preserving_path<V>(
-    zipper: &mut WriteZipperUntracked<'_, '_, V>,
+pub fn remove_value_preserving_path<V>(
+    zipper: &mut impl ZipperWriting<V>,
 ) -> Option<V>
 where V: Clone + Send + Sync + Unpin + 'static {
     if !zipper.is_val() {

@@ -1237,13 +1237,27 @@ fn epm_payload_representation_has_proof_and_native_bindings() {
         "operations_preserve_topology", "refusal_cannot_publish",
         "scaffold_erasure_preserves_real_bindings", "equal_payloads_preserve_distinct_keys",
         "scaffold_leak_mutant_is_observable",
+        "cursor_next_preserves_topology", "cursor_next_conserves_bindings",
+        "cursor_take_is_ordered_partition", "cursor_take_conserves_bindings",
+        "cursor_take_preserves_topology", "cursor_exhaustion_is_fused",
+        "cursor_early_retirement_owns_exact_suffix", "cursor_root_skip_mutant_is_observable",
     ] {
         assert!(theory.contains(&format!("Print Assumptions {theorem}.")));
     }
     let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
-    assert!(has_runner_command(&runner, &["rocq_compile_with_closed_count", "theories/EpmPayloadRepresentation.v", "10"]));
+    assert_eq!(theory.matches("Print Assumptions ").count(), 18);
+    assert!(has_runner_command(&runner, &["rocq_compile_with_closed_count", "theories/EpmPayloadRepresentation.v", "18"]));
     assert!(has_runner_kernel_check(&runner, &["StackSafePDA.EpmPayloadRepresentation"]));
     assert!(has_runner_command(&runner, &["rpb3_run_tests", "8", "--lib", "payload_representation_tests"]));
+    assert!(has_runner_command(&runner, &["rpb3_run_tests", "5", "--lib", "owned_cursor_tests"]));
+    let cursor = read_repository_file("models/tests/support/epm_owned_cursor.rs");
+    for witness in ["root_prefix_siblings_and_dangling_paths_are_preserved",
+        "arbitrary_prefixes_partition_the_source_and_preserve_shared_roots",
+        "partial_drop_and_callback_unwind_balance_payloads",
+        "deep_branching_partial_consumption_is_stack_safe",
+        "public_consuming_boundaries_keep_modes_and_guard_callback_unwind"] {
+        assert!(cursor.contains(&format!("fn {witness}(")));
+    }
     assert!(has_runner_command(&runner, &["rpb3_run_tests", "1", "--release", "-j4", "--features",
         "protobuf-projection-experiment", "--lib", "planned_handles_keep_exact_associations_without_resident_emission"]));
     assert!(read_repository_file("formal/rocq/stack_safe_pda/_CoqProject").lines()

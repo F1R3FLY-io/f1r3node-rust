@@ -143,6 +143,79 @@ Theorem scaffold_leak_mutant_is_observable {V} key (scaffold : V) :
   publish (State [] [(key, scaffold)] None) <> Some [].
 Proof. discriminate. Qed.
 
+Record consuming_cursor (V : Type) := Cursor {
+  cursor_topology : list nat;
+  cursor_remaining : bindings V
+}.
+Arguments Cursor {V}.
+Arguments cursor_topology {V}.
+Arguments cursor_remaining {V}.
+
+Definition cursor_next {V} (current : consuming_cursor V)
+    : option (nat * V) * consuming_cursor V :=
+  match cursor_remaining current with
+  | [] => (None, current)
+  | item :: rest => (Some item, Cursor (cursor_topology current) rest)
+  end.
+
+Fixpoint cursor_take {V} count (current : consuming_cursor V)
+    : bindings V * consuming_cursor V :=
+  match count with
+  | 0 => ([], current)
+  | S fuel =>
+      let '(item, next) := cursor_next current in
+      match item with
+      | None => ([], next)
+      | Some value =>
+          let '(taken, final) := cursor_take fuel next in
+          (value :: taken, final)
+      end
+  end.
+
+Theorem cursor_next_preserves_topology {V} (current : consuming_cursor V) :
+  cursor_topology (snd (cursor_next current)) = cursor_topology current.
+Proof. destruct current as [shape [|item rest]]; reflexivity. Qed.
+
+Theorem cursor_next_conserves_bindings {V} (current : consuming_cursor V) :
+  (match fst (cursor_next current) with None => [] | Some item => [item] end) ++
+    cursor_remaining (snd (cursor_next current)) = cursor_remaining current.
+Proof. destruct current as [shape [|item rest]]; reflexivity. Qed.
+
+Theorem cursor_take_is_ordered_partition {V} count shape (items : bindings V) :
+  cursor_take count (Cursor shape items) =
+    (firstn count items, Cursor shape (skipn count items)).
+Proof.
+  revert items. induction count as [|count IH]; intros [|item rest]; cbn;
+    try reflexivity. now rewrite IH.
+Qed.
+
+Theorem cursor_take_conserves_bindings {V} count (current : consuming_cursor V) :
+  fst (cursor_take count current) ++
+    cursor_remaining (snd (cursor_take count current)) = cursor_remaining current.
+Proof.
+  destruct current as [shape items]. rewrite cursor_take_is_ordered_partition.
+  cbn. apply firstn_skipn.
+Qed.
+
+Theorem cursor_take_preserves_topology {V} count (current : consuming_cursor V) :
+  cursor_topology (snd (cursor_take count current)) = cursor_topology current.
+Proof.
+  destruct current as [shape items]. now rewrite cursor_take_is_ordered_partition.
+Qed.
+
+Theorem cursor_exhaustion_is_fused {V} shape :
+  cursor_next (Cursor (V:=V) shape []) = (None, Cursor shape []).
+Proof. reflexivity. Qed.
+
+Theorem cursor_early_retirement_owns_exact_suffix {V} count shape (items : bindings V) :
+  map (@snd nat V) (cursor_remaining (snd (cursor_take count (Cursor shape items)))) =
+    map (@snd nat V) (skipn count items).
+Proof. now rewrite cursor_take_is_ordered_partition. Qed.
+
+Theorem cursor_root_skip_mutant_is_observable {V} (root : V) rest shape :
+  fst (cursor_take 1 (Cursor shape ((0, root) :: rest))) <> [].
+Proof. discriminate. Qed.
+
 Print Assumptions erase_commutes_with_denotation.
 Print Assumptions install_commutes_with_denotation.
 Print Assumptions each_writer_step_commutes.
@@ -153,5 +226,13 @@ Print Assumptions refusal_cannot_publish.
 Print Assumptions scaffold_erasure_preserves_real_bindings.
 Print Assumptions equal_payloads_preserve_distinct_keys.
 Print Assumptions scaffold_leak_mutant_is_observable.
+Print Assumptions cursor_next_preserves_topology.
+Print Assumptions cursor_next_conserves_bindings.
+Print Assumptions cursor_take_is_ordered_partition.
+Print Assumptions cursor_take_conserves_bindings.
+Print Assumptions cursor_take_preserves_topology.
+Print Assumptions cursor_exhaustion_is_fused.
+Print Assumptions cursor_early_retirement_owns_exact_suffix.
+Print Assumptions cursor_root_skip_mutant_is_observable.
 
 End EpmPayloadRepresentation.

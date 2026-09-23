@@ -16047,6 +16047,128 @@ improvement or campaign completion follows from this checkpoint.
 
 Theory SHA-256: `16a57fb959a42f78e3947af2f6b77955511feed8c438842f465ae9889c490166`.
 
+### J-213 — 2026-09-23 Guarded EPM consuming cursors
+
+**Scope and prerequisite.** Continue task 8516 under 5834 from `4d9d886b7`.
+Successful public materialization needs guarded consuming exits as well as guarded
+admission. Source review found that `OwnedEPathMapEntries` and both raw callback
+visitors owned native `OwnedZipperIter` values. Abandoning an iterator or unwinding
+a callback could therefore reach native trie destruction. Set/topology-only
+destruction is relevant even though there is no resident Par payload.
+
+**Formal-first design.** Eight additions to `EpmPayloadRepresentation.v` prove
+ordered prefix/suffix partition, conservation, unchanged abstract topology, fused
+exhaustion, the exact suffix retained for early retirement, and a skipped-root
+counterexample. All 18 exported statements compiled closed before Rust changes:
+346 ms service, 328 ms CPU, 326.3 MiB peak, zero swap. Independent kernel checking
+passed in 11.459 seconds service, 11.293 seconds CPU, 240.9 MiB peak. Both used
+MemoryHigh=1 GiB, MemoryMax=2 GiB, MemorySwapMax=0, CPUQuota=100%, RuntimeMaxSec=180.
+The invariant catalog preregistered native bindings. The ordered bindings and
+topology are abstract observations; this is not a proof of PathMap internals,
+Rust ownership, shared-anchor schedules or application throughput.
+
+**Decision and implementation.** A generic consuming cursor reuses the existing
+`PendingWriter` cleanup guard. Concrete set and map wrappers preserve the public
+`Empty`/`Set`/`Map` variants. Root membership is visited separately because native
+`to_next_val` skips its current focus. Key copying occurs with the guard installed;
+each yielded payload moves out once. A fused flag prevents traversal restart after
+exhaustion. Existing reverse-prune retirement handles the residual trie on normal
+drop, early termination, mode mismatch and consumer panic. Callback visitors and
+the unique-owner Par teardown path now use this cursor. No trie is flattened,
+sorted or decoded by this change, and no upstream crate or dependency is changed.
+
+The first design hypothesis used unconditional `remove_val(false)`. Pinned PathMap
+0.2.2 source review rejected that assumption: `LineListNode` can replace a removed
+value with an empty sentinel. The repository already has a path-preserving removal
+policy: prune only at a nonroot value with descendants. The existing helper is
+generalized from borrowed to any compatible write zipper and reexported, so owned
+and borrowed cursors share that exact policy. Native qualification must compare
+all logical paths, not merely remaining membership. This reinforces PMU-005;
+it does not authorize maintaining an upstream fork.
+
+**Qualification.** Five native tests cover root/prefix/sibling/dangling
+topology, generated exact ordered partitions and shared siblings, tracked partial
+drop and callback unwind, deep branching retirement on a 256 KiB stack, and public
+mode/metadata/callback boundaries. Topology checks compare the complete logical
+byte-path set after each removal; a separate uninterrupted iteration avoids hiding
+navigation errors behind the inspecting cursor's reset. The initial native command
+exited before compilation because nextest treats `-j` as an alias for test threads,
+duplicating `--test-threads`. The corrected command separates `CARGO_BUILD_JOBS=4`
+from `--test-threads=4`; this was an invocation error, not a test failure.
+
+Native R2 passed 5/6 selections, including the depth-8,192 small-stack case, but
+the property failed while building its fixture. A capped saved-seed backtrace
+identifies `PathMap::create_path`, before cursor construction: extending a previously
+created dangling sentinel in the sequence valued `[3,0]`, dangling `[3,4]`,
+`[3,0,0]`, `[3,4,0]` triggers `make_unique` on the empty sentinel. The fixture now
+uses the integration's existing `NativePathCursor::create_path` policy, as production
+EPathMap already does. The minimized case is retained in
+`models/tests/support/epm_owned_cursor.regressions`; no input-domain restriction or
+upstream patch was introduced. R2 used 129.179 seconds service, 470.028 CPU seconds,
+2.4 GiB peak, zero swap; its tests took 3.073 seconds. This negative receipt remains
+part of the record rather than being treated as a passing cursor qualification.
+
+The R3 build caught a missing `Clone` derive on the test-only disposal policy;
+no tests ran (10.445 seconds service, 10.376 CPU seconds, 1.2 GiB peak, zero swap).
+R4 fixes that bound and passes **35/35**, 640 excluded: 7.835 seconds tests,
+64.337 seconds service, 180.774 CPU seconds, 2 GiB peak, zero swap. It selects
+the five cursor witnesses, existing payload representation and pending retirement
+tests, planned EPM ownership, protobuf component construction and the EPR manifest.
+Properties use 1,024 cases, seed 5834. All native runs have MemoryHigh=6 GiB,
+MemoryMax=8 GiB, MemorySwapMax=0, CPUQuota=400%, RuntimeMaxSec=900, four build/test
+workers and on-disk compiler temporaries. These are qualification runs, not
+CPU-isolated performance benchmarks.
+
+Feature-enabled R5 passes **60/60**, 1,307 excluded: 8.048 seconds tests,
+117.791 seconds service, 436.357 CPU seconds, 3.4 GiB peak and zero swap under
+the same limits. Its 34 model tests cover cursor, payload, pending/planned ownership
+and component attachment; 26 RSpace tests cover the unchanged shared mutation
+policy and stateful retirement callers. This checks the generalized helper's
+borrowed-write callers as well as the new owned-write caller. The selection is
+not a full workspace run. Existing unrelated compiler warnings remain unchanged.
+
+Final R6, after formatting the new test file, passes **10/10**, 674 excluded:
+30.764 seconds tests, 93.263 seconds service, 247.927 CPU seconds, 2.5 GiB peak,
+zero swap. It reruns all five cursor witnesses with the feature enabled, the four
+existing native EPathMap clone/snapshot/term-semantics tests, and the manifest.
+The depth-1,024 nested snapshot compatibility test takes 30.757 seconds; this is
+not a new depth-gate or speedup claim. Maintained-runner shell syntax and diff
+whitespace checks pass. No heavy verification service remains from these runs.
+
+The exact topology observer uses child masks. PathMap's optimized *read* cursor
+has the separately recorded PMU-007 issue; the owned *write* cursor inherits
+mask-driven movement defaults and is not on that optimized path. Independent
+source review confirms this distinction does not rely on the removed value's
+presence. Native tests additionally compare the uninterrupted yielded sequence
+with a separately constructed ordered map, avoiding a shared traversal oracle.
+
+A repeat formal receipt captures all 18 closed declarations and successful kernel
+checking: 12.008 seconds service, 11.836 CPU seconds, 326.4 MiB peak, zero swap.
+This repeat does not replace the recorded pre-implementation checks.
+
+| Artifact under `target/verification/protobuf-attach-8516/` | SHA-256 |
+|---|---|
+| `cursor-native-r1.log` (invocation error) | `03a9367d919943a1542a3ac9abb0d3b67b2b81c048571d50aaae8ab4eefc813f` |
+| `cursor-native-r2.log` (fixture failure) | `d17e476cef2d2c6b0c291bc1643c5291483040760d926c47098963ba004c8a3c` |
+| `cursor-repro-r1.log` (saved-seed backtrace) | `8b19d0d2a221bf7278c175082ee9373836857aa8cd3c5d7480662d3139a8db2e` |
+| `cursor-native-r3.log` (test-policy compile error) | `84d2395601279d596f55cc0630b8475c49b88e01080f49125a0c8bf090593de3` |
+| `cursor-native-r4.log` (35/35 default) | `40fac279916c8c4ce329084053e729a714d916ef7017c425a52763e5b3e7a9fb` |
+| `cursor-native-r5.log` (60/60 feature/shared callers) | `d992be46ad59ce24b2650121a45952489047617cd6957ffdcf092759746e159a` |
+| `cursor-native-r6.log` (10/10 final compatibility) | `853365d7fad58e57addab5669070f9116f7a72e1fbb7aa135b56e501ffc92c8e` |
+| `cursor-formal-r2.log` (18 closed and kernel check) | `a163053e1c7c56ee6bed77761d945e40ce908cee324474ee493abeb80490550c` |
+
+Theory SHA-256: `1c9204239a7e13b2daea41a1cdb407d11e70a06f9467b0ab8b81456eda8c3e5e`.
+
+**Boundaries still open.** Root-to-owned-zipper conversion allocates before the
+writer guard exists; the sealed production payloads and default allocator introduce
+no identified ordinary callback/error edge there, but generic constructor unwind
+safety is not established. Resident `EntryTrie` still needs the planned shared
+storage owner; its cache-as-ownership witness and raw admission are not certified
+by this cursor change. Public payload mapping, general decoder routing, the unchanged
+depth-4,096 gate, resource comparisons and full workspace acceptance remain required.
+No consensus-visible bytes, matching rules, charge model or persistence format change
+is intended. Test timings will not be reported as application speedups.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

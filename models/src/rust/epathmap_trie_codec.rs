@@ -9,7 +9,6 @@ use std::fmt;
 use std::ops::Range;
 
 use pathmap::arena_compact::ArenaCompactTree;
-#[cfg(test)]
 use pathmap::zipper::ZipperIteration;
 use pathmap::zipper::{
     WriteZipperOwned, ZipperMoving, ZipperReadOnlyIteration, ZipperValues, ZipperWriting,
@@ -25,7 +24,9 @@ use rspace_plus_plus::rspace::pathmap_codec::{
     CanonicalCompactTrieTopologyCursor, CanonicalCompactTrieTopologyEvent,
     CanonicalCompactTrieValueSummary, CompactTrieError, CompactTrieTopologyEvent,
 };
-use rspace_plus_plus::rspace::pathmap_mutation::{BarrierProvider, DisposeValue, retire_pathmap};
+use rspace_plus_plus::rspace::pathmap_mutation::{
+    BarrierProvider, DisposeValue, remove_value_preserving_path, retire_pathmap,
+};
 
 use crate::rhoapi::Par;
 use crate::rust::rholang::canonical_bytes_arena::CanonicalByteProvenance;
@@ -1581,6 +1582,70 @@ impl<V: EpmPayload> PendingWriter<V> {
     }
 }
 
+struct EpmOwnedCursor<V: EpmPayload> {
+    writer: PendingWriter<V>,
+    started: bool,
+    exhausted: bool,
+}
+
+impl<V: EpmPayload> EpmOwnedCursor<V> {
+    fn new(map: PathMap<V>, scaffold: PendingScaffold<V>) -> Self {
+        Self {
+            writer: PendingWriter {
+                state: PendingWriterState::Map(map.into_write_zipper([]), scaffold),
+            },
+            started: false,
+            exhausted: false,
+        }
+    }
+}
+
+impl<V: EpmPayload> Iterator for EpmOwnedCursor<V> {
+    type Item = (Vec<u8>, V);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.exhausted {
+            return None;
+        }
+        let PendingWriterState::Map(zipper, _) = &mut self.writer.state else {
+            unreachable!("a consuming EPM cursor retains its guarded writer");
+        };
+        let root_value = !self.started && zipper.val().is_some();
+        self.started = true;
+        if !root_value && !zipper.to_next_val() {
+            self.exhausted = true;
+            return None;
+        }
+        let key = zipper.path().to_vec();
+        let value = remove_value_preserving_path(zipper)
+            .expect("a consuming EPM cursor advances only to a value");
+        Some((key, value))
+    }
+}
+
+macro_rules! owned_epm_cursor {
+    ($name:ident, $payload:ty, $scaffold:expr) => {
+        pub struct $name(EpmOwnedCursor<$payload>);
+
+        impl $name {
+            pub(crate) fn new(map: PathMap<$payload>) -> Self {
+                Self(EpmOwnedCursor::new(map, $scaffold))
+            }
+        }
+
+        impl Iterator for $name {
+            type Item = (Vec<u8>, $payload);
+
+            fn next(&mut self) -> Option<Self::Item> { self.0.next() }
+        }
+
+        impl std::iter::FusedIterator for $name {}
+    };
+}
+
+owned_epm_cursor!(OwnedEPathMapSetEntries, (), PendingScaffold::Repeat(()));
+owned_epm_cursor!(OwnedEPathMapMapEntries, Par, PendingScaffold::New(Par::default));
+
 struct PendingFraming {
     raw_mode: u8,
     arena: Range<usize>,
@@ -2416,6 +2481,10 @@ mod payload_representation_tests;
 #[cfg(test)]
 #[path = "../../tests/support/epm_owned_retirement.rs"]
 mod owned_retirement_tests;
+
+#[cfg(test)]
+#[path = "../../tests/support/epm_owned_cursor.rs"]
+mod owned_cursor_tests;
 
 #[cfg(test)]
 mod tests {

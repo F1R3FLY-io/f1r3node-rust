@@ -1,0 +1,7 @@
+# Seeds for consuming-cursor cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc aafb8a9c06fb5f41cbf0c727280e57998d5207f49274b59ff8aff1e3f9b6823f # shrinks to entries = [([3, 0], 0)], dangling = [[3, 4], [3, 0, 0], [3, 4, 0]], stop = 0

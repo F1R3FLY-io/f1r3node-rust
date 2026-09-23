@@ -9037,6 +9037,24 @@ EPM materialization, the unchanged depth-4,096 parser gate and performance accep
 remain required. J-212 records exact commands' selections, limits and artifact hashes;
 no application speedup is inferred from this checkpoint.
 
+J-213 guards consuming EPM cursors, callback visitors and unique-owner payload
+draining with the existing reverse-prune cleanup machinery. Eight added abstract
+cursor statements were kernel-checked before Rust; native tests establish the
+backend binding over root/prefix/dangling paths, arbitrary early stops, callback
+unwind, shared siblings and depth-8,192 branching on a 256 KiB stack. The default
+release selection passes 35/35, 2 GiB peak, zero swap under an 8 GiB cap. A generated
+fixture first reproduced the known raw `PathMap::create_path` sentinel issue;
+its retained regression now builds through the existing production path-creation
+policy, without restricting the property domain. J-213 records the failed commands,
+source-review boundaries, proof/test selections and receipt hashes. Resident
+clone-family/admission ownership, public payload materialization, general decoder
+routing and the unchanged depth-4,096 acceptance gate remain open. This result is
+a consuming-cursor safety checkpoint, not a decoder throughput or campaign closure.
+The feature-enabled/shared-caller selection adds 60/60 passing tests at 3.4 GiB
+peak and zero swap, including the existing RSpace mutation and retirement suites.
+Final compatibility qualification passes 10/10 at 2.5 GiB peak and zero swap,
+including unchanged clone/snapshot/term-semantics tests and the proof manifest.
+
 ### 5.29 ParBag family and count-domain completeness [SS-A13, SS-A14, SS-Y9]
 
 #### 5.29.1 The defects

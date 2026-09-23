@@ -46,7 +46,9 @@ use super::canonical_path::{
     encode_trie_path, encode_trie_path_with_stability, validate_canonical_path,
     CanonicalPathMetadata, CodecError,
 };
-use super::epathmap_trie_codec::{self, EPathMapMode, EPathMapRepr};
+use super::epathmap_trie_codec::{
+    self, EPathMapMode, EPathMapRepr, OwnedEPathMapMapEntries, OwnedEPathMapSetEntries,
+};
 use super::pathmap_crate_type_mapper::{
     eval_stable_par, reducer_eval_identity_par, PathFrameError, PathFrames,
 };
@@ -180,8 +182,8 @@ pub enum OwnedEPathMapEntry {
 /// `Vec<Par>` or a vector of key/value pairs.
 pub enum OwnedEPathMapEntries {
     Empty,
-    Set(pathmap::zipper::OwnedZipperIter<()>),
-    Map(pathmap::zipper::OwnedZipperIter<Par>),
+    Set(OwnedEPathMapSetEntries),
+    Map(OwnedEPathMapMapEntries),
 }
 
 impl Iterator for OwnedEPathMapEntries {
@@ -1995,31 +1997,24 @@ impl EntryTrie {
             return;
         }
         match repr {
-            EPathMapRepr::Empty | EPathMapRepr::Set(_) => {}
-            EPathMapRepr::Map(map) => out.extend(map.into_iter().map(|(_, value)| value)),
+            EPathMapRepr::Empty => {}
+            EPathMapRepr::Set(map) => drop(OwnedEPathMapSetEntries::new(map)),
+            EPathMapRepr::Map(map) => {
+                out.extend(OwnedEPathMapMapEntries::new(map).map(|(_, value)| value));
+            }
         }
     }
 
     fn into_raw_set_entries(self, mut visit: impl FnMut(Vec<u8>)) -> Result<(), EPathMapModeError> {
-        let EntryTrie {
-            repr,
-            len: _,
-            entries_stable: _,
-            entries_reducer_eval_identity: _,
-            union_locally_free: _,
-            any_connective_used: _,
-            trie_snapshot: _,
-            epm_layout: _,
-        } = self;
-        match repr {
-            EPathMapRepr::Empty => Ok(()),
-            EPathMapRepr::Set(map) => {
-                for (key, ()) in map {
+        match self.into_owned_entries() {
+            OwnedEPathMapEntries::Empty => Ok(()),
+            OwnedEPathMapEntries::Set(entries) => {
+                for (key, ()) in entries {
                     visit(key);
                 }
                 Ok(())
             }
-            EPathMapRepr::Map(_) => Err(EPathMapModeError {
+            OwnedEPathMapEntries::Map(_) => Err(EPathMapModeError {
                 expected: EPathMapMode::Set,
                 actual: EPathMapMode::Map,
             }),
@@ -2030,24 +2025,14 @@ impl EntryTrie {
         self,
         mut visit: impl FnMut(Vec<u8>, Par),
     ) -> Result<(), EPathMapModeError> {
-        let EntryTrie {
-            repr,
-            len: _,
-            entries_stable: _,
-            entries_reducer_eval_identity: _,
-            union_locally_free: _,
-            any_connective_used: _,
-            trie_snapshot: _,
-            epm_layout: _,
-        } = self;
-        match repr {
-            EPathMapRepr::Empty => Ok(()),
-            EPathMapRepr::Set(_) => Err(EPathMapModeError {
+        match self.into_owned_entries() {
+            OwnedEPathMapEntries::Empty => Ok(()),
+            OwnedEPathMapEntries::Set(_) => Err(EPathMapModeError {
                 expected: EPathMapMode::Map,
                 actual: EPathMapMode::Set,
             }),
-            EPathMapRepr::Map(map) => {
-                for (key, value) in map {
+            OwnedEPathMapEntries::Map(entries) => {
+                for (key, value) in entries {
                     visit(key, value);
                 }
                 Ok(())
@@ -2068,8 +2053,12 @@ impl EntryTrie {
         } = self;
         match repr {
             EPathMapRepr::Empty => OwnedEPathMapEntries::Empty,
-            EPathMapRepr::Set(map) => OwnedEPathMapEntries::Set(map.into_iter()),
-            EPathMapRepr::Map(map) => OwnedEPathMapEntries::Map(map.into_iter()),
+            EPathMapRepr::Set(map) => {
+                OwnedEPathMapEntries::Set(OwnedEPathMapSetEntries::new(map))
+            }
+            EPathMapRepr::Map(map) => {
+                OwnedEPathMapEntries::Map(OwnedEPathMapMapEntries::new(map))
+            }
         }
     }
 

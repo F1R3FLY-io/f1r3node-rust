@@ -750,7 +750,7 @@ rocq_compile_with_closed_count theories/ProtobufParAccumulation.v 13 \
   "ordered protobuf Par field accumulation"
 rocq_check_modules "ordered protobuf Par field accumulation" StackSafePDA.ProtobufParAccumulation
 rocq_reject_placeholders theories/EpmPayloadRepresentation.v
-rocq_compile_with_closed_count theories/EpmPayloadRepresentation.v 10 \
+rocq_compile_with_closed_count theories/EpmPayloadRepresentation.v 18 \
   "EPM payload representation and scaffold erasure"
 rocq_check_modules "EPM payload representation and scaffold erasure" StackSafePDA.EpmPayloadRepresentation
 rocq_reject_placeholders theories/ProtobufOwnedSlots.v
@@ -1044,6 +1044,7 @@ rpb3_run_tests 13 --lib protobuf_decoder_oracle::
 rpb3_run_tests 2 --lib oracle_body_guards::
 rpb3_run_tests 6 --lib protobuf_par_accumulation_tests
 rpb3_run_tests 8 --lib payload_representation_tests
+rpb3_run_tests 5 --lib owned_cursor_tests
 rpb3_run_tests 8 --lib protobuf_owned_slots_tests
 rpb3_run_tests 7 --lib protobuf_construction_tests
 rspace_preparation_run_tests 5 --lib stateful_retirement

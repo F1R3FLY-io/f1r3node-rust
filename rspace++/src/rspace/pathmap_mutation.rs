@@ -7,7 +7,7 @@ use pathmap::zipper::{
     ZipperReadOnlySubtries, ZipperValues, ZipperWriting,
 };
 
-use super::guarded_pathmap::{GuardedPathMap, ValueFreeDisposer, remove_value_preserving_path};
+use super::guarded_pathmap::{GuardedPathMap, ValueFreeDisposer};
 
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -16,7 +16,9 @@ enum ExtensionPhase {
     Grafted,
     Restored,
 }
-pub use super::guarded_pathmap::{BarrierProvider, DisposeValue, TeardownBarrier, retire_pathmap};
+pub use super::guarded_pathmap::{
+    BarrierProvider, DisposeValue, TeardownBarrier, remove_value_preserving_path, retire_pathmap,
+};
 
 enum EndpointAuthority<'a> {
     Uncounted,
