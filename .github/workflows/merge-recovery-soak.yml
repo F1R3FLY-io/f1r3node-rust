@@ -281,7 +281,7 @@ env:
   # 2026-09-15: 7018213 -> b3d14b2 (system-integration MAIN — the #142 merge
   #   commit; the branch pin's content, now immutable on main). Verified:
   #   descends from 7018213 (merge-base --is-ancestor).
-  SYSTEM_INTEGRATION_REF: b3d14b27e3c6276b1eb4ab9ccef04e02b0c4e283
+  SYSTEM_INTEGRATION_REF: e3c4e14189f0c6ced2e9674487fcbdeffd93141b
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"

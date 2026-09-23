@@ -1,0 +1,58 @@
+{
+  "total": 13,
+  "gaps": 13,
+  "items": [
+    {
+      "status": "pending",
+      "path": "formal/tlaplus/node_observation/README.md"
+    },
+    {
+      "status": "pending",
+      "path": "node/src/rust/soak_observer.rs"
+    },
+    {
+      "status": "pending",
+      "path": "node/tests/soak_observer.rs"
+    },
+    {
+      "status": "pending",
+      "path": "casper/src/rust/soak_observer.rs"
+    },
+    {
+      "status": "pending",
+      "path": "casper/src/rust/soak_observer/evaluation.rs"
+    },
+    {
+      "status": "pending",
+      "path": "casper/src/rust/soak_observer/reference.rs"
+    },
+    {
+      "status": "pending",
+      "path": "casper/src/rust/finality/floor.rs"
+    },
+    {
+      "status": "pending",
+      "path": "casper/src/rust/safety/clique_oracle.rs"
+    },
+    {
+      "status": "pending",
+      "path": "casper/src/rust/util/clique.rs"
+    },
+    {
+      "status": "pending",
+      "path": "shared/src/rust/dag/observation_work.rs"
+    },
+    {
+      "status": "pending",
+      "path": "block-storage/src/rust/dag/block_dag_key_value_storage.rs"
+    },
+    {
+      "status": "pending",
+      "path": "block-storage/tests/soak_snapshot.rs"
+    },
+    {
+      "status": "pending",
+      "path": "casper/tests/soak_observer.rs"
+    }
+  ]
+}

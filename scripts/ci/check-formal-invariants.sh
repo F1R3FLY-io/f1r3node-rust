@@ -137,6 +137,8 @@ run_rocq_checks() {
 
     ! grep -rnE "^[[:space:]]*(Axioms?|Admitted|Parameters?|Conjectures?)\b" \
         "$REPO_ROOT/formal/rocq/node_observation/theories/"
+    ! grep -rnE "^[[:space:]]*(Axioms?|Admitted|Parameters?|Conjectures?)\b" \
+        "$REPO_ROOT/formal/rocq/node_authority/theories/"
 
     build_rocq_project node_observation NodeObservation
     check_assumptions node_observation NodeObservation 25 \
@@ -178,6 +180,24 @@ run_rocq_checks() {
         canonical_ordered_parents_preserved \
         canonical_availability_distinct \
         canonical_collection_permutation
+
+    build_rocq_project node_authority NodeAuthority
+    check_assumptions node_authority NodeAuthority 15 \
+        authority_instance_attaches_at_most_once \
+        authority_first_attachment_wins \
+        authority_replaced_binding_refused \
+        authority_shutdown_refuses_all \
+        authority_installation_never_wraps \
+        authority_queue_never_exceeds_capacity \
+        authority_ledger_accounts_for_every_attempt \
+        authority_complete_coverage_delivers_every_attempt \
+        authority_sequence_exhaustion_refused \
+        authority_shared_budget_bounded \
+        authority_budget_failure_sticky \
+        authority_budget_failure_keeps_usage \
+        authority_paths_share_one_budget \
+        authority_checked_overflow_is_limit_failure \
+        authority_comparison_requires_equal_digest
 
     build_rocq_project slashing Slashing
     check_assumptions slashing Slashing 2 \

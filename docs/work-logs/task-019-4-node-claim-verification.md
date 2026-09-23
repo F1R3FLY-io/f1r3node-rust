@@ -1,7 +1,7 @@
 # TASK-019-4: Node claim verification
 
 ---
-handoff_status: paused
+handoff_status: ready
 execution_revision: 6ea6bf029dc57caf1e5fb512a0eba88a846e959a
 correction_checkout_base: 4561e064a70b495fe07cbcf779bff375d636aaad
 correction_working_tree: true
@@ -9,9 +9,8 @@ correction_source_manifest: docs/cbc-evidence/runs/casper-node-deadline-correcti
 claimed_by: claude-session-7015f552
 previous_claimed_by: pi-session-01a0afde-d35c-70a2-b8c9-39aa11cbdfca
 next_steps:
-  - Resolve the missing formal evidence before claim acceptance.
-  - Obtain explicit acceptance from one eligible maintainer.
-  - Keep B2 planning blocked until the complete gate passes.
+  - None for this task. Both claims are accepted and recorded.
+  - TASK-019-8 refreshes the cleanup inventory before any removal.
 ---
 
 ## Scope and authorization
@@ -580,6 +579,56 @@ The strict audit returned exit 4 before the refresh with the new module unrecord
 The package `casper-node-claim-gate-03d7f1b27-01` records the tiers reached. Bulk evidence remains under the session scratch directory outside Git.
 
 The task stops at the acceptance gate. The proposed reviewer must review each applicability decision and accept both claims by naming the revision, both claim IDs, and the package.
+
+## Handoff cycle 02 results on 2026-09-23
+
+The downstream agent reported that the soak branch carries a deterministic generation-rejection test that this branch lacked. The test was pulled across as a unit test in the DAG capture module and committed at `78d696ea6`.
+
+The test changes the insertion generation at the validated phase. The capture is rejected with the environment-changed error for the DAG insertion generation, both guards are released, and a fresh capture succeeds.
+
+### Refutation tier
+
+The gate reran at this revision with the pinned jar. It passed 15 clean configurations and 78 expected violations with exit zero, and all 17 node controls exited 12 on their named invariants.
+
+Both positive node models reran directly: `MC_ObserverSession` with 689 distinct states and `MC_BoundedCapture` with 10,066 distinct states. The model inputs did not change in this cycle.
+
+### Construction tier
+
+The Rocq project rebuilt in the resource-limited container with the same limits as cycle 01. The forbidden-vocabulary check was clean, `coqchk` reported that the modules were successfully checked, and all 14 assumption sets reported `Closed under the global context`.
+
+### Binding tier
+
+The property 8 entry in the bindings manifest lists the new test and has no remaining gap. All 65 test references in the manifest resolve to source declarations.
+
+The shared reader source has the same digest as in cycle 01, so the six verified Kani harnesses carry forward. The block-store harness remains authored and not executed.
+
+Lint with warnings denied and formatting passed. The shared suite passed 102 library and 19 reader tests. The block-storage suite passed 70 library and 27 capture tests with its remaining targets.
+
+### Applicability review
+
+The B8 row now records the generation-rejection test, the unchanged-generation writer tests, and the capture oracle. Its decision is construction recorded with acceptance pending, in line with the other properties that have a recorded theorem.
+
+No other classification changed. Every decision still awaits the named maintainer.
+
+### Records and package
+
+The package `casper-node-claim-gate-78d696ea6-01` records the tiers reached and names the cycle 01 package as its previous cycle. Its blocking list has three items: the applicability review, the acceptance, and the open construction proofs.
+
+The DAG capture source, the bindings manifest, the area README, and the authority snapshot claim changed in this cycle. Every mandatory node record is refreshed at this revision and cites the new package.
+
+The strict audit is expected to return exit 4 with every mandatory record pending. Bulk evidence remains under the session scratch directory outside Git.
+
+## Acceptance on 2026-09-23
+
+The named maintainer `jltatbeach` accepted both claims in PR #447 review 5294038948 at revision `4c0c0dbe7` on the package `casper-node-claim-gate-78d696ea6-01`. The review names both claim IDs, the revision, and the package path.
+
+The review accepts A1, A2, A8, A10, and B13 as bounded by design. It accepts the construction gaps for A3, A4, A9, B9, B11, B12, and the A7 and B2 deadline parts as recorded.
+
+This recording sets both claim files to accepted, marks every property decision in the area README as accepted, and discharges all 58 node records with the review as their acceptance evidence. The two gate-claim records in the union inventory stay pending under their own claim, so the strict audit over the union still reports two undischarged artifacts.
+
+The area README and both claim files changed in this recording, so their digests differ from the accepted revision. Each affected record keeps the accepted digest beside the current one. The package directory is unchanged.
+
+The soak field in both claim files is outside the acceptance and stays as recorded. TASK-019-2 and TASK-019-4 are complete.
 
 ## Merged-source cycle: e4d97bb83
 

@@ -3,6 +3,7 @@ node/src/rust/soak_observer.rs cbc=mandatory cbc-weight=high
 node/tests/soak_observer.rs cbc=mandatory cbc-weight=high
 formal/tlaplus/node_observation/** cbc=mandatory cbc-weight=high
 formal/rocq/node_observation/** cbc=mandatory cbc-weight=high
+formal/rocq/node_authority/** cbc=mandatory cbc-weight=high
 scripts/ci/check-node-observation-bindings.sh cbc=mandatory cbc-weight=high
 scripts/ci/test-check-node-observation-bindings.sh cbc=mandatory cbc-weight=high
 scripts/ci/check-node-canonical-wire.sh cbc=mandatory cbc-weight=high
@@ -120,3 +121,10 @@ scripts/ci/check-casper-soak-bindings.sh cbc=mandatory cbc-weight=high
 .github/workflows/casper-slashing.yml cbc=mandatory cbc-weight=high
 .github/workflows/casper-version-phlo.yml cbc=mandatory cbc-weight=high
 .github/workflows/casper-campaign-control.yml cbc=mandatory cbc-weight=high
+casper/src/rust/soak_observer.rs cbc=mandatory cbc-weight=high
+casper/src/rust/soak_observer/evaluation.rs cbc=mandatory cbc-weight=high
+casper/src/rust/soak_observer/reference.rs cbc=mandatory cbc-weight=high
+shared/src/rust/dag/observation_work.rs cbc=mandatory cbc-weight=high
+casper/tests/soak_observer.rs cbc=mandatory cbc-weight=high
+casper/src/rust/safety/clique_oracle.rs cbc=mandatory cbc-weight=high
+casper/src/rust/util/clique.rs cbc=mandatory cbc-weight=high

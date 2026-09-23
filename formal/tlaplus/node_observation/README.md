@@ -1,6 +1,6 @@
 # Node observation verification
 
-The node branch owns this canonical model set for TASK-019-4. Both node claims remain pending.
+The node branch owns this canonical model set for TASK-019-4. Both node claims were accepted on 2026-09-23 at revision `4c0c0dbe7` in PR #447 review 5294038948.
 
 This reconciliation combines the node freshness model with the broader session and capture models from downstream revision `8a379f05a07974ae9af6b450e6cea5fa6da80e0f`.
 
@@ -108,37 +108,37 @@ Eight Kani harnesses under `#[cfg(kani)]` in the shared reader and the block sto
 
 ## Applicability per property
 
-`U` means construction over arbitrary permitted histories or states is required. `F` proposes a bounded-by-design classification for maintainer review. No `F` proposal is accepted, and every property keeps required Rust binding evidence.
+`U` means construction over arbitrary permitted histories or states is required. `F` proposes a bounded-by-design classification for maintainer review. The five `F` proposals were accepted as bounded by design on 2026-09-23, and every property keeps required Rust binding evidence.
 
 A resource limit, timeout, frame size, or test fixture does not make a property bounded by design. Each `F` proposal names the finite domain that verification covers.
 
 | Property | Class | Refutation | Construction | Binding | Decision |
 | --- | --- | --- | --- | --- | --- |
-| A1: disabled startup | F proposed | None | Not applicable proposed. The domain is the absent configuration section and the absent option. | Disabled-startup test. | Pending maintainer review. |
-| A2: activation and limits | F proposed | None | Not applicable proposed. The domain is the documented integer ranges and required fields. | Configuration rejection tests. | Pending maintainer review. |
-| A3: directory safety | U | None | `observer_path_admission` under stable, trusted namespace and kernel metadata assumptions. | Directory, link, and duplicate-socket tests. | Pending. |
-| A4: peer identity | U | `BoundIdentity` | `observer_peer_admission` under the Linux credential and process metadata assumptions. | Peer identity and cross-process tests. | Pending. |
-| A5: request identity | U | `FreshChallenge`, `BoundIdentity`, `FreshChallenges`, `ReplayRefused` | `observer_replay_refused`, `observer_qualified_replay_refused`, `observer_cross_incarnation_distinct` under the distinct-incarnation assumption. | Session oracle, repeated-entropy, and identity tests. | Construction recorded, acceptance pending. |
-| A6: request count and freshness | U | `FreshChallenge`, `OneRequest`, `FreshChallenges`, `ReplayRefused` | `observer_challenges_unique`, `observer_replay_refused`. | Replay and session oracle tests. | Construction recorded, acceptance pending. |
-| A7: frames and deadline | U | `BoundFrame`, `BoundDeadline`, `SessionBudget` | `observer_counter_exhaustion_refused` and `observer_checked_allocation_valid` cover counters, while `observer_write_before_deadline` bounds write admission under the clock assumption. | Frame, deadline, and budget tests. | Partial construction, acceptance pending. |
-| A8: capabilities and effects | F proposed | None | Not applicable proposed. The domain is the fixed capability list and the single operation. | Capability and fault-command tests. | Pending maintainer review. |
-| A9: cleanup and shutdown | U | None | `observer_cleanup_preserves_replacement` and `observer_shutdown_before_exit` under the documented runtime and namespace assumptions. | Source-order regression and cleanup tests. | Pending. |
-| A10: public configuration | F proposed | None | Not applicable proposed. The domain is the fixed allowlist. | Configuration digest test. | Pending maintainer review. |
-| B1: input limits | U | `ValidAdmission`, `BoundBytes` | `capture_budget_bounded`, `capture_overflow_fails_limit`. | Limit tests, capture oracle, and four Kani harnesses. | Construction recorded, acceptance pending. |
-| B2: bounded locks | U | `BoundLockWait`, `GuardOrder` | `capture_guard_order` and `capture_lock_deadline` under the lock library assumption. | Deadline and guard tests. | Partial construction, acceptance pending. |
-| B3: environment partition | U | `OpenIdentity` | `capture_no_interference` over any participant set. | Separate-environment tests. | Construction recorded, acceptance pending. |
-| B4: identity at open | U | `OpenIdentity`, `ValidatedIdentity` | `capture_no_interference`. | Open and validation tests. | Construction recorded, acceptance pending. |
-| B5: allocation limits | U | `BoundBytes` | `capture_prefix_roundtrip`, `capture_prefix_sound`, `capture_budget_bounded`. | Length, decode, and nested-bound tests, and four Kani harnesses. | Construction recorded, acceptance pending. |
-| B6: copied state and effects | U | `GuardOrder`, `ReadOnly` | `capture_guard_order`, `capture_detached`. | Unchanged-bytes tests. | Construction recorded, acceptance pending. |
-| B7: environment validation | U | `ValidatedIdentity` | `capture_no_interference`, including restored values under monotone identifiers. | Interference tests and capture oracle. | Construction recorded, acceptance pending. |
-| B8: generation validation | U | `GenerationStable` | `capture_generation_stable`. | `generation_change_after_validation_rejects_capture` checks rejection after validation. | Acceptance pending. |
-| B9: incomplete rows | U | `CompleteRows` | `capture_complete_metadata` and `capture_complete_requested_bodies` over arbitrary finite row sets. | Missing-row tests and capture oracle. | Pending. |
-| B10: resource release | U | `Detached`, `ReadOnly` | `capture_detached`. | Release and unchanged-bytes tests. | Construction recorded, acceptance pending. |
-| B11: canonical identity | U | None | Eight `NodeObservationB11.MainTheorem` exports prove complete wire-schema roundtrip, injectivity, parent order, availability distinction, and collection ordering. | Independent canonical reader, 75 production wire cases, six rejection controls, and insertion-order tests. | Construction and finite Rust correspondence recorded. Named review remains pending. |
-| B12: scratch independence | U | None | `capture_scratch_preserves_production` and `capture_scratch_preserves_sibling` under fresh allocation assumptions. | Allocation identity and mutation isolation tests. | Acceptance pending. |
-| B13: unsupported backends | F proposed | `ValidAdmission` | Not applicable proposed. The domain is the backend downcast result. | Unsupported-backend tests. | Pending maintainer review. |
+| A1: disabled startup | F proposed | None | Not applicable proposed. The domain is the absent configuration section and the absent option. | Disabled-startup test. | Accepted as bounded by design. |
+| A2: activation and limits | F proposed | None | Not applicable proposed. The domain is the documented integer ranges and required fields. | Configuration rejection tests. | Accepted as bounded by design. |
+| A3: directory safety | U | None | `observer_path_admission` under stable, trusted namespace and kernel metadata assumptions. | Directory, link, and duplicate-socket tests. | Construction gap accepted as recorded. |
+| A4: peer identity | U | `BoundIdentity` | `observer_peer_admission` under the Linux credential and process metadata assumptions. | Peer identity and cross-process tests. | Construction gap accepted as recorded. |
+| A5: request identity | U | `FreshChallenge`, `BoundIdentity`, `FreshChallenges`, `ReplayRefused` | `observer_replay_refused`, `observer_qualified_replay_refused`, `observer_cross_incarnation_distinct` under the distinct-incarnation assumption. | Session oracle, repeated-entropy, and identity tests. | Construction recorded, accepted. |
+| A6: request count and freshness | U | `FreshChallenge`, `OneRequest`, `FreshChallenges`, `ReplayRefused` | `observer_challenges_unique`, `observer_replay_refused`. | Replay and session oracle tests. | Construction recorded, accepted. |
+| A7: frames and deadline | U | `BoundFrame`, `BoundDeadline`, `SessionBudget` | `observer_counter_exhaustion_refused` and `observer_checked_allocation_valid` cover counters, while `observer_write_before_deadline` bounds write admission under the clock assumption. | Frame, deadline, and budget tests. | Partial construction, deadline gap accepted as recorded. |
+| A8: capabilities and effects | F proposed | None | Not applicable proposed. The domain is the fixed capability list and the single operation. | Capability and fault-command tests. | Accepted as bounded by design. |
+| A9: cleanup and shutdown | U | None | `observer_cleanup_preserves_replacement` and `observer_shutdown_before_exit` under the documented runtime and namespace assumptions. | Source-order regression and cleanup tests. | Construction gap accepted as recorded. |
+| A10: public configuration | F proposed | None | Not applicable proposed. The domain is the fixed allowlist. | Configuration digest test. | Accepted as bounded by design. |
+| B1: input limits | U | `ValidAdmission`, `BoundBytes` | `capture_budget_bounded`, `capture_overflow_fails_limit`. | Limit tests, capture oracle, and four Kani harnesses. | Construction recorded, accepted. |
+| B2: bounded locks | U | `BoundLockWait`, `GuardOrder` | `capture_guard_order` and `capture_lock_deadline` under the lock library assumption. | Deadline and guard tests. | Partial construction, deadline gap accepted as recorded. |
+| B3: environment partition | U | `OpenIdentity` | `capture_no_interference` over any participant set. | Separate-environment tests. | Construction recorded, accepted. |
+| B4: identity at open | U | `OpenIdentity`, `ValidatedIdentity` | `capture_no_interference`. | Open and validation tests. | Construction recorded, accepted. |
+| B5: allocation limits | U | `BoundBytes` | `capture_prefix_roundtrip`, `capture_prefix_sound`, `capture_budget_bounded`. | Length, decode, and nested-bound tests, and four Kani harnesses. | Construction recorded, accepted. |
+| B6: copied state and effects | U | `GuardOrder`, `ReadOnly` | `capture_guard_order`, `capture_detached`. | Unchanged-bytes tests. | Construction recorded, accepted. |
+| B7: environment validation | U | `ValidatedIdentity` | `capture_no_interference`, including restored values under monotone identifiers. | Interference tests and capture oracle. | Construction recorded, accepted. |
+| B8: generation validation | U | `GenerationStable` | `capture_generation_stable`. | `generation_change_after_validation_rejects_capture` checks rejection after validation. | Construction recorded, accepted. |
+| B9: incomplete rows | U | `CompleteRows` | `capture_complete_metadata` and `capture_complete_requested_bodies` over arbitrary finite row sets. | Missing-row tests and capture oracle. | Construction gap accepted as recorded. |
+| B10: resource release | U | `Detached`, `ReadOnly` | `capture_detached`. | Release and unchanged-bytes tests. | Construction recorded, accepted. |
+| B11: canonical identity | U | None | Eight `NodeObservationB11.MainTheorem` exports prove complete wire-schema roundtrip, injectivity, parent order, availability distinction, and collection ordering. | Independent canonical reader, 75 production wire cases, six rejection controls, and insertion-order tests. | Construction gap accepted as recorded. |
+| B12: scratch independence | U | None | `capture_scratch_preserves_production` and `capture_scratch_preserves_sibling` under fresh allocation assumptions. | Allocation identity and mutation isolation tests. | Construction gap accepted as recorded. |
+| B13: unsupported backends | F proposed | `ValidAdmission` | Not applicable proposed. The domain is the backend downcast result. | Unsupported-backend tests. | Accepted as bounded by design. |
 
-Every classification and correspondence remains pending named maintainer review. A recorded theorem does not change a claim status until acceptance.
+The named maintainer reviewed and accepted every classification on 2026-09-23. A recorded theorem changed the claim status only through that acceptance.
 
 ## Reproduction and integration
 
@@ -159,4 +159,65 @@ The node package records gate registration evidence separately. The harness clai
 
 The default legacy gate record also retains its own claim and historical source identity. Model reconciliation does not renew either governance claim.
 
-Named maintainer acceptance, complete required verification, and the strict claim gate remain necessary. B2 planning remains blocked.
+Named maintainer acceptance was recorded on 2026-09-23 at revision `4c0c0dbe7` on the package `casper-node-claim-gate-78d696ea6-01`. The two gate-claim records in the union inventory stay pending under their own claim. B2 planning is unblocked.
+
+
+## Batch B2 applicability review
+
+[CLAIM-CASPER-NODE-OBSERVATION-003](../../../docs/claims/casper-node-authority-evaluation.md) covers the detached authority observer.
+The earlier acceptance applies to claims 001 and 002 at their recorded revision.
+It does not accept this extension.
+
+B2 accepts positive request limits below the ceilings in the [batch plan](../../../docs/plans/casper-node-observation-batch-b.md#work-bounds).
+The ceilings bound each request.
+They do not establish correctness for every permitted DAG or installation history.
+
+The named maintainer accepted every classification below on 2026-09-23 in PR #447 review 5294038948 at revision `237e43d72`.
+The `F` proposals name a finite domain. The `U` rows require construction over every permitted history, and the construction column names the kernel-checked theorem where one exists.
+
+Batch B2 adds no bounded TLA+ model. Its refutation tier is inherited from the accepted session and capture models where a property extends them, and is otherwise absent.
+The construction theorems live in the [`NodeAuthority` project](../../rocq/node_authority/README.md). Its 15 exported results have closed assumption sets and are registered in the formal gate.
+
+| Property | Class | Refutation | Construction | Binding | Decision |
+| --- | --- | --- | --- | --- | --- |
+| C1: disabled startup | F proposed | None | Not applicable proposed. The domain is the fixed set of constructor routes and the default configuration. | Default configuration and disabled installation tests. | Accepted as bounded by design. |
+| C2: narrow attachment | U | None | Pending. Capability exclusion is not modeled. | Endpoint construction and forbidden-call test doubles. | Construction gap accepted as recorded. |
+| C3: one attachment | U | None | `authority_instance_attaches_at_most_once`, `authority_first_attachment_wins`. | Once-only attachment and replacement tests. | Construction recorded, accepted. |
+| C4: instance coverage | U | None | `authority_replaced_binding_refused`, `authority_shutdown_refuses_all`, `authority_installation_never_wraps`. Concurrent replacement during response publication remains pending. | Replacement, busy, cancellation, and closed tests. | Partial construction, remaining part accepted as recorded. |
+| C5: nonblocking records | U | None | `authority_queue_never_exceeds_capacity`, `authority_ledger_accounts_for_every_attempt`, `authority_complete_coverage_delivers_every_attempt`, `authority_sequence_exhaustion_refused`. The lost counter bound is trusted to the same checked pattern. | Queue loss, closed receiver, malformed hash, and overflow tests. | Construction recorded, accepted. |
+| C6: event meaning | U | None | Pending. Finalizer hook placement is not modeled. | Event variant and effect failure tests. | Construction gap accepted as recorded. |
+| C7: request envelope | U | Inherited `MC_ObserverSession` | Inherited accepted session theorems. The authority operation adds no challenge allocation. | Identity test and the session suite. | Inherited from claim 001, extension accepted. |
+| C8: detached capture | U | Inherited `MC_BoundedCapture` | Inherited accepted capture theorems. Scratch reconstruction remains pending. | One capture call, scratch independence, and byte comparisons. | Inherited from claim 002, extension accepted. |
+| C9: result identity | U | None | `authority_comparison_requires_equal_digest`. Digest coverage of every input remains a hash assumption. | Exact and strict comparison tests. | Partial construction, remaining part accepted as recorded. |
+| C10: adopted parameters | U | None | Pending. Adoption routes are not modeled. | Conflicting threshold test. | Construction gap accepted as recorded. |
+| C11: independent reference | U | None | Pending. Reference semantics are not mechanized. | Exhaustive five-vertex cliques and five reference controls. | Construction gap accepted as recorded. |
+| C12: work bounds | U | None | `authority_shared_budget_bounded`, `authority_budget_failure_sticky`, `authority_budget_failure_keeps_usage`, `authority_paths_share_one_budget`, `authority_checked_overflow_is_limit_failure`. Charge placement at every operation remains pending. | Shared path, clique, traversal, cancellation, and partial counter tests. | Partial construction, remaining part accepted as recorded. |
+| C13: distinct values | F proposed | None | Not applicable proposed. The domain is the fixed response schema. | Typed availability and unavailable display tests. | Accepted as bounded by design. |
+| C14: unavailable inputs | U | None | Pending. Refusal completeness is not modeled. | Missing target, body, and restore provenance tests. | Construction gap accepted as recorded. |
+| C15: read-only behavior | U | None | Pending. Effect confinement is not modeled. | Production byte comparisons and ordinary regressions. | Construction gap accepted as recorded. |
+
+Five properties have complete or partial construction theorems. Eight properties keep pending construction with Rust tests only, and two of those inherit accepted theorems from claims 001 and 002. Two properties propose a bounded-by-design classification.
+
+The independent reference reads immutable snapshot data.
+It does not call the production floor, oracle, clique, or traversal helpers.
+Both paths use the same bounded block decoder and captured source data.
+Those shared inputs and the decoder remain trusted dependencies of the comparison.
+
+The original oracle receives a separate scratch view.
+The reference ignores captured optimization caches only when captured ancestry reaches genesis.
+Truncated ancestry reports `restore_seed_provenance_unavailable`.
+The display projection reports `equivocation_snapshot_unavailable` because B1 excludes the equivocation tracker.
+
+Work counters describe instrumented algorithm operations.
+Preparation accounts for scratch capacity separately from measured decision counters.
+Allocation charges bound accounted payloads and collection capacity, not process memory or allocator latency.
+The shared budget theorems prove the arithmetic of one budget across all paths.
+They do not prove that B2 charges every required operation.
+
+Live coverage starts with finalizer contexts created after attachment.
+Earlier contexts have no binding and fall outside this scope.
+A successful effect return does not establish persisted metadata.
+A separate capture must observe persisted metadata.
+
+B2 does not claim a live authority profile.
+The [work log](../../../docs/work-logs/task-019-3-node-authority-evaluation.md) records the tests, the construction cycle, and the source-bound evidence packages.

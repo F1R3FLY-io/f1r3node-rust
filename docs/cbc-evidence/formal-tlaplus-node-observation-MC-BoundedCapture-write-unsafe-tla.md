@@ -9,7 +9,7 @@ Model proofs and finite Rust correspondence retain the limits stated in the pack
   "artifact": {
     "path": "formal/tlaplus/node_observation/MC_BoundedCapture_write_unsafe.tla",
     "id": "formal-tlaplus-node-observation-MC-BoundedCapture-write-unsafe-tla",
-    "commit": "38e57604187feab97cb45f000f95270b12a9f8bf",
+    "commit": "78d696ea6780ca72105d9b35d2266b0329d777ed",
     "commit_is_base": true,
     "working_tree": true,
     "sha256": "d19d344d015fa93470d6d27e6e663cc6869126587ce162469e8c41194e141a00"
@@ -19,15 +19,15 @@ Model proofs and finite Rust correspondence retain the limits stated in the pack
     "CLAIM-CASPER-NODE-OBSERVATION-002"
   ],
   "claim_digests": {
-    "docs/claims/casper-node-authority-snapshot.md": "3130ca377c849facee112379fa656b34f63ab8858f01f3f8f2a6c5447a72c807"
+    "docs/claims/casper-node-authority-snapshot.md": "741d16a73647f7107d44f7416dc1b878054ffbc4ae78136365b5fd536b271822"
   },
   "adapter": null,
-  "status": "pending",
-  "scope": "task-019-4-combined-b11-cycle-03",
+  "status": "discharged",
+  "scope": "task-019-4-handoff-cycle-02",
   "evidence": {
-    "kind": "tiered-evidence-not-discharge",
-    "ref": "docs/cbc-evidence/runs/casper-node-claim-gate-38e576041-01/report.json",
-    "sha256": "785a7188828a9aa0688dc28cfdac0303937f592f47d47e082d1ba752131c2e3e"
+    "kind": "tiered-evidence-accepted",
+    "ref": "docs/cbc-evidence/runs/casper-node-claim-gate-78d696ea6-01/report.json",
+    "sha256": "79361b7df306cde8f0b157d0749dd4b09e2a33b24dd9ad99710ff9d198ee43d2"
   },
   "tiers": {
     "refutation": "recorded",
@@ -36,12 +36,24 @@ Model proofs and finite Rust correspondence retain the limits stated in the pack
   },
   "soak": "pending",
   "waiver": null,
-  "verified_at": null,
+  "verified_at": "2026-09-23T16:55:28Z",
   "previous_record": {
     "artifact": "formal/tlaplus/node_observation/MC_BoundedCapture_write_unsafe.tla",
     "path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-write-unsafe-tla.md",
-    "sha256": "4fa56f5e953f00feca32b18ddc1a0b040a83634c8daacdac63ccc49f648cde06",
-    "archive_member": "previous-records/formal-tlaplus-node-observation-MC-BoundedCapture-write-unsafe-tla.md"
+    "sha256": "7acf4e137e2442f6468ef25f9e3a54e79a1b872e5b000351aa90fc3b02cb9c31",
+    "commit": "03d7f1b27544b2c5a93b664d8684b24ea16cf3e9"
+  },
+  "accepted_claim_digests": {
+    "docs/claims/casper-node-authority-snapshot.md": "234b65b479864c0ce6b45c45f8c2f2c971d01e7639fc2343ad0256a3d728e723"
+  },
+  "acceptance": {
+    "reviewer": "jltatbeach",
+    "review_id": 5294038948,
+    "url": "https://github.com/F1R3FLY-io/f1r3node-rust/pull/447#pullrequestreview-5294038948",
+    "revision": "4c0c0dbe7c8958debefdb02f2b21795786c45900",
+    "submitted_at": "2026-09-23T16:55:28Z",
+    "package": "docs/cbc-evidence/runs/casper-node-claim-gate-78d696ea6-01",
+    "decisions": "A1, A2, A8, A10, B13 accepted as bounded by design; construction gaps A3, A4, A9, B9, B11, B12 and the A7 and B2 deadline parts accepted as recorded"
   }
 }
 ```

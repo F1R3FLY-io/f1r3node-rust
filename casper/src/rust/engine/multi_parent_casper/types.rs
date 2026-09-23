@@ -56,6 +56,7 @@ use crate::rust::validator_identity::ValidatorIdentity;
 // reads `this.casper_shard_conf.deploy_heartbeat_wake_enabled`.
 
 pub struct MultiParentCasperImpl<T: TransportLayer + Send + Sync> {
+    pub observer: std::sync::OnceLock<crate::rust::soak_observer::ObserverBinding>,
     pub block_retriever: BlockRetriever<T>,
     pub event_publisher: F1r3flyEvents,
     /// P4-4 (slashing audit) originally required

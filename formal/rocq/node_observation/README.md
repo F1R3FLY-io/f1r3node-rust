@@ -78,7 +78,7 @@ The projection reverses the TLA+ history because `issued` stores the newest toke
 
 These projections are documented source arguments, not machine-checked refinement proofs. The additional modules prove conditional boundary properties. The following assumptions define their correspondence.
 
-Named maintainer review of every applicability decision and acceptance of both claims remain pending.
+Named maintainer review of every applicability decision and acceptance of both claims were recorded on 2026-09-23 at revision `4c0c0dbe7`.
 
 ## Boundary correspondence
 

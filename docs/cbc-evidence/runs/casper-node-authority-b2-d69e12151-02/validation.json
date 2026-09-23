@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "execution_base": "d69e12151082d111f18c9e8f818ed7f3ba4f9377",
+  "working_tree": true,
+  "report_sha256": "4a9a8d296e921baab5e006be3e6aa5eb0181af8515921aa49330bb3f9bb43bf5",
+  "previous_cycle": "docs/cbc-evidence/runs/casper-node-authority-b2-d11acabcb-01/report.json",
+  "inventory_files": 34,
+  "mandatory_files": 19,
+  "records_refreshed": 14,
+  "records_created": 5,
+  "coqchk_ok": true,
+  "closed_assumption_sets": 15,
+  "strict_audit_exit_expected_after_refresh": 4,
+  "claim_acceptance": false,
+  "task_complete": false
+}

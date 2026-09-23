@@ -2,7 +2,7 @@
 
 ```yaml
 claim_id: CLAIM-CASPER-NODE-OBSERVATION-001
-status: pending
+status: accepted
 adapter: null
 scope: batch-a-local-capability-interface
 artifacts:
@@ -46,10 +46,15 @@ artifacts:
   - scripts/ci/check-node-observation-bindings.sh
   - scripts/ci/test-check-node-observation-bindings.sh
   - .github/workflows/slashing-tests.yml
-refutation: pending
-construction: pending
-binding: pending
+refutation: recorded
+construction: recorded-partial
+binding: recorded
 soak: pending
+accepted_by: jltatbeach
+accepted_at: 2026-09-23T16:55:28Z
+accepted_revision: 4c0c0dbe7c8958debefdb02f2b21795786c45900
+acceptance_record: https://github.com/F1R3FLY-io/f1r3node-rust/pull/447#pullrequestreview-5294038948
+acceptance_package: docs/cbc-evidence/runs/casper-node-claim-gate-78d696ea6-01
 ```
 
 ## Authorization and scope
@@ -189,7 +194,9 @@ Property 7 has counter proofs and a conditional write-deadline proof. Properties
 
 The session oracle test and the repeated-entropy tests provide binding evidence for challenge allocation. Properties 3, 4, and 9 have conditional construction proofs and Rust tests.
 
-The [applicability review](../../formal/tlaplus/node_observation/README.md#applicability-per-property) lists every property's class, evidence, and decision status. Named maintainer review of each decision and acceptance of this claim remain pending.
+The acceptance at `4c0c0dbe7` recorded properties 3, 4, and 9 as construction gaps accepted as recorded. The conditional proofs added after that revision await named maintainer review.
+
+The [applicability review](../../formal/tlaplus/node_observation/README.md#applicability-per-property) lists every property's class, evidence, and decision status. The named maintainer reviewed each decision and accepted this claim on 2026-09-23 in PR #447 review 5294038948 at revision `4c0c0dbe7`. The soak field is outside that acceptance and is unchanged.
 
 ## Verification requirements
 
@@ -197,7 +204,7 @@ Retain failing controls for configuration, permissions, peer identity, request i
 
 Verify disabled behavior and existing configuration regressions. Verify that source and dependency inventories contain no unrelated changes.
 
-Unit and integration tests supply evidence but do not discharge this claim. Source-bound verification and explicit acceptance remain pending.
+Unit and integration tests supply evidence but do not discharge this claim. Source-bound verification and explicit acceptance were recorded on 2026-09-23.
 
 This work does not change the harness claims, approve a campaign, publish images, or merge a pull request.
 

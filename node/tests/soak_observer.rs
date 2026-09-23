@@ -609,3 +609,41 @@ async fn foreign_peer_process() {
     let mut stream = UnixStream::connect(path).await.unwrap();
     closed(&mut stream).await;
 }
+
+#[tokio::test]
+async fn authority_request_preserves_identity_and_reports_missing_casper() {
+    let directory = Directory::new();
+    let conf = configuration(&directory, true);
+    let observer = Observer::bind(&conf).unwrap().unwrap();
+    assert_eq!(
+        observer.authority_handle().unwrap().status(),
+        "awaiting_casper"
+    );
+    let observer = observer.spawn();
+    let (mut stream, hello) = connect(&directory.socket()).await;
+    let mut message = request(&hello);
+    message["operation"] = json!("authority_snapshot");
+    message["authority"] = json!({
+        "capture": {
+            "max_value_bytes":1048576,"max_total_bytes":16777216,"max_records":4096,"max_operations":100000,
+            "max_compressed_bytes":1048576,"max_decompressed_bytes":1048576,"max_expansion_ratio":4096,
+            "max_blocks":128,"max_validators":64,"max_edges":4096,"max_work":2000000,"lock_wait_ms":100
+        },
+        "evaluation":{"operations":2000000,"allocated_bytes":268435456,"clique_expansions":100000,"recursion_depth":64},
+        "targets":[],"body_hashes":[],"floor":null,"original":false,"reference":false,"strict":false
+    });
+    send(&mut stream, &message).await;
+    let response = receive(&mut stream).await;
+    assert_eq!(response["kind"], "authority_snapshot");
+    assert_eq!(response["identity"], hello["identity"]);
+    assert_eq!(response["live_profile_qualified"], false);
+    assert_eq!(response["result"]["reason"], "awaiting_casper");
+    assert_eq!(response["result"]["availability"], "unavailable");
+    assert_eq!(
+        response["request_sha256"],
+        hex::encode(crypto::rust::hash::sha_256::Sha256Hasher::hash(
+            serde_json::to_vec(&message).unwrap()
+        ))
+    );
+    observer.stop().await;
+}

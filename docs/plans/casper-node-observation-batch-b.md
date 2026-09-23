@@ -156,11 +156,14 @@ Passing these tests does not qualify the live authority profile. Source-bound ve
 
 The user authorized these planning steps on 2026-09-23.
 This authorization permits planning before TASK-019-4 acceptance.
-Implementation still requires accepted Batch A and B1 claims, the Step 5 claim record, and ratified tags.
+The user authorized B2 implementation on 2026-09-23.
+The Step 5 claim and mandatory records preceded production edits.
+PR #447 review 5294038948 subsequently accepted Batch A and B1 at `4c0c0dbe7`.
 
 The source review uses `cef1f4b721b8109019459f11c53d49df00eb68f9`.
 Steps 1 through 4 are complete as a design.
-The proposed implementation has not started.
+The implementation uses the 27 files below.
+The B2 verification record remains separate from predecessor acceptance.
 
 ### Step 1: Final implementation file list
 
@@ -360,10 +363,10 @@ Adding a complete display capture or restore-seed contract requires a separate s
 #### Work bounds
 
 Every request supplies positive limits.
-The following ceilings are proposed for the observer only.
-They are design limits for review, not changes to consensus configuration.
+The observer enforces the following ceilings.
+These limits apply to observation requests.
 
-| Resource | Proposed ceiling |
+| Resource | Enforced ceiling |
 | --- | --- |
 | Captured blocks / validators / edges | 4,096 / 64 / 65,536. |
 | Captured raw bytes / decompressed body bytes | 64 MiB total / 8 MiB per body. |
@@ -437,6 +440,8 @@ The exact decision is never reconstructed from the display projection.
 | `effect_return` | The effect call returned success or failure. Partial persistence can precede a failure. |
 | `persisted_observation` | B1 capture observed finalized metadata in its recorded transaction interval. |
 
+Live coverage includes finalizer contexts created after attachment.
+An earlier context has no observer binding and falls outside this coverage.
 Live hooks enqueue fixed-size facts from existing local values.
 They perform no capture, serialization, disk access, blocking send, or extra oracle call on the consensus path.
 Uncaptured live inputs have an unavailable snapshot digest.
@@ -451,16 +456,16 @@ The consumer cannot turn missing events into successful effects.
 
 ### Implementation and verification gate
 
-Step 5 remains pending.
-It must register `CLAIM-CASPER-NODE-OBSERVATION-003`, ratify mandatory tags, and create pending artifact records before implementation.
+Step 5 registered `CLAIM-CASPER-NODE-OBSERVATION-003` and seven mandatory records before production edits.
+The [work log](../work-logs/task-019-3-node-authority-evaluation.md) records implementation and verification.
 
 The implementation checks must cover every attachment state, all three constructor routes, limits, event loss, and unchanged production bytes.
 Reference tests must retain disagreements from incorrect threshold, traversal, clique, cache, and containment controls.
 Uninstrumented counters and unavailable display or restore inputs must remain unavailable in those tests.
 
 B2 does not qualify a live authority profile while required inputs remain unavailable.
-Batch A and B1 acceptance remains under TASK-019-4.
-This planning authorization does not accept either claim or authorize B2 implementation.
+TASK-019-4 records Batch A and B1 acceptance at `4c0c0dbe7`.
+B2 still requires its own source-bound evidence and named maintainer acceptance.
 
 ## Batch C and campaign boundaries
 

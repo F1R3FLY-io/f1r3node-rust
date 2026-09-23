@@ -120,7 +120,8 @@ tasks:
       - "Implementation is complete. The claim remains pending until source-bound verification and explicit acceptance under TASK-019-4."
   - id: TASK-019-2
     title: "Batch B1: bounded detached DAG capture"
-    status: in_progress
+    status: complete
+    completed_on: "2026-09-23"
     claimed_by: claude-session-7015f552
     claimed_at: 2026-09-21T14:00:00Z
     claims: [CLAIM-CASPER-NODE-OBSERVATION-002]
@@ -146,9 +147,8 @@ tasks:
       - "Bounded LMDB reader, transaction identity checks, detached snapshot with canonical digest, scratch construction, and observer-only bounded block decoding landed in a38d44185."
       - "The continuation at 38d083bff corrected reader budget retention, key bounds, checked arithmetic, and short-decompression acceptance, with red tests retained."
       - "The completion review addresses all four source findings. It records 301 passing test executions and a negative compile check for mutable snapshot access."
-    remaining_work:
-      - "Review the completion evidence and obtain source-bound claim acceptance under TASK-019-4."
-      - "Keep task ownership and completion status unchanged until the required review finishes."
+    remaining_work: []
+    acceptance_record: https://github.com/F1R3FLY-io/f1r3node-rust/pull/447#pullrequestreview-5294038948
     acceptance:
       - "Every limit is checked before the allocation or store operation it bounds."
       - "Capture rejects any environment or generation change between open and validation, including restored values."
@@ -157,15 +157,36 @@ tasks:
       - "The canonical identity covers every field that scratch construction and evaluation consume."
   - id: TASK-019-3
     title: "Batch B2: observer handle, detached evaluation, and reference comparison"
-    status: pending
-    claimed_by: null
-    blocked_by: [TASK-019-2, TASK-019-4]
+    status: complete
+    completed_on: "2026-09-23"
+    claimed_by: codex-batch-b2-20260923
+    blocked_by: []
     plan: docs/plans/casper-node-observation-batch-b.md
     planning_status: "Steps 1 through 4 complete at cef1f4b721b8109019459f11c53d49df00eb68f9."
     planning_authorization: "The user authorized planning steps 1 through 4 on 2026-09-23, before TASK-019-4 acceptance."
-    implementation_authorized: false
+    implementation_authorized: true
+    implementation_authorization: "The user requested B2 completion on 2026-09-23. PR #447 review 5294038948 records predecessor acceptance at 4c0c0dbe7."
+    claim: docs/claims/casper-node-authority-evaluation.md
+    work_log: docs/work-logs/task-019-3-node-authority-evaluation.md
+    implementation_status: complete
+    verification_package: docs/cbc-evidence/runs/casper-node-authority-b2-d11acabcb-01/report.json
+    verification_status: "976 focused tests and all commit checks pass. The full Casper run exceeded 30 minutes."
+    completion_gate: "Complete. The named maintainer accepted claim 003 on 2026-09-23 at 237e43d72."
+    accepted_by: jltatbeach
+    acceptance_record: https://github.com/F1R3FLY-io/f1r3node-rust/pull/447#pullrequestreview-5294038948
+    acceptance_revision: 237e43d723b9867985cd47fdfe312fd8d06352e8
+    acceptance_package: docs/cbc-evidence/runs/casper-node-authority-b2-d69e12151-02
+    construction_cycle: batch-b2-construction-01
+    construction_project: formal/rocq/node_authority
+    construction_theorems: 15
+    applicability_review: formal/tlaplus/node_observation/README.md#batch-b2-applicability-review
+    tiers_reached:
+      refutation: "Inherited from the accepted session and capture models only. B2 adds no bounded model."
+      construction: "15 kernel-checked theorems with closed assumption sets; complete for C3 and C5, partial for C4, C9, and C12, inherited for C7 and C8, pending for C2, C6, C10, C11, C14, and C15."
+      binding: "Every property maps to named tests in the bindings manifest; 14 casper observer tests, 20 node observer tests, and 28 capture tests pass."
+    strict_cbc_result: "Exit 4 with 13 pending mandatory records."
     prerequisites:
-      - "Do not start B2 implementation until both current claims pass source-bound verification and a named maintainer explicitly accepts them."
+      - "Both predecessor claims must pass source-bound verification and named maintainer acceptance before B2 acceptance."
       - "A final file list covering the runtime, engine cell, Casper constructor, dispatch, and the six test fixtures that need the observer field."
       - "A reference evaluation path that differs from the measured path. Repeating the production tips computation is not independent coverage."
       - "Separate fields for the exact oracle decision, the original fault-tolerance result, and the display projection, each naming its input snapshot."
@@ -186,7 +207,8 @@ tasks:
       - "Step 7. Package evidence, rerun the gate, and obtain acceptance under the same rules as TASK-019-4."
   - id: TASK-019-4
     title: "Source-bound verification and acceptance of the Batch A and Batch B1 claims"
-    status: in_progress
+    status: complete
+    completed_on: "2026-09-23"
     claimed_by: claude-session-7015f552
     claimed_at: 2026-09-23T17:10:00Z
     previous_claimed_by: pi-session-01a0afde-d35c-70a2-b8c9-39aa11cbdfca
@@ -204,6 +226,7 @@ tasks:
       - docs/cbc-evidence/runs/casper-node-challenge-freshness-3b1d2465a-01/report.json
       - docs/cbc-evidence/runs/casper-node-model-reconciliation-10e7b8452-01/report.json
       - docs/cbc-evidence/runs/casper-node-claim-gate-03d7f1b27-01/report.json
+      - docs/cbc-evidence/runs/casper-node-claim-gate-78d696ea6-01/report.json
       - docs/cbc-evidence/runs/casper-node-claim-gate-00f91ca11-01/report.json
       - docs/cbc-evidence/runs/casper-node-claim-gate-38e576041-01/report.json
     verification_scope_confirmed: true
@@ -216,6 +239,8 @@ tasks:
     reconciliation_working_tree: true
     handoff_cycle_checkout_base: 8789c1c3e
     handoff_cycle_working_tree: true
+    handoff_cycle_02_checkout_base: 78d696ea6
+    handoff_cycle_02_working_tree: true
     tiers_reached:
       refutation: "The local bounded gate passes 16 configurations and 88 controls. Hosted run 35906410283 passes 31 configurations and the same controls."
       construction: "All 33 node theorem exports have closed assumption sets and pass kernel checking. B11 contributes eight byte-schema exports. Boundary assumptions require review."
@@ -224,8 +249,11 @@ tasks:
     claims: [CLAIM-CASPER-NODE-OBSERVATION-001, CLAIM-CASPER-NODE-OBSERVATION-002]
     eligible_maintainers: [spreston8, dylon, metaweta, jeffrey-l-turner, jltatbeach]
     proposed_reviewer: jltatbeach
-    accepted_by: null
-    acceptance_record: null
+    accepted_by: jltatbeach
+    acceptance_record: https://github.com/F1R3FLY-io/f1r3node-rust/pull/447#pullrequestreview-5294038948
+    acceptance_revision: 4c0c0dbe7c8958debefdb02f2b21795786c45900
+    acceptance_reviewed_at: 2026-09-23T16:55:28Z
+    acceptance_package: docs/cbc-evidence/runs/casper-node-claim-gate-78d696ea6-01
     notes:
       - "The user placed this gate before B2 planning. B2 is not a prerequisite for verification of Batch A and B1."
       - "The implementation input is available at the execution revision. TASK-019-2 remains open for this acceptance review, not as a circular prerequisite."
@@ -244,7 +272,11 @@ tasks:
       - "The handoff cycle at 8789c1c3e added the BoundedCapture Rocq module and qualified tokens, a capture bisimilarity oracle, Kani harnesses, the applicability review, and refreshed records including the DAG storage file after the dev merge."
       - "Both claims remain pending. Acceptance needs named maintainer review of every applicability decision and the remaining construction evidence."
       - "No standalone checker crate was added. Downstream must remove its checker crate or include it in the supply-chain audit."
-      - "Cross-incarnation identity and conditional proof assumptions require review. Finite Rust correspondence does not establish universal refinement. Named maintainer acceptance remains pending."
+      - "Cross-incarnation identity, remaining construction proofs, Kani harnesses, complete Rust correspondence, and named maintainer acceptance remain pending."
+      - "Batch B2 changed six accepted artifacts after acceptance: the TLA+ README, the DAG storage file, the capture tests, the node observer, its tests, and the formal gate script. Their records are pending for claim 003 at the current digest and retain the acceptance of claims 001 and 002 at 4c0c0dbe7 with the accepted digests. The other 52 accepted records stay discharged."
+      - "The named maintainer accepted claim 003 on 2026-09-23 at 237e43d72 on the construction-cycle package. The six changed artifacts are discharged again under claim 003 and keep both acceptances in their records."
+      - "The named maintainer accepted both claims on 2026-09-23 at 4c0c0dbe7 on the cycle 02 package, with the five bounded-by-design decisions and the recorded construction gaps accepted. All 58 node records are discharged. The two gate-claim records in the union inventory stay pending under CLAIM-SOAK-GATE-001."
+      - "Handoff cycle 02 at 78d696ea6 pulled the deterministic generation-rejection test across from the soak branch, reran the TLA gate and the Rocq kernel check, and refreshed every node record. Three blocking items remain: the applicability review, the acceptance, and the open construction proofs."
       - "The merged-source cycle 02 at 00f91ca11 refreshed every node record and the package after the port of the withheld cycle. The node branch refreshed its records at 78d696ea6 in parallel; that package is not merged here."
       - "Cycle 02 retained the hosted strip failure. Commit 38e576041 corrects array entry-size normalization and preserves the other allocated-section checks."
       - "Cycle 03 verifies the current sources with local Rocq, retained ARM64 Kani tooling, and successful hosted binding and correspondence jobs."
@@ -300,13 +332,28 @@ tasks:
   - id: TASK-019-7
     title: "Publish dev candidate images for adapter qualification"
     status: in_progress
-    claimed_by: null
+    claimed_by: codex-candidate-images-20260923
     blocked_by: [TASK-019-6]
     work_log: docs/work-logs/task-019-7-candidate-images.md
     baseline_status: "Published amd64 and arm64 digests verified for dev revision 6d6d4fed6f84baa0913d8e87f32a7ffe2e0ca59a."
+    baseline_executable_status: "Both executable hashes, image configurations, platform manifests, and the index were independently verified by immutable digest."
+    baseline_handoff: docs/work-logs/task-019-7-candidate-images.md#task-017-12-candidate-handoff
+    review_evidence: target/task-019-7-review-20260923/report.json
+    lifecycle_fix_pr: https://github.com/F1R3FLY-io/system-integration/pull/144
+    lifecycle_dev_merge: ef9844893f19df3e7523bb97e9e0da0ca241bb10
+    lifecycle_promotion_pr: https://github.com/F1R3FLY-io/system-integration/pull/145
+    lifecycle_promotion_status: "Merged to main on 2026-09-23. The merged tree matches the reviewed and tested tree."
+    lifecycle_main_merge: e3c4e14189f0c6ced2e9674487fcbdeffd93141b
+    lifecycle_review_status: "Independent review found no blocking code issue. All 42 lifecycle and resolver tests pass."
+    lifecycle_live_status: "Pending the promoted main pin and the node casper-integration job."
+    node_pin_status: "Prepared all three pins at e3c4e141. Workflow invariants, helper regressions, and patch verification pass."
+    node_pin_evidence: target/task-019-7-pin-e3c4e1418/report.json
+    node_pin_patch: target/task-019-7-pin-e3c4e1418/node-pin.patch
+    node_pin_branch: ci/repin-validator-lifecycle-settlement
+    node_pin_publication: "The user requested the prepared pin PR. Commit checks and publication are in progress."
     observer_candidate_status: "Pending TASK-019-6 and subsequent dev CI publication."
     external_dependencies:
-      - "system-integration: include deploy inclusion time in _submit_pos_until_effective and add settlement regressions. Merge the correction to dev, then promote dev to main before pinning it."
+      - "The system-integration fix and promotion are merged. The node pin PR, live validation, and subsequent dev image publication remain pending."
     proposed_external_branch: fix/validator-lifecycle-settlement-budget
     external_pr_target: dev
     external_promotion_target: main
@@ -553,7 +600,10 @@ Both claims remain pending on complete formal evidence and named maintainer acce
 B2 planning steps 1 through 4 and TASK-019-5 research are complete.
 B2 and Batch C implementation remain unapproved. The Batch C inventory and contract await named maintainer review.
 
-TASK-019-7 records verified baseline image digests. The lifecycle pin correction and observer candidate remain pending. PR #447 targets `dev`.
+TASK-019-7 records verified baseline image and executable digests.
+The lifecycle fix merged to system-integration `dev` through PR #144.
+Promotion PR #145 merged to `main`. The three-file node pin update is prepared.
+Node pin publication, live validation, and the observer candidate remain pending. PR #447 targets `dev`.
 
 **Scope:** This epic owns node-side interfaces only. Harness verification, profile qualification, campaign execution, and baseline soaks belong to EPIC-017.
 

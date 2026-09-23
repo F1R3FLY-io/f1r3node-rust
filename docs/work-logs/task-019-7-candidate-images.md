@@ -2,7 +2,9 @@
 
 **Reviewed:** 2026-09-23.
 
-**Status:** The existing baseline images are verified. The lifecycle fix and the observer candidate remain pending.
+**Status:** The baseline images and executables are verified. The lifecycle fix merged to system-integration `dev` through PR #144.
+Promotion PR #145 merged to `main`. All three node pins now use the merged revision in the prepared change.
+Node pin publication, live validation, and the observer candidate remain pending.
 
 ## Baseline candidate
 
@@ -39,7 +41,9 @@ It has no observer interface and does not include the proposed lifecycle fix.
 TASK-017-12 can use these immutable references for baseline candidate review.
 Candidate repinning, admission, and live qualification have not run in this task.
 
-## Proposed system-integration correction
+## Initial system-integration proposal
+
+This section retains the original proposal. The follow-up below records implementation, review, and publication status.
 
 The affected test is `integration-tests/test/tests/custom/test_validator_lifecycle.py`.
 The affected helper is `_submit_pos_until_effective`.
@@ -144,7 +148,91 @@ The handoff requests failing and passing regression results, full unit results, 
 
 The agent `codex-system-integration-20260923` acknowledged the request and accepted the scope and ownership split.
 The coordinator confirmed that the approved three-file implementation and verification should proceed.
-Implementation results remain pending.
+The follow-up below records the returned implementation and independent review.
 
 The user corrected the target sequence to `dev`, then `main`.
 The shared request and tracker now specify both merge stages and the final `main` revision for node pinning.
+
+## Independent review and publication follow-up
+
+The user assigned TASK-019-7 to this agent while another agent continued TASK-019-3.
+This review changed no B2 implementation or verification artifact.
+
+[System-integration PR #144](https://github.com/F1R3FLY-io/system-integration/pull/144) merged the correction to `dev` on 2026-09-23.
+The merge revision is `ef9844893f19df3e7523bb97e9e0da0ca241bb10`.
+[Promotion PR #145](https://github.com/F1R3FLY-io/system-integration/pull/145) targets `main` with that exact head.
+The promotion merged at `2026-09-23T19:55:44Z` as `e3c4e14189f0c6ced2e9674487fcbdeffd93141b`.
+The merged tree is `8cdc87b5e9bdcb2b403e52900ccf7bbe3da482ce`.
+This tree matches the reviewed revision exactly, so the 42-test result covers the promoted source.
+
+The promotion diff contains the helper change, eleven regression cases, their timing fixture, and the task record.
+The complete change from the node's current harness pin adds no other executable behavior.
+Other changes update documentation and one Compose comment.
+
+Independent review found no blocking code issue in the correction.
+The timeout includes deploy inclusion and retains scaling, terminal verdict checks, shared node deadlines, and selective retries.
+The timing fixture explicitly identifies its 137-second input as synthetic historical evidence.
+
+The independent test run passed all 42 lifecycle and resolver tests in 7.30 seconds.
+One existing integration-marker warning remains.
+The implementer's earlier full unit run passed 324 tests. This review did not repeat that full run.
+
+The live eight-node lifecycle test remains pending.
+The reviewed PR requires the node `casper-integration` job after the pin update.
+Its result must identify the suite revision, job, observed settlement time, and 225-second budget.
+
+The user reported the completed promotion. GitHub independently confirmed the merge and current `main` revision.
+The node pin helper updated all three sites to `e3c4e14189f0c6ced2e9674487fcbdeffd93141b`.
+Workflow invariants and the existing pin-helper regression tests pass.
+The diff replaces exactly three pin values against node `dev` revision `6d6d4fed6f84baa0913d8e87f32a7ffe2e0ca59a`.
+
+The prepared patch is `target/task-019-7-pin-e3c4e1418/node-pin.patch`.
+The patch applies to clean copies of the three `dev` files and reproduces the prepared files exactly.
+The directory also contains the verification report and prepared PR title and description.
+The proposed branch is `ci/repin-validator-lifecycle-settlement`, targeting `dev`.
+The proposed commit contains only the three pin files.
+The task notes remain separate from that proposed commit.
+
+Commit, push, and PR publication remain pending separate authorization.
+The prepared pin change does not include the other agent's staged B2 work.
+The current checkout and index remain on their existing branch.
+
+## TASK-017-12 candidate handoff
+
+The current node `dev` revision remains `6d6d4fed6f84baa0913d8e87f32a7ffe2e0ca59a`.
+The published baseline references above remain valid.
+Fresh registry requests used immutable digests for the index, both platform manifests, both configurations, and each final image layer.
+Every downloaded object matched its SHA-256 digest.
+Each decompressed layer also matched the configuration's recorded layer digest.
+
+The final layers contain `opt/docker/bin/node` as a regular file.
+The extracted executable headers identify the expected architecture.
+The review read and hashed each executable without running a container or node.
+
+| Platform | Executable SHA-256 | Executable bytes |
+| --- | --- | --- |
+| Linux amd64 | `8069dedaaf18b3b53bb3cdec84e4b0b1f57b539f832db2e4a02347abf2ec5975` | 76,226,304 |
+| Linux arm64 | `1c9efe6d605ec416c6abc73963c0d175df8315440935c42e0dc5c667e86f49fc` | 74,744,040 |
+
+The retained CI publication job binds both platform digests to the source revision.
+Its archived logs and the earlier registry records still match their recorded hashes.
+The images contain no observer interface. Their publication CI used the old system-integration pin.
+
+The machine-readable handoff is `target/task-019-7-review-20260923/report.json`.
+Its directory retains the registry objects, PR states, CI metadata, executable identities, and independent test result.
+The directory's `sources.sha256` records the evidence hashes. Bulk evidence remains outside Git.
+
+TASK-017-12 can use these references for baseline candidate review.
+Candidate repinning, workload identity, admission, and live qualification remain separate consumer steps.
+An observer candidate remains unavailable until TASK-019-6 merges PR #447 and `dev` CI publishes both platforms.
+
+## Remaining completion gates
+
+1. Publish the prepared node pin change through a separately authorized commit and PR to `dev`.
+2. After the required checks pass, obtain the authorized node PR merge.
+3. Record the live lifecycle result from the pinned suite.
+4. Record both platform digests from the new `dev` publication.
+5. After TASK-019-6 completes, verify the separate observer candidate.
+6. Supply the observer candidate identities to TASK-017-12.
+
+TASK-019-7 remains in progress because these gates have no completion evidence.
