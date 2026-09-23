@@ -44,6 +44,7 @@ artifacts:
   - scripts/ci/test-check-tla-invariants.sh
   - scripts/ci/check-formal-invariants.sh
   - scripts/ci/check-node-observation-bindings.sh
+  - scripts/ci/test-check-node-observation-bindings.sh
   - .github/workflows/slashing-tests.yml
 refutation: pending
 construction: pending

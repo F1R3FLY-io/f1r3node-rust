@@ -51,6 +51,7 @@ artifacts:
   - formal/rocq/node_observation/theories/CaptureIntegrity.v
   - formal/rocq/node_observation/theories/MainTheorem.v
   - scripts/ci/check-node-observation-bindings.sh
+  - scripts/ci/test-check-node-observation-bindings.sh
   - scripts/ci/check-node-canonical-wire.sh
   - formal/rocq/node_observation/b11/_CoqProject
   - formal/rocq/node_observation/b11/theories/Wire.v

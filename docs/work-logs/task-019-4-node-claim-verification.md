@@ -682,3 +682,27 @@ The package `casper-node-claim-gate-00f91ca11-01` keeps four compact files. The 
 The strict audit returned exit 4 before the refresh with the two new modules unrecorded. It is expected to return exit 4 after the refresh with all 62 mandatory records pending.
 
 Both claims remain pending. Acceptance still needs named maintainer review, the B11 canonical-schema construction, and a hosted binding run after the driver correction.
+
+## Hosted binding strip correction
+
+The hosted section tables differ only in the `.init_array` entry size, from `00` to `08`. Their program segments and section-content hashes match.
+
+The driver now normalizes zero entry sizes for `PREINIT_ARRAY`, `INIT_ARRAY`, and `FINI_ARRAY` to the ELF pointer width. Other entry sizes remain checked.
+
+The [ELF specification](https://gabi.xinuos.com/elf/09-dynamic.html#initialization-and-termination-functions) defines these arrays as function pointers. Dynamic entries supply their addresses and total sizes.
+
+The driver retains original section headers and compares normalized allocated-section metadata, program segments, and section-content hashes. It rejects empty allocated-section inventories.
+
+The new fixture builds a Rust executable and reproduces the original entry-size mismatch with GNU objcopy. Both original and stripped executables run successfully.
+
+Twelve controls alter code bytes, array bytes, flags, sizes, alignment, entry sizes, program flags, or the entry point. Each control requires exit one.
+
+CI runs the fixture before the binding driver. Both claim inventories include the fixture, and both claims remain pending.
+
+The native ARM64 Linux binding driver passed 332 tests and two B11 export tests. The strip fixture rejected all twelve mutations.
+
+Actionlint and all 47 formal gate refusal controls passed. The first binding rerun failed during linking because the container disk was full.
+
+The rerun passed after disposable incremental build cache was removed. Retained logs are under `target/strip-equivalence-fix/`.
+
+The hosted x86_64 rerun and combined evidence refresh remain pending. This correction changes no claim acceptance status.

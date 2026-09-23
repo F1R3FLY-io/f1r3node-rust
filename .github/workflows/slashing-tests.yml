@@ -92,6 +92,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y protobuf-compiler libprotobuf-dev \
             libssl-dev pkg-config libclang-dev clang cmake jq binutils
+      - name: Check observer strip equivalence controls
+        run: bash scripts/ci/test-check-node-observation-bindings.sh
       - name: Run node observation binding tests
         run: |
           bash scripts/ci/check-node-observation-bindings.sh \

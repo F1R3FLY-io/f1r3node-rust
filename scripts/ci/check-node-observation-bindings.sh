@@ -1,5 +1,66 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export LC_ALL=C
+
+allocated() {
+    local file=$1 width
+    width=$(readelf --file-header "$file" | awk '$1 == "Class:" { print $2 }')
+    case "$width" in
+        ELF32) width=04 ;;
+        ELF64) width=08 ;;
+        *) printf 'Unsupported ELF class: %s\n' "$width" >&2; return 1 ;;
+    esac
+    readelf --wide --sections "$file" | awk -v width="$width" '
+        /^[[:space:]]*\[[[:space:]]*[0-9]+\]/ {
+            sub(/^[[:space:]]*\[[[:space:]]*[0-9]+\][[:space:]]+/, "")
+            if ($7 !~ /A/) next
+            if ($2 ~ /^(PREINIT_ARRAY|INIT_ARRAY|FINI_ARRAY)$/) {
+                if ($6 != "00" && $6 != width) exit 1
+                $6 = width
+            }
+            $1 = $1
+            print
+            count++
+        }
+        END { if (!count) exit 1 }
+    '
+}
+section_hashes() {
+    local file=$1 table=$2 name kind rest digest
+    while read -r name kind rest; do
+        if [[ "$kind" == NOBITS ]]; then
+            printf 'NOBITS %s\n' "$name"
+        else
+            digest=$(readelf --hex-dump="$name" "$file" | sha256sum)
+            printf '%s %s\n' "${digest%% *}" "$name"
+        fi
+    done < "$table"
+}
+check_strip_equivalence() {
+    local raw=$1 executable=$2 kind file
+    for kind in raw derived; do
+        file="$raw"
+        [[ "$kind" != derived ]] || file="$executable"
+        readelf --wide --sections "$file" > "$OUTPUT/$kind-section-headers.txt"
+        allocated "$file" > "$OUTPUT/$kind-allocated.txt"
+        readelf --wide --segments "$file" > "$OUTPUT/$kind-segments.txt"
+        section_hashes "$file" "$OUTPUT/$kind-allocated.txt" > "$OUTPUT/$kind-sections.sha256"
+    done
+    for kind in allocated.txt segments.txt sections.sha256; do
+        cmp "$OUTPUT/raw-$kind" "$OUTPUT/derived-$kind"
+    done
+}
+if [[ ${1:-} == --check-strip ]]; then
+    if (($# != 4)); then
+        printf 'Usage: %s --check-strip RAW DERIVED NEW_OUTPUT_DIRECTORY\n' "$0" >&2
+        exit 2
+    fi
+    mkdir -m 700 -- "$4"
+    OUTPUT="$(cd "$4" && pwd)"
+    check_strip_equivalence "$2" "$3"
+    exit 0
+fi
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 if (($# != 1)); then
     printf 'Usage: %s NEW_OUTPUT_DIRECTORY\n' "$0" >&2
@@ -18,6 +79,7 @@ find node shared block-storage casper comm crypto models rspace++ rholang rho-pu
     sort -z | xargs -0 sha256sum > "$OUTPUT/inputs.sha256"
 sha256sum Cargo.toml Cargo.lock rust-toolchain.toml .cargo/config.toml \
     scripts/ci/check-node-observation-bindings.sh scripts/ci/check-node-canonical-wire.sh \
+    scripts/ci/test-check-node-observation-bindings.sh \
     docs/claims/casper-node-observation.md docs/claims/casper-node-authority-snapshot.md \
     formal/tlaplus/node_observation/*.tla formal/tlaplus/node_observation/*.cfg \
     formal/tlaplus/node_observation/*.json formal/tlaplus/node_observation/README.md \
@@ -39,20 +101,6 @@ build node --lib --test soak_observer
 build shared --test soak_snapshot
 build block-storage --lib --test soak_snapshot
 test "$(wc -l < "$OUTPUT/executables.tsv")" -eq 5
-allocated() {
-    readelf --wide --sections "$1" | awk '/^[[:space:]]*\[[[:space:]]*[0-9]+\]/ { sub(/^[[:space:]]*\[[[:space:]]*[0-9]+\][[:space:]]+/, ""); if ($7 ~ /A/) print }'
-}
-section_hashes() {
-    local file=$1 table=$2 name kind rest digest
-    while read -r name kind rest; do
-        if [[ "$kind" == NOBITS ]]; then
-            printf 'NOBITS %s\n' "$name"
-        else
-            digest=$(readelf --hex-dump="$name" "$file" | sha256sum)
-            printf '%s %s\n' "${digest%% *}" "$name"
-        fi
-    done < "$table"
-}
 while IFS=$'\t' read -r package target raw; do
     args=(--test-threads=2)
     name=$(basename "$raw")
@@ -61,16 +109,7 @@ while IFS=$'\t' read -r package target raw; do
     if [[ "$name" == soak_observer-* ]]; then
         executable="$OUTPUT/soak-observer-debug-stripped"
         objcopy --strip-debug "$raw" "$executable"
-        for kind in raw derived; do
-            file="$raw"
-            [[ "$kind" != derived ]] || file="$executable"
-            allocated "$file" > "$OUTPUT/$kind-allocated.txt"
-            readelf --wide --segments "$file" > "$OUTPUT/$kind-segments.txt"
-            section_hashes "$file" "$OUTPUT/$kind-allocated.txt" > "$OUTPUT/$kind-sections.sha256"
-        done
-        for kind in allocated.txt segments.txt sections.sha256; do
-            cmp "$OUTPUT/raw-$kind" "$OUTPUT/derived-$kind"
-        done
+        check_strip_equivalence "$raw" "$executable"
         test "$(stat -c %s "$executable")" -le 536870912
         "$executable" --list > "$OUTPUT/$name.list"
         grep -Fx 'session_sequences_match_an_independent_event_oracle: test' "$OUTPUT/$name.list"

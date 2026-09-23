@@ -4,6 +4,7 @@ node/tests/soak_observer.rs cbc=mandatory cbc-weight=high
 formal/tlaplus/node_observation/** cbc=mandatory cbc-weight=high
 formal/rocq/node_observation/** cbc=mandatory cbc-weight=high
 scripts/ci/check-node-observation-bindings.sh cbc=mandatory cbc-weight=high
+scripts/ci/test-check-node-observation-bindings.sh cbc=mandatory cbc-weight=high
 scripts/ci/check-node-canonical-wire.sh cbc=mandatory cbc-weight=high
 scripts/ci/check-tla-invariants.sh cbc=mandatory cbc-weight=high
 scripts/ci/test-check-tla-invariants.sh cbc=mandatory cbc-weight=high
