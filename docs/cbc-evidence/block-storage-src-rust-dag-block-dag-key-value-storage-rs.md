@@ -31,7 +31,7 @@ This refresh records source identity only. The referenced reconciliation report 
   "evidence": {
     "kind": "tiered-evidence-not-discharge",
     "ref": "docs/cbc-evidence/runs/casper-node-claim-gate-78d696ea6-01/report.json",
-    "sha256": "adaaf210f7792763d2827f78f82b9adf05bd386f4293483b20b123fef3224686"
+    "sha256": "79361b7df306cde8f0b157d0749dd4b09e2a33b24dd9ad99710ff9d198ee43d2"
   },
   "tiers": {
     "refutation": "recorded",
