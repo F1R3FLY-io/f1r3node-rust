@@ -7,25 +7,25 @@ The capture claim remains pending. Local tests do not discharge the claim or qua
   "artifact": {
     "path": "block-storage/src/rust/dag/soak_snapshot.rs",
     "id": "block-storage-src-rust-dag-soak-snapshot-rs",
-    "commit": "03d7f1b27544b2c5a93b664d8684b24ea16cf3e9",
+    "commit": "78d696ea6780ca72105d9b35d2266b0329d777ed",
     "commit_is_base": true,
     "working_tree": true,
-    "sha256": "c19898faa349b60042e61d4501282234c5070c13e17a9b48654feaa3325d5b29"
+    "sha256": "f2ec64e110d2b1218a5d1043438985976a6b72daf63dada86a805cdee664fcfc"
   },
   "claim": "docs/claims/casper-node-authority-snapshot.md",
   "claim_ids": [
     "CLAIM-CASPER-NODE-OBSERVATION-002"
   ],
   "claim_digests": {
-    "docs/claims/casper-node-authority-snapshot.md": "d8242333c663a8680376dfe758cfa18c6641905fc86ddc20ca9014ec8af81a19"
+    "docs/claims/casper-node-authority-snapshot.md": "234b65b479864c0ce6b45c45f8c2f2c971d01e7639fc2343ad0256a3d728e723"
   },
   "adapter": null,
   "status": "pending",
-  "scope": "task-019-4-handoff-cycle-01",
+  "scope": "task-019-4-handoff-cycle-02",
   "evidence": {
     "kind": "tiered-evidence-not-discharge",
-    "ref": "docs/cbc-evidence/runs/casper-node-claim-gate-03d7f1b27-01/report.json",
-    "sha256": "68e9224741cf8aeeb666f1e86947c8d15dc5cb8587bed98767cf9e52e2674160"
+    "ref": "docs/cbc-evidence/runs/casper-node-claim-gate-78d696ea6-01/report.json",
+    "sha256": "adaaf210f7792763d2827f78f82b9adf05bd386f4293483b20b123fef3224686"
   },
   "tiers": {
     "refutation": "recorded",
@@ -37,8 +37,8 @@ The capture claim remains pending. Local tests do not discharge the claim or qua
   "verified_at": null,
   "previous_record": {
     "path": "docs/cbc-evidence/block-storage-src-rust-dag-soak-snapshot-rs.md",
-    "sha256": "6c7f2316fd91ac25670a89be808713a1f79d839fd61756147968576884607a53",
-    "commit": "10e7b8452824e12a1fe2743dca7989b79fce2133"
+    "sha256": "5f8a8ab786bb31cecf3cef9ea653fbceda0e10db7d1b6a23381bab569d39820f",
+    "commit": "03d7f1b27544b2c5a93b664d8684b24ea16cf3e9"
   }
 }
 ```

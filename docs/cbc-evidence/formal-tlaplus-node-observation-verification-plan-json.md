@@ -7,7 +7,7 @@ The approved reconciliation artifact remains pending.
   "artifact": {
     "path": "formal/tlaplus/node_observation/verification-plan.json",
     "id": "formal-tlaplus-node-observation-verification-plan-json",
-    "commit": "03d7f1b27544b2c5a93b664d8684b24ea16cf3e9",
+    "commit": "78d696ea6780ca72105d9b35d2266b0329d777ed",
     "commit_is_base": true,
     "working_tree": true,
     "sha256": "0da58d7c5c4f17a9cb26995508db51d5fb152c89a54c8ce252c24972149a883a"
@@ -19,15 +19,15 @@ The approved reconciliation artifact remains pending.
   ],
   "claim_digests": {
     "docs/claims/casper-node-observation.md": "703418566c148f28a4d952e29e7dc135843242ea7fbb7e3fdc3111b6e4373274",
-    "docs/claims/casper-node-authority-snapshot.md": "d8242333c663a8680376dfe758cfa18c6641905fc86ddc20ca9014ec8af81a19"
+    "docs/claims/casper-node-authority-snapshot.md": "234b65b479864c0ce6b45c45f8c2f2c971d01e7639fc2343ad0256a3d728e723"
   },
   "adapter": null,
   "status": "pending",
-  "scope": "task-019-4-handoff-cycle-01",
+  "scope": "task-019-4-handoff-cycle-02",
   "evidence": {
     "kind": "tiered-evidence-not-discharge",
-    "ref": "docs/cbc-evidence/runs/casper-node-claim-gate-03d7f1b27-01/report.json",
-    "sha256": "68e9224741cf8aeeb666f1e86947c8d15dc5cb8587bed98767cf9e52e2674160"
+    "ref": "docs/cbc-evidence/runs/casper-node-claim-gate-78d696ea6-01/report.json",
+    "sha256": "adaaf210f7792763d2827f78f82b9adf05bd386f4293483b20b123fef3224686"
   },
   "tiers": {
     "refutation": "recorded",
@@ -39,8 +39,8 @@ The approved reconciliation artifact remains pending.
   "verified_at": null,
   "previous_record": {
     "path": "docs/cbc-evidence/formal-tlaplus-node-observation-verification-plan-json.md",
-    "sha256": "f51e899e19aad171bc5e6525f55a546df7217899c5e203a575e9e76da5ce6a23",
-    "commit": "10e7b8452824e12a1fe2743dca7989b79fce2133"
+    "sha256": "51cbf3ebdc69558fb179e5b2f7f8dc99ac3082d86b0568b05a21dbd167f5977c",
+    "commit": "03d7f1b27544b2c5a93b664d8684b24ea16cf3e9"
   }
 }
 ```

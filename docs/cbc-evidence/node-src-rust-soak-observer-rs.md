@@ -7,7 +7,7 @@ The interface claim remains pending. Local tests do not discharge the claim or q
   "artifact": {
     "path": "node/src/rust/soak_observer.rs",
     "id": "node-src-rust-soak-observer-rs",
-    "commit": "03d7f1b27544b2c5a93b664d8684b24ea16cf3e9",
+    "commit": "78d696ea6780ca72105d9b35d2266b0329d777ed",
     "commit_is_base": true,
     "working_tree": true,
     "sha256": "542a454a57db3774663e7a2010ffdf5b0b7d746078fabbab7849404b5322f68d"
@@ -21,11 +21,11 @@ The interface claim remains pending. Local tests do not discharge the claim or q
   },
   "adapter": null,
   "status": "pending",
-  "scope": "task-019-4-handoff-cycle-01",
+  "scope": "task-019-4-handoff-cycle-02",
   "evidence": {
     "kind": "tiered-evidence-not-discharge",
-    "ref": "docs/cbc-evidence/runs/casper-node-claim-gate-03d7f1b27-01/report.json",
-    "sha256": "68e9224741cf8aeeb666f1e86947c8d15dc5cb8587bed98767cf9e52e2674160"
+    "ref": "docs/cbc-evidence/runs/casper-node-claim-gate-78d696ea6-01/report.json",
+    "sha256": "adaaf210f7792763d2827f78f82b9adf05bd386f4293483b20b123fef3224686"
   },
   "tiers": {
     "refutation": "recorded",
@@ -37,8 +37,8 @@ The interface claim remains pending. Local tests do not discharge the claim or q
   "verified_at": null,
   "previous_record": {
     "path": "docs/cbc-evidence/node-src-rust-soak-observer-rs.md",
-    "sha256": "cbed24f3448cf337aabb927184707857514dc4ebd0d16d96b907ef673d5bce20",
-    "commit": "10e7b8452824e12a1fe2743dca7989b79fce2133"
+    "sha256": "7e6f6daa254b1561cce2ee37b5a0ae6904b8b5f41f6a8f5df3063622628d055e",
+    "commit": "03d7f1b27544b2c5a93b664d8684b24ea16cf3e9"
   }
 }
 ```

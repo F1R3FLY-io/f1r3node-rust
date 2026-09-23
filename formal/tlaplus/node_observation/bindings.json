@@ -496,11 +496,13 @@
             {
               "source": "block-storage/tests/soak_snapshot.rs",
               "name": "finalization_row_write_without_generation_change_is_rejected"
+            },
+            {
+              "source": "block-storage/src/rust/dag/soak_snapshot.rs",
+              "name": "rust::dag::soak_snapshot::tests::generation_change_after_validation_rejects_capture"
             }
           ],
-          "gaps": [
-            "The node branch has no deterministic generation-change rejection test. The downstream-only test is not imported by this model reconciliation."
-          ],
+          "gaps": [],
           "theorems": [
             "capture_generation_stable"
           ],

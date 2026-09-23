@@ -111,7 +111,7 @@ The formal gate requires 14 closed assumption sets for the `NodeObservation.Main
 
 The capture oracle test runs production capture against a hand-translated `BoundedCapture` oracle over 14 scenarios. Seven Kani harnesses cover the length prefix, limit comparison, atomic charging, and decode-limit validation. The charging harnesses exercise the checked-total arithmetic with symbolic inputs.
 
-Property 8 keeps a recorded binding gap. No deterministic generation-rejection test exists on this branch.
+Property 8 has a deterministic generation-rejection test. The test changes the insertion generation at the validated phase, and the capture is rejected with both guards released.
 
 The [applicability review](../../formal/tlaplus/node_observation/README.md#applicability-per-property) lists every property's class, evidence, and decision status. Named maintainer review of each decision and acceptance of this claim remain pending.
 

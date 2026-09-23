@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "execution_base": "78d696ea6780ca72105d9b35d2266b0329d777ed",
+  "working_tree": true,
+  "report_sha256": "adaaf210f7792763d2827f78f82b9adf05bd386f4293483b20b123fef3224686",
+  "inventory_files": 71,
+  "mandatory_files": 60,
+  "records_refreshed": 58,
+  "records_created": 0,
+  "tla_gate_exit": 0,
+  "previous_cycle": "docs/cbc-evidence/runs/casper-node-claim-gate-03d7f1b27-01/report.json",
+  "coqchk_ok": true,
+  "closed_assumption_sets": 14,
+  "kani_shared_exit": 0,
+  "kani_block_storage_exit": 1,
+  "oracle_scenarios": 14,
+  "clippy_exit": 0,
+  "fmt_exit": 0,
+  "strict_audit_exit_expected_after_refresh": 4,
+  "claim_acceptance": false,
+  "task_complete": false
+}

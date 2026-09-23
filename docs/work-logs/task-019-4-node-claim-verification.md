@@ -580,3 +580,42 @@ The strict audit returned exit 4 before the refresh with the new module unrecord
 The package `casper-node-claim-gate-03d7f1b27-01` records the tiers reached. Bulk evidence remains under the session scratch directory outside Git.
 
 The task stops at the acceptance gate. The proposed reviewer must review each applicability decision and accept both claims by naming the revision, both claim IDs, and the package.
+
+## Handoff cycle 02 results on 2026-09-23
+
+The downstream agent reported that the soak branch carries a deterministic generation-rejection test that this branch lacked. The test was pulled across as a unit test in the DAG capture module and committed at `78d696ea6`.
+
+The test changes the insertion generation at the validated phase. The capture is rejected with the environment-changed error for the DAG insertion generation, both guards are released, and a fresh capture succeeds.
+
+### Refutation tier
+
+The gate reran at this revision with the pinned jar. It passed 15 clean configurations and 78 expected violations with exit zero, and all 17 node controls exited 12 on their named invariants.
+
+Both positive node models reran directly: `MC_ObserverSession` with 689 distinct states and `MC_BoundedCapture` with 10,066 distinct states. The model inputs did not change in this cycle.
+
+### Construction tier
+
+The Rocq project rebuilt in the resource-limited container with the same limits as cycle 01. The forbidden-vocabulary check was clean, `coqchk` reported that the modules were successfully checked, and all 14 assumption sets reported `Closed under the global context`.
+
+### Binding tier
+
+The property 8 entry in the bindings manifest lists the new test and has no remaining gap. All 65 test references in the manifest resolve to source declarations.
+
+The shared reader source has the same digest as in cycle 01, so the six verified Kani harnesses carry forward. The block-store harness remains authored and not executed.
+
+Lint with warnings denied and formatting passed. The shared suite passed 102 library and 19 reader tests. The block-storage suite passed 70 library and 27 capture tests with its remaining targets.
+
+### Applicability review
+
+The B8 row now records the generation-rejection test, the unchanged-generation writer tests, and the capture oracle. Its decision is construction recorded with acceptance pending, in line with the other properties that have a recorded theorem.
+
+No other classification changed. Every decision still awaits the named maintainer.
+
+### Records and package
+
+The package `casper-node-claim-gate-78d696ea6-01` records the tiers reached and names the cycle 01 package as its previous cycle. Its blocking list has three items: the applicability review, the acceptance, and the open construction proofs.
+
+The DAG capture source, the bindings manifest, the area README, and the authority snapshot claim changed in this cycle. Every mandatory node record is refreshed at this revision and cites the new package.
+
+The strict audit is expected to return exit 4 with every mandatory record pending. Bulk evidence remains under the session scratch directory outside Git.
+

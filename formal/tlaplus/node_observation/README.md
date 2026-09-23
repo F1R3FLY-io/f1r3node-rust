@@ -131,7 +131,7 @@ A resource limit, timeout, frame size, or test fixture does not make a property 
 | B5: allocation limits | U | `BoundBytes` | `capture_prefix_roundtrip`, `capture_prefix_sound`, `capture_budget_bounded`. | Length, decode, and nested-bound tests, and three Kani harnesses. | Construction recorded, acceptance pending. |
 | B6: copied state and effects | U | `GuardOrder`, `ReadOnly` | `capture_guard_order`, `capture_detached`. | Unchanged-bytes tests. | Construction recorded, acceptance pending. |
 | B7: environment validation | U | `ValidatedIdentity` | `capture_no_interference`, including restored values under monotone identifiers. | Interference tests and capture oracle. | Construction recorded, acceptance pending. |
-| B8: generation validation | U | `GenerationStable` | `capture_generation_stable`. | Partial. No deterministic generation-rejection test on this branch. | Binding gap recorded. |
+| B8: generation validation | U | `GenerationStable` | `capture_generation_stable`. | Generation-rejection test at the validated phase, unchanged-generation writer tests, and capture oracle. | Construction recorded, acceptance pending. |
 | B9: incomplete rows | U | `CompleteRows` | Pending. The row model is a Boolean predicate. | Missing-row tests and capture oracle. | Pending. |
 | B10: resource release | U | `Detached`, `ReadOnly` | `capture_detached`. | Release and unchanged-bytes tests. | Construction recorded, acceptance pending. |
 | B11: canonical identity | U | None | Pending. No model or theorem. | Digest, duration, and byte-bound tests. | Pending. |

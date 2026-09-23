@@ -7,7 +7,7 @@ The approved reconciliation artifact remains pending.
   "artifact": {
     "path": "formal/tlaplus/node_observation/MC_ObserverSession_challenge_unsafe.tla",
     "id": "formal-tlaplus-node-observation-MC-ObserverSession-challenge-unsafe-tla",
-    "commit": "03d7f1b27544b2c5a93b664d8684b24ea16cf3e9",
+    "commit": "78d696ea6780ca72105d9b35d2266b0329d777ed",
     "commit_is_base": true,
     "working_tree": true,
     "sha256": "a3d7fe9a6e4aad45ac2acaf595e876c99c1fd09b6a5b23c34c327f0352b9398a"
@@ -21,11 +21,11 @@ The approved reconciliation artifact remains pending.
   },
   "adapter": null,
   "status": "pending",
-  "scope": "task-019-4-handoff-cycle-01",
+  "scope": "task-019-4-handoff-cycle-02",
   "evidence": {
     "kind": "tiered-evidence-not-discharge",
-    "ref": "docs/cbc-evidence/runs/casper-node-claim-gate-03d7f1b27-01/report.json",
-    "sha256": "68e9224741cf8aeeb666f1e86947c8d15dc5cb8587bed98767cf9e52e2674160"
+    "ref": "docs/cbc-evidence/runs/casper-node-claim-gate-78d696ea6-01/report.json",
+    "sha256": "adaaf210f7792763d2827f78f82b9adf05bd386f4293483b20b123fef3224686"
   },
   "tiers": {
     "refutation": "recorded",
@@ -37,8 +37,8 @@ The approved reconciliation artifact remains pending.
   "verified_at": null,
   "previous_record": {
     "path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-ObserverSession-challenge-unsafe-tla.md",
-    "sha256": "410917c5003e18672501dbd78965ffeeff002e5b19383bb733263fe888a38d77",
-    "commit": "10e7b8452824e12a1fe2743dca7989b79fce2133"
+    "sha256": "f172a670e82df646b13a2feac10c2791aeda0d5f3ecba5863c9941fe328d9e7d",
+    "commit": "03d7f1b27544b2c5a93b664d8684b24ea16cf3e9"
   }
 }
 ```

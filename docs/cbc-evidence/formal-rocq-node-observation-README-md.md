@@ -7,7 +7,7 @@ The approved verification artifact is pending implementation and verification.
   "artifact": {
     "path": "formal/rocq/node_observation/README.md",
     "id": "formal-rocq-node-observation-README-md",
-    "commit": "03d7f1b27544b2c5a93b664d8684b24ea16cf3e9",
+    "commit": "78d696ea6780ca72105d9b35d2266b0329d777ed",
     "commit_is_base": true,
     "working_tree": true,
     "sha256": "8fa69411f063e7eac99939aa09d2ce179e93e1f11c0874798113d618c7d265ad"
@@ -21,11 +21,11 @@ The approved verification artifact is pending implementation and verification.
   },
   "adapter": null,
   "status": "pending",
-  "scope": "task-019-4-handoff-cycle-01",
+  "scope": "task-019-4-handoff-cycle-02",
   "evidence": {
     "kind": "tiered-evidence-not-discharge",
-    "ref": "docs/cbc-evidence/runs/casper-node-claim-gate-03d7f1b27-01/report.json",
-    "sha256": "68e9224741cf8aeeb666f1e86947c8d15dc5cb8587bed98767cf9e52e2674160"
+    "ref": "docs/cbc-evidence/runs/casper-node-claim-gate-78d696ea6-01/report.json",
+    "sha256": "adaaf210f7792763d2827f78f82b9adf05bd386f4293483b20b123fef3224686"
   },
   "tiers": {
     "refutation": "recorded",
@@ -37,8 +37,8 @@ The approved verification artifact is pending implementation and verification.
   "verified_at": null,
   "previous_record": {
     "path": "docs/cbc-evidence/formal-rocq-node-observation-README-md.md",
-    "sha256": "27fe804b418ffb5c07b3800d8b333c57e9523c32db5bcc16d8851af0fa9b30c0",
-    "commit": "10e7b8452824e12a1fe2743dca7989b79fce2133"
+    "sha256": "0abe16c9a4c56dc52d002d0ff0ae5060ec148b4a747d785799969f0f0d4a085d",
+    "commit": "03d7f1b27544b2c5a93b664d8684b24ea16cf3e9"
   }
 }
 ```
