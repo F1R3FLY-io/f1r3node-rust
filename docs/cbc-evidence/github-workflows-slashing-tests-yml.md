@@ -72,16 +72,28 @@ The complete nightly suite and Rocq suite were not rerun with real verifiers. No
 
 ## Ledger record
 
+Node claims record their binding-job evidence in their own run packages. This record retains its primary claim and historical source identity.
+
 ```json
 {
   "artifact": {
     "path": ".github/workflows/slashing-tests.yml",
-    "commit": null,
-    "base_commit": "7034e21683044fb1525d213d5a1ae2e16bbb57c0",
-    "sha256": "460be11512b1f01f79387d7a3dad6c60d3c45627b5790436f9db6e165eac69fb",
+    "commit": "3b1d2465a39b020426b3caa02bf5313d2b9fac5b",
+    "commit_is_base": true,
+    "working_tree": true,
+    "sha256": "991507a49e77745dd8a6a9ecfbd4be8d2cc9cb3645d9e1b1862b8430cd01267b",
     "id": "github-workflows-slashing-tests-yml"
   },
   "claim": "CLAIM-SOAK-GATE-001",
+  "claim_ids": [
+    "CLAIM-SOAK-GATE-001"
+  ],
+  "previous_record": {
+    "commit": "3b1d2465a39b020426b3caa02bf5313d2b9fac5b",
+    "path": "docs/cbc-evidence/github-workflows-slashing-tests-yml.md",
+    "sha256": "59da572253becdc8277ddf878fa6dc2365fe567cc52fe746ba04a2ba532cf100"
+  },
+  "verification_scope": "historical-gate-evidence-not-node-claim-renewal",
   "adapter": "embedded",
   "status": "pending",
   "evidence": {

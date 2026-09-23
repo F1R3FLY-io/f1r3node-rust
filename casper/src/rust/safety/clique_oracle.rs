@@ -6,12 +6,22 @@ use std::time::{Duration, Instant};
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use models::rust::block_hash::BlockHash;
 use models::rust::validator::Validator;
+use shared::rust::dag::observation_work::{NoopWork, WorkKind, WorkMeter};
 use shared::rust::store::key_value_store::KvStoreError;
 
 use crate::rust::safety_oracle::MIN_FAULT_TOLERANCE;
 use crate::rust::util::clique::Clique;
 
 pub struct CliqueOracle;
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct ExactOracleResult {
+    pub decision: bool,
+    pub total_stake: Option<i64>,
+    pub agreeing_stake: Option<i64>,
+    pub clique_weight: Option<i64>,
+    pub early_return: Option<&'static str>,
+}
 
 type M = BlockHash; // type for message
 type V = Validator; // type for message creator/validator
@@ -134,13 +144,79 @@ impl CliqueOracle {
         target_msg: &M,
         dag: &KeyValueDagRepresentation,
     ) -> Result<WeightMap, KvStoreError> {
-        dag.lookup_unsafe(target_msg)
-            .and_then(|meta| match meta.parents.first() {
-                Some(main_parent) => dag
-                    .lookup_unsafe(main_parent)
-                    .map(|parent_meta| parent_meta.weight_map.into_iter().collect()),
-                None => Ok(meta.weight_map.into_iter().collect()),
-            })
+        Self::get_corresponding_weight_map_metered(&NoopWork, target_msg, dag).await
+    }
+    pub async fn compute_output_with_cache(
+        target_msg: &M,
+        message_weight_map: &WeightMap,
+        agreeing_weight_map: &WeightMap,
+        dag: &KeyValueDagRepresentation,
+        run_cache: &mut CliqueOracleRunCache,
+        latest_messages: &BTreeMap<V, M>,
+    ) -> Result<f32, KvStoreError> {
+        Self::compute_output_with_cache_metered(
+            &NoopWork,
+            target_msg,
+            message_weight_map,
+            agreeing_weight_map,
+            dag,
+            run_cache,
+            latest_messages,
+        )
+        .await
+    }
+    pub async fn compute_output(
+        target_msg: &M,
+        message_weight_map: &WeightMap,
+        agreeing_weight_map: &WeightMap,
+        dag: &KeyValueDagRepresentation,
+        latest_messages: &BTreeMap<V, M>,
+    ) -> Result<f32, KvStoreError> {
+        Self::compute_output_metered(
+            &NoopWork,
+            target_msg,
+            message_weight_map,
+            agreeing_weight_map,
+            dag,
+            latest_messages,
+        )
+        .await
+    }
+    pub async fn ft_witnessed_exact(
+        target_msg: &M,
+        dag: &KeyValueDagRepresentation,
+        latest_messages: &BTreeMap<V, M>,
+        ftt: FtThreshold,
+        strict: bool,
+    ) -> Result<bool, KvStoreError> {
+        Self::ft_witnessed_exact_metered(&NoopWork, target_msg, dag, latest_messages, ftt, strict)
+            .await
+    }
+    pub async fn ft_witnessed(
+        target_msg: &M,
+        dag: &KeyValueDagRepresentation,
+        latest_messages: &BTreeMap<V, M>,
+    ) -> Result<f32, KvStoreError> {
+        Self::ft_witnessed_metered(&NoopWork, target_msg, dag, latest_messages).await
+    }
+    pub async fn get_corresponding_weight_map_metered<W: WorkMeter>(
+        meter: &W,
+        target_msg: &M,
+        dag: &KeyValueDagRepresentation,
+    ) -> Result<WeightMap, KvStoreError> {
+        meter.step(WorkKind::Oracle)?;
+        meter.allocate(64, 128)?;
+        let meta = dag.lookup_unsafe_metered(meter, target_msg)?;
+        let weights = match meta.parents.first() {
+            Some(parent) => dag.lookup_unsafe_metered(meter, parent)?.weight_map,
+            None => meta.weight_map,
+        };
+        let mut result = HashMap::new();
+        for (validator, weight) in weights {
+            meter.step(WorkKind::Oracle)?;
+            result.insert(validator, weight);
+        }
+        Ok(result)
     }
 
     /// If two validators will never have disagreement on target message
@@ -168,7 +244,8 @@ impl CliqueOracle {
     ///    ignorance, not disagreement — and must not veto the edge.
     ///
     ///    If a disagreeing block is found - this is a source of disagreement.
-    async fn never_eventually_see_disagreement(
+    async fn never_eventually_see_disagreement_metered<W: WorkMeter>(
+        meter: &W,
         lm_b: &M,
         lm_a_j_b: &M,
         dag: &KeyValueDagRepresentation,
@@ -176,13 +253,16 @@ impl CliqueOracle {
         run_cache: &mut CliqueOracleRunCache,
     ) -> Result<bool, KvStoreError> {
         /// Check if there might be eventual disagreement between validators
-        async fn might_eventually_disagree(
+        async fn might_eventually_disagree_metered<W: WorkMeter>(
+            meter: &W,
             lm_b: &M,
             lm_a_j_b: &M,
             dag: &KeyValueDagRepresentation,
             target_msg: &M,
             run_cache: &mut CliqueOracleRunCache,
         ) -> Result<bool, KvStoreError> {
+            meter.step(WorkKind::Oracle)?;
+            meter.allocate(4, 256)?;
             let yield_check_interval = run_cache.yield_check_interval;
             let yield_timeslice = run_cache.yield_timeslice;
             // self justification of lmAjB or lmAjB itself. Used as a stopper for traversal
@@ -213,10 +293,12 @@ impl CliqueOracle {
                 );
                 value
             };
-            let target_height = dag.lookup_unsafe(target_msg)?.block_number;
+            let target_height = dag.lookup_unsafe_metered(meter, target_msg)?.block_number;
             let mut last_yield = Instant::now();
             let mut idx: usize = 0;
             while let Some(hash) = current {
+                meter.step(WorkKind::Traversal)?;
+                meter.allocate(4, 256)?;
                 if hash == stopper {
                     break;
                 }
@@ -257,11 +339,11 @@ impl CliqueOracle {
                     if let Some(cached) = run_cache.ancestor_cache.get(&ancestor_key) {
                         *cached
                     } else {
-                        let visited_height = dag.lookup_unsafe(&hash)?.block_number;
+                        let visited_height = dag.lookup_unsafe_metered(meter, &hash)?.block_number;
                         let value = if visited_height < target_height {
-                            dag.is_in_main_chain(&hash, target_msg)?
+                            dag.is_in_main_chain_metered(meter, &hash, target_msg)?
                         } else {
-                            dag.is_in_main_chain(target_msg, &hash)?
+                            dag.is_in_main_chain_metered(meter, target_msg, &hash)?
                         };
                         CliqueOracle::bounded_cache_insert(
                             &mut run_cache.ancestor_cache,
@@ -291,12 +373,13 @@ impl CliqueOracle {
             Ok(false)
         }
 
-        might_eventually_disagree(lm_b, lm_a_j_b, dag, target_msg, run_cache)
+        might_eventually_disagree_metered(meter, lm_b, lm_a_j_b, dag, target_msg, run_cache)
             .await
             .map(|r| !r)
     }
 
-    async fn compute_max_clique_weight(
+    async fn compute_max_clique_weight_metered<W: WorkMeter>(
+        meter: &W,
         target_msg: &M,
         agreeing_weight_map: &WeightMap,
         dag: &KeyValueDagRepresentation,
@@ -307,23 +390,41 @@ impl CliqueOracle {
         // Using tracing events for async - Span[F].traceI("compute-max-clique-weight") from Scala
         tracing::debug!(target: "f1r3fly.casper.safety.clique_oracle", "compute-max-clique-weight-started");
         /// across combination of validators compute pairs that do not have disagreement
-        async fn compute_agreeing_validator_pairs(
+        async fn compute_agreeing_validator_pairs_metered<W: WorkMeter>(
+            meter: &W,
             target_msg: &M,
             agreeing_weight_map: &WeightMap,
             dag: &KeyValueDagRepresentation,
             run_cache: &mut CliqueOracleRunCache,
             latest_messages: &BTreeMap<V, M>,
         ) -> Result<Vec<(V, V)>, KvStoreError> {
+            meter.step(WorkKind::Oracle)?;
+            meter.allocate(4, 256)?;
             let yield_check_interval = run_cache.yield_check_interval;
             let yield_timeslice = run_cache.yield_timeslice;
 
-            let agreeing_validators: BTreeSet<V> = agreeing_weight_map.keys().cloned().collect();
+            meter.allocate(agreeing_weight_map.len(), 512)?;
+            let mut agreeing_validators = BTreeSet::new();
+            for validator in agreeing_weight_map.keys() {
+                meter.step(WorkKind::Oracle)?;
+                agreeing_validators.insert(validator.clone());
+            }
             let mut latest_justifications_cache: BTreeMap<V, BTreeMap<V, M>> = BTreeMap::new();
             let mut pairwise_latest_messages: BTreeMap<V, M> = BTreeMap::new();
             // Conservative pruning: if validator has no latest message or no justifications
             // to other agreeing validators, it cannot form an agreeing edge with anyone.
             let mut pairwise_validators: Vec<V> = Vec::new();
             for validator in agreeing_validators.iter() {
+                meter.charge(
+                    WorkKind::Allocation,
+                    1,
+                    meter
+                        .metadata_bytes()
+                        .checked_mul(4)
+                        .ok_or_else(|| meter.reject("allocation_overflow"))?,
+                )?;
+                meter.step(WorkKind::Oracle)?;
+                meter.allocate(4, 256)?;
                 // Determinism lever: resolve "validator V's latest message" from the
                 // frozen snapshot, never from the live DAG (dag.latest_message_hash is
                 // the sole node-divergent input to the oracle).
@@ -336,26 +437,28 @@ impl CliqueOracle {
                     if let Some(cached) = run_cache.latest_justifications_cache.get(validator) {
                         cached.clone()
                     } else {
-                        let metadata = dag.lookup_unsafe(&latest)?;
-                        let all: BTreeMap<V, M> = metadata
-                            .justifications
-                            .iter()
-                            .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
-                            .collect();
+                        let metadata = dag.lookup_unsafe_metered(meter, &latest)?;
+                        let mut all = BTreeMap::new();
+                        for justification in &metadata.justifications {
+                            meter.step(WorkKind::Traversal)?;
+                            all.insert(
+                                justification.validator.clone(),
+                                justification.latest_block_hash.clone(),
+                            );
+                        }
                         run_cache
                             .latest_justifications_cache
                             .insert(validator.clone(), all.clone());
                         all
                     };
 
-                let relevant_justifications: BTreeMap<V, M> = all_justifications
-                    .iter()
-                    .filter_map(|(validator, hash)| {
-                        agreeing_validators
-                            .contains(validator)
-                            .then_some((validator.clone(), hash.clone()))
-                    })
-                    .collect();
+                let mut relevant_justifications = BTreeMap::new();
+                for (validator, hash) in &all_justifications {
+                    meter.step(WorkKind::Traversal)?;
+                    if agreeing_validators.contains(validator) {
+                        relevant_justifications.insert(validator.clone(), hash.clone());
+                    }
+                }
                 if relevant_justifications.is_empty() {
                     continue;
                 }
@@ -368,7 +471,11 @@ impl CliqueOracle {
             let mut last_yield = Instant::now();
             let mut pair_idx: usize = 0;
             for i in 0..pairwise_validators.len() {
+                meter.step(WorkKind::Oracle)?;
+                meter.allocate(4, 256)?;
                 for j in (i + 1)..pairwise_validators.len() {
+                    meter.step(WorkKind::Oracle)?;
+                    meter.allocate(4, 256)?;
                     // Keep this loop cooperative so higher-level timeouts can preempt
                     // expensive clique evaluation on deep DAGs.
                     if pair_idx.is_multiple_of(yield_check_interval)
@@ -397,14 +504,16 @@ impl CliqueOracle {
                     let Some(lm_b) = pairwise_latest_messages.get(b) else {
                         continue;
                     };
-                    let no_a_b_disagreement = CliqueOracle::never_eventually_see_disagreement(
-                        lm_b, lm_a_j_b, dag, target_msg, run_cache,
-                    )
-                    .await?;
-                    let no_b_a_disagreement = CliqueOracle::never_eventually_see_disagreement(
-                        lm_a, lm_b_j_a, dag, target_msg, run_cache,
-                    )
-                    .await?;
+                    let no_a_b_disagreement =
+                        CliqueOracle::never_eventually_see_disagreement_metered(
+                            meter, lm_b, lm_a_j_b, dag, target_msg, run_cache,
+                        )
+                        .await?;
+                    let no_b_a_disagreement =
+                        CliqueOracle::never_eventually_see_disagreement_metered(
+                            meter, lm_a, lm_b_j_a, dag, target_msg, run_cache,
+                        )
+                        .await?;
 
                     if no_a_b_disagreement && no_b_a_disagreement {
                         result.push((a.clone(), b.clone()));
@@ -415,7 +524,8 @@ impl CliqueOracle {
             Ok(result)
         }
 
-        let edges = compute_agreeing_validator_pairs(
+        let edges = compute_agreeing_validator_pairs_metered(
+            meter,
             target_msg,
             agreeing_weight_map,
             dag,
@@ -423,7 +533,8 @@ impl CliqueOracle {
             latest_messages,
         )
         .await?;
-        let max_weight = Clique::find_maximum_clique_by_weight(&edges, agreeing_weight_map);
+        let max_weight =
+            Clique::find_maximum_clique_by_weight_metered(meter, &edges, agreeing_weight_map)?;
 
         metrics::histogram!(
             crate::rust::metrics_constants::CLIQUE_ORACLE_COMPUTE_TIME_METRIC,
@@ -433,7 +544,8 @@ impl CliqueOracle {
         Ok(max_weight)
     }
 
-    pub async fn compute_output_with_cache(
+    pub async fn compute_output_with_cache_metered<W: WorkMeter>(
+        meter: &W,
         target_msg: &M,
         message_weight_map: &WeightMap,
         agreeing_weight_map: &WeightMap,
@@ -441,6 +553,11 @@ impl CliqueOracle {
         run_cache: &mut CliqueOracleRunCache,
         latest_messages: &BTreeMap<V, M>,
     ) -> Result<f32, KvStoreError> {
+        meter.charge(
+            WorkKind::Oracle,
+            (message_weight_map.len() + agreeing_weight_map.len()) as u64,
+            0,
+        )?;
         let total_stake = message_weight_map.values().sum::<i64>() as f32;
         assert!(
             total_stake > 0.0,
@@ -451,7 +568,8 @@ impl CliqueOracle {
         if (agreeing_weight_map.values().sum::<i64>() as f32) <= total_stake / 2.0 {
             Ok(MIN_FAULT_TOLERANCE)
         } else {
-            let max_clique_weight = CliqueOracle::compute_max_clique_weight(
+            let max_clique_weight = CliqueOracle::compute_max_clique_weight_metered(
+                meter,
                 target_msg,
                 agreeing_weight_map,
                 dag,
@@ -466,7 +584,8 @@ impl CliqueOracle {
         }
     }
 
-    pub async fn compute_output(
+    pub async fn compute_output_metered<W: WorkMeter>(
+        meter: &W,
         target_msg: &M,
         message_weight_map: &WeightMap,
         agreeing_weight_map: &WeightMap,
@@ -474,7 +593,8 @@ impl CliqueOracle {
         latest_messages: &BTreeMap<V, M>,
     ) -> Result<f32, KvStoreError> {
         let mut run_cache = Self::new_run_cache();
-        Self::compute_output_with_cache(
+        Self::compute_output_with_cache_metered(
+            meter,
             target_msg,
             message_weight_map,
             agreeing_weight_map,
@@ -489,13 +609,15 @@ impl CliqueOracle {
     /// frozen `latest_messages` snapshot. Shared by [`CliqueOracle::ft_witnessed`]
     /// (f32 display) and [`CliqueOracle::ft_witnessed_exact`] (integer DECISION)
     /// so both read agreement identically.
-    async fn agreeing_weight_map(
+    async fn agreeing_weight_map_metered<W: WorkMeter>(
+        meter: &W,
         weight_map: &WeightMap,
         target_msg: &M,
         dag: &KeyValueDagRepresentation,
         latest_messages: &BTreeMap<V, M>,
     ) -> Result<WeightMap, KvStoreError> {
-        async fn agree(
+        async fn agree_metered<W: WorkMeter>(
+            meter: &W,
             validator: &V,
             message: &M,
             dag: &KeyValueDagRepresentation,
@@ -526,7 +648,7 @@ impl CliqueOracle {
             let Some(hash) = latest_messages.get(validator) else {
                 return Ok(false);
             };
-            match dag.is_in_main_chain(message, hash) {
+            match dag.is_in_main_chain_metered(meter, message, hash) {
                 Err(KvStoreError::MissingBlock { .. }) => Ok(false),
                 other => other,
             }
@@ -534,7 +656,9 @@ impl CliqueOracle {
 
         let mut agreeing_map = HashMap::new();
         for (validator, weight) in weight_map.iter() {
-            if agree(validator, target_msg, dag, latest_messages).await? {
+            meter.step(WorkKind::Oracle)?;
+            meter.allocate(4, 256)?;
+            if agree_metered(meter, validator, target_msg, dag, latest_messages).await? {
                 agreeing_map.insert(validator.clone(), *weight);
             }
         }
@@ -549,39 +673,82 @@ impl CliqueOracle {
     /// production caller passes `strict=false` (≥). Mirrors `ft_witnessed`'s
     /// contains / zero-stake / `agreeing ≤ S/2` short-circuits so the two agree
     /// everywhere except at the `f32` rounding boundary this replaces.
-    pub async fn ft_witnessed_exact(
+    pub async fn ft_witnessed_exact_metered<W: WorkMeter>(
+        meter: &W,
         target_msg: &M,
         dag: &KeyValueDagRepresentation,
         latest_messages: &BTreeMap<V, M>,
         ftt: FtThreshold,
         strict: bool,
     ) -> Result<bool, KvStoreError> {
+        Ok(
+            Self::exact_result_metered(meter, target_msg, dag, latest_messages, ftt, strict)
+                .await?
+                .decision,
+        )
+    }
+
+    pub async fn exact_result_metered<W: WorkMeter>(
+        meter: &W,
+        target_msg: &M,
+        dag: &KeyValueDagRepresentation,
+        latest_messages: &BTreeMap<V, M>,
+        ftt: FtThreshold,
+        strict: bool,
+    ) -> Result<ExactOracleResult, KvStoreError> {
         // Non-existing message: MIN ⇒ not finalized (mirrors ft_witnessed).
         if !dag.contains(target_msg) {
             tracing::warn!(
                 ?target_msg,
                 "Exact fault tolerance for non existing message requested."
             );
-            return Ok(false);
+            return Ok(ExactOracleResult {
+                decision: false,
+                total_stake: None,
+                agreeing_stake: None,
+                clique_weight: None,
+                early_return: Some("target_not_held"),
+            });
         }
-        let full_weight_map = CliqueOracle::get_corresponding_weight_map(target_msg, dag).await?;
+        let full_weight_map =
+            CliqueOracle::get_corresponding_weight_map_metered(meter, target_msg, dag).await?;
+        meter.charge(WorkKind::Oracle, full_weight_map.len() as u64, 0)?;
         let total_stake = full_weight_map.values().sum::<i64>();
         // Zero (or negative) total stake cannot witness anything — mirrors the
         // ft_witnessed guard that returns MIN instead of asserting a positive total.
         if total_stake <= 0 {
-            return Ok(false);
+            return Ok(ExactOracleResult {
+                decision: false,
+                total_stake: Some(total_stake),
+                agreeing_stake: None,
+                clique_weight: None,
+                early_return: Some("non_positive_stake"),
+            });
         }
-        let agreeing_weight_map =
-            CliqueOracle::agreeing_weight_map(&full_weight_map, target_msg, dag, latest_messages)
-                .await?;
+        let agreeing_weight_map = CliqueOracle::agreeing_weight_map_metered(
+            meter,
+            &full_weight_map,
+            target_msg,
+            dag,
+            latest_messages,
+        )
+        .await?;
+        meter.charge(WorkKind::Oracle, agreeing_weight_map.len() as u64, 0)?;
         let agreeing = agreeing_weight_map.values().sum::<i64>();
         // agreeing ≤ S/2 ⇒ MIN ⇒ not finalized. Short-circuit BEFORE the expensive
         // clique search, exactly as compute_output_with_cache does.
         if (agreeing as i128) * 2 <= total_stake as i128 {
-            return Ok(false);
+            return Ok(ExactOracleResult {
+                decision: false,
+                total_stake: Some(total_stake),
+                agreeing_stake: Some(agreeing),
+                clique_weight: None,
+                early_return: Some("no_strict_majority"),
+            });
         }
         let mut run_cache = Self::new_run_cache();
-        let max_clique_weight = CliqueOracle::compute_max_clique_weight(
+        let max_clique_weight = CliqueOracle::compute_max_clique_weight_metered(
+            meter,
             target_msg,
             &agreeing_weight_map,
             dag,
@@ -597,7 +764,7 @@ impl CliqueOracle {
             ftt.den,
             strict,
         );
-        if tracing::enabled!(target: "f1r3.trace.oracle", tracing::Level::DEBUG) {
+        if !W::ENABLED && tracing::enabled!(target: "f1r3.trace.oracle", tracing::Level::DEBUG) {
             let snapshot: Vec<String> = latest_messages
                 .iter()
                 .map(|(v, m)| {
@@ -624,7 +791,13 @@ impl CliqueOracle {
                 "ft_witnessed_exact verdict"
             );
         }
-        Ok(decision)
+        Ok(ExactOracleResult {
+            decision,
+            total_stake: Some(total_stake),
+            agreeing_stake: Some(agreeing),
+            clique_weight: Some(max_clique_weight),
+            early_return: None,
+        })
     }
 
     /// Deterministic fault tolerance over a FROZEN latest-message snapshot.
@@ -634,7 +807,8 @@ impl CliqueOracle {
     /// input to the oracle). When `latest_messages` is taken from a candidate block's
     /// signed justification set, the result is a pure function of that block's bytes
     /// plus immutable ancestor metadata — bit-identical across honest nodes.
-    pub async fn ft_witnessed(
+    pub async fn ft_witnessed_metered<W: WorkMeter>(
+        meter: &W,
         target_msg: &M,
         dag: &KeyValueDagRepresentation,
         latest_messages: &BTreeMap<V, M>,
@@ -645,7 +819,7 @@ impl CliqueOracle {
         if dag.contains(target_msg) {
             tracing::debug!("Calculating fault tolerance for {:?}.", target_msg);
             let full_weight_map =
-                CliqueOracle::get_corresponding_weight_map(target_msg, dag).await?;
+                CliqueOracle::get_corresponding_weight_map_metered(meter, target_msg, dag).await?;
             // A weight map with no positive stake cannot witness anything.
             // `compute_output` asserts a positive total; a block whose metadata
             // carries zero-stake bonds must yield MIN, not panic — this path
@@ -660,7 +834,9 @@ impl CliqueOracle {
             // understates the clique.
             let mut held_latest_messages = BTreeMap::new();
             for (validator, hash) in latest_messages.iter() {
-                if dag.lookup(hash)?.is_some() {
+                meter.step(WorkKind::Oracle)?;
+                meter.allocate(4, 256)?;
+                if dag.lookup_metered(meter, hash)?.is_some() {
                     held_latest_messages.insert(validator.clone(), hash.clone());
                 } else {
                     tracing::debug!(
@@ -671,10 +847,16 @@ impl CliqueOracle {
                 }
             }
             let latest_messages = &held_latest_messages;
-            let agreeing_weight_map =
-                Self::agreeing_weight_map(&full_weight_map, target_msg, dag, latest_messages)
-                    .await?;
-            let result = CliqueOracle::compute_output(
+            let agreeing_weight_map = Self::agreeing_weight_map_metered(
+                meter,
+                &full_weight_map,
+                target_msg,
+                dag,
+                latest_messages,
+            )
+            .await?;
+            let result = CliqueOracle::compute_output_metered(
+                meter,
                 target_msg,
                 &full_weight_map,
                 &agreeing_weight_map,

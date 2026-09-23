@@ -202,6 +202,7 @@ impl Drop for FinalizationGuard<'_> {
 /// `FnMut + Send + Sync`.
 #[derive(Clone)]
 pub(crate) struct FinalizationContext {
+    pub(crate) observer: Option<crate::rust::soak_observer::ObserverBinding>,
     pub(crate) block_dag_storage: BlockDagKeyValueStorage,
     pub(crate) block_store: KeyValueBlockStore,
     pub(crate) runtime_manager: Arc<RuntimeManager>,
@@ -223,6 +224,7 @@ pub(crate) fn build_finalization_context<
     this: &crate::rust::engine::multi_parent_casper::types::MultiParentCasperImpl<T>,
 ) -> FinalizationContext {
     FinalizationContext {
+        observer: this.observer.get().cloned(),
         block_dag_storage: this.block_dag_storage.clone(),
         block_store: this.block_store.clone(),
         runtime_manager: this.runtime_manager.clone(),
@@ -282,6 +284,7 @@ pub(crate) async fn compute_last_finalized_block(
     ctx: FinalizationContext,
 ) -> Result<BlockMessage, CasperError> {
     let FinalizationContext {
+        observer,
         block_dag_storage,
         block_store,
         runtime_manager,
@@ -291,6 +294,7 @@ pub(crate) async fn compute_last_finalized_block(
         ftt,
         divergence_monitor,
     } = ctx;
+    let observation_operation = observer.as_ref().and_then(|observer| observer.operation());
     let lfb_lookup_started = std::time::Instant::now();
     // Get current LFB hash and height
     let dag = block_dag_storage.get_representation()?;
@@ -431,39 +435,71 @@ pub(crate) async fn compute_last_finalized_block(
         hash: last_finalized_block_hash.clone(),
         block_number: last_finalized_block_height,
     };
-    let new_lfb_opt =
-        match crate::rust::finality::floor::floor_of_view(&dag, &block_store, &current, ftt).await?
-        {
-            // `on_advance` is NOT called here: the alarm tracks the
-            // PERSISTED LFB, so the streak clears only after the adoption
-            // effect below succeeds. Clearing on derivation alone would let
-            // repeated effect failures suppress the divergence alarm.
-            crate::rust::finality::floor::FloorOfView::Advance(floor) => Some(floor),
-            crate::rust::finality::floor::FloorOfView::NoAdvance => None,
-            crate::rust::finality::floor::FloorOfView::ContainmentHold { derived } => {
-                divergence_monitor
-                    .on_containment_hold(&last_finalized_block_hash, derived.block_number);
-                None
+    let derivation =
+        crate::rust::finality::floor::floor_of_view(&dag, &block_store, &current, ftt).await;
+    if let Some(observer) = &observer {
+        use crate::rust::finality::floor::FloorOfView;
+        use crate::rust::soak_observer::{EventKind, FloorOutcome};
+        let (outcome, hash, height) = match &derivation {
+            Ok(FloorOfView::Advance(floor)) => (
+                FloorOutcome::Advance,
+                Some(floor.hash.as_ref()),
+                Some(floor.block_number),
+            ),
+            Ok(FloorOfView::ContainmentHold { derived }) => (
+                FloorOutcome::ContainmentHold,
+                Some(derived.hash.as_ref()),
+                Some(derived.block_number),
+            ),
+            Ok(FloorOfView::AbsenceHold { missing }) => {
+                (FloorOutcome::AbsenceHold, Some(missing.as_ref()), None)
             }
-            crate::rust::finality::floor::FloorOfView::AbsenceHold { missing } => {
-                tracing::debug!(
-                    missing = %PrettyPrinter::build_string_bytes(&missing),
-                    "finalizer holds this cycle: the floor walk needs a block \
-                     this node does not hold. Nothing requests it here, so the \
-                     hold lasts until catch-up fetches it for another reason"
-                );
-                None
+            Ok(FloorOfView::NoAdvance) => (FloorOutcome::NoAdvance, None, None),
+            Ok(FloorOfView::IncompatibilityHold { .. }) => {
+                (FloorOutcome::IncompatibilityHold, None, None)
             }
-            crate::rust::finality::floor::FloorOfView::IncompatibilityHold { detail } => {
-                tracing::debug!(
-                    detail,
-                    "finalizer holds this cycle: incompatible majority-agreement \
+            Err(_) => (FloorOutcome::Failed, None, None),
+        };
+        observer.emit(
+            EventKind::LiveDerivation,
+            observation_operation,
+            Some(outcome),
+            hash,
+            height,
+            Some(derivation.is_ok()),
+        );
+    }
+    let new_lfb_opt = match derivation? {
+        // `on_advance` is NOT called here: the alarm tracks the
+        // PERSISTED LFB, so the streak clears only after the adoption
+        // effect below succeeds. Clearing on derivation alone would let
+        // repeated effect failures suppress the divergence alarm.
+        crate::rust::finality::floor::FloorOfView::Advance(floor) => Some(floor),
+        crate::rust::finality::floor::FloorOfView::NoAdvance => None,
+        crate::rust::finality::floor::FloorOfView::ContainmentHold { derived } => {
+            divergence_monitor
+                .on_containment_hold(&last_finalized_block_hash, derived.block_number);
+            None
+        }
+        crate::rust::finality::floor::FloorOfView::AbsenceHold { missing } => {
+            tracing::debug!(
+                missing = %PrettyPrinter::build_string_bytes(&missing),
+                "finalizer holds this cycle: the floor walk needs a block \
+                 this node does not hold. Nothing requests it here, so the \
+                 hold lasts until catch-up fetches it for another reason"
+            );
+            None
+        }
+        crate::rust::finality::floor::FloorOfView::IncompatibilityHold { detail } => {
+            tracing::debug!(
+                detail,
+                "finalizer holds this cycle: incompatible majority-agreement \
                      candidates under a negative fault-tolerance threshold; the \
                      next merge spanning both branches reconciles them"
-                );
-                None
-            }
-        };
+            );
+            None
+        }
+    };
 
     let new_lfb_found = new_lfb_opt.is_some();
     let final_lfb_hash = if let Some(new_lfb) = new_lfb_opt {
@@ -488,9 +524,28 @@ pub(crate) async fn compute_last_finalized_block(
             fault_tolerance = ft_value,
             "finalization lifecycle"
         );
-        new_lfb_found_effect((new_lfb.hash.clone(), ft_value))
-            .await
-            .map_err(CasperError::KvStoreError)?;
+        if let Some(observer) = &observer {
+            observer.emit(
+                crate::rust::soak_observer::EventKind::EffectAttempt,
+                observation_operation,
+                None,
+                Some(&new_lfb.hash),
+                Some(new_lfb.block_number),
+                None,
+            );
+        }
+        let effect_result = new_lfb_found_effect((new_lfb.hash.clone(), ft_value)).await;
+        if let Some(observer) = &observer {
+            observer.emit(
+                crate::rust::soak_observer::EventKind::EffectReturn,
+                observation_operation,
+                None,
+                Some(&new_lfb.hash),
+                Some(new_lfb.block_number),
+                Some(effect_result.is_ok()),
+            );
+        }
+        effect_result.map_err(CasperError::KvStoreError)?;
         divergence_monitor.on_advance();
         new_lfb.hash
     } else {

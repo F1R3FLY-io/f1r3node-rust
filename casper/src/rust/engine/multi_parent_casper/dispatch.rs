@@ -133,6 +133,24 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
 
 #[async_trait]
 impl<T: TransportLayer + Send + Sync> MultiParentCasper for MultiParentCasperImpl<T> {
+    fn attach_observer(
+        &self,
+        binding: crate::rust::soak_observer::ObserverBinding,
+    ) -> Result<
+        crate::rust::soak_observer::CaptureEndpoint,
+        crate::rust::soak_observer::AttachmentError,
+    > {
+        self.observer
+            .set(binding)
+            .map_err(|_| crate::rust::soak_observer::AttachmentError::AlreadyAttached)?;
+        Ok(crate::rust::soak_observer::CaptureEndpoint::new(
+            self.block_dag_storage.clone(),
+            self.block_store.clone(),
+            &self.casper_shard_conf,
+            &self.approved_block,
+        ))
+    }
+
     async fn fetch_dependencies(&self) -> Result<(), CasperError> {
         // Get pendants from CasperBuffer
         let pendants = self.casper_buffer_storage.get_pendants();

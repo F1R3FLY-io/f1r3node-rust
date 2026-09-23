@@ -524,6 +524,29 @@ A **creation fence** prevents further workload execution after closure, includin
 **Preferred usage:** Identify the mechanism that enforces the creation fence.
 A rejected client request, an empty process list, or a single kill operation does not establish a creation fence.
 
+### Publication tuple
+
+A **publication tuple** is the set of observed storage rows and runtime state references used to evaluate one publication sequence.
+The tuple records database coverage, capture completeness, and writer context.
+
+**Preferred usage:** Use this term for the Batch C observation contract.
+A complete tuple does not establish atomic publication.
+
+### Publication attempt
+
+A **publication attempt** is one execution of a specified production publication path within one node incarnation.
+An external request label does not establish a durable production identity for that attempt.
+
+**Preferred usage:** Identify the writer path and the available production identity when this term appears in fault evidence.
+
+### Reached receipt
+
+A **reached receipt** records that execution reached a specified source boundary during one armed publication attempt.
+The receipt identifies the request, node incarnation, source revision, boundary, and attempt.
+
+**Preferred usage:** Use this term for boundary evidence that the external controller retains before process termination.
+An arm acknowledgment is not a reached receipt.
+
 ## Maintenance
 
 - Update this file before merging code or documentation that introduces a
