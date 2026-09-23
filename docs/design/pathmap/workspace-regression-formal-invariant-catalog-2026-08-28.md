@@ -1637,7 +1637,8 @@ tracked test payloads, not a Rust lifetime proof. J-213 retains all negative run
 
 ## EPM stateful ownership retirement (EOR, task 5834)
 
-`EpmOwnedRetirement.v` has 24 exported closed statements and two helper lemmas.
+The initial `EpmOwnedRetirement.v` ownership layer has 24 exported closed statements
+and two helper lemmas. The resident-cache extension below raises the exported count to 32.
 Compilation and independent kernel checking completed before the shared provider
 implementation. It extends the existing reverse-prune trace model; it does not
 replace that algorithm or establish a Rust/compiler refinement theorem.
@@ -1688,6 +1689,47 @@ a throughput or allocator benchmark. The short-lived map owner has an explicit
 ownership discriminator (eight additional stack bytes for unit on the tested target),
 not a per-PDA-frame or heap allocation. Successful transfer into raw public EPathMapRepr remains the
 pre-existing, separately audited frontier, not a guarded-recipient theorem binding.
+
+### Resident storage and cache coherence extension (task 8516)
+
+Preregistered after `8db4a76f5`, before the resident-storage Rust migration.
+Reuse `PathMapReversePruneTeardown.v`'s immutable wrapper clone, nonfinal release,
+shared `make_mut`, aborted detach, cross-anchor sharing and final-only retirement
+facts, and EOR's guarded transfer facts. Do not duplicate those models. The new
+EOR layer labels each optional cache with the image it describes. It proves
+cache/image coherence and preflight no-op preservation, not the serialization
+function, Arc internals, allocator behavior or arbitrary metadata transactions.
+
+| New closed declaration | Required witness in `epm_resident_ownership.rs` |
+|---|---|
+| `clone_owner_shares_image_identity_and_caches` | Cold and warm clone families share one storage identity and both cells |
+| `mutation_begin_clears_both_caches` | Both cells are empty before the mutable representation is exposed |
+| `mutation_begin_preserves_image_and_metadata` | A test interruption at mutation entry leaves values and maintained metadata unchanged |
+| `interrupted_mutation_begin_has_coherent_caches` | Interrupted detached owner remains cold while its sibling retains the original image/caches |
+| `prepared_image_change_has_coherent_caches` | Recomputed snapshot/layout agree with the mutated representation, not the old image |
+| `shared_mutation_preserves_sibling_and_cache_coherence` | Generated Set/Map alias mutations preserve the other sibling's bytes and metadata |
+| `preflight_noop_preserves_exact_owner` | Missing removals, existing-path creation, empty extension and absent greatest values retain identity, metadata and caches |
+| `uncleared_cache_mutant_is_incoherent` | Warm-cache mutation controls compare encoded bytes before/after a genuine change |
+
+Additional native ownership bindings must cover unique/shared Set, Map and
+topology-only retirement on a small stack, rejected incoming representations,
+replacement, algebraic root swaps and consuming transfers. The claim excludes
+transactional restoration of metadata after arbitrary mid-mutation panics; the
+mutation-entry witness interrupts before image or metadata changes.
+
+The six witnesses are bound by the maintained runner and manifest. The no-op
+claim applies to read-only preflights that establish absence, not every native
+operation returning false. In particular, a dangling PathMap leaf can contain an
+empty-child sentinel with zero logical children that native branch removal still
+prunes. Both removal APIs therefore gate only on path existence. Direct native
+parity checks cover the result, surviving topology and shared sibling for both
+specializations. A false native result after detach may leave a cold cache; that
+is not a semantic change or a violation of the restricted preflight theorem.
+
+The admission witness also exercises the raw-input wrapper with depth-8,192
+topology and a depth-8,192 Par payload. The algebra witness checks typed-empty Set
+selection from neutral Empty and exact consumed key/value association. Qualification
+and residual proof boundaries are recorded in J-214 of the engineering journal.
 
 ## Original workspace-regression completion gates
 

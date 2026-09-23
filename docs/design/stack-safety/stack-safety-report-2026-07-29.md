@@ -9055,6 +9055,29 @@ peak and zero swap, including the existing RSpace mutation and retirement suites
 Final compatibility qualification passes 10/10 at 2.5 GiB peak and zero swap,
 including unchanged clone/snapshot/term-semantics tests and the proof manifest.
 
+J-214 installs the resident owner: one shared guarded trie and two coherent cache
+cells replace the cache-reference-count ownership proxy. Eight abstract cache
+statements were added and kernel-checked before implementation (32 total EOR
+statements). Mutation clears both caches before exposing the mutable representation;
+rejected incoming tries and replaced resident roots retain the existing cleanup
+guard. Native tests cover cold/warm aliases, interrupted mutation entry, no-op
+preflights, exact consuming transfers, typed-empty Set selection, raw/owned admission
+failure, and depth-8,192 topology and payload cleanup on a 256 KiB stack.
+
+The default compatibility selection passes **106/106**, 655 excluded, with a
+2.1 GiB service peak and zero swap under an 8 GiB cap. Test time is 282.255 seconds;
+deep map algebra takes 261.829 seconds and unchanged legacy field-1 depth-4,096
+decoding takes 274.438 seconds. These are bounded correctness observations, not
+performance acceptance. J-214 preserves the negative build/filter receipts and
+the rejected child-count preflight: a dangling sentinel with no logical children
+may still be removed by native PathMap. The accepted preflight uses path existence,
+with direct native parity tests. Native subtree-removal internals and raw temporary
+algebra builders are not certified merely by guarding resident storage. Public
+planned-payload mapping, general decoder routing, gate 5917, resource comparisons
+and full workspace acceptance remain open; no consensus-visible change is intended.
+Feature-enabled resident/construction qualification additionally passes 26/26,
+664 excluded, in 8.734 seconds test time, 2.7 GiB peak and zero swap.
+
 ### 5.29 ParBag family and count-domain completeness [SS-A13, SS-A14, SS-Y9]
 
 #### 5.29.1 The defects

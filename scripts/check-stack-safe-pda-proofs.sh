@@ -758,7 +758,7 @@ rocq_compile_with_closed_count theories/ProtobufOwnedSlots.v 44 \
   "protobuf owned slot projection and schema rank"
 rocq_check_modules "protobuf owned slot projection and schema rank" StackSafePDA.ProtobufOwnedSlots
 rocq_reject_placeholders theories/EpmOwnedRetirement.v
-rocq_compile_with_closed_count theories/EpmOwnedRetirement.v 24 \
+rocq_compile_with_closed_count theories/EpmOwnedRetirement.v 32 \
   "stateful EPM barriers and affine ownership retirement"
 rocq_check_modules "stateful EPM ownership retirement" StackSafePDA.EpmOwnedRetirement
 rocq_reject_placeholders theories/DepthProbeClassification.v
@@ -1045,6 +1045,7 @@ rpb3_run_tests 2 --lib oracle_body_guards::
 rpb3_run_tests 6 --lib protobuf_par_accumulation_tests
 rpb3_run_tests 8 --lib payload_representation_tests
 rpb3_run_tests 5 --lib owned_cursor_tests
+rpb3_run_tests 6 --lib resident_ownership_tests
 rpb3_run_tests 8 --lib protobuf_owned_slots_tests
 rpb3_run_tests 7 --lib protobuf_construction_tests
 rspace_preparation_run_tests 5 --lib stateful_retirement

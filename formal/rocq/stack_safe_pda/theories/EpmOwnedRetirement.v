@@ -331,6 +331,79 @@ Proof. intros. apply every_quarantine_outcome_guards_raw_drop. Qed.
 
 End Failure.
 
+Section CacheOwnership.
+Context {Image Metadata : Type}.
+
+Record cached_owner := CachedOwner {
+  cache_identity : nat;
+  resident_image : Image;
+  resident_metadata : Metadata;
+  snapshot_source : option Image;
+  layout_source : option Image
+}.
+
+Definition source_matches (image : Image) (source : option Image) : Prop :=
+  match source with None => True | Some cached => cached = image end.
+
+Definition cache_coherent (owner : cached_owner) : Prop :=
+  source_matches (resident_image owner) (snapshot_source owner) /\
+  source_matches (resident_image owner) (layout_source owner).
+
+Definition clone_owner (owner : cached_owner) := (owner, owner).
+
+Definition begin_mutation identity (owner : cached_owner) :=
+  CachedOwner identity (resident_image owner) (resident_metadata owner) None None.
+
+Definition set_image image metadata (owner : cached_owner) :=
+  CachedOwner (cache_identity owner) image metadata
+    (snapshot_source owner) (layout_source owner).
+
+Definition edit_owner (changed : bool) identity image metadata owner :=
+  if changed then set_image image metadata (begin_mutation identity owner) else owner.
+
+Theorem clone_owner_shares_image_identity_and_caches : forall owner,
+  fst (clone_owner owner) = owner /\ snd (clone_owner owner) = owner.
+Proof. intros. split; reflexivity. Qed.
+
+Theorem mutation_begin_clears_both_caches : forall identity owner,
+  snapshot_source (begin_mutation identity owner) = None /\
+  layout_source (begin_mutation identity owner) = None.
+Proof. intros. split; reflexivity. Qed.
+
+Theorem mutation_begin_preserves_image_and_metadata : forall identity owner,
+  resident_image (begin_mutation identity owner) = resident_image owner /\
+  resident_metadata (begin_mutation identity owner) = resident_metadata owner.
+Proof. intros. split; reflexivity. Qed.
+
+Theorem interrupted_mutation_begin_has_coherent_caches : forall identity owner,
+  cache_coherent (begin_mutation identity owner).
+Proof. intros. split; exact I. Qed.
+
+Theorem prepared_image_change_has_coherent_caches : forall identity image metadata owner,
+  cache_coherent (set_image image metadata (begin_mutation identity owner)).
+Proof. intros. split; exact I. Qed.
+
+Theorem shared_mutation_preserves_sibling_and_cache_coherence :
+  forall identity image metadata owner,
+  cache_coherent owner ->
+  let pair := (edit_owner true identity image metadata (fst (clone_owner owner)),
+               snd (clone_owner owner)) in
+  snd pair = owner /\ cache_coherent (fst pair) /\ cache_coherent (snd pair).
+Proof.
+  intros identity image metadata owner coherent. simpl.
+  split; [reflexivity|]. split; [apply prepared_image_change_has_coherent_caches|exact coherent].
+Qed.
+
+Theorem preflight_noop_preserves_exact_owner : forall identity image metadata owner,
+  edit_owner false identity image metadata owner = owner.
+Proof. reflexivity. Qed.
+
+End CacheOwnership.
+
+Theorem uncleared_cache_mutant_is_incoherent :
+  ~ cache_coherent (set_image 1 tt (CachedOwner 0 0 tt (Some 0) (Some 0))).
+Proof. intros [different _]. discriminate different. Qed.
+
 Print Assumptions stateful_provider_preserves_every_event.
 Print Assumptions stateful_provider_preserves_valid_same_arena_values.
 Print Assumptions stateful_terminal_drain_preserves_existing_semantics.
@@ -355,5 +428,13 @@ Print Assumptions refusal_and_projection_failure_do_not_publish.
 Print Assumptions cleanup_panic_is_terminal.
 Print Assumptions cleanup_allocation_failure_is_terminal.
 Print Assumptions retirement_reuses_existing_raw_drop_quarantine.
+Print Assumptions clone_owner_shares_image_identity_and_caches.
+Print Assumptions mutation_begin_clears_both_caches.
+Print Assumptions mutation_begin_preserves_image_and_metadata.
+Print Assumptions interrupted_mutation_begin_has_coherent_caches.
+Print Assumptions prepared_image_change_has_coherent_caches.
+Print Assumptions shared_mutation_preserves_sibling_and_cache_coherence.
+Print Assumptions preflight_noop_preserves_exact_owner.
+Print Assumptions uncleared_cache_mutant_is_incoherent.
 
 End EpmOwnedRetirement.

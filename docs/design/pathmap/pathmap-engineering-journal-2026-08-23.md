@@ -16169,6 +16169,108 @@ depth-4,096 gate, resource comparisons and full workspace acceptance remain requ
 No consensus-visible bytes, matching rules, charge model or persistence format change
 is intended. Test timings will not be reported as application speedups.
 
+### J-214 — 2026-09-23 Shared resident EPM ownership and cache coherence
+
+**Question and scope.** Continue task 8516 under 5834 after `8db4a76f5`.
+Can resident EPathMap clones share one cleanup authority and coherent serialization
+caches, without using a cache reference count as a proxy for trie ownership?
+This slice prepares guarded public materialization; it does not switch the general
+protobuf decoder to planned construction or complete the campaign acceptance gates.
+
+**Formal-first design.** The existing ownership and reverse-prune models already
+cover nonfinal release, final retirement, guarded transfer and copy-on-write (CoW)
+detach. Eight new EOR declarations model the association between an immutable trie
+image and its two optional caches. Mutation begins with both caches absent;
+successful image replacement cannot reuse an old cache. An unchanged preflight
+preserves the exact owner. A stale-cache mutant is demonstrably incoherent.
+The invariant catalog recorded the bindings before Rust implementation.
+These are abstract cache-source and ownership statements, not a Rust refinement,
+proof of PathMap internals or proof of arbitrary metadata rollback on panic.
+
+Formal R1 caught a missing boolean type annotation (491 ms service, 466 ms CPU,
+378.2 MiB peak). Corrected R2 compiled all **32 closed declarations** and passed
+independent kernel checking before the Rust migration: 13.763 seconds service,
+13.591 CPU seconds, 398.6 MiB peak, zero swap. Limits were MemoryHigh=1 GiB,
+MemoryMax=2 GiB, MemorySwapMax=0, CPUQuota=100%, RuntimeMaxSec=180.
+
+**Implementation.** `EntryTrie` now holds one `Arc<EntryTrieStorage>` containing
+the guarded Set/Map/Empty representation and both cache cells. Clone shares that
+storage; mutation detaches through `Arc::make_mut` and clears both caches before
+exposing a mutable representation. Whole-root replacement retires the previous
+guarded owner. Incoming raw representations acquire a guard before mode checking,
+key validation or metadata folds can fail. Consuming transfer unwraps or CoW-clones
+the storage into J-213's guarded cursor. Nonfinal teardown releases the storage Arc;
+unique teardown moves actual payloads to the existing explicit worklist.
+
+This keeps `PathMap<()>` and `PathMap<Par>` specialization, native algebra and
+prefix-compressed topology. It introduces no decoded-entry projection, sorting,
+upstream fork or dependency. Structurally, clone now increments one shared-storage
+reference rather than separate trie and cache references. That is a source-level
+observation, not a measured throughput or allocation improvement.
+
+**Rejected optimization.** Independent review found that `child_count() == 0`
+does not establish that native branch removal is a no-op. An exact-key dangling
+leaf may retain an empty-child sentinel that PathMap removes. The proposed stronger
+preflight was removed before qualification. Both branch and subtrie removal now
+short-circuit only a missing path. Tests compare return values and resulting
+topology directly with the pinned native implementation for dangling `[7]`, both
+Set/Map modes, both removal operations and retained siblings. This is a local
+ownership-refactor correction, not a new change to PathMap semantics.
+
+**Qualification receipts.** Release compile check R1 passes in 21.513 seconds
+service, 53.539 CPU seconds, 1 GiB peak, zero swap. Native R1 stopped at a test-only
+temporary-borrow error before running tests: 22.232 seconds service, 63.403 CPU
+seconds, 2.3 GiB peak. Native R2 passes **16/16**, 665 excluded: 31.441 seconds
+tests, 93.088 seconds service, 256.006 CPU seconds, 2.5 GiB peak, zero swap.
+It covers six resident witnesses, five consuming-cursor witnesses, four existing
+clone/snapshot/term-semantics tests and the EOR manifest. The depth-1,024 nested
+snapshot compatibility case took 31.434 seconds; this is not a speedup claim.
+
+Native R3 rejected an exact binary-name filter before compilation (436 ms service,
+427 ms CPU, 124.4 MiB peak). R4 uses nextest's explicit substring filter. The test
+suite is strengthened with typed-empty Set selection, exact consuming key/value
+checks, and rejection through the raw wrapper with deep topology and deep Par
+payloads. All native commands use four build/test workers, 1,024 property cases,
+seed 5834, MemoryHigh=6 GiB, MemoryMax=8 GiB, MemorySwapMax=0, CPUQuota=400%,
+RuntimeMaxSec=900 and on-disk compiler temporaries. Runs are correctness
+qualification, not CPU-isolated benchmarks.
+
+Expanded default R4 passes **106/106**, 655 excluded: 282.255 seconds tests,
+338.095 seconds service, 768.505 CPU seconds, 2.1 GiB peak, zero swap.
+Selections include the strengthened resident witnesses, consuming cursors,
+planned ownership/component construction and manifest, plus complete EPathMap
+algebra, native zipper, cache, EPM1 snapshot, canonical-fixture and identity suites.
+The unchanged deep map-algebra case takes 261.829 seconds; legacy field-1
+depth-4,096 decoding takes 274.438 seconds. Both pass, but neither result discharges
+the outstanding decoder time/space optimization or the distinct parser gate 5917.
+
+Feature-enabled R5 passes **26/26**, 664 excluded: 8.734 seconds tests,
+70.620 seconds service, 242.651 CPU seconds, 2.7 GiB peak, zero swap.
+It enables `protobuf-projection-experiment` and selects resident ownership,
+consuming cursors, planned ownership, component construction and the EOR manifest.
+All scoped heavy verification commands have finished. Shell syntax and diff
+whitespace checks pass; no full-workspace acceptance is claimed.
+
+**Boundaries.** Guarding resident storage does not prove teardown inside every
+native subtree-removal operation or raw temporary algebra builder. It does not
+certify arbitrary allocator/constructor unwind, serialization itself or concurrent
+Arc internals. Public planned-payload mapping, general decoder routing, the unchanged
+depth-4,096 gate, resource comparisons and full workspace acceptance remain required.
+No consensus-visible byte, matching, charge or persistence-format change is intended.
+
+| Artifact under `target/verification/protobuf-attach-8516/` | SHA-256 |
+|---|---|
+| `resident-formal-r1.log` (type annotation error) | `cd89b86b99978a064a28bffb4b68de87b75e009f3087c9bc0af844f8e795c330` |
+| `resident-formal-r2.log` (32 closed and kernel check) | `7b7759f6016fdfd7144410a3e8f2dc85d9b5d45a6d6438e80ee7e24ced54b8d8` |
+| `resident-check-r1.log` | `ce531a14779965434d1b0570dc3c25e8bb41fa8b5cbfb8d8feaa39c82665af56` |
+| `resident-native-r1.log` (test lifetime error) | `8b640e18021d1ee512c99e639394bcb9c99a75250ef943601b566d68efcd0e2c` |
+| `resident-native-r2.log` (16/16) | `fac31c78970ea5365f50cde5839132d1b1f7b39bb1e06d4c395868a46d21b282` |
+| `resident-native-r3.log` (filter error) | `6d9de9c690318cef12174609d8db98b67467e2934c27f0d0af0bf369cb78a0fc` |
+| `resident-native-r4.log` (106/106 default) | `7f370920dea6a3f5f422c95cca33d160a28c852a3d88d1522b9c64d3cc221cbf` |
+| `resident-native-r5.log` (26/26 feature-enabled) | `8ef7d2c9c7598ae25ba2e051379b267cc8a01dc13a9bdadd323c7363381f015f` |
+
+Theory SHA-256: `61ab2ba23cf2dc92a6e57becfdb38e5f7211c23443fac86fae5425e6d5ae1703`.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

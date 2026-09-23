@@ -1366,8 +1366,16 @@ fn epm_owned_retirement_has_explicit_proof_boundaries_and_native_bindings() {
         "cleanup_panic_is_terminal",
         "cleanup_allocation_failure_is_terminal",
         "retirement_reuses_existing_raw_drop_quarantine",
+        "clone_owner_shares_image_identity_and_caches",
+        "mutation_begin_clears_both_caches",
+        "mutation_begin_preserves_image_and_metadata",
+        "interrupted_mutation_begin_has_coherent_caches",
+        "prepared_image_change_has_coherent_caches",
+        "shared_mutation_preserves_sibling_and_cache_coherence",
+        "preflight_noop_preserves_exact_owner",
+        "uncleared_cache_mutant_is_incoherent",
     ];
-    assert_eq!(names.len(), 24);
+    assert_eq!(names.len(), 32);
     assert_eq!(theory.matches("Print Assumptions ").count(), names.len());
     let catalog = read_repository_file("docs/design/pathmap/workspace-regression-formal-invariant-catalog-2026-08-28.md");
     for name in names {
@@ -1375,7 +1383,19 @@ fn epm_owned_retirement_has_explicit_proof_boundaries_and_native_bindings() {
         assert!(catalog.contains(&format!("`{name}`")));
     }
     let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
-    assert!(has_runner_command(&runner, &["rocq_compile_with_closed_count", "theories/EpmOwnedRetirement.v", "24"]));
+    assert!(has_runner_command(&runner, &["rocq_compile_with_closed_count", "theories/EpmOwnedRetirement.v", "32"]));
+    assert!(has_runner_command(&runner, &["rpb3_run_tests", "6", "--lib", "resident_ownership_tests"]));
+    let resident = read_repository_file("models/tests/support/epm_resident_ownership.rs");
+    for witness in [
+        "cold_and_warm_aliases_share_storage_until_mutation",
+        "mutation_clears_both_caches_before_exposing_repr",
+        "no_op_mutations_preserve_storage_metadata_and_caches",
+        "resident_owners_retire_unique_shared_and_topology_only_on_small_stack",
+        "guarded_admission_rejection_and_replacement_preserve_previous_state",
+        "algebra_and_consuming_transfers_preserve_values_and_metadata",
+    ] {
+        assert!(resident.contains(&format!("fn {witness}(")));
+    }
     assert!(has_runner_kernel_check(&runner, &["StackSafePDA.EpmOwnedRetirement"]));
     assert!(has_runner_command(&runner, &["rspace_preparation_run_tests", "5", "--lib", "stateful_retirement"]));
     assert!(has_runner_command(&runner, &["rpb3_run_tests", "7", "--lib", "owned_retirement_tests"]));

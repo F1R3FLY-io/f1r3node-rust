@@ -1392,6 +1392,17 @@ pub(crate) struct EpmReprOwner<V: EpmPayload, B: BarrierProvider<V>> {
     pub(crate) barrier: B,
 }
 
+#[derive(Default, Clone, Copy)]
+pub(crate) struct ResidentEpmBarrier;
+
+impl BarrierProvider<Par> for ResidentEpmBarrier {
+    fn make_barrier(&self) -> Par { Par::default() }
+
+    fn discard_barrier(&self, value: Par) { value.dispose(); }
+}
+
+pub(crate) type OwnedResidentEPathMap = EpmReprOwner<Par, ResidentEpmBarrier>;
+
 impl<V: EpmPayload, B: BarrierProvider<V>> EpmReprOwner<V, B> {
     pub(crate) fn new(repr: EPathMapRepr<V>, barrier: B) -> Self {
         Self { repr, barrier }
@@ -1645,6 +1656,17 @@ macro_rules! owned_epm_cursor {
 
 owned_epm_cursor!(OwnedEPathMapSetEntries, (), PendingScaffold::Repeat(()));
 owned_epm_cursor!(OwnedEPathMapMapEntries, Par, PendingScaffold::New(Par::default));
+
+impl OwnedResidentEPathMap {
+    pub(crate) fn into_entries(mut self) -> crate::rust::rhoapi_ext::OwnedEPathMapEntries {
+        use crate::rust::rhoapi_ext::OwnedEPathMapEntries;
+        match std::mem::take(&mut self.repr) {
+            EPathMapRepr::Empty => OwnedEPathMapEntries::Empty,
+            EPathMapRepr::Set(map) => OwnedEPathMapEntries::Set(OwnedEPathMapSetEntries::new(map)),
+            EPathMapRepr::Map(map) => OwnedEPathMapEntries::Map(OwnedEPathMapMapEntries::new(map)),
+        }
+    }
+}
 
 struct PendingFraming {
     raw_mode: u8,

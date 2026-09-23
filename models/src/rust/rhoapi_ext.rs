@@ -48,6 +48,7 @@ use super::canonical_path::{
 };
 use super::epathmap_trie_codec::{
     self, EPathMapMode, EPathMapRepr, OwnedEPathMapMapEntries, OwnedEPathMapSetEntries,
+    OwnedResidentEPathMap, ResidentEpmBarrier,
 };
 use super::pathmap_crate_type_mapper::{
     eval_stable_par, reducer_eval_identity_par, PathFrameError, PathFrames,
@@ -115,6 +116,29 @@ where V: Clone + Send + Sync + Unpin {
 // ★ THE ENTRY TRIE — the stored form of an `EPathMap`'s entries
 // ─────────────────────────────────────────────────────────────────────────────
 
+struct EntryTrieStorage {
+    repr: OwnedResidentEPathMap,
+    trie_snapshot: OnceLock<Vec<u8>>,
+    epm_layout: OnceLock<epathmap_trie_codec::EpmLayout>,
+}
+
+impl EntryTrieStorage {
+    fn new(repr: OwnedResidentEPathMap) -> Self {
+        Self { repr, trie_snapshot: OnceLock::new(), epm_layout: OnceLock::new() }
+    }
+
+    fn clear_caches(&mut self) {
+        self.trie_snapshot.take();
+        self.epm_layout.take();
+    }
+}
+
+impl Clone for EntryTrieStorage {
+    fn clone(&self) -> Self {
+        Self::new(OwnedResidentEPathMap::new(self.repr.as_repr().clone(), ResidentEpmBarrier))
+    }
+}
+
 /// ★ **The entries of an `EPathMap`, stored as the trie they always were.**
 ///
 /// Set mode stores canonical paths in `PathMap<()>`; map mode stores canonical
@@ -131,7 +155,7 @@ pub struct EntryTrie {
     /// prefix-free, and **total** over every `Par` via the `0x0F` escape arm —
     /// `canonical_path.rs`), so a non-ground entry is as storable as a ground
     /// one and there is no arm in which the `Vec` has to come back.
-    repr: EPathMapRepr<Par>,
+    storage: Arc<EntryTrieStorage>,
     /// Number of DISTINCT entries. Maintained at insert/remove because
     /// `PathMap::val_count` is documented O(N) ("This is not a cheap method",
     /// `pathmap-0.2.2/src/trie_map.rs:499`).
@@ -151,18 +175,6 @@ pub struct EntryTrie {
     /// OR of the entries' `connective_used` flags (the map's own `remainder`
     /// is folded in by the caller, not here — it is metadata, not an entry).
     any_connective_used: bool,
-    /// Canonical `EPM1` snapshot of the prefix-compressed trie. The `OnceLock`
-    /// itself is shared by a clone family, so cloning a cold map and then
-    /// serializing several siblings still constructs exactly one snapshot.
-    /// Mutation detaches only the mutated sibling by installing a fresh cell.
-    /// This is a serialization cache only: equality, hashing, ordering and
-    /// lookup walk the PathMap directly and never force it.
-    trie_snapshot: Arc<OnceLock<Vec<u8>>>,
-    /// Value-independent EPM1 prefix: mode, ACTree03 topology, and value count.
-    /// The generated protobuf PDA streams `PathMap<Par>` values after this
-    /// prefix, so nested maps share compressed topology without retaining a
-    /// complete snapshot for every suffix of a nested chain.
-    epm_layout: Arc<OnceLock<epathmap_trie_codec::EpmLayout>>,
 }
 
 /// One entry moved out of homogeneous EPathMap storage.
@@ -744,17 +756,14 @@ impl std::error::Error for EPathMapAlgebraError {}
 impl EntryTrie {
     #[allow(deprecated)]
     fn from_repr(repr: EPathMapRepr<Par>) -> Result<Self, DecodeError> {
-        Self::from_repr_with_key_validation(repr, true)
+        Self::from_owned_repr_with_key_validation(
+            OwnedResidentEPathMap::new(repr, ResidentEpmBarrier), true,
+        )
     }
 
     #[allow(deprecated)]
-    fn from_repr_deferred_key_validation(repr: EPathMapRepr<Par>) -> Result<Self, DecodeError> {
-        Self::from_repr_with_key_validation(repr, false)
-    }
-
-    #[allow(deprecated)]
-    fn from_repr_with_key_validation(
-        repr: EPathMapRepr<Par>,
+    fn from_owned_repr_with_key_validation(
+        repr: OwnedResidentEPathMap,
         validate_canonical_keys: bool,
     ) -> Result<Self, DecodeError> {
         let mut len = 0usize;
@@ -771,7 +780,7 @@ impl EntryTrie {
             );
             any_connective_used |= contribution.connective_used;
         };
-        match &repr {
+        match repr.as_repr() {
             EPathMapRepr::Empty => {}
             EPathMapRepr::Set(map) => {
                 for (key, ()) in map.iter() {
@@ -803,14 +812,12 @@ impl EntryTrie {
         }
 
         Ok(EntryTrie {
-            repr,
+            storage: Arc::new(EntryTrieStorage::new(repr)),
             len,
             entries_stable,
             entries_reducer_eval_identity,
             union_locally_free,
             any_connective_used,
-            trie_snapshot: Arc::new(OnceLock::new()),
-            epm_layout: Arc::new(OnceLock::new()),
         })
     }
 
@@ -821,7 +828,7 @@ impl EntryTrie {
     /// Map mode has distinct key/value APIs and cannot be flattened through
     /// this set-only surface.
     pub fn entries_owned(&self) -> Vec<Par> {
-        match &self.repr {
+        match self.representation() {
             EPathMapRepr::Empty => Vec::new(),
             EPathMapRepr::Set(map) => decode_set_entries(map),
             EPathMapRepr::Map(_) => {
@@ -838,31 +845,31 @@ impl EntryTrie {
     /// are one `Arc`/`OnceLock` indirection and return the cached slice without
     /// allocation; the enclosing serializer then copies the slice to its output.
     pub fn trie_snapshot(&self) -> &[u8] {
-        self.trie_snapshot
-            .get_or_init(|| epathmap_trie_codec::encode_with_layout(&self.repr, self.epm_layout()))
+        self.storage.trie_snapshot
+            .get_or_init(|| epathmap_trie_codec::encode_with_layout(self.representation(), self.epm_layout()))
             .as_slice()
     }
 
     #[inline]
     pub(crate) fn epm_layout(&self) -> &epathmap_trie_codec::EpmLayout {
-        self.epm_layout.get_or_init(|| {
-            let certified_value_count = match self.repr {
+        self.storage.epm_layout.get_or_init(|| {
+            let certified_value_count = match self.representation() {
                 EPathMapRepr::Map(_) => self.len,
                 EPathMapRepr::Empty | EPathMapRepr::Set(_) => 0,
             };
             epathmap_trie_codec::layout_with_certified_value_count(
-                &self.repr,
+                self.representation(),
                 Some(certified_value_count),
             )
         })
     }
 
     #[cfg(test)]
-    fn snapshot_is_forced(&self) -> bool { self.trie_snapshot.get().is_some() }
+    fn snapshot_is_forced(&self) -> bool { self.storage.trie_snapshot.get().is_some() }
 
     /// The set trie itself, handed out by O(1) root clone.
     pub fn set_trie(&self) -> &RholangSetPathMap {
-        match &self.repr {
+        match self.representation() {
             EPathMapRepr::Empty => empty_set_trie(),
             EPathMapRepr::Set(map) => map,
             EPathMapRepr::Map(_) => panic!(
@@ -871,7 +878,7 @@ impl EntryTrie {
         }
     }
 
-    pub fn map_trie(&self) -> Option<&RholangMapPathMap> { self.repr.as_map() }
+    pub fn map_trie(&self) -> Option<&RholangMapPathMap> { self.representation().as_map() }
 
     pub fn for_each_raw_set_entry(
         &self,
@@ -879,7 +886,7 @@ impl EntryTrie {
     ) -> Result<(), EPathMapModeError> {
         use pathmap::zipper::{ZipperMoving, ZipperReadOnlyIteration};
 
-        match &self.repr {
+        match self.representation() {
             EPathMapRepr::Empty => Ok(()),
             EPathMapRepr::Set(map) => {
                 let mut zipper = map.read_zipper();
@@ -904,7 +911,7 @@ impl EntryTrie {
     ) -> Result<(), EPathMapModeError> {
         use pathmap::zipper::{ZipperMoving, ZipperReadOnlyIteration};
 
-        match &self.repr {
+        match self.representation() {
             EPathMapRepr::Empty => Ok(()),
             EPathMapRepr::Set(_) => Err(EPathMapModeError {
                 expected: EPathMapMode::Map,
@@ -927,7 +934,7 @@ impl EntryTrie {
         &self,
         mut visit: impl FnMut(&[u8]),
     ) -> Result<(), EPathMapModeError> {
-        match &self.repr {
+        match self.representation() {
             EPathMapRepr::Empty => Ok(()),
             EPathMapRepr::Set(map) => {
                 for_each_raw_value_reverse(map, |key, ()| visit(key));
@@ -947,7 +954,7 @@ impl EntryTrie {
         &'trie self,
         mut visit: impl FnMut(&[u8], &'trie Par),
     ) -> Result<(), EPathMapModeError> {
-        match &self.repr {
+        match self.representation() {
             EPathMapRepr::Empty => Ok(()),
             EPathMapRepr::Set(_) => Err(EPathMapModeError {
                 expected: EPathMapMode::Map,
@@ -960,9 +967,24 @@ impl EntryTrie {
         }
     }
 
-    pub fn representation(&self) -> &EPathMapRepr<Par> { &self.repr }
+    pub fn representation(&self) -> &EPathMapRepr<Par> { self.storage.repr.as_repr() }
 
-    pub fn mode(&self) -> EPathMapMode { self.repr.mode() }
+    fn representation_mut(&mut self) -> &mut EPathMapRepr<Par> {
+        let storage = Arc::make_mut(&mut self.storage);
+        storage.clear_caches();
+        storage.repr.as_repr_mut()
+    }
+
+    fn replace_repr(&mut self, repr: OwnedResidentEPathMap) {
+        if let Some(storage) = Arc::get_mut(&mut self.storage) {
+            storage.clear_caches();
+            storage.repr = repr;
+        } else {
+            self.storage = Arc::new(EntryTrieStorage::new(repr));
+        }
+    }
+
+    pub fn mode(&self) -> EPathMapMode { self.representation().mode() }
 
     /// Inspect a canonical key in-place without allocating or materializing a
     /// `Par`. Callers normally obtain `encoded_key` from one of the raw zipper
@@ -978,8 +1000,7 @@ impl EntryTrie {
     }
 
     fn invalidate_derived(&mut self) {
-        self.trie_snapshot = Arc::new(OnceLock::new());
-        self.epm_layout = Arc::new(OnceLock::new());
+        Arc::make_mut(&mut self.storage).clear_caches();
     }
 
     fn fold_par_metadata(&mut self, par: &Par) {
@@ -1003,7 +1024,7 @@ impl EntryTrie {
 
     /// `true` iff the map holds neither values nor explicit value-free
     /// topology — O(1) (`PathMap::is_empty` reads the root node's tag).
-    pub fn is_empty(&self) -> bool { self.repr.is_empty() }
+    pub fn is_empty(&self) -> bool { self.representation().is_empty() }
 
     /// `true` iff every entry is in the codec's ground domain
     /// (`eval_stable_par`) — the entry half of the GROUND wire predicate. O(1).
@@ -1033,7 +1054,7 @@ impl EntryTrie {
     }
 
     pub fn try_insert_entry(&mut self, par: Par) -> Result<(), EPathMapModeError> {
-        if matches!(self.repr, EPathMapRepr::Map(_)) {
+        if matches!(self.representation(), EPathMapRepr::Map(_)) {
             return Err(EPathMapModeError {
                 expected: EPathMapMode::Set,
                 actual: EPathMapMode::Map,
@@ -1047,7 +1068,7 @@ impl EntryTrie {
         &mut self,
         par: Par,
     ) -> Result<Par, EPathMapModeError> {
-        if matches!(self.repr, EPathMapRepr::Map(_)) {
+        if matches!(self.representation(), EPathMapRepr::Map(_)) {
             return Err(EPathMapModeError {
                 expected: EPathMapMode::Set,
                 actual: EPathMapMode::Map,
@@ -1092,7 +1113,7 @@ impl EntryTrie {
     /// verdict. It is `pub(crate)` and takes both together — never a bare key —
     /// so the only way to reach it is to have called the encoder.
     pub(crate) fn insert_encoded(&mut self, key: Vec<u8>, stable: bool, par: Par) -> Par {
-        if matches!(self.repr, EPathMapRepr::Map(_)) {
+        if matches!(self.representation(), EPathMapRepr::Map(_)) {
             panic!("set insertion attempted on map-mode EPathMap");
         }
         self.entries_stable &= stable;
@@ -1102,10 +1123,10 @@ impl EntryTrie {
             std::mem::take(&mut self.union_locally_free),
             par.locally_free().to_vec(),
         );
-        if matches!(self.repr, EPathMapRepr::Empty) {
-            self.repr = EPathMapRepr::Set(RholangSetPathMap::new());
+        if matches!(self.representation(), EPathMapRepr::Empty) {
+            self.replace_repr(OwnedResidentEPathMap::new(EPathMapRepr::Set(RholangSetPathMap::new()), ResidentEpmBarrier));
         }
-        let EPathMapRepr::Set(map) = &mut self.repr else {
+        let EPathMapRepr::Set(map) = self.representation_mut() else {
             unreachable!("map mode was rejected and empty mode was specialized")
         };
         let replaced = native_insert(map, &key, ());
@@ -1148,22 +1169,22 @@ impl EntryTrie {
         key: Par,
         value: Par,
     ) -> Result<Option<Par>, EPathMapModeError> {
-        if matches!(self.repr, EPathMapRepr::Set(_)) {
+        if matches!(self.representation(), EPathMapRepr::Set(_)) {
             return Err(EPathMapModeError {
                 expected: EPathMapMode::Map,
                 actual: EPathMapMode::Set,
             });
         }
 
-        if matches!(self.repr, EPathMapRepr::Empty) {
-            self.repr = EPathMapRepr::Map(pathmap::PathMap::new());
+        if matches!(self.representation(), EPathMapRepr::Empty) {
+            self.replace_repr(OwnedResidentEPathMap::new(EPathMapRepr::Map(pathmap::PathMap::new()), ResidentEpmBarrier));
         }
 
         self.fold_par_metadata_with_stability(&key, key_stable);
         self.fold_par_metadata(&value);
         crate::rust::rholang::par_children::dismantle(key);
 
-        let EPathMapRepr::Map(map) = &mut self.repr else {
+        let EPathMapRepr::Map(map) = self.representation_mut() else {
             unreachable!("set mode was rejected and empty mode was specialized")
         };
         let replaced = native_insert(map, &encoded_key, value);
@@ -1179,7 +1200,7 @@ impl EntryTrie {
     }
 
     pub fn get_map_value(&self, key: &Par) -> Result<Option<&Par>, EPathMapModeError> {
-        match &self.repr {
+        match self.representation() {
             EPathMapRepr::Empty => Ok(None),
             EPathMapRepr::Map(map) => Ok(map.get(encode_trie_path(key))),
             EPathMapRepr::Set(_) => Err(EPathMapModeError {
@@ -1193,7 +1214,7 @@ impl EntryTrie {
         &self,
         key: &[u8],
     ) -> Result<Option<&Par>, EPathMapModeError> {
-        match &self.repr {
+        match self.representation() {
             EPathMapRepr::Empty => Ok(None),
             EPathMapRepr::Map(map) => Ok(map.get(key)),
             EPathMapRepr::Set(_) => Err(EPathMapModeError {
@@ -1210,7 +1231,7 @@ impl EntryTrie {
         encoded_key: &[u8],
         value: Par,
     ) -> Result<(), EPathMapModeError> {
-        if matches!(self.repr, EPathMapRepr::Set(_)) {
+        if matches!(self.representation(), EPathMapRepr::Set(_)) {
             return Err(EPathMapModeError {
                 expected: EPathMapMode::Map,
                 actual: EPathMapMode::Set,
@@ -1232,7 +1253,7 @@ impl EntryTrie {
     /// in the selected trie; neutral empty uses an empty set trie because both
     /// specializations make the same choice when no value is present.
     pub fn cursor_entry_key(&self, segments: &[Vec<u8>], kind: CursorKind) -> Vec<u8> {
-        match &self.repr {
+        match self.representation() {
             EPathMapRepr::Empty => encode_cursor_entry_key(segments, kind, empty_set_trie()),
             EPathMapRepr::Set(map) => encode_cursor_entry_key(segments, kind, map),
             EPathMapRepr::Map(map) => encode_cursor_entry_key(segments, kind, map),
@@ -1242,7 +1263,7 @@ impl EntryTrie {
     /// Resolve a relative path argument against a cursor without projecting a
     /// map-valued trie through the set-only compatibility boundary.
     pub fn entry_key_at(&self, cursor: &[Vec<u8>], path: &Par) -> Vec<u8> {
-        match &self.repr {
+        match self.representation() {
             EPathMapRepr::Empty => encode_entry_key_at(cursor, path, empty_set_trie()),
             EPathMapRepr::Set(map) => encode_entry_key_at(cursor, path, map),
             EPathMapRepr::Map(map) => encode_entry_key_at(cursor, path, map),
@@ -1252,7 +1273,7 @@ impl EntryTrie {
     /// Read the semantic leaf stored at an encoded key.  Set mode returns the
     /// key decoded as its member; map mode returns the associated value.
     pub fn leaf_at_encoded_key(&self, key: &[u8]) -> Option<Par> {
-        match &self.repr {
+        match self.representation() {
             EPathMapRepr::Empty => None,
             EPathMapRepr::Set(map) => map.contains(key).then(|| {
                 decode_trie_path(key).expect("set-mode EPathMap keys are canonical Par paths")
@@ -1265,7 +1286,7 @@ impl EntryTrie {
     /// value.  This is deliberately distinct from zipper/path lookup: a list
     /// `Par` is one canonical key here, not a sequence of relative segments.
     pub fn contains_encoded_key(&self, key: &[u8]) -> bool {
-        match &self.repr {
+        match self.representation() {
             EPathMapRepr::Empty => false,
             EPathMapRepr::Set(map) => map.contains(key),
             EPathMapRepr::Map(map) => map.contains(key),
@@ -1280,7 +1301,7 @@ impl EntryTrie {
     }
 
     pub fn path_prefix_exists(&self, prefix: &[u8]) -> bool {
-        match &self.repr {
+        match self.representation() {
             EPathMapRepr::Empty => false,
             EPathMapRepr::Set(map) => path_prefix_exists(map, prefix),
             EPathMapRepr::Map(map) => path_prefix_exists(map, prefix),
@@ -1288,7 +1309,7 @@ impl EntryTrie {
     }
 
     pub fn collect_child_segments(&self, prefix: &[u8], limit: Option<usize>) -> Vec<Vec<u8>> {
-        match &self.repr {
+        match self.representation() {
             EPathMapRepr::Empty => Vec::new(),
             EPathMapRepr::Set(map) => collect_child_segments(map, prefix, limit),
             EPathMapRepr::Map(map) => collect_child_segments(map, prefix, limit),
@@ -1296,7 +1317,7 @@ impl EntryTrie {
     }
 
     pub fn subtrie_value_count(&self, prefix: &[u8]) -> usize {
-        match &self.repr {
+        match self.representation() {
             EPathMapRepr::Empty => 0,
             EPathMapRepr::Set(map) => subtrie_value_count(map, prefix),
             EPathMapRepr::Map(map) => subtrie_value_count(map, prefix),
@@ -1304,7 +1325,7 @@ impl EntryTrie {
     }
 
     pub fn next_value_key(&self, from_key: &[u8]) -> Option<Vec<u8>> {
-        match &self.repr {
+        match self.representation() {
             EPathMapRepr::Empty => None,
             EPathMapRepr::Set(map) => next_value_key(map, from_key),
             EPathMapRepr::Map(map) => next_value_key(map, from_key),
@@ -1317,7 +1338,7 @@ impl EntryTrie {
     /// vector is constructed. Multi-prefix restriction remains delegated to
     /// PathMap's native `restrict` algebra below.
     pub fn subtrie(&self, prefix: &[u8]) -> Self {
-        let repr = match &self.repr {
+        let repr = match self.representation() {
             EPathMapRepr::Empty => EPathMapRepr::Empty,
             EPathMapRepr::Set(map) => EPathMapRepr::Set(focused_subtrie_clone(map, prefix)),
             EPathMapRepr::Map(map) => EPathMapRepr::Map(focused_subtrie_clone(map, prefix)),
@@ -1333,7 +1354,7 @@ impl EntryTrie {
         if count == 0 {
             return self.clone();
         }
-        let repr = match &self.repr {
+        let repr = match self.representation() {
             EPathMapRepr::Empty => EPathMapRepr::Empty,
             EPathMapRepr::Set(source) => {
                 let mut destination = RholangSetPathMap::new();
@@ -1360,13 +1381,13 @@ impl EntryTrie {
     }
 
     fn normalize_after_destructive_mutation(&mut self) {
-        self.len = match &self.repr {
+        self.len = match self.representation() {
             EPathMapRepr::Empty => 0,
             EPathMapRepr::Set(map) => map.val_count(),
             EPathMapRepr::Map(map) => map.val_count(),
         };
-        if self.repr.is_empty() {
-            self.repr = EPathMapRepr::Empty;
+        if self.representation().is_empty() {
+            self.replace_repr(OwnedResidentEPathMap::new(EPathMapRepr::Empty, ResidentEpmBarrier));
             self.len = 0;
         }
         self.recompute_folds();
@@ -1375,7 +1396,13 @@ impl EntryTrie {
     /// Remove only the value at `key`, preserving any descendants and
     /// value-free topology below it.
     pub fn remove_encoded_entry(&mut self, key: &[u8]) -> bool {
-        let removed = match &mut self.repr {
+        let present = match self.representation() {
+            EPathMapRepr::Empty => false,
+            EPathMapRepr::Set(map) => map.contains(key),
+            EPathMapRepr::Map(map) => map.contains(key),
+        };
+        if !present { return false; }
+        let removed = match self.representation_mut() {
             EPathMapRepr::Empty => return false,
             EPathMapRepr::Set(map) => native_remove(map, key).is_some(),
             EPathMapRepr::Map(map) => match native_remove(map, key) {
@@ -1395,7 +1422,13 @@ impl EntryTrie {
     /// Remove descendants of `prefix` with PathMap's write-zipper primitive,
     /// retaining a value stored exactly at the prefix.
     pub fn remove_branches_at(&mut self, prefix: &[u8]) -> bool {
-        let changed = match &mut self.repr {
+        let present = match self.representation() {
+            EPathMapRepr::Empty => false,
+            EPathMapRepr::Set(map) => map.path_exists_at(prefix),
+            EPathMapRepr::Map(map) => map.path_exists_at(prefix),
+        };
+        if !present { return false; }
+        let changed = match self.representation_mut() {
             EPathMapRepr::Empty => false,
             EPathMapRepr::Set(map) => native_remove_branches(map, prefix),
             EPathMapRepr::Map(map) => native_remove_branches(map, prefix),
@@ -1409,16 +1442,22 @@ impl EntryTrie {
     /// Remove the value and every branch at or below `prefix` without a
     /// whole-map key scan.
     pub fn remove_subtrie_at(&mut self, prefix: &[u8]) -> bool {
-        if self.repr.is_empty() {
+        if self.representation().is_empty() {
             return false;
         }
         if prefix.is_empty() {
-            self.repr = EPathMapRepr::Empty;
+            self.replace_repr(OwnedResidentEPathMap::new(EPathMapRepr::Empty, ResidentEpmBarrier));
             self.len = 0;
             self.recompute_folds();
             return true;
         }
-        let changed = match &mut self.repr {
+        let present = match self.representation() {
+            EPathMapRepr::Empty => false,
+            EPathMapRepr::Set(map) => map.path_exists_at(prefix),
+            EPathMapRepr::Map(map) => map.path_exists_at(prefix),
+        };
+        if !present { return false; }
+        let changed = match self.representation_mut() {
             EPathMapRepr::Empty => false,
             EPathMapRepr::Set(map) => {
                 let branches = native_remove_branches(map, prefix);
@@ -1445,7 +1484,13 @@ impl EntryTrie {
     /// Neutral empty cannot choose between `PathMap<()>` and `PathMap<Par>`;
     /// callers must first perform a mode-selecting insertion.
     pub fn create_path(&mut self, path: &[u8]) -> Result<bool, EPathMapEmptyModeError> {
-        let changed = match &mut self.repr {
+        let exists = match self.representation() {
+            EPathMapRepr::Empty => return Err(EPathMapEmptyModeError),
+            EPathMapRepr::Set(map) => map.path_exists_at(path),
+            EPathMapRepr::Map(map) => map.path_exists_at(path),
+        };
+        if exists { return Ok(false); }
+        let changed = match self.representation_mut() {
             EPathMapRepr::Empty => return Err(EPathMapEmptyModeError),
             EPathMapRepr::Set(map) => native_create_path(map, path),
             EPathMapRepr::Map(map) => native_create_path(map, path),
@@ -1471,7 +1516,7 @@ impl EntryTrie {
         let left_mode = self.mode();
         let right_mode = source.mode();
 
-        let repr = match (&self.repr, &source.repr) {
+        let repr = match (self.representation(), source.representation()) {
             (EPathMapRepr::Empty, EPathMapRepr::Empty) => {
                 if cursor_segments.is_empty() {
                     EPathMapRepr::Empty
@@ -1538,7 +1583,7 @@ impl EntryTrie {
         &self,
         mut visit: impl FnMut(&Par, &Par),
     ) -> Result<(), EPathMapModeError> {
-        match &self.repr {
+        match self.representation() {
             EPathMapRepr::Empty => Ok(()),
             EPathMapRepr::Set(_) => Err(EPathMapModeError {
                 expected: EPathMapMode::Map,
@@ -1567,11 +1612,12 @@ impl EntryTrie {
     }
 
     fn joined_result(repr: EPathMapRepr<Par>, len: usize, left: &Self, right: &Self) -> Self {
-        if repr.is_empty() {
+        let repr = OwnedResidentEPathMap::new(repr, ResidentEpmBarrier);
+        if repr.as_repr().is_empty() {
             return Self::default();
         }
         Self {
-            repr,
+            storage: Arc::new(EntryTrieStorage::new(repr)),
             len,
             entries_stable: left.entries_stable && right.entries_stable,
             entries_reducer_eval_identity: left.entries_reducer_eval_identity
@@ -1581,8 +1627,6 @@ impl EntryTrie {
                 right.union_locally_free.clone(),
             ),
             any_connective_used: left.any_connective_used || right.any_connective_used,
-            trie_snapshot: Arc::new(OnceLock::new()),
-            epm_layout: Arc::new(OnceLock::new()),
         }
     }
 
@@ -1594,7 +1638,7 @@ impl EntryTrie {
     }
 
     fn try_join_exact_zipper(&self, other: &Self) -> Result<Self, EPathMapAlgebraError> {
-        match (&self.repr, &other.repr) {
+        match (self.representation(), other.representation()) {
             (EPathMapRepr::Empty, _) => Ok(other.clone()),
             (_, EPathMapRepr::Empty) => Ok(self.clone()),
             (EPathMapRepr::Set(left), EPathMapRepr::Set(right)) => {
@@ -1620,14 +1664,14 @@ impl EntryTrie {
     }
 
     pub fn try_join(&self, other: &Self) -> Result<Self, EPathMapAlgebraError> {
-        if Arc::ptr_eq(&self.trie_snapshot, &other.trie_snapshot) {
+        if Arc::ptr_eq(&self.storage, &other.storage) {
             return Ok(self.clone());
         }
         self.try_join_exact_zipper(other)
     }
 
     pub fn try_meet(&self, other: &Self) -> Result<Self, EPathMapAlgebraError> {
-        match (&self.repr, &other.repr) {
+        match (self.representation(), other.representation()) {
             (EPathMapRepr::Empty, _) | (_, EPathMapRepr::Empty) => Ok(Self::default()),
             (EPathMapRepr::Set(left), EPathMapRepr::Set(right)) => {
                 Ok(Self::algebra_result(EPathMapRepr::Set(left.meet(right))))
@@ -1640,7 +1684,7 @@ impl EntryTrie {
     }
 
     pub fn try_subtract(&self, other: &Self) -> Result<Self, EPathMapAlgebraError> {
-        match (&self.repr, &other.repr) {
+        match (self.representation(), other.representation()) {
             (EPathMapRepr::Empty, _) => Ok(Self::default()),
             (_, EPathMapRepr::Empty) => Ok(self.clone()),
             (EPathMapRepr::Set(left), EPathMapRepr::Set(right)) => Ok(Self::algebra_result(
@@ -1667,7 +1711,7 @@ impl EntryTrie {
     /// encoded keys without decoding, re-encoding, or manufacturing dummy
     /// `Par` values. Derived folds are recomputed once for the final trie.
     pub fn subtract_encoded_keys(&self, keys: &RholangSetPathMap) -> Self {
-        match &self.repr {
+        match self.representation() {
             EPathMapRepr::Empty => Self::default(),
             EPathMapRepr::Set(left) => Self::algebra_result(EPathMapRepr::Set(left.subtract(keys))),
             EPathMapRepr::Map(left) => {
@@ -1695,7 +1739,7 @@ impl EntryTrie {
     /// mode copies only selected associated values while retaining canonical
     /// keys and their prefix compression.
     pub fn select_encoded_keys(&self, keys: &RholangSetPathMap) -> Self {
-        match &self.repr {
+        match self.representation() {
             EPathMapRepr::Empty => Self::default(),
             EPathMapRepr::Set(left) => Self::algebra_result(EPathMapRepr::Set(left.meet(keys))),
             EPathMapRepr::Map(left) => {
@@ -1719,7 +1763,7 @@ impl EntryTrie {
     }
 
     pub fn try_restrict(&self, other: &Self) -> Result<Self, EPathMapAlgebraError> {
-        match (&self.repr, &other.repr) {
+        match (self.representation(), other.representation()) {
             (EPathMapRepr::Empty, _) | (_, EPathMapRepr::Empty) => Ok(Self::default()),
             (EPathMapRepr::Set(left), EPathMapRepr::Set(right)) => {
                 let restricted = if other.len == 1 {
@@ -1750,7 +1794,7 @@ impl EntryTrie {
     }
 
     pub fn try_restrict_member_prefixes(&self, other: &Self) -> Result<Self, EPathMapAlgebraError> {
-        match (&self.repr, &other.repr) {
+        match (self.representation(), other.representation()) {
             (EPathMapRepr::Empty, _) | (_, EPathMapRepr::Empty) => Ok(Self::default()),
             (EPathMapRepr::Set(left), EPathMapRepr::Set(right)) => {
                 if other.len == 1 {
@@ -1832,26 +1876,26 @@ impl EntryTrie {
     /// `insert_entry` is no longer on this path. Each is monotone and O(1) per entry — the same
     /// three folds, in the same order.
     pub fn extend_entries(&mut self, other: &EntryTrie) {
-        if matches!(self.repr, EPathMapRepr::Map(_)) {
+        if matches!(self.representation(), EPathMapRepr::Map(_)) {
             panic!("set union attempted on map-mode EPathMap");
         }
-        let other_map = match &other.repr {
+        let other_map = match other.representation() {
             EPathMapRepr::Empty => return,
             EPathMapRepr::Set(map) => map,
             EPathMapRepr::Map(_) => panic!("cannot mix map-mode entries into a set EPathMap"),
         };
-        if matches!(self.repr, EPathMapRepr::Empty) {
-            self.repr = EPathMapRepr::Set(RholangSetPathMap::new());
-        }
-        let EPathMapRepr::Set(self_map) = &mut self.repr else {
-            unreachable!("map mode was rejected and empty mode was specialized")
-        };
-
         // PathMap's lattice join operates on whole compressed subtries and can
         // preserve shared nodes. Counting the result is one node cata; it is
         // still cheaper than reinserting every full key through the root.
-        *self_map = self_map.join(other_map);
-        self.len = self_map.val_count();
+        let joined = match self.representation() {
+            EPathMapRepr::Empty => other_map.clone(),
+            EPathMapRepr::Set(map) => map.join(other_map),
+            EPathMapRepr::Map(_) => unreachable!("map mode was rejected"),
+        };
+        let joined = OwnedResidentEPathMap::new(EPathMapRepr::Set(joined), ResidentEpmBarrier);
+        let EPathMapRepr::Set(map) = joined.as_repr() else { unreachable!() };
+        self.len = map.val_count();
+        self.replace_repr(joined);
 
         // ★★ The three metadata folds COMBINE from `other`'s aggregates — O(1) each, not
         // O(Σ entries). They used to be re-derived per entry inside the loop above, which meant
@@ -1882,7 +1926,7 @@ impl EntryTrie {
     /// canonical bytes in `PathMap<()>`, so they contribute no borrowed value;
     /// map mode contributes only its associated `Par` values.
     pub fn extend_owned_par_refs<'trie>(&'trie self, out: &mut Vec<&'trie Par>) {
-        if let EPathMapRepr::Map(map) = &self.repr {
+        if let EPathMapRepr::Map(map) = self.representation() {
             out.extend(map.iter().map(|(_, value)| value));
         }
     }
@@ -1897,7 +1941,7 @@ impl EntryTrie {
         &self,
         mut visit: impl FnMut(&Par) -> Result<(), E>,
     ) -> Result<(), E> {
-        let map = match &self.repr {
+        let map = match self.representation() {
             EPathMapRepr::Empty => return Ok(()),
             EPathMapRepr::Set(map) => map,
             EPathMapRepr::Map(_) => {
@@ -1921,7 +1965,7 @@ impl EntryTrie {
     /// decoded hit by value keeps the trie compressed and avoids retaining a decoded
     /// shadow collection.
     pub fn find_entry(&self, mut pred: impl FnMut(&Par) -> bool) -> Option<Par> {
-        let map = match &self.repr {
+        let map = match self.representation() {
             EPathMapRepr::Empty => return None,
             EPathMapRepr::Set(map) => map,
             EPathMapRepr::Map(_) => {
@@ -1940,7 +1984,7 @@ impl EntryTrie {
     }
 
     pub fn for_each_entry(&self, mut visit: impl FnMut(&Par)) {
-        let map = match &self.repr {
+        let map = match self.representation() {
             EPathMapRepr::Empty => return,
             EPathMapRepr::Set(map) => map,
             EPathMapRepr::Map(_) => {
@@ -1957,11 +2001,6 @@ impl EntryTrie {
 
     /// Hand every `Par` this value owns to `out`, **BY MOVE**, leaving none behind.
     ///
-    /// ★ For iterative teardown ([`crate::rust::rholang::par_children::dismantle`]). `Drop` for
-    /// the `Par` family is itself a Θ(depth) recursive traversal, so a deep term must be taken
-    /// apart with an explicit worklist rather than dropped — and the worklist can only do that
-    /// if it is handed the `Par`s themselves, not copies of them.
-    ///
     /// ⚠ **Exhaustively destructured, with no `..`.** That is the point: a field added to
     /// `EntryTrie` that can hold a `Par` becomes a COMPILE ERROR here rather than a silent leak
     /// back onto the recursive destructor. The wrong form is unspellable.
@@ -1970,38 +2009,21 @@ impl EntryTrie {
     /// The snapshot/layout caches contain bytes only, and set mode stores unit
     /// values, so neither can reintroduce recursive `Par` destruction.
     ///
-    /// ★ A clone-family member that is NOT the last owner must not drive the
-    /// PathMap by value. `PathMap::into_iter` makes a shared root unique and
-    /// therefore clones every `Par` value merely so this alias can discard it.
-    /// `trie_snapshot` is reset on every mutation and shared by every unmodified
-    /// `EntryTrie::clone`, so its Arc count is an exact O(1) witness for this
-    /// case: another snapshot-cell owner also owns the identical PathMap root.
-    /// Releasing the root refcount is sufficient and cannot destroy a value.
-    /// The last owner still moves every value into the explicit teardown PDA.
     pub(crate) fn drain_owned_pars(self, out: &mut Vec<Par>) {
         // ⚠ NO `..` — see the doc above.
         let EntryTrie {
-            repr,
+            storage,
             len: _,
             entries_stable: _,
             entries_reducer_eval_identity: _,
             union_locally_free: _,
             any_connective_used: _,
-            trie_snapshot,
-            epm_layout: _,
         } = self;
-        if Arc::strong_count(&trie_snapshot) > 1 {
-            // Dropping `repr` here only decrements the shared PathMap root. The
-            // sibling witnessed by `trie_snapshot` keeps every value alive, so
-            // no recursive value destructor can run on this edge.
+        let Ok(storage) = Arc::try_unwrap(storage) else {
             return;
-        }
-        match repr {
-            EPathMapRepr::Empty => {}
-            EPathMapRepr::Set(map) => drop(OwnedEPathMapSetEntries::new(map)),
-            EPathMapRepr::Map(map) => {
-                out.extend(OwnedEPathMapMapEntries::new(map).map(|(_, value)| value));
-            }
+        };
+        if let OwnedEPathMapEntries::Map(entries) = storage.repr.into_entries() {
+            out.extend(entries.map(|(_, value)| value));
         }
     }
 
@@ -2042,24 +2064,14 @@ impl EntryTrie {
 
     fn into_owned_entries(self) -> OwnedEPathMapEntries {
         let EntryTrie {
-            repr,
+            storage,
             len: _,
             entries_stable: _,
             entries_reducer_eval_identity: _,
             union_locally_free: _,
             any_connective_used: _,
-            trie_snapshot: _,
-            epm_layout: _,
         } = self;
-        match repr {
-            EPathMapRepr::Empty => OwnedEPathMapEntries::Empty,
-            EPathMapRepr::Set(map) => {
-                OwnedEPathMapEntries::Set(OwnedEPathMapSetEntries::new(map))
-            }
-            EPathMapRepr::Map(map) => {
-                OwnedEPathMapEntries::Map(OwnedEPathMapMapEntries::new(map))
-            }
-        }
+        Arc::unwrap_or_clone(storage).repr.into_entries()
     }
 
     /// Remove the entry with the GREATEST key in trie order, and return it.
@@ -2073,7 +2085,7 @@ impl EntryTrie {
     pub fn remove_greatest_entry(&mut self) -> Option<Par> {
         let last_key = {
             use pathmap::zipper::{ZipperIteration, ZipperMoving};
-            let map = match &self.repr {
+            let map = match self.representation() {
                 EPathMapRepr::Empty => return None,
                 EPathMapRepr::Set(map) => map,
                 EPathMapRepr::Map(_) => panic!("set removal attempted on map-mode EPathMap"),
@@ -2085,14 +2097,15 @@ impl EntryTrie {
             }
             last?
         };
-        let EPathMapRepr::Set(map) = &mut self.repr else {
+        let EPathMapRepr::Set(map) = self.representation_mut() else {
             unreachable!("the mode was checked above")
         };
         let removed = map.remove(&last_key);
+        let empty = map.is_empty();
         if removed.is_some() {
             self.len -= 1;
-            if map.is_empty() {
-                self.repr = EPathMapRepr::Empty;
+            if empty {
+                self.replace_repr(OwnedResidentEPathMap::new(EPathMapRepr::Empty, ResidentEpmBarrier));
             }
             self.invalidate_derived();
             // The folds are not invertible, so they are recomputed rather than
@@ -2107,7 +2120,7 @@ impl EntryTrie {
     }
 
     pub fn remove_greatest_map_entry(&mut self) -> Result<Option<(Par, Par)>, EPathMapModeError> {
-        let last_key = match &self.repr {
+        let last_key = match self.representation() {
             EPathMapRepr::Empty => return Ok(None),
             EPathMapRepr::Set(_) => {
                 return Err(EPathMapModeError {
@@ -2120,7 +2133,7 @@ impl EntryTrie {
         let Some(last_key) = last_key else {
             return Ok(None);
         };
-        let EPathMapRepr::Map(map) = &mut self.repr else {
+        let EPathMapRepr::Map(map) = self.representation_mut() else {
             unreachable!("the mode was checked above")
         };
         let value = map
@@ -2128,9 +2141,10 @@ impl EntryTrie {
             .expect("the selected greatest map key still exists");
         let key = decode_trie_path(&last_key)
             .expect("map-mode EPathMap keys are canonical_path encodings");
+        let empty = map.is_empty();
         self.len -= 1;
-        if map.is_empty() {
-            self.repr = EPathMapRepr::Empty;
+        if empty {
+            self.replace_repr(OwnedResidentEPathMap::new(EPathMapRepr::Empty, ResidentEpmBarrier));
         }
         self.recompute_folds();
         self.invalidate_derived();
@@ -2144,7 +2158,7 @@ impl EntryTrie {
         let mut entries_reducer_eval_identity = true;
         let mut any_connective_used = false;
         let mut union_locally_free = Vec::new();
-        match &self.repr {
+        match self.representation() {
             EPathMapRepr::Empty => {}
             EPathMapRepr::Set(map) => {
                 for (key, ()) in map.iter() {
@@ -2181,8 +2195,7 @@ impl EntryTrie {
         self.entries_reducer_eval_identity = entries_reducer_eval_identity;
         self.any_connective_used = any_connective_used;
         self.union_locally_free = union_locally_free;
-        self.trie_snapshot = Arc::new(OnceLock::new());
-        self.epm_layout = Arc::new(OnceLock::new());
+        self.invalidate_derived();
     }
 }
 
@@ -2252,18 +2265,16 @@ impl EntryTrie {
             return normalized;
         }
         EntryTrie {
-            repr: if map.is_empty() {
+            storage: Arc::new(EntryTrieStorage::new(OwnedResidentEPathMap::new(if map.is_empty() {
                 EPathMapRepr::Empty
             } else {
                 EPathMapRepr::Set(map.clone())
-            },
+            }, ResidentEpmBarrier))),
             len,
             entries_stable,
             entries_reducer_eval_identity,
             union_locally_free,
             any_connective_used,
-            trie_snapshot: Arc::new(OnceLock::new()),
-            epm_layout: Arc::new(OnceLock::new()),
         }
     }
 }
@@ -2302,19 +2313,14 @@ impl From<&Vec<Par>> for EntryTrie {
 }
 
 impl Clone for EntryTrie {
-    /// O(1) at the trie root: PathMap clone is a refcount bump and both
-    /// serialization caches are shared by `Arc`. Only the small `locally_free`
-    /// bitset copies.
     fn clone(&self) -> Self {
         EntryTrie {
-            repr: self.repr.clone(),
+            storage: Arc::clone(&self.storage),
             len: self.len,
             entries_stable: self.entries_stable,
             entries_reducer_eval_identity: self.entries_reducer_eval_identity,
             union_locally_free: self.union_locally_free.clone(),
             any_connective_used: self.any_connective_used,
-            trie_snapshot: Arc::clone(&self.trie_snapshot),
-            epm_layout: Arc::clone(&self.epm_layout),
         }
     }
 }
@@ -2324,14 +2330,12 @@ impl Default for EntryTrie {
     /// `for all` over no entries.
     fn default() -> Self {
         EntryTrie {
-            repr: EPathMapRepr::Empty,
+            storage: Arc::new(EntryTrieStorage::new(OwnedResidentEPathMap::default())),
             len: 0,
             entries_stable: true,
             entries_reducer_eval_identity: true,
             union_locally_free: Vec::new(),
             any_connective_used: false,
-            trie_snapshot: Arc::new(OnceLock::new()),
-            epm_layout: Arc::new(OnceLock::new()),
         }
     }
 }
@@ -2343,7 +2347,7 @@ impl fmt::Debug for EntryTrie {
         f.debug_struct("EntryTrie")
             .field("mode", &self.mode())
             .field("len", &self.len)
-            .field("snapshot_cached", &self.trie_snapshot.get().is_some())
+            .field("snapshot_cached", &self.storage.trie_snapshot.get().is_some())
             .finish()
     }
 }
@@ -2377,7 +2381,7 @@ impl EntryTrie {
         if self.len != other.len {
             return false;
         }
-        let (a_map, b_map) = match (&self.repr, &other.repr) {
+        let (a_map, b_map) = match (self.representation(), other.representation()) {
             (EPathMapRepr::Empty, EPathMapRepr::Empty) => return true,
             (EPathMapRepr::Set(a), EPathMapRepr::Set(b)) => (a, b),
             (EPathMapRepr::Map(a), EPathMapRepr::Map(b)) => {
@@ -2460,7 +2464,7 @@ impl EntryTrie {
     /// Before that repair this change would have needed a seven-axis entry.
     fn recursive_hash_oracle<H: Hasher>(&self, state: &mut H) {
         use pathmap::zipper::{ZipperIteration, ZipperMoving};
-        match &self.repr {
+        match self.representation() {
             EPathMapRepr::Empty => {}
             EPathMapRepr::Set(map) => {
                 for path in map.read_zipper().into_path_iter() {
@@ -2513,7 +2517,7 @@ impl EntryTrie {
     /// meaning.
     fn recursive_cmp_oracle(&self, other: &Self) -> Ordering {
         use pathmap::zipper::{ZipperIteration, ZipperMoving};
-        let (a_map, b_map) = match (&self.repr, &other.repr) {
+        let (a_map, b_map) = match (self.representation(), other.representation()) {
             (EPathMapRepr::Empty, EPathMapRepr::Empty) => return Ordering::Equal,
             (EPathMapRepr::Set(a), EPathMapRepr::Set(b)) => (a, b),
             (EPathMapRepr::Map(a), EPathMapRepr::Map(b)) => {
@@ -2698,8 +2702,19 @@ impl EPathMap {
         repr: EPathMapRepr<Par>,
         validate_canonical_keys: bool,
     ) -> Result<(), DecodeError> {
+        self.replace_owned_decoded_representation_with(
+            OwnedResidentEPathMap::new(repr, ResidentEpmBarrier), validate_canonical_keys,
+        )
+    }
+
+    #[allow(deprecated)]
+    pub(crate) fn replace_owned_decoded_representation_with(
+        &mut self,
+        repr: OwnedResidentEPathMap,
+        validate_canonical_keys: bool,
+    ) -> Result<(), DecodeError> {
         let current = self.mode();
-        let incoming = repr.mode();
+        let incoming = repr.as_repr().mode();
         if current != EPathMapMode::Empty && incoming != EPathMapMode::Empty && current != incoming
         {
             return Err(DecodeError::new(format!(
@@ -2707,11 +2722,7 @@ impl EPathMap {
                 current, incoming
             )));
         }
-        self.ps = if validate_canonical_keys {
-            EntryTrie::from_repr(repr)?
-        } else {
-            EntryTrie::from_repr_deferred_key_validation(repr)?
-        };
+        self.ps = EntryTrie::from_owned_repr_with_key_validation(repr, validate_canonical_keys)?;
         Ok(())
     }
 
@@ -2889,11 +2900,11 @@ impl EPathMap {
 
     /// Conservative proof that two values retain the same immutable trie root
     /// and the same enclosing wire metadata. [`EntryTrie::clone`] shares its
-    /// snapshot cell and every successful mutation replaces it; pointer
+    /// guarded storage and mutation detaches it when shared; pointer
     /// identity therefore avoids forcing either snapshot while remaining
     /// sound. Independently constructed equal maps may return `false`.
     pub fn shares_storage_with(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.ps.trie_snapshot, &other.ps.trie_snapshot)
+        Arc::ptr_eq(&self.ps.storage, &other.ps.storage)
             && self.locally_free == other.locally_free
             && self.connective_used == other.connective_used
             && self.remainder == other.remainder
@@ -3042,7 +3053,7 @@ impl Default for EPathMap {
 }
 
 impl Clone for EPathMap {
-    /// Clone the PathMap roots and shared snapshot/layout cells by refcount.
+    /// Clone the shared guarded trie and snapshot/layout storage by refcount.
     /// Only metadata bytes and the small optional remainder are copied.
     fn clone(&self) -> Self {
         EPathMap {
@@ -3285,6 +3296,10 @@ impl EPathMap {
             .then_with(|| self.remainder.cmp(&other.remainder))
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/support/epm_resident_ownership.rs"]
+mod resident_ownership_tests;
 
 #[cfg(test)]
 mod pathmap_native_semantics_tests {
