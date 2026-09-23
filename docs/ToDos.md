@@ -337,7 +337,10 @@ tasks:
     node_pin_evidence: target/task-019-7-pin-e3c4e1418/report.json
     node_pin_patch: target/task-019-7-pin-e3c4e1418/node-pin.patch
     node_pin_branch: ci/repin-validator-lifecycle-settlement
-    node_pin_publication: "The user requested the prepared pin PR. Commit checks and publication are in progress."
+    node_pin_publication: "PR #450 is open against dev at 6497dd76a. CI run 35921674172 is in progress."
+    node_pin_pr: https://github.com/F1R3FLY-io/f1r3node-rust/pull/450
+    node_pin_commit: 6497dd76a029481d63e49c2af6f0f91c4bd71fe2
+    node_pin_ci_run: 35921674172
     observer_candidate_status: "Pending TASK-019-6 and subsequent dev CI publication."
     external_dependencies:
       - "The system-integration fix and promotion are merged. The node pin PR, live validation, and subsequent dev image publication remain pending."
