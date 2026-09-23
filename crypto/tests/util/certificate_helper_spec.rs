@@ -245,6 +245,32 @@ fn test_normalize_public_key_coordinates() {
 }
 
 #[test]
+fn test_normalize_public_key_coordinates_keeps_leading_zero_coordinate_byte() {
+    let mut coordinates = vec![0u8; 64];
+    coordinates[63] = 1;
+
+    let passthrough =
+        CertificateHelper::normalize_public_key_coordinates(coordinates.clone()).unwrap();
+    assert_eq!(passthrough, coordinates);
+
+    let mut sec1 = vec![0x04u8];
+    sec1.extend_from_slice(&coordinates);
+    let normalized = CertificateHelper::normalize_public_key_coordinates(sec1.clone()).unwrap();
+    assert_eq!(normalized, coordinates);
+
+    let mut der_style = vec![0u8];
+    der_style.extend_from_slice(&sec1);
+    let normalized_der = CertificateHelper::normalize_public_key_coordinates(der_style).unwrap();
+    assert_eq!(normalized_der, coordinates);
+
+    let mut unused_bits_only = vec![0u8];
+    unused_bits_only.extend_from_slice(&coordinates);
+    let normalized_raw =
+        CertificateHelper::normalize_public_key_coordinates(unused_bits_only).unwrap();
+    assert_eq!(normalized_raw, coordinates);
+}
+
+#[test]
 fn test_generated_certificate_parses_from_der_and_pem() {
     let (secret_key, public_key) = CertificateHelper::generate_key_pair();
     let cert_der = CertificateHelper::generate_certificate(&secret_key, &public_key)

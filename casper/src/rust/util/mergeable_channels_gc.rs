@@ -97,8 +97,10 @@ pub async fn collect_garbage(
     metrics::histogram!("mergeable_channels_gc.oldest_eligible_pending_depth")
         .record(min_height.map_or(0, |h| floor.block_number - h) as f64);
 
-    let common_strict_ancestors =
-        min_height.and_then(|min_height| common_strict_main_chain_ancestors(dag, min_height));
+    let common_strict_ancestors = match min_height {
+        Some(min_height) => common_strict_main_chain_ancestors(dag, min_height)?,
+        None => None,
+    };
     metrics::histogram!("mergeable_channels_gc.ancestor_set_size")
         .record(common_strict_ancestors.as_ref().map_or(0, |a| a.len()) as f64);
     let mut collected = Vec::new();
@@ -303,30 +305,40 @@ fn extend_pending_to_ceiling(
 fn common_strict_main_chain_ancestors(
     dag: &KeyValueDagRepresentation,
     min_height: i64,
-) -> Option<HashSet<BlockHash>> {
+) -> Result<Option<HashSet<BlockHash>>, KvStoreError> {
     // Validators sharing the same latest message (common on a healthy,
     // synchronized chain) would otherwise seed the frontier with that same
     // lineage once per validator instead of once total.
-    let latest_messages: HashSet<BlockHash> =
-        dag.latest_message_hashes().values().cloned().collect();
+    //
+    // A slot holding a block its validator never signed is the genesis
+    // placeholder, which has no main parent: counting it collapses the anchor
+    // search and the pass keeps everything.
+    let mut latest_messages: HashSet<BlockHash> = HashSet::new();
+    for (validator, hash) in dag.latest_message_hashes() {
+        if dag.own_testimony(&validator, &hash)?.is_some() {
+            latest_messages.insert(hash);
+        }
+    }
 
     // Main-parent chains are linear, so the intersection of N strict-ancestor
     // paths is just the path below their deepest common point. Finding that
     // point and walking one chain replaces materialising N chains and
     // intersecting them; `common_strict_ancestors` below is the definition
     // this implements, kept as the differential oracle.
-    let anchor = deepest_common_strict_ancestor(
+    let Some(anchor) = deepest_common_strict_ancestor(
         latest_messages,
         |block_hash| dag.main_parent(block_hash),
         |block_hash| block_height(dag, block_hash),
-    )?;
+    ) else {
+        return Ok(None);
+    };
 
-    Some(main_chain_set_from(
+    Ok(Some(main_chain_set_from(
         anchor,
         |block_hash| dag.main_parent(block_hash),
         |block_hash| block_height(dag, block_hash),
         min_height,
-    ))
+    )))
 }
 
 fn block_height(dag: &KeyValueDagRepresentation, block_hash: &BlockHash) -> Option<i64> {
@@ -859,7 +871,7 @@ mod tests {
         // candidate's own height — the same rule `collect_garbage` applies
         // to a whole `pending` set collapses to "this one height" here.
         let candidate_height = dag.lookup_unsafe(block_hash)?.block_number;
-        let common_strict_ancestors = common_strict_main_chain_ancestors(dag, candidate_height);
+        let common_strict_ancestors = common_strict_main_chain_ancestors(dag, candidate_height)?;
         is_safe_to_delete(
             dag,
             block_hash,
@@ -904,6 +916,23 @@ mod tests {
             is_safe_to_delete_at_floor(&dag, &hash(5), &floor_at(10), &conf).expect("safety check"),
             "block 5 is 5 below the floor at 10, past the 4-block allowance, so \
              no merge can still need it and holding it forever leaks",
+        );
+    }
+
+    /// A bonded validator that never proposed has the genesis placeholder in
+    /// its slot, and genesis has no main parent, so the anchor search
+    /// short-circuits and every candidate is refused.
+    #[test]
+    fn a_validator_that_never_proposed_does_not_stop_collection() {
+        let mut dag = linear_chain_dag();
+        dag.latest_messages_map
+            .insert(Bytes::from(vec![0x07u8; 65]), hash(0));
+        let conf = conf();
+        assert!(
+            is_safe_to_delete_at_floor(&dag, &hash(5), &floor_at(10), &conf).expect("safety check"),
+            "a slot holding a block its validator never signed is bookkeeping, \
+             not a position anything moved past; counting it collects nothing \
+             for as long as that validator stays silent",
         );
     }
 
