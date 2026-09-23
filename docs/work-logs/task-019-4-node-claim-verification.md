@@ -636,3 +636,49 @@ The five proposed finite-domain classifications remain unaccepted. Both claims a
 The existing workflow and TLA gate governance records keep their prior claim identities. The regenerated package will supply separate node claim views for those files.
 
 The six remaining STE findings occur in unchanged prose. The new and revised prose received a separate sentence-length review.
+
+## Merged-source cycle 02: 00f91ca11
+
+This cycle refreshes the verification evidence at the merged revision `00f91ca11fd1153183818cde605d7d19eea00a7f`. The harness session ran it on 2026-09-23 while the node session worked on B11.
+
+The node branch refreshed its own records at `78d696ea6` in parallel. That package, `casper-node-claim-gate-78d696ea6-01`, is not merged into this branch. The next merge must reconcile the two record sets.
+
+### Refutation tier
+
+The bounded gate ran alone on a clean export of the execution base. It passed 16 clean configurations and 88 expected violations with exit zero.
+
+Both node models passed: `MC_ObserverSession` with 689 distinct states and `MC_BoundedCapture` with 10,066 distinct states. All 17 node controls exited 12 on their named invariants.
+
+The hosted full tier in run 35895550078 passed 31 clean configurations and 88 expected violations. The registry fixture passed all 88 controls in a separate run.
+
+A first attempt ran the fixture and the gate at the same time. The fixture overwrote eleven shared TLC logs, so the gate misclassified eleven controls. The recorded run avoids that overlap.
+
+### Construction tier
+
+Local Rocq execution was not possible. Docker Desktop routes container traffic through a TLS-intercepting proxy, so apt and opam cannot install Rocq inside a container.
+
+The hosted Rocq job in run 35895550078 ran `scripts/ci/check-formal-invariants.sh --rocq` with Rocq 9.2.0 from opam. It passed with 36 closed assumption sets across four projects, including all 25 node exports.
+
+The formal gate fixture passed 47 exact-exit refusal controls locally.
+
+### Binding tier
+
+The hosted binding driver built the shared, block-storage, and node test targets on x86_64. It then stopped at its strip-equivalence check before any test executed.
+
+The cause is a binutils detail. After `objcopy --strip-debug`, the `.init_array` EntSize field changes from 00 to 08, and the driver compares that column. The same defect made the node branch's own binding job fail before the port.
+
+The rocq-build job with the wire correspondence check was not created, because it needs the binding job. The retained artifact holds the build logs, the input digests, and the section tables.
+
+Native macOS runs of the shared and block-storage suites passed 303 tests and failed 4. The four failures are the known `/private/var` path comparisons that PR #447 corrects. The node observer suites are Linux-only.
+
+Kani did not run in this cycle. The eight recorded harnesses keep their prior results from the handoff cycle.
+
+Lint with warnings denied and formatting passed on the clean export.
+
+### Records and package
+
+The package `casper-node-claim-gate-00f91ca11-01` keeps four compact files. The 58 scoped records now pin the merged revision, the refreshed claim digests, and this package. Two new records cover `InterfaceSafety.v` and `CaptureIntegrity.v`.
+
+The strict audit returned exit 4 before the refresh with the two new modules unrecorded. It is expected to return exit 4 after the refresh with all 62 mandatory records pending.
+
+Both claims remain pending. Acceptance still needs named maintainer review, the B11 canonical-schema construction, and a hosted binding run after the driver correction.

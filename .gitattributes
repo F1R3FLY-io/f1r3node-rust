@@ -4,6 +4,7 @@ node/tests/soak_observer.rs cbc=mandatory cbc-weight=high
 formal/tlaplus/node_observation/** cbc=mandatory cbc-weight=high
 formal/rocq/node_observation/** cbc=mandatory cbc-weight=high
 scripts/ci/check-node-observation-bindings.sh cbc=mandatory cbc-weight=high
+scripts/ci/check-node-canonical-wire.sh cbc=mandatory cbc-weight=high
 scripts/ci/check-tla-invariants.sh cbc=mandatory cbc-weight=high
 scripts/ci/test-check-tla-invariants.sh cbc=mandatory cbc-weight=high
 scripts/ci/check-formal-invariants.sh cbc=mandatory cbc-weight=high
@@ -11,6 +12,7 @@ scripts/ci/check-formal-invariants.sh cbc=mandatory cbc-weight=high
 shared/src/rust/store/soak_snapshot.rs cbc=mandatory cbc-weight=high
 shared/tests/soak_snapshot.rs cbc=mandatory cbc-weight=high
 block-storage/src/rust/dag/soak_snapshot.rs cbc=mandatory cbc-weight=high
+block-storage/src/rust/dag/soak_snapshot/canonical_wire_tests.rs cbc=mandatory cbc-weight=high
 block-storage/tests/soak_snapshot.rs cbc=mandatory cbc-weight=high
 casper/src/rust/engine/multi_parent_casper/snapshot.rs cbc=mandatory cbc-weight=high
 casper/src/rust/blocks/proposer/block_creator.rs cbc=mandatory cbc-weight=high

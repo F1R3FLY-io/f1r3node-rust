@@ -1102,3 +1102,6 @@ mod tests {
             .is_ok());
     }
 }
+
+#[cfg(test)]
+mod canonical_wire_tests;

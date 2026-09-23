@@ -111,6 +111,7 @@ jobs:
             ${{ runner.temp }}/node-observation-bindings/*.list
             ${{ runner.temp }}/node-observation-bindings/*.exit
             ${{ runner.temp }}/node-observation-bindings/*.jsonl
+            ${{ runner.temp }}/node-observation-bindings/canonical-wire/
           retention-days: 14
           if-no-files-found: error
 
@@ -365,7 +366,8 @@ jobs:
           if-no-files-found: error
 
   rocq-build:
-    name: Rocq slashing, fork-choice and rspace-guards rebuild
+    name: Rocq construction and node wire correspondence
+    needs: node-observation-bindings
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -386,6 +388,26 @@ jobs:
         run: |
           eval "$(opam env)"
           bash scripts/ci/check-formal-invariants.sh --rocq
+      - name: Retrieve node binding evidence for this attempt
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: node-observation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/node-binding-evidence
+      - name: Check production wire correspondence
+        run: |
+          eval "$(opam env)"
+          shasum -a 256 -c target/node-binding-evidence/inputs.sha256 \
+            > target/node-binding-evidence/canonical-wire/node-inputs-check.log
+          bash scripts/ci/check-node-canonical-wire.sh verify \
+            target/node-binding-evidence/canonical-wire
+      - name: Retain wire correspondence evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: node-wire-correspondence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/node-binding-evidence/canonical-wire
+          if-no-files-found: error
+          retention-days: 14
       - name: Complete Rocq verification receipt
         run: bash scripts/ci/check-formal-gate.sh complete rocq-build target/formal-provenance-rocq
       - name: Retain Rocq verification provenance

@@ -7,25 +7,25 @@ The approved binding driver remains pending implementation and verification.
   "artifact": {
     "path": "scripts/ci/check-node-observation-bindings.sh",
     "id": "scripts-ci-check-node-observation-bindings-sh",
-    "commit": "03d7f1b27544b2c5a93b664d8684b24ea16cf3e9",
+    "commit": "00f91ca11fd1153183818cde605d7d19eea00a7f",
     "commit_is_base": true,
     "working_tree": true,
-    "sha256": "947937192ae8761330cd8b36b437edcd9e3256a53803477e7c076f9cd1c1e5ca"
+    "sha256": "9a936cb186354b0e58f9a96c654d31096a9eb5f5cbc6244c67ffe661caf45558"
   },
   "claim": "docs/claims/casper-node-observation.md",
   "claim_ids": [
     "CLAIM-CASPER-NODE-OBSERVATION-001"
   ],
   "claim_digests": {
-    "docs/claims/casper-node-observation.md": "703418566c148f28a4d952e29e7dc135843242ea7fbb7e3fdc3111b6e4373274"
+    "docs/claims/casper-node-observation.md": "4c69fd24c361c0c03a2a176230c667c46e8259a158c47af5bed24a0e1a38d172"
   },
   "adapter": null,
   "status": "pending",
-  "scope": "task-019-4-handoff-cycle-01",
+  "scope": "task-019-4-merged-source-cycle-02",
   "evidence": {
     "kind": "tiered-evidence-not-discharge",
-    "ref": "docs/cbc-evidence/runs/casper-node-claim-gate-03d7f1b27-01/report.json",
-    "sha256": "68e9224741cf8aeeb666f1e86947c8d15dc5cb8587bed98767cf9e52e2674160"
+    "ref": "docs/cbc-evidence/runs/casper-node-claim-gate-00f91ca11-01/report.json",
+    "sha256": "c3dfa5f3f876b625db10de1645b32b4ded0411e45d1f1c61e63c27ef0afa95d8"
   },
   "tiers": {
     "refutation": "recorded",
@@ -37,8 +37,8 @@ The approved binding driver remains pending implementation and verification.
   "verified_at": null,
   "previous_record": {
     "path": "docs/cbc-evidence/scripts-ci-check-node-observation-bindings-sh.md",
-    "sha256": "6b64aeb83a08c1009f3e3d5adaf57e4cfe73c01a24d1a9c2dcfce49de2c00656",
-    "commit": "10e7b8452824e12a1fe2743dca7989b79fce2133"
+    "sha256": "6fff5e00458d52f5485a973c9d5e90e5a09387e22107a4e875f94731b8784456",
+    "commit": "03d7f1b27544b2c5a93b664d8684b24ea16cf3e9"
   }
 }
 ```

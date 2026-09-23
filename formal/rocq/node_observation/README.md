@@ -10,7 +10,8 @@ This project proves challenge-allocation, cross-incarnation, and bounded-capture
 | `BoundedCapture` | Transaction clocks, capture observations, insertion generation, charge budgets, length prefixes, and the capture protocol. |
 | `InterfaceSafety` | Directory and peer admission, identity-sensitive cleanup, awaited shutdown, and deadline admission. |
 | `CaptureIntegrity` | Complete rows, logical field framing, and fresh scratch storage. |
-| `MainTheorem` | The 25 exported results. |
+| `MainTheorem` | The 25 existing exported results. |
+| `b11/` | Eight additional byte-schema results in `NodeObservationB11.MainTheorem`. |
 
 ## Correspondence
 
@@ -67,7 +68,7 @@ make -j1
 coqchk -Q theories NodeObservation NodeObservation.MainTheorem
 ```
 
-The formal gate separately prints the assumptions of each exported theorem and requires 25 closed sets. Build success alone does not establish a closed assumption set.
+The formal gate requires 25 closed sets from `NodeObservation` and eight from `NodeObservationB11`. Build success alone does not establish a closed assumption set.
 
 The [TLA+ area](../../tlaplus/node_observation/README.md) contains the canonical session and capture models and the applicability review per property.
 
@@ -90,7 +91,7 @@ Named maintainer review of every applicability decision and acceptance of both c
 | `write_admitted` | `Observer::write` rejects an expired deadline before output. | Tokio supplies a monotone clock and cooperative task scheduling. This theorem bounds admission, not operating-system latency. |
 | `lock_admitted` | All three capture guards receive one absolute deadline. | The lock library honors the deadline. An uncontended lock can succeed after that deadline. |
 | `rows_complete` | Capture requires metadata for held blocks and bodies for requested held blocks. | Row predicates represent successful decoding and identity checks. Missing cache seeds remain permitted. |
-| `canonical_record` | Logical fields have unambiguous length framing. | This normal form is not the Rust wire schema. Complete schema refinement remains pending. |
+| `canonical_record` | Logical fields have unambiguous length framing. | The separate B11 project proves injectivity for the complete byte schema. |
 | `populate`, `addresses_fresh` | `scratch_view` creates fresh stores and populates captured rows. | Rust allocation, ownership, and store isolation hold. Initialization errors prevent a returned view. |
 
 The canonical reader test decodes the production bytes independently and compares each field with the captured data. Four cases cover body and cache availability.
@@ -112,3 +113,13 @@ The public decoder formats the same errors after those checks. Native tests exer
 The block preflight harness checks every `usize` length against `check_compressed_length`. Production calls this check before varint decoding or decompression.
 
 Kani verifies the arithmetic boundary. It does not verify allocation, diagnostic formatting, decompression, or the complete block decoder.
+
+## B11 wire correspondence
+
+The [B11 project](b11/README.md) covers every canonical field, integer width, tag, count, and option marker. Its eight exports have closed assumption sets.
+
+The combined binding driver runs both B11 tests and exports 75 production cases. The Rocq CI job verifies those cases and six rejection controls.
+
+The Rocq job requires successful binding execution and retrieves the artifact from the same workflow attempt. The verifier checks source, script, and case digests.
+
+The B11 model proofs apply to arbitrary valid values. The Rust correspondence cases are finite and do not establish universal machine-checked Rust refinement.

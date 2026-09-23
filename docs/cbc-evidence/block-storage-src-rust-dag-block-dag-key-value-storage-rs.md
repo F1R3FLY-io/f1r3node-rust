@@ -13,7 +13,7 @@ This refresh records source identity only. The referenced reconciliation report 
   "artifact": {
     "path": "block-storage/src/rust/dag/block_dag_key_value_storage.rs",
     "id": "block-storage-src-rust-dag-block-dag-key-value-storage-rs",
-    "commit": "03d7f1b27544b2c5a93b664d8684b24ea16cf3e9",
+    "commit": "00f91ca11fd1153183818cde605d7d19eea00a7f",
     "commit_is_base": true,
     "working_tree": true,
     "sha256": "7bfd28ef62b84ee912a1c2979bd77d6f1f3d804c6cb5d6c9549f9f86ddf43bc2"
@@ -23,15 +23,15 @@ This refresh records source identity only. The referenced reconciliation report 
     "CLAIM-CASPER-NODE-OBSERVATION-002"
   ],
   "claim_digests": {
-    "docs/claims/casper-node-authority-snapshot.md": "d8242333c663a8680376dfe758cfa18c6641905fc86ddc20ca9014ec8af81a19"
+    "docs/claims/casper-node-authority-snapshot.md": "423f5e29c4550e561d41809e560ae97f870d000d00b36f14188348e4e9975481"
   },
   "adapter": null,
   "status": "pending",
-  "scope": "task-019-4-handoff-cycle-01",
+  "scope": "task-019-4-merged-source-cycle-02",
   "evidence": {
     "kind": "tiered-evidence-not-discharge",
-    "ref": "docs/cbc-evidence/runs/casper-node-claim-gate-03d7f1b27-01/report.json",
-    "sha256": "68e9224741cf8aeeb666f1e86947c8d15dc5cb8587bed98767cf9e52e2674160"
+    "ref": "docs/cbc-evidence/runs/casper-node-claim-gate-00f91ca11-01/report.json",
+    "sha256": "c3dfa5f3f876b625db10de1645b32b4ded0411e45d1f1c61e63c27ef0afa95d8"
   },
   "tiers": {
     "refutation": "recorded",
@@ -43,8 +43,8 @@ This refresh records source identity only. The referenced reconciliation report 
   "verified_at": null,
   "previous_record": {
     "path": "docs/cbc-evidence/block-storage-src-rust-dag-block-dag-key-value-storage-rs.md",
-    "sha256": "402a5af9eb173392028137b675251c9fdc14de2647a26ea4222b19764da5e5d7",
-    "commit": "8789c1c3e1ad71241d92d9bbdde2296d1e64851d"
+    "sha256": "454593950c4aab69afdffbbaaa675cd1461d71e903974b66d1b50dfb723ffbcd",
+    "commit": "03d7f1b27544b2c5a93b664d8684b24ea16cf3e9"
   }
 }
 ```

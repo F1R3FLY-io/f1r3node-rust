@@ -200,7 +200,7 @@ This work does not change the harness claims, approve a campaign, publish images
 
 ## Merged-source verification
 
-The evidence package for this cycle is not in the tree. The node session regenerates it under the evidence retention rule before any claim tier advances.
+The current package is [casper-node-claim-gate-00f91ca11-01](../cbc-evidence/runs/casper-node-claim-gate-00f91ca11-01/report.json). It records the merged-source cycle 02 checks at the merged revision.
 
 The checkout did not contain the previously named `casper-node-claim-gate-8789c1c3e-01` package. This cycle supplies new evidence instead of reconstructing that missing result.
 

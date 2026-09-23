@@ -17,12 +17,14 @@ find node shared block-storage casper comm crypto models rspace++ rholang rho-pu
     -type f \( -name '*.rs' -o -name '*.proto' -o -name Cargo.toml \) -print0 |
     sort -z | xargs -0 sha256sum > "$OUTPUT/inputs.sha256"
 sha256sum Cargo.toml Cargo.lock rust-toolchain.toml .cargo/config.toml \
-    scripts/ci/check-node-observation-bindings.sh \
+    scripts/ci/check-node-observation-bindings.sh scripts/ci/check-node-canonical-wire.sh \
     docs/claims/casper-node-observation.md docs/claims/casper-node-authority-snapshot.md \
     formal/tlaplus/node_observation/*.tla formal/tlaplus/node_observation/*.cfg \
     formal/tlaplus/node_observation/*.json formal/tlaplus/node_observation/README.md \
     formal/rocq/node_observation/_CoqProject formal/rocq/node_observation/README.md \
-    formal/rocq/node_observation/theories/*.v >> "$OUTPUT/inputs.sha256"
+    formal/rocq/node_observation/theories/*.v \
+    formal/rocq/node_observation/b11/_CoqProject formal/rocq/node_observation/b11/README.md \
+    formal/rocq/node_observation/b11/theories/*.v >> "$OUTPUT/inputs.sha256"
 rustc -vV > "$OUTPUT/compiler.txt"
 build() {
     local package=$1
@@ -81,7 +83,7 @@ while IFS=$'\t' read -r package target raw; do
         if [[ "$target" == block_storage ]]; then
             grep -Fx 'rust::dag::soak_snapshot::tests::generation_change_after_validation_rejects_capture: test' "$OUTPUT/$name.list"
             grep -Fx 'rust::dag::soak_snapshot::tests::all_capture_guards_use_the_supplied_deadline: test' "$OUTPUT/$name.list"
-            args+=(rust::dag::soak_snapshot::tests::)
+            args+=(rust::dag::soak_snapshot::)
         elif [[ "$package" == block-storage ]]; then
             grep -Fx 'capture_outcomes_match_the_bounded_capture_oracle: test' "$OUTPUT/$name.list"
         fi
@@ -94,6 +96,7 @@ jq -r '.claims[].properties[].tests[].name' formal/tlaplus/node_observation/bind
 while IFS= read -r required; do
     grep -hFx "test $required ... ok" "$OUTPUT"/*.log > /dev/null
 done < "$OUTPUT/required-tests.txt"
+bash scripts/ci/check-node-canonical-wire.sh export "$OUTPUT/canonical-wire"
 sha256sum -c "$OUTPUT/inputs.sha256" > "$OUTPUT/inputs-after.log"
 sha256sum -c "$OUTPUT/raw-executables.sha256" > "$OUTPUT/raw-after.log"
 sha256sum -c "$OUTPUT/executed.sha256" > "$OUTPUT/executed-after.log"

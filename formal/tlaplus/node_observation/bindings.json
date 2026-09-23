@@ -589,7 +589,7 @@
         {
           "property": 11,
           "invariants": [],
-          "coverage": "rust-tests-only",
+          "coverage": "construction-and-executable-wire-correspondence",
           "tests": [
             {
               "source": "block-storage/tests/soak_snapshot.rs",
@@ -606,10 +606,36 @@
             {
               "source": "block-storage/tests/soak_snapshot.rs",
               "name": "canonical_fields_round_trip_through_an_independent_reader"
+            },
+            {
+              "source": "block-storage/src/rust/dag/soak_snapshot/canonical_wire_tests.rs",
+              "name": "rust::dag::soak_snapshot::canonical_wire_tests::canonical_wire_field_coverage"
+            },
+            {
+              "source": "block-storage/src/rust/dag/soak_snapshot/canonical_wire_tests.rs",
+              "name": "rust::dag::soak_snapshot::canonical_wire_tests::canonical_collections_ignore_insertion_order"
             }
           ],
-          "theorems": [],
-          "harnesses": []
+          "theorems": [
+            "NodeObservationB11.MainTheorem.canonical_integer_roundtrip",
+            "NodeObservationB11.MainTheorem.canonical_metadata_roundtrip",
+            "NodeObservationB11.MainTheorem.canonical_snapshot_roundtrip",
+            "NodeObservationB11.MainTheorem.canonical_metadata_injective",
+            "NodeObservationB11.MainTheorem.canonical_snapshot_injective",
+            "NodeObservationB11.MainTheorem.canonical_ordered_parents_preserved",
+            "NodeObservationB11.MainTheorem.canonical_availability_distinct",
+            "NodeObservationB11.MainTheorem.canonical_collection_permutation"
+          ],
+          "harnesses": [],
+          "construction_project": "formal/rocq/node_observation/b11",
+          "wire_correspondence": {
+            "driver": "scripts/ci/check-node-canonical-wire.sh",
+            "export_via": "scripts/ci/check-node-observation-bindings.sh",
+            "verify_job": "rocq-build",
+            "cases": 75,
+            "rejection_controls": 6,
+            "machine_checked_refinement": false
+          }
         },
         {
           "property": 12,

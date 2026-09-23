@@ -87,10 +87,10 @@ build_rocq_project() {
         coq_makefile -f _CoqProject -o "$makefile"
         make -f "$makefile" -j1
         coqchk -Q theories "$namespace" "$namespace.MainTheorem" \
-            >"/tmp/${project}-coqchk.log" 2>&1
+            >"/tmp/${namespace}-coqchk.log" 2>&1
     )
 
-    grep -q "Modules were successfully checked" "/tmp/${project}-coqchk.log"
+    grep -q "Modules were successfully checked" "/tmp/${namespace}-coqchk.log"
 }
 
 check_assumptions() {
@@ -165,6 +165,19 @@ run_rocq_checks() {
         capture_canonical_record_injective \
         capture_scratch_preserves_production \
         capture_scratch_preserves_sibling
+
+    ! grep -rnE "^[[:space:]]*(Axioms?|Admitted|Parameters?|Conjectures?)\b" \
+        "$REPO_ROOT/formal/rocq/node_observation/b11/theories/"
+    build_rocq_project node_observation/b11 NodeObservationB11
+    check_assumptions node_observation/b11 NodeObservationB11 8 \
+        canonical_integer_roundtrip \
+        canonical_metadata_roundtrip \
+        canonical_snapshot_roundtrip \
+        canonical_metadata_injective \
+        canonical_snapshot_injective \
+        canonical_ordered_parents_preserved \
+        canonical_availability_distinct \
+        canonical_collection_permutation
 
     build_rocq_project slashing Slashing
     check_assumptions slashing Slashing 2 \

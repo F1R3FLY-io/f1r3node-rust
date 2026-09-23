@@ -204,16 +204,21 @@ tasks:
       - docs/cbc-evidence/runs/casper-node-challenge-freshness-3b1d2465a-01/report.json
       - docs/cbc-evidence/runs/casper-node-model-reconciliation-10e7b8452-01/report.json
       - docs/cbc-evidence/runs/casper-node-claim-gate-03d7f1b27-01/report.json
+      - docs/cbc-evidence/runs/casper-node-claim-gate-00f91ca11-01/report.json
     verification_scope_confirmed: true
-    verification_cycle: handoff-cycle-01
+    verification_cycle: merged-source-cycle-02
+    merged_source_cycle_checkout_base: 00f91ca11
+    merged_source_cycle_working_tree: true
+    sibling_cycle_package: docs/cbc-evidence/runs/casper-node-claim-gate-78d696ea6-01/report.json
+    sibling_cycle_branch: feature/casper-node-observation
     reconciliation_checkout_base: 10e7b8452824e12a1fe2743dca7989b79fce2133
     reconciliation_working_tree: true
     handoff_cycle_checkout_base: 8789c1c3e
     handoff_cycle_working_tree: true
     tiers_reached:
-      refutation: "15 clean configurations and 78 expected violations through the TLA gate at the pinned jar; the two node models and 17 controls pass on this revision."
-      construction: "14 kernel-checked theorems with closed assumption sets in formal/rocq/node_observation; construction pending for A3, A4, A9, B9, B11, B12 and the deadline parts of A7 and B2."
-      binding: "Capture oracle over 14 scenarios, session oracle, retained pre-fix regressions, and seven Kani harnesses; B8 keeps a recorded binding gap."
+      refutation: "16 clean configurations and 88 expected violations through the bounded TLA gate at the pinned jar, and 31 clean configurations in the hosted full tier; the two node models and 17 controls pass at 00f91ca11."
+      construction: "25 kernel-checked theorems with closed assumption sets in formal/rocq/node_observation, verified by the hosted Rocq 9.2.0 job; construction pending for B11 canonical-schema refinement and the boundary assumptions under review."
+      binding: "Native shared and block-storage suites pass except four macOS path cases; the hosted driver builds all three test targets and stops at its strip-equivalence check; Kani not executed this cycle."
     applicability_review: formal/tlaplus/node_observation/README.md#applicability-per-property
     claims: [CLAIM-CASPER-NODE-OBSERVATION-001, CLAIM-CASPER-NODE-OBSERVATION-002]
     eligible_maintainers: [spreston8, dylon, metaweta, jeffrey-l-turner, jltatbeach]
@@ -239,6 +244,9 @@ tasks:
       - "Both claims remain pending. Acceptance needs named maintainer review of every applicability decision and the remaining construction evidence."
       - "No standalone checker crate was added. Downstream must remove its checker crate or include it in the supply-chain audit."
       - "Cross-incarnation identity, remaining construction proofs, Kani harnesses, complete Rust correspondence, and named maintainer acceptance remain pending."
+      - "The merged-source cycle 02 at 00f91ca11 refreshed every node record and the package after the port of the withheld cycle. The node branch refreshed its records at 78d696ea6 in parallel; that package is not merged here."
+      - "The hosted binding driver fails on x86_64 runners because objcopy --strip-debug changes the .init_array EntSize field. The comparison in the driver needs to ignore that field. This defect predates the port."
+      - "Local container verification is blocked because Docker Desktop routes traffic through a TLS-intercepting proxy. Construction evidence comes from the hosted Rocq job."
     acceptance:
       - "Strict source-bound audits pass for every artifact in both claim inventories at the accepted revision."
       - "Refutation, construction, and binding tiers are recorded with retained failing controls."

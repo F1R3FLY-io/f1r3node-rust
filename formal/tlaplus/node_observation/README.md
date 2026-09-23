@@ -84,7 +84,7 @@ Both models permit stuttering and assume no fairness. They establish bounded saf
 
 ## Construction and binding
 
-The [Rocq project](../../rocq/node_observation/README.md) exports 25 kernel-checked theorems. The project README states the boundary assumptions and the remaining canonical-schema gap.
+The [Rocq project](../../rocq/node_observation/README.md) registers 33 theorem exports across two namespaces. The project README states the boundary assumptions and the executable B11 correspondence checks.
 
 Every theorem reports `Closed under the global context`. The formal gate counts 25 closed assumption sets for the `NodeObservation.MainTheorem` module.
 
@@ -134,7 +134,7 @@ A resource limit, timeout, frame size, or test fixture does not make a property 
 | B8: generation validation | U | `GenerationStable` | `capture_generation_stable`. | `generation_change_after_validation_rejects_capture` checks rejection after validation. | Acceptance pending. |
 | B9: incomplete rows | U | `CompleteRows` | `capture_complete_metadata` and `capture_complete_requested_bodies` over arbitrary finite row sets. | Missing-row tests and capture oracle. | Pending. |
 | B10: resource release | U | `Detached`, `ReadOnly` | `capture_detached`. | Release and unchanged-bytes tests. | Construction recorded, acceptance pending. |
-| B11: canonical identity | U | None | `capture_canonical_record_injective` proves logical framing with complete Rust schema refinement still pending. | Independent canonical reader, digest, duration, and byte-bound tests. | Partial construction. |
+| B11: canonical identity | U | None | Eight `NodeObservationB11.MainTheorem` exports prove complete wire-schema roundtrip, injectivity, parent order, availability distinction, and collection ordering. | Independent canonical reader, 75 production wire cases, six rejection controls, and insertion-order tests. | Construction and finite Rust correspondence recorded. Named review remains pending. |
 | B12: scratch independence | U | None | `capture_scratch_preserves_production` and `capture_scratch_preserves_sibling` under fresh allocation assumptions. | Allocation identity and mutation isolation tests. | Acceptance pending. |
 | B13: unsupported backends | F proposed | `ValidAdmission` | Not applicable proposed. The domain is the backend downcast result. | Unsupported-backend tests. | Pending maintainer review. |
 
