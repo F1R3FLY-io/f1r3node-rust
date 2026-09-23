@@ -7,45 +7,38 @@ The approved verification artifact remains pending.
   "artifact": {
     "path": "scripts/ci/check-formal-invariants.sh",
     "id": "scripts-ci-check-formal-invariants-sh",
-    "commit": "78d696ea6780ca72105d9b35d2266b0329d777ed",
+    "commit": "d69e12151082d111f18c9e8f818ed7f3ba4f9377",
     "commit_is_base": true,
     "working_tree": true,
-    "sha256": "5118a35df0edf44f881d17d567357f139635409e0598302a68f9e6af53ed48cc"
+    "sha256": "d69aa2f8f72db96be2703f7ab8deb37c24ee0a96ee599c0d175c8bf22d1dda66",
+    "accepted_sha256": "5118a35df0edf44f881d17d567357f139635409e0598302a68f9e6af53ed48cc"
   },
   "claim": "docs/claims/casper-node-observation.md",
   "claim_ids": [
     "CLAIM-CASPER-NODE-OBSERVATION-001",
-    "CLAIM-CASPER-NODE-OBSERVATION-002"
+    "CLAIM-CASPER-NODE-OBSERVATION-002",
+    "CLAIM-CASPER-NODE-OBSERVATION-003"
   ],
   "claim_digests": {
     "docs/claims/casper-node-observation.md": "b865e33216b210a8915662e6ebd4f91d2b397a68f8f4dcf31fcd306aa8ca6c38",
-    "docs/claims/casper-node-authority-snapshot.md": "741d16a73647f7107d44f7416dc1b878054ffbc4ae78136365b5fd536b271822"
+    "docs/claims/casper-node-authority-snapshot.md": "741d16a73647f7107d44f7416dc1b878054ffbc4ae78136365b5fd536b271822",
+    "docs/claims/casper-node-authority-evaluation.md": "5956cff23feb6e32e175976019d4e483dc7755bc7a9040b6f2d35a0bebf758fe"
   },
   "adapter": null,
-  "status": "discharged",
-  "scope": "task-019-4-handoff-cycle-02",
+  "status": "pending",
+  "scope": "batch-b2-construction-01",
   "evidence": {
-    "kind": "tiered-evidence-accepted",
-    "ref": "docs/cbc-evidence/runs/casper-node-claim-gate-78d696ea6-01/report.json",
-    "sha256": "79361b7df306cde8f0b157d0749dd4b09e2a33b24dd9ad99710ff9d198ee43d2"
+    "kind": "tiered-evidence-not-discharge",
+    "ref": "docs/cbc-evidence/runs/casper-node-authority-b2-d69e12151-02/report.json",
+    "sha256": "4a9a8d296e921baab5e006be3e6aa5eb0181af8515921aa49330bb3f9bb43bf5"
   },
   "tiers": {
-    "refutation": "recorded",
+    "refutation": "inherited-models-only",
     "construction": "recorded-partial",
-    "binding": "recorded-partial"
+    "binding": "recorded"
   },
   "soak": "pending",
   "waiver": null,
-  "verified_at": "2026-09-23T16:55:28Z",
-  "previous_record": {
-    "path": "docs/cbc-evidence/scripts-ci-check-formal-invariants-sh.md",
-    "sha256": "811df6d38ce13c14349f19cad11b5f4bd25c198df096a5080d493a72c252bbc6",
-    "commit": "03d7f1b27544b2c5a93b664d8684b24ea16cf3e9"
-  },
-  "accepted_claim_digests": {
-    "docs/claims/casper-node-observation.md": "703418566c148f28a4d952e29e7dc135843242ea7fbb7e3fdc3111b6e4373274",
-    "docs/claims/casper-node-authority-snapshot.md": "234b65b479864c0ce6b45c45f8c2f2c971d01e7639fc2343ad0256a3d728e723"
-  },
   "acceptance": {
     "reviewer": "jltatbeach",
     "review_id": 5294038948,
@@ -54,6 +47,18 @@ The approved verification artifact remains pending.
     "submitted_at": "2026-09-23T16:55:28Z",
     "package": "docs/cbc-evidence/runs/casper-node-claim-gate-78d696ea6-01",
     "decisions": "A1, A2, A8, A10, B13 accepted as bounded by design; construction gaps A3, A4, A9, B9, B11, B12 and the A7 and B2 deadline parts accepted as recorded"
-  }
+  },
+  "accepted_claim_digests": {
+    "docs/claims/casper-node-observation.md": "703418566c148f28a4d952e29e7dc135843242ea7fbb7e3fdc3111b6e4373274",
+    "docs/claims/casper-node-authority-snapshot.md": "234b65b479864c0ce6b45c45f8c2f2c971d01e7639fc2343ad0256a3d728e723"
+  },
+  "previous_record": {
+    "path": "docs/cbc-evidence/scripts-ci-check-formal-invariants-sh.md",
+    "sha256": "a04073da177f2e6a78fa644712c1303cff5b42752a094440242a138472d3405b",
+    "commit": "78d696ea6780ca72105d9b35d2266b0329d777ed"
+  },
+  "accepted_at": "2026-09-23T16:55:28Z",
+  "acceptance_scope": "The acceptance applies to CLAIM-CASPER-NODE-OBSERVATION-001 and CLAIM-CASPER-NODE-OBSERVATION-002 at revision 4c0c0dbe7c8958debefdb02f2b21795786c45900 and the accepted digest. This record is pending for CLAIM-CASPER-NODE-OBSERVATION-003 at the current digest after the NodeAuthority gate registration.",
+  "verified_at": null
 }
 ```

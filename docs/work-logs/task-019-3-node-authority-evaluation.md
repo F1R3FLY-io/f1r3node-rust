@@ -114,3 +114,32 @@ No B2 record is discharged, and no waiver is recorded.
 The full Casper suite needs a longer run before anyone can claim complete regression coverage.
 Display and restore limitations remain explicit.
 The observer does not qualify a live authority profile.
+
+## Applicability review and construction cycle on 2026-09-23
+
+The user requested the applicability review and the construction obligations after the implementation landed at `d11acabcb` and the source-bound package at `d69e12151`.
+
+### Applicability review
+
+The area README now classifies all 15 B2 properties with a class, a refutation, a construction, a binding, and a decision column. C1 and C13 propose a bounded-by-design classification with a named finite domain. The other 13 properties are unbounded and require construction.
+
+C7 and C8 inherit the accepted session and capture theorems from claims 001 and 002. Their extension to the authority operation awaits acceptance.
+
+### Construction tier
+
+A new project `formal/rocq/node_authority` exports 15 theorems. It models once-only attachment, installation coverage, the nonblocking event ledger, the shared sticky work budget, checked overflow, and the digest guard on result comparison.
+
+The build passed in the resource-limited container, `coqchk` reported that the modules were successfully checked, and all 15 assumption sets reported `Closed under the global context`. The formal gate registers the project and requires 15 closed sets. The accepted `node_observation` project is unchanged.
+
+C3 and C5 have complete construction. C4, C9, and C12 have partial construction with a named remaining part. C2, C6, C10, C11, C14, and C15 keep pending construction with Rust tests only.
+
+### Binding tier
+
+The bindings manifest gains a claim 003 section that maps every property to named tests, theorems, and gaps. All test references resolve to source declarations.
+
+### Records and package
+
+The five project files and the formal gate script join the claim 003 inventory with mandatory tags. The package `casper-node-authority-b2-d69e12151-02` records the tiers reached and names the source-bound package as its previous cycle. Every claim 003 record cites the new package. The formal gate script record keeps the acceptance of claims 001 and 002 beside its current digest.
+
+The task stops at the acceptance gate. The named maintainer must review each applicability decision and accept claim 003 by naming the revision, the claim ID, and the package.
+

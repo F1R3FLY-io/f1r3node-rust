@@ -1,17 +1,16 @@
-# CbC Evidence: casper/src/rust/util/clique.rs
+# CbC Evidence: formal/rocq/node_authority/README.md
 
-The B2 claim remains pending. The source manifest binds the recorded tests to these working-tree contents.
-Previous acceptance applies only to its recorded source revision.
+The B2 claim remains pending. Kernel-checked theorems do not discharge the claim without named maintainer acceptance.
 
 ```json
 {
   "artifact": {
-    "path": "casper/src/rust/util/clique.rs",
-    "id": "casper-src-rust-util-clique-rs",
+    "path": "formal/rocq/node_authority/README.md",
+    "id": "formal-rocq-node-authority-README-md",
     "commit": "d69e12151082d111f18c9e8f818ed7f3ba4f9377",
     "commit_is_base": true,
     "working_tree": true,
-    "sha256": "72de583499cfdaac3ea98c80e110ae48d6a88787af6a3d7782ce588e2af09c1f"
+    "sha256": "113f060f4894864477f7708bdc409c45a53282b9431b5efc3b90671032debb72"
   },
   "claim": "docs/claims/casper-node-authority-evaluation.md",
   "claim_ids": [
@@ -35,11 +34,7 @@ Previous acceptance applies only to its recorded source revision.
   },
   "soak": "pending",
   "waiver": null,
-  "verified_at": "2026-09-23T18:59:22.351007+00:00",
-  "previous_record": {
-    "path": "docs/cbc-evidence/casper-src-rust-util-clique-rs.md",
-    "sha256": "75c577b62331e9e29127116e4a693632b8bd87ae8604b03d3c51286604f24010",
-    "commit": "d11acabcbd27b564eab7398778169cf3990762d1"
-  }
+  "verified_at": null,
+  "previous_record": null
 }
 ```

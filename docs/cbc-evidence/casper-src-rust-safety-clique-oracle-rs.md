@@ -8,7 +8,7 @@ Previous acceptance applies only to its recorded source revision.
   "artifact": {
     "path": "casper/src/rust/safety/clique_oracle.rs",
     "id": "casper-src-rust-safety-clique-oracle-rs",
-    "commit": "d11acabcbd27b564eab7398778169cf3990762d1",
+    "commit": "d69e12151082d111f18c9e8f818ed7f3ba4f9377",
     "commit_is_base": true,
     "working_tree": true,
     "sha256": "a42a10bbefe048652d3c588dc45336a685261c7f23b90dae54ab7e6de53a69bc"
@@ -18,31 +18,28 @@ Previous acceptance applies only to its recorded source revision.
     "CLAIM-CASPER-NODE-OBSERVATION-003"
   ],
   "claim_digests": {
-    "docs/claims/casper-node-authority-evaluation.md": "d37e548ae04d8fb6bfce28665ef0bdd3538571a6b4a795d741ae01c1873ec813"
+    "docs/claims/casper-node-authority-evaluation.md": "5956cff23feb6e32e175976019d4e483dc7755bc7a9040b6f2d35a0bebf758fe"
   },
   "adapter": null,
   "status": "pending",
-  "scope": "batch-b2-source-verification",
+  "scope": "batch-b2-construction-01",
   "evidence": {
-    "kind": "source-bound-rust-evidence-pending-acceptance",
-    "ref": "docs/cbc-evidence/runs/casper-node-authority-b2-d11acabcb-01/report.json",
-    "sha256": "abd1403dde113356fffaf2f5e091c6a6d0b35205d6336d2d44ba08c4ec7db505"
+    "kind": "tiered-evidence-not-discharge",
+    "ref": "docs/cbc-evidence/runs/casper-node-authority-b2-d69e12151-02/report.json",
+    "sha256": "4a9a8d296e921baab5e006be3e6aa5eb0181af8515921aa49330bb3f9bb43bf5"
   },
   "tiers": {
     "refutation": "inherited-models-only",
-    "construction": "pending",
-    "binding": "recorded-partial"
+    "construction": "recorded-partial",
+    "binding": "recorded"
   },
   "soak": "pending",
   "waiver": null,
   "verified_at": "2026-09-23T18:59:22.351007+00:00",
   "previous_record": {
     "path": "docs/cbc-evidence/casper-src-rust-safety-clique-oracle-rs.md",
-    "commit": "d11acabcbd27b564eab7398778169cf3990762d1",
-    "sha256": "59b9d1671876011b682291628956f0b7df6af522d1d90a37423a297be34aeb9b",
-    "artifact_sha256": "cc1b5940c981a336e3492c9cb4d3a810f0c0cf683ac5af2e3852c2c9f188b4f5",
-    "status": "pending",
-    "acceptance": null
+    "sha256": "7d07afe3ec3908da63704d50b0f4f24b13c9c50a8d5f1a6a9998919bb4cd84f2",
+    "commit": "d11acabcbd27b564eab7398778169cf3990762d1"
   }
 }
 ```

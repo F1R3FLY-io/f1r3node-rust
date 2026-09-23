@@ -34,9 +34,15 @@ artifacts:
   - casper/tests/api/deploy_finalization_status_test.rs
   - casper/tests/api/last_finalized_api_test.rs
   - casper/tests/api/bonded_status_api_test.rs
-refutation: pending
-construction: pending
-binding: pending
+  - formal/rocq/node_authority/_CoqProject
+  - formal/rocq/node_authority/README.md
+  - formal/rocq/node_authority/theories/AuthorityObserver.v
+  - formal/rocq/node_authority/theories/AuthorityWork.v
+  - formal/rocq/node_authority/theories/MainTheorem.v
+  - scripts/ci/check-formal-invariants.sh
+refutation: inherited-models-only
+construction: recorded-partial
+binding: recorded
 soak: pending
 ```
 
@@ -78,6 +84,16 @@ Reference controls must expose incorrect threshold, traversal, clique, cache, an
 A bounded test instance does not establish the complete unbounded property.
 The [area review](../../formal/tlaplus/node_observation/README.md#batch-b2-applicability-review) maps the B2 properties to their evidence and remaining requirements.
 Each property requires the applicability review and verification tiers defined by [the CbC policy](../cbc-verification-tiers.md).
+
+## Construction and binding evidence
+
+The [`NodeAuthority` project](../../formal/rocq/node_authority/README.md) exports 15 theorems with closed assumption sets. The formal gate requires all 15. Properties 3 and 5 have complete construction. Properties 4, 9, and 12 have partial construction with a named remaining part. Properties 7 and 8 inherit the accepted session and capture theorems. Properties 2, 6, 10, 11, 14, and 15 keep pending construction with Rust tests only. Properties 1 and 13 propose a bounded-by-design classification.
+
+Batch B2 adds no bounded TLA+ model. The refutation tier is inherited from the accepted models where a property extends them.
+
+The binding tier maps every property to named tests in the [bindings manifest](../../formal/tlaplus/node_observation/bindings.json). The casper observer suite, the node observer suite, and the capture suite pass at the recorded revision.
+
+The [applicability review](../../formal/tlaplus/node_observation/README.md#batch-b2-applicability-review) lists every property's class, evidence, and decision status. Named maintainer review of each decision and acceptance of this claim remain pending.
 
 This claim remains pending until source-bound verification and named maintainer acceptance are recorded.
 Unavailable display and restore inputs do not qualify a live authority profile.

@@ -168,7 +168,15 @@ tasks:
     implementation_status: complete
     verification_package: docs/cbc-evidence/runs/casper-node-authority-b2-d11acabcb-01/report.json
     verification_status: "976 focused tests and all commit checks pass. The full Casper run exceeded 30 minutes."
-    completion_gate: "Step 7 remains pending for B2 proof obligations, semantic binding, and named maintainer acceptance."
+    completion_gate: "Step 7 remains pending for named maintainer acceptance. The applicability review and the construction cycle are recorded."
+    construction_cycle: batch-b2-construction-01
+    construction_project: formal/rocq/node_authority
+    construction_theorems: 15
+    applicability_review: formal/tlaplus/node_observation/README.md#batch-b2-applicability-review
+    tiers_reached:
+      refutation: "Inherited from the accepted session and capture models only. B2 adds no bounded model."
+      construction: "15 kernel-checked theorems with closed assumption sets; complete for C3 and C5, partial for C4, C9, and C12, inherited for C7 and C8, pending for C2, C6, C10, C11, C14, and C15."
+      binding: "Every property maps to named tests in the bindings manifest; 14 casper observer tests, 20 node observer tests, and 28 capture tests pass."
     strict_cbc_result: "Exit 4 with 13 pending mandatory records."
     prerequisites:
       - "Both predecessor claims must pass source-bound verification and named maintainer acceptance before B2 acceptance."
@@ -252,7 +260,7 @@ tasks:
       - "Both claims remain pending. Acceptance needs named maintainer review of every applicability decision and the remaining construction evidence."
       - "No standalone checker crate was added. Downstream must remove its checker crate or include it in the supply-chain audit."
       - "Cross-incarnation identity, remaining construction proofs, Kani harnesses, complete Rust correspondence, and named maintainer acceptance remain pending."
-      - "Batch B2 changed five accepted artifacts after acceptance: the TLA+ README, the DAG storage file, the capture tests, the node observer, and its tests. Their records are pending for claim 003 at the current digest and retain the acceptance of claims 001 and 002 at 4c0c0dbe7 with the accepted digests."
+      - "Batch B2 changed six accepted artifacts after acceptance: the TLA+ README, the DAG storage file, the capture tests, the node observer, its tests, and the formal gate script. Their records are pending for claim 003 at the current digest and retain the acceptance of claims 001 and 002 at 4c0c0dbe7 with the accepted digests. The other 52 accepted records stay discharged."
       - "The named maintainer accepted both claims on 2026-09-23 at 4c0c0dbe7 on the cycle 02 package, with the five bounded-by-design decisions and the recorded construction gaps accepted. All 58 node records are discharged. The two gate-claim records in the union inventory stay pending under CLAIM-SOAK-GATE-001."
       - "Handoff cycle 02 at 78d696ea6 pulled the deterministic generation-rejection test across from the soak branch, reran the TLA gate and the Rocq kernel check, and refreshed every node record. Three blocking items remain: the applicability review, the acceptance, and the open construction proofs."
     acceptance:
@@ -305,13 +313,28 @@ tasks:
   - id: TASK-019-7
     title: "Publish dev candidate images for adapter qualification"
     status: in_progress
-    claimed_by: null
+    claimed_by: codex-candidate-images-20260923
     blocked_by: [TASK-019-6]
     work_log: docs/work-logs/task-019-7-candidate-images.md
     baseline_status: "Published amd64 and arm64 digests verified for dev revision 6d6d4fed6f84baa0913d8e87f32a7ffe2e0ca59a."
+    baseline_executable_status: "Both executable hashes, image configurations, platform manifests, and the index were independently verified by immutable digest."
+    baseline_handoff: docs/work-logs/task-019-7-candidate-images.md#task-017-12-candidate-handoff
+    review_evidence: target/task-019-7-review-20260923/report.json
+    lifecycle_fix_pr: https://github.com/F1R3FLY-io/system-integration/pull/144
+    lifecycle_dev_merge: ef9844893f19df3e7523bb97e9e0da0ca241bb10
+    lifecycle_promotion_pr: https://github.com/F1R3FLY-io/system-integration/pull/145
+    lifecycle_promotion_status: "Merged to main on 2026-09-23. The merged tree matches the reviewed and tested tree."
+    lifecycle_main_merge: e3c4e14189f0c6ced2e9674487fcbdeffd93141b
+    lifecycle_review_status: "Independent review found no blocking code issue. All 42 lifecycle and resolver tests pass."
+    lifecycle_live_status: "Pending the promoted main pin and the node casper-integration job."
+    node_pin_status: "Prepared all three pins at e3c4e141. Workflow invariants, helper regressions, and patch verification pass."
+    node_pin_evidence: target/task-019-7-pin-e3c4e1418/report.json
+    node_pin_patch: target/task-019-7-pin-e3c4e1418/node-pin.patch
+    node_pin_branch: ci/repin-validator-lifecycle-settlement
+    node_pin_publication: "Pending separate commit, push, and PR authorization."
     observer_candidate_status: "Pending TASK-019-6 and subsequent dev CI publication."
     external_dependencies:
-      - "system-integration: include deploy inclusion time in _submit_pos_until_effective and add settlement regressions. Merge the correction to dev, then promote dev to main before pinning it."
+      - "The system-integration fix and promotion are merged. The node pin PR, live validation, and subsequent dev image publication remain pending."
     proposed_external_branch: fix/validator-lifecycle-settlement-budget
     external_pr_target: dev
     external_promotion_target: main
@@ -558,7 +581,10 @@ Both claims remain pending on complete formal evidence and named maintainer acce
 B2 planning steps 1 through 4 and TASK-019-5 research are complete.
 B2 and Batch C implementation remain unapproved. The Batch C inventory and contract await named maintainer review.
 
-TASK-019-7 records verified baseline image digests. The lifecycle pin correction and observer candidate remain pending. PR #447 targets `dev`.
+TASK-019-7 records verified baseline image and executable digests.
+The lifecycle fix merged to system-integration `dev` through PR #144.
+Promotion PR #145 merged to `main`. The three-file node pin update is prepared.
+Node pin publication, live validation, and the observer candidate remain pending. PR #447 targets `dev`.
 
 **Scope:** This epic owns node-side interfaces only. Harness verification, profile qualification, campaign execution, and baseline soaks belong to EPIC-017.
 

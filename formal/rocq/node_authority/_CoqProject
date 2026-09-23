@@ -1,0 +1,4 @@
+-Q theories NodeAuthority
+theories/AuthorityObserver.v
+theories/AuthorityWork.v
+theories/MainTheorem.v
