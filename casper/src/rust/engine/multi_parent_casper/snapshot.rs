@@ -547,11 +547,19 @@ pub(crate) async fn estimator<T: TransportLayer + Send + Sync>(
     let invalid_latest_messages =
         dag.invalid_latest_messages_from_hashes(&latest_message_hashes)?;
 
-    let valid_latest: HashMap<Validator, BlockHash> = latest_message_hashes
-        .iter()
-        .filter(|(validator, _)| !invalid_latest_messages.contains_key(*validator))
-        .map(|(validator, hash): (&Validator, &BlockHash)| (validator.clone(), hash.clone()))
-        .collect();
+    // A slot the validator never signed is the genesis placeholder: a tip here
+    // makes `show_main_chain` return a chain rooted at height 0.
+    let mut valid_latest: HashMap<Validator, BlockHash> =
+        HashMap::with_capacity(latest_message_hashes.len());
+    for (validator, hash) in latest_message_hashes.iter() {
+        if invalid_latest_messages.contains_key(validator) {
+            continue;
+        }
+        if dag.own_testimony(validator, hash)?.is_none() {
+            continue;
+        }
+        valid_latest.insert(validator.clone(), hash.clone());
+    }
 
     if valid_latest.is_empty() {
         Ok(vec![this.approved_block.block_hash.clone()])

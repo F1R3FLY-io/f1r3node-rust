@@ -55,4 +55,14 @@ async fn a_snapshot_never_cites_a_genesis_placeholder_as_a_parent() {
         "the placeholder slots must be abstained: genesis is not a parent once \
          a real one exists; got {parents:?}"
     );
+
+    // The estimator feeds the read API, which takes the first tip off a set:
+    // a placeholder there roots `show_main_chain` at height 0.
+    let mut dag = node.casper.block_dag().await.expect("dag");
+    let tips = node.casper.estimator(&mut dag).await.expect("estimator");
+    assert_eq!(
+        tips,
+        vec![own.block_hash],
+        "the estimator's tips are the blocks validators signed; got {tips:?}"
+    );
 }
