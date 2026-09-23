@@ -337,6 +337,64 @@ Proof. intros path. pose proof (ownership_path_rank_budget path). lia. Qed.
 
 End RankedOwnership.
 
+Definition method_children {V} (target : V) (arguments : list V) :=
+  arguments ++ [target].
+
+Theorem method_child_order_commutes {V W} (denote : V -> W) target arguments :
+  map denote (method_children target arguments) =
+  method_children (denote target) (map denote arguments).
+Proof. unfold method_children. now rewrite map_app. Qed.
+
+Theorem method_child_order_preserves_cardinality {V} (target : V) arguments :
+  length (method_children target arguments) = S (length arguments).
+Proof. unfold method_children. rewrite length_app. cbn. lia. Qed.
+
+Theorem method_child_order_retains_target_last {V} (target : V) arguments :
+  last (method_children target arguments) target = target.
+Proof. unfold method_children. apply last_last. Qed.
+
+Definition semantic_optional {V} (fallback : V) (slot : option V) :=
+  (match slot with Some _ => true | None => false end, reopen fallback slot).
+
+Theorem semantic_optional_commutes {V W} (denote : V -> W)
+    source_default target_default slot :
+  denote source_default = target_default ->
+  (fst (semantic_optional source_default slot),
+   denote (snd (semantic_optional source_default slot))) =
+  semantic_optional target_default (option_map denote slot).
+Proof. intros defaults. destruct slot; cbn; [reflexivity|now rewrite defaults]. Qed.
+
+Theorem semantic_optional_absent_retains_absence {V} (fallback : V) :
+  semantic_optional fallback None = (false, fallback).
+Proof. reflexivity. Qed.
+
+Theorem semantic_optional_present_retains_presence {V} (fallback child : V) :
+  semantic_optional fallback (Some child) = (true, child).
+Proof. reflexivity. Qed.
+
+Definition component_frontier {V} (complete : bool) (incomplete canonical : V) :=
+  if complete then canonical else incomplete.
+
+Theorem component_frontier_selects_incomplete {V} (incomplete canonical : V) :
+  component_frontier false incomplete canonical = incomplete.
+Proof. reflexivity. Qed.
+
+Theorem component_frontier_selects_complete {V} (incomplete canonical : V) :
+  component_frontier true incomplete canonical = canonical.
+Proof. reflexivity. Qed.
+
+Theorem component_frontier_commutes {V W} (denote : V -> W) complete
+    source_incomplete source_canonical target_incomplete target_canonical :
+  denote source_incomplete = target_incomplete ->
+  denote source_canonical = target_canonical ->
+  denote (component_frontier complete source_incomplete source_canonical) =
+  component_frontier complete target_incomplete target_canonical.
+Proof. intros incomplete canonical. destruct complete; assumption. Qed.
+
+Theorem method_unrotated_mutant_changes_order :
+  method_children 1 [2; 3] <> [1; 2; 3].
+Proof. discriminate. Qed.
+
 Print Assumptions absent_slot_commutes.
 Print Assumptions present_slot_commutes.
 Print Assumptions absent_and_present_default_remain_distinct.
@@ -371,5 +429,15 @@ Print Assumptions absent_collapsed_to_default_mutant_changes_presence.
 Print Assumptions ownership_path_rank_budget.
 Print Assumptions ownership_path_length_is_schema_bounded.
 Print Assumptions strict_schema_rank_excludes_positive_cycles.
+Print Assumptions method_child_order_commutes.
+Print Assumptions method_child_order_preserves_cardinality.
+Print Assumptions method_child_order_retains_target_last.
+Print Assumptions semantic_optional_commutes.
+Print Assumptions semantic_optional_absent_retains_absence.
+Print Assumptions semantic_optional_present_retains_presence.
+Print Assumptions component_frontier_selects_incomplete.
+Print Assumptions component_frontier_selects_complete.
+Print Assumptions component_frontier_commutes.
+Print Assumptions method_unrotated_mutant_changes_order.
 
 End ProtobufOwnedSlots.

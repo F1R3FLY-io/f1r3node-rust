@@ -380,6 +380,10 @@ mod collection_collision_elision;
 #[path = "../../tests/support/planned_epm_ownership.rs"]
 mod planned_epm_ownership_tests;
 
+#[cfg(test)]
+#[path = "../../tests/support/protobuf_construction.rs"]
+mod protobuf_construction_tests;
+
 enum ProtoPiece {
     Bytes(Box<[u8]>),
     SharedBytes(Box<prost::bytes::Bytes>),
@@ -1795,6 +1799,48 @@ impl ParConstruction {
         Ok(component)
     }
 
+    pub(crate) fn owned_ezipper_repr_expr_component(
+        &mut self,
+        shell: &EZipper,
+        repr: OwnedPlannedEPathMap,
+        locally_free: Vec<u8>,
+        connective_used: bool,
+        remainder: Option<crate::rhoapi::Var>,
+    ) -> Result<PlannedComponent, ParConstructionError> {
+        let (planned_map, map_protobuf) =
+            self.planned_epathmap_repr(repr, &locally_free, connective_used, remainder.as_ref())?;
+        self.ezipper_component(shell, planned_map, map_protobuf)
+    }
+
+    fn ezipper_component(
+        &mut self,
+        zipper: &EZipper,
+        planned_map: PlannedEPathMap,
+        map_protobuf: usize,
+    ) -> Result<PlannedComponent, ParConstructionError> {
+        let map_node = &self.epathmaps[planned_map.0];
+        let snapshot_score = self.score_wire_bytes(
+            WireRoot::EPathMapSnapshot(planned_map),
+            map_node.snapshot_len,
+            map_node.snapshot_zero_count,
+        )?;
+        let score = semantics::rpb3_pathmap_score(self, true, snapshot_score, zipper.connective_used)?;
+        let tail = EZipper {
+            pathmap: None,
+            current_path: zipper.current_path.clone(),
+            is_write_zipper: zipper.is_write_zipper,
+            locally_free: zipper.locally_free.clone(),
+            connective_used: zipper.connective_used,
+            cursor_kind: zipper.cursor_kind,
+        };
+        let tail = self.plan_protobuf(&tail, &[])?;
+        let mut pieces = vec![ProtoPiece::Node { tag: 1, node: map_protobuf }];
+        pieces.append(&mut self.protobuf_nodes[tail].pieces);
+        let zipper_protobuf = self.push_proto_node(pieces)?;
+        let expr_protobuf = self.wrap_proto_node(33, zipper_protobuf)?;
+        Ok(self.component_from_proto(ParComponentTag::Expr, score, expr_protobuf, false, None))
+    }
+
     /// Plan an EPathMap set expression directly from canonical planned keys.
     ///
     /// This is the normalizer's `{| p1, …, pn |}` path: each key is emitted by
@@ -2786,42 +2832,7 @@ impl ParConstruction {
                     return self.schema_expr_component(shell, &[], score);
                 };
                 let (planned_map, map_protobuf) = self.planned_epathmap(pathmap, par_children)?;
-                let map_node = &self.epathmaps[planned_map.0];
-                let snapshot_score = self.score_wire_bytes(
-                    WireRoot::EPathMapSnapshot(planned_map),
-                    map_node.snapshot_len,
-                    map_node.snapshot_zero_count,
-                )?;
-                let score = semantics::rpb3_pathmap_score(
-                    self,
-                    true,
-                    snapshot_score,
-                    zipper.connective_used,
-                )?;
-
-                let tail = EZipper {
-                    pathmap: None,
-                    current_path: zipper.current_path.clone(),
-                    is_write_zipper: zipper.is_write_zipper,
-                    locally_free: zipper.locally_free.clone(),
-                    connective_used: zipper.connective_used,
-                    cursor_kind: zipper.cursor_kind,
-                };
-                let tail = self.plan_protobuf(&tail, &[])?;
-                let mut pieces = vec![ProtoPiece::Node {
-                    tag: 1,
-                    node: map_protobuf,
-                }];
-                pieces.append(&mut self.protobuf_nodes[tail].pieces);
-                let zipper_protobuf = self.push_proto_node(pieces)?;
-                let expr_protobuf = self.wrap_proto_node(33, zipper_protobuf)?;
-                Ok(self.component_from_proto(
-                    ParComponentTag::Expr,
-                    score,
-                    expr_protobuf,
-                    false,
-                    None,
-                ))
+                self.ezipper_component(zipper, planned_map, map_protobuf)
             }
             ExprInstance::ENegBody(_)
             | ExprInstance::ENotBody(_)

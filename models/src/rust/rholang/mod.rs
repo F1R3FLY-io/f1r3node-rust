@@ -15,6 +15,7 @@ pub mod match_path_cursor;
 pub mod par_children;
 pub mod pooled_stack;
 pub mod protobuf_cursor;
+pub(crate) mod protobuf_construction;
 pub(crate) mod protobuf_admission;
 pub mod bincode_decoder;
 pub mod protobuf_encoder;

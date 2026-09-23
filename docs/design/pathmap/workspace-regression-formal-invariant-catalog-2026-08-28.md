@@ -1536,7 +1536,7 @@ decoder, rather than from another instantiation of the modified pending core.
 
 ## Protobuf owned slots (POS, task 5834)
 
-`formal/rocq/stack_safe_pda/theories/ProtobufOwnedSlots.v` proves 34 exported
+`formal/rocq/stack_safe_pda/theories/ProtobufOwnedSlots.v` proves 44 exported
 statements about payload-parametric container operations and ranked ownership.
 Kernel checking preceded the generated private-record implementation. The native
 bindings live in `models/tests/support/protobuf_owned_slots.rs`; they qualify the
@@ -1565,6 +1565,24 @@ projection trace. P runs with the recorded property-test seed and case count.
 | Recoverable guards | `failed_attachment_allows_later_success`, `rejected_api_guard_preserves_parent`, `guarded_attachment_commutes` | EPR's recoverable protocol tests cover the existing EPM guard boundary; generated owned-PDA attachment binding remains required at cutover |
 | Negative controls | `repeated_prepend_mutant_changes_order`, `absent_collapsed_to_default_mutant_changes_presence` | P and O contain distinguishing nonempty/order/presence witnesses |
 | Schema ownership | `ownership_path_rank_budget`, `ownership_path_length_is_schema_bounded`, `strict_schema_rank_excludes_positive_cycles` | R establishes decreasing edges over the same resolved schema graph; T independently pins protobuf traversal order |
+| Component frontier | `component_frontier_selects_incomplete`, `component_frontier_selects_complete`, `component_frontier_commutes` | `all_component_families_match_frozen_attachment_for_complete_and_incomplete_shells` and `ordered_and_commutative_collections_match_frozen_attachment` compare frozen-decoder component identities; equivalence of each selected family constructor is a premise, not proved by this Boolean dispatch lemma |
+| Method child order | `method_child_order_commutes`, `method_child_order_preserves_cardinality`, `method_child_order_retains_target_last`, `method_unrotated_mutant_changes_order` | `method_order_and_incomplete_lane_match_frozen_keys` uses nonempty target/arguments and compares protobuf and RPB3 keys; target moves from first wire slot to last planner slot exactly once |
+| Optional semantic children | `semantic_optional_commutes`, `semantic_optional_absent_retains_absence`, `semantic_optional_present_retains_presence` | `guard_and_condition_completion_preserve_frontier_semantics` covers absent, present-empty, LF-only, connective-only, and nonempty conditions/guards; synthesized empty handles do not change shell presence and are added only in the complete lane |
+
+The ten component-frontier statements were compiled and kernel checked before
+adapter implementation (`protobuf-attach-8516-r2`, 13.520 seconds, 397.7 MiB peak,
+zero swap, 2 GiB cap). Their native bindings, preregistered before implementation,
+are in `models/tests/support/protobuf_construction.rs` and pass with 1,024 property
+cases and seed 5834. `captured_epm_bounds_and_complete_shape_are_certified` ties the
+descriptor-derived EPM cut bound and route checks to semantic completeness.
+`epm_and_ezipper_attachment_preserve_topology_payloads_and_distinct_metadata`
+binds retained mode, value-free topology, payloads, remainder and inner/outer metadata.
+`deep_mixed_attachment_uses_flat_plans_without_resident_children` builds 8,192
+mixed levels on 256 KiB and, with instrumentation, observes zero intermediate
+finish calls. These are adapter tests, not production decoder routing tests.
+The first run found a missing Boolean type annotation; no Rust adapter existed yet.
+The existing DCC ordered-hole substitution and PPA accumulator models cover their
+respective boundaries. Neither proves the semantic family constructors themselves.
 
 **Premises and exclusions.** Defaults and successful commits must correspond under
 the selected payload denotation. Failure preserves the saved parent after any prior
@@ -1577,9 +1595,10 @@ cut implementations, including branching PathMap destruction and panic/error
 cleanup, need their own guarantees; this model does not prove them. The EPM remainder
 is the existing native Var family, separately checked to reach neither Par nor EPM.
 No byte parser, Rust memory/resource behavior, complete decoder refinement, or
-production performance theorem is claimed. Public EPM materialization and component
-planning policies still require integration; D's empty-EPM callback is a test double,
-not a production implementation.
+production performance theorem is claimed. Component planning is implemented and
+qualified separately from public projection; the general decoder still needs routing
+through these adapters. Public EPM materialization remains required. D's empty-EPM
+callback is a test double, not a production implementation.
 
 ## EPM stateful ownership retirement (EOR, task 5834)
 

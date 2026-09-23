@@ -15962,6 +15962,91 @@ cost-accounting or matching rule is intentionally changed by this ownership slic
 
 Theory SHA-256: `281fdd5dca93b0b2de19db88aef8e6fc8fbcf7ab1fe049ceccc1a73add1dd005`.
 
+### J-212 — 2026-09-23 Planned protobuf component attachment without resident children
+
+**Scope and formal prerequisite.** Continue required leaf 8516 under 5834 from
+`8ef39ac03`; no task switch or new campaign scope. The plan-agent review selected
+the component attachment frontier before the public EPM projection frontier.
+`ProtobufOwnedSlots.v` now has 44 exported closed statements plus its two existing
+helpers. Ten additions establish method-child permutation, optional semantic-child
+presence, and complete/incomplete lane selection. They assume corresponding family
+constructors; they do not prove the whole Rust decoder or those constructors.
+The invariant catalog mapped these obligations to native tests before implementation.
+Formal R1 failed on a missing Boolean annotation. R2 compiled and independently
+kernel-checked before Rust changes: 13.520 seconds service, 13.293 CPU seconds,
+397.7 MiB peak, zero swap, 2 GiB cap and 180-second ceiling.
+
+**Implementation and rationale.** Descriptor-driven `.plan` entry points cover all
+nine Par component families. Their common projection freezes each immediate owned
+Par builder to an arena handle and produces a shallow shell without calling `finish`.
+The existing incomplete-component lane runs first, preserving raw optional presence
+and protobuf child order. Complete messages use the established family planners:
+EMethod moves its target from first wire child to last semantic child, Receive adds
+an absent condition handle, and Match inserts absent guards at their case boundaries.
+Those handles do not change the shell's optional presence. Standalone message
+projection remains separate and noncanonicalizing.
+
+EPM projection captures the guarded trie owner, not its entries. Only direct EPM
+and EZipper expression planning consume that owner and its metadata. A shallow EPM
+placeholder carries presence only; it is never used as the entries authority. The
+new EZipper adapter shares the previous planner's snapshot scoring and protobuf-tail
+emission. Source review and native differences qualify unchanged cursor fields,
+remainder and distinct inner/outer metadata. No PathMap-to-Vec conversion, payload
+decode, trie sorting, upstream change, new dependency or persistent format occurs.
+
+**Schema guard.** The existing SCC order computes a saturated immediate-EPM count:
+Par cuts contribute zero, EPM cuts one; fields sum, oneofs take the maximum, and
+repeated/map children with EPM reachability saturate to the rejection value two.
+Generation requires zero for eight families and one for Expr, and pins the two
+supported EPM routes. This is a schema ownership invariant, not a traversal-depth
+limit. Runtime assertions additionally reject an unexpected simultaneous Par cut
+on a captured-EPM route; the current schema has no such route.
+
+**Measured qualification.** Native R1 passed 4/4 initial tests, 613 excluded:
+4.520 seconds tests, 56.950 seconds service, 152.628 CPU seconds, 2.2 GiB peak.
+Expanded feature R2 passed 54/54, 624 excluded: 23.780 seconds tests, 84.199 seconds
+service, 245.110 CPU seconds, 2.9 GiB peak. Final default R3 adds the seventh
+collection/partial-field property and passes 55/55, 615 excluded: 23.663 seconds
+tests, 82.186 seconds service, 243.642 CPU seconds, 2.8 GiB peak. Each uses four
+build/test workers, MemoryHigh=6 GiB, MemoryMax=8 GiB, MemorySwapMax=0, CPUQuota=400%,
+RuntimeMaxSec=900, on-disk compiler temporaries and zero observed swap. Property
+cases are 1,024 with seed 5834. No native failures occurred in these runs.
+
+Final feature R4 reruns all seven adapter tests and their manifest: **8/8**, 671
+excluded, 4.957 seconds tests, 64.479 seconds service, 218.117 CPU seconds,
+2.8 GiB peak and zero swap under the same limits. The independent read-only review
+found no blocking adapter defect. Maintained-runner shell syntax and diff-whitespace
+checks pass. These selections do not replace the full workspace acceptance run.
+
+Frozen-reference tests compare full RPB3 compact images and canonical protobuf,
+including incomplete shells, collection order/collision behavior, optional guards,
+topology-only Set/Map and outer/inner zipper metadata. The mixed Send/Expr/EPM test
+builds 8,192 levels on a 256 KiB stack, retains exactly one planned Par and component
+per level, and the feature counters observe zero intermediate finish calls or
+instrumented resident-byte emissions. It materializes one final root only. This
+is a structural/resource witness, not a timed benchmark or full parser depth gate.
+
+**Remaining required work.** General decoder Node/Value/Attach routing still carries
+resident Par; this checkpoint supplies its component adapter but does not switch it.
+Public EPM materialization needs a topology-preserving payload mapper and guarded
+resident admission; current raw `EntryTrie` admission is not certified by J-211.
+Legacy EPM ingress, error/oneof/reopen integration, the unchanged depth-4,096 decoder
+gate, geometric resource/shallow measurements and workspace acceptance remain open.
+No consensus-visible byte, charge or matching change is intended; no throughput
+improvement or campaign completion follows from this checkpoint.
+
+| Artifact under `target/verification/protobuf-attach-8516/` | SHA-256 |
+|---|---|
+| `coqc-r1.log` (annotation failure) | `7cb7ef46f0f2d25bb602d3a19ed3b50d0aeb861dc57812dfa8668487440bf023` |
+| `coqc-r2.log` (44 closed statements) | `91c8f85a89f0dad5aa673c26795ec2104550e39095d2be660ead44168301ac26` |
+| `coqchk-r2.log` (silent success) | `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` |
+| `native-r1.log` | `7e611fce52ab6ab144fcccb639464a5d84cc12b0063b51b9c3b2aabf874553b0` |
+| `native-r2.log` | `2ee941a9b2fbda907ecf55c3ebb47c137a576e7c0064391a938fb4c552e383a7` |
+| `native-r3.log` | `ee9e00bda8acb317e1957c69f387eaa8ae0cb89000fd3c3a74141221f5820ecf` |
+| `native-r4.log` | `82b80f8c6e2a429155817ec896b6d262a1c9d4c84d02c386bb1ac96ff1811e0e` |
+
+Theory SHA-256: `16a57fb959a42f78e3947af2f6b77955511feed8c438842f465ae9889c490166`.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

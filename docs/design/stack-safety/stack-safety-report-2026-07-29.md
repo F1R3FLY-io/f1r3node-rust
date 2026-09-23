@@ -9024,6 +9024,19 @@ neutral Par is allocated. Planned EPM nodes retire before other arena contents.
 J-211 retains failed attempts and receipt hashes. General decoder routing,
 successful public materialization and unchanged depth-4,096 acceptance remain open.
 
+J-212 supplies the owned-component attachment adapter for all nine Par families.
+Ten added frontier/order/presence statements were kernel-checked before Rust; they
+do not prove the entire decoder. Frozen-reference properties distinguish incomplete
+and canonical lanes, EMethod order, optional guards, collection collisions, EPM
+topology and inner/outer zipper metadata. The expanded feature selection passes
+54/54 at 2.9 GiB peak and the final default selection 55/55 at 2.8 GiB, zero swap,
+under 8 GiB caps. A mixed Send/Expr/EPM construction reaches depth 8,192 on 256 KiB
+with zero intermediate `finish` calls in the instrumented run. These measurements
+qualify the construction adapter only: production general-decoder routing, public
+EPM materialization, the unchanged depth-4,096 parser gate and performance acceptance
+remain required. J-212 records exact commands' selections, limits and artifact hashes;
+no application speedup is inferred from this checkpoint.
+
 ### 5.29 ParBag family and count-domain completeness [SS-A13, SS-A14, SS-Y9]
 
 #### 5.29.1 The defects

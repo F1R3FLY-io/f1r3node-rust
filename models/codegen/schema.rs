@@ -11367,6 +11367,18 @@ fn unexpected_end_group_tag() -> DecodeError {
     );
 
     emit_protobuf_owned_slots(&mut src, messages, resolved, oneofs, extern_set, graph);
+    for field in par_fields {
+        let Shape::RepeatedMessage { leaf } = &field.shape else { continue };
+        let name = rust_type_name(leaf);
+        let planner = match name.as_str() {
+            "Send" => "send", "Receive" => "receive", "New" => "new",
+            "Expr" => "expression", "Match" => "matching", "GUnforgeable" => "unforgeable",
+            "Bundle" => "bundle", "Connective" => "connective", "If" => "conditional",
+            _ => panic!("protobuf component planning: unhandled family {name}"),
+        };
+        writeln!(src, "impl owned_slots::{name} {{ pub(crate) fn plan(self, arena: &mut crate::rust::par_construction::ParConstruction) -> Result<crate::rust::par_construction::PlannedComponent, crate::rust::par_construction::ParConstructionError> {{ crate::rust::rholang::protobuf_construction::plan(arena, |projection| self.project(projection), crate::rust::rholang::protobuf_construction::{planner}) }} }}")
+            .expect("write owned component planner");
+    }
     emit_protobuf_decoder_pda(&mut src, messages, resolved, oneofs, extern_set, par_fields);
 
     // ★ THE NON-VACUITY FLOOR, at the emitter. `models/build.rs` refuses a
@@ -11432,6 +11444,7 @@ fn emit_protobuf_owned_slots(
         "protobuf owned slots: recursive residual ownership"
     );
     let mut ranks = vec![None::<usize>; messages.len()];
+    let mut epm_bounds = vec![0usize; messages.len()];
     for component in &graph.scc {
         assert_eq!(
             component.len(),
@@ -11451,6 +11464,25 @@ fn emit_protobuf_owned_slots(
             );
         }
         ranks[index] = Some(rank);
+        epm_bounds[index] = match graph.names[index].as_str() {
+            "Par" => 0,
+            "EPathMap" => 1,
+            _ => resolved.iter().find(|(row, _)| *row == index)
+                .expect("owned message has resolved fields").1.iter().fold(0usize, |total, field| {
+                    let bound = match &field.shape {
+                        Shape::Message { leaf } => epm_bounds[indices[leaf.as_str()]],
+                        Shape::RepeatedMessage { leaf } | Shape::Map { value_leaf: leaf, .. } => {
+                            if epm_bounds[indices[leaf.as_str()]] == 0 { 0 } else { 2 }
+                        }
+                        Shape::Oneof => certified_oneof_for_field(&messages[index], field, oneofs)
+                            .variants.iter().filter_map(|arm| arm.message_leaf.as_ref())
+                            .map(|leaf| epm_bounds[indices[leaf.as_str()]])
+                            .max().unwrap_or(0),
+                        _ => 0,
+                    };
+                    (total + bound).min(2)
+                }),
+        };
     }
     let var_index = indices["Var"];
     let mut pending = vec![var_index];
@@ -11494,6 +11526,35 @@ fn emit_protobuf_owned_slots(
         .expect("write owned rank witness");
     }
     src.push_str("];\n");
+    src.push_str("pub(crate) const COMPONENT_EPM_CUT_BOUNDS: &[(&str, usize)] = &[\n");
+    for family in ["Send", "Receive", "New", "Expr", "Match", "GUnforgeable", "Bundle", "Connective", "If"] {
+        let bound = epm_bounds[indices[family]];
+        assert_eq!(bound, usize::from(family == "Expr"), "unsupported EPM cuts in {family}");
+        writeln!(src, "    ({family:?}, {bound}),").expect("write EPM cut bound");
+    }
+    src.push_str("];\n");
+    let expr = &messages[indices["Expr"]];
+    let expr_fields = &resolved.iter().find(|(index, _)| *index == indices["Expr"]).unwrap().1;
+    let mut routes = Vec::new();
+    for field in expr_fields {
+        if matches!(field.shape, Shape::Oneof) {
+            for arm in &certified_oneof_for_field(expr, field, oneofs).variants {
+                if let Some(leaf) = &arm.message_leaf {
+                    if epm_bounds[indices[leaf.as_str()]] != 0 {
+                        routes.push((arm.rust_ident.as_str(), leaf.as_str()));
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(routes, [("EPathmapBody", "EPathMap"), ("EZipperBody", "EZipper")]);
+    let zipper_fields = &resolved.iter().find(|(index, _)| *index == indices["EZipper"]).unwrap().1;
+    let routes: Vec<_> = zipper_fields.iter().filter_map(|field| match &field.shape {
+        Shape::Message { leaf } if epm_bounds[indices[leaf.as_str()]] != 0 =>
+            Some((field.rust_name.as_str(), leaf.as_str())),
+        _ => None,
+    }).collect();
+    assert_eq!(routes, [("pathmap", "EPathMap")]);
     writeln!(
         src,
         "pub(crate) const EPM_REMAINDER_OWNERSHIP_RANK: usize = {};",

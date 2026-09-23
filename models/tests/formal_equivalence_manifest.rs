@@ -1277,8 +1277,13 @@ fn protobuf_owned_slots_have_proof_and_native_bindings() {
         "repeated_prepend_mutant_changes_order", "absent_collapsed_to_default_mutant_changes_presence",
         "ownership_path_rank_budget", "ownership_path_length_is_schema_bounded",
         "strict_schema_rank_excludes_positive_cycles",
+        "method_child_order_commutes", "method_child_order_preserves_cardinality",
+        "method_child_order_retains_target_last", "semantic_optional_commutes",
+        "semantic_optional_absent_retains_absence", "semantic_optional_present_retains_presence",
+        "component_frontier_selects_incomplete", "component_frontier_selects_complete",
+        "component_frontier_commutes", "method_unrotated_mutant_changes_order",
     ];
-    assert_eq!(names.len(), 34);
+    assert_eq!(names.len(), 44);
     assert_eq!(theory.matches("Print Assumptions ").count(), names.len());
     let catalog = read_repository_file("docs/design/pathmap/workspace-regression-formal-invariant-catalog-2026-08-28.md");
     for name in names {
@@ -1286,9 +1291,22 @@ fn protobuf_owned_slots_have_proof_and_native_bindings() {
         assert!(catalog.contains(&format!("`{name}`")));
     }
     let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
-    assert!(has_runner_command(&runner, &["rocq_compile_with_closed_count", "theories/ProtobufOwnedSlots.v", "34"]));
+    assert!(has_runner_command(&runner, &["rocq_compile_with_closed_count", "theories/ProtobufOwnedSlots.v", "44"]));
     assert!(has_runner_kernel_check(&runner, &["StackSafePDA.ProtobufOwnedSlots"]));
     assert!(has_runner_command(&runner, &["rpb3_run_tests", "8", "--lib", "protobuf_owned_slots_tests"]));
+    assert!(has_runner_command(&runner, &["rpb3_run_tests", "7", "--lib", "protobuf_construction_tests"]));
+    let attachment = read_repository_file("models/tests/support/protobuf_construction.rs");
+    for witness in [
+        "all_component_families_match_frozen_attachment_for_complete_and_incomplete_shells",
+        "method_order_and_incomplete_lane_match_frozen_keys",
+        "ordered_and_commutative_collections_match_frozen_attachment",
+        "guard_and_condition_completion_preserve_frontier_semantics",
+        "captured_epm_bounds_and_complete_shape_are_certified",
+        "epm_and_ezipper_attachment_preserve_topology_payloads_and_distinct_metadata",
+        "deep_mixed_attachment_uses_flat_plans_without_resident_children",
+    ] {
+        assert!(attachment.contains(&format!("fn {witness}(")));
+    }
     assert!(read_repository_file("formal/rocq/stack_safe_pda/_CoqProject").lines()
         .any(|line| line == "theories/ProtobufOwnedSlots.v"));
     let native = read_repository_file("models/tests/support/protobuf_owned_slots.rs");
