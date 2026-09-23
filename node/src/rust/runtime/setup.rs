@@ -146,14 +146,13 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         BlockDagKeyValueStorage::new(&mut rnode_store_manager).await?
     };
 
-    // First-boot repeat-deploy carrier-index watermark (same pattern as
-    // the LFB migration above): records the height since which every
-    // insert records carriers, which gates the fast path's absence
-    // proofs. No backfill walk exists — blocks below the watermark are
-    // never claimed.
+    // Repeat-deploy carrier-index watermark (same pattern as the LFB
+    // migration above): the height since which every insert records carriers,
+    // which gates the fast path's absence proofs. An empty database gets none
+    // here — the history root is not known until genesis or restore completes.
     let carrier_index_watermark = block_dag_storage.ensure_carrier_watermark()?;
     info!(
-        carrier_index_watermark,
+        carrier_index_watermark = ?carrier_index_watermark,
         "repeat-deploy carrier index checked"
     );
 
