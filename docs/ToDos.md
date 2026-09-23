@@ -158,8 +158,12 @@ tasks:
     status: pending
     claimed_by: null
     blocked_by: [TASK-019-2, TASK-019-4]
+    plan: docs/plans/casper-node-observation-batch-b.md
+    planning_status: "Steps 1 through 4 complete at cef1f4b721b8109019459f11c53d49df00eb68f9."
+    planning_authorization: "The user authorized planning steps 1 through 4 on 2026-09-23, before TASK-019-4 acceptance."
+    implementation_authorized: false
     prerequisites:
-      - "Do not start B2 planning until both current claims pass source-bound verification and a named maintainer explicitly accepts them."
+      - "Do not start B2 implementation until both current claims pass source-bound verification and a named maintainer explicitly accepts them."
       - "A final file list covering the runtime, engine cell, Casper constructor, dispatch, and the six test fixtures that need the observer field."
       - "A reference evaluation path that differs from the measured path. Repeating the production tips computation is not independent coverage."
       - "Separate fields for the exact oracle decision, the original fault-tolerance result, and the display projection, each naming its input snapshot."
@@ -275,21 +279,30 @@ tasks:
       - "EPIC-017 TASK-017-12 updates its node interface status to the merged revision."
   - id: TASK-019-7
     title: "Publish dev candidate images for adapter qualification"
-    status: pending
+    status: in_progress
     claimed_by: null
-    blocked_by: []
+    blocked_by: [TASK-019-6]
+    work_log: docs/work-logs/task-019-7-candidate-images.md
+    baseline_status: "Published amd64 and arm64 digests verified for dev revision 6d6d4fed6f84baa0913d8e87f32a7ffe2e0ca59a."
+    observer_candidate_status: "Pending TASK-019-6 and subsequent dev CI publication."
     external_dependencies:
-      - "system-integration: the lifecycle-test fix must be committed, pushed, and merged before it can be pinned."
+      - "system-integration: include deploy inclusion time in _submit_pos_until_effective and add settlement regressions. Merge the correction to dev, then promote dev to main before pinning it."
+    proposed_external_branch: fix/validator-lifecycle-settlement-budget
+    external_pr_target: dev
+    external_promotion_target: main
     consumer: "EPIC-017 TASK-017-12 candidate repin on formal/soak-casper-consensus."
-    pin_site: .github/oci-validation.env
+    pin_sites:
+      - .github/oci-validation.env
+      - .github/workflows/_integration-pipeline.yml
+      - .github/workflows/merge-recovery-soak.yml
     implementation_plan:
-      - "Step 1. In system-integration, commit and push the lifecycle-test fix with its own consent, and record the merged revision."
-      - "Step 2. Open a small PR to dev that updates SYSTEM_INTEGRATION_REF in .github/oci-validation.env to that revision. The soak branch keeps its own three pin sites aligned separately."
+      - "Step 1. In system-integration, target dev, then promote dev to main. Record both merge revisions. Commits and pushes require separate consent."
+      - "Step 2. Use scripts/repin-system-integration.sh to align all three SYSTEM_INTEGRATION_REF sites in a small PR to dev. Update the soak branch separately."
       - "Step 3. Let dev CI publish the image for the current dev revision, and record the immutable image digests for amd64 and arm64 with the dev revision they were built from."
       - "Step 4. Hand the digests to TASK-017-12 for candidate repin and admission. This baseline image carries no observer interface."
       - "Step 5. After TASK-019-6 merges PR #447, repeat Step 3 for the observer-capable dev revision. Authority and publication adapter qualification needs that second image, not the baseline."
     acceptance:
-      - "The pin names a merged system-integration revision as a 40-character SHA."
+      - "The pin names the 40-character system-integration main revision that contains the promoted fix."
       - "Each published image is recorded by immutable digest, platform, and source dev revision."
       - "The baseline and observer-capable images are recorded as distinct candidates."
       - "No candidate is repinned from a rebuilt or mutable tag."
@@ -321,9 +334,11 @@ tasks:
 
 **Current state:** Batch A and B1 have implementation evidence. The first approved verification cycle corrects challenge reuse within one observer lifetime and records 580 passing isolated test executions.
 
-Both claims remain pending on complete formal evidence and named maintainer acceptance under TASK-019-4. Batch B2 and Batch C remain unapproved.
+Both claims remain pending on complete formal evidence and named maintainer acceptance under TASK-019-4.
 
-Candidate image publication waits on the system-integration pin under TASK-019-7. PR #447 targets `dev`.
+B2 planning steps 1 through 4 are complete. B2 implementation and Batch C remain unapproved.
+
+TASK-019-7 records verified baseline image digests. The lifecycle pin correction and observer candidate remain pending. PR #447 targets `dev`.
 
 **Scope:** This epic owns node-side interfaces only. Harness verification, profile qualification, campaign execution, and baseline soaks belong to EPIC-017.
 
