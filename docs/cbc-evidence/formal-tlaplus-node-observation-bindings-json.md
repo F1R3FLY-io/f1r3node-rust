@@ -7,38 +7,40 @@ The approved reconciliation artifact remains pending.
   "artifact": {
     "path": "formal/tlaplus/node_observation/bindings.json",
     "id": "formal-tlaplus-node-observation-bindings-json",
-    "commit": "10e7b8452824e12a1fe2743dca7989b79fce2133",
+    "commit": "03d7f1b27544b2c5a93b664d8684b24ea16cf3e9",
     "commit_is_base": true,
     "working_tree": true,
-    "sha256": "0c1aeb74cd25ac1fc708116d4442925e94db44240666df56b8c223585fb375be"
+    "sha256": "65d1bca45c6a92cee68fe13e929371cd65fc750dd5d73e2fd7702e68787f7b46"
   },
   "claim": "docs/claims/casper-node-observation.md",
   "claim_ids": [
     "CLAIM-CASPER-NODE-OBSERVATION-001",
     "CLAIM-CASPER-NODE-OBSERVATION-002"
   ],
+  "claim_digests": {
+    "docs/claims/casper-node-observation.md": "703418566c148f28a4d952e29e7dc135843242ea7fbb7e3fdc3111b6e4373274",
+    "docs/claims/casper-node-authority-snapshot.md": "d8242333c663a8680376dfe758cfa18c6641905fc86ddc20ca9014ec8af81a19"
+  },
   "adapter": null,
   "status": "pending",
+  "scope": "task-019-4-handoff-cycle-01",
   "evidence": {
-    "kind": "partial-reconciliation-not-discharge",
-    "ref": "docs/cbc-evidence/runs/casper-node-model-reconciliation-10e7b8452-01/report.json",
-    "sha256": "1ed89bb3221fddeba2782c1496f9f4a59a37a23359feea348bbc9f8981a3d09c"
+    "kind": "tiered-evidence-not-discharge",
+    "ref": "docs/cbc-evidence/runs/casper-node-claim-gate-03d7f1b27-01/report.json",
+    "sha256": "68e9224741cf8aeeb666f1e86947c8d15dc5cb8587bed98767cf9e52e2674160"
   },
   "tiers": {
-    "refutation": "pending",
-    "construction": "pending",
-    "binding": "pending"
+    "refutation": "recorded",
+    "construction": "recorded-partial",
+    "binding": "recorded-partial"
   },
+  "soak": "pending",
   "waiver": null,
   "verified_at": null,
-  "claim_digests": {
-    "docs/claims/casper-node-observation.md": "3fc9de43df482f5c0ad240583dc7b4f12523e0881443348e9026dfc1539afe28",
-    "docs/claims/casper-node-authority-snapshot.md": "4a2282757f77e01161e729f54c36b75c6c4074c9c8e37711d164cd64aa0196a8"
-  },
   "previous_record": {
     "path": "docs/cbc-evidence/formal-tlaplus-node-observation-bindings-json.md",
-    "sha256": "0ad622d317c4fc62cdb7a666cc4b7469cde0d718b28a2d76e4a0827d258c6a71",
-    "archive": "records-pre-refresh"
+    "sha256": "5df51ca4b0a9f2a62d6b1a3198591c7d3ebc149881f8fe0e8216f8ff683e092d",
+    "commit": "10e7b8452824e12a1fe2743dca7989b79fce2133"
   }
 }
 ```

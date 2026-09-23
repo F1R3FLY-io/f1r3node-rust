@@ -557,9 +557,9 @@ The formal gate registration now expects 14 closed sets. The container ran with 
 
 The capture oracle test hand-translates the `BoundedCapture` admission, completeness, and validation predicates. It runs production capture under seven interference kinds with and without a requested body, and requires equal outcomes across all 14 scenarios.
 
-Nine Kani harnesses were added under `#[cfg(kani)]`: seven in the shared reader for the length prefix, limit comparison, checked totals, and atomic charging, and two in the block store for decode-limit validation and oversized-input rejection. Both crates carry the same `unexpected_cfgs` allowance the casper crate uses.
+Seven Kani harnesses remain under `#[cfg(kani)]`: six in the shared reader for the length prefix, limit comparison, and atomic charging, and one in the block store for decode-limit validation. A standalone checked-total harness timed out twice at 15 and 25 minutes and was removed, because both charging harnesses drive the same arithmetic with fully symbolic inputs and verified, and the Rocq overflow theorem covers the same property. A first full-crate run stalled for over an hour on the formatted error paths, so the prefix check was factored into a pure `split_length_prefixed` predicate that production and the harnesses share, the decoder harness was dropped, and the harnesses run one at a time with timeouts. Both crates carry the same `unexpected_cfgs` allowance the casper crate uses.
 
-The Kani driver needs a glibc newer than Debian bookworm provides. The harness run uses an Ubuntu 24.04 container with a fresh Rust toolchain. Its result is recorded in the evidence package.
+The Kani driver needs a glibc newer than Debian bookworm provides, so the harness run uses an Ubuntu 24.04 container with a fresh Rust toolchain. Six shared harnesses verified: the limit comparison, both atomic-charging harnesses, and all three prefix harnesses. The block-store harness could not execute because a hashing dependency in that crate tree requires aes and neon target features that the Kani compiler invocation does not pass. It remains authored, and unit tests cover its property.
 
 Lint with warnings denied and formatting passed. The shared and block-storage suites passed with 27 capture tests and 19 reader tests.
 
@@ -577,6 +577,6 @@ The dev merge changed the DAG storage file, and this cycle changed the Rocq proj
 
 The strict audit returned exit 4 before the refresh with the new module unrecorded. It is expected to return exit 4 after the refresh with every mandatory record pending, which is the correct state before acceptance.
 
-The package `casper-node-claim-gate-8789c1c3e-01` records the tiers reached. Bulk evidence remains under the session scratch directory outside Git.
+The package `casper-node-claim-gate-03d7f1b27-01` records the tiers reached. Bulk evidence remains under the session scratch directory outside Git.
 
 The task stops at the acceptance gate. The proposed reviewer must review each applicability decision and accept both claims by naming the revision, both claim IDs, and the package.

@@ -7,7 +7,7 @@ The approved reconciliation artifact remains pending.
   "artifact": {
     "path": "formal/tlaplus/node_observation/MC_BoundedCapture_order_unsafe.tla",
     "id": "formal-tlaplus-node-observation-MC-BoundedCapture-order-unsafe-tla",
-    "commit": "10e7b8452824e12a1fe2743dca7989b79fce2133",
+    "commit": "03d7f1b27544b2c5a93b664d8684b24ea16cf3e9",
     "commit_is_base": true,
     "working_tree": true,
     "sha256": "927ca1030b336b9b20110ac3517e4004ab892143c0b306c93124baa98d47e114"
@@ -16,27 +16,29 @@ The approved reconciliation artifact remains pending.
   "claim_ids": [
     "CLAIM-CASPER-NODE-OBSERVATION-002"
   ],
+  "claim_digests": {
+    "docs/claims/casper-node-authority-snapshot.md": "d8242333c663a8680376dfe758cfa18c6641905fc86ddc20ca9014ec8af81a19"
+  },
   "adapter": null,
   "status": "pending",
+  "scope": "task-019-4-handoff-cycle-01",
   "evidence": {
-    "kind": "partial-reconciliation-not-discharge",
-    "ref": "docs/cbc-evidence/runs/casper-node-model-reconciliation-10e7b8452-01/report.json",
-    "sha256": "1ed89bb3221fddeba2782c1496f9f4a59a37a23359feea348bbc9f8981a3d09c"
+    "kind": "tiered-evidence-not-discharge",
+    "ref": "docs/cbc-evidence/runs/casper-node-claim-gate-03d7f1b27-01/report.json",
+    "sha256": "68e9224741cf8aeeb666f1e86947c8d15dc5cb8587bed98767cf9e52e2674160"
   },
   "tiers": {
-    "refutation": "pending",
-    "construction": "pending",
-    "binding": "pending"
+    "refutation": "recorded",
+    "construction": "recorded-partial",
+    "binding": "recorded-partial"
   },
+  "soak": "pending",
   "waiver": null,
   "verified_at": null,
-  "claim_digests": {
-    "docs/claims/casper-node-authority-snapshot.md": "4a2282757f77e01161e729f54c36b75c6c4074c9c8e37711d164cd64aa0196a8"
-  },
   "previous_record": {
     "path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-order-unsafe-tla.md",
-    "sha256": "d970d3cf62b8760216678a144cdabc866ac134509a22cfc428bfa12483c8b154",
-    "archive": "records-pre-refresh"
+    "sha256": "586d4638d6a165267f1ad905555a06043318edd6072920552f0a838601502c12",
+    "commit": "10e7b8452824e12a1fe2743dca7989b79fce2133"
   }
 }
 ```

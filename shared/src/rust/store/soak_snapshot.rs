@@ -156,7 +156,24 @@ pub fn decode_length_prefixed(raw: &[u8]) -> Result<Vec<u8>, SnapshotError> {
     length_prefixed_payload(raw).map(<[u8]>::to_vec)
 }
 
+pub fn split_length_prefixed(raw: &[u8]) -> Option<&[u8]> {
+    if raw.len() < LENGTH_PREFIX_BYTES {
+        return None;
+    }
+    let mut prefix = [0u8; LENGTH_PREFIX_BYTES];
+    prefix.copy_from_slice(&raw[..LENGTH_PREFIX_BYTES]);
+    let declared = u64::from_le_bytes(prefix);
+    let actual = (raw.len() - LENGTH_PREFIX_BYTES) as u64;
+    if declared != actual {
+        return None;
+    }
+    Some(&raw[LENGTH_PREFIX_BYTES..])
+}
+
 fn length_prefixed_payload(raw: &[u8]) -> Result<&[u8], SnapshotError> {
+    if let Some(payload) = split_length_prefixed(raw) {
+        return Ok(payload);
+    }
     if raw.len() < LENGTH_PREFIX_BYTES {
         return Err(SnapshotError::Malformed(format!(
             "raw value of {} bytes is shorter than its length prefix",
@@ -167,12 +184,9 @@ fn length_prefixed_payload(raw: &[u8]) -> Result<&[u8], SnapshotError> {
     prefix.copy_from_slice(&raw[..LENGTH_PREFIX_BYTES]);
     let declared = u64::from_le_bytes(prefix);
     let actual = (raw.len() - LENGTH_PREFIX_BYTES) as u64;
-    if declared != actual {
-        return Err(SnapshotError::Malformed(format!(
-            "length prefix declares {declared} bytes but {actual} bytes follow"
-        )));
-    }
-    Ok(&raw[LENGTH_PREFIX_BYTES..])
+    Err(SnapshotError::Malformed(format!(
+        "length prefix declares {declared} bytes but {actual} bytes follow"
+    )))
 }
 
 fn lmdb_store(store: &Arc<dyn KeyValueStore>) -> Result<&LmdbKeyValueStore, SnapshotError> {
@@ -402,10 +416,7 @@ mod kani_proofs {
         let payload: [u8; 4] = kani::any();
         let raw = encode_length_prefixed(&payload[..len]);
         assert_eq!(raw.len(), LENGTH_PREFIX_BYTES + len);
-        assert_eq!(
-            decode_length_prefixed(&raw).unwrap(),
-            payload[..len].to_vec()
-        );
+        assert_eq!(split_length_prefixed(&raw), Some(&payload[..len]));
     }
 
     #[kani::proof]
@@ -415,22 +426,19 @@ mod kani_proofs {
         let mut prefix = [0u8; LENGTH_PREFIX_BYTES];
         prefix.copy_from_slice(&raw[..LENGTH_PREFIX_BYTES]);
         let declared = u64::from_le_bytes(prefix);
-        let decoded = decode_length_prefixed(&raw);
-        assert_eq!(decoded.is_ok(), declared == 4);
-        if let Ok(payload) = decoded {
-            assert_eq!(payload, raw[LENGTH_PREFIX_BYTES..].to_vec());
+        let split = split_length_prefixed(&raw);
+        assert_eq!(split.is_some(), declared == 4);
+        if let Some(payload) = split {
+            assert_eq!(payload, &raw[LENGTH_PREFIX_BYTES..]);
         }
     }
 
     #[kani::proof]
-    fn short_raw_is_malformed() {
+    fn short_raw_is_rejected() {
         let len: usize = kani::any();
         kani::assume(len < LENGTH_PREFIX_BYTES);
         let raw = [0u8; LENGTH_PREFIX_BYTES];
-        assert!(matches!(
-            decode_length_prefixed(&raw[..len]),
-            Err(SnapshotError::Malformed(_))
-        ));
+        assert!(split_length_prefixed(&raw[..len]).is_none());
     }
 
     #[kani::proof]
@@ -438,19 +446,6 @@ mod kani_proofs {
         let observed: usize = kani::any();
         let limit: usize = kani::any();
         assert_eq!(check_limit("k", observed, limit).is_ok(), observed <= limit);
-    }
-
-    #[kani::proof]
-    fn checked_total_refuses_overflow() {
-        let current: usize = kani::any();
-        let amount: usize = kani::any();
-        match checked_total("k", current, amount) {
-            Ok(total) => assert_eq!(Some(total), current.checked_add(amount)),
-            Err(error) => {
-                assert!(current.checked_add(amount).is_none());
-                assert_eq!(error, SnapshotError::CounterOverflow("k"));
-            }
-        }
     }
 
     #[kani::proof]
