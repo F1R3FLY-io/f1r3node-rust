@@ -1,0 +1,61 @@
+diff --git a/scripts/ci/check-tla-invariants.sh b/scripts/ci/check-tla-invariants.sh
+index 958b84603..10ac9e828 100755
+--- a/scripts/ci/check-tla-invariants.sh
++++ b/scripts/ci/check-tla-invariants.sh
+@@ -285,7 +285,14 @@ for check in "${POST_FIX_CONFIGS[@]}" "${NEGATIVE_CONTROLS[@]}"; do
+     if ((status == 0)) && [[ -z "$expected_invariant" ]]; then
+         echo "OK     $entry ($elapsed)"
+     elif ((status == 12)) && [[ -n "$expected_invariant" ]] &&
+-        grep -Fxq "Error: Invariant $expected_invariant is violated." "$log"; then
++        grep -Fxq "Error: Invariant $expected_invariant is violated." "$log" &&
++        awk '
++            /^Error: The behavior up to this point is:$/ { trace_header = 1; next }
++            trace_header && /^[[:space:]]*$/ { next }
++            trace_header && /^State 1:/ { found = 1 }
++            { trace_header = 0 }
++            END { exit !found }
++        ' "$log"; then
+         echo "EXPECTED-FAIL $entry ($expected_invariant, $elapsed)"
+     elif ((status == 124)); then
+         echo "TIMEOUT $entry after $elapsed (cap $TLC_PER_CONFIG_TIMEOUT) — treat as failure; profile or split the config"
+@@ -294,7 +301,7 @@ for check in "${POST_FIX_CONFIGS[@]}" "${NEGATIVE_CONTROLS[@]}"; do
+     else
+         echo "FAIL   $entry ($elapsed)"
+         if [[ -n "$expected_invariant" ]]; then
+-            echo "Expected invariant $expected_invariant with TLC exit 12, received exit $status."
++            echo "Expected invariant $expected_invariant with TLC exit 12 and a counterexample trace, received exit $status."
+         fi
+         echo "--- last 40 lines of $log ---"
+         tail -40 "$log"
+diff --git a/scripts/ci/test-check-tla-invariants.sh b/scripts/ci/test-check-tla-invariants.sh
+index 092c404a1..322f69d57 100755
+--- a/scripts/ci/test-check-tla-invariants.sh
++++ b/scripts/ci/test-check-tla-invariants.sh
+@@ -57,6 +57,10 @@ if [[ "$config" == "${TEST_TLC_TARGET:-}" ]]; then
+         wrong-invariant) invariant=TypeOK ;;
+         tool-error) printf 'Error: The configuration could not be parsed.\n'; exit 1 ;;
+         wrong-exit) printf 'Error: Invariant %s is violated.\n' "$invariant"; exit 1 ;;
++        no-trace)
++            printf 'Error: Invariant %s is violated.\n' "$invariant"
++            printf 'Error: The behavior up to this point is:\n'
++            exit 12 ;;
+         timeout) exit 124 ;;
+         violate) invariant=Baseline ;;
+     esac
+@@ -67,6 +71,7 @@ if [[ -z "$invariant" ]]; then
+ fi
+ printf 'Error: Invariant %s is violated.\n' "$invariant"
+ printf 'Error: The behavior up to this point is:\n'
++printf 'State 1: <Initial predicate>\nfixture = TRUE\n'
+ exit 12
+ SH
+ chmod +x "$WORK/bin/tlc"
+@@ -95,7 +100,7 @@ mapfile -t AREAS < <(sed -n 's/^REGISTERED_CONTROL_AREAS=(\(.*\))$/\1/p' "$GATE"
+ for area in "${AREAS[@]}"; do
+     check="$(printf '%s\n' "${CONTROLS[@]}" | grep -m1 "^$area/")" || fail "The area $area registers no control."
+     target="${check%%:*}"
+-    for result in clean wrong-invariant tool-error wrong-exit timeout missing; do
++    for result in clean wrong-invariant tool-error wrong-exit no-trace timeout missing; do
+         config="$WORK/repo/formal/tlaplus/$target.cfg"
+         [[ "$result" != missing ]] || mv "$config" "$config.saved"
+         status=0

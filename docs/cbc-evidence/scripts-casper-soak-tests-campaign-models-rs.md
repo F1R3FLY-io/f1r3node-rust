@@ -1,0 +1,1 @@
+../casper/cbc-evidence/scripts-casper-soak-tests-campaign-models-rs.md

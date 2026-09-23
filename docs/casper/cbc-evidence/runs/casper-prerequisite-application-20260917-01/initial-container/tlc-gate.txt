@@ -1,0 +1,802 @@
+CHECK  replay_liveness/MC_ReplayHotLoop (started 03:05:09Z, cap 2m)
+FAIL   replay_liveness/MC_ReplayHotLoop (0s)
+--- last 40 lines of /tmp/tlc-replay_liveness-MC_ReplayHotLoop.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/replay_liveness/states/26-09-17-03-05-09 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  carrier_index/MC_CarrierIndex (started 03:05:09Z, cap 2m)
+FAIL   carrier_index/MC_CarrierIndex (0s)
+--- last 40 lines of /tmp/tlc-carrier_index-MC_CarrierIndex.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/carrier_index/states/26-09-17-03-05-09 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  deploy_storage/MC_DeployStorageBound (started 03:05:09Z, cap 2m)
+FAIL   deploy_storage/MC_DeployStorageBound (0s)
+--- last 40 lines of /tmp/tlc-deploy_storage-MC_DeployStorageBound.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/deploy_storage/states/26-09-17-03-05-09 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakDiskAdmission (started 03:05:09Z, cap 2m)
+FAIL   soak_disk/MC_SoakDiskAdmission (0s)
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakDiskAdmission.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-09 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakDiskGuardian (started 03:05:09Z, cap 2m)
+FAIL   soak_disk/MC_SoakDiskGuardian (0s)
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakDiskGuardian.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-09 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakStorageBudget (started 03:05:09Z, cap 2m)
+FAIL   soak_disk/MC_SoakStorageBudget (0s)
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakStorageBudget.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-09 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_MetricBaseline (started 03:05:09Z, cap 2m)
+FAIL   soak_disk/MC_MetricBaseline (0s)
+--- last 40 lines of /tmp/tlc-soak_disk-MC_MetricBaseline.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-09 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_MetricBaseline_available (started 03:05:09Z, cap 2m)
+FAIL   soak_disk/MC_MetricBaseline_available (0s)
+--- last 40 lines of /tmp/tlc-soak_disk-MC_MetricBaseline_available.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-09 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_MetricMonotonicity (started 03:05:09Z, cap 2m)
+FAIL   soak_disk/MC_MetricMonotonicity (0s)
+--- last 40 lines of /tmp/tlc-soak_disk-MC_MetricMonotonicity.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-09 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_MetricSampleValidity (started 03:05:09Z, cap 2m)
+FAIL   soak_disk/MC_MetricSampleValidity (0s)
+--- last 40 lines of /tmp/tlc-soak_disk-MC_MetricSampleValidity.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-09 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_MetricSummary (started 03:05:09Z, cap 2m)
+FAIL   soak_disk/MC_MetricSummary (0s)
+--- last 40 lines of /tmp/tlc-soak_disk-MC_MetricSummary.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-09 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_ReserveBound (started 03:05:09Z, cap 2m)
+FAIL   soak_disk/MC_ReserveBound (0s)
+--- last 40 lines of /tmp/tlc-soak_disk-MC_ReserveBound.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-09 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_RetentionReserve (started 03:05:09Z, cap 2m)
+FAIL   soak_disk/MC_RetentionReserve (0s)
+--- last 40 lines of /tmp/tlc-soak_disk-MC_RetentionReserve.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-09 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  carrier_index/MC_CarrierIndex_dag_first_pre_fix (started 03:05:09Z, cap 2m)
+FAIL   carrier_index/MC_CarrierIndex_dag_first_pre_fix (0s)
+Expected invariant IndexCompleteForWindow with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-carrier_index-MC_CarrierIndex_dag_first_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/carrier_index/states/26-09-17-03-05-09 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  carrier_index/MC_CarrierIndex_read_failure_pre_fix (started 03:05:09Z, cap 2m)
+FAIL   carrier_index/MC_CarrierIndex_read_failure_pre_fix (0s)
+Expected invariant AbsenceProofSound with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-carrier_index-MC_CarrierIndex_read_failure_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/carrier_index/states/26-09-17-03-05-09 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakDiskAdmission_floor_only_pre_fix (started 03:05:09Z, cap 2m)
+FAIL   soak_disk/MC_SoakDiskAdmission_floor_only_pre_fix (0s)
+Expected invariant AdmissionRequiresBand with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakDiskAdmission_floor_only_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-09 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakDiskAdmission_missing_sample_pre_fix (started 03:05:09Z, cap 2m)
+FAIL   soak_disk/MC_SoakDiskAdmission_missing_sample_pre_fix (0s)
+Expected invariant AdmissionRequiresSample with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakDiskAdmission_missing_sample_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-09 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakDiskAdmission_numeric_prefix_pre_fix (started 03:05:09Z, cap 2m)
+FAIL   soak_disk/MC_SoakDiskAdmission_numeric_prefix_pre_fix (1s)
+Expected invariant AdmissionRequiresValidSample with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakDiskAdmission_numeric_prefix_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-10 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakDiskAdmission_unchecked_guardian_pre_fix (started 03:05:10Z, cap 2m)
+FAIL   soak_disk/MC_SoakDiskAdmission_unchecked_guardian_pre_fix (0s)
+Expected invariant AdmissionRequiresGuardian with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakDiskAdmission_unchecked_guardian_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-10 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakDiskAdmission_retained_breach_pre_fix (started 03:05:10Z, cap 2m)
+FAIL   soak_disk/MC_SoakDiskAdmission_retained_breach_pre_fix (0s)
+Expected invariant RetainedBreachPreventsBenchmark with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakDiskAdmission_retained_breach_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-10 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakDiskAdmission_benchmark_band_pre_fix (started 03:05:10Z, cap 2m)
+FAIL   soak_disk/MC_SoakDiskAdmission_benchmark_band_pre_fix (0s)
+Expected invariant BenchmarkRequiresBand with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakDiskAdmission_benchmark_band_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-10 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakDiskAdmission_late_guardian_pre_fix (started 03:05:10Z, cap 2m)
+FAIL   soak_disk/MC_SoakDiskAdmission_late_guardian_pre_fix (0s)
+Expected invariant BenchmarkBreachObserved with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakDiskAdmission_late_guardian_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-10 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakDiskAdmission_unwatched_death_pre_fix (started 03:05:10Z, cap 2m)
+FAIL   soak_disk/MC_SoakDiskAdmission_unwatched_death_pre_fix (0s)
+Expected invariant BenchmarkCancellationObserved with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakDiskAdmission_unwatched_death_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-10 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakDiskAdmission_unwatched_breach_pre_fix (started 03:05:10Z, cap 2m)
+FAIL   soak_disk/MC_SoakDiskAdmission_unwatched_breach_pre_fix (0s)
+Expected invariant BenchmarkCancellationObserved with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakDiskAdmission_unwatched_breach_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-10 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakDiskAdmission_unchecked_progress_pre_fix (started 03:05:10Z, cap 2m)
+FAIL   soak_disk/MC_SoakDiskAdmission_unchecked_progress_pre_fix (0s)
+Expected invariant StaleProgressPreventsAdmission with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakDiskAdmission_unchecked_progress_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-10 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakDiskAdmission_unbounded_hygiene_pre_fix (started 03:05:10Z, cap 2m)
+FAIL   soak_disk/MC_SoakDiskAdmission_unbounded_hygiene_pre_fix (0s)
+Expected invariant HygieneWithinBudget with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakDiskAdmission_unbounded_hygiene_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-10 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakDiskAdmission_unchecked_range_pre_fix (started 03:05:10Z, cap 2m)
+FAIL   soak_disk/MC_SoakDiskAdmission_unchecked_range_pre_fix (0s)
+Expected invariant AdmissionRequiresValidDiskSettings with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakDiskAdmission_unchecked_range_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-10 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakDiskAdmission_age_only_pre_fix (started 03:05:10Z, cap 2m)
+FAIL   soak_disk/MC_SoakDiskAdmission_age_only_pre_fix (0s)
+Expected invariant UnownedSessionPreserved with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakDiskAdmission_age_only_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-10 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakDiskAdmission_ignore_errors_pre_fix (started 03:05:10Z, cap 2m)
+FAIL   soak_disk/MC_SoakDiskAdmission_ignore_errors_pre_fix (0s)
+Expected invariant CleanupFailurePreventsAdmission with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakDiskAdmission_ignore_errors_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-10 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakDiskAdmission_global_prune_pre_fix (started 03:05:10Z, cap 2m)
+FAIL   soak_disk/MC_SoakDiskAdmission_global_prune_pre_fix (0s)
+Expected invariant UnownedDockerResourcesPreserved with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakDiskAdmission_global_prune_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-10 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakDiskAdmission_unrecorded_pre_fix (started 03:05:10Z, cap 2m)
+FAIL   soak_disk/MC_SoakDiskAdmission_unrecorded_pre_fix (0s)
+Expected invariant CrashRequiresRefusal with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakDiskAdmission_unrecorded_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-10 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakDiskAdmission_unrecorded_benchmark_pre_fix (started 03:05:10Z, cap 2m)
+FAIL   soak_disk/MC_SoakDiskAdmission_unrecorded_benchmark_pre_fix (0s)
+Expected invariant BenchmarkCrashRequiresRefusal with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakDiskAdmission_unrecorded_benchmark_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-10 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakDiskAdmission_iteration_only_pre_fix (started 03:05:10Z, cap 2m)
+FAIL   soak_disk/MC_SoakDiskAdmission_iteration_only_pre_fix (0s)
+Expected invariant BenchmarkMonitorDeathObserved with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakDiskAdmission_iteration_only_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-10 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakDiskAdmission_unchecked_monitor_pre_fix (started 03:05:10Z, cap 2m)
+FAIL   soak_disk/MC_SoakDiskAdmission_unchecked_monitor_pre_fix (0s)
+Expected invariant MonitorDeathPreventsAdmission with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakDiskAdmission_unchecked_monitor_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-10 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakDiskAdmission_unchecked_placement_pre_fix (started 03:05:10Z, cap 2m)
+FAIL   soak_disk/MC_SoakDiskAdmission_unchecked_placement_pre_fix (0s)
+Expected invariant UnverifiedPlacementPreventsAdmission with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakDiskAdmission_unchecked_placement_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-10 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakDiskAdmission_pathname_pre_fix (started 03:05:10Z, cap 2m)
+FAIL   soak_disk/MC_SoakDiskAdmission_pathname_pre_fix (0s)
+Expected invariant UntrustedRecordPreventsAdmission with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakDiskAdmission_pathname_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-10 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakDiskAdmission_attribute_first_pre_fix (started 03:05:10Z, cap 2m)
+FAIL   soak_disk/MC_SoakDiskAdmission_attribute_first_pre_fix (0s)
+Expected invariant AttributionRequiresRecord with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakDiskAdmission_attribute_first_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-10 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakDiskAdmission_in_place_pre_fix (started 03:05:10Z, cap 2m)
+FAIL   soak_disk/MC_SoakDiskAdmission_in_place_pre_fix (0s)
+Expected invariant VisibleImpliesComplete with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakDiskAdmission_in_place_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-10 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakDiskAdmission_unchecked_producer_pre_fix (started 03:05:10Z, cap 2m)
+FAIL   soak_disk/MC_SoakDiskAdmission_unchecked_producer_pre_fix (0s)
+Expected invariant FailedProducerPreservesRecord with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakDiskAdmission_unchecked_producer_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-10 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakDiskGuardian_unwatched_pre_fix (started 03:05:10Z, cap 2m)
+FAIL   soak_disk/MC_SoakDiskGuardian_unwatched_pre_fix (0s)
+Expected invariant DeadGuardianRequiresInterrupt with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakDiskGuardian_unwatched_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-10 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakDiskGuardian_unavailable_sample_pre_fix (started 03:05:10Z, cap 2m)
+FAIL   soak_disk/MC_SoakDiskGuardian_unavailable_sample_pre_fix (1s)
+Expected invariant InvalidSampleRequiresInterrupt with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakDiskGuardian_unavailable_sample_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-11 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakDiskGuardian_unbounded_probe_pre_fix (started 03:05:11Z, cap 2m)
+FAIL   soak_disk/MC_SoakDiskGuardian_unbounded_probe_pre_fix (0s)
+Expected invariant ProbeWithinDeadline with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakDiskGuardian_unbounded_probe_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-11 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakDiskGuardian_stop_first_pre_fix (started 03:05:11Z, cap 2m)
+FAIL   soak_disk/MC_SoakDiskGuardian_stop_first_pre_fix (0s)
+Expected invariant StopRequiresRecord with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakDiskGuardian_stop_first_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-11 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakDiskGuardian_per_root_deadline_pre_fix (started 03:05:11Z, cap 2m)
+FAIL   soak_disk/MC_SoakDiskGuardian_per_root_deadline_pre_fix (0s)
+Expected invariant AttributionWithinBudget with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakDiskGuardian_per_root_deadline_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-11 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakDiskGuardian_cleared_breach_pre_fix (started 03:05:11Z, cap 2m)
+FAIL   soak_disk/MC_SoakDiskGuardian_cleared_breach_pre_fix (0s)
+Expected invariant RetainedBreachStopsRestart with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakDiskGuardian_cleared_breach_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-11 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakDiskGuardian_unbounded_stop_pre_fix (started 03:05:11Z, cap 2m)
+FAIL   soak_disk/MC_SoakDiskGuardian_unbounded_stop_pre_fix (0s)
+Expected invariant StopWithinBudget with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakDiskGuardian_unbounded_stop_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-11 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakDiskGuardian_alive_only_pre_fix (started 03:05:11Z, cap 2m)
+FAIL   soak_disk/MC_SoakDiskGuardian_alive_only_pre_fix (0s)
+Expected invariant StaleGuardianRequiresInterrupt with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakDiskGuardian_alive_only_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-11 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakDiskGuardian_client_only_pre_fix (started 03:05:11Z, cap 2m)
+FAIL   soak_disk/MC_SoakDiskGuardian_client_only_pre_fix (0s)
+Expected invariant ExitStopsWriters with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakDiskGuardian_client_only_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-11 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakDiskGuardian_rate_exceeds_floor_pre_fix (started 03:05:11Z, cap 2m)
+FAIL   soak_disk/MC_SoakDiskGuardian_rate_exceeds_floor_pre_fix (0s)
+Expected invariant NoOverrun with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakDiskGuardian_rate_exceeds_floor_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-11 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakDiskGuardian_unconfirmed_stop_pre_fix (started 03:05:11Z, cap 2m)
+FAIL   soak_disk/MC_SoakDiskGuardian_unconfirmed_stop_pre_fix (0s)
+Expected invariant NoOverrun with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakDiskGuardian_unconfirmed_stop_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-11 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakDiskGuardian_ignored_pre_fix (started 03:05:11Z, cap 2m)
+FAIL   soak_disk/MC_SoakDiskGuardian_ignored_pre_fix (0s)
+Expected invariant FailedStopRetained with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakDiskGuardian_ignored_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-11 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakDiskGuardian_name_only_pre_fix (started 03:05:11Z, cap 2m)
+FAIL   soak_disk/MC_SoakDiskGuardian_name_only_pre_fix (0s)
+Expected invariant UnownedWritersPreserved with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakDiskGuardian_name_only_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-11 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakDiskGuardian_host_pattern_only_pre_fix (started 03:05:11Z, cap 2m)
+FAIL   soak_disk/MC_SoakDiskGuardian_host_pattern_only_pre_fix (0s)
+Expected invariant UnownedHostWritersPreserved with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakDiskGuardian_host_pattern_only_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-11 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakDiskGuardian_oom_pattern_only_pre_fix (started 03:05:11Z, cap 2m)
+FAIL   soak_disk/MC_SoakDiskGuardian_oom_pattern_only_pre_fix (0s)
+Expected invariant UnownedPreferencesPreserved with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakDiskGuardian_oom_pattern_only_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-11 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakDiskGuardian_periodic_name_pre_fix (started 03:05:11Z, cap 2m)
+FAIL   soak_disk/MC_SoakDiskGuardian_periodic_name_pre_fix (0s)
+Expected invariant UnownedContainerPreferencesPreserved with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakDiskGuardian_periodic_name_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-11 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakDiskGuardian_parent_group_pre_fix (started 03:05:11Z, cap 2m)
+FAIL   soak_disk/MC_SoakDiskGuardian_parent_group_pre_fix (0s)
+Expected invariant CrashStopsOwnedWriters with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakDiskGuardian_parent_group_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-11 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakDiskGuardian_unconditional_pre_fix (started 03:05:11Z, cap 2m)
+FAIL   soak_disk/MC_SoakDiskGuardian_unconditional_pre_fix (0s)
+Expected invariant HandledExitHasNoExtraStop with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakDiskGuardian_unconditional_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-11 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakDiskGuardian_startup_only_pre_fix (started 03:05:11Z, cap 2m)
+FAIL   soak_disk/MC_SoakDiskGuardian_startup_only_pre_fix (0s)
+Expected invariant DeadMonitorRequiresInterrupt with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakDiskGuardian_startup_only_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-11 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakDiskGuardian_drain_first_pre_fix (started 03:05:11Z, cap 2m)
+FAIL   soak_disk/MC_SoakDiskGuardian_drain_first_pre_fix (0s)
+Expected invariant DrainRequiresOwnedStop with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakDiskGuardian_drain_first_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-11 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakDiskGuardian_unmanaged_pre_fix (started 03:05:11Z, cap 2m)
+FAIL   soak_disk/MC_SoakDiskGuardian_unmanaged_pre_fix (0s)
+Expected invariant ControllerLossStopsOwnedWriters with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakDiskGuardian_unmanaged_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-11 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakDiskGuardian_start_first_pre_fix (started 03:05:11Z, cap 2m)
+FAIL   soak_disk/MC_SoakDiskGuardian_start_first_pre_fix (0s)
+Expected invariant UnavailableQueryPreventsRelease with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakDiskGuardian_start_first_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-11 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakDiskGuardian_unbounded_pre_fix (started 03:05:11Z, cap 2m)
+FAIL   soak_disk/MC_SoakDiskGuardian_unbounded_pre_fix (1s)
+Expected invariant ResponseWithinDeadline with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakDiskGuardian_unbounded_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-11 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakDiskGuardian_parent_only_pre_fix (started 03:05:12Z, cap 2m)
+FAIL   soak_disk/MC_SoakDiskGuardian_parent_only_pre_fix (0s)
+Expected invariant UntrustedControlPreventsRelease with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakDiskGuardian_parent_only_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-12 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakDiskGuardian_blocking_pre_fix (started 03:05:12Z, cap 2m)
+FAIL   soak_disk/MC_SoakDiskGuardian_blocking_pre_fix (0s)
+Expected invariant ShutdownIndependentOfSync with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakDiskGuardian_blocking_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-12 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakStorageBudget_uncapped_blocks_pre_fix (started 03:05:12Z, cap 2m)
+FAIL   soak_disk/MC_SoakStorageBudget_uncapped_blocks_pre_fix (0s)
+Expected invariant WithinBudget with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakStorageBudget_uncapped_blocks_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-12 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakStorageBudget_uncapped_logs_pre_fix (started 03:05:12Z, cap 2m)
+FAIL   soak_disk/MC_SoakStorageBudget_uncapped_logs_pre_fix (0s)
+Expected invariant WithinBudget with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakStorageBudget_uncapped_logs_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-12 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_SoakStorageBudget_uncapped_history_pre_fix (started 03:05:12Z, cap 2m)
+FAIL   soak_disk/MC_SoakStorageBudget_uncapped_history_pre_fix (0s)
+Expected invariant WithinBudget with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_SoakStorageBudget_uncapped_history_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-12 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_MetricBaseline_zero_pre_fix (started 03:05:12Z, cap 2m)
+FAIL   soak_disk/MC_MetricBaseline_zero_pre_fix (0s)
+Expected invariant MissingBaselineUnavailable with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_MetricBaseline_zero_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-12 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_MetricMonotonicity_unchecked_pre_fix (started 03:05:12Z, cap 2m)
+FAIL   soak_disk/MC_MetricMonotonicity_unchecked_pre_fix (0s)
+Expected invariant DecreasingSamplesUnavailable with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_MetricMonotonicity_unchecked_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-12 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_MetricSampleValidity_unchecked_pre_fix (started 03:05:12Z, cap 2m)
+FAIL   soak_disk/MC_MetricSampleValidity_unchecked_pre_fix (0s)
+Expected invariant InvalidSamplesRejected with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_MetricSampleValidity_unchecked_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-12 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_MetricSummary_omitted_pre_fix (started 03:05:12Z, cap 2m)
+FAIL   soak_disk/MC_MetricSummary_omitted_pre_fix (0s)
+Expected invariant CollectedRequiredPublished with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_MetricSummary_omitted_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-12 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_ReserveBound_unbounded_pre_fix (started 03:05:12Z, cap 2m)
+FAIL   soak_disk/MC_ReserveBound_unbounded_pre_fix (0s)
+Expected invariant OperatingReserveHeld with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_ReserveBound_unbounded_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-12 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  soak_disk/MC_RetentionReserve_unskipped_pre_fix (started 03:05:12Z, cap 2m)
+FAIL   soak_disk/MC_RetentionReserve_unskipped_pre_fix (0s)
+Expected invariant ReserveHeld with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-soak_disk-MC_RetentionReserve_unskipped_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/soak_disk/states/26-09-17-03-05-12 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+CHECK  deploy_storage/MC_DeployStorageBound_unmetered_pre_fix (started 03:05:12Z, cap 2m)
+FAIL   deploy_storage/MC_DeployStorageBound_unmetered_pre_fix (0s)
+Expected invariant RetainedWithinPhlo with TLC exit 12, received exit 1.
+--- last 40 lines of /tmp/tlc-deploy_storage-MC_DeployStorageBound_unmetered_pre_fix.log ---
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+Exception in thread "main" util.Assert$TLCRuntimeException: TLC could not make a directory /case/repo/formal/tlaplus/deploy_storage/states/26-09-17-03-05-12 for the disk files it needs to write.
+	at util.Assert.check(Assert.java:91)
+	at util.FileUtil.makeMetaDir(FileUtil.java:255)
+	at tlc2.TLC.handleParameters(TLC.java:958)
+	at tlc2.TLC.main(TLC.java:246)
+--- end log ---
+FAILED: 74 config(s) did not verify — 0 cap timeout(s), 74 violation-or-error(s).

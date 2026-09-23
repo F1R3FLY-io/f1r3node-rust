@@ -1,6 +1,8 @@
 # CbC Evidence: block-storage/src/rust/dag/soak_snapshot.rs
 
-The capture claim remains pending. Local tests do not discharge the claim or qualify a live adapter.
+The combined package records current source hashes and scoped verification results. Both node claims remain pending named maintainer acceptance.
+
+Model proofs and finite Rust correspondence retain the limits stated in the package. This record does not qualify a live campaign.
 
 ```json
 {
@@ -36,6 +38,7 @@ The capture claim remains pending. Local tests do not discharge the claim or qua
   "waiver": null,
   "verified_at": "2026-09-23T16:55:28Z",
   "previous_record": {
+    "artifact": "block-storage/src/rust/dag/soak_snapshot.rs",
     "path": "docs/cbc-evidence/block-storage-src-rust-dag-soak-snapshot-rs.md",
     "sha256": "5f8a8ab786bb31cecf3cef9ea653fbceda0e10db7d1b6a23381bab569d39820f",
     "commit": "03d7f1b27544b2c5a93b664d8684b24ea16cf3e9"

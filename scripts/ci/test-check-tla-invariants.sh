@@ -74,6 +74,10 @@ if [[ "$config" == "${TEST_TLC_TARGET:-}" ]]; then
         wrong-invariant) invariant=TypeOK ;;
         tool-error) printf 'Error: The configuration could not be parsed.\n'; exit 1 ;;
         wrong-exit) printf 'Error: Invariant %s is violated.\n' "$invariant"; exit 1 ;;
+        no-trace)
+            printf 'Error: Invariant %s is violated.\n' "$invariant"
+            printf 'Error: The behavior up to this point is:\n'
+            exit 12 ;;
         timeout) exit 124 ;;
         violate) invariant=Baseline ;;
     esac
@@ -222,8 +226,9 @@ done
 checked >"$WORK/full"
 run_gate gate-pr || fail 'The PR-tier gate failed with the fixture.'
 checked >"$WORK/pr"
-for config in "$ROOT"/formal/tlaplus/node_observation/MC_*.cfg; do
-    entry="node_observation/$(basename "$config" .cfg)"
+for config in "$ROOT"/formal/tlaplus/casper_soak/MC_CasperSoakHarness*.cfg \
+    "$ROOT"/formal/tlaplus/node_observation/MC_*.cfg; do
+    entry="$(basename "$(dirname "$config")")/$(basename "$config" .cfg)"
     for tier in full pr; do
         grep -Fxq "$entry" "$WORK/$tier" || fail "The $tier tier omits $entry."
     done
@@ -289,6 +294,14 @@ if run_gate gate; then
 fi
 grep -q 'not registered in NEGATIVE_CONTROLS' "$WORK/run.log" ||
     fail 'The gate failed for a reason other than the unregistered control.'
+rm -f "$planted"
+planted="$tla/casper_soak/MC_CasperSoakHarness_planted_unsafe.cfg"
+cp "$tla/casper_soak/MC_CasperSoakHarness_identity_unsafe.cfg" "$planted"
+if run_gate gate; then
+    fail 'The gate accepted an unregistered Casper unsafe configuration.'
+fi
+grep -q 'not registered in NEGATIVE_CONTROLS' "$WORK/run.log" ||
+    fail 'The gate failed for a reason other than the unregistered Casper control.'
 rm -f "$planted"
 for family in ObserverSession BoundedCapture; do
     planted="$tla/node_observation/MC_${family}_planted_unsafe.cfg"

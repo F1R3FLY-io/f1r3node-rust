@@ -87,10 +87,10 @@ build_rocq_project() {
         coq_makefile -f _CoqProject -o "$makefile"
         make -f "$makefile" -j1
         coqchk -Q theories "$namespace" "$namespace.MainTheorem" \
-            >"/tmp/${project}-coqchk.log" 2>&1
+            >"/tmp/${namespace}-coqchk.log" 2>&1
     )
 
-    grep -q "Modules were successfully checked" "/tmp/${project}-coqchk.log"
+    grep -q "Modules were successfully checked" "/tmp/${namespace}-coqchk.log"
 }
 
 check_assumptions() {
@@ -141,7 +141,7 @@ run_rocq_checks() {
         "$REPO_ROOT/formal/rocq/node_authority/theories/"
 
     build_rocq_project node_observation NodeObservation
-    check_assumptions node_observation NodeObservation 14 \
+    check_assumptions node_observation NodeObservation 25 \
         observer_challenges_unique \
         observer_replay_refused \
         observer_counter_exhaustion_refused \
@@ -155,7 +155,31 @@ run_rocq_checks() {
         capture_prefix_roundtrip \
         capture_prefix_sound \
         capture_guard_order \
-        capture_detached
+        capture_detached \
+        observer_path_admission \
+        observer_peer_admission \
+        observer_cleanup_preserves_replacement \
+        observer_shutdown_before_exit \
+        observer_write_before_deadline \
+        capture_lock_deadline \
+        capture_complete_metadata \
+        capture_complete_requested_bodies \
+        capture_canonical_record_injective \
+        capture_scratch_preserves_production \
+        capture_scratch_preserves_sibling
+
+    ! grep -rnE "^[[:space:]]*(Axioms?|Admitted|Parameters?|Conjectures?)\b" \
+        "$REPO_ROOT/formal/rocq/node_observation/b11/theories/"
+    build_rocq_project node_observation/b11 NodeObservationB11
+    check_assumptions node_observation/b11 NodeObservationB11 8 \
+        canonical_integer_roundtrip \
+        canonical_metadata_roundtrip \
+        canonical_snapshot_roundtrip \
+        canonical_metadata_injective \
+        canonical_snapshot_injective \
+        canonical_ordered_parents_preserved \
+        canonical_availability_distinct \
+        canonical_collection_permutation
 
     build_rocq_project node_authority NodeAuthority
     check_assumptions node_authority NodeAuthority 15 \

@@ -1,6 +1,8 @@
 # CbC Evidence: formal/tlaplus/node_observation/MC_BoundedCapture_admission_unsafe.tla
 
-The approved reconciliation artifact remains pending.
+The combined package records current source hashes and scoped verification results. Both node claims remain pending named maintainer acceptance.
+
+Model proofs and finite Rust correspondence retain the limits stated in the package. This record does not qualify a live campaign.
 
 ```json
 {
@@ -36,6 +38,7 @@ The approved reconciliation artifact remains pending.
   "waiver": null,
   "verified_at": "2026-09-23T16:55:28Z",
   "previous_record": {
+    "artifact": "formal/tlaplus/node_observation/MC_BoundedCapture_admission_unsafe.tla",
     "path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-admission-unsafe-tla.md",
     "sha256": "a7fac00fb0b8806d51e638e208d565d3a08db7ffd6c35b5a86d5e5c847351020",
     "commit": "03d7f1b27544b2c5a93b664d8684b24ea16cf3e9"

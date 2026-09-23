@@ -1,6 +1,8 @@
 # CbC Evidence: formal/rocq/node_observation/theories/MainTheorem.v
 
-The approved verification artifact is pending implementation and verification.
+The combined package records current source hashes and scoped verification results. Both node claims remain pending named maintainer acceptance.
+
+Model proofs and finite Rust correspondence retain the limits stated in the package. This record does not qualify a live campaign.
 
 ```json
 {
@@ -10,7 +12,7 @@ The approved verification artifact is pending implementation and verification.
     "commit": "78d696ea6780ca72105d9b35d2266b0329d777ed",
     "commit_is_base": true,
     "working_tree": true,
-    "sha256": "f5dc4c1423be9953c9a948df5eee294fcf2049d0942f178578ba334d3bf5e13f"
+    "sha256": "5d356d683cb9ebb55d0a80bd205f07c2cfcf203d15d3ae14322c828a44e87140"
   },
   "claim": "docs/claims/casper-node-observation.md",
   "claim_ids": [
@@ -38,6 +40,7 @@ The approved verification artifact is pending implementation and verification.
   "waiver": null,
   "verified_at": "2026-09-23T16:55:28Z",
   "previous_record": {
+    "artifact": "formal/rocq/node_observation/theories/MainTheorem.v",
     "path": "docs/cbc-evidence/formal-rocq-node-observation-theories-MainTheorem-v.md",
     "sha256": "d5f6fb50b735ab5c1416804228ffb09e41ce24904cc5f5658148d8d84dd9833f",
     "commit": "03d7f1b27544b2c5a93b664d8684b24ea16cf3e9"

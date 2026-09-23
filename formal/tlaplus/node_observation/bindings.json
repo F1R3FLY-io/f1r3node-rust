@@ -41,7 +41,7 @@
         {
           "property": 3,
           "invariants": [],
-          "coverage": "rust-tests-only",
+          "coverage": "construction-and-rust-tests",
           "tests": [
             {
               "source": "node/tests/soak_observer.rs",
@@ -50,9 +50,15 @@
             {
               "source": "node/tests/soak_observer.rs",
               "name": "duplicate_observer_does_not_remove_the_active_socket"
+            },
+            {
+              "source": "node/src/rust/soak_observer.rs",
+              "name": "rust::soak_observer::linux::tests::directory_admission_matches_all_leaf_permission_bits"
             }
           ],
-          "theorems": [],
+          "theorems": [
+            "observer_path_admission"
+          ],
           "harnesses": []
         },
         {
@@ -60,7 +66,7 @@
           "invariants": [
             "BoundIdentity"
           ],
-          "coverage": "bounded-model-and-rust-tests",
+          "coverage": "bounded-model-construction-and-rust-tests",
           "tests": [
             {
               "source": "node/tests/soak_observer.rs",
@@ -69,9 +75,15 @@
             {
               "source": "node/tests/soak_observer.rs",
               "name": "a_different_process_cannot_receive_the_handshake"
+            },
+            {
+              "source": "node/src/rust/soak_observer.rs",
+              "name": "rust::soak_observer::linux::tests::peer_admission_rejects_each_identity_mismatch_before_hello"
             }
           ],
-          "theorems": [],
+          "theorems": [
+            "observer_peer_admission"
+          ],
           "harnesses": []
         },
         {
@@ -177,11 +189,16 @@
             {
               "source": "node/tests/soak_observer.rs",
               "name": "session_budget_stops_only_the_observer"
+            },
+            {
+              "source": "node/src/rust/soak_observer.rs",
+              "name": "rust::soak_observer::linux::tests::expired_write_emits_no_frame"
             }
           ],
           "theorems": [
             "observer_counter_exhaustion_refused",
-            "observer_checked_allocation_valid"
+            "observer_checked_allocation_valid",
+            "observer_write_before_deadline"
           ],
           "harnesses": []
         },
@@ -205,7 +222,7 @@
         {
           "property": 9,
           "invariants": [],
-          "coverage": "rust-tests-only",
+          "coverage": "construction-and-rust-tests",
           "tests": [
             {
               "source": "node/tests/soak_observer.rs",
@@ -218,9 +235,20 @@
             {
               "source": "node/tests/soak_observer.rs",
               "name": "dropping_the_owner_cancels_a_pending_session"
+            },
+            {
+              "source": "node/src/rust/soak_observer.rs",
+              "name": "rust::soak_observer::linux::tests::cleanup_requires_both_socket_identity_fields"
+            },
+            {
+              "source": "node/tests/soak_observer.rs",
+              "name": "awaited_stop_releases_a_pending_session_and_its_socket"
             }
           ],
-          "theorems": [],
+          "theorems": [
+            "observer_cleanup_preserves_replacement",
+            "observer_shutdown_before_exit"
+          ],
           "harnesses": []
         },
         {
@@ -285,23 +313,26 @@
             {
               "source": "shared/src/rust/store/soak_snapshot.rs",
               "name": "check_limit_is_the_comparison",
-              "verified": true
+              "verified": true,
+              "evidence": "docs/cbc-evidence/runs/casper-node-claim-gate-38e576041-01/report.json"
             },
             {
               "source": "shared/src/rust/store/soak_snapshot.rs",
               "name": "charge_record_never_exceeds_limits_and_fails_atomically",
-              "verified": true
+              "verified": true,
+              "evidence": "docs/cbc-evidence/runs/casper-node-claim-gate-38e576041-01/report.json"
             },
             {
               "source": "shared/src/rust/store/soak_snapshot.rs",
               "name": "charge_operation_never_exceeds_limit_and_fails_atomically",
-              "verified": true
+              "verified": true,
+              "evidence": "docs/cbc-evidence/runs/casper-node-claim-gate-38e576041-01/report.json"
             },
             {
               "source": "block-storage/src/rust/key_value_block_store.rs",
               "name": "decode_limits_validate_iff_all_positive",
-              "verified": false,
-              "status": "authored-not-executed"
+              "verified": true,
+              "evidence": "docs/cbc-evidence/runs/casper-node-claim-gate-38e576041-01/report.json"
             }
           ]
         },
@@ -319,7 +350,8 @@
             }
           ],
           "theorems": [
-            "capture_guard_order"
+            "capture_guard_order",
+            "capture_lock_deadline"
           ],
           "harnesses": []
         },
@@ -407,17 +439,26 @@
             {
               "source": "shared/src/rust/store/soak_snapshot.rs",
               "name": "length_prefix_roundtrip",
-              "verified": true
+              "verified": true,
+              "evidence": "docs/cbc-evidence/runs/casper-node-claim-gate-38e576041-01/report.json"
             },
             {
               "source": "shared/src/rust/store/soak_snapshot.rs",
               "name": "length_prefix_accepts_only_exact_declaration",
-              "verified": true
+              "verified": true,
+              "evidence": "docs/cbc-evidence/runs/casper-node-claim-gate-38e576041-01/report.json"
             },
             {
               "source": "shared/src/rust/store/soak_snapshot.rs",
               "name": "short_raw_is_rejected",
-              "verified": true
+              "verified": true,
+              "evidence": "docs/cbc-evidence/runs/casper-node-claim-gate-38e576041-01/report.json"
+            },
+            {
+              "source": "block-storage/src/rust/key_value_block_store.rs",
+              "name": "compressed_input_preflight_is_exact",
+              "verified": true,
+              "evidence": "docs/cbc-evidence/runs/casper-node-claim-gate-38e576041-01/report.json"
             }
           ]
         },
@@ -513,7 +554,7 @@
           "invariants": [
             "CompleteRows"
           ],
-          "coverage": "bounded-model-and-rust-tests",
+          "coverage": "bounded-model-construction-and-rust-tests",
           "tests": [
             {
               "source": "block-storage/tests/soak_snapshot.rs",
@@ -533,7 +574,10 @@
               "kind": "bisimilarity-oracle"
             }
           ],
-          "theorems": [],
+          "theorems": [
+            "capture_complete_metadata",
+            "capture_complete_requested_bodies"
+          ],
           "harnesses": []
         },
         {
@@ -561,7 +605,7 @@
         {
           "property": 11,
           "invariants": [],
-          "coverage": "rust-tests-only",
+          "coverage": "construction-and-executable-wire-correspondence",
           "tests": [
             {
               "source": "block-storage/tests/soak_snapshot.rs",
@@ -574,15 +618,45 @@
             {
               "source": "block-storage/tests/soak_snapshot.rs",
               "name": "canonical_output_has_an_exact_byte_bound"
+            },
+            {
+              "source": "block-storage/tests/soak_snapshot.rs",
+              "name": "canonical_fields_round_trip_through_an_independent_reader"
+            },
+            {
+              "source": "block-storage/src/rust/dag/soak_snapshot/canonical_wire_tests.rs",
+              "name": "rust::dag::soak_snapshot::canonical_wire_tests::canonical_wire_field_coverage"
+            },
+            {
+              "source": "block-storage/src/rust/dag/soak_snapshot/canonical_wire_tests.rs",
+              "name": "rust::dag::soak_snapshot::canonical_wire_tests::canonical_collections_ignore_insertion_order"
             }
           ],
-          "theorems": [],
-          "harnesses": []
+          "theorems": [
+            "NodeObservationB11.MainTheorem.canonical_integer_roundtrip",
+            "NodeObservationB11.MainTheorem.canonical_metadata_roundtrip",
+            "NodeObservationB11.MainTheorem.canonical_snapshot_roundtrip",
+            "NodeObservationB11.MainTheorem.canonical_metadata_injective",
+            "NodeObservationB11.MainTheorem.canonical_snapshot_injective",
+            "NodeObservationB11.MainTheorem.canonical_ordered_parents_preserved",
+            "NodeObservationB11.MainTheorem.canonical_availability_distinct",
+            "NodeObservationB11.MainTheorem.canonical_collection_permutation"
+          ],
+          "harnesses": [],
+          "construction_project": "formal/rocq/node_observation/b11",
+          "wire_correspondence": {
+            "driver": "scripts/ci/check-node-canonical-wire.sh",
+            "export_via": "scripts/ci/check-node-observation-bindings.sh",
+            "verify_job": "rocq-build",
+            "cases": 75,
+            "rejection_controls": 6,
+            "machine_checked_refinement": false
+          }
         },
         {
           "property": 12,
           "invariants": [],
-          "coverage": "rust-tests-only",
+          "coverage": "construction-and-rust-tests",
           "tests": [
             {
               "source": "block-storage/tests/soak_snapshot.rs",
@@ -593,7 +667,10 @@
               "name": "scratch_block_stores_use_captured_bytes_and_are_independent"
             }
           ],
-          "theorems": [],
+          "theorems": [
+            "capture_scratch_preserves_production",
+            "capture_scratch_preserves_sibling"
+          ],
           "harnesses": []
         },
         {

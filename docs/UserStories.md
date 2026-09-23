@@ -41,6 +41,23 @@ This document captures user stories that drive feature development. User stories
 
 ---
 
+
+#### US-006: Verify the Casper soak harness
+
+> As a **release engineer**, I want **to verify source-bound Casper harness behavior** so that **I can reject incomplete or misleading experiment evidence**.
+
+**Implemented in:** EPIC-017
+**User Flow:** FLOW-001
+
+**Status:** In Progress
+
+**Acceptance Criteria:**
+- [ ] The harness preserves immutable identities and failure history.
+- [ ] The workflow retains exact control verdicts and driver evidence.
+- [ ] Claim verification remains separate from node observations.
+
+---
+
 ## Planned Stories
 
 #### US-005: Congruent Casper test infrastructure

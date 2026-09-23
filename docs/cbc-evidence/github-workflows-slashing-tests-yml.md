@@ -1,5 +1,19 @@
 # CbC Evidence: Bounded Pull-Request Formal Checks
 
+## Current implementation checkpoint
+
+The [restored claim](../claims/soak-formal-gate.md) records the approved workflow implementation and local-only finalized-floor obligation revision.
+
+The [implementation log](../work-logs/soak-formal-gate-implementation.md) records local checks. The [hosted renewal log](../work-logs/soak-formal-gate-hosted-renewal.md) records successful run `35473280388` and renewed bounded bindings.
+
+The independent governance claim remains pending. The user approved conditional protection changes, enforcement tests, and final acceptance after verification.
+
+The [authorization record](../work-logs/soak-formal-gate-authorization.md) preserves that approval. Baseline availability, actual rule activation, enforcement results, and evidence-backed acceptance remain open.
+
+The historical results below retain their original source identities. They do not discharge the new workflow.
+
+## Historical evidence
+
 **Claim:** [CLAIM-SOAK-GATE-001](https://github.com/F1R3FLY-io/f1r3node-rust/blob/2388a8eedf33d07018f0630bced51a6e054ba439/docs/claims/soak-formal-gate.md)
 
 **Status:** Pending. Cycle G0/B2 passes local verification. Hosted execution and required-check enforcement remain open.

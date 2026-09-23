@@ -1,0 +1,1 @@
+PASS: The missing guardian progress stopped the active iteration and preserved failure before fixture release.

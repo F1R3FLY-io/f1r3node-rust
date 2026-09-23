@@ -1,0 +1,11 @@
+{
+  "status": "pending-binding-evidence-verified",
+  "nested_references": 1476,
+  "platforms": 2,
+  "tests_per_platform": 7,
+  "cases_per_platform": 68,
+  "invocations_per_platform": 73,
+  "models": 4,
+  "claim_discharge": "pending",
+  "node_execution": false
+}

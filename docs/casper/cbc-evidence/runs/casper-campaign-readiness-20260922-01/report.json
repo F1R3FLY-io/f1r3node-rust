@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "task": "TASK-017-12",
+  "status": "blocked-before-workload-pinning",
+  "evidence_kind": "read_only_readiness_review",
+  "observed_at": "2026-09-22T20:04:20.607920+00:00",
+  "harness_revision": "18f85fa279979c3ef3da18417a1b217f0b8bad4c",
+  "source_digests": {
+    "scripts/ci/resolve-dev-candidate.sh": "556e1cb3ab73f3711eaf1efd0082480cb7ee979e23b017c4ddb90f665671b0ff",
+    "scripts/casper-soak/src/profiles/authority_finality.rs": "18a1a18cebe632dc5f87483784e08a00c11f3870116f3a3b54766bbf68c45e47",
+    "scripts/casper-soak/src/bin/casper-authority-finality.rs": "93caa3d4c8909d8c8befe4ec3a1b551ca470d75fe39bf14ba7a45100310d1718",
+    ".github/workflows/merge-recovery-soak.yml": "0e61d97222f962d973e9bb5322e6f70d3d302c7936be0ac59e05efafc86c9ece"
+  },
+  "candidate_resolution": {
+    "requested_revision": "b465313a2d490d24b6f2e55447bd81efc0912e10",
+    "registry_query": "https://hub.docker.com/v2/repositories/f1r3flyindustries/f1r3fly-rust/tags?name=gb465313a&page_size=50",
+    "matching_tags": 0,
+    "status": "no-published-candidate-tag",
+    "ci_run_id": 35677113121,
+    "ci_jobs": [
+      {
+        "conclusion": "failure",
+        "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/35677113121/job/106588410307",
+        "name": "Heavy Pipeline / Integration Tests (amd64-subprocess)"
+      },
+      {
+        "conclusion": "failure",
+        "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/35677113121/job/106598438577",
+        "name": "Integration Tests (amd64)"
+      },
+      {
+        "conclusion": "skipped",
+        "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/35677113121/job/106598439729",
+        "name": "Release Docker Image"
+      }
+    ],
+    "failed_test": "integration-tests/test/tests/custom/test_validator_lifecycle.py::test_validator_lifecycle@custom",
+    "failure_summary": "The grow-and-shrink phase timed out without a terminal verdict for one of three deploys. This does not establish deploy loss.",
+    "unpublished_build_artifacts_available": true,
+    "existing_candidate_pins_preserved": true
+  },
+  "node_prerequisite": {
+    "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/pull/447",
+    "merged": false,
+    "number": 447,
+    "revision": "de93425ee9cbc72a6509de21b0eb009a07eb48a7",
+    "state": "open"
+  },
+  "workload": {
+    "required_profile": "authority_finality",
+    "live_adapter_implemented": false,
+    "guard_reason": "live_adapter_unqualified",
+    "node_task": "TASK-019-3",
+    "source_acceptance_task": "TASK-019-4",
+    "executable_workload_pins_complete": false,
+    "live_qualification": "pending"
+  },
+  "deployment": {
+    "campaign_activation_variable_names_observed": [],
+    "variable_query": "repos/F1R3FLY-io/f1r3node-rust/actions/variables",
+    "object_and_supervisor_status": "prepared-not-deployed",
+    "storage_preparation_report": "docs/casper/cbc-evidence/runs/casper-campaign-storage-preparation-20260922-01/report.json"
+  },
+  "execution": {
+    "workflow_dispatched": false,
+    "runner_allocations_used": 0,
+    "preflight_run_id": null,
+    "baseline_run_ids": [],
+    "baseline_verdict": "not-run",
+    "claim_acceptance_changed": false
+  },
+  "bulk_evidence": {
+    "target/task-017-12-readiness-20260922-01/dev.json": "6fdab8129d109d1ae91a260fcc18a6cca0c9f9b1ee2a28c8afd8789b6c514d5e",
+    "target/task-017-12-readiness-20260922-01/jobs.json": "55168adff6626cf0aa53b7505f198d3e6baec1fd819f4f7abd090ff65b806720",
+    "target/task-017-12-readiness-20260922-01/pr447.json": "7a9f070f25723e737555c854f7a1c39689ce9a4cd44c68b4664ba0666b8afa39",
+    "target/task-017-12-readiness-20260922-01/tags.json": "0595424161ea863805d9b92c0e52d7aa1e3c46ec58cd8f0d6933759006a5fb74"
+  },
+  "required_next_steps": [
+    "Complete and accept the node authority observer under EPIC-019.",
+    "Implement and qualify the live authority/finality harness adapter.",
+    "Resolve published candidate images after the required CI checks pass.",
+    "Pin executable workloads and qualify the deployed campaign controls.",
+    "Run one preflight before both full 86400-second baselines."
+  ]
+}

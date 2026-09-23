@@ -1,6 +1,8 @@
 # CbC Evidence: scripts/ci/test-check-tla-invariants.sh
 
-The approved verification artifact remains pending.
+The combined package records current source hashes and scoped verification results. Both node claims remain pending named maintainer acceptance.
+
+Model proofs and finite Rust correspondence retain the limits stated in the package. This record does not qualify a live campaign.
 
 ```json
 {
@@ -10,7 +12,7 @@ The approved verification artifact remains pending.
     "commit": "78d696ea6780ca72105d9b35d2266b0329d777ed",
     "commit_is_base": true,
     "working_tree": true,
-    "sha256": "014e198bb983a934ec32335b2181bb00105382dd96ca28250885aabaed59cb7d"
+    "sha256": "d95437ab2d4cdf003b21213fc382771941b00fe36ac2f442f4d9279425dcd726"
   },
   "claim": "docs/claims/casper-node-observation.md",
   "claim_ids": [
@@ -38,6 +40,7 @@ The approved verification artifact remains pending.
   "waiver": null,
   "verified_at": "2026-09-23T16:55:28Z",
   "previous_record": {
+    "artifact": "scripts/ci/test-check-tla-invariants.sh",
     "path": "docs/cbc-evidence/scripts-ci-test-check-tla-invariants-sh.md",
     "sha256": "ace5dcfd2a56dc14cf87a55067228b58f79d0c02afa35ce15333898316b15d62",
     "commit": "03d7f1b27544b2c5a93b664d8684b24ea16cf3e9"

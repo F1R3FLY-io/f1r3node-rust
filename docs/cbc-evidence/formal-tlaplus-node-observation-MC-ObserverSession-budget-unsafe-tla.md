@@ -1,6 +1,8 @@
 # CbC Evidence: formal/tlaplus/node_observation/MC_ObserverSession_budget_unsafe.tla
 
-The approved reconciliation artifact remains pending.
+The combined package records current source hashes and scoped verification results. Both node claims remain pending named maintainer acceptance.
+
+Model proofs and finite Rust correspondence retain the limits stated in the package. This record does not qualify a live campaign.
 
 ```json
 {
@@ -36,6 +38,7 @@ The approved reconciliation artifact remains pending.
   "waiver": null,
   "verified_at": "2026-09-23T16:55:28Z",
   "previous_record": {
+    "artifact": "formal/tlaplus/node_observation/MC_ObserverSession_budget_unsafe.tla",
     "path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-ObserverSession-budget-unsafe-tla.md",
     "sha256": "596b870777d5c8b8c48d4158ce9f4e679f92a01cdeb63a8c98d7932be15d9977",
     "commit": "03d7f1b27544b2c5a93b664d8684b24ea16cf3e9"

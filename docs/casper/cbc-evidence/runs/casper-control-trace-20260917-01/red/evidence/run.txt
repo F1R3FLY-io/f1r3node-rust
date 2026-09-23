@@ -1,0 +1,1 @@
+FAIL: The gate accepted carrier_index/MC_CarrierIndex_dag_first_pre_fix with result no-trace.

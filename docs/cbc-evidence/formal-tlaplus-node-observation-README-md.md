@@ -68,6 +68,7 @@ Previous acceptance applies only to its recorded source revision.
     "docs/claims/casper-node-authority-evaluation.md": "5956cff23feb6e32e175976019d4e483dc7755bc7a9040b6f2d35a0bebf758fe"
   },
   "previous_record": {
+    "artifact": "formal/tlaplus/node_observation/README.md",
     "path": "docs/cbc-evidence/formal-tlaplus-node-observation-README-md.md",
     "sha256": "1977a6c9e48c3ae7a0a71ce03cae18efc6317eec1f14b485d08c0b62000c1557",
     "commit": "d11acabcbd27b564eab7398778169cf3990762d1"

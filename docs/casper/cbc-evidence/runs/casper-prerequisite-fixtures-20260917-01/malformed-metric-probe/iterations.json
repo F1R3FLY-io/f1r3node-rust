@@ -1,0 +1,9 @@
+[
+  {
+    "iteration": 1,
+    "provider": "docker",
+    "ok": true,
+    "duration_s": 60,
+    "metrics": {}
+  }
+]

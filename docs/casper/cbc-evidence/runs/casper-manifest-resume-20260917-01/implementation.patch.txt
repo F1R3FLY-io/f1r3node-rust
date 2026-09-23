@@ -1,0 +1,447 @@
+diff --git a/scripts/bench/test-run-merge-recovery-soak.sh b/scripts/bench/test-run-merge-recovery-soak.sh
+index 10f15fc2a..90cf387d7 100755
+--- a/scripts/bench/test-run-merge-recovery-soak.sh
++++ b/scripts/bench/test-run-merge-recovery-soak.sh
+@@ -339,4 +339,5 @@ for state_case in valid executable duplicate unknown missing overflow; do
+ 	[ ! -e "$TMP/state-child.pid" ]
+ done
+ 
+-printf 'soak driver tests passed (fail-closed + deadline + disk-band + six restart-state cases)\n'
++python3 "$ROOT/scripts/bench/test_casper_soak_manifest.py" -v
++printf 'soak driver tests passed (fail-closed + deadline + disk-band + restart state + manifest identity)\n'
+diff --git a/scripts/run-merge-recovery-soak.sh b/scripts/run-merge-recovery-soak.sh
+index 848aa2b31..af31f2f37 100755
+--- a/scripts/run-merge-recovery-soak.sh
++++ b/scripts/run-merge-recovery-soak.sh
+@@ -16,6 +16,11 @@ if ! [[ "$DURATION_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
+ 	exit 2
+ fi
+ PROVIDERS=(docker subprocess)
++SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++CASPER_MANIFEST_DIGEST=""
++if [ -n "${SOAK_MANIFEST_PATH:-}" ] || [ -e "$OUTPUT_DIR/.casper-manifest.json" ] || [ -L "$OUTPUT_DIR/.casper-manifest.json" ]; then
++	CASPER_MANIFEST_DIGEST="$(python3 "$SCRIPT_DIR/bench/casper_soak_manifest.py" "${SOAK_MANIFEST_PATH:-}" "$OUTPUT_DIR")" || exit 2
++fi
+ 
+ # A soak is run as one or more segments so results can be published part-way
+ # through: a single 22h invocation cannot be interrupted to publish, but three
+@@ -26,6 +31,7 @@ PROVIDERS=(docker subprocess)
+ # directories and silently discard its metrics.
+ mkdir -p "$OUTPUT_DIR"
+ STATE_FILE="$OUTPUT_DIR/.soak-state"
++MANIFEST_BOUND=0
+ INFLIGHT_ITERATION=0
+ INFLIGHT_BENCHMARK=0
+ if [ -e "$STATE_FILE" ] || [ -L "$STATE_FILE" ]; then
+@@ -38,7 +44,7 @@ if [ -e "$STATE_FILE" ] || [ -L "$STATE_FILE" ]; then
+ 		saved_key="${saved_line%%=*}"
+ 		saved_value="${saved_line#*=}"
+ 		case "$saved_key" in
+-			STARTED_AT|ITERATIONS|FAILURES|SEGMENT|BENCH_SEGMENTS|BENCH_FAILURES|INFLIGHT_ITERATION|INFLIGHT_BENCHMARK) ;;
++			STARTED_AT|ITERATIONS|FAILURES|SEGMENT|BENCH_SEGMENTS|BENCH_FAILURES|INFLIGHT_ITERATION|INFLIGHT_BENCHMARK|MANIFEST_BOUND) ;;
+ 			*) printf 'The saved soak state contains an unknown field.\n' >&2; exit 2 ;;
+ 		esac
+ 		if [[ " $saved_keys " == *" $saved_key "* ]] ||
+@@ -59,6 +65,12 @@ if [ -e "$STATE_FILE" ] || [ -L "$STATE_FILE" ]; then
+ 		printf 'The saved start time and segment must be positive.\n' >&2
+ 		exit 2
+ 	fi
++	if { [ "$MANIFEST_BOUND" -ne 0 ] && [ "$MANIFEST_BOUND" -ne 1 ]; } ||
++		{ [ "$MANIFEST_BOUND" -eq 1 ] && [ -z "$CASPER_MANIFEST_DIGEST" ]; } ||
++		{ [ "$MANIFEST_BOUND" -eq 0 ] && [ -n "$CASPER_MANIFEST_DIGEST" ]; }; then
++		printf 'The saved manifest binding is missing or invalid.\n' >&2
++		exit 2
++	fi
+ 	SEGMENT="$((SEGMENT + 1))"
+ 	printf 'resuming soak: segment %s, %s iterations so far, started %s\n' \
+ 		"$SEGMENT" "$ITERATIONS" "$(date -d "@$STARTED_AT" '+%F %T %Z' 2>/dev/null || date -r "$STARTED_AT")"
+@@ -112,7 +124,11 @@ if [ -f "$OUTPUT_DIR/early-exit.txt" ]; then
+ 	DEADLINE=0
+ fi
+ 
+-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++if [ -n "$CASPER_MANIFEST_DIGEST" ] && [ "$(date +%s)" -lt "$DEADLINE" ]; then
++	printf 'Casper profile dispatch remains blocked until its adapter is qualified.\n' >&2
++	exit 2
++fi
++
+ # Harness telemetry roots. Subprocess sessions write monitor artifacts and
+ # node logs under .subprocess-data/; docker sessions write them under
+ # log-archive/ (the provider's host-visible per-session dir —
+@@ -765,6 +781,9 @@ if [ -n "$NODE_REPO_DIR" ] && [ -f "$NODE_REPO_DIR/node/Cargo.toml" ]; then
+ fi
+ 
+ emit_soak_state() {
++	if [ -n "$CASPER_MANIFEST_DIGEST" ]; then
++		printf 'MANIFEST_BOUND=1\n'
++	fi
+ 	printf 'STARTED_AT=%s\n' "$STARTED_AT"
+ 	printf 'ITERATIONS=%s\n' "$ITERATIONS"
+ 	printf 'INFLIGHT_ITERATION=%s\n' "$INFLIGHT_ITERATION"
+@@ -783,6 +802,7 @@ persist_soak_state() {
+ 		--arg target_ref "$TARGET_REF" \
+ 		--arg target_sha "$TARGET_SHA" \
+ 		--arg trigger_source "$TRIGGER_SOURCE" \
++		--arg manifest_digest "$CASPER_MANIFEST_DIGEST" \
+ 		--argjson slot_delay "$SLOT_DELAY_SECONDS" \
+ 		--arg version "$VERSION" \
+ 		--argjson started_at "$STARTED_AT" \
+@@ -793,6 +813,7 @@ persist_soak_state() {
+ 		--argjson bench_failures "$BENCH_FAILURES" \
+ 		'{target_ref: $target_ref, target_sha: $target_sha,
+       trigger_source: $trigger_source, slot_delay_seconds: $slot_delay,
++      manifest_digest: (if $manifest_digest == "" then null else $manifest_digest end),
+       version: $version, started_at: $started_at,
+       requested_seconds: $requested_seconds, iterations: $iterations,
+       failures: $failures, bench_segments: $bench_segments,
+diff --git a/scripts/bench/casper_soak_manifest.py b/scripts/bench/casper_soak_manifest.py
+new file mode 100644
+index 000000000..6fefaf578
+--- /dev/null
++++ b/scripts/bench/casper_soak_manifest.py
+@@ -0,0 +1,152 @@
++import hashlib
++import json
++import math
++import os
++from pathlib import Path, PurePosixPath
++import re
++import stat
++import sys
++import tempfile
++
++
++MAX_BYTES = 1024 * 1024
++REQUIRED_FIELDS = (
++    "schema_version", "run_id", "phase", "candidate_id", "node_revision",
++    "node_binary_digest", "image_digest", "harness_revision", "external_harness_revision",
++    "source_digests", "configuration_digest", "profile_id", "profile_digest",
++    "fixture_digest", "expectation_digest", "seed", "provider", "policy_variant",
++    "evidence_kind", "capabilities", "tool_versions", "bounds", "assumptions",
++    "resource_limits", "required_scenarios", "deadline", "merge_gate",
++)
++
++
++def require(condition, message):
++    if not condition:
++        raise ValueError(message)
++
++
++def unique_object(pairs):
++    result = {}
++    for key, value in pairs:
++        require(key not in result, "A JSON object has duplicate fields.")
++        result[key] = value
++    return result
++
++
++def invalid_constant(value):
++    raise ValueError("Nonfinite JSON numbers are not permitted.")
++
++
++def finite_number(value):
++    number = float(value)
++    require(math.isfinite(number), "Nonfinite JSON numbers are not permitted.")
++    return number
++
++
++def read_regular(path):
++    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
++    with os.fdopen(descriptor, "rb") as stream:
++        metadata = os.fstat(stream.fileno())
++        require(stat.S_ISREG(metadata.st_mode), "A manifest record is not a regular file.")
++        require(metadata.st_size <= MAX_BYTES, "A manifest record exceeds the size limit.")
++        data = stream.read(MAX_BYTES + 1)
++    require(len(data) <= MAX_BYTES, "A manifest record exceeds the size limit.")
++    return data
++
++
++def parse(data):
++    value = json.loads(data.decode("utf-8"), object_pairs_hook=unique_object, parse_constant=invalid_constant, parse_float=finite_number)
++    require(isinstance(value, dict), "A manifest record must be a JSON object.")
++    return value
++
++
++def validate(manifest):
++    require(all(key in manifest for key in REQUIRED_FIELDS), "The manifest lacks required fields.")
++    require(type(manifest["schema_version"]) is int and manifest["schema_version"] == 1, "The manifest schema version is unsupported.")
++    for key in ("run_id", "candidate_id", "profile_id", "policy_variant"):
++        require(isinstance(manifest[key], str) and bool(manifest[key].strip()), "A manifest identity is missing.")
++    for key in ("node_revision", "harness_revision", "external_harness_revision"):
++        require(isinstance(manifest[key], str) and re.fullmatch(r"[0-9a-f]{40}", manifest[key]), "A repository revision is invalid.")
++    for key in ("node_binary_digest", "configuration_digest", "profile_digest", "fixture_digest", "expectation_digest"):
++        require(isinstance(manifest[key], str) and re.fullmatch(r"[0-9a-f]{64}", manifest[key]), "A manifest digest is invalid.")
++    require(manifest["phase"] in ("pre_pr216_merge", "post_pr216_merge"), "The manifest phase is invalid.")
++    require(manifest["provider"] in ("docker", "subprocess"), "The manifest provider is invalid.")
++    require(manifest["evidence_kind"] in ("synthetic_fixture", "node_observation"), "The evidence kind is invalid.")
++    if manifest["provider"] == "docker":
++        require(isinstance(manifest["image_digest"], str) and re.fullmatch(r"[0-9a-f]{64}", manifest["image_digest"]), "The Docker image digest is invalid.")
++    else:
++        require(manifest["image_digest"] is None and isinstance(manifest.get("image_digest_reason"), str) and bool(manifest["image_digest_reason"].strip()), "A subprocess manifest needs an explicit image reason.")
++    require(isinstance(manifest["seed"], str) and re.fullmatch(r"0|[1-9][0-9]*", manifest["seed"]), "The manifest seed is invalid.")
++    for key in ("source_digests", "capabilities", "tool_versions", "bounds", "resource_limits", "deadline"):
++        require(isinstance(manifest[key], dict) and bool(manifest[key]), "A required manifest record is empty or invalid.")
++    for path, digest in manifest["source_digests"].items():
++        relative = PurePosixPath(path)
++        require(not relative.is_absolute() and ".." not in relative.parts and str(relative) == path and path != "." and "\\" not in path, "A source path is invalid.")
++        require(isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest), "A source digest is invalid.")
++    for key in ("assumptions", "required_scenarios"):
++        values = manifest[key]
++        require(isinstance(values, list) and all(isinstance(value, str) and bool(value.strip()) for value in values), "A required manifest list is invalid.")
++    scenarios = manifest["required_scenarios"]
++    require(bool(scenarios) and len(set(scenarios)) == len(scenarios), "Required scenarios must be nonempty and unique.")
++    if manifest["phase"] == "pre_pr216_merge":
++        require(manifest["merge_gate"] is None, "A pre-merge manifest cannot assert a post-merge gate.")
++    else:
++        require(isinstance(manifest["merge_gate"], dict), "The post-merge gate is missing.")
++
++
++def bind(manifest_path, output):
++    require(bool(manifest_path), "A bound run requires its original manifest.")
++    data = read_regular(manifest_path)
++    manifest = parse(data)
++    validate(manifest)
++    output = Path(output)
++    require(not output.is_symlink(), "The run directory cannot be a symbolic link.")
++    bound = output / ".casper-manifest.json"
++    digest = hashlib.sha256(data).hexdigest()
++    if bound.exists() or bound.is_symlink():
++        require(read_regular(bound) == data, "The immutable manifest changed on resume.")
++        checkpoint = output / ".soak-checkpoint-state.json"
++        state = output / ".soak-state"
++        has_state = state.exists() or state.is_symlink()
++        has_checkpoint = checkpoint.exists() or checkpoint.is_symlink()
++        require(has_state == has_checkpoint, "The saved state and checkpoint must both exist.")
++        if has_checkpoint:
++            require(parse(read_regular(checkpoint)).get("manifest_digest") == digest, "The checkpoint manifest identity differs.")
++        else:
++            require(all(path.name == bound.name for path in output.iterdir()), "An incomplete run cannot discard its existing artifacts.")
++        return digest
++    require(not output.exists() or not any(output.iterdir()), "An existing run cannot acquire a new manifest identity.")
++    output.mkdir(parents=True, exist_ok=True)
++    descriptor, name = tempfile.mkstemp(prefix=".casper-manifest-", dir=output)
++    try:
++        with os.fdopen(descriptor, "wb") as stream:
++            stream.write(data)
++            stream.flush()
++            os.fsync(stream.fileno())
++        os.chmod(name, 0o444)
++        try:
++            os.link(name, bound)
++        except FileExistsError:
++            require(read_regular(bound) == data, "Another manifest already owns the run directory.")
++        directory = os.open(output, os.O_RDONLY | os.O_DIRECTORY)
++        try:
++            os.fsync(directory)
++        finally:
++            os.close(directory)
++    finally:
++        os.unlink(name)
++    return digest
++
++
++def main():
++    try:
++        require(len(sys.argv) == 3, "Usage: casper_soak_manifest.py MANIFEST OUTPUT_DIRECTORY")
++        print(bind(sys.argv[1], sys.argv[2]))
++        return 0
++    except (OSError, ValueError, RecursionError):
++        print("The manifest is invalid or differs from the retained run identity.", file=sys.stderr)
++        return 2
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/scripts/bench/test_casper_soak_manifest.py b/scripts/bench/test_casper_soak_manifest.py
+new file mode 100644
+index 000000000..e36cc45e1
+--- /dev/null
++++ b/scripts/bench/test_casper_soak_manifest.py
+@@ -0,0 +1,187 @@
++import copy
++import hashlib
++import json
++import os
++from pathlib import Path
++import subprocess
++import tempfile
++import unittest
++
++
++ROOT = Path(__file__).resolve().parents[2]
++
++
++def fixture_manifest():
++    return {
++        "schema_version": 1,
++        "run_id": "fixture-run",
++        "phase": "pre_pr216_merge",
++        "candidate_id": "fixture-candidate",
++        "node_revision": "1" * 40,
++        "node_binary_digest": "2" * 64,
++        "image_digest": "3" * 64,
++        "harness_revision": "4" * 40,
++        "external_harness_revision": "5" * 40,
++        "source_digests": {"fixture.py": "6" * 64},
++        "configuration_digest": "7" * 64,
++        "profile_id": "authority-finality",
++        "profile_digest": "8" * 64,
++        "fixture_digest": "9" * 64,
++        "expectation_digest": "a" * 64,
++        "seed": "1",
++        "provider": "docker",
++        "policy_variant": "baseline",
++        "evidence_kind": "synthetic_fixture",
++        "capabilities": {"paired-evaluation": {"status": "unknown"}},
++        "tool_versions": {"fixture": "1"},
++        "bounds": {"scenarios": 2, "observations": 3},
++        "assumptions": ["Synthetic process boundary."],
++        "resource_limits": {"children": 1, "timeout_seconds": 1},
++        "required_scenarios": ["fixture-scenario"],
++        "deadline": {"clock_id": "wall", "epoch_seconds": "1"},
++        "merge_gate": None,
++    }
++
++
++def retained_tree(root):
++    return {
++        str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
++        for path in root.rglob("*")
++        if path.is_file()
++    }
++
++
++class ManifestDriverTests(unittest.TestCase):
++    def test_invalid_manifests_do_not_create_run_state(self):
++        manifest = fixture_manifest()
++        invalid = {
++            "missing": b"{}",
++            "array": b"[]",
++            "duplicate": b'{"schema_version":1,"schema_version":1}',
++            "nested-duplicate": b'{"bounds":{"children":1,"children":2}}',
++            "nan": json.dumps(manifest).replace('"scenarios": 2', '"scenarios": NaN').encode(),
++            "overflow": json.dumps(manifest).replace('"scenarios": 2', '"scenarios": 1e999').encode(),
++            "utf8": b"\xff",
++            "oversize": b" " * (1024 * 1024 + 1),
++            "boolean-schema": json.dumps({**manifest, "schema_version": True}).encode(),
++            "traversal": json.dumps({**manifest, "source_digests": {"../source.py": "a" * 64}}).encode(),
++            "duplicate-scenarios": json.dumps({**manifest, "required_scenarios": ["same", "same"]}).encode(),
++            "symbolic-link": json.dumps(manifest).encode(),
++            "fifo": b"",
++            "directory": b"",
++        }
++        with tempfile.TemporaryDirectory() as temporary:
++            root = Path(temporary)
++            for case, data in invalid.items():
++                with self.subTest(case=case):
++                    source = root / (case + ".json")
++                    output = root / (case + "-output")
++                    if case == "symbolic-link":
++                        target = root / "target.json"
++                        target.write_bytes(data)
++                        source.symlink_to(target)
++                    elif case == "fifo":
++                        os.mkfifo(source)
++                    elif case == "directory":
++                        source.mkdir()
++                    else:
++                        source.write_bytes(data)
++                    environment = os.environ.copy()
++                    environment.update({
++                        "SOAK_DURATION_SECONDS": "1",
++                        "SOAK_DEADLINE_EPOCH": "1",
++                        "SYSTEM_INTEGRATION_DIR": str(root / "suite"),
++                        "SOAK_OUTPUT_DIR": str(output),
++                        "SOAK_MANIFEST_PATH": str(source),
++                    })
++                    result = subprocess.run(
++                        ["bash", str(ROOT / "scripts/run-merge-recovery-soak.sh")],
++                        env=environment, capture_output=True, text=True, timeout=5,
++                    )
++                    self.assertEqual(result.returncode, 2, result.stderr)
++                    self.assertFalse(output.exists())
++                    self.assertFalse((root / "suite").exists())
++
++    def test_resume_requires_the_original_manifest(self):
++        with tempfile.TemporaryDirectory() as temporary:
++            root = Path(temporary)
++            manifest_path = root / "manifest.json"
++            output = root / "output"
++            suite = root / "suite"
++            suite.mkdir()
++            manifest = fixture_manifest()
++            manifest_path.write_text(json.dumps(manifest))
++            environment = os.environ.copy()
++            environment.update({
++                "SOAK_DURATION_SECONDS": "1",
++                "SOAK_DEADLINE_EPOCH": "1",
++                "SYSTEM_INTEGRATION_DIR": str(suite),
++                "SOAK_OUTPUT_DIR": str(output),
++                "SOAK_MANIFEST_PATH": str(manifest_path),
++                "SOAK_RSS_CEILING_MB": "0",
++                "SOAK_HOST_FREE_FLOOR_MB": "0",
++                "SOAK_DISK_FREE_FLOOR_MB": "0",
++                "SOAK_RUN_BENCHMARKS": "false",
++            })
++
++            def run():
++                return subprocess.run(
++                    ["bash", str(ROOT / "scripts/run-merge-recovery-soak.sh")],
++                    env=environment, capture_output=True, text=True, timeout=15,
++                )
++
++            first = run()
++            self.assertEqual(first.returncode, 0, first.stderr)
++            matching = run()
++            self.assertEqual(matching.returncode, 0, matching.stderr)
++            self.assertIn("SEGMENT=2\n", (output / ".soak-state").read_text())
++            before = retained_tree(output)
++            for field, value in manifest.items():
++                with self.subTest(field=field):
++                    changed = copy.deepcopy(manifest)
++                    if field.endswith("_revision") or field.endswith("_digest"):
++                        changed[field] = "b" + value[1:]
++                    elif field == "seed":
++                        changed[field] = "2"
++                    elif isinstance(value, str):
++                        changed[field] = value + "-changed"
++                    elif field == "source_digests":
++                        changed[field] = {"fixture.py": "b" * 64}
++                    elif isinstance(value, dict):
++                        changed[field]["changed"] = True
++                    elif isinstance(value, list):
++                        changed[field].append("changed")
++                    else:
++                        changed[field] = "changed"
++                    manifest_path.write_text(json.dumps(changed))
++                    result = run()
++                    self.assertEqual(result.returncode, 2, f"Changed {field} was accepted: {result.stdout}")
++                    self.assertEqual(retained_tree(output), before)
++            manifest_path.write_text(json.dumps(manifest))
++            del environment["SOAK_MANIFEST_PATH"]
++            result = run()
++            self.assertEqual(result.returncode, 2, "Resume dropped the manifest requirement.")
++            self.assertEqual(retained_tree(output), before)
++            self.assertEqual(list(output.glob("iteration-*")), [])
++            bound = output / ".casper-manifest.json"
++            bound.unlink()
++            before = retained_tree(output)
++            result = run()
++            self.assertEqual(result.returncode, 2, "A missing seal removed the manifest requirement.")
++            self.assertEqual(retained_tree(output), before)
++            bound.write_bytes(manifest_path.read_bytes())
++            environment["SOAK_MANIFEST_PATH"] = str(manifest_path)
++            for missing in (".soak-state", ".soak-checkpoint-state.json"):
++                with self.subTest(missing=missing):
++                    path = output / missing
++                    data = path.read_bytes()
++                    path.unlink()
++                    before = retained_tree(output)
++                    result = run()
++                    self.assertEqual(result.returncode, 2, "An incomplete checkpoint was accepted.")
++                    self.assertEqual(retained_tree(output), before)
++                    path.write_bytes(data)
++
++
++if __name__ == "__main__":
++    unittest.main()

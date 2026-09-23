@@ -1,0 +1,153 @@
+diff --git a/scripts/bench/test-run-merge-recovery-soak.sh b/scripts/bench/test-run-merge-recovery-soak.sh
+index 7785c9448..10f15fc2a 100755
+--- a/scripts/bench/test-run-merge-recovery-soak.sh
++++ b/scripts/bench/test-run-merge-recovery-soak.sh
+@@ -312 +312,31 @@ test ! -e "$TMP/fake-poetry-3.pid"
+-printf 'soak driver tests passed (fail-closed + deadline + disk-band paths)\n'
++for state_case in valid executable duplicate unknown missing overflow; do
++	state_output="$TMP/state-$state_case"
++	mkdir -p "$state_output"
++	printf 'STARTED_AT=1\nITERATIONS=0\nFAILURES=0\nSEGMENT=1\n' >"$state_output/.soak-state"
++	case "$state_case" in
++		executable) printf 'printf executed >"$OUTPUT_DIR/executed"\nexit 2\n' >>"$state_output/.soak-state" ;;
++		duplicate) printf 'ITERATIONS=0\n' >>"$state_output/.soak-state" ;;
++		unknown) printf 'UNRECOGNIZED=0\n' >>"$state_output/.soak-state" ;;
++		missing) printf 'STARTED_AT=1\nITERATIONS=0\nFAILURES=0\n' >"$state_output/.soak-state" ;;
++		overflow) printf 'STARTED_AT=1\nITERATIONS=0\nFAILURES=0\nSEGMENT=99999999999999999999\n' >"$state_output/.soak-state" ;;
++	esac
++	cp "$state_output/.soak-state" "$state_output/before.txt"
++	status=0
++	timeout --signal=TERM --kill-after=2 15 env PATH="$TMP/bin:$PATH" \
++		FAKE_POETRY_PID_FILE="$TMP/state-child.pid" \
++		SOAK_DURATION_SECONDS=1 SYSTEM_INTEGRATION_DIR="$TMP/system-integration" \
++		SOAK_OUTPUT_DIR="$state_output" SOAK_RSS_CEILING_MB=0 \
++		SOAK_HOST_FREE_FLOOR_MB=0 SOAK_DISK_FREE_FLOOR_MB=0 \
++		"$ROOT/scripts/run-merge-recovery-soak.sh" >"$TMP/state-$state_case.log" 2>&1 || status=$?
++	if [ "$state_case" = valid ]; then
++		[ "$status" -eq 0 ] || { cat "$TMP/state-$state_case.log" >&2; exit 1; }
++		grep -q '^SEGMENT=2$' "$state_output/.soak-state"
++	else
++		[ "$status" -eq 2 ] || { printf 'Invalid state accepted: %s (exit %s)\n' "$state_case" "$status" >&2; exit 1; }
++		[ ! -e "$state_output/executed" ] || { printf 'Saved state executed shell input.\n' >&2; exit 1; }
++		cmp "$state_output/before.txt" "$state_output/.soak-state"
++	fi
++	[ ! -e "$TMP/state-child.pid" ]
++done
++
++printf 'soak driver tests passed (fail-closed + deadline + disk-band + six restart-state cases)\n'
+diff --git a/scripts/ci/check-tla-invariants.sh b/scripts/ci/check-tla-invariants.sh
+index 3392ed44a..afd7dc8f1 100755
+--- a/scripts/ci/check-tla-invariants.sh
++++ b/scripts/ci/check-tla-invariants.sh
+@@ -137,0 +138,2 @@ fi
++POST_FIX_CONFIGS+=(casper_soak/MC_CasperSoakHarness)
++
+@@ -161,2 +163,2 @@ fi
+-if [[ "$SOAK_PR" == true && -z "$TIMEOUT_CMD" ]]; then
+-    echo "ERROR: The soak PR tier requires timeout or gtimeout." >&2
++if [[ -z "$TIMEOUT_CMD" ]]; then
++    echo "ERROR: The registered Casper controls require timeout or gtimeout." >&2
+@@ -234,0 +237,10 @@ NEGATIVE_CONTROLS=(
++    casper_soak/MC_CasperSoakHarness_identity_unsafe:IdentityPinned
++    casper_soak/MC_CasperSoakHarness_resume_unsafe:ResumePreservesHistory
++    casper_soak/MC_CasperSoakHarness_failure_unsafe:ProductFailureMonotone
++    casper_soak/MC_CasperSoakHarness_evidence_unsafe:PassRequiresEvidence
++    casper_soak/MC_CasperSoakHarness_stop_unsafe:StopPreventsLaunch
++    casper_soak/MC_CasperSoakHarness_cleanup_unsafe:EvidenceBeforeCleanup
++    casper_soak/MC_CasperSoakHarness_policy_unsafe:PolicyIsolation
++    casper_soak/MC_CasperSoakHarness_samples_unsafe:MissingIsUnknown
++    casper_soak/MC_CasperSoakHarness_merge_unsafe:PostMergeGate
++    casper_soak/MC_CasperSoakHarness_control_unsafe:ControlVerdictExact
+@@ -242 +254 @@ NEGATIVE_CONTROLS=(
+-REGISTERED_CONTROL_AREAS=(carrier_index deploy_storage soak_disk)
++REGISTERED_CONTROL_AREAS=(carrier_index deploy_storage soak_disk casper_soak)
+@@ -246 +258 @@ for entry in "${POST_FIX_CONFIGS[@]}"; do
+-    for cfg in "$TLA_ROOT/$entry"_*_pre_fix.cfg; do
++    for cfg in "$TLA_ROOT/$entry"_*_pre_fix.cfg "$TLA_ROOT/$entry"_*_unsafe.cfg; do
+@@ -272,2 +284,16 @@ for check in "${POST_FIX_CONFIGS[@]}" "${NEGATIVE_CONTROLS[@]}"; do
+-    if [[ ! -f "$dir/$cfg.tla" || ! -f "$dir/$cfg.cfg" ]]; then
+-        echo "FAIL   $entry (missing $cfg.tla or $cfg.cfg in $dir — registered config not found)"
++    model="$cfg"
++    workers="$TLC_WORKERS"
++    check_timeout="$TLC_PER_CONFIG_TIMEOUT"
++    check_timeout_cmd="$TIMEOUT_CMD"
++    java_options="${JAVA_TOOL_OPTIONS:-}"
++    tlc_args=()
++    if [[ "${entry%%/*}" == casper_soak ]]; then
++        model=CasperSoakHarness
++        workers=1
++        check_timeout=2m
++        check_timeout_cmd="${TIMEOUT_CMD%"$TLC_PER_CONFIG_TIMEOUT"}2m"
++        java_options+=" -Xmx512m"
++        tlc_args=(-seed 1)
++    fi
++    if [[ ! -f "$dir/$model.tla" || ! -f "$dir/$cfg.cfg" ]]; then
++        echo "FAIL   $entry (missing $model.tla or $cfg.cfg in $dir — registered config not found)"
+@@ -279 +305 @@ for check in "${POST_FIX_CONFIGS[@]}" "${NEGATIVE_CONTROLS[@]}"; do
+-    echo "CHECK  $entry (started $(date -u +%H:%M:%SZ), cap $TLC_PER_CONFIG_TIMEOUT)"
++    echo "CHECK  $entry (started $(date -u +%H:%M:%SZ), cap $check_timeout)"
+@@ -281 +307 @@ for check in "${POST_FIX_CONFIGS[@]}" "${NEGATIVE_CONTROLS[@]}"; do
+-    (cd "$dir" && $TIMEOUT_CMD $TLC_CMD -workers "$TLC_WORKERS" -config "$cfg.cfg" "$cfg.tla") >"$log" 2>&1
++    (cd "$dir" && JAVA_TOOL_OPTIONS="$java_options" $check_timeout_cmd $TLC_CMD -workers "$workers" "${tlc_args[@]}" -config "$cfg.cfg" "$model.tla") >"$log" 2>&1
+@@ -303 +329 @@ for check in "${POST_FIX_CONFIGS[@]}" "${NEGATIVE_CONTROLS[@]}"; do
+-        echo "TIMEOUT $entry after $elapsed (cap $TLC_PER_CONFIG_TIMEOUT) — treat as failure; profile or split the config"
++        echo "TIMEOUT $entry after $elapsed (cap $check_timeout) — treat as failure; profile or split the config"
+diff --git a/scripts/ci/test-check-tla-invariants.sh b/scripts/ci/test-check-tla-invariants.sh
+index fe0038a4c..37ad4147d 100755
+--- a/scripts/ci/test-check-tla-invariants.sh
++++ b/scripts/ci/test-check-tla-invariants.sh
+@@ -221,0 +222,6 @@ checked >"$WORK/pr"
++for config in "$ROOT"/formal/tlaplus/casper_soak/MC_CasperSoakHarness*.cfg; do
++    entry="casper_soak/$(basename "$config" .cfg)"
++    for tier in full pr; do
++        grep -Fxq "$entry" "$WORK/$tier" || fail "The $tier tier omits $entry."
++    done
++done
+@@ -285,0 +292,8 @@ rm -f "$planted"
++planted="$tla/casper_soak/MC_CasperSoakHarness_planted_unsafe.cfg"
++cp "$tla/casper_soak/MC_CasperSoakHarness_identity_unsafe.cfg" "$planted"
++if run_gate gate; then
++    fail 'The gate accepted an unregistered Casper unsafe configuration.'
++fi
++grep -q 'not registered in NEGATIVE_CONTROLS' "$WORK/run.log" ||
++    fail 'The gate failed for a reason other than the unregistered Casper control.'
++rm -f "$planted"
+diff --git a/scripts/run-merge-recovery-soak.sh b/scripts/run-merge-recovery-soak.sh
+index 786723395..848aa2b31 100755
+--- a/scripts/run-merge-recovery-soak.sh
++++ b/scripts/run-merge-recovery-soak.sh
+@@ -31,3 +31,31 @@ INFLIGHT_BENCHMARK=0
+-if [ -f "$STATE_FILE" ]; then
+-	# shellcheck source=/dev/null
+-	. "$STATE_FILE"
++if [ -e "$STATE_FILE" ] || [ -L "$STATE_FILE" ]; then
++	if [ ! -f "$STATE_FILE" ] || [ -L "$STATE_FILE" ] || [ "$(wc -c <"$STATE_FILE")" -gt 4096 ]; then
++		printf 'The saved soak state must be a regular file of at most 4096 bytes.\n' >&2
++		exit 2
++	fi
++	saved_keys=""
++	while IFS= read -r saved_line || [ -n "$saved_line" ]; do
++		saved_key="${saved_line%%=*}"
++		saved_value="${saved_line#*=}"
++		case "$saved_key" in
++			STARTED_AT|ITERATIONS|FAILURES|SEGMENT|BENCH_SEGMENTS|BENCH_FAILURES|INFLIGHT_ITERATION|INFLIGHT_BENCHMARK) ;;
++			*) printf 'The saved soak state contains an unknown field.\n' >&2; exit 2 ;;
++		esac
++		if [[ " $saved_keys " == *" $saved_key "* ]] ||
++			! [[ "$saved_value" =~ ^(0|[1-9][0-9]*)$ ]] || [ "${#saved_value}" -gt 18 ]; then
++			printf 'The saved soak state contains a duplicate or invalid numeric field.\n' >&2
++			exit 2
++		fi
++		saved_keys+=" $saved_key"
++		printf -v "$saved_key" '%s' "$saved_value"
++	done <"$STATE_FILE"
++	for saved_key in STARTED_AT ITERATIONS FAILURES SEGMENT; do
++		if [[ " $saved_keys " != *" $saved_key "* ]]; then
++			printf 'The saved soak state lacks a required field.\n' >&2
++			exit 2
++		fi
++	done
++	if [ "$STARTED_AT" -lt 1 ] || [ "$SEGMENT" -lt 1 ]; then
++		printf 'The saved start time and segment must be positive.\n' >&2
++		exit 2
++	fi

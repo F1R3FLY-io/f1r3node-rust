@@ -1,0 +1,133 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 37 and seed 1 with 1 worker on 16 cores with 455MB heap and 64MB offheap memory [pid: 48411] (Mac OS X 27.0 aarch64, Homebrew 26.0.2.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file [WORKSPACE]/formal/tlaplus/casper_soak/CasperSoakHarness.tla
+Parsing file /private/var/folders/4n/_7jzrd1x0p5fdmqhkm9cbmmr0000gq/T/Naturals.tla
+Parsing file /private/var/folders/4n/_7jzrd1x0p5fdmqhkm9cbmmr0000gq/T/FiniteSets.tla
+Parsing file /private/var/folders/4n/_7jzrd1x0p5fdmqhkm9cbmmr0000gq/T/Sequences.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module CasperSoakHarness
+Starting... (2026-09-16 22:27:21)
+Computing initial states...
+Computed 2 initial states...
+Computed 4 initial states...
+Finished computing initial states: 8 distinct states generated at 2026-09-16 22:27:22.
+Error: Invariant EvidenceBeforeCleanup is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+s = [ phase |-> "pre",
+  stage |-> "new",
+  pinned |-> candidate1,
+  identity |-> candidate1,
+  mergeVerified |-> FALSE,
+  admitted |-> FALSE,
+  segment |-> 1,
+  history |-> {},
+  recorded |-> {},
+  failureSeen |-> FALSE,
+  failed |-> FALSE,
+  stopSeen |-> FALSE,
+  lateLaunch |-> FALSE,
+  captured |-> FALSE,
+  evidenceComplete |-> FALSE,
+  deleted |-> FALSE,
+  baselinePolicy |-> "baseline",
+  experimentSeen |-> FALSE,
+  samplePresent |-> TRUE,
+  measurement |-> "unknown",
+  samplesComplete |-> TRUE,
+  controlChecked |-> FALSE,
+  controlExit |-> 0,
+  controlMatches |-> FALSE,
+  controlAccepted |-> FALSE,
+  verdict |-> "pending" ]
+
+State 2: <Admit line 26, col 3 to line 28, col 56 of module CasperSoakHarness>
+s = [ phase |-> "pre",
+  stage |-> "idle",
+  pinned |-> candidate1,
+  identity |-> candidate1,
+  mergeVerified |-> FALSE,
+  admitted |-> TRUE,
+  segment |-> 1,
+  history |-> {},
+  recorded |-> {},
+  failureSeen |-> FALSE,
+  failed |-> FALSE,
+  stopSeen |-> FALSE,
+  lateLaunch |-> FALSE,
+  captured |-> FALSE,
+  evidenceComplete |-> FALSE,
+  deleted |-> FALSE,
+  baselinePolicy |-> "baseline",
+  experimentSeen |-> FALSE,
+  samplePresent |-> TRUE,
+  measurement |-> "unknown",
+  samplesComplete |-> TRUE,
+  controlChecked |-> FALSE,
+  controlExit |-> 0,
+  controlMatches |-> FALSE,
+  controlAccepted |-> FALSE,
+  verdict |-> "pending" ]
+
+State 3: <Stop line 72, col 3 to line 74, col 79 of module CasperSoakHarness>
+s = [ phase |-> "pre",
+  stage |-> "stopped",
+  pinned |-> candidate1,
+  identity |-> candidate1,
+  mergeVerified |-> FALSE,
+  admitted |-> TRUE,
+  segment |-> 1,
+  history |-> {},
+  recorded |-> {},
+  failureSeen |-> FALSE,
+  failed |-> FALSE,
+  stopSeen |-> TRUE,
+  lateLaunch |-> FALSE,
+  captured |-> FALSE,
+  evidenceComplete |-> FALSE,
+  deleted |-> FALSE,
+  baselinePolicy |-> "baseline",
+  experimentSeen |-> FALSE,
+  samplePresent |-> TRUE,
+  measurement |-> "unknown",
+  samplesComplete |-> TRUE,
+  controlChecked |-> FALSE,
+  controlExit |-> 0,
+  controlMatches |-> FALSE,
+  controlAccepted |-> FALSE,
+  verdict |-> "pending" ]
+
+State 4: <Cleanup line 94, col 3 to line 96, col 55 of module CasperSoakHarness>
+s = [ phase |-> "pre",
+  stage |-> "done",
+  pinned |-> candidate1,
+  identity |-> candidate1,
+  mergeVerified |-> FALSE,
+  admitted |-> TRUE,
+  segment |-> 1,
+  history |-> {},
+  recorded |-> {},
+  failureSeen |-> FALSE,
+  failed |-> FALSE,
+  stopSeen |-> TRUE,
+  lateLaunch |-> FALSE,
+  captured |-> FALSE,
+  evidenceComplete |-> FALSE,
+  deleted |-> TRUE,
+  baselinePolicy |-> "baseline",
+  experimentSeen |-> FALSE,
+  samplePresent |-> TRUE,
+  measurement |-> "unknown",
+  samplesComplete |-> TRUE,
+  controlChecked |-> FALSE,
+  controlExit |-> 0,
+  controlMatches |-> FALSE,
+  controlAccepted |-> FALSE,
+  verdict |-> "pending" ]
+
+150 states generated, 130 distinct states found, 103 states left on queue.
+The depth of the complete state graph search is 4.
+The average outdegree of the complete state graph is 5 (minimum is 0, the maximum 12 and the 95th percentile is 12).
+Finished in 00s at (2026-09-16 22:27:22)

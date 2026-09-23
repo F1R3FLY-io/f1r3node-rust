@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "status": "checkout-change-reviewed",
+  "report_sha256": "35d6e8b46c7ad5f87060881047649658adc07b5e57347b9baf859d5a95a30631",
+  "captured_start_revision": "7509c831c881ae6bbd284a5f2121da0ce7ae5605",
+  "later_observed_revision": "5cc4e665b52f0cc5279ec577ac5075b5b9897caf",
+  "checkout_changed_during_review": true,
+  "incoming_scope": "documentation-only",
+  "incoming_paths": [
+    "docs/ToDos.md",
+    "docs/cbc-evidence/github-workflows-slashing-tests-yml.md",
+    "docs/claims/soak-formal-gate.md",
+    "docs/plans/casper-ratified-soak-2026-09-16.md",
+    "docs/work-logs/soak-formal-gate-authorization.md",
+    "docs/work-logs/soak-formal-gate-hosted-renewal.md"
+  ],
+  "scoped_executable_sources_unchanged_between_revisions": true,
+  "original_revision_guard_exit": 1,
+  "checkout_revision_at_each_earlier_command_recorded": false,
+  "earlier_tests_reexecuted_for_later_revision": false,
+  "earlier_results_relabelled": false,
+  "admission_manifest_harness_revision": "7509c831c881ae6bbd284a5f2121da0ce7ae5605",
+  "source_revision_interpretation": "The source revision identifies matching source bytes. It does not establish the checkout revision at every earlier command.",
+  "limits": [
+    "Source snapshots and executable hashes retain the identities of the tested artifacts.",
+    "The admission probes retain their original request identities and controlled inputs.",
+    "No earlier result becomes execution of the later checkout.",
+    "The new branch policy allows stacking only after acceptance of the EPIC-017 handoff.",
+    "Recovery qualification and post-merge claim discharge still require the actual PR #216 merge."
+  ]
+}

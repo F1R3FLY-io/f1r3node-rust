@@ -1,0 +1,6 @@
+docs/cbc-evidence/github-workflows-merge-recovery-soak-yml.md
+docs/cbc-evidence/github-workflows-slashing-tests-yml.md
+docs/cbc-evidence/scripts-bench-test-run-merge-recovery-soak-sh.md
+docs/cbc-evidence/scripts-bench-write-soak-summary-sh.md
+docs/cbc-evidence/scripts-ci-check-tla-invariants-sh.md
+docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md

@@ -1,0 +1,1 @@
+host_protection_breach: The host guardian exited during benchmark execution. Workload termination is unconfirmed.

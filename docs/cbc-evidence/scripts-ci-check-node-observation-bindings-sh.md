@@ -1,6 +1,8 @@
 # CbC Evidence: scripts/ci/check-node-observation-bindings.sh
 
-The approved binding driver remains pending implementation and verification.
+The combined package records current source hashes and scoped verification results. Both node claims remain pending named maintainer acceptance.
+
+Model proofs and finite Rust correspondence retain the limits stated in the package. This record does not qualify a live campaign.
 
 ```json
 {
@@ -10,11 +12,12 @@ The approved binding driver remains pending implementation and verification.
     "commit": "78d696ea6780ca72105d9b35d2266b0329d777ed",
     "commit_is_base": true,
     "working_tree": true,
-    "sha256": "947937192ae8761330cd8b36b437edcd9e3256a53803477e7c076f9cd1c1e5ca"
+    "sha256": "8cbf5dfcdc843f91d01b7a89ccc96f4fa56f5ae6c61ded2eabeaf92edd3183f2"
   },
   "claim": "docs/claims/casper-node-observation.md",
   "claim_ids": [
-    "CLAIM-CASPER-NODE-OBSERVATION-001"
+    "CLAIM-CASPER-NODE-OBSERVATION-001",
+    "CLAIM-CASPER-NODE-OBSERVATION-002"
   ],
   "claim_digests": {
     "docs/claims/casper-node-observation.md": "b865e33216b210a8915662e6ebd4f91d2b397a68f8f4dcf31fcd306aa8ca6c38"
@@ -36,6 +39,7 @@ The approved binding driver remains pending implementation and verification.
   "waiver": null,
   "verified_at": "2026-09-23T16:55:28Z",
   "previous_record": {
+    "artifact": "scripts/ci/check-node-observation-bindings.sh",
     "path": "docs/cbc-evidence/scripts-ci-check-node-observation-bindings-sh.md",
     "sha256": "6fff5e00458d52f5485a973c9d5e90e5a09387e22107a4e875f94731b8784456",
     "commit": "03d7f1b27544b2c5a93b664d8684b24ea16cf3e9"

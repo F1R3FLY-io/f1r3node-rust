@@ -824,6 +824,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "casper-soak"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "eyre",
+ "libc",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "zip 3.0.0",
+]
+
+[[package]]
 name = "cast"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

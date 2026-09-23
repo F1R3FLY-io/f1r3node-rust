@@ -1,0 +1,1 @@
+PASS: The driver canceled the stalled hygiene client and published failure before fixture release.

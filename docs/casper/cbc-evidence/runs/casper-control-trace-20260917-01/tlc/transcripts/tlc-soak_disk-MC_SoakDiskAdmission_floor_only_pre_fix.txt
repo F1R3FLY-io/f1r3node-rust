@@ -1,0 +1,523 @@
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 98 and seed 8853410821213251097 with 2 workers on 2 cores with 341MB heap and 64MB offheap memory [pid: 728] (Linux 6.12.76-linuxkit aarch64, Debian 17.0.20.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /case/work/formal/tlaplus/soak_disk/MC_SoakDiskAdmission_floor_only_pre_fix.tla
+Parsing file /case/work/formal/tlaplus/soak_disk/SoakDiskAdmission.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/TLC.tla
+Parsing file /tmp/Sequences.tla
+Parsing file /tmp/FiniteSets.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module SoakDiskAdmission
+Semantic processing of module MC_SoakDiskAdmission_floor_only_pre_fix
+Starting... (2026-09-17 05:08:26)
+Implied-temporal checking--satisfiability problem has 1 branches.
+Computing initial states...
+Computed 2 initial states...
+Computed 4 initial states...
+Computed 8 initial states...
+Computed 16 initial states...
+Computed 32 initial states...
+Computed 64 initial states...
+Finished computing initial states: 128 distinct states generated at 2026-09-17 05:08:26.
+Error: Invariant AdmissionRequiresBand is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ hygieneElapsed = 0
+/\ phase = "config"
+/\ attributionStarted = FALSE
+/\ cleanupFailed = FALSE
+/\ benchmarkGuardianAlive = TRUE
+/\ benchmarkFault = "none"
+/\ stopReason = "none"
+/\ guardianFresh = TRUE
+/\ benchmarkObserved = FALSE
+/\ admissionRaw = [kind |-> "missing", mib |-> 0]
+/\ retained = FALSE
+/\ sample = [mib |-> 0, known |-> FALSE]
+/\ sessionPresent = TRUE
+/\ admissionFresh = TRUE
+/\ raw = [kind |-> "missing", mib |-> 0]
+/\ interrupted = FALSE
+/\ guardianAlive = TRUE
+/\ benchmark = FALSE
+/\ hygieneTermSent = FALSE
+/\ hygieneKillSent = FALSE
+/\ free = 7000
+/\ recordTrusted = TRUE
+/\ monitorAlive = TRUE
+/\ admissionSample = [mib |-> 0, known |-> FALSE]
+/\ hygieneStalled = FALSE
+/\ dockerPresent = TRUE
+/\ producerFailed = FALSE
+/\ recordMatches = TRUE
+/\ guardian = FALSE
+/\ sessionAge = "old"
+/\ benchmarkMonitorAlive = TRUE
+/\ recordVisible = "none"
+/\ benchmarkFresh = TRUE
+/\ settingsValid = TRUE
+/\ evidence = FALSE
+/\ benchmarkInterrupted = FALSE
+/\ benchmarkSample = [mib |-> 0, known |-> FALSE]
+/\ admitted = FALSE
+/\ benchmarkCancelled = FALSE
+
+State 2: <Next line 486, col 13 to line 491, col 101 of module SoakDiskAdmission>
+/\ hygieneElapsed = 0
+/\ phase = "benchmark"
+/\ attributionStarted = FALSE
+/\ cleanupFailed = FALSE
+/\ benchmarkGuardianAlive = TRUE
+/\ benchmarkFault = "none"
+/\ stopReason = "none"
+/\ guardianFresh = TRUE
+/\ benchmarkObserved = FALSE
+/\ admissionRaw = [kind |-> "missing", mib |-> 0]
+/\ retained = FALSE
+/\ sample = [mib |-> 0, known |-> FALSE]
+/\ sessionPresent = TRUE
+/\ admissionFresh = TRUE
+/\ raw = [kind |-> "missing", mib |-> 0]
+/\ interrupted = FALSE
+/\ guardianAlive = TRUE
+/\ benchmark = FALSE
+/\ hygieneTermSent = FALSE
+/\ hygieneKillSent = FALSE
+/\ free = 7000
+/\ recordTrusted = TRUE
+/\ monitorAlive = TRUE
+/\ admissionSample = [mib |-> 0, known |-> FALSE]
+/\ hygieneStalled = FALSE
+/\ dockerPresent = TRUE
+/\ producerFailed = FALSE
+/\ recordMatches = TRUE
+/\ guardian = FALSE
+/\ sessionAge = "old"
+/\ benchmarkMonitorAlive = TRUE
+/\ recordVisible = "none"
+/\ benchmarkFresh = TRUE
+/\ settingsValid = TRUE
+/\ evidence = FALSE
+/\ benchmarkInterrupted = FALSE
+/\ benchmarkSample = [mib |-> 0, known |-> FALSE]
+/\ admitted = FALSE
+/\ benchmarkCancelled = FALSE
+
+State 3: <Next line 470, col 10 to line 470, col 98 of module SoakDiskAdmission>
+/\ hygieneElapsed = 0
+/\ phase = "guard"
+/\ attributionStarted = FALSE
+/\ cleanupFailed = FALSE
+/\ benchmarkGuardianAlive = TRUE
+/\ benchmarkFault = "none"
+/\ stopReason = "none"
+/\ guardianFresh = TRUE
+/\ benchmarkObserved = FALSE
+/\ admissionRaw = [kind |-> "missing", mib |-> 0]
+/\ retained = FALSE
+/\ sample = [mib |-> 0, known |-> FALSE]
+/\ sessionPresent = TRUE
+/\ admissionFresh = TRUE
+/\ raw = [kind |-> "missing", mib |-> 0]
+/\ interrupted = FALSE
+/\ guardianAlive = TRUE
+/\ benchmark = TRUE
+/\ hygieneTermSent = FALSE
+/\ hygieneKillSent = FALSE
+/\ free = 7000
+/\ recordTrusted = TRUE
+/\ monitorAlive = TRUE
+/\ admissionSample = [mib |-> 0, known |-> FALSE]
+/\ hygieneStalled = FALSE
+/\ dockerPresent = TRUE
+/\ producerFailed = FALSE
+/\ recordMatches = TRUE
+/\ guardian = FALSE
+/\ sessionAge = "old"
+/\ benchmarkMonitorAlive = TRUE
+/\ recordVisible = "none"
+/\ benchmarkFresh = TRUE
+/\ settingsValid = TRUE
+/\ evidence = FALSE
+/\ benchmarkInterrupted = FALSE
+/\ benchmarkSample = [mib |-> 8192, known |-> TRUE]
+/\ admitted = FALSE
+/\ benchmarkCancelled = FALSE
+
+State 4: <Next line 486, col 13 to line 491, col 101 of module SoakDiskAdmission>
+/\ hygieneElapsed = 0
+/\ phase = "probe"
+/\ attributionStarted = FALSE
+/\ cleanupFailed = FALSE
+/\ benchmarkGuardianAlive = TRUE
+/\ benchmarkFault = "none"
+/\ stopReason = "none"
+/\ guardianFresh = TRUE
+/\ benchmarkObserved = FALSE
+/\ admissionRaw = [kind |-> "missing", mib |-> 0]
+/\ retained = FALSE
+/\ sample = [mib |-> 0, known |-> FALSE]
+/\ sessionPresent = TRUE
+/\ admissionFresh = TRUE
+/\ raw = [kind |-> "missing", mib |-> 0]
+/\ interrupted = FALSE
+/\ guardianAlive = TRUE
+/\ benchmark = TRUE
+/\ hygieneTermSent = FALSE
+/\ hygieneKillSent = FALSE
+/\ free = 7000
+/\ recordTrusted = TRUE
+/\ monitorAlive = TRUE
+/\ admissionSample = [mib |-> 0, known |-> FALSE]
+/\ hygieneStalled = FALSE
+/\ dockerPresent = TRUE
+/\ producerFailed = FALSE
+/\ recordMatches = TRUE
+/\ guardian = FALSE
+/\ sessionAge = "old"
+/\ benchmarkMonitorAlive = TRUE
+/\ recordVisible = "none"
+/\ benchmarkFresh = TRUE
+/\ settingsValid = TRUE
+/\ evidence = FALSE
+/\ benchmarkInterrupted = FALSE
+/\ benchmarkSample = [mib |-> 8192, known |-> TRUE]
+/\ admitted = FALSE
+/\ benchmarkCancelled = FALSE
+
+State 5: <Next line 486, col 13 to line 491, col 101 of module SoakDiskAdmission>
+/\ hygieneElapsed = 0
+/\ phase = "boundary-decide"
+/\ attributionStarted = FALSE
+/\ cleanupFailed = FALSE
+/\ benchmarkGuardianAlive = TRUE
+/\ benchmarkFault = "none"
+/\ stopReason = "none"
+/\ guardianFresh = TRUE
+/\ benchmarkObserved = FALSE
+/\ admissionRaw = [kind |-> "missing", mib |-> 0]
+/\ retained = FALSE
+/\ sample = [mib |-> 7000, known |-> TRUE]
+/\ sessionPresent = TRUE
+/\ admissionFresh = TRUE
+/\ raw = [kind |-> "valid", mib |-> 7000]
+/\ interrupted = FALSE
+/\ guardianAlive = TRUE
+/\ benchmark = TRUE
+/\ hygieneTermSent = FALSE
+/\ hygieneKillSent = FALSE
+/\ free = 7000
+/\ recordTrusted = TRUE
+/\ monitorAlive = TRUE
+/\ admissionSample = [mib |-> 0, known |-> FALSE]
+/\ hygieneStalled = FALSE
+/\ dockerPresent = TRUE
+/\ producerFailed = FALSE
+/\ recordMatches = TRUE
+/\ guardian = FALSE
+/\ sessionAge = "old"
+/\ benchmarkMonitorAlive = TRUE
+/\ recordVisible = "none"
+/\ benchmarkFresh = TRUE
+/\ settingsValid = TRUE
+/\ evidence = FALSE
+/\ benchmarkInterrupted = FALSE
+/\ benchmarkSample = [mib |-> 8192, known |-> TRUE]
+/\ admitted = FALSE
+/\ benchmarkCancelled = FALSE
+
+State 6: <Next line 486, col 13 to line 491, col 101 of module SoakDiskAdmission>
+/\ hygieneElapsed = 0
+/\ phase = "hygiene"
+/\ attributionStarted = FALSE
+/\ cleanupFailed = FALSE
+/\ benchmarkGuardianAlive = TRUE
+/\ benchmarkFault = "none"
+/\ stopReason = "none"
+/\ guardianFresh = TRUE
+/\ benchmarkObserved = FALSE
+/\ admissionRaw = [kind |-> "missing", mib |-> 0]
+/\ retained = FALSE
+/\ sample = [mib |-> 7000, known |-> TRUE]
+/\ sessionPresent = TRUE
+/\ admissionFresh = TRUE
+/\ raw = [kind |-> "valid", mib |-> 7000]
+/\ interrupted = FALSE
+/\ guardianAlive = TRUE
+/\ benchmark = TRUE
+/\ hygieneTermSent = FALSE
+/\ hygieneKillSent = FALSE
+/\ free = 7000
+/\ recordTrusted = TRUE
+/\ monitorAlive = TRUE
+/\ admissionSample = [mib |-> 0, known |-> FALSE]
+/\ hygieneStalled = FALSE
+/\ dockerPresent = TRUE
+/\ producerFailed = FALSE
+/\ recordMatches = TRUE
+/\ guardian = FALSE
+/\ sessionAge = "old"
+/\ benchmarkMonitorAlive = TRUE
+/\ recordVisible = "none"
+/\ benchmarkFresh = TRUE
+/\ settingsValid = TRUE
+/\ evidence = FALSE
+/\ benchmarkInterrupted = FALSE
+/\ benchmarkSample = [mib |-> 8192, known |-> TRUE]
+/\ admitted = FALSE
+/\ benchmarkCancelled = FALSE
+
+State 7: <Next line 483, col 13 to line 485, col 85 of module SoakDiskAdmission>
+/\ hygieneElapsed = 0
+/\ phase = "post-guard"
+/\ attributionStarted = FALSE
+/\ cleanupFailed = FALSE
+/\ benchmarkGuardianAlive = TRUE
+/\ benchmarkFault = "none"
+/\ stopReason = "none"
+/\ guardianFresh = TRUE
+/\ benchmarkObserved = FALSE
+/\ admissionRaw = [kind |-> "missing", mib |-> 0]
+/\ retained = FALSE
+/\ sample = [mib |-> 7000, known |-> TRUE]
+/\ sessionPresent = TRUE
+/\ admissionFresh = TRUE
+/\ raw = [kind |-> "valid", mib |-> 7000]
+/\ interrupted = FALSE
+/\ guardianAlive = TRUE
+/\ benchmark = TRUE
+/\ hygieneTermSent = FALSE
+/\ hygieneKillSent = FALSE
+/\ free = 7000
+/\ recordTrusted = TRUE
+/\ monitorAlive = TRUE
+/\ admissionSample = [mib |-> 0, known |-> FALSE]
+/\ hygieneStalled = FALSE
+/\ dockerPresent = TRUE
+/\ producerFailed = FALSE
+/\ recordMatches = TRUE
+/\ guardian = FALSE
+/\ sessionAge = "old"
+/\ benchmarkMonitorAlive = TRUE
+/\ recordVisible = "none"
+/\ benchmarkFresh = TRUE
+/\ settingsValid = TRUE
+/\ evidence = FALSE
+/\ benchmarkInterrupted = FALSE
+/\ benchmarkSample = [mib |-> 8192, known |-> TRUE]
+/\ admitted = FALSE
+/\ benchmarkCancelled = FALSE
+
+State 8: <Next line 486, col 13 to line 491, col 101 of module SoakDiskAdmission>
+/\ hygieneElapsed = 0
+/\ phase = "post-probe"
+/\ attributionStarted = FALSE
+/\ cleanupFailed = FALSE
+/\ benchmarkGuardianAlive = TRUE
+/\ benchmarkFault = "none"
+/\ stopReason = "none"
+/\ guardianFresh = TRUE
+/\ benchmarkObserved = FALSE
+/\ admissionRaw = [kind |-> "missing", mib |-> 0]
+/\ retained = FALSE
+/\ sample = [mib |-> 7000, known |-> TRUE]
+/\ sessionPresent = TRUE
+/\ admissionFresh = TRUE
+/\ raw = [kind |-> "valid", mib |-> 7000]
+/\ interrupted = FALSE
+/\ guardianAlive = TRUE
+/\ benchmark = TRUE
+/\ hygieneTermSent = FALSE
+/\ hygieneKillSent = FALSE
+/\ free = 7000
+/\ recordTrusted = TRUE
+/\ monitorAlive = TRUE
+/\ admissionSample = [mib |-> 0, known |-> FALSE]
+/\ hygieneStalled = FALSE
+/\ dockerPresent = TRUE
+/\ producerFailed = FALSE
+/\ recordMatches = TRUE
+/\ guardian = FALSE
+/\ sessionAge = "old"
+/\ benchmarkMonitorAlive = TRUE
+/\ recordVisible = "none"
+/\ benchmarkFresh = TRUE
+/\ settingsValid = TRUE
+/\ evidence = FALSE
+/\ benchmarkInterrupted = FALSE
+/\ benchmarkSample = [mib |-> 8192, known |-> TRUE]
+/\ admitted = FALSE
+/\ benchmarkCancelled = FALSE
+
+State 9: <Next line 486, col 13 to line 491, col 101 of module SoakDiskAdmission>
+/\ hygieneElapsed = 0
+/\ phase = "post-decide"
+/\ attributionStarted = FALSE
+/\ cleanupFailed = FALSE
+/\ benchmarkGuardianAlive = TRUE
+/\ benchmarkFault = "none"
+/\ stopReason = "none"
+/\ guardianFresh = TRUE
+/\ benchmarkObserved = FALSE
+/\ admissionRaw = [kind |-> "missing", mib |-> 0]
+/\ retained = FALSE
+/\ sample = [mib |-> 7000, known |-> TRUE]
+/\ sessionPresent = TRUE
+/\ admissionFresh = TRUE
+/\ raw = [kind |-> "valid", mib |-> 7000]
+/\ interrupted = FALSE
+/\ guardianAlive = TRUE
+/\ benchmark = TRUE
+/\ hygieneTermSent = FALSE
+/\ hygieneKillSent = FALSE
+/\ free = 7000
+/\ recordTrusted = TRUE
+/\ monitorAlive = TRUE
+/\ admissionSample = [mib |-> 0, known |-> FALSE]
+/\ hygieneStalled = FALSE
+/\ dockerPresent = TRUE
+/\ producerFailed = FALSE
+/\ recordMatches = TRUE
+/\ guardian = FALSE
+/\ sessionAge = "old"
+/\ benchmarkMonitorAlive = TRUE
+/\ recordVisible = "none"
+/\ benchmarkFresh = TRUE
+/\ settingsValid = TRUE
+/\ evidence = FALSE
+/\ benchmarkInterrupted = FALSE
+/\ benchmarkSample = [mib |-> 8192, known |-> TRUE]
+/\ admitted = FALSE
+/\ benchmarkCancelled = FALSE
+
+State 10: <Next line 486, col 13 to line 491, col 101 of module SoakDiskAdmission>
+/\ hygieneElapsed = 0
+/\ phase = "admission-check"
+/\ attributionStarted = FALSE
+/\ cleanupFailed = FALSE
+/\ benchmarkGuardianAlive = TRUE
+/\ benchmarkFault = "none"
+/\ stopReason = "none"
+/\ guardianFresh = TRUE
+/\ benchmarkObserved = FALSE
+/\ admissionRaw = [kind |-> "missing", mib |-> 0]
+/\ retained = FALSE
+/\ sample = [mib |-> 7000, known |-> TRUE]
+/\ sessionPresent = TRUE
+/\ admissionFresh = TRUE
+/\ raw = [kind |-> "valid", mib |-> 7000]
+/\ interrupted = FALSE
+/\ guardianAlive = TRUE
+/\ benchmark = TRUE
+/\ hygieneTermSent = FALSE
+/\ hygieneKillSent = FALSE
+/\ free = 7000
+/\ recordTrusted = TRUE
+/\ monitorAlive = TRUE
+/\ admissionSample = [mib |-> 0, known |-> FALSE]
+/\ hygieneStalled = FALSE
+/\ dockerPresent = TRUE
+/\ producerFailed = FALSE
+/\ recordMatches = TRUE
+/\ guardian = FALSE
+/\ sessionAge = "old"
+/\ benchmarkMonitorAlive = TRUE
+/\ recordVisible = "none"
+/\ benchmarkFresh = TRUE
+/\ settingsValid = TRUE
+/\ evidence = FALSE
+/\ benchmarkInterrupted = FALSE
+/\ benchmarkSample = [mib |-> 8192, known |-> TRUE]
+/\ admitted = FALSE
+/\ benchmarkCancelled = FALSE
+
+State 11: <Next line 486, col 13 to line 491, col 101 of module SoakDiskAdmission>
+/\ hygieneElapsed = 0
+/\ phase = "admit"
+/\ attributionStarted = FALSE
+/\ cleanupFailed = FALSE
+/\ benchmarkGuardianAlive = TRUE
+/\ benchmarkFault = "none"
+/\ stopReason = "none"
+/\ guardianFresh = TRUE
+/\ benchmarkObserved = FALSE
+/\ admissionRaw = [kind |-> "missing", mib |-> 0]
+/\ retained = FALSE
+/\ sample = [mib |-> 7000, known |-> TRUE]
+/\ sessionPresent = TRUE
+/\ admissionFresh = TRUE
+/\ raw = [kind |-> "valid", mib |-> 7000]
+/\ interrupted = FALSE
+/\ guardianAlive = TRUE
+/\ benchmark = TRUE
+/\ hygieneTermSent = FALSE
+/\ hygieneKillSent = FALSE
+/\ free = 7000
+/\ recordTrusted = TRUE
+/\ monitorAlive = TRUE
+/\ admissionSample = [mib |-> 0, known |-> FALSE]
+/\ hygieneStalled = FALSE
+/\ dockerPresent = TRUE
+/\ producerFailed = FALSE
+/\ recordMatches = TRUE
+/\ guardian = FALSE
+/\ sessionAge = "old"
+/\ benchmarkMonitorAlive = TRUE
+/\ recordVisible = "none"
+/\ benchmarkFresh = TRUE
+/\ settingsValid = TRUE
+/\ evidence = FALSE
+/\ benchmarkInterrupted = FALSE
+/\ benchmarkSample = [mib |-> 8192, known |-> TRUE]
+/\ admitted = FALSE
+/\ benchmarkCancelled = FALSE
+
+State 12: <Next line 471, col 13 to line 473, col 85 of module SoakDiskAdmission>
+/\ hygieneElapsed = 0
+/\ phase = "running"
+/\ attributionStarted = FALSE
+/\ cleanupFailed = FALSE
+/\ benchmarkGuardianAlive = TRUE
+/\ benchmarkFault = "none"
+/\ stopReason = "none"
+/\ guardianFresh = TRUE
+/\ benchmarkObserved = FALSE
+/\ admissionRaw = [kind |-> "valid", mib |-> 7000]
+/\ retained = FALSE
+/\ sample = [mib |-> 7000, known |-> TRUE]
+/\ sessionPresent = TRUE
+/\ admissionFresh = TRUE
+/\ raw = [kind |-> "valid", mib |-> 7000]
+/\ interrupted = FALSE
+/\ guardianAlive = TRUE
+/\ benchmark = TRUE
+/\ hygieneTermSent = FALSE
+/\ hygieneKillSent = FALSE
+/\ free = 7000
+/\ recordTrusted = TRUE
+/\ monitorAlive = TRUE
+/\ admissionSample = [mib |-> 7000, known |-> TRUE]
+/\ hygieneStalled = FALSE
+/\ dockerPresent = TRUE
+/\ producerFailed = FALSE
+/\ recordMatches = TRUE
+/\ guardian = FALSE
+/\ sessionAge = "old"
+/\ benchmarkMonitorAlive = TRUE
+/\ recordVisible = "none"
+/\ benchmarkFresh = TRUE
+/\ settingsValid = TRUE
+/\ evidence = FALSE
+/\ benchmarkInterrupted = FALSE
+/\ benchmarkSample = [mib |-> 8192, known |-> TRUE]
+/\ admitted = TRUE
+/\ benchmarkCancelled = FALSE
+
+35310 states generated, 21540 distinct states found, 4186 states left on queue.
+The depth of the complete state graph search is 12.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 14 and the 95th percentile is 4).
+Finished in 01s at (2026-09-17 05:08:28)

@@ -1,6 +1,8 @@
 # CbC Evidence: formal/tlaplus/node_observation/bindings.json
 
-The approved reconciliation artifact remains pending.
+The combined package records current source hashes and scoped verification results. Both node claims remain pending named maintainer acceptance.
+
+Model proofs and finite Rust correspondence retain the limits stated in the package. This record does not qualify a live campaign.
 
 ```json
 {
@@ -38,6 +40,7 @@ The approved reconciliation artifact remains pending.
   "waiver": null,
   "verified_at": "2026-09-23T16:55:28Z",
   "previous_record": {
+    "artifact": "formal/tlaplus/node_observation/bindings.json",
     "path": "docs/cbc-evidence/formal-tlaplus-node-observation-bindings-json.md",
     "sha256": "09e6d5ccc47bf3915021f2236348a1f4e7bb20838dddcf4d96ee34f4f61c853b",
     "commit": "03d7f1b27544b2c5a93b664d8684b24ea16cf3e9"

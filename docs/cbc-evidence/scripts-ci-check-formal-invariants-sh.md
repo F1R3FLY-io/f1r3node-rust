@@ -1,6 +1,8 @@
 # CbC Evidence: scripts/ci/check-formal-invariants.sh
 
-The approved verification artifact remains pending.
+The combined package records current source hashes and scoped verification results. Both node claims remain pending named maintainer acceptance.
+
+Model proofs and finite Rust correspondence retain the limits stated in the package. This record does not qualify a live campaign.
 
 ```json
 {
@@ -64,6 +66,7 @@ The approved verification artifact remains pending.
     "docs/claims/casper-node-authority-evaluation.md": "5956cff23feb6e32e175976019d4e483dc7755bc7a9040b6f2d35a0bebf758fe"
   },
   "previous_record": {
+    "artifact": "scripts/ci/check-formal-invariants.sh",
     "path": "docs/cbc-evidence/scripts-ci-check-formal-invariants-sh.md",
     "sha256": "a04073da177f2e6a78fa644712c1303cff5b42752a094440242a138472d3405b",
     "commit": "78d696ea6780ca72105d9b35d2266b0329d777ed"

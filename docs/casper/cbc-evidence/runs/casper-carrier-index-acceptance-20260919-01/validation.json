@@ -1,0 +1,235 @@
+{
+  "schema_version": 1,
+  "status": "passed",
+  "validated_at": "2026-09-19T17:59:32Z",
+  "base_revision": "f7b0cb32f4d4ac8ac28996e99e75e0cd8cdb68c6",
+  "working_tree": true,
+  "report_sha256": "06e5c0d15a9eef13c09f5e28c5b553a082685be7dc44f305fed5380e0c7860e7",
+  "claim_digests": {
+    "docs/claims/casper-soak-carrier-index.md": "4aab7367b93766df504bcd679670b8d4bcfeda3d4cd5ea3a2f6b2f39ca86a236"
+  },
+  "claim_discharge": "discharged",
+  "phase": "pre_pr216_merge",
+  "source_files_verified_before_acceptance": 21,
+  "unchanged_reviewed_sources": 20,
+  "current_source_files_verified": 21,
+  "unchanged_profile_artifacts": 12,
+  "archive_manifest_hashes_verified": 14606,
+  "archive_members": 14607,
+  "archive_sha256": "941c3c95a05e972e24bea9b33ba6c08b3da439dda7a87ceb63fa35da78dd0ca0",
+  "publication_receipt_sha256": "7ca046ac32e63d014e315f9a52d817aa533fef1f8612cd5a7bb3b6474744753e",
+  "previous_ledgers_retained": 12,
+  "canonical_ledger_hashes": {
+    "docs/casper/cbc-evidence/scripts-casper-soak-src-profiles-carrier-index-rs.md": "eae6bccc0a667939ff273f40c225915c177742e7e5ba813e32cf91d94171fd53",
+    "docs/casper/cbc-evidence/scripts-casper-soak-src-bin-casper-carrier-index-rs.md": "40a14cddef57f2b2a88936046bfc09e50e63b5817bb971ab2e2a00e335cd5c90",
+    "docs/casper/cbc-evidence/scripts-casper-soak-tests-carrier-index-rs.md": "1c4b2ac5acbd09c75d9df494cc198988c8756c00adbfe50d08789f4abee5b33f",
+    "docs/casper/cbc-evidence/scripts-casper-soak-check-carrier-index-sh.md": "98d5e487c0d987aad0eed9b4ca66cca4d768436a0bef1c7739f5f187cecd1423",
+    "docs/casper/cbc-evidence/github-workflows-casper-carrier-index-yml.md": "bffac52a354a4f554852d8d580232a353a755f51de52c45a572677736ce278df",
+    "docs/casper/cbc-evidence/formal-tlaplus-casper-soak-profiles-carrier-index-CarrierIndex-tla.md": "a4794734d23e743884b166e25dd148b8cbbb32b542a8a5316a64862b4d8731c9",
+    "docs/casper/cbc-evidence/formal-tlaplus-casper-soak-profiles-carrier-index-MC-CarrierIndex-cfg.md": "8652868d892fd2648d8274c6e5f9571cdffd50e6fee25e66a7f44c3365905067",
+    "docs/casper/cbc-evidence/formal-tlaplus-casper-soak-profiles-carrier-index-MC-CarrierIndex-path-unsafe-cfg.md": "d4e1b03374c6a7edece62ea719d82d6000a3b9fd10c1bc0f4edc2c4543b3c89a",
+    "docs/casper/cbc-evidence/formal-tlaplus-casper-soak-profiles-carrier-index-MC-CarrierIndex-window-unsafe-cfg.md": "4259d4bb45b11864fd0de497d880596c2e7efe137afdb60a1087be5e5eba80df",
+    "docs/casper/cbc-evidence/formal-tlaplus-casper-soak-profiles-carrier-index-MC-CarrierIndex-counter-unsafe-cfg.md": "ea77d284c9948b059451ab0e0efe3612823a46c6f94506e008945919b35429e5",
+    "docs/casper/cbc-evidence/formal-tlaplus-casper-soak-profiles-carrier-index-verification-plan-jsonc.md": "1cadb9bd6e220c5690f5fd9c2256d7995dc0f5a38d500f44cc1bfafe3a9a492b",
+    "docs/casper/cbc-evidence/formal-tlaplus-casper-soak-profiles-carrier-index-README-md.md": "312415abf47a9d21dd8357335f568dc69fac48db985027d2c1791dc66d6772f4"
+  },
+  "compatibility_links_verified": 12,
+  "strict_claim_audits": {
+    "001": {
+      "exit": 0,
+      "report_sha256": "a70a1db33d3f0986b27bb51ce3a4a765355c91cd119f469392490072e011dfd8"
+    },
+    "002": {
+      "exit": 0,
+      "report_sha256": "1b019d102efac29ff147ebb8a94830e8dbdeb17c6cb70f9f6716762019a71245"
+    },
+    "003": {
+      "exit": 0,
+      "report_sha256": "629681440127f48c8cdbf250fd9dff6e429e23fc726c8877dde029012ee1e419"
+    },
+    "004": {
+      "exit": 0,
+      "report_sha256": "cfda783ee9af0e9c9ba6aa59165bb25db0a1579f6a12820553258644c082de45"
+    },
+    "005": {
+      "exit": 0,
+      "report_sha256": "5b34c4de0fd3042407fadae1e23a226d528ce2e105718316b150c1578e3c1b37"
+    },
+    "006": {
+      "exit": 0,
+      "report_sha256": "a6978e0f20d996429a80b8801debdd42aa78cb34149dc6a16e696cabafdbebc4"
+    },
+    "008": {
+      "exit": 0,
+      "report_sha256": "2662ef3fc2ab29cfdd7454642fcbfdeb564a7044821bf170da12b4d3620584c6"
+    }
+  },
+  "strict_bundle": {
+    "exit": 4,
+    "pending_claims": [
+      "CLAIM-CASPER-SOAK-007"
+    ],
+    "report_sha256": "0eb0040149540320a21de218b14ac90bfa49a76287261b888b4a1c41bee01088"
+  },
+  "carrier_cbc_gate": {
+    "total": 12,
+    "gaps": 0,
+    "items": [
+      {
+        "status": "discharged",
+        "path": "scripts/casper-soak/src/profiles/carrier_index.rs"
+      },
+      {
+        "status": "discharged",
+        "path": "scripts/casper-soak/src/bin/casper-carrier-index.rs"
+      },
+      {
+        "status": "discharged",
+        "path": "scripts/casper-soak/tests/carrier_index.rs"
+      },
+      {
+        "status": "discharged",
+        "path": "scripts/casper-soak/check-carrier-index.sh"
+      },
+      {
+        "status": "discharged",
+        "path": ".github/workflows/casper-carrier-index.yml"
+      },
+      {
+        "status": "discharged",
+        "path": "formal/tlaplus/casper_soak/profiles/carrier_index/CarrierIndex.tla"
+      },
+      {
+        "status": "discharged",
+        "path": "formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex.cfg"
+      },
+      {
+        "status": "discharged",
+        "path": "formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex_path_unsafe.cfg"
+      },
+      {
+        "status": "discharged",
+        "path": "formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex_window_unsafe.cfg"
+      },
+      {
+        "status": "discharged",
+        "path": "formal/tlaplus/casper_soak/profiles/carrier_index/MC_CarrierIndex_counter_unsafe.cfg"
+      },
+      {
+        "status": "discharged",
+        "path": "formal/tlaplus/casper_soak/profiles/carrier_index/verification-plan.jsonc"
+      },
+      {
+        "status": "discharged",
+        "path": "formal/tlaplus/casper_soak/profiles/carrier_index/README.md"
+      }
+    ]
+  },
+  "native": {
+    "tests": 23,
+    "cases": 88,
+    "invocations": 91,
+    "model_controls": 4,
+    "exit": 0
+  },
+  "shared_tests": {
+    "passed": 11,
+    "failed": 0
+  },
+  "task": {
+    "id": "TASK-017-10",
+    "status": "complete",
+    "completed_date": "2026-09-19",
+    "completion_gaps": [],
+    "integrity": {
+      "target": "TASK-017-10",
+      "kind": "task",
+      "grade": "full",
+      "gaps": [],
+      "details": []
+    },
+    "comparison": {
+      "status": "passed",
+      "unrelated_tasks_unchanged": 100,
+      "outside_target_bytes_unchanged": true,
+      "protected_hashes_unchanged": true,
+      "helper_and_libraries_unchanged": true
+    },
+    "tracker_sha256": "c2a2da2129dedbc063ce17bbfc7aaee14cb23293a9408c1151df14374c90a1c3"
+  },
+  "helper": {
+    "sha256": "924a1cde6ae61d15a72dda276687b0d63d9df0dd75d7b7f1aba4e8300f502d2e",
+    "library_hashes": {
+      "task-complete.sh": "924a1cde6ae61d15a72dda276687b0d63d9df0dd75d7b7f1aba4e8300f502d2e",
+      "lib/integrity-walker.sh": "2d6a07068a55a7a51545a5b162ad46b47695ada2faa6778581ed5ec941527f05",
+      "lib/epic-parser.sh": "c3c3fa8746fa9108a30cad30a98214f71bf2b915314e8a34b7508266e26b398a",
+      "lib/user-flow-parser.sh": "4ab41752c1b4cbeab5c15c105038b5f5379e2303c09ea3803bca7f04d60c59e3",
+      "lib/story-parser.sh": "b667d1de723e96cf75c9c098016834837f2b91ac86e7a7d7ef565a89968b1afa",
+      "lib/cbc-ledger.sh": "84bc464614bb2fdb0ed2d3febf41ed5d3d48f71f901840195cab31ae2e5594d5"
+    },
+    "invocation": "mark_task_complete TASK-017-10 scripts/casper-soak/tests/carrier_index.rs true false false",
+    "execution": "Fresh Bash process with the original function. The temporary helper removes only final CLI dispatch.",
+    "strict": true,
+    "force": false,
+    "no_stamp": false,
+    "parser_compatibility": "BF_TODO_PARSER_STRICT=0 tolerates seven legacy review statuses. Strict integrity and explicit artifact discharge remain required.",
+    "artifact_gate_limit": "The parser omits task files. The separate explicit 12-artifact gate passed before closure.",
+    "temporary_helper_sha256": "cd10144a6546828d7d8cf00564c510fcc73eaa241362d4b08b7f5337b8f8d755"
+  },
+  "protected_hashes": {
+    "docs/ToDos.md.bak": null,
+    "scripts/casper-soak/task-complete.sh": "89245a31460c48bf066e58c1329538baa57791ced13a01c4761aa2c62afdb912",
+    ".gitattributes": "a7ac028169a0f02ab1ba87546834727795f91e67a67a2e77aaf7dafeac17e7fe",
+    "scripts/ci/check-casper-soak-bindings.sh": "31644fc2f64f3b03625412fdc00825a88cabde54d042776ea6ae3bea2c9deccc"
+  },
+  "historical_reports_unchanged": {
+    "docs/casper/cbc-evidence/runs/casper-carrier-index-publication-20260919-01/report.json": "d18b6e247c7710aa09961c3f3120b2c2ca5a9c1139d82723b9285ea772fcfe23",
+    "docs/casper/cbc-evidence/runs/casper-carrier-index-20260919-01/report.json": "b18b3549273c469f2cb7a59f547834f5413ddb96f8791aa989ba93144543d33b"
+  },
+  "external_checks": {
+    "directory": "/tmp/carrier-index-checks/acceptance-20260919-01",
+    "sha256_by_path": {
+      "preflight.json": "caca4aade3a91fc8b355a982cff9fd78246a1b048264134bbca9cea9c3e81d52",
+      "native/summary.json": "8712c8b10ad28345f690fbad79b9c5593050628cd9fdbe62532407b5b13f7c6a",
+      "native/source-after.sha256": "8b86f2d82a7d69c7bb36c69822a69365fdee401c84509098306a6e221979f1ce",
+      "native/models/report.json": "9a96cfcc366fd0277af432685379be7cc80e20b6ce0d42ef7fba7f5a01d2e4b3",
+      "shared-tests-final.log": "f1024e9bad000f8dce9adf8a23b8a9f8cf44ddd673afc1c43bebe4de5764817e",
+      "closure-probe.log": "e164145eefb5d3a9ca07c5a59d075e61f3239c851c1e93306e18b3639506dd1c",
+      "closure-03/tracker.patch": "8e6032da098835469e1686de98489e02bbd643df4df8290acc14dc167ae7add0",
+      "closure-03/integrity-final.json": "f482da7f313006c30f674d55ef3e2d772c0b87d345ba3e8d1c269353bc6610a9",
+      "closure-03/comparison-final.json": "8a5a6e815aae4d8484e0d466c24aa5769eefeb299f6822c15db435cdf11e7548"
+    },
+    "failed_attempt_sha256_by_path": {
+      "shared-tests.log": "bb43b05dfda27006edebc2ac5a0d25643e9e12f034a8d7127c4a36c7f77f9fb1",
+      "intermediate-audit.log": "a15591e48b6d879fbe006d5ad9d6da6ec1244f7eca0e97db79e14b54786dacf6",
+      "strict-close.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "strict-close-02.log": "2ed27c1421e6928dbe13dbfdb5c59e1045b30341fe7ebe05700006bc5ac572c0",
+      "strict-close-03.log": "d762cbe53f6fb91ce579a24063f61ffd93d956279cecf494b69ed5407a33aa09",
+      "strict-close-04.log": "6e222d7a3743c3dceda98bc3fea0c8400bc4f2b53d792cd54a0d7fdfea97db7a",
+      "strict-close-failed-01.sh": "7636c8088fefb2a9957e6984edd29c596e4e3d4bded9644249e35cebdc2dfc07",
+      "strict-close-failed-02.sh": "4aee0e174d59ef7658281f8784cbedd1b75cd37d95405ac57ed28258974894e2",
+      "strict-close-failed-03.sh": "8ebf7820cc809d38d3b5000fed243762cd358d6714b1010ad700c3149b828d8f"
+    },
+    "attempt_outcomes": {
+      "shared-before-ledgers": 101,
+      "intermediate-claim-audit": 2,
+      "closure-01": 1,
+      "closure-02": 1,
+      "closure-03-parent-shell": 1,
+      "closure-04": "tool-timeout-after-180-seconds",
+      "closure-fresh-shell": 0
+    }
+  },
+  "other_tasks_unchanged": true,
+  "both_workflow_tags_preserved": true,
+  "shared_claim_001_unchanged": true,
+  "node_execution": false,
+  "post_merge_execution": "blocked",
+  "soak": "pending",
+  "waiver": null,
+  "remaining_work": [
+    "Claim 007 remains pending.",
+    "Shared workflow inventory repair requires separate Claim 001 renewal.",
+    "Release publication and shared index maintenance remain separate owner obligations."
+  ]
+}

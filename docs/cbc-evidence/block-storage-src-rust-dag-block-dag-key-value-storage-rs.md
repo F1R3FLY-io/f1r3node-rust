@@ -64,6 +64,7 @@ Previous acceptance applies only to its recorded source revision.
     "docs/claims/casper-node-authority-evaluation.md": "5956cff23feb6e32e175976019d4e483dc7755bc7a9040b6f2d35a0bebf758fe"
   },
   "previous_record": {
+    "artifact": "block-storage/src/rust/dag/block_dag_key_value_storage.rs",
     "path": "docs/cbc-evidence/block-storage-src-rust-dag-block-dag-key-value-storage-rs.md",
     "sha256": "ce1ab52bed557dbe2bdbdc0de64dd372ad23138441795c5be847900194c9560f",
     "commit": "d11acabcbd27b564eab7398778169cf3990762d1"

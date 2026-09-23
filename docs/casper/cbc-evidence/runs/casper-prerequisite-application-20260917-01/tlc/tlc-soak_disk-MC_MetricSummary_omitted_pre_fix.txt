@@ -1,0 +1,37 @@
+Picked up JAVA_TOOL_OPTIONS: -Xmx384m
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 54 and seed 590581723435255764 with 2 workers on 2 cores with 341MB heap and 64MB offheap memory [pid: 2544] (Linux 6.12.76-linuxkit aarch64, Debian 17.0.20.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /case/work/formal/tlaplus/soak_disk/MC_MetricSummary_omitted_pre_fix.tla
+Parsing file /case/work/formal/tlaplus/soak_disk/MetricSummary.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/FiniteSets.tla
+Parsing file /tmp/Sequences.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module MetricSummary
+Semantic processing of module MC_MetricSummary_omitted_pre_fix
+Starting... (2026-09-17 03:09:49)
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-09-17 03:09:49.
+Error: Invariant CollectedRequiredPublished is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ collected = {}
+/\ published = {}
+/\ phase = "scraping"
+
+State 2: <Scrape line 15, col 11 to line 18, col 32 of module MetricSummary>
+/\ collected = 1..27
+/\ published = {}
+/\ phase = "formatting"
+
+State 3: <Publish line 20, col 12 to line 24, col 33 of module MetricSummary>
+/\ collected = 1..27
+/\ published = {1, 2, 3, 4, 5, 6, 7}
+/\ phase = "retained"
+
+3 states generated, 3 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 3.
+The average outdegree of the complete state graph is 1 (minimum is 1, the maximum 1 and the 95th percentile is 1).
+Finished in 00s at (2026-09-17 03:09:49)

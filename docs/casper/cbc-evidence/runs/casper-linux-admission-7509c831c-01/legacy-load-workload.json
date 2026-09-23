@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "profile_id": "current-dev-load",
+  "scope": "legacy-load-only",
+  "status": "pinned-not-qualified",
+  "qualified_for_ratified_casper_baseline": false,
+  "external_harness_revision": "b3d14b27e3c6276b1eb4ab9ccef04e02b0c4e283",
+  "external_git_tree": "02d35e9d4579814b35616823078a7e5ee58391e3",
+  "source_inventory": {
+    "path": "suite-sources.sha256",
+    "sha256": "5623c8be54bb5e9d94461b393cf82771822b2b4702b9784225c11f92fee9cf64",
+    "files": 269
+  },
+  "test_path": "integration-tests/test/tests/custom/test_load.py",
+  "test_sha256": "aa06c14d0268f36c58eb3102ae2d2224b1f968f335631b8161d43d4d4999c19b",
+  "preflight_profile_path": "integration-tests/test/full-suite.txt",
+  "preflight_profile_sha256": "968bfff3cff8ebb2b9de7b5c2372222859f86ca2fa9db26f4db0d4d9b921a8fe",
+  "dependency_sources": {
+    "poetry.lock": "966e518dacdc812c6bcb95463d5188b19e79d5f4febeff40d7af3482416ac0c8",
+    "pyproject.toml": "f349acb108bbcf16ae7ace74a05733d583cc809888c9b2a935cadb7d0819b54a"
+  },
+  "providers": [
+    "docker",
+    "subprocess"
+  ],
+  "policy_variant": "current-dev-load",
+  "required_capabilities": [
+    "load",
+    "query",
+    "metrics"
+  ],
+  "stress_options": {
+    "--heartbeat-self-propose-cooldown": "3seconds",
+    "--heartbeat-advanced-frontier-chase-max-lag": "20",
+    "--max-user-deploys-per-block": "128"
+  },
+  "limits": [
+    "These stress options are not production defaults.",
+    "This source inventory does not qualify a live adapter.",
+    "This legacy workload cannot replace the required Casper profiles."
+  ]
+}

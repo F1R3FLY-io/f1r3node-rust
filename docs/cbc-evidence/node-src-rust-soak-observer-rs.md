@@ -64,6 +64,7 @@ Previous acceptance applies only to its recorded source revision.
     "docs/claims/casper-node-authority-evaluation.md": "5956cff23feb6e32e175976019d4e483dc7755bc7a9040b6f2d35a0bebf758fe"
   },
   "previous_record": {
+    "artifact": "node/src/rust/soak_observer.rs",
     "path": "docs/cbc-evidence/node-src-rust-soak-observer-rs.md",
     "sha256": "0ff5eab586364b570a9153c128959faee3d2ab0ad4e27650261aa193ab5e9baa",
     "commit": "d11acabcbd27b564eab7398778169cf3990762d1"

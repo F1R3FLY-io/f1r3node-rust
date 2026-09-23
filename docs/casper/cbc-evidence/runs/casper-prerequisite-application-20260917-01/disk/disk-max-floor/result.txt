@@ -1,0 +1,1 @@
+PASS: A valid maximum disk setting preserved admission behavior (disk-max-floor).

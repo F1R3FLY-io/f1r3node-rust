@@ -577,6 +577,79 @@ mod linux {
         }
 
         #[tokio::test]
+        async fn peer_admission_rejects_each_identity_mismatch_before_hello() {
+            for mismatch in 0..3 {
+                let mut fixture = fixture();
+                let observer = &mut fixture.observer;
+                match mismatch {
+                    0 => observer.owner_uid ^= 1,
+                    1 => observer.config.peer_pid = 0,
+                    _ => observer.config.peer_start_ticks ^= 1,
+                }
+                let mut client =
+                    UnixStream::connect(observer.config.directory.join("observer.sock"))
+                        .await
+                        .unwrap();
+                let (server, _) = observer.listener.accept().await.unwrap();
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+                assert!(matches!(
+                    observer.session(server, deadline, Uuid::nil).await,
+                    Err(ObserverError::PeerIdentity)
+                ));
+                assert!(receive(&mut client).await.is_err());
+                assert_eq!(observer.sequence, 0);
+            }
+        }
+
+        #[tokio::test]
+        async fn expired_write_emits_no_frame() {
+            let (mut server, mut client) = UnixStream::pair().unwrap();
+            let result = Observer::write(
+                &mut server,
+                &json!({"kind": "hello"}),
+                tokio::time::Instant::now(),
+            )
+            .await;
+            assert!(matches!(result, Err(ObserverError::ResourceLimit)));
+            drop(server);
+            let mut bytes = Vec::new();
+            client.read_to_end(&mut bytes).await.unwrap();
+            assert!(bytes.is_empty());
+        }
+
+        #[tokio::test]
+        async fn directory_admission_matches_all_leaf_permission_bits() {
+            let fixture = fixture();
+            let uid = fs::metadata("/proc/self").unwrap().uid();
+            for mode in 0..=0o7777 {
+                fs::set_permissions(&fixture.directory, fs::Permissions::from_mode(mode)).unwrap();
+                assert_eq!(
+                    safe_directory(&fixture.directory, uid).is_ok(),
+                    mode == 0o700,
+                    "mode {mode:o}"
+                );
+            }
+            fs::set_permissions(&fixture.directory, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+
+        #[tokio::test]
+        async fn cleanup_requires_both_socket_identity_fields() {
+            let fixture = fixture();
+            let original = &fixture.observer._socket;
+            for (device, inode) in [
+                (original.device ^ 1, original.inode),
+                (original.device, original.inode ^ 1),
+            ] {
+                drop(SocketGuard {
+                    path: original.path.clone(),
+                    device,
+                    inode,
+                });
+                assert!(original.path.exists());
+            }
+        }
+
+        #[tokio::test]
         async fn exhausted_sequence_refuses_a_handshake() {
             let mut fixture = fixture();
             let observer = &mut fixture.observer;

@@ -24,14 +24,26 @@ on:
         required: true
         default: dev
         type: string
+      campaign_request:
+        description: >-
+          Supply a campaign request JSON object with an explicit campaign
+          duration. Admission remains blocked before cloud execution.
+        required: false
+        default: ""
+        type: string
       duration:
-        description: Requested soak duration; weekend-60h is the 60h stability soak, daily-24h the dev integration soak (ignored when window_end_epoch is set)
+        description: >-
+          Select a legacy schedule window or an explicit campaign stage.
+          The campaign baseline requires 86400 workload seconds.
         required: true
         default: daily-24h
         type: choice
         options:
           - daily-24h
           - weekend-60h
+          - campaign-preflight
+          - campaign-baseline-24h
+          - campaign-stability-60h
       preflight_only:
         description: Run only the full integration preflight
         required: false
@@ -285,7 +297,329 @@ env:
   CI_RUNNER_COMPARTMENT_OCID: "ocid1.compartment.oc1..aaaaaaaalq6bh2a6dmq4h6i3nrripxlcevv7fa3goaf7wxve52qiuocmehia"
 
 jobs:
+  campaign_admission:
+    name: Check Manual Campaign Admission
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      vars.CASPER_CAMPAIGN_CONFIG_SHA256 == '' &&
+      (inputs.campaign_request != '' ||
+       startsWith(inputs.duration, 'campaign-'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Retain campaign request
+        env:
+          CAMPAIGN_REQUEST: ${{ inputs.campaign_request }}
+          CAMPAIGN_SELECTION: ${{ inputs.duration }}
+          CAMPAIGN_CONTROL_REVISION: ${{ github.workflow_sha }}
+        shell: bash -euo pipefail {0}
+        run: |
+          mkdir -p "$RUNNER_TEMP/campaign-evidence"
+          printf '%s' "$CAMPAIGN_REQUEST" \
+            > "$RUNNER_TEMP/campaign-evidence/request.json"
+          jq -n --arg revision "$CAMPAIGN_CONTROL_REVISION" \
+            --arg selection "$CAMPAIGN_SELECTION" \
+            --arg run "$GITHUB_RUN_ID" --arg attempt "$GITHUB_RUN_ATTEMPT" \
+            '{control_revision:$revision,selection:$selection,
+              run_id:$run,run_attempt:$attempt,execution_enabled:false}' \
+            > "$RUNNER_TEMP/campaign-evidence/dispatch.json"
+
+      - name: Checkout campaign controls
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: ci-control
+          persist-credentials: false
+
+      - name: Check campaign records
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CAMPAIGN_CONTROL_REVISION: ${{ github.workflow_sha }}
+          CAMPAIGN_SELECTION: ${{ inputs.duration }}
+          INPUT_TARGET_REF: ${{ inputs.target_ref }}
+          INPUT_SCHEDULED_SLOT: ${{ inputs.scheduled_slot_epoch }}
+          INPUT_WINDOW_END: ${{ inputs.window_end_epoch }}
+          INPUT_SERIES: ${{ inputs.series }}
+          INPUT_RETRY_ATTEMPT: ${{ inputs.retry_attempt }}
+          INPUT_RESTART_OF_RUN_ID: ${{ inputs.restart_of_run_id }}
+          INPUT_CANDIDATE_TAG: ${{ inputs.candidate_tag }}
+          INPUT_PREFLIGHT_ONLY: ${{ inputs.preflight_only }}
+          INPUT_SKIP_PREFLIGHT: ${{ inputs.skip_integration_preflight }}
+          INPUT_CANARY: ${{ inputs.canary }}
+          INPUT_INJECT_PROTECTION_BREACH: ${{ inputs.inject_protection_breach }}
+        shell: bash -euo pipefail {0}
+        run: |
+          test "$(git -C ci-control rev-parse HEAD)" \
+            = "$CAMPAIGN_CONTROL_REVISION"
+          bash ci-control/scripts/casper-soak/campaign.sh dispatch \
+            "$GITHUB_WORKSPACE/ci-control" \
+            "$RUNNER_TEMP/campaign-evidence/request.json" \
+            "$CAMPAIGN_SELECTION" \
+            "$RUNNER_TEMP/campaign-evidence/admission"
+
+      - name: Retain campaign admission evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: >-
+            campaign-admission-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/campaign-evidence
+          retention-days: 30
+          if-no-files-found: error
+
+  campaign_plan:
+    name: Prepare Campaign Approval
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      vars.CASPER_CAMPAIGN_CONFIG_SHA256 != '' &&
+      (inputs.campaign_request != '' || startsWith(inputs.duration, 'campaign-'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    env:
+      CAMPAIGN_CONTROL_REVISION: ${{ github.workflow_sha }}
+      CAMPAIGN_SELECTION: ${{ inputs.duration }}
+      CASPER_CAMPAIGN_CONFIG_SHA256: ${{ vars.CASPER_CAMPAIGN_CONFIG_SHA256 }}
+      CAMPAIGN_CONFIG_PATH: ${{ vars.CASPER_CAMPAIGN_CONFIG_PATH }}
+      INPUT_TARGET_REF: ${{ inputs.target_ref }}
+      INPUT_SCHEDULED_SLOT: ${{ inputs.scheduled_slot_epoch }}
+      INPUT_WINDOW_END: ${{ inputs.window_end_epoch }}
+      INPUT_SERIES: ${{ inputs.series }}
+      INPUT_RETRY_ATTEMPT: ${{ inputs.retry_attempt }}
+      INPUT_RESTART_OF_RUN_ID: ${{ inputs.restart_of_run_id }}
+      INPUT_CANDIDATE_TAG: ${{ inputs.candidate_tag }}
+      INPUT_PREFLIGHT_ONLY: ${{ inputs.preflight_only }}
+      INPUT_SKIP_PREFLIGHT: ${{ inputs.skip_integration_preflight }}
+      INPUT_CANARY: ${{ inputs.canary }}
+      INPUT_INJECT_PROTECTION_BREACH: ${{ inputs.inject_protection_breach }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: nightly-2026-02-09
+      - name: Prepare exact approval binding
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CAMPAIGN_REQUEST: ${{ inputs.campaign_request }}
+        shell: bash -euo pipefail {0}
+        run: |
+          mkdir -m 700 "$RUNNER_TEMP/campaign-inputs"
+          printf '%s' "$CAMPAIGN_REQUEST" > "$RUNNER_TEMP/campaign-inputs/request.json"
+          test -n "$CAMPAIGN_CONFIG_PATH"
+          configuration="$(realpath -e -- "$GITHUB_WORKSPACE/$CAMPAIGN_CONFIG_PATH")"
+          [[ "$configuration" == "$GITHUB_WORKSPACE/"* ]]
+          cp "$configuration" "$RUNNER_TEMP/campaign-inputs/config.json"
+          cargo build --locked -p casper-soak --bin casper-campaign-control
+          test "$(target/debug/casper-campaign-control config-digest --config "$configuration")" = "$CASPER_CAMPAIGN_CONFIG_SHA256"
+          bash scripts/casper-soak/campaign-control.sh "$GITHUB_WORKSPACE" \
+            "$RUNNER_TEMP/campaign-inputs/request.json" "$configuration" approval "$RUNNER_TEMP/campaign-plan"
+          cp "$RUNNER_TEMP/campaign-plan/plan.json" "$RUNNER_TEMP/campaign-inputs/plan.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: casper-campaign-inputs-${{ github.run_id }}-1
+          path: ${{ runner.temp }}/campaign-inputs
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: casper-campaign-plan-${{ github.run_id }}-1
+          path: ${{ runner.temp }}/campaign-plan
+          if-no-files-found: warn
+          retention-days: 30
+
+  campaign_launch:
+    name: Launch Approved Campaign
+    needs: campaign_plan
+    runs-on: ubuntu-latest
+    environment: casper-campaign
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      runner_label: ${{ steps.launch.outputs.runner_label }}
+    env:
+      CASPER_CAMPAIGN_CONFIG_SHA256: ${{ vars.CASPER_CAMPAIGN_CONFIG_SHA256 }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: nightly-2026-02-09
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: casper-campaign-inputs-${{ github.run_id }}-1
+          path: ${{ runner.temp }}/campaign-inputs
+      - name: Install OCI CLI
+        shell: bash -euo pipefail {0}
+        run: |
+          curl -fsSL "$OCI_CLI_INSTALLER_URL" -o "$RUNNER_TEMP/campaign-oci-install.sh"
+          printf '%s  %s\n' "$OCI_CLI_INSTALLER_SHA256" "$RUNNER_TEMP/campaign-oci-install.sh" | sha256sum --check -
+          bash "$RUNNER_TEMP/campaign-oci-install.sh" --accept-all-defaults --install-dir /opt/oci-cli --exec-dir /usr/local/bin
+      - name: Create controller token
+        id: controller-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+        with:
+          app-id: ${{ vars.CI_GITHUB_APP_ID }}
+          private-key: ${{ secrets.CI_GITHUB_APP_PRIVATE_KEY }}
+          permission-administration: write
+          permission-actions: read
+          permission-contents: read
+      - name: Authenticate and submit one launch
+        id: launch
+        env:
+          GH_TOKEN: ${{ steps.controller-token.outputs.token }}
+          OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
+          OCI_CLI_TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_CLI_REGION: ${{ secrets.OCI_REGION }}
+          OCI_CLI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
+        shell: bash -euo pipefail {0}
+        run: |
+          cargo build --locked -p casper-soak --bin casper-campaign-control
+          mkdir -m 700 "$RUNNER_TEMP/campaign-launch"
+          target/debug/casper-campaign-control dispatch --root "$GITHUB_WORKSPACE" \
+            --config "$RUNNER_TEMP/campaign-inputs/config.json" --request "$RUNNER_TEMP/campaign-inputs/request.json" \
+            --plan "$RUNNER_TEMP/campaign-inputs/plan.json" --run "$GITHUB_RUN_ID" \
+            --evidence "$RUNNER_TEMP/campaign-launch/control" > "$RUNNER_TEMP/campaign-launch/receipt.json"
+          label="$(jq -er .receipt.runner_label "$RUNNER_TEMP/campaign-launch/receipt.json")"
+          [[ "$label" =~ ^casper-[a-f0-9]{64}$ ]]
+          printf 'runner_label=%s\n' "$label" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: casper-campaign-launch-${{ github.run_id }}-1
+          path: ${{ runner.temp }}/campaign-launch
+          if-no-files-found: warn
+          retention-days: 30
+
+  campaign_workload:
+    name: Campaign Workload
+    needs: campaign_launch
+    if: needs.campaign_launch.outputs.runner_label != ''
+    runs-on: [self-hosted, '${{ needs.campaign_launch.outputs.runner_label }}']
+    timeout-minutes: ${{ inputs.duration == 'campaign-preflight' && 240 || inputs.duration == 'campaign-stability-60h' && 3840 || 1560 }}
+    permissions:
+      contents: read
+      actions: read
+    env:
+      CASPER_CAMPAIGN_CONFIG_SHA256: ${{ vars.CASPER_CAMPAIGN_CONFIG_SHA256 }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: nightly-2026-02-09
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: casper-campaign-inputs-${{ github.run_id }}-1
+          path: ${{ runner.temp }}/campaign-inputs
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: casper-campaign-launch-${{ github.run_id }}-1
+          path: ${{ runner.temp }}/campaign-launch
+      - name: Verify host and execute pinned workload
+        shell: bash -euo pipefail {0}
+        run: |
+          cargo build --locked -p casper-soak --bin casper-campaign-control
+          bash scripts/casper-soak/campaign-job.sh "$GITHUB_WORKSPACE" \
+            "$RUNNER_TEMP/campaign-inputs/config.json" "$RUNNER_TEMP/campaign-inputs/request.json" \
+            "$RUNNER_TEMP/campaign-launch/receipt.json" "$RUNNER_TEMP/campaign-worker"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: casper-campaign-worker-${{ github.run_id }}-1
+          path: ${{ runner.temp }}/campaign-worker/host/worker-result.json
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: casper-campaign-observations-${{ github.run_id }}-1
+          path: |
+            ${{ runner.temp }}/campaign-worker/host/observations.json
+            ${{ runner.temp }}/campaign-worker/host/guard-failure.json
+            ${{ runner.temp }}/campaign-worker/host/workload
+          if-no-files-found: warn
+          retention-days: 30
+
+  campaign_finish:
+    name: Collect Campaign Result and Cleanup
+    needs: [campaign_plan, campaign_launch, campaign_workload]
+    if: always() && needs.campaign_plan.result == 'success' && needs.campaign_launch.result != 'skipped'
+    runs-on: ubuntu-latest
+    environment: oci-credentials
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    env:
+      CASPER_CAMPAIGN_CONFIG_SHA256: ${{ vars.CASPER_CAMPAIGN_CONFIG_SHA256 }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: nightly-2026-02-09
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: casper-campaign-inputs-${{ github.run_id }}-1
+          path: ${{ runner.temp }}/campaign-inputs
+      - name: Install OCI CLI
+        shell: bash -euo pipefail {0}
+        run: |
+          curl -fsSL "$OCI_CLI_INSTALLER_URL" -o "$RUNNER_TEMP/campaign-oci-install.sh"
+          printf '%s  %s\n' "$OCI_CLI_INSTALLER_SHA256" "$RUNNER_TEMP/campaign-oci-install.sh" | sha256sum --check -
+          bash "$RUNNER_TEMP/campaign-oci-install.sh" --accept-all-defaults --install-dir /opt/oci-cli --exec-dir /usr/local/bin
+      - name: Collect authenticated results and request cleanup
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
+          OCI_CLI_TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_CLI_REGION: ${{ secrets.OCI_REGION }}
+          OCI_CLI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
+        shell: bash -euo pipefail {0}
+        run: |
+          cargo build --locked -p casper-soak --bin casper-campaign-control
+          bash scripts/casper-soak/campaign-finish.sh "$GITHUB_WORKSPACE" \
+            "$RUNNER_TEMP/campaign-inputs/config.json" "$RUNNER_TEMP/campaign-inputs/request.json" \
+            "$RUNNER_TEMP/campaign-inputs/plan.json" "$RUNNER_TEMP/campaign-finish"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: casper-campaign-result-${{ github.run_id }}-1
+          path: ${{ runner.temp }}/campaign-finish/control/campaign-result.json
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: casper-campaign-cleanup-${{ github.run_id }}-1
+          path: ${{ runner.temp }}/campaign-finish
+          if-no-files-found: warn
+          retention-days: 30
+
   schedule_gate:
+    if: >-
+      inputs.campaign_request == '' &&
+      !startsWith(inputs.duration, 'campaign-')
     name: Resolve Pacific Schedule
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -330,6 +664,7 @@ jobs:
       - name: Resolve schedule
         id: resolve
         env:
+          INPUT_CAMPAIGN_REQUEST: ${{ inputs.campaign_request }}
           INPUT_CANDIDATE_TAG: ${{ inputs.candidate_tag }}
           INPUT_RESTART_OF_RUN_ID: ${{ inputs.restart_of_run_id }}
           EVENT_NAME: ${{ github.event_name }}
@@ -348,6 +683,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: bash -euo pipefail {0}
         run: |
+          if [[ -n "${INPUT_CAMPAIGN_REQUEST:-}" ||
+                "${INPUT_DURATION:-}" == campaign-* ]]; then
+            echo "::error::Campaign inputs cannot enter the legacy path."
+            exit 2
+          fi
           case "${INPUT_PREFLIGHT_ONLY:-false}" in
             true|false|"") ;;
             *) echo "::error::preflight_only must be true or false"; exit 1 ;;
@@ -1686,6 +2026,16 @@ jobs:
           ref: ${{ steps.pin.outputs.system_integration_ref }}
           path: system-integration
           persist-credentials: false
+
+      - name: Install the pinned Rust toolchain for harness controls
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: nightly-2026-02-09
+
+      - name: Build the harness host controls
+        working-directory: ci-control
+        shell: bash -euo pipefail {0}
+        run: cargo build --locked --target-dir target -p casper-soak --bin casper-soak
 
       - name: Extend issue 24 soak metrics
         shell: bash -euo pipefail {0}

@@ -1,0 +1,531 @@
+{
+  "schema_version": 1,
+  "task": "TASK-019-4",
+  "kind": "bounded-models-and-source-bound-executable-evidence",
+  "status": "technical-checks-passed-acceptance-pending",
+  "source_base": "4aa93d11cf7a4c318074975dd4266208575c8aca",
+  "working_tree": true,
+  "source_manifest": {
+    "path": "docs/cbc-evidence/runs/casper-node-claim-gate-4aa93d11c-03/sources.sha256",
+    "sha256": "a3454592619cf7c3792a64720f3f57766d9e7b8f30a46cc8dcf178917afb21f2",
+    "files": 75
+  },
+  "source_delta": {
+    "path": "block-storage/src/rust/dag/soak_snapshot.rs",
+    "sha256": "f2ec64e110d2b1218a5d1043438985976a6b72daf63dada86a805cdee664fcfc",
+    "kind": "test-only-generation-rejection-regression"
+  },
+  "claims": {
+    "docs/claims/casper-node-observation.md": "b6552635d07fae63ac49c0d63cb670b35e6de045e20551deced1ac7f327275d8",
+    "docs/claims/casper-node-authority-snapshot.md": "c2bd97d63c74e4fad19a8817a21e044fc358957623c3e8968c3f8535b60964c6"
+  },
+  "tiers": {
+    "refutation": {
+      "result": "passed",
+      "formal_controls": 16,
+      "rust_mutation_controls": 1,
+      "acceptance": "pending"
+    },
+    "construction": {
+      "result": "passed",
+      "positive_models": 2,
+      "rust_tests_passed": 65,
+      "acceptance": "pending"
+    },
+    "binding": {
+      "result": "passed",
+      "properties": 23,
+      "isolated_build_inputs_checked": 1130,
+      "machine_checked_refinement": false,
+      "acceptance": "pending"
+    }
+  },
+  "models": {
+    "report": "target/task-019-4-rust-verification/models/report.json",
+    "sha256": "da03fd829ffc6dee52b469d44cfd9566f05d04c3dc3a19289dbc47dce940efea",
+    "tlc_jar_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+    "results": [
+      {
+        "module": "MC_ObserverSession",
+        "configuration": "MC_ObserverSession.cfg",
+        "expected_exit": 0,
+        "invariant": null,
+        "exit": 0,
+        "passed": true,
+        "log": "MC_ObserverSession.log",
+        "log_sha256": "85d5077ad3bec02ac2840a37f231ca8a2119971231e007d2efb52e918be6ec0d"
+      },
+      {
+        "module": "MC_ObserverSession_challenge_unsafe",
+        "configuration": "MC_ObserverSession_challenge_unsafe.cfg",
+        "expected_exit": 12,
+        "invariant": "FreshChallenge",
+        "exit": 12,
+        "passed": true,
+        "log": "MC_ObserverSession_challenge_unsafe.log",
+        "log_sha256": "b051e37adb35468e6e27c269b764ed1c52b1ea39641effd6484d336c79e3539e"
+      },
+      {
+        "module": "MC_ObserverSession_identity_unsafe",
+        "configuration": "MC_ObserverSession_identity_unsafe.cfg",
+        "expected_exit": 12,
+        "invariant": "BoundIdentity",
+        "exit": 12,
+        "passed": true,
+        "log": "MC_ObserverSession_identity_unsafe.log",
+        "log_sha256": "b6f76eab7541bb494e7d21b986979fe5c3e2cf0547851141025550d29a1e6e6b"
+      },
+      {
+        "module": "MC_ObserverSession_frame_unsafe",
+        "configuration": "MC_ObserverSession_frame_unsafe.cfg",
+        "expected_exit": 12,
+        "invariant": "BoundFrame",
+        "exit": 12,
+        "passed": true,
+        "log": "MC_ObserverSession_frame_unsafe.log",
+        "log_sha256": "8b380a596971b939667361ca3b02917b0ca60590ff965ac6089b2b86e365f8a0"
+      },
+      {
+        "module": "MC_ObserverSession_deadline_unsafe",
+        "configuration": "MC_ObserverSession_deadline_unsafe.cfg",
+        "expected_exit": 12,
+        "invariant": "BoundDeadline",
+        "exit": 12,
+        "passed": true,
+        "log": "MC_ObserverSession_deadline_unsafe.log",
+        "log_sha256": "3fd5347315674dea7ee08fe8c86a6537b8bb21353e628ae9b1e57539e67cb5a1"
+      },
+      {
+        "module": "MC_ObserverSession_repeat_unsafe",
+        "configuration": "MC_ObserverSession_repeat_unsafe.cfg",
+        "expected_exit": 12,
+        "invariant": "OneRequest",
+        "exit": 12,
+        "passed": true,
+        "log": "MC_ObserverSession_repeat_unsafe.log",
+        "log_sha256": "d842fc1bebcbc949cba3bd628e3c098dbec283706d96d383a541b545dc19c406"
+      },
+      {
+        "module": "MC_ObserverSession_budget_unsafe",
+        "configuration": "MC_ObserverSession_budget_unsafe.cfg",
+        "expected_exit": 12,
+        "invariant": "SessionBudget",
+        "exit": 12,
+        "passed": true,
+        "log": "MC_ObserverSession_budget_unsafe.log",
+        "log_sha256": "3f283d9be7a5239d9622367a4a408a7ff545b8447d362df81dd9574b83d2eb46"
+      },
+      {
+        "module": "MC_BoundedCapture",
+        "configuration": "MC_BoundedCapture.cfg",
+        "expected_exit": 0,
+        "invariant": null,
+        "exit": 0,
+        "passed": true,
+        "log": "MC_BoundedCapture.log",
+        "log_sha256": "1c3d942b299694127b3e5dae813eda24981a4bb7bc1a5163a70f9b220e916fe3"
+      },
+      {
+        "module": "MC_BoundedCapture_admission_unsafe",
+        "configuration": "MC_BoundedCapture_admission_unsafe.cfg",
+        "expected_exit": 12,
+        "invariant": "ValidAdmission",
+        "exit": 12,
+        "passed": true,
+        "log": "MC_BoundedCapture_admission_unsafe.log",
+        "log_sha256": "13af2ff34f6f966ed17f1360df4b3b1d950a6754253acc337ea5b19912f748ab"
+      },
+      {
+        "module": "MC_BoundedCapture_deadline_unsafe",
+        "configuration": "MC_BoundedCapture_deadline_unsafe.cfg",
+        "expected_exit": 12,
+        "invariant": "BoundLockWait",
+        "exit": 12,
+        "passed": true,
+        "log": "MC_BoundedCapture_deadline_unsafe.log",
+        "log_sha256": "ffa771b2809fa2c2d852719ae148e50d2eebfe4381adbfffebc0b77550e4594c"
+      },
+      {
+        "module": "MC_BoundedCapture_order_unsafe",
+        "configuration": "MC_BoundedCapture_order_unsafe.cfg",
+        "expected_exit": 12,
+        "invariant": "GuardOrder",
+        "exit": 12,
+        "passed": true,
+        "log": "MC_BoundedCapture_order_unsafe.log",
+        "log_sha256": "cc015a6c6a29b9ce1e67fc3271cb509f9881743256694897195d843be19a30b6"
+      },
+      {
+        "module": "MC_BoundedCapture_open_unsafe",
+        "configuration": "MC_BoundedCapture_open_unsafe.cfg",
+        "expected_exit": 12,
+        "invariant": "OpenIdentity",
+        "exit": 12,
+        "passed": true,
+        "log": "MC_BoundedCapture_open_unsafe.log",
+        "log_sha256": "7a0bf069b1edf9b8e5d795f16f07e5587ff73bba2c2ca3aa010a8ba863ccc878"
+      },
+      {
+        "module": "MC_BoundedCapture_validation_unsafe",
+        "configuration": "MC_BoundedCapture_validation_unsafe.cfg",
+        "expected_exit": 12,
+        "invariant": "ValidatedIdentity",
+        "exit": 12,
+        "passed": true,
+        "log": "MC_BoundedCapture_validation_unsafe.log",
+        "log_sha256": "62ace4379474fdf63672d97b3df9e88ea1282339791bb08a8eb22f745924fb38"
+      },
+      {
+        "module": "MC_BoundedCapture_generation_unsafe",
+        "configuration": "MC_BoundedCapture_generation_unsafe.cfg",
+        "expected_exit": 12,
+        "invariant": "GenerationStable",
+        "exit": 12,
+        "passed": true,
+        "log": "MC_BoundedCapture_generation_unsafe.log",
+        "log_sha256": "4d69ffdff534f299a55f26a881426eeb79f9873948472a38b0586de60375e965"
+      },
+      {
+        "module": "MC_BoundedCapture_incomplete_unsafe",
+        "configuration": "MC_BoundedCapture_incomplete_unsafe.cfg",
+        "expected_exit": 12,
+        "invariant": "CompleteRows",
+        "exit": 12,
+        "passed": true,
+        "log": "MC_BoundedCapture_incomplete_unsafe.log",
+        "log_sha256": "32dcdaaa5e6c7f22ccc7268bb8b7d7f8049865fae380c00868f19d73ae5f8f45"
+      },
+      {
+        "module": "MC_BoundedCapture_bytes_unsafe",
+        "configuration": "MC_BoundedCapture_bytes_unsafe.cfg",
+        "expected_exit": 12,
+        "invariant": "BoundBytes",
+        "exit": 12,
+        "passed": true,
+        "log": "MC_BoundedCapture_bytes_unsafe.log",
+        "log_sha256": "8a211dcfc5e146d201b69bfcadfbab7490720e3e27cd4a8025ab724f552f1d78"
+      },
+      {
+        "module": "MC_BoundedCapture_release_unsafe",
+        "configuration": "MC_BoundedCapture_release_unsafe.cfg",
+        "expected_exit": 12,
+        "invariant": "Detached",
+        "exit": 12,
+        "passed": true,
+        "log": "MC_BoundedCapture_release_unsafe.log",
+        "log_sha256": "cc5223cc1aec7d7e284cef01d8980c0680d8208b2a85b6c7f898b9c953fc00b3"
+      },
+      {
+        "module": "MC_BoundedCapture_write_unsafe",
+        "configuration": "MC_BoundedCapture_write_unsafe.cfg",
+        "expected_exit": 12,
+        "invariant": "ReadOnly",
+        "exit": 12,
+        "passed": true,
+        "log": "MC_BoundedCapture_write_unsafe.log",
+        "log_sha256": "8427236f52601a02eccd0135ed3725fa59c3983cf68ca1d344b21f38f2d490e9"
+      }
+    ]
+  },
+  "bindings": {
+    "inventory": "formal/tlaplus/node_observation/bindings.json",
+    "sha256": "552a6f1b8254e2015c63dfbada6f0497d5cca59a8da29fac13f79cb2a0f0dfb3",
+    "report": "target/task-019-4-rust-verification/bindings-report.json",
+    "report_sha256": "6f3c589bdc80c5d7f58b01109eaf6d44e8dda2261de6dadf7987d03067ccf658"
+  },
+  "isolated_rebuild": {
+    "platform": "aarch64-unknown-linux-gnu",
+    "execution": "native-linux-container",
+    "source_archive_sha256": "e4edef00ea84fa0fbe07b0aa7add7cffb871f26ed12db552ce60380526ba326d",
+    "source_files_checked": 4141,
+    "manifest": "target/task-019-4-verification/isolated-inputs.sha256",
+    "manifest_sha256": "ba3374d344318411b86c1143a467447380d76b3a4e1ef8545a1769d84fe91797",
+    "tool_image": "sha256:fc6351ab4210530ff9fe6768c81c17855cabeff6a69555107a6c413d2f1cd484",
+    "dependency_image": "sha256:1696356fe6e6a15941983171fa4ca663b1f53686d3840f6787aca0b10ec5edc6",
+    "compiler": "rustc 1.95.0-nightly (6efa357bf 2026-02-08)",
+    "toolchain": "nightly-2026-02-09",
+    "fresh_project_target": true,
+    "host_project_objects_imported": false,
+    "dependency_fetch_before_isolation": true,
+    "network": "none",
+    "uid": 1001,
+    "capabilities": "none",
+    "no_new_privileges": true,
+    "memory_gib": 12,
+    "cpus": 6,
+    "build_script": "target/task-019-4-verification/rebuild.sh",
+    "final_script": "target/task-019-4-verification/rebuild-final.sh",
+    "initial_tests": {
+      "passed": 64,
+      "ignored": 1,
+      "exit": 0
+    },
+    "final_tests": {
+      "passed": 65,
+      "ignored": 1,
+      "exit": 0,
+      "suites": {
+        "shared_capture": 19,
+        "block_capture": 26,
+        "block_capture_unit": 2,
+        "observer_interface": 18
+      }
+    },
+    "ignored_helper": "foreign_peer_process is invoked by a separate-process test",
+    "strict_clippy": {
+      "exit": 0,
+      "packages": [
+        "shared",
+        "block-storage",
+        "node"
+      ],
+      "targets": "all"
+    },
+    "test_profile_debug": 0,
+    "executable_stripping": false,
+    "executables": [
+      {
+        "path": "target/debug/deps/soak_snapshot-676760ff5e9b8c8a",
+        "sha256": "be7534d39f532e8149c6fb0900dc4acc292f6a22fee90a0bfa0633da785828fc",
+        "bytes": 4537552
+      },
+      {
+        "path": "target/debug/deps/soak_snapshot-8a42d2d2f7c34f61",
+        "sha256": "57d1f8746a6b9073cc5ad59afc2bff268e4aa80e7a3c7d080fb94ebb78c40185",
+        "bytes": 16586520
+      },
+      {
+        "path": "target/debug/deps/block_storage-8e4095a638d77f03",
+        "sha256": "cf17b1d071938d26eb37f5cee8b1c7e0036da67dcb8a42dd0b877fdc7ea74605",
+        "bytes": 18960504
+      },
+      {
+        "path": "target/debug/deps/soak_observer-05837cd13e15ee7a",
+        "sha256": "3963e08cdd0fda297ba69eadff5b3a3ca496f90748ba94df500dfe8e9cad45b6",
+        "bytes": 18050808
+      }
+    ],
+    "reuse_note": "The node source inputs are unchanged. The Rust replacement rechecked the retained isolated source manifest and all 65 passing test cases. The node suites were not rerun for this tooling change."
+  },
+  "rust_negative_control": {
+    "test": "rust::dag::soak_snapshot::tests::generation_change_after_validation_rejects_capture",
+    "mutation": "Replace the generation mismatch condition with false in the isolated source copy.",
+    "expected_exit": 101,
+    "observed_exit": 101,
+    "assertion": "EnvironmentChanged for dag insertion generation, opened 0 and observed 1",
+    "log": "target/task-019-4-verification/generation-negative.log",
+    "corrected_rerun": "passed"
+  },
+  "gate_regression": {
+    "exit": 0,
+    "registered_controls": 87,
+    "log": "target/task-019-4-verification/ci-regression.log",
+    "scope": "Verifier fixtures test classification, routing, and missing control registration."
+  },
+  "checker_tests": {
+    "language": "Rust",
+    "passed": 8,
+    "failed": 0,
+    "ignored": 0,
+    "strict_clippy": "passed",
+    "format": "passed",
+    "log": "target/task-019-4-rust-verification/tests.log"
+  },
+  "limitations": [
+    "The bounded models do not establish a machine-checked refinement of Rust.",
+    "Source hashes identify tested bytes and do not prove semantic correspondence.",
+    "No deterministic executable injection covers the transaction-open race. The model and source review cover that interval.",
+    "Native I/O latency, scheduling, cryptography, and LMDB semantics remain trusted assumptions.",
+    "The shutdown regression checks source ordering, not a complete production node shutdown.",
+    "These are native test suites, not a production node, candidate image, adapter, campaign, or soak.",
+    "The current package includes uncommitted test and verification changes. The base revision alone does not identify this package."
+  ],
+  "retained_failures": [
+    "The initial Java invocation and sandbox runtime setup failed.",
+    "An initial capture model had a conditional-expression parse error.",
+    "The final binding check rejected an incomplete deadline-control state assignment with TLC exit 75. Parenthesizing that assignment corrected the control.",
+    "The isolated generation mutation failed its expected assertion with exit 101.",
+    "The full claim STE check reports an unchanged legacy sentence above the configured word limit."
+  ],
+  "retained_artifacts": {
+    "target/task-019-4-verification/binding-checker-tests.log": "199ba496f288116d36c62f29346d4fbf0bd75745a1c893abfcbdaa4c6d5b1033",
+    "target/task-019-4-verification/bindings-report.json": "4167bdf4b0d43d17601ea6e26404cd94bd383a2486bb4e60bce807e112a80f7f",
+    "target/task-019-4-verification/capture-initial.log": "6f89c8b17a18605ad1736e65d7cf229bf59b273b4f6ed8934ada852371d103ec",
+    "target/task-019-4-verification/capture.log": "0e6b126641e905902113b04f718d79695b6733a1008cd5b9140ea02cbe5781e9",
+    "target/task-019-4-verification/ci-regression.log": "4960ac74a1bc1fe73c7f94cd7a423b1c7b686695fb98f431764a2e760cc928d5",
+    "target/task-019-4-verification/executables.log": "7a7d8cdaefd2ccb6087242fbc49c991cc18a46063b3f344771313311be3424a5",
+    "target/task-019-4-verification/fetch.log": "57c6d3c822e55191a947a7023ce2a3501caebd6f0cb43f6b414d5b420e29e508",
+    "target/task-019-4-verification/generation-corrected.rs": "f2ec64e110d2b1218a5d1043438985976a6b72daf63dada86a805cdee664fcfc",
+    "target/task-019-4-verification/generation-mutant.rs": "445a0cdd2cb9ae0a386fc5d3d7cc2637594b908341fb56c53fb150aba7906040",
+    "target/task-019-4-verification/generation-negative.log": "a74a10647f3d4015e10d4dc29bf8456066b007f176ff144da8a7819d34c7e6f9",
+    "target/task-019-4-verification/image-build.log": "b3b18e28560e7b83fb4761d8593eed62fec50c21f0f1c816f6bbc6db66d2c6ce",
+    "target/task-019-4-verification/isolated-inputs.sha256": "ba3374d344318411b86c1143a467447380d76b3a4e1ef8545a1769d84fe91797",
+    "target/task-019-4-verification/isolated-source-check.log": "13038607265c2def4890f8001f64bb88ff8c929f4918174b8b25063bf75964a6",
+    "target/task-019-4-verification/model-checker-tests.log": "921b60a7fd52e978fbb551cacd29df2d6708879400278e1fcc70fceeb0c6f8e0",
+    "target/task-019-4-verification/models-01/MC_BoundedCapture.log": "733d76271f52aedccae4554994c0f3706aef6a685ca7d1cf1f77900ef6ba6d55",
+    "target/task-019-4-verification/models-01/MC_BoundedCapture_admission_unsafe.log": "7fdba936e2401c33a496e84ccc5c75f80a5ac91bc2382a03f94050e6ef15a3d1",
+    "target/task-019-4-verification/models-01/MC_BoundedCapture_bytes_unsafe.log": "b89659406bd7c86d5da47777324c6501315de430ac9b667bca0608e12b5bf363",
+    "target/task-019-4-verification/models-01/MC_BoundedCapture_deadline_unsafe.log": "e343d3abe29240489f7c8e2ec42f51119d5205034d8246a652ee69bbe7ff3de4",
+    "target/task-019-4-verification/models-01/MC_BoundedCapture_generation_unsafe.log": "223be2a2ac1b6fd913d1d7837657f6ce91847a5308e8fb4259c855c4aff2d142",
+    "target/task-019-4-verification/models-01/MC_BoundedCapture_incomplete_unsafe.log": "1e9508e456bf72de3138c00c803236a2215c080bb2b36bd7f711ac3e76397045",
+    "target/task-019-4-verification/models-01/MC_BoundedCapture_open_unsafe.log": "d87eace22e0ac9a11c5f82ebea23c04a3f657eb4fb09b263cbace1d765eaa457",
+    "target/task-019-4-verification/models-01/MC_BoundedCapture_order_unsafe.log": "3f39c6849990c01b83de41aea8390540e70b0a402fd7f49acf798431c216297c",
+    "target/task-019-4-verification/models-01/MC_BoundedCapture_release_unsafe.log": "74cf4c891911ccb844ad5ca932901c5109502ee12f1bde05c4453de31311ba2e",
+    "target/task-019-4-verification/models-01/MC_BoundedCapture_validation_unsafe.log": "d99072195cf89684baad203cd9e3f22368a834c92d53578661aefae8ce1469bf",
+    "target/task-019-4-verification/models-01/MC_BoundedCapture_write_unsafe.log": "1fbeac877a464148ff7a003c268bd0b405cefc627ef3c3b971d6d45c31176149",
+    "target/task-019-4-verification/models-01/MC_ObserverSession.log": "4826e6a76a63c88ececa63e1d9c44187adb16ea752d6fa018ed9997af6c7bfad",
+    "target/task-019-4-verification/models-01/MC_ObserverSession_budget_unsafe.log": "7aa29efe858f979cfa0ad0053345ea5ae9ff15410b803dc270661b1d5344277a",
+    "target/task-019-4-verification/models-01/MC_ObserverSession_challenge_unsafe.log": "131b3958f33e611908b0342f7f740da3d951de43302ed7f7c6b0aa78769529d0",
+    "target/task-019-4-verification/models-01/MC_ObserverSession_deadline_unsafe.log": "c1a1c6de6b919b179f30e0645ce83a11d40cad40b4f53c51c29069835324c9e1",
+    "target/task-019-4-verification/models-01/MC_ObserverSession_frame_unsafe.log": "2ed504f4bf2a497b7a473508cbf1a034079e7c5f1de9e8019f03e65543be27df",
+    "target/task-019-4-verification/models-01/MC_ObserverSession_identity_unsafe.log": "7eb5ababb940e6669a2a1639ccf7f0a8464c70cf576d68c3891017434d376be2",
+    "target/task-019-4-verification/models-01/MC_ObserverSession_repeat_unsafe.log": "b4aaa001ccdcc50ff667f9498bb326664edb000bc00d26298dd5e4b12542191b",
+    "target/task-019-4-verification/models-01/report.json": "92d8d36f1d57a8567c679426dc0f29ceeae8ad2398c3cf0f4037b6eb34d4f346",
+    "target/task-019-4-verification/models-accepted-inputs/MC_BoundedCapture.log": "9d8a34aea03a770004148a5777db5fa826f0bc2fc23cd78c9bef25bcc124fae2",
+    "target/task-019-4-verification/models-accepted-inputs/MC_BoundedCapture_admission_unsafe.log": "34270848d59a3617e8ae298171bea0055a21ed7f82b720f94664c578de6cb025",
+    "target/task-019-4-verification/models-accepted-inputs/MC_BoundedCapture_bytes_unsafe.log": "a0cd0a38deb4f4d61e287d9cc7c44faf38d20d62d2fc5ef34f7b010f3cdba25f",
+    "target/task-019-4-verification/models-accepted-inputs/MC_BoundedCapture_deadline_unsafe.log": "5e286dd173e3853b634cea7aab8cf5c80197ccf2c8fd358d396de49156f1a59f",
+    "target/task-019-4-verification/models-accepted-inputs/MC_BoundedCapture_generation_unsafe.log": "1a245260af335c1cdd448c98babdae24ab9ae0c9063728a29f39d486545c91a0",
+    "target/task-019-4-verification/models-accepted-inputs/MC_BoundedCapture_incomplete_unsafe.log": "8431501b675108c1a8904a5cef0d8ea64ed72f8cb167411cd8bd774525cae6b3",
+    "target/task-019-4-verification/models-accepted-inputs/MC_BoundedCapture_open_unsafe.log": "ee286f43e9f3bbe49e78af3493dbc19222d8d8b13b2bfb4003bd67c97a9865c2",
+    "target/task-019-4-verification/models-accepted-inputs/MC_BoundedCapture_order_unsafe.log": "6c03c2a4378312e3dc4f72e0eeea1dd92944e05e731367c6e61dcfcf9e751b24",
+    "target/task-019-4-verification/models-accepted-inputs/MC_BoundedCapture_release_unsafe.log": "aff5e4c57be831a8781b91dd2eec94b01b822f42e278043a189cc1ce40ada2c0",
+    "target/task-019-4-verification/models-accepted-inputs/MC_BoundedCapture_validation_unsafe.log": "eb35d3c916c4994a1250752f48751e9a8ed788c67117d7fce5e650d95492c8cc",
+    "target/task-019-4-verification/models-accepted-inputs/MC_BoundedCapture_write_unsafe.log": "ce11a44c5662eb343eae360bbd62e7da3ef8a177fd107cbd3972392b5ad2ba45",
+    "target/task-019-4-verification/models-accepted-inputs/MC_ObserverSession.log": "6e45d0722765720a8b97c6b05a88d08afebb6771526f795001de52732d2a35bd",
+    "target/task-019-4-verification/models-accepted-inputs/MC_ObserverSession_budget_unsafe.log": "d60441485d857c8fa4944990b4e13eadff135a6a24bfe7e97692708371eecdf1",
+    "target/task-019-4-verification/models-accepted-inputs/MC_ObserverSession_challenge_unsafe.log": "687c8a71fabbe91d81651480353cba44887b51b0a8f8ed0729f0bf4ab7151ed0",
+    "target/task-019-4-verification/models-accepted-inputs/MC_ObserverSession_deadline_unsafe.log": "83f0e9c66bbbab6da99063e06351ae16ebd39fccd6b73c7177d04357bdcd2df6",
+    "target/task-019-4-verification/models-accepted-inputs/MC_ObserverSession_frame_unsafe.log": "50ed2069ace57a70f0a0d0e4a8c5eed677d18e45fd94fba586619e4ef89dcf00",
+    "target/task-019-4-verification/models-accepted-inputs/MC_ObserverSession_identity_unsafe.log": "db00f2d1dc106f6dbbd91bd94557b98adcdb1644ad157188ef0c88dfce110c2f",
+    "target/task-019-4-verification/models-accepted-inputs/MC_ObserverSession_repeat_unsafe.log": "55d67f69fbada81c23184f2e160d5b496688bac3ef24a1452718d6fd616c216b",
+    "target/task-019-4-verification/models-accepted-inputs/report.json": "1dda46f118751264849b74cdf7a30e02fc89cfb32251bb87f87254df438d0610",
+    "target/task-019-4-verification/models-final/MC_BoundedCapture.log": "35b591c4f6c53e674826d4c0ee73a661dee5b8946861a2bfca6905a246b90cf3",
+    "target/task-019-4-verification/models-final/MC_BoundedCapture_admission_unsafe.log": "e2ecbfb285b958e85fadb6e7894c7d15bdfaa55f789119eea2504aa58975e01c",
+    "target/task-019-4-verification/models-final/MC_BoundedCapture_bytes_unsafe.log": "0efe662dbb32fdc7a4f91fdd661d0b65314286eb48bfb42f90e8dd34179e1f0a",
+    "target/task-019-4-verification/models-final/MC_BoundedCapture_deadline_unsafe.log": "aa9c180c5e1860b47eb3518c17d9baf9e90af6b4de7daa269aa05b26324d0c68",
+    "target/task-019-4-verification/models-final/MC_BoundedCapture_generation_unsafe.log": "2c48efb6097a78eff36e20e5e7115298656c9a54fe1519c4cae9475d28fa8127",
+    "target/task-019-4-verification/models-final/MC_BoundedCapture_incomplete_unsafe.log": "434a3bfe176277d0decd0ce88b668ae2d6623e3df72d7ffa904b5694d5a3c53b",
+    "target/task-019-4-verification/models-final/MC_BoundedCapture_open_unsafe.log": "8a9458f10719b5715b361834bbbe5f8c0d16982a09d99af03a95733736674f17",
+    "target/task-019-4-verification/models-final/MC_BoundedCapture_order_unsafe.log": "e3e45a206b3cf80b2c90c3991c26772cd3c1a1e50d797297b98947cd26e35afb",
+    "target/task-019-4-verification/models-final/MC_BoundedCapture_release_unsafe.log": "6164c2c6b31dd893cd9e53aecd4179721b0a496c34ef9ba330bfee91e25e4f36",
+    "target/task-019-4-verification/models-final/MC_BoundedCapture_validation_unsafe.log": "444b45fb117ca4f0f3dc3b59fe118a31f25aaa86f8fd7754be4d0593af3ad3b4",
+    "target/task-019-4-verification/models-final/MC_BoundedCapture_write_unsafe.log": "05011da95a8e2992676a3945b6e30902966230b6a47ff6481f234f934eb00413",
+    "target/task-019-4-verification/models-final/MC_ObserverSession.log": "be859f87618e57a8a4088ea12099f8aadc6cc2317a3d6116b4b4b2ef943581f7",
+    "target/task-019-4-verification/models-final/MC_ObserverSession_budget_unsafe.log": "2f7b8fc8dbefd0c40161764e2450bd187a91f716574816782d5fb8108b0cff73",
+    "target/task-019-4-verification/models-final/MC_ObserverSession_challenge_unsafe.log": "afad90e8106257c79f99e86f990e5918f72d254c4e37cc58685223ccd7d90619",
+    "target/task-019-4-verification/models-final/MC_ObserverSession_deadline_unsafe.log": "9d85b9f41e78699a5f7a1fedc03d51ae1ae57d438094e86f7c05a938e3070a97",
+    "target/task-019-4-verification/models-final/MC_ObserverSession_frame_unsafe.log": "f8080aa892c61fc19ed34062167da08db8c7f4f343fde90b39a9434d910d54fb",
+    "target/task-019-4-verification/models-final/MC_ObserverSession_identity_unsafe.log": "3f102ce163234786c3e506dbef26fff285718fbbff39691277276e6effcec4d4",
+    "target/task-019-4-verification/models-final/MC_ObserverSession_repeat_unsafe.log": "ff1e68db3937654fb293e9913ecf41287d18ed46508e8525e104efef8a631286",
+    "target/task-019-4-verification/models-final/report.json": "6f3bf4cb274ee6086dfa59d2b26c8bde9ee9105abcfe32543f1911b9d6dbc4ae",
+    "target/task-019-4-verification/models-reviewed/MC_BoundedCapture.log": "9a375063b2e6da1699a20a3d035b8d8dae84e2e1b2f67f0ada73e3c36b53c011",
+    "target/task-019-4-verification/models-reviewed/MC_BoundedCapture_admission_unsafe.log": "d264aa070b1aa5c897b7256f767f8a6b9eab93ff5f738c5d7c5b461011d16cda",
+    "target/task-019-4-verification/models-reviewed/MC_BoundedCapture_bytes_unsafe.log": "72ffd62a0a59aed11f79bb2e51f2340351113cf011c32a79d5b016ffa6f25b89",
+    "target/task-019-4-verification/models-reviewed/MC_BoundedCapture_deadline_unsafe.log": "096fb3c3e4729b865159771f84087b00a564cd4862836da7f49fa48fa5a1c6bb",
+    "target/task-019-4-verification/models-reviewed/MC_BoundedCapture_generation_unsafe.log": "74a2f954e59d28ce46d20edf416de3a78a5a82579f44494e32f11610707ac214",
+    "target/task-019-4-verification/models-reviewed/MC_BoundedCapture_incomplete_unsafe.log": "91dba7269249e9d7db784e2e8cd0e0118e128cee6805575a7545b5417e9d2a89",
+    "target/task-019-4-verification/models-reviewed/MC_BoundedCapture_open_unsafe.log": "d5687981faac6626943b8874757427195dcde277b310cf4ab6753eaf02db28ae",
+    "target/task-019-4-verification/models-reviewed/MC_BoundedCapture_order_unsafe.log": "440a4fa6f3970e9fa024b29b70db3112894cbe8e36d6b57aa6b8c443b8b824fa",
+    "target/task-019-4-verification/models-reviewed/MC_BoundedCapture_release_unsafe.log": "59c405d67ce0ca2fe35f7068a0fe8aa31f950577f63129f714472dd28c8b8580",
+    "target/task-019-4-verification/models-reviewed/MC_BoundedCapture_validation_unsafe.log": "91f99c6d8171262f540be0f8ad1e3015927f3dd251422107ca58fdf9dfb78f8d",
+    "target/task-019-4-verification/models-reviewed/MC_BoundedCapture_write_unsafe.log": "364faa4aa51afcfc77f302239c454f855365f6881455d6d9c918c8ce13876c97",
+    "target/task-019-4-verification/models-reviewed/MC_ObserverSession.log": "72b1cd52a99a7923fa90291615d4b47c0206c151d09104194a32858963410972",
+    "target/task-019-4-verification/models-reviewed/MC_ObserverSession_budget_unsafe.log": "152d6b8b4040487529053871d5dcc1a721418d0cc7634bd606f9a57eb65d8099",
+    "target/task-019-4-verification/models-reviewed/MC_ObserverSession_challenge_unsafe.log": "d3910790ca521a77d4243c163ebd63f43ae2e19f27e934c85adf1d4ce6e450c0",
+    "target/task-019-4-verification/models-reviewed/MC_ObserverSession_deadline_unsafe.log": "39f4aab8ba18ffa96634f9043b823df8cda4ff0849322e28f3f798344fb6924c",
+    "target/task-019-4-verification/models-reviewed/MC_ObserverSession_frame_unsafe.log": "bfeeb20fca8f3e3489c42e529c93f6f26b99c1da4d03ece194ac0c97d9ec7abc",
+    "target/task-019-4-verification/models-reviewed/MC_ObserverSession_identity_unsafe.log": "e9f345b091830487e55930a5efa7678597df6d9dee1d18da78e2b21a9e1b7ae5",
+    "target/task-019-4-verification/models-reviewed/MC_ObserverSession_repeat_unsafe.log": "d98da076f21c82de21134fff653045a564cce503036d8b28f7a655d7605249b3",
+    "target/task-019-4-verification/models-reviewed/report.json": "dac9297d0448ee987cbf002a3643ef6757320d18602a4bc429f6af741cf49bca",
+    "target/task-019-4-verification/rebuild-final.log": "2b3ac5789013f897a244c35a12c7fdea31c2e9fd10e30dac9699d5b94196b5b7",
+    "target/task-019-4-verification/rebuild-final.sh": "5a58d292955e8d6ca20b0af208647bc9f51fb5e6376b565425800f4ade2156a9",
+    "target/task-019-4-verification/rebuild.log": "c65d53e50842b27bcc597aa3ec2f2d22e3bf3fc5f31077893eabfd7d60ab2025",
+    "target/task-019-4-verification/rebuild.sh": "691dc140b754a9248b4ff665d1fece34dfeeba375542c065ba9a873b887cf253",
+    "target/task-019-4-verification/session-initial.log": "473686a65d6c0bcf53f1734a4047f40b5dd6a0064715b40b36ae8909bf009956",
+    "target/task-019-4-verification/session.log": "83e345f3035d5e0322f95845ab6591ac096a6936d7c294c4092458c26d159395",
+    "target/task-019-4-verification/Dockerfile": "a88f2f891a73b5bbce196f6f8534b8e17e020d6e1654c9dabbdeae5809c0d8b8",
+    "target/task-019-4-verification/source.tar": "e4edef00ea84fa0fbe07b0aa7add7cffb871f26ed12db552ce60380526ba326d",
+    "target/task-019-4-rust-verification/bindings-report.json": "6f3c589bdc80c5d7f58b01109eaf6d44e8dda2261de6dadf7987d03067ccf658",
+    "target/task-019-4-rust-verification/previous-inputs.txt": "6cdb956c2e08683d5fe787b584effb22be0df6311d5b43460a9317457ca176d9",
+    "target/task-019-4-rust-verification/previous-inputs.tar.gz": "7427b05aa4cfc9caf4cc7b767a38878dd8b31b968558842541055d5a8303d1f6",
+    "target/task-019-4-rust-verification/tests.log": "5ec074aa628b1442ead310acc2b93ea16f19a5de1c2605ef05e1df694ae7090e",
+    "target/task-019-4-rust-verification/previous-metadata.tar.gz": "b595d2a87fc11dadec09f4d8ac50cc09a977ffc537b945edf06900c742e2243d",
+    "target/task-019-4-rust-verification/models/MC_ObserverSession_repeat_unsafe.log": "d842fc1bebcbc949cba3bd628e3c098dbec283706d96d383a541b545dc19c406",
+    "target/task-019-4-rust-verification/models/report.json": "da03fd829ffc6dee52b469d44cfd9566f05d04c3dc3a19289dbc47dce940efea",
+    "target/task-019-4-rust-verification/models/MC_ObserverSession_deadline_unsafe.log": "3fd5347315674dea7ee08fe8c86a6537b8bb21353e628ae9b1e57539e67cb5a1",
+    "target/task-019-4-rust-verification/models/MC_BoundedCapture_order_unsafe.log": "cc015a6c6a29b9ce1e67fc3271cb509f9881743256694897195d843be19a30b6",
+    "target/task-019-4-rust-verification/models/MC_BoundedCapture_validation_unsafe.log": "62ace4379474fdf63672d97b3df9e88ea1282339791bb08a8eb22f745924fb38",
+    "target/task-019-4-rust-verification/models/MC_BoundedCapture_incomplete_unsafe.log": "32dcdaaa5e6c7f22ccc7268bb8b7d7f8049865fae380c00868f19d73ae5f8f45",
+    "target/task-019-4-rust-verification/models/MC_ObserverSession_challenge_unsafe.log": "b051e37adb35468e6e27c269b764ed1c52b1ea39641effd6484d336c79e3539e",
+    "target/task-019-4-rust-verification/models/MC_ObserverSession_identity_unsafe.log": "b6f76eab7541bb494e7d21b986979fe5c3e2cf0547851141025550d29a1e6e6b",
+    "target/task-019-4-rust-verification/models/MC_BoundedCapture_open_unsafe.log": "7a0bf069b1edf9b8e5d795f16f07e5587ff73bba2c2ca3aa010a8ba863ccc878",
+    "target/task-019-4-rust-verification/models/MC_BoundedCapture_write_unsafe.log": "8427236f52601a02eccd0135ed3725fa59c3983cf68ca1d344b21f38f2d490e9",
+    "target/task-019-4-rust-verification/models/MC_BoundedCapture_deadline_unsafe.log": "ffa771b2809fa2c2d852719ae148e50d2eebfe4381adbfffebc0b77550e4594c",
+    "target/task-019-4-rust-verification/models/MC_ObserverSession.log": "85d5077ad3bec02ac2840a37f231ca8a2119971231e007d2efb52e918be6ec0d",
+    "target/task-019-4-rust-verification/models/MC_BoundedCapture_admission_unsafe.log": "13af2ff34f6f966ed17f1360df4b3b1d950a6754253acc337ea5b19912f748ab",
+    "target/task-019-4-rust-verification/models/MC_BoundedCapture_release_unsafe.log": "cc5223cc1aec7d7e284cef01d8980c0680d8208b2a85b6c7f898b9c953fc00b3",
+    "target/task-019-4-rust-verification/models/MC_ObserverSession_budget_unsafe.log": "3f283d9be7a5239d9622367a4a408a7ff545b8447d362df81dd9574b83d2eb46",
+    "target/task-019-4-rust-verification/models/MC_BoundedCapture_generation_unsafe.log": "4d69ffdff534f299a55f26a881426eeb79f9873948472a38b0586de60375e965",
+    "target/task-019-4-rust-verification/models/MC_BoundedCapture.log": "1c3d942b299694127b3e5dae813eda24981a4bb7bc1a5163a70f9b220e916fe3",
+    "target/task-019-4-rust-verification/models/MC_ObserverSession_frame_unsafe.log": "8b380a596971b939667361ca3b02917b0ca60590ff965ac6089b2b86e365f8a0",
+    "target/task-019-4-rust-verification/models/MC_BoundedCapture_bytes_unsafe.log": "8a211dcfc5e146d201b69bfcadfbab7490720e3e27cd4a8025ab724f552f1d78"
+  },
+  "acceptance": {
+    "status": "pending",
+    "eligible_maintainers": [
+      "spreston8",
+      "dylon",
+      "metaweta",
+      "jeffrey-l-turner",
+      "jltatbeach"
+    ],
+    "proposed_reviewer": "jltatbeach",
+    "accepted_by": null,
+    "acceptance_record": null,
+    "claims": [
+      "CLAIM-CASPER-NODE-OBSERVATION-001",
+      "CLAIM-CASPER-NODE-OBSERVATION-002"
+    ]
+  },
+  "historical_packages": [
+    "docs/cbc-evidence/runs/casper-node-claim-gate-6ea6bf029-01/report.json",
+    "docs/cbc-evidence/runs/casper-node-deadline-correction-4561e064a-01/report.json",
+    "docs/cbc-evidence/runs/casper-node-claim-gate-4aa93d11c-02/report.json"
+  ],
+  "strict_audit": {
+    "path": "docs/cbc-evidence/runs/casper-node-claim-gate-4aa93d11c-03/strict-audit.json",
+    "sha256": "647392fcd47878a38b429de5d84bfe3a36ea0e53caedea1af46cb1cdec1eea44",
+    "exit": 4,
+    "mandatory_artifacts": 8,
+    "pending_artifacts": 8,
+    "meaning": "The status gate remains closed pending named maintainer acceptance. The source binding check passed separately."
+  },
+  "tool_replacement": {
+    "manifest": "scripts/node-observation/Cargo.toml",
+    "commands": [
+      "models",
+      "bindings"
+    ],
+    "sources": {
+      "scripts/node-observation/Cargo.lock": "002e0bb17415c1c20ef5c5eccf6e128506666eebf8c4ea1bbc7fde1418286f7a",
+      "scripts/node-observation/Cargo.toml": "13ffce259c3c68e74d6f30b1dd2189a4dc95ee66d8effb2254cc939c58c58cf9",
+      "scripts/node-observation/src/bindings.rs": "02f1155984b1ce20056fdd6b431f80f212b607ad1a2b04fcc71790857323765f",
+      "scripts/node-observation/src/main.rs": "5a4a1359936abe2c93f2a056887c103a1d8e3b6a6d4102462493629d69811a20",
+      "scripts/node-observation/src/models.rs": "7f065c94591cdebdf3720e55b56b9feff303171df8116c38e1f7faf5a6112016",
+      "scripts/node-observation/src/tests.rs": "66f656a3a6ac2a97f3811cbd3556cbbd4d175fc3a6c419ec43fa589c1a4206ab"
+    },
+    "executable_sha256": "cf05ad86e6e1109c84de44cdc3d6dfdedc92099122272328abd8a93abf97fc20",
+    "removed": [
+      "scripts/ci/check-node-observation.py",
+      "scripts/ci/test-check-node-observation.py",
+      "scripts/ci/check-node-observation-bindings.py",
+      "scripts/ci/test-check-node-observation-bindings.py"
+    ],
+    "node_workspace_dependencies_changed": false,
+    "prior_source_archive": "target/task-019-4-rust-verification/previous-inputs.tar.gz",
+    "prior_source_archive_sha256": "7427b05aa4cfc9caf4cc7b767a38878dd8b31b968558842541055d5a8303d1f6",
+    "prior_metadata_archive": "target/task-019-4-rust-verification/previous-metadata.tar.gz",
+    "prior_metadata_archive_sha256": "b595d2a87fc11dadec09f4d8ac50cc09a977ffc537b945edf06900c742e2243d"
+  }
+}

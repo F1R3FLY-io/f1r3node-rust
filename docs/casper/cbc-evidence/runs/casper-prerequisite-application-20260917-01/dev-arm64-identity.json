@@ -1,0 +1,86 @@
+{
+  "artifact_id": 10454758648,
+  "archive_sha256": "ab4c163c62a52da404220b17cc0ce8812d929c3cb34164335a880b087870c276",
+  "workflow_run_id": 35114194633,
+  "source_revision": "a2fe60c7255bf4ba035d41fb65b6d6f1c0f02632",
+  "platform": "linux/arm64",
+  "image_digest": "sha256:353c94638b61ff4bcff3b80ed29de093380b6995d0bb1540685b27a077aa6259",
+  "image_config_digest": "sha256:a9bcec6743eac420fd001bc03f81fee36e7e3f6490f1852055e1a822ca6cfb21",
+  "node_binary": {
+    "path": "opt/docker/bin/node",
+    "sha256": "590ea71c58828b4cb49eb0e2e5eccec8a1a12d3b39cb5465c708e042df5fcf98",
+    "size": 74763232
+  },
+  "verified_blob_count": 10,
+  "node_binary_layer_occurrences": 2,
+  "image_manifest": {
+    "schemaVersion": 2,
+    "mediaType": "application/vnd.oci.image.manifest.v1+json",
+    "config": {
+      "mediaType": "application/vnd.oci.image.config.v1+json",
+      "digest": "sha256:a9bcec6743eac420fd001bc03f81fee36e7e3f6490f1852055e1a822ca6cfb21",
+      "size": 5642
+    },
+    "layers": [
+      {
+        "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+        "digest": "sha256:75782e20ea1f4a9d9259bc20a5ecbbea8d5943bf5370bf0f5727900728f1cc9a",
+        "size": 28117289
+      },
+      {
+        "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+        "digest": "sha256:e42f1e9e8cdbb316fc780cc1c0b9d1a6d99cac571613789af8c6d8953a99ca20",
+        "size": 6491406
+      },
+      {
+        "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+        "digest": "sha256:a6b1099805deef5d1968cf631027f13857b86449489e2bbde4e145a08dbd025d",
+        "size": 7178881
+      },
+      {
+        "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+        "digest": "sha256:3a699528b3fa4f9bbc2640129f9f1b3677ffc1f298bdf3959ac596c6a49f6cf9",
+        "size": 116
+      },
+      {
+        "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+        "digest": "sha256:3e5c977451af3c7ff199f2d1317ab1ffd2d82879fe0e9fa2c22c59d723e27a59",
+        "size": 133
+      },
+      {
+        "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+        "digest": "sha256:c3b11398ef9f66ae77e4565140213ed5f91a00923576156c972730c749b1d683",
+        "size": 25372971
+      },
+      {
+        "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+        "digest": "sha256:82e234be0ae4c9fe13e9a0cb6c8bbd51b2c523acf3e3dd3eac770594931f47c8",
+        "size": 1190
+      },
+      {
+        "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+        "digest": "sha256:029a70b874205e1cd80efb383fc8c4e523744931ec5e61cbae698751c6b69bc9",
+        "size": 25374296
+      }
+    ]
+  },
+  "image_index": {
+    "schemaVersion": 2,
+    "mediaType": "application/vnd.oci.image.index.v1+json",
+    "manifests": [
+      {
+        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        "digest": "sha256:353c94638b61ff4bcff3b80ed29de093380b6995d0bb1540685b27a077aa6259",
+        "size": 1817,
+        "annotations": {
+          "io.containerd.image.name": "docker.io/f1r3flyindustries/f1r3fly-rust:arm64",
+          "org.opencontainers.image.created": "2026-09-16T15:36:59Z",
+          "org.opencontainers.image.ref.name": "arm64"
+        }
+      }
+    ]
+  },
+  "provenance_kind": "github_actions_run_and_workflow_source",
+  "artifact_attestation_verified": false,
+  "node_executed": false
+}

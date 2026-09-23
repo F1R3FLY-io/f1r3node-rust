@@ -25,6 +25,10 @@ name: Slashing test suite
 on:
   workflow_dispatch:
     inputs:
+      require_casper_discharge:
+        description: Require complete pre-merge Casper claim discharge, not an audit with pending claims.
+        type: boolean
+        default: false
       run_exhaustive:
         description: >-
           Also run the exhaustive TLA+ tier (RUN_EXHAUSTIVE_TLA=1): the
@@ -82,15 +86,14 @@ jobs:
           toolchain: nightly-2026-02-09
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
-          save-if: >-
-            ${{ github.event_name == 'push' &&
-            (github.ref == 'refs/heads/dev' ||
-            github.ref == 'refs/heads/master') }}
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/master') }}
       - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y protobuf-compiler libprotobuf-dev \
             libssl-dev pkg-config libclang-dev clang cmake jq binutils
+      - name: Check observer strip equivalence controls
+        run: bash scripts/ci/test-check-node-observation-bindings.sh
       - name: Run node observation binding tests
         run: |
           bash scripts/ci/check-node-observation-bindings.sh \
@@ -107,6 +110,7 @@ jobs:
             ${{ runner.temp }}/node-observation-bindings/*.list
             ${{ runner.temp }}/node-observation-bindings/*.exit
             ${{ runner.temp }}/node-observation-bindings/*.jsonl
+            ${{ runner.temp }}/node-observation-bindings/canonical-wire/
           retention-days: 14
           if-no-files-found: error
 
@@ -265,6 +269,11 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
+          ref: ${{ github.sha }}
+      - name: Test formal gate controls
+        run: bash scripts/ci/test-check-formal-gate.sh
+      - name: Record TLA verification inputs
+        run: bash scripts/ci/check-formal-gate.sh record tla-model-check target/formal-provenance-tla
       - name: Install Java + TLC
         # Pinned release + sha256 (same fail-closed pattern as the OCI CLI
         # installer pin in _integration-pipeline.yml): a moved or compromised
@@ -293,22 +302,80 @@ jobs:
           else
             bash scripts/ci/check-tla-invariants.sh --soak-pr
           fi
+      - name: Install Rust for the Casper harness
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: nightly-2026-02-09
+      - name: Check the Casper model result records
+        run: |
+          cargo build --locked -p casper-soak
+          bash scripts/ci/check-casper-soak-models.sh --output-dir target/casper-model-evidence
+      - name: Complete TLA verification receipt
+        run: bash scripts/ci/check-formal-gate.sh complete tla-model-check target/formal-provenance-tla
+      - name: Retain TLA verification provenance
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: formal-provenance-tla-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/formal-provenance-tla
+          if-no-files-found: error
       - name: Retain TLA+ logs
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: tla-invariant-logs-${{ github.run_id }}-${{ github.run_attempt }}
-          path: /tmp/tlc-*.log
+          path: |
+            /tmp/tlc-*.log
+            target/casper-model-evidence
           if-no-files-found: warn
 
+  casper-driver-bindings:
+    name: Casper driver binding fixtures
+    needs: tla-model-check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - name: Install Rust for the Casper harness
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: nightly-2026-02-09
+          targets: x86_64-unknown-linux-musl
+      - name: Check model, claim-audit, and interruption regressions
+        run: cargo test --locked -p casper-soak --test models --test claims --test interruption
+      - name: Audit Casper claim identities and discharge evidence
+        run: cargo run --locked -p casper-soak --bin check-casper-claims -- --output target/casper-claim-audit.json
+      - name: Require complete Casper claim discharge
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.require_casper_discharge }}
+        run: cargo run --locked -p casper-soak --bin check-casper-claims -- --strict --output target/casper-claim-strict.json
+      - name: Check isolated driver bindings and actual case counts
+        run: bash scripts/ci/check-casper-soak-bindings.sh --output target/casper-binding-evidence
+      - name: Retain source-bound fixture evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: casper-driver-bindings-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/casper-binding-evidence/report.json
+            target/casper-binding-evidence/evidence.tar.gz
+            target/casper-claim-audit.json
+            target/casper-claim-strict.json
+          if-no-files-found: error
+
   rocq-build:
-    name: Rocq slashing, fork-choice and rspace-guards rebuild
+    name: Rocq construction and node wire correspondence
+    needs: node-observation-bindings
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
+          ref: ${{ github.sha }}
+      - name: Record Rocq verification inputs
+        run: bash scripts/ci/check-formal-gate.sh record rocq-build target/formal-provenance-rocq
       - name: Install Rocq / Coq
         run: |
           sudo apt-get update
@@ -320,6 +387,64 @@ jobs:
         run: |
           eval "$(opam env)"
           bash scripts/ci/check-formal-invariants.sh --rocq
+      - name: Retrieve node binding evidence for this attempt
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: node-observation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/node-binding-evidence
+      - name: Check production wire correspondence
+        run: |
+          eval "$(opam env)"
+          shasum -a 256 -c target/node-binding-evidence/inputs.sha256 \
+            > target/node-binding-evidence/canonical-wire/node-inputs-check.log
+          bash scripts/ci/check-node-canonical-wire.sh verify \
+            target/node-binding-evidence/canonical-wire
+      - name: Retain wire correspondence evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: node-wire-correspondence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/node-binding-evidence/canonical-wire
+          if-no-files-found: error
+          retention-days: 14
+      - name: Complete Rocq verification receipt
+        run: bash scripts/ci/check-formal-gate.sh complete rocq-build target/formal-provenance-rocq
+      - name: Retain Rocq verification provenance
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: formal-provenance-rocq-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/formal-provenance-rocq
+          if-no-files-found: error
+
+  formal-verification-gate:
+    name: Formal verification gate
+    if: always()
+    needs: [tla-model-check, rocq-build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      FORMAL_TLA_RESULT: ${{ needs.tla-model-check.result }}
+      FORMAL_ROCQ_RESULT: ${{ needs.rocq-build.result }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - name: Require successful prerequisites
+        run: bash scripts/ci/check-formal-gate.sh status
+      - name: Retrieve TLA receipt for this attempt
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: formal-provenance-tla-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/formal-receipts/tla-model-check
+      - name: Retrieve Rocq receipt for this attempt
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: formal-provenance-rocq-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/formal-receipts/rocq-build
+      - name: Verify independent source and run identities
+        run: bash scripts/ci/check-formal-gate.sh verify target/formal-receipts
 
   search-horizon-smoke:
     name: Search-horizon smoke tier (10k fuzz runs)
