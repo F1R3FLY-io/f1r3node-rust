@@ -139,9 +139,7 @@ if [[ "$SOAK_PR" == true ]]; then
     TLC_WORKERS=2
 fi
 
-POST_FIX_CONFIGS+=(casper_soak/MC_CasperSoakHarness
-    node_observation/MC_ObserverSession
-    node_observation/MC_BoundedCapture)
+POST_FIX_CONFIGS+=(casper_soak/MC_CasperSoakHarness)
 
 if [[ "${RUN_EXHAUSTIVE_TLA:-0}" == "1" ]]; then
     POST_FIX_CONFIGS+=(

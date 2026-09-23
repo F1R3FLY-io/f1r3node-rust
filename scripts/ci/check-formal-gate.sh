@@ -12,7 +12,7 @@ snapshot() {
     case "${GITHUB_EVENT_NAME:-}" in pull_request|push|schedule|workflow_dispatch) ;; *) fail 'Unexpected event.';; esac
     [[ "${GITHUB_WORKFLOW_REF:-}" == "$GITHUB_REPOSITORY/.github/workflows/slashing-tests.yml@"* ]] || fail 'Unexpected workflow.'
     [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]] || fail 'Checkout identity differs.'
-    local -a paths=(.github/workflows/slashing-tests.yml scripts/ci/check-formal-gate.sh scripts/ci/test-check-formal-gate.sh scripts/ci/check-tla-invariants.sh scripts/ci/check-formal-invariants.sh scripts/ci/check-casper-soak-models.sh scripts/bench/casper-soak.sh scripts/casper-soak formal/tlaplus formal/rocq/slashing formal/rocq/fork_choice formal/rocq/rspace_guards Cargo.toml Cargo.lock rust-toolchain.toml .cargo/config.toml)
+    local -a paths=(.github/workflows/slashing-tests.yml scripts/ci/check-formal-gate.sh scripts/ci/test-check-formal-gate.sh scripts/ci/check-tla-invariants.sh scripts/ci/check-formal-invariants.sh scripts/ci/check-casper-soak-models.sh scripts/bench/casper-soak.sh scripts/casper-soak formal/tlaplus formal/rocq/slashing formal/rocq/fork_choice formal/rocq/rspace_guards formal/rocq/node_observation Cargo.toml Cargo.lock rust-toolchain.toml .cargo/config.toml)
     git diff --quiet HEAD -- "${paths[@]}" || fail 'Verification sources changed.'
     local untracked inventory
     untracked=$(git ls-files --others --exclude-standard -- "${paths[@]}") || fail 'Cannot inspect untracked inputs.'
