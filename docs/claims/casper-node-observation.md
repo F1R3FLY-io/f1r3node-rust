@@ -15,55 +15,35 @@ artifacts:
   - node/src/rust/runtime/node_runtime.rs
   - node/src/rust/diagnostics/tests.rs
   - node/tests/soak_observer.rs
-  - formal/tlaplus/node_observation/BoundedCapture.tla
-  - formal/tlaplus/node_observation/MC_BoundedCapture.cfg
-  - formal/tlaplus/node_observation/MC_BoundedCapture.tla
-  - formal/tlaplus/node_observation/MC_BoundedCapture_admission_unsafe.cfg
-  - formal/tlaplus/node_observation/MC_BoundedCapture_admission_unsafe.tla
-  - formal/tlaplus/node_observation/MC_BoundedCapture_bytes_unsafe.cfg
-  - formal/tlaplus/node_observation/MC_BoundedCapture_bytes_unsafe.tla
-  - formal/tlaplus/node_observation/MC_BoundedCapture_deadline_unsafe.cfg
-  - formal/tlaplus/node_observation/MC_BoundedCapture_deadline_unsafe.tla
-  - formal/tlaplus/node_observation/MC_BoundedCapture_generation_unsafe.cfg
-  - formal/tlaplus/node_observation/MC_BoundedCapture_generation_unsafe.tla
-  - formal/tlaplus/node_observation/MC_BoundedCapture_incomplete_unsafe.cfg
-  - formal/tlaplus/node_observation/MC_BoundedCapture_incomplete_unsafe.tla
-  - formal/tlaplus/node_observation/MC_BoundedCapture_open_unsafe.cfg
-  - formal/tlaplus/node_observation/MC_BoundedCapture_open_unsafe.tla
-  - formal/tlaplus/node_observation/MC_BoundedCapture_order_unsafe.cfg
-  - formal/tlaplus/node_observation/MC_BoundedCapture_order_unsafe.tla
-  - formal/tlaplus/node_observation/MC_BoundedCapture_release_unsafe.cfg
-  - formal/tlaplus/node_observation/MC_BoundedCapture_release_unsafe.tla
-  - formal/tlaplus/node_observation/MC_BoundedCapture_validation_unsafe.cfg
-  - formal/tlaplus/node_observation/MC_BoundedCapture_validation_unsafe.tla
-  - formal/tlaplus/node_observation/MC_BoundedCapture_write_unsafe.cfg
-  - formal/tlaplus/node_observation/MC_BoundedCapture_write_unsafe.tla
-  - formal/tlaplus/node_observation/MC_ObserverSession.cfg
-  - formal/tlaplus/node_observation/MC_ObserverSession.tla
-  - formal/tlaplus/node_observation/MC_ObserverSession_budget_unsafe.cfg
-  - formal/tlaplus/node_observation/MC_ObserverSession_budget_unsafe.tla
-  - formal/tlaplus/node_observation/MC_ObserverSession_challenge_unsafe.cfg
-  - formal/tlaplus/node_observation/MC_ObserverSession_challenge_unsafe.tla
-  - formal/tlaplus/node_observation/MC_ObserverSession_deadline_unsafe.cfg
-  - formal/tlaplus/node_observation/MC_ObserverSession_deadline_unsafe.tla
-  - formal/tlaplus/node_observation/MC_ObserverSession_frame_unsafe.cfg
-  - formal/tlaplus/node_observation/MC_ObserverSession_frame_unsafe.tla
-  - formal/tlaplus/node_observation/MC_ObserverSession_identity_unsafe.cfg
-  - formal/tlaplus/node_observation/MC_ObserverSession_identity_unsafe.tla
-  - formal/tlaplus/node_observation/MC_ObserverSession_repeat_unsafe.cfg
-  - formal/tlaplus/node_observation/MC_ObserverSession_repeat_unsafe.tla
   - formal/tlaplus/node_observation/ObserverSession.tla
+  - formal/tlaplus/node_observation/MC_ObserverSession.tla
+  - formal/tlaplus/node_observation/MC_ObserverSession.cfg
+  - formal/tlaplus/node_observation/MC_ObserverSession_freshness_pre_fix.tla
+  - formal/tlaplus/node_observation/MC_ObserverSession_freshness_pre_fix.cfg
+  - formal/tlaplus/node_observation/MC_ObserverSession_challenge_unsafe.tla
+  - formal/tlaplus/node_observation/MC_ObserverSession_challenge_unsafe.cfg
+  - formal/tlaplus/node_observation/MC_ObserverSession_identity_unsafe.tla
+  - formal/tlaplus/node_observation/MC_ObserverSession_identity_unsafe.cfg
+  - formal/tlaplus/node_observation/MC_ObserverSession_frame_unsafe.tla
+  - formal/tlaplus/node_observation/MC_ObserverSession_frame_unsafe.cfg
+  - formal/tlaplus/node_observation/MC_ObserverSession_deadline_unsafe.tla
+  - formal/tlaplus/node_observation/MC_ObserverSession_deadline_unsafe.cfg
+  - formal/tlaplus/node_observation/MC_ObserverSession_repeat_unsafe.tla
+  - formal/tlaplus/node_observation/MC_ObserverSession_repeat_unsafe.cfg
+  - formal/tlaplus/node_observation/MC_ObserverSession_budget_unsafe.tla
+  - formal/tlaplus/node_observation/MC_ObserverSession_budget_unsafe.cfg
   - formal/tlaplus/node_observation/README.md
-  - formal/tlaplus/node_observation/bindings.json
   - formal/tlaplus/node_observation/verification-plan.json
+  - formal/tlaplus/node_observation/bindings.json
+  - formal/rocq/node_observation/_CoqProject
+  - formal/rocq/node_observation/README.md
+  - formal/rocq/node_observation/theories/ObserverSession.v
+  - formal/rocq/node_observation/theories/MainTheorem.v
   - scripts/ci/check-tla-invariants.sh
   - scripts/ci/test-check-tla-invariants.sh
-  - scripts/node-observation/Cargo.toml
-  - scripts/node-observation/Cargo.lock
-  - scripts/node-observation/src/main.rs
-  - scripts/node-observation/src/models.rs
-  - scripts/node-observation/src/bindings.rs
-  - scripts/node-observation/src/tests.rs
+  - scripts/ci/check-formal-invariants.sh
+  - scripts/ci/check-node-observation-bindings.sh
+  - .github/workflows/slashing-tests.yml
 refutation: pending
 construction: pending
 binding: pending
@@ -137,6 +117,10 @@ A request includes `schema_version`, `request_id`, `incarnation`, `challenge`, `
 
 The only operation is `capabilities`. The request identifier uses canonical lowercase syntax for a Universally Unique Identifier (UUID).
 
+The challenge combines a random UUID, a colon, and the decimal hello-event sequence. The peer must echo the complete challenge unchanged.
+
+The checked event counter prevents challenge reuse within one observer lifetime, even when random UUIDs repeat. Cross-incarnation freshness remains a separate verification obligation.
+
 A successful response includes the original request digest, identity, sequence, and monotonic timestamp. All five listed profile capabilities remain unsupported, and `live_profile_qualified` is false.
 
 Each connection accepts one request. The observer serves one connection at a time and closes rejected or expired sessions.
@@ -181,6 +165,18 @@ The earlier Batch A report remains unchanged. Its passing transport tests did no
 
 Batch B remains unapproved. The [revised proposal](../plans/casper-node-observation-batch-b.md) separates bounded storage capture from later authority evaluation.
 
+## Verification scope confirmation
+
+The user confirmed the TASK-019-4 implementation scope after the property review. This confirmation includes formal inputs, binding tests, the freshness correction, and high-weight mandatory tags.
+
+The first verification cycle concerns challenge allocation and replay within one observer lifetime. It does not discharge the other properties or establish cross-incarnation uniqueness.
+
+The user then confirmed reconciliation with the broader downstream models on the node branch. The expanded inventory preserves both model families and the repeated-entropy control.
+
+The node branch owns the canonical models, configurations, and property map. Downstream integration must combine gate registrations without removing either branch's required checks.
+
+This reconciliation does not establish complete Rust correspondence or claim acceptance.
+
 ## Verification requirements
 
 Retain failing controls for configuration, permissions, peer identity, request identity, replay, frame bounds, deadlines, and cleanup.
@@ -190,17 +186,3 @@ Verify disabled behavior and existing configuration regressions. Verify that sou
 Unit and integration tests supply evidence but do not discharge this claim. Source-bound verification and explicit acceptance remain pending.
 
 This work does not change the harness claims, approve a campaign, publish images, or merge a pull request.
-
-## Bounded verification package
-
-The [TASK-019-4 package](../cbc-evidence/runs/casper-node-claim-gate-4aa93d11c-03/report.json) records the current source inputs and results.
-The [model scope](../../formal/tlaplus/node_observation/README.md) states the bounds, assumptions, and limits of the source correspondence.
-
-Two positive models and 16 negative controls support the construction and refutation tiers.
-The binding inventory maps all 23 properties across both claims to executable tests.
-The binding check verifies source bytes and named passing tests. It does not prove a machine-checked refinement.
-
-The isolated native Linux rebuild passed 65 tests and strict Clippy. One peer helper remains ignored during direct invocation.
-The generation regression fails when its production rejection check is disabled. The corrected source passes the same test.
-
-These results are ready for maintainer review. Claim status and formal tier acceptance remain pending until a named maintainer accepts the exact package.

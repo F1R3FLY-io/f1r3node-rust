@@ -183,51 +183,58 @@ tasks:
   - id: TASK-019-4
     title: "Source-bound verification and acceptance of the Batch A and Batch B1 claims"
     status: in_progress
-    implementation_status: complete
-    verification_status: bounded_models_and_source_bindings_passed
-    remaining_gate: named_maintainer_acceptance
     claimed_by: pi-session-01a0afde-d35c-70a2-b8c9-39aa11cbdfca
     claimed_at: 2026-09-22T14:15:47Z
     blocked_by: []
-    execution_revision: 4aa93d11cf7a4c318074975dd4266208575c8aca
-    verification_working_tree: true
-    verification_source_manifest: docs/cbc-evidence/runs/casper-node-claim-gate-4aa93d11c-03/sources.sha256
+    execution_revision: 6ea6bf029dc57caf1e5fb512a0eba88a846e959a
     correction_checkout_base: 4561e064a70b495fe07cbcf779bff375d636aaad
     correction_working_tree: true
     correction_source_manifest: docs/cbc-evidence/runs/casper-node-deadline-correction-4561e064a-01/sources.sha256
     work_log: docs/work-logs/task-019-4-node-claim-verification.md
     evidence:
-      - docs/cbc-evidence/runs/casper-node-claim-gate-4aa93d11c-03/report.json
-      - docs/cbc-evidence/runs/casper-node-claim-gate-4aa93d11c-02/report.json
       - docs/cbc-evidence/runs/casper-node-claim-gate-6ea6bf029-01/report.json
       - docs/cbc-evidence/runs/casper-node-deadline-correction-4561e064a-01/report.json
+      - docs/cbc-evidence/runs/casper-node-challenge-freshness-3b1d2465a-01/report.json
+      - docs/cbc-evidence/runs/casper-node-model-reconciliation-10e7b8452-01/report.json
+    verification_scope_confirmed: true
+    verification_cycle: model-reconciliation-01
+    reconciliation_checkout_base: 10e7b8452824e12a1fe2743dca7989b79fce2133
+    reconciliation_working_tree: true
     claims: [CLAIM-CASPER-NODE-OBSERVATION-001, CLAIM-CASPER-NODE-OBSERVATION-002]
     eligible_maintainers: [spreston8, dylon, metaweta, jeffrey-l-turner, jltatbeach]
     proposed_reviewer: jltatbeach
     accepted_by: null
     acceptance_record: null
     notes:
-      - "The source correction is committed. The new verification package uses the checkout base plus an uncommitted generation regression and formal evidence."
-      - "Both bounded models pass. All 16 negative controls produce the exact expected counterexample."
-      - "The verification tools now use Rust. Eight checker tests, strict Clippy, all model checks, and all property bindings pass."
-      - "The isolated native rebuild passes 65 tests and strict Clippy. Disabling generation rejection makes its new regression fail."
-      - "The binding check covers all 23 properties and verifies 1,130 isolated build inputs. This is not a machine-checked refinement."
-      - "Both claim inventories include the models and verification scripts. The CI gate runs the models in both tiers."
-      - "The strict status audit returns exit 4 for eight pending artifacts, including the shared CI gate."
-      - "Seven existing evidence records and the CI registration record identify the new package. Historical evidence and separate claims remain intact."
-      - "The acceptance request is prepared in the package README. Named maintainer acceptance and discharge remain pending."
       - "The user placed this gate before B2 planning. B2 is not a prerequisite for verification of Batch A and B1."
+      - "The implementation input is available at the execution revision. TASK-019-2 remains open for this acceptance review, not as a circular prerequisite."
+      - "Maintainer identities do not constitute acceptance. Approval must name the reviewed revision, both claims, and the evidence package."
+      - "The initial intake had seven pending mandatory artifacts and no observer-specific formal inputs. The confirmed verification scope adds formal and gate artifacts."
+      - "The initial package retains the lock-deadline counterexample and the interface fixture failure."
+      - "The user approved the five-file correction. All three capture locks use a checked deadline, and the test hashes its executable before the handshake."
+      - "The corrected isolated run passed 577 test executions, strict Clippy, the workspace check, and formatting checks. The interface executable has a separate debug-stripped identity."
+      - "Production limits remain unchanged. The repeated-nonce regression failed before the correction and passed afterward. The new isolated run passed 580 test executions."
+      - "TLC passed the challenge model and its expected freshness violation. Four allocation theorems passed Rocq kernel checking with closed assumption sets."
+      - "The bounded TLC gate passed 14 positive configurations and 62 expected violations. These results do not discharge either combined claim."
+      - "The canonical model set combines the broader downstream models with the node freshness control. Both claim records remain pending."
+      - "The reconciliation gate passed 15 positive configurations and 78 expected violations. All 17 node controls remain registered, with four closed Rocq assumption sets."
+      - "The isolated binding driver passed 276 executions. Its input base is node revision 10e7b8452, not a harness merge revision."
+      - "The node package owns gate registration evidence. The harness keeps its primary gate record without node claim digests."
+      - "No standalone checker crate was added. Downstream must remove its checker crate or include it in the supply-chain audit."
+      - "Cross-incarnation identity, remaining construction proofs, Kani harnesses, complete Rust correspondence, and named maintainer acceptance remain pending."
     acceptance:
       - "Strict source-bound audits pass for every artifact in both claim inventories at the accepted revision."
       - "Refutation, construction, and binding tiers are recorded with retained failing controls."
       - "An isolated rebuild runs the interface and capture suites. The Batch A and B1 reports record native runs only."
       - "Acceptance is recorded by a named maintainer. Passing tests alone do not discharge a claim."
     implementation_plan:
-      - "Step 1. Author bounded TLA+ models under formal/tlaplus/node_observation/: MC_ObserverSession for challenge freshness, one request per session, deadline expiry, and session budget; MC_BoundedCapture for guard order, transaction-identity interval, environment-change rejection, incomplete-row rejection, and guard release. Add negative controls beside each positive configuration."
-      - "Step 2. Register both models in scripts/ci/check-tla-invariants.sh and add the model files to both claim inventories. Record the refutation tier from the negative controls and the construction tier from the positive checks."
-      - "Step 3. Rerun the isolated rebuild at corrected revision de93425ee or later. Create a new casper-node-claim-gate-<revision>-02 package. Audit both explicit claim inventories. Bind every required property to named passing tests and matching isolated source inputs. A status audit alone cannot establish binding."
-      - "Step 4. Request acceptance from the proposed reviewer as a PR #447 review comment that names the revision, both claim IDs, and the package path."
-      - "Step 5. Record acceptance: fill accepted_by and acceptance_record, flip both claim files from pending, set verified_at on the seven records, and run the CbC discharge so the strict gate exits clean."
+      - "Step 1. Refutation tier. Author bounded TLA+ models under formal/tlaplus/node_observation/: MC_ObserverSession for challenge freshness, one request per session, deadline expiry, and session budget; MC_BoundedCapture for guard order, transaction-identity interval, environment-change rejection, incomplete-row rejection, and guard release. Register each clean configuration and one expected-violation configuration per defect class in scripts/ci/check-tla-invariants.sh. The clean run must pass and each violation must fail on its named invariant with TLC exit 12. Record the instance bounds in the area README. This tier yields bounded refutation evidence only."
+      - "Step 2. Applicability review per property. For each property in both claims, record in the area README whether it is bounded by design or unbounded, following docs/cbc-verification-tiers.md. A resource limit, timeout, frame size, or test fixture does not make a property bounded by design, and a smaller TLC instance does not cover a larger permitted domain. Construction may be recorded as not applicable only after a named maintainer accepts the bounded-by-design justification with evidence that verification covers the complete permitted domain. Capture consistency over every permitted DAG and session isolation over every request are unbounded and require promotion. A claim closes only when every constituent property has a reviewed classification."
+      - "Step 3. Construction tier. For every promoted property, add a Rocq project under formal/rocq/node_observation/ that exports one MainTheorem module, register it in scripts/ci/check-formal-invariants.sh, and require a clean coqchk run with a counted assumption set that contains no Axiom, Admitted, or Parameter. Until the theorem lands, every record keeps construction pending. Passing TLC checks never satisfy this tier."
+      - "Step 4. Binding tier. Source hashes establish identity only. Bind the Rust to the models with a bisimilarity test that runs the production capture and observer paths against a hand-translated oracle on the same inputs, keep the retained pre-fix regressions for the five corrected findings, and add a Kani harness for the length-prefix and block-decode limit arithmetic. Record which binding forms each claim reached."
+      - "Step 5. Gate rerun. Rerun the gate at the corrected revision de93425ee or later with an isolated rebuild and the strict explicit-inventory audit. Package it as casper-node-claim-gate-<revision>-02 with the tiers reached, the construction field, and construction_assumptions for each theorem."
+      - "Step 6. Acceptance. Request acceptance from the proposed reviewer as a PR #447 review comment that names the revision, both claim IDs, and the package path. Record accepted_by and acceptance_record."
+      - "Step 7. Status follows evidence. Change a tier field only when its evidence exists, and change a claim status only when every required tier is verified and acceptance is recorded. The audit result follows the statuses. Never change a status to make the audit pass. A claim with construction still pending stays pending, with the promotion decision recorded."
   - id: TASK-019-5
     title: "Batch C: publication writer inventory and consistency contract"
     phase_boundary: "Occurrence-dependent qualification follows this branch merge and PR #216 integration. It does not block this branch on PR #216."
@@ -245,7 +252,7 @@ tasks:
     title: "Review minimum necessary scope, merge PR #447 to dev, and return PR #436 to dev"
     status: pending
     claimed_by: null
-    blocked_by: [TASK-019-4]
+    blocked_by: [TASK-019-4, TASK-019-8]
     acceptance:
       - "Review every branch change before merge and justify why each retained component is necessary for an approved requirement."
       - "Identify components that can be removed, combined, or moved into test tooling instead of the production node."
@@ -276,12 +283,37 @@ tasks:
       - "Each published image is recorded by immutable digest, platform, and source dev revision."
       - "The baseline and observer-capable images are recorded as distinct candidates."
       - "No candidate is repinned from a rebuilt or mutable tag."
+  - id: TASK-019-8
+    title: "Final branch cleanup before the PR #447 merge"
+    status: pending
+    claimed_by: null
+    blocked_by: [TASK-019-4]
+    precedes: [TASK-019-6]
+    scope: "Remove discovery notes, work logs, plans, and CbC evidence files that are not integral to the branch's functionality or its accepted claims. Production code scope is reviewed under TASK-019-6, not here."
+    retention_rules:
+      - "Keep every file that an accepted claim, a CbC record, or the tracker cites by path or digest. Removing one breaks the source-bound audit."
+      - "Keep the claim files, the per-artifact records, and one compact report.json plus validation.json per evidence run that a record cites."
+      - "Keep the acceptance record and the handoff notes that name decisions, owners, and open findings."
+      - "Bulk evidence stays outside Git. Anything that leaves the tree is recorded with its external location and digest, following the TASK-017-14 precedent on the soak branch."
+    implementation_plan:
+      - "Step 1. Inventory every docs/, formal/, and .github change on the branch against dev, and classify each file as integral, cited, or removable."
+      - "Step 2. Consolidate the work logs to one per task, keeping decisions, acceptance records, and open findings, and dropping run-by-run narrative that a retained report already records."
+      - "Step 3. Remove superseded evidence run packages, historical red-source snapshots, and plan drafts that no claim or record cites. Record each removal with its reason."
+      - "Step 4. Run the strict claims audit, the link check, and the STE check before and after, and require identical results."
+      - "Step 5. Record the file and line counts of the diff against dev before and after, and obtain maintainer confirmation of the reduced diff before TASK-019-6 proceeds."
+    acceptance:
+      - "No removal changes a claim status, a record status, a tier field, or an audit result."
+      - "Every file an accepted claim cites is still present at its recorded digest."
+      - "Each removed file is listed with a reason, and any externalized evidence names its location and digest."
+      - "The maintainer confirms the reduced diff before the merge."
 ---
 ```
 
-**Current state:** Batch A and the B1 corrections are implemented. TASK-019-4 now has passing bounded models, negative controls, source bindings, and 65 isolated test executions. Both claims await named maintainer acceptance of the new package.
+**Current state:** Batch A and B1 have implementation evidence. The first approved verification cycle corrects challenge reuse within one observer lifetime and records 580 passing isolated test executions.
 
-Batch B2 and Batch C remain unapproved. Candidate image publication waits on the system-integration pin under TASK-019-7. PR #447 targets `dev`.
+Both claims remain pending on complete formal evidence and named maintainer acceptance under TASK-019-4. Batch B2 and Batch C remain unapproved.
+
+Candidate image publication waits on the system-integration pin under TASK-019-7. PR #447 targets `dev`.
 
 **Scope:** This epic owns node-side interfaces only. Harness verification, profile qualification, campaign execution, and baseline soaks belong to EPIC-017.
 

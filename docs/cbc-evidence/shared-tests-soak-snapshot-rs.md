@@ -7,7 +7,7 @@ The capture claim remains pending. The verification package requires named maint
   "artifact": {
     "path": "shared/tests/soak_snapshot.rs",
     "id": "shared-tests-soak-snapshot-rs",
-    "commit": "4aa93d11cf7a4c318074975dd4266208575c8aca",
+    "commit": "10e7b8452824e12a1fe2743dca7989b79fce2133",
     "commit_is_base": true,
     "working_tree": true,
     "sha256": "4ae3aa408e7de7adf032da424cac7d33d356eb285933a1ed6e840d102cc12880"
@@ -17,20 +17,20 @@ The capture claim remains pending. The verification package requires named maint
     "CLAIM-CASPER-NODE-OBSERVATION-002"
   ],
   "claim_digests": {
-    "docs/claims/casper-node-authority-snapshot.md": "c2bd97d63c74e4fad19a8817a21e044fc358957623c3e8968c3f8535b60964c6"
+    "docs/claims/casper-node-authority-snapshot.md": "4a2282757f77e01161e729f54c36b75c6c4074c9c8e37711d164cd64aa0196a8"
   },
   "adapter": null,
   "status": "pending",
   "scope": "batch-b1-bounded-detached-capture",
   "evidence": {
-    "kind": "bounded-models-and-source-bound-tests-awaiting-acceptance",
-    "ref": "docs/cbc-evidence/runs/casper-node-claim-gate-4aa93d11c-03/report.json",
-    "sha256": "dc7acd04b4da21aaac99b8a19d0bd56193a85a24a914e9bb09f0334892c6300c"
+    "kind": "partial-reconciliation-not-discharge",
+    "ref": "docs/cbc-evidence/runs/casper-node-model-reconciliation-10e7b8452-01/report.json",
+    "sha256": "1ed89bb3221fddeba2782c1496f9f4a59a37a23359feea348bbc9f8981a3d09c"
   },
   "previous_record": {
-    "commit": "4aa93d11cf7a4c318074975dd4266208575c8aca",
     "path": "docs/cbc-evidence/shared-tests-soak-snapshot-rs.md",
-    "sha256": "2ca067309b05ce9b26aafda0b5dc313d6c24461d0c5ac04d2bd21ec3b3fd92c7"
+    "sha256": "2ca067309b05ce9b26aafda0b5dc313d6c24461d0c5ac04d2bd21ec3b3fd92c7",
+    "archive": "records-pre-refresh"
   },
   "tiers": {
     "refutation": "pending",

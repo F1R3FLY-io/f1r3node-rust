@@ -135,6 +135,16 @@ run_rocq_checks() {
     ! grep -rnE "^[[:space:]]*(Axioms?|Admitted|Parameters?|Conjectures?)\b" \
         "$REPO_ROOT/formal/rocq/rspace_guards/theories/"
 
+    ! grep -rnE "^[[:space:]]*(Axioms?|Admitted|Parameters?|Conjectures?)\b" \
+        "$REPO_ROOT/formal/rocq/node_observation/theories/"
+
+    build_rocq_project node_observation NodeObservation
+    check_assumptions node_observation NodeObservation 4 \
+        observer_challenges_unique \
+        observer_replay_refused \
+        observer_counter_exhaustion_refused \
+        observer_checked_allocation_valid
+
     build_rocq_project slashing Slashing
     check_assumptions slashing Slashing 2 \
         main_bisimilarity_theorem \

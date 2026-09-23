@@ -7,30 +7,30 @@ The interface claim remains pending. The verification package requires named mai
   "artifact": {
     "path": "node/tests/soak_observer.rs",
     "id": "node-tests-soak-observer-rs",
-    "commit": "4aa93d11cf7a4c318074975dd4266208575c8aca",
+    "commit": "10e7b8452824e12a1fe2743dca7989b79fce2133",
     "commit_is_base": true,
     "working_tree": true,
-    "sha256": "622d951d3ebde16dd1ecf0d1f7dfbecfc67c180d12139d343c5c3198a5c65322"
+    "sha256": "b49d6fd51be0d865d89bff5e851a219dad6b2d6d170d7ce1042a28780fe30741"
   },
   "claim": "docs/claims/casper-node-observation.md",
   "claim_ids": [
     "CLAIM-CASPER-NODE-OBSERVATION-001"
   ],
   "claim_digests": {
-    "docs/claims/casper-node-observation.md": "b6552635d07fae63ac49c0d63cb670b35e6de045e20551deced1ac7f327275d8"
+    "docs/claims/casper-node-observation.md": "3fc9de43df482f5c0ad240583dc7b4f12523e0881443348e9026dfc1539afe28"
   },
   "adapter": null,
   "status": "pending",
   "scope": "batch-a-local-capability-interface",
   "evidence": {
-    "kind": "bounded-models-and-source-bound-tests-awaiting-acceptance",
-    "ref": "docs/cbc-evidence/runs/casper-node-claim-gate-4aa93d11c-03/report.json",
-    "sha256": "dc7acd04b4da21aaac99b8a19d0bd56193a85a24a914e9bb09f0334892c6300c"
+    "kind": "partial-reconciliation-not-discharge",
+    "ref": "docs/cbc-evidence/runs/casper-node-model-reconciliation-10e7b8452-01/report.json",
+    "sha256": "1ed89bb3221fddeba2782c1496f9f4a59a37a23359feea348bbc9f8981a3d09c"
   },
   "previous_record": {
-    "commit": "4aa93d11cf7a4c318074975dd4266208575c8aca",
     "path": "docs/cbc-evidence/node-tests-soak-observer-rs.md",
-    "sha256": "fa8e1a31d84ab493504beecfbe5beeed79f626fb41d83db306752b512a6d2101"
+    "sha256": "a682dfb2221e32cfafd3f41614bdcf95f14d4efda0b29339898a4d5e3614f024",
+    "archive": "records-pre-refresh"
   },
   "tiers": {
     "refutation": "pending",

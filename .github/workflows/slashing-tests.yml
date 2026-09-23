@@ -69,6 +69,51 @@ env:
   RUSTFLAGS: "-C target-feature=+aes,+sse2"
 
 jobs:
+  node-observation-bindings:
+    name: Node observation binding tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: 1
+      RUST_MIN_STACK: 8388608
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: nightly-2026-02-09
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          save-if: >-
+            ${{ github.event_name == 'push' &&
+            (github.ref == 'refs/heads/dev' ||
+            github.ref == 'refs/heads/master') }}
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler libprotobuf-dev \
+            libssl-dev pkg-config libclang-dev clang cmake jq binutils
+      - name: Run node observation binding tests
+        run: |
+          bash scripts/ci/check-node-observation-bindings.sh \
+            "$RUNNER_TEMP/node-observation-bindings"
+      - name: Retain binding evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: node-observation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/node-observation-bindings/*.log
+            ${{ runner.temp }}/node-observation-bindings/*.txt
+            ${{ runner.temp }}/node-observation-bindings/*.sha256
+            ${{ runner.temp }}/node-observation-bindings/*.list
+            ${{ runner.temp }}/node-observation-bindings/*.exit
+            ${{ runner.temp }}/node-observation-bindings/*.jsonl
+          retention-days: 14
+          if-no-files-found: error
+
   example-based:
     name: Example-based UC tests
     runs-on: ubuntu-latest
@@ -335,11 +380,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y opam
           opam init --disable-sandboxing -y
-          eval $(opam env)
+          eval "$(opam env)"
           opam install -y coq
       - name: Run Rocq verification suite
         run: |
-          eval $(opam env)
+          eval "$(opam env)"
           bash scripts/ci/check-formal-invariants.sh --rocq
       - name: Complete Rocq verification receipt
         run: bash scripts/ci/check-formal-gate.sh complete rocq-build target/formal-provenance-rocq

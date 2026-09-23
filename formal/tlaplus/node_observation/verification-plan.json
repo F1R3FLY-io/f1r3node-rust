@@ -109,6 +109,12 @@
       "configuration": "MC_BoundedCapture_write_unsafe.cfg",
       "expected_exit": 12,
       "invariant": "ReadOnly"
+    },
+    {
+      "module": "MC_ObserverSession_freshness_pre_fix",
+      "configuration": "MC_ObserverSession_freshness_pre_fix.cfg",
+      "expected_exit": 12,
+      "invariant": "FreshChallenges"
     }
   ]
 }

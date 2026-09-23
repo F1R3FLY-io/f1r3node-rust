@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "binding_kind": "reviewed-property-to-executable-test-map",
+  "binding_kind": "provisional-property-to-executable-test-map",
   "machine_checked_refinement": false,
   "claims": [
     {
@@ -70,7 +70,9 @@
           "property": 5,
           "invariants": [
             "FreshChallenge",
-            "BoundIdentity"
+            "BoundIdentity",
+            "FreshChallenges",
+            "ReplayRefused"
           ],
           "coverage": "bounded-model-and-rust-tests",
           "tests": [
@@ -81,6 +83,20 @@
             {
               "source": "node/tests/soak_observer.rs",
               "name": "capabilities_are_bound_and_never_claim_live_qualification"
+            },
+            {
+              "source": "node/tests/soak_observer.rs",
+              "name": "session_sequences_match_an_independent_event_oracle"
+            }
+          ],
+          "supplemental_tests": [
+            {
+              "source": "node/src/rust/soak_observer.rs",
+              "name": "rust::soak_observer::linux::tests::repeated_entropy_cannot_replay_a_request"
+            },
+            {
+              "source": "node/src/rust/soak_observer.rs",
+              "name": "rust::soak_observer::linux::tests::exhausted_sequence_refuses_a_handshake"
             }
           ]
         },
@@ -88,7 +104,9 @@
           "property": 6,
           "invariants": [
             "FreshChallenge",
-            "OneRequest"
+            "OneRequest",
+            "FreshChallenges",
+            "ReplayRefused"
           ],
           "coverage": "bounded-model-and-rust-tests",
           "tests": [
@@ -99,6 +117,20 @@
             {
               "source": "node/tests/soak_observer.rs",
               "name": "capabilities_are_bound_and_never_claim_live_qualification"
+            },
+            {
+              "source": "node/tests/soak_observer.rs",
+              "name": "session_sequences_match_an_independent_event_oracle"
+            }
+          ],
+          "supplemental_tests": [
+            {
+              "source": "node/src/rust/soak_observer.rs",
+              "name": "rust::soak_observer::linux::tests::repeated_entropy_cannot_replay_a_request"
+            },
+            {
+              "source": "node/src/rust/soak_observer.rs",
+              "name": "rust::soak_observer::linux::tests::exhausted_sequence_refuses_a_handshake"
             }
           ]
         },
@@ -345,12 +377,8 @@
           "invariants": [
             "GenerationStable"
           ],
-          "coverage": "bounded-model-and-rust-tests",
+          "coverage": "bounded-model-and-partial-rust-tests",
           "tests": [
-            {
-              "source": "block-storage/src/rust/dag/soak_snapshot.rs",
-              "name": "rust::dag::soak_snapshot::tests::generation_change_after_validation_rejects_capture"
-            },
             {
               "source": "block-storage/tests/soak_snapshot.rs",
               "name": "captured_data_survives_later_live_mutations"
@@ -359,6 +387,9 @@
               "source": "block-storage/tests/soak_snapshot.rs",
               "name": "finalization_row_write_without_generation_change_is_rejected"
             }
+          ],
+          "gaps": [
+            "The node branch has no deterministic generation-change rejection test. The downstream-only test is not imported by this model reconciliation."
           ]
         },
         {
