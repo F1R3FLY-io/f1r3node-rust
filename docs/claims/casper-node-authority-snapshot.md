@@ -2,7 +2,7 @@
 
 ```yaml
 claim_id: CLAIM-CASPER-NODE-OBSERVATION-002
-status: pending
+status: accepted
 adapter: null
 scope: batch-b1-bounded-detached-capture
 artifacts:
@@ -47,10 +47,15 @@ artifacts:
   - formal/rocq/node_observation/_CoqProject
   - formal/rocq/node_observation/theories/BoundedCapture.v
   - formal/rocq/node_observation/theories/MainTheorem.v
-refutation: pending
-construction: pending
-binding: pending
+refutation: recorded
+construction: recorded-partial
+binding: recorded
 soak: pending
+accepted_by: jltatbeach
+accepted_at: 2026-09-23T16:55:28Z
+accepted_revision: 4c0c0dbe7c8958debefdb02f2b21795786c45900
+acceptance_record: https://github.com/F1R3FLY-io/f1r3node-rust/pull/447#pullrequestreview-5294038948
+acceptance_package: docs/cbc-evidence/runs/casper-node-claim-gate-78d696ea6-01
 ```
 
 ## Authorization and scope
@@ -101,7 +106,7 @@ The shared capture suite passed 11 tests. The block-storage capture suite passed
 
 Both suites use LMDB environments on the local filesystem. No running node, live adapter, campaign image, or consensus result was qualified.
 
-Unit and integration tests supply evidence but do not discharge this claim. Source-bound verification and explicit acceptance remain pending.
+Unit and integration tests supply evidence but do not discharge this claim. Source-bound verification and explicit acceptance were recorded on 2026-09-23.
 
 ## Construction and binding evidence
 
@@ -113,7 +118,7 @@ The capture oracle test runs production capture against a hand-translated `Bound
 
 Property 8 has a deterministic generation-rejection test. The test changes the insertion generation at the validated phase, and the capture is rejected with both guards released.
 
-The [applicability review](../../formal/tlaplus/node_observation/README.md#applicability-per-property) lists every property's class, evidence, and decision status. Named maintainer review of each decision and acceptance of this claim remain pending.
+The [applicability review](../../formal/tlaplus/node_observation/README.md#applicability-per-property) lists every property's class, evidence, and decision status. The named maintainer reviewed each decision and accepted this claim on 2026-09-23 in PR #447 review 5294038948 at revision `4c0c0dbe7`. The soak field is outside that acceptance and is unchanged.
 
 ## Verification requirements
 

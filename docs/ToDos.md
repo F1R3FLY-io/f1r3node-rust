@@ -118,7 +118,8 @@ tasks:
       - "Implementation is complete. The claim remains pending until source-bound verification and explicit acceptance under TASK-019-4."
   - id: TASK-019-2
     title: "Batch B1: bounded detached DAG capture"
-    status: in_progress
+    status: complete
+    completed_on: "2026-09-23"
     claimed_by: claude-session-7015f552
     claimed_at: 2026-09-21T14:00:00Z
     claims: [CLAIM-CASPER-NODE-OBSERVATION-002]
@@ -144,9 +145,8 @@ tasks:
       - "Bounded LMDB reader, transaction identity checks, detached snapshot with canonical digest, scratch construction, and observer-only bounded block decoding landed in a38d44185."
       - "The continuation at 38d083bff corrected reader budget retention, key bounds, checked arithmetic, and short-decompression acceptance, with red tests retained."
       - "The completion review addresses all four source findings. It records 301 passing test executions and a negative compile check for mutable snapshot access."
-    remaining_work:
-      - "Review the completion evidence and obtain source-bound claim acceptance under TASK-019-4."
-      - "Keep task ownership and completion status unchanged until the required review finishes."
+    remaining_work: []
+    acceptance_record: https://github.com/F1R3FLY-io/f1r3node-rust/pull/447#pullrequestreview-5294038948
     acceptance:
       - "Every limit is checked before the allocation or store operation it bounds."
       - "Capture rejects any environment or generation change between open and validation, including restored values."
@@ -155,15 +155,18 @@ tasks:
       - "The canonical identity covers every field that scratch construction and evaluation consume."
   - id: TASK-019-3
     title: "Batch B2: observer handle, detached evaluation, and reference comparison"
-    status: pending
-    claimed_by: null
+    status: in_progress
+    claimed_by: codex-batch-b2-20260923
     blocked_by: [TASK-019-2, TASK-019-4]
     plan: docs/plans/casper-node-observation-batch-b.md
     planning_status: "Steps 1 through 4 complete at cef1f4b721b8109019459f11c53d49df00eb68f9."
     planning_authorization: "The user authorized planning steps 1 through 4 on 2026-09-23, before TASK-019-4 acceptance."
-    implementation_authorized: false
+    implementation_authorized: true
+    implementation_authorization: "The user requested B2 completion on 2026-09-23. Implementation proceeds while predecessor acceptance remains pending."
+    claim: docs/claims/casper-node-authority-evaluation.md
+    work_log: docs/work-logs/task-019-3-node-authority-evaluation.md
     prerequisites:
-      - "Do not start B2 implementation until both current claims pass source-bound verification and a named maintainer explicitly accepts them."
+      - "Both predecessor claims must pass source-bound verification and named maintainer acceptance before B2 acceptance."
       - "A final file list covering the runtime, engine cell, Casper constructor, dispatch, and the six test fixtures that need the observer field."
       - "A reference evaluation path that differs from the measured path. Repeating the production tips computation is not independent coverage."
       - "Separate fields for the exact oracle decision, the original fault-tolerance result, and the display projection, each naming its input snapshot."
@@ -184,7 +187,8 @@ tasks:
       - "Step 7. Package evidence, rerun the gate, and obtain acceptance under the same rules as TASK-019-4."
   - id: TASK-019-4
     title: "Source-bound verification and acceptance of the Batch A and Batch B1 claims"
-    status: in_progress
+    status: complete
+    completed_on: "2026-09-23"
     claimed_by: claude-session-7015f552
     claimed_at: 2026-09-23T17:10:00Z
     previous_claimed_by: pi-session-01a0afde-d35c-70a2-b8c9-39aa11cbdfca
@@ -219,8 +223,11 @@ tasks:
     claims: [CLAIM-CASPER-NODE-OBSERVATION-001, CLAIM-CASPER-NODE-OBSERVATION-002]
     eligible_maintainers: [spreston8, dylon, metaweta, jeffrey-l-turner, jltatbeach]
     proposed_reviewer: jltatbeach
-    accepted_by: null
-    acceptance_record: null
+    accepted_by: jltatbeach
+    acceptance_record: https://github.com/F1R3FLY-io/f1r3node-rust/pull/447#pullrequestreview-5294038948
+    acceptance_revision: 4c0c0dbe7c8958debefdb02f2b21795786c45900
+    acceptance_reviewed_at: 2026-09-23T16:55:28Z
+    acceptance_package: docs/cbc-evidence/runs/casper-node-claim-gate-78d696ea6-01
     notes:
       - "The user placed this gate before B2 planning. B2 is not a prerequisite for verification of Batch A and B1."
       - "The implementation input is available at the execution revision. TASK-019-2 remains open for this acceptance review, not as a circular prerequisite."
@@ -240,6 +247,7 @@ tasks:
       - "Both claims remain pending. Acceptance needs named maintainer review of every applicability decision and the remaining construction evidence."
       - "No standalone checker crate was added. Downstream must remove its checker crate or include it in the supply-chain audit."
       - "Cross-incarnation identity, remaining construction proofs, Kani harnesses, complete Rust correspondence, and named maintainer acceptance remain pending."
+      - "The named maintainer accepted both claims on 2026-09-23 at 4c0c0dbe7 on the cycle 02 package, with the five bounded-by-design decisions and the recorded construction gaps accepted. All 58 node records are discharged. The two gate-claim records in the union inventory stay pending under CLAIM-SOAK-GATE-001."
       - "Handoff cycle 02 at 78d696ea6 pulled the deterministic generation-rejection test across from the soak branch, reran the TLA gate and the Rocq kernel check, and refreshed every node record. Three blocking items remain: the applicability review, the acceptance, and the open construction proofs."
     acceptance:
       - "Strict source-bound audits pass for every artifact in both claim inventories at the accepted revision."

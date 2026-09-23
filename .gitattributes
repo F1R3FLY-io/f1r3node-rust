@@ -97,3 +97,10 @@ rspace++/src/rspace/rspace/ops_install.rs cbc=mandatory cbc-weight=medium
 rspace++/src/rspace/rspace/setup.rs cbc=mandatory cbc-weight=medium
 rspace++/src/rspace/space_matcher.rs cbc=mandatory cbc-weight=high
 rspace++/src/rspace/match.rs cbc=mandatory cbc-weight=high
+casper/src/rust/soak_observer.rs cbc=mandatory cbc-weight=high
+casper/src/rust/soak_observer/evaluation.rs cbc=mandatory cbc-weight=high
+casper/src/rust/soak_observer/reference.rs cbc=mandatory cbc-weight=high
+shared/src/rust/dag/observation_work.rs cbc=mandatory cbc-weight=high
+casper/tests/soak_observer.rs cbc=mandatory cbc-weight=high
+casper/src/rust/safety/clique_oracle.rs cbc=mandatory cbc-weight=high
+casper/src/rust/util/clique.rs cbc=mandatory cbc-weight=high
