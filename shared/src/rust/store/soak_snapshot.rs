@@ -449,19 +449,6 @@ mod kani_proofs {
     }
 
     #[kani::proof]
-    fn checked_total_refuses_overflow() {
-        let current: usize = kani::any();
-        let amount: usize = kani::any();
-        match checked_total("k", current, amount) {
-            Ok(total) => assert_eq!(Some(total), current.checked_add(amount)),
-            Err(error) => {
-                assert!(current.checked_add(amount).is_none());
-                assert_eq!(error, SnapshotError::CounterOverflow("k"));
-            }
-        }
-    }
-
-    #[kani::proof]
     fn charge_record_never_exceeds_limits_and_fails_atomically() {
         let limits = ReadLimits {
             max_value_bytes: kani::any(),

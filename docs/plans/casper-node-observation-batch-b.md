@@ -1,6 +1,6 @@
 # Casper Node Observation: Batch B Review
 
-**Status:** B2 planning steps 1 through 4 are complete. B2 implementation and Batch C remain unapproved. The Batch A and B1 claims remain pending.
+**Status:** B2 planning steps 1 through 4 are complete. B2 and Batch C implementation remain unapproved. The Batch A and B1 claims remain pending.
 
 **Branch:** `feature/casper-node-observation`.
 
@@ -464,7 +464,9 @@ This planning authorization does not accept either claim or authorize B2 impleme
 
 ## Batch C and campaign boundaries
 
-The cross-environment storage finding also constrains Batch C. Batch C still needs the complete writer inventory and publication consistency contract.
+The cross-environment storage finding also constrains Batch C.
+The [Batch C research](casper-node-observation-batch-c.md) records the writer inventory and publication consistency contract.
+Maintainer review and implementation approval remain pending.
 
 Do not infer occurrence identity from deploy signatures. Actual PR #216 merge remains necessary for occurrence-level recovery qualification.
 
@@ -478,7 +480,7 @@ The user confirmed the nine-file Batch B1 scope, the pending claim, and the four
 
 The [Batch B1 work log](../work-logs/casper-node-observation-batch-b1.md) records the implementation, the local results, and the registered claim `CLAIM-CASPER-NODE-OBSERVATION-002`.
 
-The B1 confirmation does not authorize B2 implementation, Batch C, merges, claim acceptance, or cloud launches. Commits and pushes require their separate consent.
+The B1 confirmation does not authorize B2 implementation, Batch C implementation, merges, claim acceptance, or cloud launches. Commits and pushes require their separate consent.
 
 ## B1 continuation review
 

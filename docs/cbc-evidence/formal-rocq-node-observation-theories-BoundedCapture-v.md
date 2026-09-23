@@ -1,16 +1,16 @@
-# CbC Evidence: block-storage/src/rust/dag/soak_snapshot.rs
+# CbC Evidence: formal/rocq/node_observation/theories/BoundedCapture.v
 
-The capture claim remains pending. Local tests do not discharge the claim or qualify a live adapter.
+The capture claim remains pending. Kernel-checked theorems and local tests do not discharge the claim without named maintainer acceptance.
 
 ```json
 {
   "artifact": {
-    "path": "block-storage/src/rust/dag/soak_snapshot.rs",
-    "id": "block-storage-src-rust-dag-soak-snapshot-rs",
+    "path": "formal/rocq/node_observation/theories/BoundedCapture.v",
+    "id": "formal-rocq-node-observation-theories-BoundedCapture-v",
     "commit": "03d7f1b27544b2c5a93b664d8684b24ea16cf3e9",
     "commit_is_base": true,
     "working_tree": true,
-    "sha256": "c19898faa349b60042e61d4501282234c5070c13e17a9b48654feaa3325d5b29"
+    "sha256": "a2cb0858ece3634ce364cd0b92af6e5e6b908e8df968855e3d84e4d7f66c54a2"
   },
   "claim": "docs/claims/casper-node-authority-snapshot.md",
   "claim_ids": [
@@ -35,10 +35,6 @@ The capture claim remains pending. Local tests do not discharge the claim or qua
   "soak": "pending",
   "waiver": null,
   "verified_at": null,
-  "previous_record": {
-    "path": "docs/cbc-evidence/block-storage-src-rust-dag-soak-snapshot-rs.md",
-    "sha256": "6c7f2316fd91ac25670a89be808713a1f79d839fd61756147968576884607a53",
-    "commit": "10e7b8452824e12a1fe2743dca7989b79fce2133"
-  }
+  "previous_record": null
 }
 ```

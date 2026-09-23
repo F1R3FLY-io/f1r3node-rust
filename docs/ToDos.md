@@ -201,7 +201,7 @@ tasks:
       - docs/cbc-evidence/runs/casper-node-deadline-correction-4561e064a-01/report.json
       - docs/cbc-evidence/runs/casper-node-challenge-freshness-3b1d2465a-01/report.json
       - docs/cbc-evidence/runs/casper-node-model-reconciliation-10e7b8452-01/report.json
-      - docs/cbc-evidence/runs/casper-node-claim-gate-8789c1c3e-01/report.json
+      - docs/cbc-evidence/runs/casper-node-claim-gate-03d7f1b27-01/report.json
     verification_scope_confirmed: true
     verification_cycle: handoff-cycle-01
     reconciliation_checkout_base: 10e7b8452824e12a1fe2743dca7989b79fce2133
@@ -211,7 +211,7 @@ tasks:
     tiers_reached:
       refutation: "15 clean configurations and 78 expected violations through the TLA gate at the pinned jar; the two node models and 17 controls pass on this revision."
       construction: "14 kernel-checked theorems with closed assumption sets in formal/rocq/node_observation; construction pending for A3, A4, A9, B9, B11, B12 and the deadline parts of A7 and B2."
-      binding: "Capture oracle over 14 scenarios, session oracle, retained pre-fix regressions, and eight Kani harnesses; B8 keeps a recorded binding gap."
+      binding: "Capture oracle over 14 scenarios, session oracle, retained pre-fix regressions, and seven Kani harnesses; B8 keeps a recorded binding gap."
     applicability_review: formal/tlaplus/node_observation/README.md#applicability-per-property
     claims: [CLAIM-CASPER-NODE-OBSERVATION-001, CLAIM-CASPER-NODE-OBSERVATION-002]
     eligible_maintainers: [spreston8, dylon, metaweta, jeffrey-l-turner, jltatbeach]
@@ -252,12 +252,19 @@ tasks:
       - "Step 7. Status follows evidence. Change a tier field only when its evidence exists, and change a claim status only when every required tier is verified and acceptance is recorded. The audit result follows the statuses. Never change a status to make the audit pass. A claim with construction still pending stays pending, with the promotion decision recorded."
   - id: TASK-019-5
     title: "Batch C: publication writer inventory and consistency contract"
-    status: pending
+    status: complete
     claimed_by: null
-    blocked_by: [TASK-019-3]
-    prerequisites:
-      - "A complete inventory of publication writers across the DAG and block environments."
-      - "A publication consistency contract that states which intermediate states a consistent read can expose."
+    completed_on: "2026-09-23"
+    completion_scope: research_only
+    research: docs/plans/casper-node-observation-batch-c.md
+    research_authorization: "The user requested Batch C research before TASK-019-3 completion."
+    research_results:
+      - "The inventory covers all 15 block and DAG databases, adjacent custody stores, dependency storage, and runtime state."
+      - "The contract separates read consistency, partial publication, recovery evidence, and unsupported occurrence identity."
+    review_status: pending_named_maintainer
+    implementation_authorized: false
+    implementation_dependencies: [TASK-019-3]
+    qualification_prerequisites:
       - "PR #216 merged to dev. Occurrence-level recovery qualification has no occurrence store to observe before that merge."
     acceptance:
       - "Occurrence identity is never inferred from deploy signatures."
@@ -318,6 +325,200 @@ tasks:
       - "Keep the claim files, the per-artifact records, and one compact report.json plus validation.json per evidence run that a record cites."
       - "Keep the acceptance record and the handoff notes that name decisions, owners, and open findings."
       - "Bulk evidence stays outside Git. Anything that leaves the tree is recorded with its external location and digest, following the TASK-017-14 precedent on the soak branch."
+    inventory_status: complete
+    inventory_completed_on: "2026-09-23"
+    removals_authorized: false
+    cleanup_acceptance: pending
+    inventory:
+      head: 03d7f1b27544b2c5a93b664d8684b24ea16cf3e9
+      dev: 6d6d4fed6f84baa0913d8e87f32a7ffe2e0ca59a
+      comparison: "git diff --name-status dev...HEAD -- docs formal .github"
+      merge_base_equals_dev: true
+      committed_files: 147
+      committed_diff_lines: {added: 8427, deleted: 15}
+      working_tree_only_files: 7
+      total_files: 154
+      classifications: {"integral": 124, "cited": 27, "removable": 3}
+      method:
+        - "The inventory covers committed branch paths and current tracked or untracked additions in the three requested directories."
+        - "Integral files support required functionality, verification, policy, or an active evidence package."
+        - "Cited files retain explicit claim, record, task, handoff, or package references."
+        - "Removable files are proposals only. Claim acceptance and the required before-and-after checks must precede removal."
+        - "Reference checks exclude this new inventory. Its own file list must not create a retention requirement."
+        - "The three proposed checksum removals preserve their reports, source manifests, and existing validation files."
+        - "Concurrent TASK-019-4 edits retain their classifications. Refresh this inventory after the final acceptance revision changes."
+      reasons:
+        workflow_gate: "The workflow runs node binding checks and the registered formal gate."
+        task_record: "The tracker retains task scope, dependencies, review gates, and the cleanup decision."
+        research_terms: "The glossary defines the terms used by the Batch C contract."
+        tier_policy: "The claim review requires the property classification and tier rules."
+        claim_specification: "The file defines an observation claim and its required evidence."
+        formal_verification: "The claim verification uses this model, control, theorem, project input, binding map, or applicability record."
+        artifact_record: "The source-bound audit requires the per-artifact CbC record. Its generated filename need not have an explicit inbound link."
+        task_plan: "TASK-019-3 or TASK-019-5 cites this research and implementation boundary."
+        task_handoff: "The tracker or observation claim cites this handoff, its decisions, or its open findings."
+        retained_validation: "The retention rule requires the validation companion for this cited report."
+        gate_registration: "The reconciliation report cites this node-specific gate registration and claim digest view."
+        active_evidence: "The current TASK-019-4 package uses this checksum file. Its verification and acceptance remain pending."
+        validation_digest: "The package validation records this checksum file digest."
+        source_digest: "The report or package checksum file cites this source manifest by path or digest."
+        retained_report: "A claim, per-artifact record, task, or retained handoff cites this report."
+        uncited_checksum: "No inbound path or digest reference was found. The retained report and source manifest contain the same source identities."
+      files:
+        - {"path": ".github/workflows/slashing-tests.yml", "change": "M", "classification": "integral", "reason": "workflow_gate"}
+        - {"path": "docs/Glossary.md", "change": "M", "classification": "integral", "reason": "research_terms", "scope": "working_tree_only"}
+        - {"path": "docs/ToDos.md", "change": "M", "classification": "integral", "reason": "task_record"}
+        - {"path": "docs/cbc-evidence/block-storage-src-rust-dag-block-dag-key-value-storage-rs.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/block-storage-src-rust-dag-soak-snapshot-rs.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/block-storage-tests-soak-snapshot-rs.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-rocq-node-observation-CoqProject.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-rocq-node-observation-README-md.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-rocq-node-observation-theories-BoundedCapture-v.md", "change": "A", "classification": "integral", "reason": "artifact_record", "scope": "working_tree_only"}
+        - {"path": "docs/cbc-evidence/formal-rocq-node-observation-theories-MainTheorem-v.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-rocq-node-observation-theories-ObserverSession-v.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-BoundedCapture-tla.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-admission-unsafe-cfg.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-admission-unsafe-tla.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-bytes-unsafe-cfg.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-bytes-unsafe-tla.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-cfg.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-deadline-unsafe-cfg.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-deadline-unsafe-tla.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-generation-unsafe-cfg.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-generation-unsafe-tla.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-incomplete-unsafe-cfg.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-incomplete-unsafe-tla.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-open-unsafe-cfg.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-open-unsafe-tla.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-order-unsafe-cfg.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-order-unsafe-tla.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-release-unsafe-cfg.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-release-unsafe-tla.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-tla.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-validation-unsafe-cfg.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-validation-unsafe-tla.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-write-unsafe-cfg.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-write-unsafe-tla.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-ObserverSession-budget-unsafe-cfg.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-ObserverSession-budget-unsafe-tla.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-ObserverSession-cfg.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-ObserverSession-challenge-unsafe-cfg.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-ObserverSession-challenge-unsafe-tla.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-ObserverSession-deadline-unsafe-cfg.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-ObserverSession-deadline-unsafe-tla.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-ObserverSession-frame-unsafe-cfg.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-ObserverSession-frame-unsafe-tla.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-ObserverSession-freshness-pre-fix-cfg.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-ObserverSession-freshness-pre-fix-tla.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-ObserverSession-identity-unsafe-cfg.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-ObserverSession-identity-unsafe-tla.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-ObserverSession-repeat-unsafe-cfg.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-ObserverSession-repeat-unsafe-tla.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-ObserverSession-tla.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-ObserverSession-tla.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-README-md.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-bindings-json.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-verification-plan-json.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/github-workflows-slashing-tests-yml.md", "change": "M", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/node-src-rust-soak-observer-rs.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/node-tests-soak-observer-rs.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-challenge-freshness-3b1d2465a-01/report.json", "change": "A", "classification": "cited", "reason": "retained_report"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-challenge-freshness-3b1d2465a-01/sources.sha256", "change": "A", "classification": "cited", "reason": "source_digest"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-claim-gate-03d7f1b27-01/artifacts.sha256", "change": "A", "classification": "integral", "reason": "active_evidence", "scope": "working_tree_only"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-claim-gate-03d7f1b27-01/report.json", "change": "A", "classification": "cited", "reason": "retained_report", "scope": "working_tree_only"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-claim-gate-03d7f1b27-01/sources.sha256", "change": "A", "classification": "cited", "reason": "source_digest", "scope": "working_tree_only"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-claim-gate-03d7f1b27-01/validation.json", "change": "A", "classification": "integral", "reason": "retained_validation", "scope": "working_tree_only"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-claim-gate-6ea6bf029-01/report.json", "change": "A", "classification": "cited", "reason": "retained_report"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-claim-gate-6ea6bf029-01/sources.sha256", "change": "A", "classification": "cited", "reason": "source_digest"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-claim-gate-6ea6bf029-01/validation.json", "change": "A", "classification": "integral", "reason": "retained_validation"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-deadline-correction-4561e064a-01/report.json", "change": "A", "classification": "cited", "reason": "retained_report"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-deadline-correction-4561e064a-01/sources.sha256", "change": "A", "classification": "cited", "reason": "source_digest"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-deadline-correction-4561e064a-01/validation.json", "change": "A", "classification": "integral", "reason": "retained_validation"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-model-reconciliation-10e7b8452-01/gate-registrations.json", "change": "A", "classification": "integral", "reason": "gate_registration"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-model-reconciliation-10e7b8452-01/report.json", "change": "A", "classification": "cited", "reason": "retained_report"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-model-reconciliation-10e7b8452-01/sources.sha256", "change": "A", "classification": "cited", "reason": "source_digest"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-model-reconciliation-10e7b8452-01/validation.json", "change": "A", "classification": "integral", "reason": "retained_validation"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-observer-batch-a-877cea722-01/artifacts.sha256", "change": "A", "classification": "removable", "reason": "uncited_checksum"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-observer-batch-a-877cea722-01/report.json", "change": "A", "classification": "cited", "reason": "retained_report"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-observer-batch-a-877cea722-01/sources.sha256", "change": "A", "classification": "cited", "reason": "source_digest"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-observer-shutdown-d021a1d53-01/artifacts.sha256", "change": "A", "classification": "removable", "reason": "uncited_checksum"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-observer-shutdown-d021a1d53-01/report.json", "change": "A", "classification": "cited", "reason": "retained_report"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-observer-shutdown-d021a1d53-01/sources.sha256", "change": "A", "classification": "cited", "reason": "source_digest"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-observer-shutdown-d021a1d53-01/validation.json", "change": "A", "classification": "integral", "reason": "retained_validation"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-snapshot-batch-b1-799e2136a-01/artifacts.sha256", "change": "A", "classification": "removable", "reason": "uncited_checksum"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-snapshot-batch-b1-799e2136a-01/report.json", "change": "A", "classification": "cited", "reason": "retained_report"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-snapshot-batch-b1-799e2136a-01/sources.sha256", "change": "A", "classification": "cited", "reason": "source_digest"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-snapshot-batch-b1-799e2136a-01/validation.json", "change": "A", "classification": "integral", "reason": "retained_validation"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-snapshot-completion-619882128-01/report.json", "change": "A", "classification": "cited", "reason": "retained_report"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-snapshot-completion-619882128-01/sources.sha256", "change": "A", "classification": "cited", "reason": "source_digest"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-snapshot-completion-619882128-01/validation.json", "change": "A", "classification": "integral", "reason": "retained_validation"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-snapshot-hardening-2ccc4ae0a-01/artifacts.sha256", "change": "A", "classification": "cited", "reason": "validation_digest"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-snapshot-hardening-2ccc4ae0a-01/report.json", "change": "A", "classification": "cited", "reason": "retained_report"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-snapshot-hardening-2ccc4ae0a-01/sources.sha256", "change": "A", "classification": "cited", "reason": "source_digest"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-snapshot-hardening-2ccc4ae0a-01/validation.json", "change": "A", "classification": "integral", "reason": "retained_validation"}
+        - {"path": "docs/cbc-evidence/scripts-ci-check-formal-invariants-sh.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/scripts-ci-check-node-observation-bindings-sh.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/scripts-ci-check-tla-invariants-sh.md", "change": "M", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/scripts-ci-test-check-tla-invariants-sh.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/shared-src-rust-store-soak-snapshot-rs.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/shared-tests-soak-snapshot-rs.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-verification-tiers.md", "change": "M", "classification": "integral", "reason": "tier_policy"}
+        - {"path": "docs/claims/casper-node-authority-snapshot.md", "change": "A", "classification": "integral", "reason": "claim_specification"}
+        - {"path": "docs/claims/casper-node-observation.md", "change": "A", "classification": "integral", "reason": "claim_specification"}
+        - {"path": "docs/plans/casper-node-observation-batch-b.md", "change": "A", "classification": "cited", "reason": "task_plan"}
+        - {"path": "docs/plans/casper-node-observation-batch-c.md", "change": "A", "classification": "cited", "reason": "task_plan", "scope": "working_tree_only"}
+        - {"path": "docs/work-logs/casper-node-observation-batch-b1.md", "change": "A", "classification": "cited", "reason": "task_handoff"}
+        - {"path": "docs/work-logs/casper-node-observer-shutdown-review.md", "change": "A", "classification": "cited", "reason": "task_handoff"}
+        - {"path": "docs/work-logs/task-019-4-node-claim-verification.md", "change": "A", "classification": "cited", "reason": "task_handoff"}
+        - {"path": "docs/work-logs/task-019-7-candidate-images.md", "change": "A", "classification": "cited", "reason": "task_handoff"}
+        - {"path": "formal/rocq/node_observation/README.md", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/rocq/node_observation/_CoqProject", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/rocq/node_observation/theories/BoundedCapture.v", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/rocq/node_observation/theories/MainTheorem.v", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/rocq/node_observation/theories/ObserverSession.v", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/BoundedCapture.tla", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_BoundedCapture.cfg", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_BoundedCapture.tla", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_BoundedCapture_admission_unsafe.cfg", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_BoundedCapture_admission_unsafe.tla", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_BoundedCapture_bytes_unsafe.cfg", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_BoundedCapture_bytes_unsafe.tla", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_BoundedCapture_deadline_unsafe.cfg", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_BoundedCapture_deadline_unsafe.tla", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_BoundedCapture_generation_unsafe.cfg", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_BoundedCapture_generation_unsafe.tla", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_BoundedCapture_incomplete_unsafe.cfg", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_BoundedCapture_incomplete_unsafe.tla", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_BoundedCapture_open_unsafe.cfg", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_BoundedCapture_open_unsafe.tla", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_BoundedCapture_order_unsafe.cfg", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_BoundedCapture_order_unsafe.tla", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_BoundedCapture_release_unsafe.cfg", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_BoundedCapture_release_unsafe.tla", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_BoundedCapture_validation_unsafe.cfg", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_BoundedCapture_validation_unsafe.tla", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_BoundedCapture_write_unsafe.cfg", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_BoundedCapture_write_unsafe.tla", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_ObserverSession.cfg", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_ObserverSession.tla", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_ObserverSession_budget_unsafe.cfg", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_ObserverSession_budget_unsafe.tla", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_ObserverSession_challenge_unsafe.cfg", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_ObserverSession_challenge_unsafe.tla", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_ObserverSession_deadline_unsafe.cfg", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_ObserverSession_deadline_unsafe.tla", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_ObserverSession_frame_unsafe.cfg", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_ObserverSession_frame_unsafe.tla", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_ObserverSession_freshness_pre_fix.cfg", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_ObserverSession_freshness_pre_fix.tla", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_ObserverSession_identity_unsafe.cfg", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_ObserverSession_identity_unsafe.tla", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_ObserverSession_repeat_unsafe.cfg", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/MC_ObserverSession_repeat_unsafe.tla", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/ObserverSession.tla", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/README.md", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/bindings.json", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/tlaplus/node_observation/verification-plan.json", "change": "A", "classification": "integral", "reason": "formal_verification"}
     implementation_plan:
       - "Step 1. Inventory every docs/, formal/, and .github change on the branch against dev, and classify each file as integral, cited, or removable."
       - "Step 2. Consolidate the work logs to one per task, keeping decisions, acceptance records, and open findings, and dropping run-by-run narrative that a retained report already records."
@@ -336,7 +537,8 @@ tasks:
 
 Both claims remain pending on complete formal evidence and named maintainer acceptance under TASK-019-4.
 
-B2 planning steps 1 through 4 are complete. B2 implementation and Batch C remain unapproved.
+B2 planning steps 1 through 4 and TASK-019-5 research are complete.
+B2 and Batch C implementation remain unapproved. The Batch C inventory and contract await named maintainer review.
 
 TASK-019-7 records verified baseline image digests. The lifecycle pin correction and observer candidate remain pending. PR #447 targets `dev`.
 

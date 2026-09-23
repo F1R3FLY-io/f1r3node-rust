@@ -284,23 +284,24 @@
           "harnesses": [
             {
               "source": "shared/src/rust/store/soak_snapshot.rs",
-              "name": "check_limit_is_the_comparison"
+              "name": "check_limit_is_the_comparison",
+              "verified": true
             },
             {
               "source": "shared/src/rust/store/soak_snapshot.rs",
-              "name": "checked_total_refuses_overflow"
+              "name": "charge_record_never_exceeds_limits_and_fails_atomically",
+              "verified": true
             },
             {
               "source": "shared/src/rust/store/soak_snapshot.rs",
-              "name": "charge_record_never_exceeds_limits_and_fails_atomically"
-            },
-            {
-              "source": "shared/src/rust/store/soak_snapshot.rs",
-              "name": "charge_operation_never_exceeds_limit_and_fails_atomically"
+              "name": "charge_operation_never_exceeds_limit_and_fails_atomically",
+              "verified": true
             },
             {
               "source": "block-storage/src/rust/key_value_block_store.rs",
-              "name": "decode_limits_validate_iff_all_positive"
+              "name": "decode_limits_validate_iff_all_positive",
+              "verified": false,
+              "status": "authored-not-executed"
             }
           ]
         },
@@ -405,15 +406,18 @@
           "harnesses": [
             {
               "source": "shared/src/rust/store/soak_snapshot.rs",
-              "name": "length_prefix_roundtrip"
+              "name": "length_prefix_roundtrip",
+              "verified": true
             },
             {
               "source": "shared/src/rust/store/soak_snapshot.rs",
-              "name": "length_prefix_accepts_only_exact_declaration"
+              "name": "length_prefix_accepts_only_exact_declaration",
+              "verified": true
             },
             {
               "source": "shared/src/rust/store/soak_snapshot.rs",
-              "name": "short_raw_is_rejected"
+              "name": "short_raw_is_rejected",
+              "verified": true
             }
           ]
         },

@@ -13,9 +13,9 @@ This refresh records source identity only. The referenced reconciliation report 
   "artifact": {
     "path": "block-storage/src/rust/dag/block_dag_key_value_storage.rs",
     "id": "block-storage-src-rust-dag-block-dag-key-value-storage-rs",
-    "commit": "8789c1c3e1ad71241d92d9bbdde2296d1e64851d",
-    "commit_is_base": false,
-    "working_tree": false,
+    "commit": "03d7f1b27544b2c5a93b664d8684b24ea16cf3e9",
+    "commit_is_base": true,
+    "working_tree": true,
     "sha256": "7bfd28ef62b84ee912a1c2979bd77d6f1f3d804c6cb5d6c9549f9f86ddf43bc2"
   },
   "claim": "docs/claims/casper-node-authority-snapshot.md",
@@ -23,28 +23,28 @@ This refresh records source identity only. The referenced reconciliation report 
     "CLAIM-CASPER-NODE-OBSERVATION-002"
   ],
   "claim_digests": {
-    "docs/claims/casper-node-authority-snapshot.md": "4a2282757f77e01161e729f54c36b75c6c4074c9c8e37711d164cd64aa0196a8"
+    "docs/claims/casper-node-authority-snapshot.md": "d8242333c663a8680376dfe758cfa18c6641905fc86ddc20ca9014ec8af81a19"
   },
   "adapter": null,
   "status": "pending",
-  "scope": "batch-b1-bounded-detached-capture",
+  "scope": "task-019-4-handoff-cycle-01",
   "evidence": {
-    "kind": "partial-reconciliation-not-discharge",
-    "ref": "docs/cbc-evidence/runs/casper-node-model-reconciliation-10e7b8452-01/report.json",
-    "sha256": "1ed89bb3221fddeba2782c1496f9f4a59a37a23359feea348bbc9f8981a3d09c"
-  },
-  "previous_record": {
-    "path": "docs/cbc-evidence/block-storage-src-rust-dag-block-dag-key-value-storage-rs.md",
-    "sha256": "1d3ec5ec29fb4f9eedd878c041ac9d2834c366be0c14f9a28f4f3376921a5478",
-    "archive": "records-pre-refresh"
+    "kind": "tiered-evidence-not-discharge",
+    "ref": "docs/cbc-evidence/runs/casper-node-claim-gate-03d7f1b27-01/report.json",
+    "sha256": "68e9224741cf8aeeb666f1e86947c8d15dc5cb8587bed98767cf9e52e2674160"
   },
   "tiers": {
-    "refutation": "pending",
-    "construction": "pending",
-    "binding": "pending"
+    "refutation": "recorded",
+    "construction": "recorded-partial",
+    "binding": "recorded-partial"
   },
   "soak": "pending",
   "waiver": null,
-  "verified_at": null
+  "verified_at": null,
+  "previous_record": {
+    "path": "docs/cbc-evidence/block-storage-src-rust-dag-block-dag-key-value-storage-rs.md",
+    "sha256": "402a5af9eb173392028137b675251c9fdc14de2647a26ea4222b19764da5e5d7",
+    "commit": "8789c1c3e1ad71241d92d9bbdde2296d1e64851d"
+  }
 }
 ```

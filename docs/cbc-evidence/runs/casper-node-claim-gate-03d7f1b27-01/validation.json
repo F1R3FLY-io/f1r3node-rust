@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "execution_base": "03d7f1b27544b2c5a93b664d8684b24ea16cf3e9",
+  "working_tree": true,
+  "report_sha256": "68e9224741cf8aeeb666f1e86947c8d15dc5cb8587bed98767cf9e52e2674160",
+  "inventory_files": 71,
+  "mandatory_files": 60,
+  "records_refreshed": 57,
+  "records_created": 1,
+  "tla_gate_exit": 0,
+  "coqchk_ok": true,
+  "closed_assumption_sets": 14,
+  "kani_shared_exit": 0,
+  "kani_block_storage_exit": 1,
+  "oracle_scenarios": 14,
+  "clippy_exit": 0,
+  "fmt_exit": 0,
+  "strict_audit_exit_expected_after_refresh": 4,
+  "claim_acceptance": false,
+  "task_complete": false
+}

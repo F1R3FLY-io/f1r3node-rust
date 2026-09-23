@@ -102,7 +102,7 @@ The binding tier has three forms on this branch. The capture oracle test `captur
 
 The session oracle test `session_sequences_match_an_independent_event_oracle` checks event sequences across response, replay, and disconnect. The retained pre-fix regressions cover the lock deadline, short decompression, nested collection bounds, canonical work, duration identity, body counts, and repeated entropy.
 
-Eight Kani harnesses under `#[cfg(kani)]` in the shared reader and the block store cover the length prefix, the limit comparison, checked totals, atomic charging, and decode-limit validation. The prefix harnesses call the same `split_length_prefixed` predicate that production decoding uses. Their execution status is recorded in the evidence package.
+Seven Kani harnesses under `#[cfg(kani)]` in the shared reader and the block store cover the length prefix, the limit comparison, atomic charging, and decode-limit validation. The charging harnesses drive the checked-total arithmetic with fully symbolic inputs. The prefix harnesses call the same `split_length_prefixed` predicate that production decoding uses. Their execution status is recorded in the evidence package.
 
 [bindings.json](bindings.json) maps all 23 required properties to invariants, theorems, harnesses, and tests. It is provisional and does not establish complete property coverage.
 
@@ -124,7 +124,7 @@ A resource limit, timeout, frame size, or test fixture does not make a property 
 | A8: capabilities and effects | F proposed | None | Not applicable proposed. The domain is the fixed capability list and the single operation. | Capability and fault-command tests. | Pending maintainer review. |
 | A9: cleanup and shutdown | U | None | Pending. No complete shutdown model. | Source-order regression and cleanup tests. | Pending. |
 | A10: public configuration | F proposed | None | Not applicable proposed. The domain is the fixed allowlist. | Configuration digest test. | Pending maintainer review. |
-| B1: input limits | U | `ValidAdmission`, `BoundBytes` | `capture_budget_bounded`, `capture_overflow_fails_limit`. | Limit tests, capture oracle, and five Kani harnesses. | Construction recorded, acceptance pending. |
+| B1: input limits | U | `ValidAdmission`, `BoundBytes` | `capture_budget_bounded`, `capture_overflow_fails_limit`. | Limit tests, capture oracle, and four Kani harnesses. | Construction recorded, acceptance pending. |
 | B2: bounded locks | U | `BoundLockWait`, `GuardOrder` | `capture_guard_order`. The deadline bound relies on the lock library and remains pending. | Deadline and guard tests. | Partial construction, acceptance pending. |
 | B3: environment partition | U | `OpenIdentity` | `capture_no_interference` over any participant set. | Separate-environment tests. | Construction recorded, acceptance pending. |
 | B4: identity at open | U | `OpenIdentity`, `ValidatedIdentity` | `capture_no_interference`. | Open and validation tests. | Construction recorded, acceptance pending. |
