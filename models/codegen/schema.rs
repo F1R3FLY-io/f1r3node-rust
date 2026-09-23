@@ -11471,8 +11471,8 @@ fn emit_protobuf_owned_slots(
     }
     src.push_str("\n#[allow(dead_code, unused_variables)]\npub(crate) mod owned_slots {\n");
     src.push_str("pub(crate) type Par = crate::rust::par_construction::ProtobufParBuilder;\n");
-    src.push_str("pub(crate) struct EPathMap {\n    pub(crate) repr: crate::rust::epathmap_trie_codec::EPathMapRepr<crate::rust::par_construction::PlannedPar>,\n    pub(crate) locally_free: Vec<u8>,\n    pub(crate) connective_used: bool,\n    pub(crate) remainder: Option<crate::rhoapi::Var>,\n}\n");
-    src.push_str("impl Default for EPathMap { fn default() -> Self { Self { repr: crate::rust::epathmap_trie_codec::EPathMapRepr::Empty, locally_free: Vec::new(), connective_used: false, remainder: None } } }\n");
+    src.push_str("pub(crate) struct EPathMap {\n    pub(crate) repr: crate::rust::par_construction::OwnedPlannedEPathMap,\n    pub(crate) locally_free: Vec<u8>,\n    pub(crate) connective_used: bool,\n    pub(crate) remainder: Option<crate::rhoapi::Var>,\n}\n");
+    src.push_str("impl Default for EPathMap { fn default() -> Self { Self { repr: Default::default(), locally_free: Vec::new(), connective_used: false, remainder: None } } }\n");
     src.push_str("pub(crate) trait Projection {\n    type Error;\n    fn par(&mut self, value: Par) -> Result<crate::rhoapi::Par, Self::Error>;\n    fn epathmap(&mut self, value: EPathMap) -> Result<crate::rhoapi::EPathMap, Self::Error>;\n}\n");
     for cut in ["Par", "EPathMap"] {
         let method = if cut == "Par" { "par" } else { "epathmap" };

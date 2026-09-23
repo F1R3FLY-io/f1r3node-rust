@@ -1583,7 +1583,7 @@ not a production implementation.
 
 ## EPM stateful ownership retirement (EOR, task 5834)
 
-`EpmOwnedRetirement.v` has 18 exported closed statements and two helper lemmas.
+`EpmOwnedRetirement.v` has 24 exported closed statements and two helper lemmas.
 Compilation and independent kernel checking completed before the shared provider
 implementation. It extends the existing reverse-prune trace model; it does not
 replace that algorithm or establish a Rust/compiler refinement theorem.
@@ -1599,15 +1599,23 @@ Map abandonment before/after attachment, Set/topology-only abandonment, final
 rejection, transfer/replacement, frame unwind, guard layout, and generated
 abandonment/rejection schedules. Q explicitly checks retained writers and deep
 scaffold state before dropping, so premature Discard cannot satisfy the depth gate.
+R denotes the seven `planned_epm_ownership_tests` witnesses: arena-barrier validity
+and reuse, branching owner retirement, lazy raw-ingress bootstrap and public
+normalization, builder unwind, returning length refusal, generated-mirror replacement
+and projection rejection, and construction-arena disposal. R's synthetic invalid
+handle is a test-only unwind injection, not an accepted production handle. The
+length refusal is a separate ordinary-error witness. Native qualification is
+recorded in J-211; the binding itself is not a test-pass claim.
 
 | Obligation | Formal statements | Native binding and scope |
 |---|---|---|
+| Arena-backed barrier | `arena_barrier_reuses_nonempty`, `arena_barrier_bootstraps_empty`, `arena_barrier_returns_valid`, `arena_barrier_preserves_existing`, `arena_barrier_repeated_requests_reuse`, `arena_extension_preserves_barrier` | R checks empty/nonempty bootstrap, repeated manufacture, preservation under arena extension, topology-only cleanup, and no per-map neutral allocation. The count model assumes same-arena input handles and append-only arena growth; the bounded empty-Par score source audit is separate from the count proof. No Rust refinement is claimed. |
 | Provider erasure and validity | `stateful_provider_preserves_every_event`, `stateful_provider_preserves_valid_same_arena_values`, `stateful_terminal_drain_preserves_existing_semantics`, `repeat_scaffold_needs_only_validity` | P compares observer events with the static adapter, checks one-byte prune width and exact real values. L checks absence of factory calls for empty/root-only maps and disposal before installation. Stateful test values have no Default and carry one arena identity. |
-| Affine settlement | `every_settlement_consumes_source`, `live_source_has_exactly_one_terminal_event`, `consumed_source_cannot_retire_or_transfer_again`, `retirement_and_transfer_are_exclusive` | Q binds consuming pending-map/writer slots with balanced payload creation/drop counts. Generated mirrors, planned nodes and public publication remain separate obligations. |
+| Affine settlement | `every_settlement_consumes_source`, `live_source_has_exactly_one_terminal_event`, `consumed_source_cannot_retire_or_transfer_again`, `retirement_and_transfer_are_exclusive` | Q binds consuming pending-map/writer slots with balanced payload creation/drop counts. R exercises planned-node and generated-mirror cleanup on a small stack; it does not count every real destructor. Successful public materialization remains separate. |
 | Zipper adoption | `zipper_adoption_preserves_subject_and_authority` | Q exercises guarded map/writer handoff. Pinned PathMap 0.2.2 source review establishes the no-callback empty-root conversion premise; the abstract theorem does not prove upstream code. |
-| Replacement | `replacement_retires_old_before_adopting_new`, `replacing_with_absence_retires_without_publication` | Q exercises owned replacement and latched Discard. Generated oneof mirror replacement remains unbound. |
-| Frame/arena disposal | `scope_disposal_consumes_each_owned_slot_once`, `scope_disposal_preserves_order_and_drain_traces` | D and Q establish branching drain and partial pending-frame disposal; construction-arena and planned-node ownership remain unbound. |
-| Returning errors | `returning_failure_preserves_selected_error`, `refusal_and_projection_failure_do_not_publish` | Q pins deferred noncanonical rejection and first-semantic-error precedence, including generated partial schedules. General projection failure remains unbound. |
+| Replacement | `replacement_retires_old_before_adopting_new`, `replacing_with_absence_retires_without_publication` | Q exercises owned replacement and latched Discard. R replaces the generated EPM field and rejects its projection with retained Map/Set topology; full generated PDA oneof routing remains pending. |
+| Frame/arena disposal | `scope_disposal_consumes_each_owned_slot_once`, `scope_disposal_preserves_order_and_drain_traces` | D, Q and R exercise branching drain, partial pending frames, builder unwind and planned-node/arena teardown. Native small-stack observations are not a Rust lifetime proof. |
+| Returning errors | `returning_failure_preserves_selected_error`, `refusal_and_projection_failure_do_not_publish` | Q pins deferred noncanonical rejection and first-semantic-error precedence. R covers planned snapshot-length overflow and generated EPM projection rejection; full generated PDA projection remains pending. |
 | Terminal cleanup failures | `cleanup_panic_is_terminal`, `cleanup_allocation_failure_is_terminal`, `retirement_reuses_existing_raw_drop_quarantine` | F requires SIGABRT at all three callback sites, not merely test failure. C checks sibling survival. Allocation failure is inherited from the existing quarantine model; no new allocator-failure injection is claimed. |
 
 Premises: provider state remains valid and every barrier belongs to the same live

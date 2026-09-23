@@ -8989,8 +8989,8 @@ topology-only cleanup on a 256 KiB stack, CoW preservation and three fail-stop
 callback controls. Peak memory is 1.7 GiB. The decoder/reference/manifest selection
 passes 30/30 tests at 2.4 GiB peak. Both runs use 8 GiB limits and zero swap; J-209
 records exact selections, negative attempts, elapsed times and receipt hashes.
-The pending decoder, planned-node and public-recipient ownership integrations are
-not yet covered by this shared facade. In particular, these results do not close
+At the J-209 checkpoint, pending decoder, planned-node and public-recipient ownership
+integrations were not yet covered by this shared facade. These results do not close
 task 5834, the unchanged depth-4,096 timeout, or establish a decoding speedup.
 
 J-210 binds pending decoder rejection, abandonment and map/writer handoff to that
@@ -9002,11 +9002,27 @@ witnesses include 8,192-byte branching trie cleanup on a 256 KiB stack and gener
 partial schedules. The earlier default selection passes 37/37 tests; after the
 complete-enum layout correction, the final feature-enabled EPathMap codec/reference
 selection passes 93/93. The latter capped service peaks at 2.7 GiB with zero swap;
-the final layout has not been rerun in the default configuration. J-210 preserves
-both failed layout hypotheses, the correction, exact receipts and proof boundaries. Planned
-builders/nodes, generated EPM mirrors and public recipients still require ownership
-integration before production planned decoding; the general depth-4,096 decoder
+default-configuration qualification follows in J-211. J-210 preserves both failed
+layout hypotheses, the correction, exact receipts and proof boundaries. At that
+checkpoint, planned builders/nodes, generated EPM mirrors and public recipients
+still required ownership integration; the general depth-4,096 decoder
 timeout remains open. These cleanup results are not a decoding speedup claim.
+
+J-211 extends guarded ownership through planned EPM builders, stored nodes and
+generated EPM records. Six arena-barrier lemmas were kernel-checked before Rust;
+they establish count/index validity and reuse, not a Rust refinement theorem.
+Seven new native witnesses exercise branching cleanup, unwind, returning length
+failure, mirror replacement/projection rejection and arena disposal. The corrected
+default release selection passes 55/55 at 2.9 GiB peak; the broader feature-enabled
+codec/construction selection passes 119/119 at 2.8 GiB peak. Both use zero swap and
+an 8 GiB cap. Native tests rejected an incorrect planning assumption: value-free topology
+is not empty under PathMap's predicate. Runtime preserves it, including exact
+ACT/EPM prefix bytes at public ingress; an initially empty arena provides one
+valid neutral-Par barrier for a retained Map. Truly empty maps require no handle,
+and populated-map construction reuses the arena's existing handle. No per-map
+neutral Par is allocated. Planned EPM nodes retire before other arena contents.
+J-211 retains failed attempts and receipt hashes. General decoder routing,
+successful public materialization and unchanged depth-4,096 acceptance remain open.
 
 ### 5.29 ParBag family and count-domain completeness [SS-A13, SS-A14, SS-Y9]
 

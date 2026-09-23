@@ -1314,6 +1314,12 @@ fn epm_owned_retirement_has_explicit_proof_boundaries_and_native_bindings() {
         "stateful_provider_preserves_valid_same_arena_values",
         "stateful_terminal_drain_preserves_existing_semantics",
         "repeat_scaffold_needs_only_validity",
+        "arena_barrier_reuses_nonempty",
+        "arena_barrier_bootstraps_empty",
+        "arena_barrier_returns_valid",
+        "arena_barrier_preserves_existing",
+        "arena_barrier_repeated_requests_reuse",
+        "arena_extension_preserves_barrier",
         "every_settlement_consumes_source",
         "live_source_has_exactly_one_terminal_event",
         "consumed_source_cannot_retire_or_transfer_again",
@@ -1329,7 +1335,7 @@ fn epm_owned_retirement_has_explicit_proof_boundaries_and_native_bindings() {
         "cleanup_allocation_failure_is_terminal",
         "retirement_reuses_existing_raw_drop_quarantine",
     ];
-    assert_eq!(names.len(), 18);
+    assert_eq!(names.len(), 24);
     assert_eq!(theory.matches("Print Assumptions ").count(), names.len());
     let catalog = read_repository_file("docs/design/pathmap/workspace-regression-formal-invariant-catalog-2026-08-28.md");
     for name in names {
@@ -1337,10 +1343,11 @@ fn epm_owned_retirement_has_explicit_proof_boundaries_and_native_bindings() {
         assert!(catalog.contains(&format!("`{name}`")));
     }
     let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
-    assert!(has_runner_command(&runner, &["rocq_compile_with_closed_count", "theories/EpmOwnedRetirement.v", "18"]));
+    assert!(has_runner_command(&runner, &["rocq_compile_with_closed_count", "theories/EpmOwnedRetirement.v", "24"]));
     assert!(has_runner_kernel_check(&runner, &["StackSafePDA.EpmOwnedRetirement"]));
     assert!(has_runner_command(&runner, &["rspace_preparation_run_tests", "5", "--lib", "stateful_retirement"]));
     assert!(has_runner_command(&runner, &["rpb3_run_tests", "7", "--lib", "owned_retirement_tests"]));
+    assert!(has_runner_command(&runner, &["rpb3_run_tests", "7", "--lib", "planned_epm_ownership_tests"]));
     assert!(read_repository_file("formal/rocq/stack_safe_pda/_CoqProject").lines()
         .any(|line| line == "theories/EpmOwnedRetirement.v"));
     let native = read_repository_file("rspace++/tests/guarded_pathmap/stateful_retirement.rs");
@@ -1364,6 +1371,18 @@ fn epm_owned_retirement_has_explicit_proof_boundaries_and_native_bindings() {
         "generated_abandonment_and_rejection_retire_every_created_payload",
     ] {
         assert!(pending.contains(&format!("fn {witness}(")));
+    }
+    let planned = read_repository_file("models/tests/support/planned_epm_ownership.rs");
+    for witness in [
+        "arena_barriers_preserve_validity_and_reuse",
+        "planned_owners_retire_branching_sets_maps_and_topology",
+        "raw_topology_ingress_preserves_topology_and_bootstraps_valid_barrier",
+        "builder_unwind_retires_partial_branching_keys",
+        "planned_length_refusal_preserves_error_and_arena_reuse",
+        "generated_mirror_replacement_and_projection_failure_retire_owned_maps",
+        "arena_disposal_retires_planned_trie_nodes_on_small_stack",
+    ] {
+        assert!(planned.contains(&format!("fn {witness}(")));
     }
 }
 

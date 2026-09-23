@@ -758,7 +758,7 @@ rocq_compile_with_closed_count theories/ProtobufOwnedSlots.v 34 \
   "protobuf owned slot projection and schema rank"
 rocq_check_modules "protobuf owned slot projection and schema rank" StackSafePDA.ProtobufOwnedSlots
 rocq_reject_placeholders theories/EpmOwnedRetirement.v
-rocq_compile_with_closed_count theories/EpmOwnedRetirement.v 18 \
+rocq_compile_with_closed_count theories/EpmOwnedRetirement.v 24 \
   "stateful EPM barriers and affine ownership retirement"
 rocq_check_modules "stateful EPM ownership retirement" StackSafePDA.EpmOwnedRetirement
 rocq_reject_placeholders theories/DepthProbeClassification.v
@@ -1047,6 +1047,7 @@ rpb3_run_tests 8 --lib payload_representation_tests
 rpb3_run_tests 8 --lib protobuf_owned_slots_tests
 rspace_preparation_run_tests 5 --lib stateful_retirement
 rpb3_run_tests 7 --lib owned_retirement_tests
+rpb3_run_tests 7 --lib planned_epm_ownership_tests
 rpb3_run_tests 1 --release -j4 --features protobuf-projection-experiment --lib planned_handles_keep_exact_associations_without_resident_emission
 rpb3_run_tests 1 --release -j4 --features protobuf-projection-experiment --lib accumulation_emits_no_resident_root_until_requested
 rpb3_run_tests 1 --release -j4 --features protobuf-projection-experiment --lib incomplete_planning_has_no_resident_finish_events

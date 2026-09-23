@@ -21,6 +21,7 @@
 //! represented as another flat arena.  Parent scores reference child score
 //! nodes by index; no recursive `Tree` is cloned while a construction grows.
 
+use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::fmt;
 
@@ -31,9 +32,10 @@ pub mod substitution_cost;
 use pathmap::zipper::{ZipperIteration, ZipperMoving, ZipperReadOnlyIteration};
 use pathmap::PathMap;
 use prost::encoding::{encoded_len_varint, key_len};
+use rspace_plus_plus::rspace::pathmap_mutation::BarrierProvider;
 
 use super::canonical_path::tag as path_tag;
-use super::epathmap_trie_codec::{self, EPathMapMode, EPathMapRepr};
+use super::epathmap_trie_codec::{self, EPathMapMode, EPathMapRepr, EpmReprOwner};
 use super::par_bag::{
     canonical_ezipper_region_parts, CanonicalParBagKey, Multiplicity, OwnedCanonicalEzipper,
     ParBag, ParBagComponent, ParComponentTag, PAR_BAG_KEY_DOMAIN,
@@ -59,6 +61,27 @@ use crate::rhoapi::{
 /// An index into a [`ParConstruction`]'s planned-Par arena.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PlannedPar(usize);
+
+#[derive(Default)]
+pub(crate) struct PlannedEpmBarrier(Option<PlannedPar>);
+
+impl BarrierProvider<PlannedPar> for PlannedEpmBarrier {
+    fn make_barrier(&self) -> PlannedPar {
+        self.0.expect("an owned planned map retains a valid arena barrier")
+    }
+
+    fn discard_barrier(&self, _: PlannedPar) {}
+}
+
+struct ArenaEpmBarrier<'a>(RefCell<&'a mut ParConstruction>);
+
+impl BarrierProvider<PlannedPar> for ArenaEpmBarrier<'_> {
+    fn make_barrier(&self) -> PlannedPar { self.0.borrow_mut().epm_barrier() }
+
+    fn discard_barrier(&self, _: PlannedPar) {}
+}
+
+pub(crate) type OwnedPlannedEPathMap = EpmReprOwner<PlannedPar, PlannedEpmBarrier>;
 
 #[derive(Default)]
 pub(crate) struct ProtobufParBuilder {
@@ -352,6 +375,10 @@ mod protobuf_par_accumulation_tests;
 #[cfg(test)]
 #[path = "../../tests/support/collection_collision_elision.rs"]
 mod collection_collision_elision;
+
+#[cfg(test)]
+#[path = "../../tests/support/planned_epm_ownership.rs"]
+mod planned_epm_ownership_tests;
 
 enum ProtoPiece {
     Bytes(Box<[u8]>),
@@ -918,7 +945,7 @@ struct ParNode {
 }
 
 struct PlannedEPathMapNode {
-    repr: EPathMapRepr<PlannedPar>,
+    repr: OwnedPlannedEPathMap,
     /// EPM1 magic/version/mode + ACTree03 arena + value count.
     prefix: Box<[u8]>,
     /// Canonical trie-order map-value schedule. This is an ordinal schedule of
@@ -1434,7 +1461,7 @@ impl ParConstruction {
                         }
                         CanonicalSegment::EPathMap(map) => {
                             let map_node = &self.epathmaps[map.0];
-                            match &map_node.repr {
+                            match map_node.repr.as_repr() {
                                 EPathMapRepr::Empty => {
                                     out.push(path_tag::EPATHMAP);
                                     push_uv(out, 0);
@@ -1583,35 +1610,7 @@ impl ParConstruction {
             });
         }
 
-        let repr = match shell.mode() {
-            EPathMapMode::Empty => EPathMapRepr::Empty,
-            EPathMapMode::Set => {
-                let mut entries = PathMap::new();
-                for &entry in par_children {
-                    let key = self.canonical_path_bytes(entry)?;
-                    entries.insert(&key, ());
-                }
-                if entries.is_empty() {
-                    EPathMapRepr::Empty
-                } else {
-                    EPathMapRepr::Set(entries)
-                }
-            }
-            EPathMapMode::Map => {
-                let mut entries = PathMap::new();
-                for pair in par_children.chunks_exact(2) {
-                    let key = pair[0];
-                    let value = pair[1];
-                    let encoded_key = self.canonical_path_bytes(key)?;
-                    entries.insert(&encoded_key, value);
-                }
-                if entries.is_empty() {
-                    EPathMapRepr::Empty
-                } else {
-                    EPathMapRepr::Map(entries)
-                }
-            }
-        };
+        let repr = self.build_epm_entries(shell.mode(), par_children)?;
 
         self.planned_epathmap_repr(
             repr,
@@ -1626,12 +1625,12 @@ impl ParConstruction {
     /// normalizer-native set construction share this path.
     fn planned_epathmap_repr(
         &mut self,
-        repr: EPathMapRepr<PlannedPar>,
+        repr: OwnedPlannedEPathMap,
         locally_free: &[u8],
         connective_used: bool,
         remainder: Option<&crate::rhoapi::Var>,
     ) -> Result<(PlannedEPathMap, usize), ParConstructionError> {
-        let entries_stable = match &repr {
+        let entries_stable = match repr.as_repr() {
             EPathMapRepr::Empty => true,
             EPathMapRepr::Set(entries) => {
                 let mut stable = true;
@@ -1657,10 +1656,10 @@ impl ParConstruction {
             }
         };
 
-        let layout = epathmap_trie_codec::layout(&repr);
+        let layout = epathmap_trie_codec::layout(repr.as_repr());
         let prefix = layout.prefix().to_vec().into_boxed_slice();
         let mut value_order = Vec::with_capacity(layout.value_count());
-        if let EPathMapRepr::Map(entries) = &repr {
+        if let EPathMapRepr::Map(entries) = repr.as_repr() {
             let mut zipper = entries.read_zipper();
             while let Some(value) = zipper.to_next_get_val() {
                 value_order.push(*value);
@@ -1728,22 +1727,11 @@ impl ParConstruction {
         connective_used: bool,
         remainder: Option<crate::rhoapi::Var>,
     ) -> Result<PlannedComponent, ParConstructionError> {
-        let repr = match mode {
+        match mode {
             EPathMapMode::Empty => {
                 Self::require_arity("empty EPathMap", 0, children.len())?;
-                EPathMapRepr::Empty
             }
-            EPathMapMode::Set => {
-                let mut entries = PathMap::new();
-                for &key in children {
-                    entries.insert(&self.canonical_path_bytes(key)?, ());
-                }
-                if entries.is_empty() {
-                    EPathMapRepr::Empty
-                } else {
-                    EPathMapRepr::Set(entries)
-                }
-            }
+            EPathMapMode::Set => {}
             EPathMapMode::Map => {
                 if !children.len().is_multiple_of(2) {
                     return Err(ParConstructionError::ChildArity {
@@ -1752,18 +1740,10 @@ impl ParConstruction {
                         supplied: children.len(),
                     });
                 }
-                let mut entries = PathMap::new();
-                for pair in children.chunks_exact(2) {
-                    entries.insert(&self.canonical_path_bytes(pair[0])?, pair[1]);
-                }
-                if entries.is_empty() {
-                    EPathMapRepr::Empty
-                } else {
-                    EPathMapRepr::Map(entries)
-                }
             }
-        };
-        self.epathmap_repr_expr_component(repr, locally_free, connective_used, remainder)
+        }
+        let repr = self.build_epm_entries(mode, children)?;
+        self.owned_epathmap_repr_expr_component(repr, locally_free, connective_used, remainder)
     }
 
     /// Finish an already prefix-compressed set/map construction as one Expr.
@@ -1775,11 +1755,17 @@ impl ParConstruction {
         connective_used: bool,
         remainder: Option<crate::rhoapi::Var>,
     ) -> Result<PlannedComponent, ParConstructionError> {
-        let repr = match repr {
-            EPathMapRepr::Set(entries) if entries.is_empty() => EPathMapRepr::Empty,
-            EPathMapRepr::Map(entries) if entries.is_empty() => EPathMapRepr::Empty,
-            repr => repr,
-        };
+        let repr = self.own_epm_repr(repr);
+        self.owned_epathmap_repr_expr_component(repr, locally_free, connective_used, remainder)
+    }
+
+    pub(crate) fn owned_epathmap_repr_expr_component(
+        &mut self,
+        repr: OwnedPlannedEPathMap,
+        locally_free: Vec<u8>,
+        connective_used: bool,
+        remainder: Option<crate::rhoapi::Var>,
+    ) -> Result<PlannedComponent, ParConstructionError> {
         let (planned_map, map_protobuf) =
             self.planned_epathmap_repr(repr, &locally_free, connective_used, remainder.as_ref())?;
         let map_node = &self.epathmaps[planned_map.0];
@@ -3197,6 +3183,56 @@ impl ParConstruction {
         self.par(std::iter::empty(), Vec::new(), false)
     }
 
+    fn epm_barrier(&mut self) -> PlannedPar {
+        if self.pars.is_empty() {
+            self.empty_par().expect("neutral Par construction has bounded constant summaries")
+        } else {
+            PlannedPar(0)
+        }
+    }
+
+    fn build_epm_entries(
+        &mut self,
+        mode: EPathMapMode,
+        children: &[PlannedPar],
+    ) -> Result<OwnedPlannedEPathMap, ParConstructionError> {
+        let (repr, barrier) = match mode {
+            EPathMapMode::Empty => (EPathMapRepr::Empty, None),
+            EPathMapMode::Set => (EPathMapRepr::Set(PathMap::new()), None),
+            EPathMapMode::Map => (
+                EPathMapRepr::Map(PathMap::new()),
+                (!children.is_empty()).then(|| self.epm_barrier()),
+            ),
+        };
+        let mut owner = EpmReprOwner::new(repr, PlannedEpmBarrier(barrier));
+        match owner.as_repr_mut() {
+            EPathMapRepr::Empty => {}
+            EPathMapRepr::Set(entries) => {
+                for &key in children {
+                    entries.insert(&self.canonical_path_bytes(key)?, ());
+                }
+            }
+            EPathMapRepr::Map(entries) => {
+                for pair in children.chunks_exact(2) {
+                    entries.insert(&self.canonical_path_bytes(pair[0])?, pair[1]);
+                }
+            }
+        }
+        owner.normalize_empty();
+        Ok(owner)
+    }
+
+    fn own_epm_repr(&mut self, repr: EPathMapRepr<PlannedPar>) -> OwnedPlannedEPathMap {
+        let mut owner = EpmReprOwner::new(repr, ArenaEpmBarrier(RefCell::new(self)));
+        owner.normalize_empty();
+        let barrier = if matches!(owner.as_repr(), EPathMapRepr::Map(_)) {
+            Some(owner.barrier.make_barrier())
+        } else {
+            None
+        };
+        owner.with_barrier(PlannedEpmBarrier(barrier))
+    }
+
     /// Construct one top-level occurrence with its already-derived root
     /// summaries.
     ///
@@ -3891,12 +3927,9 @@ impl ParConstruction {
 
 impl Drop for ParConstruction {
     fn drop(&mut self) {
-        // All edges are integer indices. Explicitly clearing the largest
-        // fragment owners first keeps teardown order deterministic and makes
-        // the non-recursive nature evident to stack-slope instrumentation.
+        self.epathmaps.clear();
         self.components.clear();
         self.pars.clear();
-        self.epathmaps.clear();
         self.protobuf_nodes.clear();
         self.scores.clear();
         self.byte_fragments.clear();

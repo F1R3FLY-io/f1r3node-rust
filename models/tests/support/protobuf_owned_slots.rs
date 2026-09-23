@@ -34,7 +34,7 @@ impl owned::Projection for Materialize {
     }
 
     fn epathmap(&mut self, value: owned::EPathMap) -> Result<rhoapi::EPathMap, Self::Error> {
-        assert!(matches!(value.repr, EPathMapRepr::Empty));
+        assert!(matches!(value.repr.as_repr(), EPathMapRepr::Empty));
         assert!(value.locally_free.is_empty());
         assert!(!value.connective_used);
         assert!(value.remainder.is_none());

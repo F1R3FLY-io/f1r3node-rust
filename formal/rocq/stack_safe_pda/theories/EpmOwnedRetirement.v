@@ -111,6 +111,33 @@ Proof. intros. simpl. tauto. Qed.
 
 End Provider.
 
+Definition arena_barrier (count : nat) : nat * nat :=
+  (Nat.max 1 count, 0).
+
+Theorem arena_barrier_reuses_nonempty : forall count,
+  0 < count -> arena_barrier count = (count, 0).
+Proof. intros. unfold arena_barrier. rewrite Nat.max_r by lia. reflexivity. Qed.
+
+Theorem arena_barrier_bootstraps_empty : arena_barrier 0 = (1, 0).
+Proof. reflexivity. Qed.
+
+Theorem arena_barrier_returns_valid : forall count,
+  snd (arena_barrier count) < fst (arena_barrier count).
+Proof. intros [|count]; unfold arena_barrier; simpl; lia. Qed.
+
+Theorem arena_barrier_preserves_existing : forall count handle,
+  handle < count -> handle < fst (arena_barrier count).
+Proof. intros [|count] handle H; unfold arena_barrier; simpl; lia. Qed.
+
+Theorem arena_barrier_repeated_requests_reuse : forall count,
+  arena_barrier (fst (arena_barrier count)) = arena_barrier count.
+Proof. intros [|count]; reflexivity. Qed.
+
+Theorem arena_extension_preserves_barrier : forall count extended,
+  fst (arena_barrier count) <= extended ->
+  snd (arena_barrier count) < extended.
+Proof. intros. pose proof (arena_barrier_returns_valid count). lia. Qed.
+
 Inductive ownership_form := OwnedRoot | OwnedZipper.
 
 Record owned : Type := Owned {
@@ -308,6 +335,12 @@ Print Assumptions stateful_provider_preserves_every_event.
 Print Assumptions stateful_provider_preserves_valid_same_arena_values.
 Print Assumptions stateful_terminal_drain_preserves_existing_semantics.
 Print Assumptions repeat_scaffold_needs_only_validity.
+Print Assumptions arena_barrier_reuses_nonempty.
+Print Assumptions arena_barrier_bootstraps_empty.
+Print Assumptions arena_barrier_returns_valid.
+Print Assumptions arena_barrier_preserves_existing.
+Print Assumptions arena_barrier_repeated_requests_reuse.
+Print Assumptions arena_extension_preserves_barrier.
 Print Assumptions every_settlement_consumes_source.
 Print Assumptions live_source_has_exactly_one_terminal_event.
 Print Assumptions consumed_source_cannot_retire_or_transfer_again.

@@ -15869,6 +15869,99 @@ required, not accepted as complete by this source audit.
 | `pending-r6.log` (complete-enum layout regression) | 2f7b22ff55cdd1cd43e302e2dee8e2a2d79a9c5682fad47c977a2937b080c18c |
 | `pending-r7.log` (outer-owner correction) | 2326debb9268c05bd2079c39f36e02a378ddc3800891e9b7fee20736ae6d8d81 |
 
+### J-211 — 2026-09-23 Planned EPM ownership through builders, nodes and generated records
+
+**Required scope.** Resume 5834 at the J-210 handoff. PgMCP STDIO is available again;
+progress 14375 backfills the prior checkpoint. The non-leaf parent was still in
+triage despite ongoing approved work. Its existing defect was confirmed, and the
+remaining decoder slice was recorded as executable child 8516, reachable through
+5834 and campaign root 4131. Scheduler revision 1234 selected that child first and
+it was claimed with WIP=1. This is not an optional campaign or a claim that the
+general decoder timeout has been repaired.
+
+**Design and rationale.** One `EpmReprOwner` retains the original homogeneous trie
+and a barrier provider. Both construction entry points now share guarded key
+insertion: ownership exists before the first fallible canonical-key calculation.
+The same owner survives layout/length preparation, planned-node adoption and
+generated EPM record replacement/projection. No key decoding, flattened Par
+collection, alternative semantic cache, upstream change or dependency is added.
+
+Raw public ingress immediately installs an arena-backed provider. Its existing
+`PathMap::is_empty` normalization is preserved. **R2 refuted the planning review's
+claim that this predicate erases topology-only maps:** retained value-free topology
+is nonempty. The implementation already retained it, but two tests expected Empty
+and failed. Corrected tests require exact ACT/EPM prefix preservation and Map mode
+at public ingress. The normalization helper is named `normalize_empty`, not
+`normalize_value_empty`; it does not confuse membership with topology.
+
+The provider reuses index zero when the same arena is nonempty. A topology-only
+Map entering an empty arena is retained and establishes one genuine neutral Par
+while still under the temporary owner; it is then rebound to a repeated valid
+handle. There is no allocation or fallible work after root extraction in that
+transfer. Truly empty maps normalize without manufacturing a handle. If temporary
+owner retirement needs a barrier, the existing retirement quarantine encloses its
+lazy manufacture. The separate owned entry does not normalize its input.
+
+**Formal-first evidence.** Six count/index lemmas extend EOR: nonempty reuse,
+empty bootstrap, returned-handle validity, preservation of existing handles,
+repeated-request idempotence and validity under arena extension. The model assumes
+same-arena handles and append-only arena growth. It does not prove Rust ownership
+or the implementation of neutral Par construction. A separate source audit traces
+that fixed input through bounded score lengths 0, 10, 10 and 22, without child
+lookup or occurrence insertion. Ordinary construction errors remain recoverable
+under the owner; unexpected cleanup failure retains the existing terminal policy.
+
+The first proof attempt failed a tactic after simplification of `Nat.max`; explicit
+natural-number cases repaired it. R2 compiled all 24 exported statements closed
+under the global context and passed independent kernel checking before production
+edits: 13.584 seconds service, 13.402 CPU seconds, 397 MiB peak, zero swap,
+MemoryMax=2 GiB, CPUQuota=100%, RuntimeMaxSec=180. No new teardown algorithm was
+introduced. The exhaustive six-lemma/native-property mapping was added before Rust.
+
+**Native verification.** Seven witnesses cover generated arena sizes
+and extension, 8,192-level branching Set/Map/topology cleanup on a 256 KiB stack,
+raw/public normalization, partial-builder unwind, selected returning length failure,
+generated-record replacement and direct Map/Set projection refusal, and arena
+disposal. The invalid handle in the builder test is only a deliberate panic
+injection; the separate length witness exercises an ordinary returning error.
+R1 stopped before tests at a test-only `Send` type/trait name collision; the helper
+now names `std::marker::Send`. R2 passed 53/55 tests and rejected the two incorrect
+topology-normalization assertions above: 23.660 seconds tests, 76.579 seconds service,
+181.654 CPU seconds, 2.3 GiB peak, zero swap. R3 passed **55/55**, 608 excluded,
+after correcting those assertions: 24.389 seconds tests, 83.992 seconds service,
+237.335 CPU seconds, 2.9 GiB peak, zero swap. The selection includes all seven new
+ownership witnesses, prior pending-owner and generated-slot witnesses, frozen
+decoder comparisons, the formal manifest, and existing ParConstruction tests
+(including depth-16,384 construction and depth-4,096 planned EPM value emission).
+Those construction gates are not the still-open general-decoder gate.
+
+Both run under
+MemoryHigh=6 GiB, MemoryMax=8 GiB, MemorySwapMax=0, CPUQuota=400%, RuntimeMaxSec=900,
+four build/test workers, property cases=1,024 and seed=5834. Compiler temporaries
+and logs remain on disk under target rather than tmpfs. The broader feature-enabled
+R4 passes **119/119**, 553 excluded, adding the entire EPathMap codec module:
+24.213 seconds tests, 83.262 seconds service, 236.613 CPU seconds, 2.8 GiB peak,
+zero swap under the same limits. Diff-whitespace and maintained-runner shell syntax
+checks pass. No benchmark or full-workspace pass is inferred.
+
+**Remaining boundaries.** Production general protobuf PDA routing, successful raw
+public materialization, error/oneof/reopen correspondence at cutover, the unchanged
+depth-4,096 gate, slope/shallow measurements and full workspace acceptance remain
+required. Existing narrow tests do not establish those results. No consensus byte,
+cost-accounting or matching rule is intentionally changed by this ownership slice.
+
+| Artifact under `target/verification/epm-owned-retirement-5834/` | SHA-256 |
+|---|---|
+| `arena-coqc-r1.log` (tactic failure) | 0173818bd65e147a98cb15bd3c46fe28ef876ba0d541f4c3520b795e9e2ae971 |
+| `arena-coqc-r2.log` | 6b7b81e9e9e6411935565ab1c384e9fc7be3d37426a327e71ddd049a612bd5f5 |
+| `arena-coqchk-r2.log` (silent success) | e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 |
+| `planned-native-r1.log` (test compile failure) | bc468c5624f1fa70570d69079c0b36dee61f8e694f3d10e070dd73a1a1710bfa |
+| `planned-native-r2.log` (incorrect topology assertions) | f0dc7d63e92529ec7b7ff2e9f28c2f0ec1737d0f219f86f4dc6b4894f2174e9e |
+| `planned-native-r3.log` (55/55) | 234db9f40812ebe64ceb0fadc287d944b83c60a2b3060c3c81e3d334608c0fe1 |
+| `planned-native-r4.log` (119/119, feature enabled) | becce851dc1f2964c52863a08e6413555741ec3df7d7ce476d509d51f522a5ab |
+
+Theory SHA-256: `281fdd5dca93b0b2de19db88aef8e6fc8fbcf7ab1fe049ceccc1a73add1dd005`.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

@@ -1386,6 +1386,51 @@ impl<V: EpmPayload> DisposeValue<V> for EpmPayloadDisposer {
     fn dispose(&self, value: V) { value.dispose(); }
 }
 
+pub(crate) struct EpmReprOwner<V: EpmPayload, B: BarrierProvider<V>> {
+    repr: EPathMapRepr<V>,
+    pub(crate) barrier: B,
+}
+
+impl<V: EpmPayload, B: BarrierProvider<V>> EpmReprOwner<V, B> {
+    pub(crate) fn new(repr: EPathMapRepr<V>, barrier: B) -> Self {
+        Self { repr, barrier }
+    }
+
+    pub(crate) fn as_repr(&self) -> &EPathMapRepr<V> { &self.repr }
+
+    pub(crate) fn as_repr_mut(&mut self) -> &mut EPathMapRepr<V> { &mut self.repr }
+
+    pub(crate) fn normalize_empty(&mut self) {
+        if self.repr.is_empty() {
+            self.retire();
+        }
+    }
+
+    pub(crate) fn with_barrier<C: BarrierProvider<V>>(mut self, barrier: C) -> EpmReprOwner<V, C> {
+        EpmReprOwner::new(std::mem::take(&mut self.repr), barrier)
+    }
+
+    fn retire(&mut self) {
+        match std::mem::take(&mut self.repr) {
+            EPathMapRepr::Empty => {}
+            EPathMapRepr::Set(map) => {
+                retire_pathmap(map, &EpmPayloadDisposer, &PendingScaffold::Repeat(()));
+            }
+            EPathMapRepr::Map(map) => {
+                retire_pathmap(map, &EpmPayloadDisposer, &self.barrier);
+            }
+        }
+    }
+}
+
+impl<V: EpmPayload, B: BarrierProvider<V> + Default> Default for EpmReprOwner<V, B> {
+    fn default() -> Self { Self::new(EPathMapRepr::Empty, B::default()) }
+}
+
+impl<V: EpmPayload, B: BarrierProvider<V>> Drop for EpmReprOwner<V, B> {
+    fn drop(&mut self) { self.retire(); }
+}
+
 impl<V: Clone> PendingScaffold<V> {
     fn value(&self) -> V {
         match self {
