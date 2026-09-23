@@ -350,13 +350,6 @@ impl FloorOfView {
     }
 }
 
-/// The LFB decision over the LIVE view — the one finality clock: derive the
-/// floor of the current frontier (the deduped latest-message blocks, over
-/// the live snapshot) and advance only onto a strictly higher floor whose
-/// state CONTAINS the current LFB's settled effects — the same containment
-/// check the per-block derivation runs, so the read surface can never
-/// designate a state missing settled content. Both the finalization runner
-/// and the API path consume exactly this.
 /// The outcome a failed derivation becomes for the finalizer's own clock.
 /// At or below zero, incompatible majority-agreement candidates are an expected
 /// transient — hold the cycle. Above zero the same error is a genuine safety
@@ -404,6 +397,13 @@ async fn decidable_tips(
     Ok(decidable)
 }
 
+/// The LFB decision over the LIVE view — the one finality clock: derive the
+/// floor of the current frontier (the deduped latest-message blocks, over
+/// the live snapshot) and advance only onto a strictly higher floor whose
+/// state CONTAINS the current LFB's settled effects — the same containment
+/// check the per-block derivation runs, so the read surface can never
+/// designate a state missing settled content. Both the finalization runner
+/// and the API path consume exactly this.
 pub async fn floor_of_view(
     dag: &KeyValueDagRepresentation,
     block_store: &KeyValueBlockStore,
