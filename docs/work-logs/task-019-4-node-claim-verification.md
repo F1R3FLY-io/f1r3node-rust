@@ -706,3 +706,45 @@ Actionlint and all 47 formal gate refusal controls passed. The first binding rer
 The rerun passed after disposable incremental build cache was removed. Retained logs are under `target/strip-equivalence-fix/`.
 
 The hosted x86_64 rerun and combined evidence refresh remain pending. This correction changes no claim acceptance status.
+
+## Combined B11 evidence cycle 03: 38e576041
+
+The current package is `docs/cbc-evidence/runs/casper-node-claim-gate-38e576041-01/report.json`. Its execution base is `38e57604187feab97cb45f000f95270b12a9f8bf`.
+
+Both node projects pass local and hosted Rocq checking. The gate checks 25 parent exports and eight B11 exports, with 33 closed assumption sets.
+
+The complete formal gate checks 44 closed assumption sets across five projects. The package lists every node export and retains the kernel logs.
+
+B11 verifies 75 production wire cases and six rejection controls. These finite cases do not establish universal refinement of the Rust implementation.
+
+The local bounded TLA gate passes 16 configurations and 88 expected violations. Hosted run 35906410283 passes 31 configurations and the same controls.
+
+Both node models pass, with all 17 node controls. Earlier local attempts failed because of the Java environment and sandbox socket restrictions.
+
+The hosted x86_64 and native ARM64 binding drivers each pass 332 tests and two B11 export tests. One ignored helper executes through its parent test.
+
+The hosted strip fixture rejects all 12 executable mutations. The formal gate fixture passes 47 refusal controls.
+
+Kani 0.67.0 and CBMC 6.8.0 verify all eight harnesses in the current source. The package records symbolic inputs, prefix bounds, assumptions, and compiler flags.
+
+The Kani compiler uses nightly-2025-11-21 on ARM64 Linux. Explicit AES and NEON configuration permits dependency compilation without disabling verification checks.
+
+Kani does not verify complete decompression, allocation behavior at arbitrary sizes, or the complete observer. Native tests and conditional model proofs retain their separate scopes.
+
+The package retains unsuccessful Kani setup attempts. The earlier nine-harness result describes a different source revision and does not supply this cycle's count.
+
+The hosted binding, TLA, Rocq correspondence, and formal gate jobs all pass. Other workflow jobs do not determine these node claim results.
+
+The current inventory contains 81 artifacts, including 70 mandatory artifacts. The refresh updates 60 node records and creates eight records for B11 and the strip fixture.
+
+The workflow and TLA gate keep their primary governance records. The package supplies separate node registration views for those two files.
+
+Source hashes bind the current files. Changes after execution affect claim text, the applicability table, and binding metadata only.
+
+The package retains the original execution manifests and identifies those metadata differences. Every tested Rust, proof, model, and driver file matches its execution source.
+
+The strict audit returns exit four with 70 pending records and no missing records. A separate digest check verifies artifact, claim, and report identities.
+
+Both claims remain pending. Acceptance requires named maintainer review of applicability decisions, conditional assumptions, and the sufficiency of finite Rust correspondence.
+
+Bulk logs and previous records remain in the ignored archive named by the report. No claim acceptance, commit, or push occurs in this cycle.

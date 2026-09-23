@@ -1,13 +1,15 @@
 # CbC Evidence: formal/tlaplus/node_observation/MC_BoundedCapture_order_unsafe.tla
 
-The approved reconciliation artifact remains pending.
+The combined package records current source hashes and scoped verification results. Both node claims remain pending named maintainer acceptance.
+
+Model proofs and finite Rust correspondence retain the limits stated in the package. This record does not qualify a live campaign.
 
 ```json
 {
   "artifact": {
     "path": "formal/tlaplus/node_observation/MC_BoundedCapture_order_unsafe.tla",
     "id": "formal-tlaplus-node-observation-MC-BoundedCapture-order-unsafe-tla",
-    "commit": "00f91ca11fd1153183818cde605d7d19eea00a7f",
+    "commit": "38e57604187feab97cb45f000f95270b12a9f8bf",
     "commit_is_base": true,
     "working_tree": true,
     "sha256": "927ca1030b336b9b20110ac3517e4004ab892143c0b306c93124baa98d47e114"
@@ -17,15 +19,15 @@ The approved reconciliation artifact remains pending.
     "CLAIM-CASPER-NODE-OBSERVATION-002"
   ],
   "claim_digests": {
-    "docs/claims/casper-node-authority-snapshot.md": "423f5e29c4550e561d41809e560ae97f870d000d00b36f14188348e4e9975481"
+    "docs/claims/casper-node-authority-snapshot.md": "3130ca377c849facee112379fa656b34f63ab8858f01f3f8f2a6c5447a72c807"
   },
   "adapter": null,
   "status": "pending",
-  "scope": "task-019-4-merged-source-cycle-02",
+  "scope": "task-019-4-combined-b11-cycle-03",
   "evidence": {
     "kind": "tiered-evidence-not-discharge",
-    "ref": "docs/cbc-evidence/runs/casper-node-claim-gate-00f91ca11-01/report.json",
-    "sha256": "c3dfa5f3f876b625db10de1645b32b4ded0411e45d1f1c61e63c27ef0afa95d8"
+    "ref": "docs/cbc-evidence/runs/casper-node-claim-gate-38e576041-01/report.json",
+    "sha256": "785a7188828a9aa0688dc28cfdac0303937f592f47d47e082d1ba752131c2e3e"
   },
   "tiers": {
     "refutation": "recorded",
@@ -36,9 +38,10 @@ The approved reconciliation artifact remains pending.
   "waiver": null,
   "verified_at": null,
   "previous_record": {
+    "artifact": "formal/tlaplus/node_observation/MC_BoundedCapture_order_unsafe.tla",
     "path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-order-unsafe-tla.md",
-    "sha256": "3947aac32ae9f336ecd9bc61b007859f66d1981f2b755c51477ee7e9272ad0db",
-    "commit": "03d7f1b27544b2c5a93b664d8684b24ea16cf3e9"
+    "sha256": "02083ea8ed28fcd24ae018764cd170921fc5bf3fd3a62a096d516b9d2adc3224",
+    "archive_member": "previous-records/formal-tlaplus-node-observation-MC-BoundedCapture-order-unsafe-tla.md"
   }
 }
 ```

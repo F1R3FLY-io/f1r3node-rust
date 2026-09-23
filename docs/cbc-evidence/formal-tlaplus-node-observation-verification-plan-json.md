@@ -1,13 +1,15 @@
 # CbC Evidence: formal/tlaplus/node_observation/verification-plan.json
 
-The approved reconciliation artifact remains pending.
+The combined package records current source hashes and scoped verification results. Both node claims remain pending named maintainer acceptance.
+
+Model proofs and finite Rust correspondence retain the limits stated in the package. This record does not qualify a live campaign.
 
 ```json
 {
   "artifact": {
     "path": "formal/tlaplus/node_observation/verification-plan.json",
     "id": "formal-tlaplus-node-observation-verification-plan-json",
-    "commit": "00f91ca11fd1153183818cde605d7d19eea00a7f",
+    "commit": "38e57604187feab97cb45f000f95270b12a9f8bf",
     "commit_is_base": true,
     "working_tree": true,
     "sha256": "0da58d7c5c4f17a9cb26995508db51d5fb152c89a54c8ce252c24972149a883a"
@@ -18,16 +20,16 @@ The approved reconciliation artifact remains pending.
     "CLAIM-CASPER-NODE-OBSERVATION-002"
   ],
   "claim_digests": {
-    "docs/claims/casper-node-observation.md": "4c69fd24c361c0c03a2a176230c667c46e8259a158c47af5bed24a0e1a38d172",
-    "docs/claims/casper-node-authority-snapshot.md": "423f5e29c4550e561d41809e560ae97f870d000d00b36f14188348e4e9975481"
+    "docs/claims/casper-node-observation.md": "d02013bb25aac9d9d16795651cbcbacd2227eae3873661f0258c6b6bd35ff2c6",
+    "docs/claims/casper-node-authority-snapshot.md": "3130ca377c849facee112379fa656b34f63ab8858f01f3f8f2a6c5447a72c807"
   },
   "adapter": null,
   "status": "pending",
-  "scope": "task-019-4-merged-source-cycle-02",
+  "scope": "task-019-4-combined-b11-cycle-03",
   "evidence": {
     "kind": "tiered-evidence-not-discharge",
-    "ref": "docs/cbc-evidence/runs/casper-node-claim-gate-00f91ca11-01/report.json",
-    "sha256": "c3dfa5f3f876b625db10de1645b32b4ded0411e45d1f1c61e63c27ef0afa95d8"
+    "ref": "docs/cbc-evidence/runs/casper-node-claim-gate-38e576041-01/report.json",
+    "sha256": "785a7188828a9aa0688dc28cfdac0303937f592f47d47e082d1ba752131c2e3e"
   },
   "tiers": {
     "refutation": "recorded",
@@ -38,9 +40,10 @@ The approved reconciliation artifact remains pending.
   "waiver": null,
   "verified_at": null,
   "previous_record": {
+    "artifact": "formal/tlaplus/node_observation/verification-plan.json",
     "path": "docs/cbc-evidence/formal-tlaplus-node-observation-verification-plan-json.md",
-    "sha256": "51cbf3ebdc69558fb179e5b2f7f8dc99ac3082d86b0568b05a21dbd167f5977c",
-    "commit": "03d7f1b27544b2c5a93b664d8684b24ea16cf3e9"
+    "sha256": "7f4c68e9a7ef04a983d1585906ac90032d22a43b24fcae5779403655fdfdc615",
+    "archive_member": "previous-records/formal-tlaplus-node-observation-verification-plan-json.md"
   }
 }
 ```

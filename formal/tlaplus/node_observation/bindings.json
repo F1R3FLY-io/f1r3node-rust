@@ -41,7 +41,7 @@
         {
           "property": 3,
           "invariants": [],
-          "coverage": "rust-tests-only",
+          "coverage": "construction-and-rust-tests",
           "tests": [
             {
               "source": "node/tests/soak_observer.rs",
@@ -56,7 +56,9 @@
               "name": "rust::soak_observer::linux::tests::directory_admission_matches_all_leaf_permission_bits"
             }
           ],
-          "theorems": [],
+          "theorems": [
+            "observer_path_admission"
+          ],
           "harnesses": []
         },
         {
@@ -64,7 +66,7 @@
           "invariants": [
             "BoundIdentity"
           ],
-          "coverage": "bounded-model-and-rust-tests",
+          "coverage": "bounded-model-construction-and-rust-tests",
           "tests": [
             {
               "source": "node/tests/soak_observer.rs",
@@ -79,7 +81,9 @@
               "name": "rust::soak_observer::linux::tests::peer_admission_rejects_each_identity_mismatch_before_hello"
             }
           ],
-          "theorems": [],
+          "theorems": [
+            "observer_peer_admission"
+          ],
           "harnesses": []
         },
         {
@@ -193,7 +197,8 @@
           ],
           "theorems": [
             "observer_counter_exhaustion_refused",
-            "observer_checked_allocation_valid"
+            "observer_checked_allocation_valid",
+            "observer_write_before_deadline"
           ],
           "harnesses": []
         },
@@ -217,7 +222,7 @@
         {
           "property": 9,
           "invariants": [],
-          "coverage": "rust-tests-only",
+          "coverage": "construction-and-rust-tests",
           "tests": [
             {
               "source": "node/tests/soak_observer.rs",
@@ -240,7 +245,10 @@
               "name": "awaited_stop_releases_a_pending_session_and_its_socket"
             }
           ],
-          "theorems": [],
+          "theorems": [
+            "observer_cleanup_preserves_replacement",
+            "observer_shutdown_before_exit"
+          ],
           "harnesses": []
         },
         {
@@ -305,23 +313,26 @@
             {
               "source": "shared/src/rust/store/soak_snapshot.rs",
               "name": "check_limit_is_the_comparison",
-              "verified": true
+              "verified": true,
+              "evidence": "docs/cbc-evidence/runs/casper-node-claim-gate-38e576041-01/report.json"
             },
             {
               "source": "shared/src/rust/store/soak_snapshot.rs",
               "name": "charge_record_never_exceeds_limits_and_fails_atomically",
-              "verified": true
+              "verified": true,
+              "evidence": "docs/cbc-evidence/runs/casper-node-claim-gate-38e576041-01/report.json"
             },
             {
               "source": "shared/src/rust/store/soak_snapshot.rs",
               "name": "charge_operation_never_exceeds_limit_and_fails_atomically",
-              "verified": true
+              "verified": true,
+              "evidence": "docs/cbc-evidence/runs/casper-node-claim-gate-38e576041-01/report.json"
             },
             {
               "source": "block-storage/src/rust/key_value_block_store.rs",
               "name": "decode_limits_validate_iff_all_positive",
-              "verified": false,
-              "status": "authored-not-executed"
+              "verified": true,
+              "evidence": "docs/cbc-evidence/runs/casper-node-claim-gate-38e576041-01/report.json"
             }
           ]
         },
@@ -339,7 +350,8 @@
             }
           ],
           "theorems": [
-            "capture_guard_order"
+            "capture_guard_order",
+            "capture_lock_deadline"
           ],
           "harnesses": []
         },
@@ -427,23 +439,26 @@
             {
               "source": "shared/src/rust/store/soak_snapshot.rs",
               "name": "length_prefix_roundtrip",
-              "verified": true
+              "verified": true,
+              "evidence": "docs/cbc-evidence/runs/casper-node-claim-gate-38e576041-01/report.json"
             },
             {
               "source": "shared/src/rust/store/soak_snapshot.rs",
               "name": "length_prefix_accepts_only_exact_declaration",
-              "verified": true
+              "verified": true,
+              "evidence": "docs/cbc-evidence/runs/casper-node-claim-gate-38e576041-01/report.json"
             },
             {
               "source": "shared/src/rust/store/soak_snapshot.rs",
               "name": "short_raw_is_rejected",
-              "verified": true
+              "verified": true,
+              "evidence": "docs/cbc-evidence/runs/casper-node-claim-gate-38e576041-01/report.json"
             },
             {
               "source": "block-storage/src/rust/key_value_block_store.rs",
               "name": "compressed_input_preflight_is_exact",
-              "verified": false,
-              "status": "authored-not-executed"
+              "verified": true,
+              "evidence": "docs/cbc-evidence/runs/casper-node-claim-gate-38e576041-01/report.json"
             }
           ]
         },
@@ -528,9 +543,6 @@
               "name": "rust::dag::soak_snapshot::tests::generation_change_after_validation_rejects_capture"
             }
           ],
-          "gaps": [
-            "The node branch has no deterministic generation-change rejection test. The downstream-only test is not imported by this model reconciliation."
-          ],
           "theorems": [
             "capture_generation_stable"
           ],
@@ -541,7 +553,7 @@
           "invariants": [
             "CompleteRows"
           ],
-          "coverage": "bounded-model-and-rust-tests",
+          "coverage": "bounded-model-construction-and-rust-tests",
           "tests": [
             {
               "source": "block-storage/tests/soak_snapshot.rs",
@@ -561,7 +573,10 @@
               "kind": "bisimilarity-oracle"
             }
           ],
-          "theorems": [],
+          "theorems": [
+            "capture_complete_metadata",
+            "capture_complete_requested_bodies"
+          ],
           "harnesses": []
         },
         {
@@ -640,7 +655,7 @@
         {
           "property": 12,
           "invariants": [],
-          "coverage": "rust-tests-only",
+          "coverage": "construction-and-rust-tests",
           "tests": [
             {
               "source": "block-storage/tests/soak_snapshot.rs",
@@ -651,7 +666,10 @@
               "name": "scratch_block_stores_use_captured_bytes_and_are_independent"
             }
           ],
-          "theorems": [],
+          "theorems": [
+            "capture_scratch_preserves_production",
+            "capture_scratch_preserves_sibling"
+          ],
           "harnesses": []
         },
         {

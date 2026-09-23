@@ -1,31 +1,33 @@
 # CbC Evidence: block-storage/src/rust/dag/soak_snapshot.rs
 
-The capture claim remains pending. The verification package requires named maintainer acceptance. Live adapter qualification remains separate.
+The combined package records current source hashes and scoped verification results. Both node claims remain pending named maintainer acceptance.
+
+Model proofs and finite Rust correspondence retain the limits stated in the package. This record does not qualify a live campaign.
 
 ```json
 {
   "artifact": {
     "path": "block-storage/src/rust/dag/soak_snapshot.rs",
     "id": "block-storage-src-rust-dag-soak-snapshot-rs",
-    "commit": "00f91ca11fd1153183818cde605d7d19eea00a7f",
+    "commit": "38e57604187feab97cb45f000f95270b12a9f8bf",
     "commit_is_base": true,
     "working_tree": true,
-    "sha256": "f2ec64e110d2b1218a5d1043438985976a6b72daf63dada86a805cdee664fcfc"
+    "sha256": "48e640a9eac4337bd24e3c80cb6a12ca0e956aa998ec27d8e64829574de69cf4"
   },
   "claim": "docs/claims/casper-node-authority-snapshot.md",
   "claim_ids": [
     "CLAIM-CASPER-NODE-OBSERVATION-002"
   ],
   "claim_digests": {
-    "docs/claims/casper-node-authority-snapshot.md": "423f5e29c4550e561d41809e560ae97f870d000d00b36f14188348e4e9975481"
+    "docs/claims/casper-node-authority-snapshot.md": "3130ca377c849facee112379fa656b34f63ab8858f01f3f8f2a6c5447a72c807"
   },
   "adapter": null,
   "status": "pending",
-  "scope": "task-019-4-merged-source-cycle-02",
+  "scope": "task-019-4-combined-b11-cycle-03",
   "evidence": {
     "kind": "tiered-evidence-not-discharge",
-    "ref": "docs/cbc-evidence/runs/casper-node-claim-gate-00f91ca11-01/report.json",
-    "sha256": "c3dfa5f3f876b625db10de1645b32b4ded0411e45d1f1c61e63c27ef0afa95d8"
+    "ref": "docs/cbc-evidence/runs/casper-node-claim-gate-38e576041-01/report.json",
+    "sha256": "785a7188828a9aa0688dc28cfdac0303937f592f47d47e082d1ba752131c2e3e"
   },
   "tiers": {
     "refutation": "recorded",
@@ -36,9 +38,10 @@ The capture claim remains pending. The verification package requires named maint
   "waiver": null,
   "verified_at": null,
   "previous_record": {
+    "artifact": "block-storage/src/rust/dag/soak_snapshot.rs",
     "path": "docs/cbc-evidence/block-storage-src-rust-dag-soak-snapshot-rs.md",
-    "sha256": "a8d79f42d1159e229907c0ab9968ac89da7fa06500f6be6c28d307cf016a1168",
-    "commit": "03d7f1b27544b2c5a93b664d8684b24ea16cf3e9"
+    "sha256": "11058aa9a91871e144e31d488db8c84c7882aa9003dc0269f12d1a5741eebd86",
+    "archive_member": "previous-records/block-storage-src-rust-dag-soak-snapshot-rs.md"
   }
 }
 ```

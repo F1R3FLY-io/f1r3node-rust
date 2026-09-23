@@ -183,9 +183,11 @@ This reconciliation does not establish complete Rust correspondence or claim acc
 
 The TASK-019-4 handoff cycle on 2026-09-23 added incarnation-qualified tokens to the `ObserverSession` Rocq module. Tokens from distinct incarnations never match, and replay refusal holds within one incarnation.
 
-Incarnation distinctness is an assumption about UUID generation at observer start, not a theorem. Properties 5 and 6 have recorded theorems, property 7 has theorems for the budget counter only, and properties 1, 2, 8, and 10 carry proposed bounded-by-design classifications.
+Incarnation distinctness remains an assumption about UUID generation at observer start. Properties 5 and 6 have recorded theorems.
 
-The session oracle test and the repeated-entropy tests remain the binding evidence for challenge allocation. Properties 3, 4, and 9 keep pending construction with Rust tests only.
+Property 7 has counter proofs and a conditional write-deadline proof. Properties 1, 2, 8, and 10 retain proposed bounded-by-design classifications.
+
+The session oracle test and the repeated-entropy tests provide binding evidence for challenge allocation. Properties 3, 4, and 9 have conditional construction proofs and Rust tests.
 
 The [applicability review](../../formal/tlaplus/node_observation/README.md#applicability-per-property) lists every property's class, evidence, and decision status. Named maintainer review of each decision and acceptance of this claim remain pending.
 
@@ -201,12 +203,14 @@ This work does not change the harness claims, approve a campaign, publish images
 
 ## Merged-source verification
 
-The current package is [casper-node-claim-gate-00f91ca11-01](../cbc-evidence/runs/casper-node-claim-gate-00f91ca11-01/report.json). It records the merged-source cycle 02 checks at the merged revision.
+The current package is [casper-node-claim-gate-38e576041-01](../cbc-evidence/runs/casper-node-claim-gate-38e576041-01/report.json). It records the combined B11 and strip-correction verification cycle.
 
 The checkout did not contain the previously named `casper-node-claim-gate-8789c1c3e-01` package. This cycle supplies new evidence instead of reconstructing that missing result.
 
-The project exports 25 construction results. The [proof correspondence](../../formal/rocq/node_observation/README.md#boundary-correspondence) states their assumptions and limitations.
+The two node projects export 33 construction results. The [proof correspondence](../../formal/rocq/node_observation/README.md#boundary-correspondence) states their assumptions and limitations.
 
 The binding driver now includes the shared and block capture suites. It also runs the retained lock deadline and generation-change regressions.
 
-Complete canonical-schema refinement remains pending. All applicability decisions, source correspondence, and both claims still require named maintainer acceptance.
+B11 records byte-schema proofs and finite Rust correspondence. A universal Rust refinement proof remains outside this evidence.
+
+All applicability decisions, source correspondence, and both claims still require named maintainer acceptance.

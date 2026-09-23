@@ -1,4 +1,4 @@
-# CbC Evidence: formal/tlaplus/node_observation/MC_BoundedCapture.cfg
+# CbC Evidence: formal/rocq/node_observation/b11/theories/Schema.v
 
 The combined package records current source hashes and scoped verification results. Both node claims remain pending named maintainer acceptance.
 
@@ -7,12 +7,12 @@ Model proofs and finite Rust correspondence retain the limits stated in the pack
 ```json
 {
   "artifact": {
-    "path": "formal/tlaplus/node_observation/MC_BoundedCapture.cfg",
-    "id": "formal-tlaplus-node-observation-MC-BoundedCapture-cfg",
+    "path": "formal/rocq/node_observation/b11/theories/Schema.v",
+    "id": "formal-rocq-node-observation-b11-theories-Schema-v",
     "commit": "38e57604187feab97cb45f000f95270b12a9f8bf",
     "commit_is_base": true,
     "working_tree": true,
-    "sha256": "396718266cab3e27f01affa6e82836aaad98dc6adff6f0df3209206d8894e6ff"
+    "sha256": "815aa2a765a18e46f5094a51f07cd192b828975bf51b32202a987995160b2041"
   },
   "claim": "docs/claims/casper-node-authority-snapshot.md",
   "claim_ids": [
@@ -36,12 +36,6 @@ Model proofs and finite Rust correspondence retain the limits stated in the pack
   },
   "soak": "pending",
   "waiver": null,
-  "verified_at": null,
-  "previous_record": {
-    "artifact": "formal/tlaplus/node_observation/MC_BoundedCapture.cfg",
-    "path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-BoundedCapture-cfg.md",
-    "sha256": "c1336adf2a954eb1d8649e0adbc135735391d74e62d226f2d030abdc52267abf",
-    "archive_member": "previous-records/formal-tlaplus-node-observation-MC-BoundedCapture-cfg.md"
-  }
+  "verified_at": null
 }
 ```

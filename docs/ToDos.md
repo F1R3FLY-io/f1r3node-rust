@@ -205,9 +205,10 @@ tasks:
       - docs/cbc-evidence/runs/casper-node-model-reconciliation-10e7b8452-01/report.json
       - docs/cbc-evidence/runs/casper-node-claim-gate-03d7f1b27-01/report.json
       - docs/cbc-evidence/runs/casper-node-claim-gate-00f91ca11-01/report.json
+      - docs/cbc-evidence/runs/casper-node-claim-gate-38e576041-01/report.json
     verification_scope_confirmed: true
-    verification_cycle: merged-source-cycle-02
-    merged_source_cycle_checkout_base: 00f91ca11
+    verification_cycle: combined-b11-cycle-03
+    merged_source_cycle_checkout_base: 38e576041
     merged_source_cycle_working_tree: true
     sibling_cycle_package: docs/cbc-evidence/runs/casper-node-claim-gate-78d696ea6-01/report.json
     sibling_cycle_branch: feature/casper-node-observation
@@ -216,9 +217,9 @@ tasks:
     handoff_cycle_checkout_base: 8789c1c3e
     handoff_cycle_working_tree: true
     tiers_reached:
-      refutation: "16 clean configurations and 88 expected violations through the bounded TLA gate at the pinned jar, and 31 clean configurations in the hosted full tier; the two node models and 17 controls pass at 00f91ca11."
-      construction: "25 kernel-checked theorems with closed assumption sets in formal/rocq/node_observation, verified by the hosted Rocq 9.2.0 job; construction pending for B11 canonical-schema refinement and the boundary assumptions under review."
-      binding: "Native shared and block-storage suites pass except four macOS path cases; the hosted driver builds all three test targets and stops at its strip-equivalence check; Kani not executed this cycle."
+      refutation: "The local bounded gate passes 16 configurations and 88 controls. Hosted run 35906410283 passes 31 configurations and the same controls."
+      construction: "All 33 node theorem exports have closed assumption sets and pass kernel checking. B11 contributes eight byte-schema exports. Boundary assumptions require review."
+      binding: "The hosted and ARM64 Linux drivers each pass 334 test executions, including two B11 export tests. Eight current Kani harnesses pass."
     applicability_review: formal/tlaplus/node_observation/README.md#applicability-per-property
     claims: [CLAIM-CASPER-NODE-OBSERVATION-001, CLAIM-CASPER-NODE-OBSERVATION-002]
     eligible_maintainers: [spreston8, dylon, metaweta, jeffrey-l-turner, jltatbeach]
@@ -243,10 +244,12 @@ tasks:
       - "The handoff cycle at 8789c1c3e added the BoundedCapture Rocq module and qualified tokens, a capture bisimilarity oracle, Kani harnesses, the applicability review, and refreshed records including the DAG storage file after the dev merge."
       - "Both claims remain pending. Acceptance needs named maintainer review of every applicability decision and the remaining construction evidence."
       - "No standalone checker crate was added. Downstream must remove its checker crate or include it in the supply-chain audit."
-      - "Cross-incarnation identity, remaining construction proofs, Kani harnesses, complete Rust correspondence, and named maintainer acceptance remain pending."
+      - "Cross-incarnation identity and conditional proof assumptions require review. Finite Rust correspondence does not establish universal refinement. Named maintainer acceptance remains pending."
       - "The merged-source cycle 02 at 00f91ca11 refreshed every node record and the package after the port of the withheld cycle. The node branch refreshed its records at 78d696ea6 in parallel; that package is not merged here."
-      - "The hosted binding driver fails on x86_64 runners because objcopy --strip-debug changes the .init_array EntSize field. The comparison in the driver needs to ignore that field. This defect predates the port."
-      - "Local container verification is blocked because Docker Desktop routes traffic through a TLS-intercepting proxy. Construction evidence comes from the hosted Rocq job."
+      - "Cycle 02 retained the hosted strip failure. Commit 38e576041 corrects array entry-size normalization and preserves the other allocated-section checks."
+      - "Cycle 03 verifies the current sources with local Rocq, retained ARM64 Kani tooling, and successful hosted binding and correspondence jobs."
+      - "The current package refreshes 68 node records and preserves two primary governance records. The strict audit keeps all 70 mandatory records pending."
+      - "B11 correspondence checks 75 production wire cases and six rejection controls. The strip fixture rejects 12 executable mutations."
     acceptance:
       - "Strict source-bound audits pass for every artifact in both claim inventories at the accepted revision."
       - "Refutation, construction, and binding tiers are recorded with retained failing controls."

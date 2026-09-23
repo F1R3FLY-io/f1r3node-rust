@@ -128,7 +128,7 @@ A resource limit, timeout, frame size, or test fixture does not make a property 
 | B2: bounded locks | U | `BoundLockWait`, `GuardOrder` | `capture_guard_order` and `capture_lock_deadline` under the lock library assumption. | Deadline and guard tests. | Partial construction, acceptance pending. |
 | B3: environment partition | U | `OpenIdentity` | `capture_no_interference` over any participant set. | Separate-environment tests. | Construction recorded, acceptance pending. |
 | B4: identity at open | U | `OpenIdentity`, `ValidatedIdentity` | `capture_no_interference`. | Open and validation tests. | Construction recorded, acceptance pending. |
-| B5: allocation limits | U | `BoundBytes` | `capture_prefix_roundtrip`, `capture_prefix_sound`, `capture_budget_bounded`. | Length, decode, and nested-bound tests, and three Kani harnesses. | Construction recorded, acceptance pending. |
+| B5: allocation limits | U | `BoundBytes` | `capture_prefix_roundtrip`, `capture_prefix_sound`, `capture_budget_bounded`. | Length, decode, and nested-bound tests, and four Kani harnesses. | Construction recorded, acceptance pending. |
 | B6: copied state and effects | U | `GuardOrder`, `ReadOnly` | `capture_guard_order`, `capture_detached`. | Unchanged-bytes tests. | Construction recorded, acceptance pending. |
 | B7: environment validation | U | `ValidatedIdentity` | `capture_no_interference`, including restored values under monotone identifiers. | Interference tests and capture oracle. | Construction recorded, acceptance pending. |
 | B8: generation validation | U | `GenerationStable` | `capture_generation_stable`. | `generation_change_after_validation_rejects_capture` checks rejection after validation. | Acceptance pending. |

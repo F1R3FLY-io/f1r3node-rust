@@ -119,11 +119,15 @@ Unit and integration tests supply evidence but do not discharge this claim. Sour
 
 The TASK-019-4 handoff cycle on 2026-09-23 added the `BoundedCapture` Rocq module. Its theorems cover interval consistency over monotone transaction clocks, generation stability, charge budgets, overflow, length prefixes, guard order, and detachment.
 
-The formal gate requires 14 closed assumption sets for the `NodeObservation.MainTheorem` module. Properties 1 through 8 and 10 have recorded theorems. Properties 9, 11, and 12 have none, and property 13 has a proposed bounded-by-design classification.
+The initial handoff gate required 14 closed assumption sets. The current gate requires 25 `NodeObservation` exports and eight `NodeObservationB11` exports.
 
-The capture oracle test runs production capture against a hand-translated `BoundedCapture` oracle over 14 scenarios. Seven Kani harnesses cover the length prefix, limit comparison, atomic charging, and decode-limit validation. The charging harnesses exercise the checked-total arithmetic with symbolic inputs.
+Properties 9 and 12 have conditional construction proofs. Property 11 has byte-schema proofs and finite Rust correspondence evidence. Property 13 retains its proposed classification.
 
-Property 8 keeps a recorded binding gap. No deterministic generation-rejection test exists on this branch.
+The capture oracle test runs production capture against a hand-translated `BoundedCapture` oracle over 14 scenarios. Eight verified Kani harnesses cover prefixes, limit comparisons, atomic charging, decode-limit validation, and compressed-length preflight.
+
+The charging harnesses exercise the checked-total arithmetic with symbolic inputs. The current package records each harness, its bounds, and its assumptions.
+
+Property 8 now includes the deterministic `generation_change_after_validation_rejects_capture` regression.
 
 The [applicability review](../../formal/tlaplus/node_observation/README.md#applicability-per-property) lists every property's class, evidence, and decision status. Named maintainer review of each decision and acceptance of this claim remain pending.
 
@@ -143,11 +147,11 @@ This work does not change the harness claims, approve a campaign, publish images
 
 ## Merged-source verification
 
-The current package is [casper-node-claim-gate-00f91ca11-01](../cbc-evidence/runs/casper-node-claim-gate-00f91ca11-01/report.json). It records the merged-source cycle 02 checks at the merged revision.
+The current package is [casper-node-claim-gate-38e576041-01](../cbc-evidence/runs/casper-node-claim-gate-38e576041-01/report.json). It records the combined B11 and strip-correction verification cycle.
 
 The checkout did not contain the previously named `casper-node-claim-gate-8789c1c3e-01` package. This cycle supplies new evidence instead of reconstructing that missing result.
 
-The project exports 25 construction results. The [proof correspondence](../../formal/rocq/node_observation/README.md#boundary-correspondence) states their assumptions and limitations.
+The two node projects export 33 construction results. The [proof correspondence](../../formal/rocq/node_observation/README.md#boundary-correspondence) states their assumptions and limitations.
 
 The binding driver now includes the shared and block capture suites. It also runs the retained lock deadline and generation-change regressions.
 

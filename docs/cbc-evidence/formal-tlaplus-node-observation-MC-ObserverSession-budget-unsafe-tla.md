@@ -1,13 +1,15 @@
 # CbC Evidence: formal/tlaplus/node_observation/MC_ObserverSession_budget_unsafe.tla
 
-The approved reconciliation artifact remains pending.
+The combined package records current source hashes and scoped verification results. Both node claims remain pending named maintainer acceptance.
+
+Model proofs and finite Rust correspondence retain the limits stated in the package. This record does not qualify a live campaign.
 
 ```json
 {
   "artifact": {
     "path": "formal/tlaplus/node_observation/MC_ObserverSession_budget_unsafe.tla",
     "id": "formal-tlaplus-node-observation-MC-ObserverSession-budget-unsafe-tla",
-    "commit": "00f91ca11fd1153183818cde605d7d19eea00a7f",
+    "commit": "38e57604187feab97cb45f000f95270b12a9f8bf",
     "commit_is_base": true,
     "working_tree": true,
     "sha256": "871106f33930940102bec72fbac69ea28182ff8d12cd7771ffecd63d48135292"
@@ -17,15 +19,15 @@ The approved reconciliation artifact remains pending.
     "CLAIM-CASPER-NODE-OBSERVATION-001"
   ],
   "claim_digests": {
-    "docs/claims/casper-node-observation.md": "4c69fd24c361c0c03a2a176230c667c46e8259a158c47af5bed24a0e1a38d172"
+    "docs/claims/casper-node-observation.md": "d02013bb25aac9d9d16795651cbcbacd2227eae3873661f0258c6b6bd35ff2c6"
   },
   "adapter": null,
   "status": "pending",
-  "scope": "task-019-4-merged-source-cycle-02",
+  "scope": "task-019-4-combined-b11-cycle-03",
   "evidence": {
     "kind": "tiered-evidence-not-discharge",
-    "ref": "docs/cbc-evidence/runs/casper-node-claim-gate-00f91ca11-01/report.json",
-    "sha256": "c3dfa5f3f876b625db10de1645b32b4ded0411e45d1f1c61e63c27ef0afa95d8"
+    "ref": "docs/cbc-evidence/runs/casper-node-claim-gate-38e576041-01/report.json",
+    "sha256": "785a7188828a9aa0688dc28cfdac0303937f592f47d47e082d1ba752131c2e3e"
   },
   "tiers": {
     "refutation": "recorded",
@@ -36,9 +38,10 @@ The approved reconciliation artifact remains pending.
   "waiver": null,
   "verified_at": null,
   "previous_record": {
+    "artifact": "formal/tlaplus/node_observation/MC_ObserverSession_budget_unsafe.tla",
     "path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-ObserverSession-budget-unsafe-tla.md",
-    "sha256": "596b870777d5c8b8c48d4158ce9f4e679f92a01cdeb63a8c98d7932be15d9977",
-    "commit": "03d7f1b27544b2c5a93b664d8684b24ea16cf3e9"
+    "sha256": "888c393898af2eb6b51c1819d4b1bf852608e63c943f650fa18be7194c850e77",
+    "archive_member": "previous-records/formal-tlaplus-node-observation-MC-ObserverSession-budget-unsafe-tla.md"
   }
 }
 ```
