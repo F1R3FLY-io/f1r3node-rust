@@ -211,7 +211,7 @@ tasks:
     tiers_reached:
       refutation: "15 clean configurations and 78 expected violations through the TLA gate at the pinned jar; the two node models and 17 controls pass on this revision."
       construction: "14 kernel-checked theorems with closed assumption sets in formal/rocq/node_observation; construction pending for A3, A4, A9, B9, B11, B12 and the deadline parts of A7 and B2."
-      binding: "Capture oracle over 14 scenarios, session oracle, retained pre-fix regressions, and nine Kani harnesses; B8 keeps a recorded binding gap."
+      binding: "Capture oracle over 14 scenarios, session oracle, retained pre-fix regressions, and eight Kani harnesses; B8 keeps a recorded binding gap."
     applicability_review: formal/tlaplus/node_observation/README.md#applicability-per-property
     claims: [CLAIM-CASPER-NODE-OBSERVATION-001, CLAIM-CASPER-NODE-OBSERVATION-002]
     eligible_maintainers: [spreston8, dylon, metaweta, jeffrey-l-turner, jltatbeach]

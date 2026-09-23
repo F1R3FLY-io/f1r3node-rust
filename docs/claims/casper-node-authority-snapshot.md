@@ -109,7 +109,7 @@ The TASK-019-4 handoff cycle on 2026-09-23 added the `BoundedCapture` Rocq modul
 
 The formal gate requires 14 closed assumption sets for the `NodeObservation.MainTheorem` module. Properties 1 through 8 and 10 have recorded theorems. Properties 9, 11, and 12 have none, and property 13 has a proposed bounded-by-design classification.
 
-The capture oracle test runs production capture against a hand-translated `BoundedCapture` oracle over 14 scenarios. Nine Kani harnesses cover the length prefix, limit comparison, checked totals, atomic charging, decode-limit validation, and oversized-input rejection.
+The capture oracle test runs production capture against a hand-translated `BoundedCapture` oracle over 14 scenarios. Eight Kani harnesses cover the length prefix, limit comparison, checked totals, atomic charging, and decode-limit validation.
 
 Property 8 keeps a recorded binding gap. No deterministic generation-rejection test exists on this branch.
 

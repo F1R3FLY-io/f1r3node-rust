@@ -557,7 +557,7 @@ The formal gate registration now expects 14 closed sets. The container ran with 
 
 The capture oracle test hand-translates the `BoundedCapture` admission, completeness, and validation predicates. It runs production capture under seven interference kinds with and without a requested body, and requires equal outcomes across all 14 scenarios.
 
-Nine Kani harnesses were added under `#[cfg(kani)]`: seven in the shared reader for the length prefix, limit comparison, checked totals, and atomic charging, and two in the block store for decode-limit validation and oversized-input rejection. Both crates carry the same `unexpected_cfgs` allowance the casper crate uses.
+Eight Kani harnesses were added under `#[cfg(kani)]`: seven in the shared reader for the length prefix, limit comparison, checked totals, and atomic charging, and one in the block store for decode-limit validation. A first full-crate run stalled for over an hour on the formatted error paths, so the prefix check was factored into a pure `split_length_prefixed` predicate that production and the harnesses share, the decoder harness was dropped, and the harnesses run one at a time with timeouts. Both crates carry the same `unexpected_cfgs` allowance the casper crate uses.
 
 The Kani driver needs a glibc newer than Debian bookworm provides. The harness run uses an Ubuntu 24.04 container with a fresh Rust toolchain. Its result is recorded in the evidence package.
 

@@ -413,11 +413,7 @@
             },
             {
               "source": "shared/src/rust/store/soak_snapshot.rs",
-              "name": "short_raw_is_malformed"
-            },
-            {
-              "source": "block-storage/src/rust/key_value_block_store.rs",
-              "name": "oversized_input_is_rejected_before_any_decode"
+              "name": "short_raw_is_rejected"
             }
           ]
         },

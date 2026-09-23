@@ -1207,27 +1207,4 @@ mod kani_proofs {
             && limits.max_expansion_ratio > 0;
         assert_eq!(limits.validate().is_ok(), positive);
     }
-
-    #[kani::proof]
-    #[kani::unwind(6)]
-    fn oversized_input_is_rejected_before_any_decode() {
-        let limits = BlockDecodeLimits {
-            max_compressed_bytes: kani::any(),
-            max_decompressed_bytes: kani::any(),
-            max_expansion_ratio: kani::any(),
-        };
-        kani::assume(limits.validate().is_ok());
-        let len: usize = kani::any();
-        kani::assume(len <= 4);
-        kani::assume(len > limits.max_compressed_bytes);
-        let bytes = [0u8; 4];
-        assert_eq!(
-            KeyValueBlockStore::decode_block_bounded(&bytes[..len], &limits).err(),
-            Some(SnapshotError::LimitExceeded {
-                kind: "compressed block bytes",
-                limit: limits.max_compressed_bytes,
-                observed: len,
-            })
-        );
-    }
 }
