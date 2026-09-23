@@ -84,57 +84,61 @@ Both models permit stuttering and assume no fairness. They establish bounded saf
 
 ## Construction and binding
 
-The [Rocq project](../../rocq/node_observation/README.md) retains four challenge-allocation theorems over arbitrary finite event histories.
+The [Rocq project](../../rocq/node_observation/README.md) exports 14 kernel-checked theorems. Six cover challenge allocation and cross-incarnation tokens, and eight cover capture consistency, budgets, length prefixes, guard order, and detachment.
 
-`Begin` projects to `Hello`, and a successful `Reply` projects to `Response`. `Tick` and `Close` project to `Rejected`.
+Every theorem reports `Closed under the global context`. The formal gate counts 14 closed assumption sets for the `NodeObservation.MainTheorem` module.
 
-The projection reverses the TLA+ challenge history because Rocq stores the newest token first. Extra admission guards restrict transitions without changing allocation arithmetic.
+The capture theorems use a time-indexed transaction clock over an unbounded environment set. Equal observations at open and validation imply that no commit occurred in the observed interval, given monotone transaction identifiers.
 
-This correspondence is a source argument, not a machine-checked refinement theorem. The Rocq results do not prove the additional session or capture invariants.
+The generation theorem is the same result over the insertion generation. The budget theorems cover any finite sequence of checked charges, and the prefix theorems cover any payload length.
 
-The production repeated-entropy test supplies `Uuid::nil` twice. The integration oracle checks event sequences across response, replay, and disconnect.
+The guard-order and detachment theorems hold for every reachable state of the capture protocol over any finite action sequence, including opening any number of transactions.
 
-Rust UUID formatting, decimal formatting, exact string equality, and checked arithmetic still require their stated correspondence assumptions.
+`Begin` projects to `Hello`, and a successful `Reply` projects to `Response`. `Tick` and `Close` project to `Rejected`. Capture actions project to the `capture_step` transitions in the same order as the TLA+ phases.
 
-[bindings.json](bindings.json) maps all 23 required properties to supporting tests and invariants. It is provisional and does not establish complete property coverage.
+These correspondences are documented source arguments, not machine-checked refinement theorems. Rust UUID formatting, decimal formatting, string equality, checked `u64` arithmetic, and the LMDB transaction rule remain stated assumptions.
 
-The map distinguishes supplemental node unit tests from interface tests. B8 explicitly records the missing deterministic generation-rejection test on this node revision.
+The binding tier has three forms on this branch. The capture oracle test `capture_outcomes_match_the_bounded_capture_oracle` runs production capture against a hand-translated `BoundedCapture` oracle over 14 scenarios and requires equal outcomes.
 
-The downstream-only generation test is not silently imported. The existing shutdown test checks source ordering, not complete production shutdown.
+The session oracle test `session_sequences_match_an_independent_event_oracle` checks event sequences across response, replay, and disconnect. The retained pre-fix regressions cover the lock deadline, short decompression, nested collection bounds, canonical work, duration identity, body counts, and repeated entropy.
 
-The [applicability map](../../../docs/work-logs/task-019-4-node-claim-verification.md#property-coverage-plan) remains provisional. No property has an accepted construction exemption.
+Kani harnesses under `#[cfg(kani)]` in the shared reader and the block store cover the length prefix, the limit comparison, checked totals, atomic charging, decode-limit validation, and oversized-input rejection. Their execution status is recorded in the evidence package.
+
+[bindings.json](bindings.json) maps all 23 required properties to invariants, theorems, harnesses, and tests. It is provisional and does not establish complete property coverage.
 
 ## Applicability per property
 
-`U` proposes construction over arbitrary permitted histories or states. `F/U` identifies a finite predicate within a larger property, not a construction exemption.
+`U` means construction over arbitrary permitted histories or states is required. `F` proposes a bounded-by-design classification for maintainer review. No `F` proposal is accepted, and every property keeps required Rust binding evidence.
 
-Every classification and Rust correspondence remains pending named maintainer review. The linked applicability map retains the domains, assumptions, and evidence gaps.
+A resource limit, timeout, frame size, or test fixture does not make a property bounded by design. Each `F` proposal names the finite domain that verification covers.
 
-| Property | Proposed class | Current model evidence |
-| --- | --- | --- |
-| A1: disabled startup | U | No model coverage. |
-| A2: activation and limits | F/U | No model coverage. |
-| A3: directory safety | U | No model coverage. |
-| A4: peer identity | U | Boolean response-admission predicate only. |
-| A5: request identity | U | Complete challenge comparison and Boolean identity predicates. |
-| A6: request count and freshness | U | One request and within-lifetime challenge allocation. |
-| A7: frames and deadline | F/U | Normalized frame, clock, and session-budget predicates. |
-| A8: capabilities and effects | F/U | No model coverage. |
-| A9: cleanup and shutdown | U | No complete shutdown model. |
-| A10: public configuration | F/U | No model coverage. |
-| B1: input limits | U | Abstract admission and byte bounds. |
-| B2: bounded locks | U | Guard order and contended deadline. |
-| B3: environment partition | U | Two fixed participants only. |
-| B4: identity at open | U | Abstract transaction comparisons. |
-| B5: allocation limits | U | Normalized copied sizes only. |
-| B6: copied state and effects | U | Abstract guards and effects. |
-| B7: environment validation | U | Monotonic transaction observations. |
-| B8: generation validation | U | Abstract generation comparison. |
-| B9: incomplete rows | U | Boolean completeness predicate. |
-| B10: resource release | U | Abstract handles and effects. |
-| B11: canonical identity | U | No model coverage. |
-| B12: scratch independence | U | No model coverage. |
-| B13: unsupported backends | F/U | Boolean backend predicate. |
+| Property | Class | Refutation | Construction | Binding | Decision |
+| --- | --- | --- | --- | --- | --- |
+| A1: disabled startup | F proposed | None | Not applicable proposed. The domain is the absent configuration section and the absent option. | Disabled-startup test. | Pending maintainer review. |
+| A2: activation and limits | F proposed | None | Not applicable proposed. The domain is the documented integer ranges and required fields. | Configuration rejection tests. | Pending maintainer review. |
+| A3: directory safety | U | None | Pending. Filesystem states are unbounded and unmodeled. | Directory, link, and duplicate-socket tests. | Pending. |
+| A4: peer identity | U | `BoundIdentity` | Pending. Kernel credentials are a trust boundary. | Peer identity and cross-process tests. | Pending. |
+| A5: request identity | U | `FreshChallenge`, `BoundIdentity`, `FreshChallenges`, `ReplayRefused` | `observer_replay_refused`, `observer_qualified_replay_refused`, `observer_cross_incarnation_distinct` under the distinct-incarnation assumption. | Session oracle, repeated-entropy, and identity tests. | Construction recorded, acceptance pending. |
+| A6: request count and freshness | U | `FreshChallenge`, `OneRequest`, `FreshChallenges`, `ReplayRefused` | `observer_challenges_unique`, `observer_replay_refused`. | Replay and session oracle tests. | Construction recorded, acceptance pending. |
+| A7: frames and deadline | U | `BoundFrame`, `BoundDeadline`, `SessionBudget` | `observer_counter_exhaustion_refused`, `observer_checked_allocation_valid` for the budget counter. The deadline remains pending. | Frame, deadline, and budget tests. | Partial construction, acceptance pending. |
+| A8: capabilities and effects | F proposed | None | Not applicable proposed. The domain is the fixed capability list and the single operation. | Capability and fault-command tests. | Pending maintainer review. |
+| A9: cleanup and shutdown | U | None | Pending. No complete shutdown model. | Source-order regression and cleanup tests. | Pending. |
+| A10: public configuration | F proposed | None | Not applicable proposed. The domain is the fixed allowlist. | Configuration digest test. | Pending maintainer review. |
+| B1: input limits | U | `ValidAdmission`, `BoundBytes` | `capture_budget_bounded`, `capture_overflow_fails_limit`. | Limit tests, capture oracle, and five Kani harnesses. | Construction recorded, acceptance pending. |
+| B2: bounded locks | U | `BoundLockWait`, `GuardOrder` | `capture_guard_order`. The deadline bound relies on the lock library and remains pending. | Deadline and guard tests. | Partial construction, acceptance pending. |
+| B3: environment partition | U | `OpenIdentity` | `capture_no_interference` over any participant set. | Separate-environment tests. | Construction recorded, acceptance pending. |
+| B4: identity at open | U | `OpenIdentity`, `ValidatedIdentity` | `capture_no_interference`. | Open and validation tests. | Construction recorded, acceptance pending. |
+| B5: allocation limits | U | `BoundBytes` | `capture_prefix_roundtrip`, `capture_prefix_sound`, `capture_budget_bounded`. | Length, decode, and nested-bound tests, and four Kani harnesses. | Construction recorded, acceptance pending. |
+| B6: copied state and effects | U | `GuardOrder`, `ReadOnly` | `capture_guard_order`, `capture_detached`. | Unchanged-bytes tests. | Construction recorded, acceptance pending. |
+| B7: environment validation | U | `ValidatedIdentity` | `capture_no_interference`, including restored values under monotone identifiers. | Interference tests and capture oracle. | Construction recorded, acceptance pending. |
+| B8: generation validation | U | `GenerationStable` | `capture_generation_stable`. | Partial. No deterministic generation-rejection test on this branch. | Binding gap recorded. |
+| B9: incomplete rows | U | `CompleteRows` | Pending. The row model is a Boolean predicate. | Missing-row tests and capture oracle. | Pending. |
+| B10: resource release | U | `Detached`, `ReadOnly` | `capture_detached`. | Release and unchanged-bytes tests. | Construction recorded, acceptance pending. |
+| B11: canonical identity | U | None | Pending. No model or theorem. | Digest, duration, and byte-bound tests. | Pending. |
+| B12: scratch independence | U | None | Pending. No model or theorem. | Scratch independence tests. | Pending. |
+| B13: unsupported backends | F proposed | `ValidAdmission` | Not applicable proposed. The domain is the backend downcast result. | Unsupported-backend tests. | Pending maintainer review. |
+
+Every classification and correspondence remains pending named maintainer review. A recorded theorem does not change a claim status until acceptance.
 
 ## Reproduction and integration
 

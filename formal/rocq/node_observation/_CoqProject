@@ -1,3 +1,4 @@
 -Q theories NodeObservation
 theories/ObserverSession.v
+theories/BoundedCapture.v
 theories/MainTheorem.v

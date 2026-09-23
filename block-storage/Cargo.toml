@@ -36,6 +36,9 @@ default = []
 # `docs/casper/theory/slashing/slashing-verification.md` §9.2 (Bug #2).
 test-internals = []
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
+
 [dev-dependencies]
 proptest = { workspace = true }
 # Exhaustive thread-interleaving model checker for the

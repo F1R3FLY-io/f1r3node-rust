@@ -183,8 +183,11 @@ tasks:
   - id: TASK-019-4
     title: "Source-bound verification and acceptance of the Batch A and Batch B1 claims"
     status: in_progress
-    claimed_by: pi-session-01a0afde-d35c-70a2-b8c9-39aa11cbdfca
-    claimed_at: 2026-09-22T14:15:47Z
+    claimed_by: claude-session-7015f552
+    claimed_at: 2026-09-23T17:10:00Z
+    previous_claimed_by: pi-session-01a0afde-d35c-70a2-b8c9-39aa11cbdfca
+    previous_claimed_at: 2026-09-22T14:15:47Z
+    handoff_revision: 8789c1c3e
     blocked_by: []
     execution_revision: 6ea6bf029dc57caf1e5fb512a0eba88a846e959a
     correction_checkout_base: 4561e064a70b495fe07cbcf779bff375d636aaad
@@ -196,10 +199,18 @@ tasks:
       - docs/cbc-evidence/runs/casper-node-deadline-correction-4561e064a-01/report.json
       - docs/cbc-evidence/runs/casper-node-challenge-freshness-3b1d2465a-01/report.json
       - docs/cbc-evidence/runs/casper-node-model-reconciliation-10e7b8452-01/report.json
+      - docs/cbc-evidence/runs/casper-node-claim-gate-8789c1c3e-01/report.json
     verification_scope_confirmed: true
-    verification_cycle: model-reconciliation-01
+    verification_cycle: handoff-cycle-01
     reconciliation_checkout_base: 10e7b8452824e12a1fe2743dca7989b79fce2133
     reconciliation_working_tree: true
+    handoff_cycle_checkout_base: 8789c1c3e
+    handoff_cycle_working_tree: true
+    tiers_reached:
+      refutation: "15 clean configurations and 78 expected violations through the TLA gate at the pinned jar; the two node models and 17 controls pass on this revision."
+      construction: "14 kernel-checked theorems with closed assumption sets in formal/rocq/node_observation; construction pending for A3, A4, A9, B9, B11, B12 and the deadline parts of A7 and B2."
+      binding: "Capture oracle over 14 scenarios, session oracle, retained pre-fix regressions, and nine Kani harnesses; B8 keeps a recorded binding gap."
+    applicability_review: formal/tlaplus/node_observation/README.md#applicability-per-property
     claims: [CLAIM-CASPER-NODE-OBSERVATION-001, CLAIM-CASPER-NODE-OBSERVATION-002]
     eligible_maintainers: [spreston8, dylon, metaweta, jeffrey-l-turner, jltatbeach]
     proposed_reviewer: jltatbeach
@@ -220,6 +231,8 @@ tasks:
       - "The reconciliation gate passed 15 positive configurations and 78 expected violations. All 17 node controls remain registered, with four closed Rocq assumption sets."
       - "The isolated binding driver passed 276 executions. Its input base is node revision 10e7b8452, not a harness merge revision."
       - "The node package owns gate registration evidence. The harness keeps its primary gate record without node claim digests."
+      - "The handoff cycle at 8789c1c3e added the BoundedCapture Rocq module and qualified tokens, a capture bisimilarity oracle, Kani harnesses, the applicability review, and refreshed records including the DAG storage file after the dev merge."
+      - "Both claims remain pending. Acceptance needs named maintainer review of every applicability decision and the remaining construction evidence."
       - "No standalone checker crate was added. Downstream must remove its checker crate or include it in the supply-chain audit."
       - "Cross-incarnation identity, remaining construction proofs, Kani harnesses, complete Rust correspondence, and named maintainer acceptance remain pending."
     acceptance:

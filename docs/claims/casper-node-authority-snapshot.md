@@ -43,6 +43,10 @@ artifacts:
   - formal/tlaplus/node_observation/bindings.json
   - scripts/ci/check-tla-invariants.sh
   - scripts/ci/test-check-tla-invariants.sh
+  - scripts/ci/check-formal-invariants.sh
+  - formal/rocq/node_observation/_CoqProject
+  - formal/rocq/node_observation/theories/BoundedCapture.v
+  - formal/rocq/node_observation/theories/MainTheorem.v
 refutation: pending
 construction: pending
 binding: pending
@@ -98,6 +102,18 @@ The shared capture suite passed 11 tests. The block-storage capture suite passed
 Both suites use LMDB environments on the local filesystem. No running node, live adapter, campaign image, or consensus result was qualified.
 
 Unit and integration tests supply evidence but do not discharge this claim. Source-bound verification and explicit acceptance remain pending.
+
+## Construction and binding evidence
+
+The TASK-019-4 handoff cycle on 2026-09-23 added the `BoundedCapture` Rocq module. Its theorems cover interval consistency over monotone transaction clocks, generation stability, charge budgets, overflow, length prefixes, guard order, and detachment.
+
+The formal gate requires 14 closed assumption sets for the `NodeObservation.MainTheorem` module. Properties 1 through 8 and 10 have recorded theorems. Properties 9, 11, and 12 have none, and property 13 has a proposed bounded-by-design classification.
+
+The capture oracle test runs production capture against a hand-translated `BoundedCapture` oracle over 14 scenarios. Nine Kani harnesses cover the length prefix, limit comparison, checked totals, atomic charging, decode-limit validation, and oversized-input rejection.
+
+Property 8 keeps a recorded binding gap. No deterministic generation-rejection test exists on this branch.
+
+The [applicability review](../../formal/tlaplus/node_observation/README.md#applicability-per-property) lists every property's class, evidence, and decision status. Named maintainer review of each decision and acceptance of this claim remain pending.
 
 ## Verification requirements
 

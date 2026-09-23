@@ -6,7 +6,8 @@ execution_revision: 6ea6bf029dc57caf1e5fb512a0eba88a846e959a
 correction_checkout_base: 4561e064a70b495fe07cbcf779bff375d636aaad
 correction_working_tree: true
 correction_source_manifest: docs/cbc-evidence/runs/casper-node-deadline-correction-4561e064a-01/sources.sha256
-claimed_by: pi-session-01a0afde-d35c-70a2-b8c9-39aa11cbdfca
+claimed_by: claude-session-7015f552
+previous_claimed_by: pi-session-01a0afde-d35c-70a2-b8c9-39aa11cbdfca
 next_steps:
   - Resolve the missing formal evidence before claim acceptance.
   - Obtain explicit acceptance from one eligible maintainer.
@@ -519,3 +520,63 @@ The index changed externally during verification, but HEAD remained at the node 
 Both claims remain pending. All applicability decisions and complete Rust correspondence still require named maintainer review.
 
 B2 planning remains blocked. Downstream integration must take the canonical model files, preserve the Rocq and binding registrations, and combine gate registration lists.
+
+## Handoff to claude-session-7015f552 on 2026-09-23
+
+The user handed TASK-019-4 to this session at `8789c1c3e`, the merge of `dev` into the branch. The previous session's evidence packages and records remain unchanged.
+
+The merge changed `block-storage/src/rust/dag/block_dag_key_value_storage.rs`. Its record digest is stale until the next refresh.
+
+Planned order: construction proofs for the capture and cross-incarnation properties, Rust binding evidence, a TLC rerun of all 19 configurations, the applicability review for maintainer sign-off, then record refresh and a gate package.
+
+Verifier tools run in resource-limited containers. No host package is installed. No production limit changes without a recorded finding.
+
+## Handoff cycle results on 2026-09-23
+
+### Refutation tier
+
+The pinned TLC jar was fetched at the CI release and verified against the CI digest. The host Java 8 runtime executed it without the runtime mismatch that the previous container run recorded.
+
+Both positive configurations passed: `MC_ObserverSession` with 689 distinct states and `MC_BoundedCapture` with 10,066 distinct states. All 17 node controls exited 12 on their named invariants.
+
+The full gate in pull-request tier passed 15 clean configurations and 78 expected violations with exit zero. The registry fixture suite passed separately.
+
+### Construction tier
+
+The pinned `coqorg/coq:8.16.1` image is amd64 only, and this host is arm64. A local verifier image built from Debian bookworm supplies Rocq 8.16.1 and a Java 17 runtime.
+
+The `BoundedCapture` module adds a transaction clock, capture observations, the insertion generation, charge budgets, length prefixes, and the capture protocol state machine. The `ObserverSession` module adds incarnation-qualified tokens.
+
+`MainTheorem` now exports 14 theorems. The build passed, `coqchk` reported that the modules were successfully checked, and all 14 assumption sets reported `Closed under the global context`.
+
+Two tactic corrections were needed. A goal-count error in the interference proof and a folded `shape` definition in the guard-order lemma were resolved by explicit terms and an explicit unfold. Both failing runs remain in the retained container logs.
+
+The formal gate registration now expects 14 closed sets. The container ran with 2 GiB of memory, two CPUs, 256 processes, and no network.
+
+### Binding tier
+
+The capture oracle test hand-translates the `BoundedCapture` admission, completeness, and validation predicates. It runs production capture under seven interference kinds with and without a requested body, and requires equal outcomes across all 14 scenarios.
+
+Nine Kani harnesses were added under `#[cfg(kani)]`: seven in the shared reader for the length prefix, limit comparison, checked totals, and atomic charging, and two in the block store for decode-limit validation and oversized-input rejection. Both crates carry the same `unexpected_cfgs` allowance the casper crate uses.
+
+The Kani driver needs a glibc newer than Debian bookworm provides. The harness run uses an Ubuntu 24.04 container with a fresh Rust toolchain. Its result is recorded in the evidence package.
+
+Lint with warnings denied and formatting passed. The shared and block-storage suites passed with 27 capture tests and 19 reader tests.
+
+### Applicability review
+
+The area README now classifies all 23 properties with a refutation, construction, binding, and decision column. Five properties propose a bounded-by-design classification with a named finite domain: A1, A2, A8, A10, and B13.
+
+Twelve properties have recorded construction theorems. A3, A4, A9, B9, B11, and B12 remain pending with Rust tests only, and A7 and B2 keep pending deadline parts.
+
+No classification is accepted. Every decision awaits a named maintainer, and no claim status changed.
+
+### Records and package
+
+The dev merge changed the DAG storage file, and this cycle changed the Rocq project, the shared reader, the block store, the capture tests, the formal gate, and the bindings manifest. Every affected record is refreshed at this revision, and the new capture module receives its first record.
+
+The strict audit returned exit 4 before the refresh with the new module unrecorded. It is expected to return exit 4 after the refresh with every mandatory record pending, which is the correct state before acceptance.
+
+The package `casper-node-claim-gate-8789c1c3e-01` records the tiers reached. Bulk evidence remains under the session scratch directory outside Git.
+
+The task stops at the acceptance gate. The proposed reviewer must review each applicability decision and accept both claims by naming the revision, both claim IDs, and the package.

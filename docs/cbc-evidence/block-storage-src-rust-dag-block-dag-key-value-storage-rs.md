@@ -4,15 +4,19 @@ The capture claim remains pending. The verification package requires named maint
 
 This record adds the Batch B1 capture boundary only. The file's existing `CLAIM-FINALITY-002` obligations are not discharged or waived by this record.
 
+The source and claim digests identify merge revision `8789c1c3e1ad71241d92d9bbdde2296d1e64851d`. The source digest also matches the current file.
+
+This refresh records source identity only. The referenced reconciliation report remains historical evidence and does not verify the merged implementation.
+
 ```json
 {
   "artifact": {
     "path": "block-storage/src/rust/dag/block_dag_key_value_storage.rs",
     "id": "block-storage-src-rust-dag-block-dag-key-value-storage-rs",
-    "commit": "10e7b8452824e12a1fe2743dca7989b79fce2133",
-    "commit_is_base": true,
-    "working_tree": true,
-    "sha256": "81b9d16d0321d7781dc392c7eab213d29d1858d20b64fcb0f18cf2cf2bc03f6f"
+    "commit": "8789c1c3e1ad71241d92d9bbdde2296d1e64851d",
+    "commit_is_base": false,
+    "working_tree": false,
+    "sha256": "7bfd28ef62b84ee912a1c2979bd77d6f1f3d804c6cb5d6c9549f9f86ddf43bc2"
   },
   "claim": "docs/claims/casper-node-authority-snapshot.md",
   "claim_ids": [

@@ -177,6 +177,16 @@ The node branch owns the canonical models, configurations, and property map. Dow
 
 This reconciliation does not establish complete Rust correspondence or claim acceptance.
 
+## Construction and binding evidence
+
+The TASK-019-4 handoff cycle on 2026-09-23 added incarnation-qualified tokens to the `ObserverSession` Rocq module. Tokens from distinct incarnations never match, and replay refusal holds within one incarnation.
+
+Incarnation distinctness is an assumption about UUID generation at observer start, not a theorem. Properties 5 and 6 have recorded theorems, property 7 has theorems for the budget counter only, and properties 1, 2, 8, and 10 carry proposed bounded-by-design classifications.
+
+The session oracle test and the repeated-entropy tests remain the binding evidence for challenge allocation. Properties 3, 4, and 9 keep pending construction with Rust tests only.
+
+The [applicability review](../../formal/tlaplus/node_observation/README.md#applicability-per-property) lists every property's class, evidence, and decision status. Named maintainer review of each decision and acceptance of this claim remain pending.
+
 ## Verification requirements
 
 Retain failing controls for configuration, permissions, peer identity, request identity, replay, frame bounds, deadlines, and cleanup.
