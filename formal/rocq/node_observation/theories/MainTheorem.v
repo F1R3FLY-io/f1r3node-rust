@@ -1,6 +1,7 @@
 From Coq Require Import List.
+Import ListNotations.
 From NodeObservation Require Import ObserverSession.
-From NodeObservation Require Import BoundedCapture.
+From NodeObservation Require Import BoundedCapture InterfaceSafety CaptureIntegrity.
 
 Theorem observer_challenges_unique : forall events,
   NoDup (issued (run initial events)).
@@ -68,3 +69,55 @@ Proof. exact capture_reachable_guard_order. Qed.
 Theorem capture_detached : forall actions final,
   capture_run initial_capture actions = Some final -> detached final.
 Proof. exact capture_reachable_detached. Qed.
+
+Theorem observer_path_admission : forall uid parents leaf,
+  safe_path uid parents leaf = true ->
+  Forall (fun c => directory c = true /\ (owner c = 0 \/ owner c = uid) /\
+    (writable c = false \/ (owner c = 0 /\ sticky c = true))) (parents ++ [leaf]) /\
+  owner leaf = uid /\ permissions leaf = 448.
+Proof. exact InterfaceSafety.path_admission_sound. Qed.
+
+Theorem observer_peer_admission : forall uid pid start actual_uid actual_pid actual_start,
+  peer_admitted uid pid start actual_uid actual_pid actual_start = true ->
+  actual_uid = uid /\ actual_pid = Some pid /\ actual_start = start.
+Proof. exact InterfaceSafety.peer_admission_sound. Qed.
+
+Theorem observer_cleanup_preserves_replacement : forall dev ino e,
+  socket e = false \/ device e <> dev \/ inode e <> ino ->
+  cleanup dev ino (Some e) = Some e.
+Proof. exact InterfaceSafety.cleanup_preserves_replacement. Qed.
+
+Theorem observer_shutdown_before_exit : forall actions cleaned,
+  shutdown_run (Running, false) actions = Some (Exited, cleaned) -> cleaned = true.
+Proof. exact InterfaceSafety.shutdown_before_exit. Qed.
+
+Theorem observer_write_before_deadline : forall deadline now,
+  write_admitted deadline now = true -> now < deadline.
+Proof. exact InterfaceSafety.write_before_deadline. Qed.
+
+Theorem capture_lock_deadline : forall deadline attempts,
+  forallb (fun a => lock_admitted deadline (fst a) (snd a)) attempts = true ->
+  forall now, In (now, true) attempts -> now < deadline.
+Proof. exact InterfaceSafety.lock_sequence_uses_one_deadline. Qed.
+
+Theorem capture_complete_metadata : forall held requested metadata body,
+  rows_complete held requested metadata body = true ->
+  forall h, In h held -> metadata h = true.
+Proof. exact CaptureIntegrity.complete_metadata. Qed.
+
+Theorem capture_complete_requested_bodies : forall held requested metadata body,
+  rows_complete held requested metadata body = true ->
+  forall h, In h held -> In h requested -> body h = true.
+Proof. exact CaptureIntegrity.complete_requested_bodies. Qed.
+
+Theorem capture_canonical_record_injective : forall left right,
+  canonical_record left = canonical_record right -> left = right.
+Proof. exact CaptureIntegrity.canonical_record_injective. Qed.
+
+Theorem capture_scratch_preserves_production : forall rows h next address,
+  addresses_fresh next rows -> address < next -> populate h rows address = h address.
+Proof. exact CaptureIntegrity.fresh_scratch_preserves_production. Qed.
+
+Theorem capture_scratch_preserves_sibling : forall h first second value,
+  first <> second -> put h first value second = h second.
+Proof. exact CaptureIntegrity.scratch_writes_preserve_sibling. Qed.

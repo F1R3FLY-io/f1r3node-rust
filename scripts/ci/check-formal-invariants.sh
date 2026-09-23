@@ -139,7 +139,7 @@ run_rocq_checks() {
         "$REPO_ROOT/formal/rocq/node_observation/theories/"
 
     build_rocq_project node_observation NodeObservation
-    check_assumptions node_observation NodeObservation 14 \
+    check_assumptions node_observation NodeObservation 25 \
         observer_challenges_unique \
         observer_replay_refused \
         observer_counter_exhaustion_refused \
@@ -153,7 +153,18 @@ run_rocq_checks() {
         capture_prefix_roundtrip \
         capture_prefix_sound \
         capture_guard_order \
-        capture_detached
+        capture_detached \
+        observer_path_admission \
+        observer_peer_admission \
+        observer_cleanup_preserves_replacement \
+        observer_shutdown_before_exit \
+        observer_write_before_deadline \
+        capture_lock_deadline \
+        capture_complete_metadata \
+        capture_complete_requested_bodies \
+        capture_canonical_record_injective \
+        capture_scratch_preserves_production \
+        capture_scratch_preserves_sibling
 
     build_rocq_project slashing Slashing
     check_assumptions slashing Slashing 2 \

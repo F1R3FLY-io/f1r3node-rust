@@ -50,6 +50,10 @@
             {
               "source": "node/tests/soak_observer.rs",
               "name": "duplicate_observer_does_not_remove_the_active_socket"
+            },
+            {
+              "source": "node/src/rust/soak_observer.rs",
+              "name": "rust::soak_observer::linux::tests::directory_admission_matches_all_leaf_permission_bits"
             }
           ],
           "theorems": [],
@@ -69,6 +73,10 @@
             {
               "source": "node/tests/soak_observer.rs",
               "name": "a_different_process_cannot_receive_the_handshake"
+            },
+            {
+              "source": "node/src/rust/soak_observer.rs",
+              "name": "rust::soak_observer::linux::tests::peer_admission_rejects_each_identity_mismatch_before_hello"
             }
           ],
           "theorems": [],
@@ -177,6 +185,10 @@
             {
               "source": "node/tests/soak_observer.rs",
               "name": "session_budget_stops_only_the_observer"
+            },
+            {
+              "source": "node/src/rust/soak_observer.rs",
+              "name": "rust::soak_observer::linux::tests::expired_write_emits_no_frame"
             }
           ],
           "theorems": [
@@ -218,6 +230,14 @@
             {
               "source": "node/tests/soak_observer.rs",
               "name": "dropping_the_owner_cancels_a_pending_session"
+            },
+            {
+              "source": "node/src/rust/soak_observer.rs",
+              "name": "rust::soak_observer::linux::tests::cleanup_requires_both_socket_identity_fields"
+            },
+            {
+              "source": "node/tests/soak_observer.rs",
+              "name": "awaited_stop_releases_a_pending_session_and_its_socket"
             }
           ],
           "theorems": [],
@@ -418,6 +438,12 @@
               "source": "shared/src/rust/store/soak_snapshot.rs",
               "name": "short_raw_is_rejected",
               "verified": true
+            },
+            {
+              "source": "block-storage/src/rust/key_value_block_store.rs",
+              "name": "compressed_input_preflight_is_exact",
+              "verified": false,
+              "status": "authored-not-executed"
             }
           ]
         },
@@ -496,6 +522,10 @@
             {
               "source": "block-storage/tests/soak_snapshot.rs",
               "name": "finalization_row_write_without_generation_change_is_rejected"
+            },
+            {
+              "source": "block-storage/src/rust/dag/soak_snapshot.rs",
+              "name": "rust::dag::soak_snapshot::tests::generation_change_after_validation_rejects_capture"
             }
           ],
           "gaps": [
@@ -572,6 +602,10 @@
             {
               "source": "block-storage/tests/soak_snapshot.rs",
               "name": "canonical_output_has_an_exact_byte_bound"
+            },
+            {
+              "source": "block-storage/tests/soak_snapshot.rs",
+              "name": "canonical_fields_round_trip_through_an_independent_reader"
             }
           ],
           "theorems": [],

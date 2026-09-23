@@ -84,9 +84,9 @@ Both models permit stuttering and assume no fairness. They establish bounded saf
 
 ## Construction and binding
 
-The [Rocq project](../../rocq/node_observation/README.md) exports 14 kernel-checked theorems. Six cover challenge allocation and cross-incarnation tokens, and eight cover capture consistency, budgets, length prefixes, guard order, and detachment.
+The [Rocq project](../../rocq/node_observation/README.md) exports 25 kernel-checked theorems. The project README states the boundary assumptions and the remaining canonical-schema gap.
 
-Every theorem reports `Closed under the global context`. The formal gate counts 14 closed assumption sets for the `NodeObservation.MainTheorem` module.
+Every theorem reports `Closed under the global context`. The formal gate counts 25 closed assumption sets for the `NodeObservation.MainTheorem` module.
 
 The capture theorems use a time-indexed transaction clock over an unbounded environment set. Equal observations at open and validation imply that no commit occurred in the observed interval, given monotone transaction identifiers.
 
@@ -102,7 +102,7 @@ The binding tier has three forms on this branch. The capture oracle test `captur
 
 The session oracle test `session_sequences_match_an_independent_event_oracle` checks event sequences across response, replay, and disconnect. The retained pre-fix regressions cover the lock deadline, short decompression, nested collection bounds, canonical work, duration identity, body counts, and repeated entropy.
 
-Seven Kani harnesses under `#[cfg(kani)]` in the shared reader and the block store cover the length prefix, the limit comparison, atomic charging, and decode-limit validation. The charging harnesses drive the checked-total arithmetic with fully symbolic inputs. The prefix harnesses call the same `split_length_prefixed` predicate that production decoding uses. Their execution status is recorded in the evidence package.
+Eight Kani harnesses under `#[cfg(kani)]` in the shared reader and the block store cover the length prefix, the limit comparison, atomic charging, decode-limit validation, and the compressed-length preflight. The charging harnesses drive the checked-total arithmetic with fully symbolic inputs. The prefix harnesses call the same `split_length_prefixed` predicate that production decoding uses. Their execution status is recorded in the evidence package.
 
 [bindings.json](bindings.json) maps all 23 required properties to invariants, theorems, harnesses, and tests. It is provisional and does not establish complete property coverage.
 
@@ -116,26 +116,26 @@ A resource limit, timeout, frame size, or test fixture does not make a property 
 | --- | --- | --- | --- | --- | --- |
 | A1: disabled startup | F proposed | None | Not applicable proposed. The domain is the absent configuration section and the absent option. | Disabled-startup test. | Pending maintainer review. |
 | A2: activation and limits | F proposed | None | Not applicable proposed. The domain is the documented integer ranges and required fields. | Configuration rejection tests. | Pending maintainer review. |
-| A3: directory safety | U | None | Pending. Filesystem states are unbounded and unmodeled. | Directory, link, and duplicate-socket tests. | Pending. |
-| A4: peer identity | U | `BoundIdentity` | Pending. Kernel credentials are a trust boundary. | Peer identity and cross-process tests. | Pending. |
+| A3: directory safety | U | None | `observer_path_admission` under stable, trusted namespace and kernel metadata assumptions. | Directory, link, and duplicate-socket tests. | Pending. |
+| A4: peer identity | U | `BoundIdentity` | `observer_peer_admission` under the Linux credential and process metadata assumptions. | Peer identity and cross-process tests. | Pending. |
 | A5: request identity | U | `FreshChallenge`, `BoundIdentity`, `FreshChallenges`, `ReplayRefused` | `observer_replay_refused`, `observer_qualified_replay_refused`, `observer_cross_incarnation_distinct` under the distinct-incarnation assumption. | Session oracle, repeated-entropy, and identity tests. | Construction recorded, acceptance pending. |
 | A6: request count and freshness | U | `FreshChallenge`, `OneRequest`, `FreshChallenges`, `ReplayRefused` | `observer_challenges_unique`, `observer_replay_refused`. | Replay and session oracle tests. | Construction recorded, acceptance pending. |
-| A7: frames and deadline | U | `BoundFrame`, `BoundDeadline`, `SessionBudget` | `observer_counter_exhaustion_refused`, `observer_checked_allocation_valid` for the budget counter. The deadline remains pending. | Frame, deadline, and budget tests. | Partial construction, acceptance pending. |
+| A7: frames and deadline | U | `BoundFrame`, `BoundDeadline`, `SessionBudget` | `observer_counter_exhaustion_refused` and `observer_checked_allocation_valid` cover counters, while `observer_write_before_deadline` bounds write admission under the clock assumption. | Frame, deadline, and budget tests. | Partial construction, acceptance pending. |
 | A8: capabilities and effects | F proposed | None | Not applicable proposed. The domain is the fixed capability list and the single operation. | Capability and fault-command tests. | Pending maintainer review. |
-| A9: cleanup and shutdown | U | None | Pending. No complete shutdown model. | Source-order regression and cleanup tests. | Pending. |
+| A9: cleanup and shutdown | U | None | `observer_cleanup_preserves_replacement` and `observer_shutdown_before_exit` under the documented runtime and namespace assumptions. | Source-order regression and cleanup tests. | Pending. |
 | A10: public configuration | F proposed | None | Not applicable proposed. The domain is the fixed allowlist. | Configuration digest test. | Pending maintainer review. |
 | B1: input limits | U | `ValidAdmission`, `BoundBytes` | `capture_budget_bounded`, `capture_overflow_fails_limit`. | Limit tests, capture oracle, and four Kani harnesses. | Construction recorded, acceptance pending. |
-| B2: bounded locks | U | `BoundLockWait`, `GuardOrder` | `capture_guard_order`. The deadline bound relies on the lock library and remains pending. | Deadline and guard tests. | Partial construction, acceptance pending. |
+| B2: bounded locks | U | `BoundLockWait`, `GuardOrder` | `capture_guard_order` and `capture_lock_deadline` under the lock library assumption. | Deadline and guard tests. | Partial construction, acceptance pending. |
 | B3: environment partition | U | `OpenIdentity` | `capture_no_interference` over any participant set. | Separate-environment tests. | Construction recorded, acceptance pending. |
 | B4: identity at open | U | `OpenIdentity`, `ValidatedIdentity` | `capture_no_interference`. | Open and validation tests. | Construction recorded, acceptance pending. |
 | B5: allocation limits | U | `BoundBytes` | `capture_prefix_roundtrip`, `capture_prefix_sound`, `capture_budget_bounded`. | Length, decode, and nested-bound tests, and three Kani harnesses. | Construction recorded, acceptance pending. |
 | B6: copied state and effects | U | `GuardOrder`, `ReadOnly` | `capture_guard_order`, `capture_detached`. | Unchanged-bytes tests. | Construction recorded, acceptance pending. |
 | B7: environment validation | U | `ValidatedIdentity` | `capture_no_interference`, including restored values under monotone identifiers. | Interference tests and capture oracle. | Construction recorded, acceptance pending. |
-| B8: generation validation | U | `GenerationStable` | `capture_generation_stable`. | Partial. No deterministic generation-rejection test on this branch. | Binding gap recorded. |
-| B9: incomplete rows | U | `CompleteRows` | Pending. The row model is a Boolean predicate. | Missing-row tests and capture oracle. | Pending. |
+| B8: generation validation | U | `GenerationStable` | `capture_generation_stable`. | `generation_change_after_validation_rejects_capture` checks rejection after validation. | Acceptance pending. |
+| B9: incomplete rows | U | `CompleteRows` | `capture_complete_metadata` and `capture_complete_requested_bodies` over arbitrary finite row sets. | Missing-row tests and capture oracle. | Pending. |
 | B10: resource release | U | `Detached`, `ReadOnly` | `capture_detached`. | Release and unchanged-bytes tests. | Construction recorded, acceptance pending. |
-| B11: canonical identity | U | None | Pending. No model or theorem. | Digest, duration, and byte-bound tests. | Pending. |
-| B12: scratch independence | U | None | Pending. No model or theorem. | Scratch independence tests. | Pending. |
+| B11: canonical identity | U | None | `capture_canonical_record_injective` proves logical framing with complete Rust schema refinement still pending. | Independent canonical reader, digest, duration, and byte-bound tests. | Partial construction. |
+| B12: scratch independence | U | None | `capture_scratch_preserves_production` and `capture_scratch_preserves_sibling` under fresh allocation assumptions. | Allocation identity and mutation isolation tests. | Acceptance pending. |
 | B13: unsupported backends | F proposed | `ValidAdmission` | Not applicable proposed. The domain is the backend downcast result. | Unsupported-backend tests. | Pending maintainer review. |
 
 Every classification and correspondence remains pending named maintainer review. A recorded theorem does not change a claim status until acceptance.
@@ -145,17 +145,15 @@ Every classification and correspondence remains pending named maintainer review.
 1. Run `bash scripts/ci/check-tla-invariants.sh --soak-pr` with the pinned TLC jar.
 2. Run `bash scripts/ci/test-check-tla-invariants.sh` with Bash 4 or later.
 3. Run `bash scripts/ci/check-node-observation-bindings.sh /path/to/new-output` in the isolated Rust build environment.
-4. Rebuild the Rocq project and check all four exported assumption sets.
+4. Rebuild the Rocq project and check all 25 exported assumption sets.
 
-The binding driver runs node tests, not the complete capture suite. It does not accept a named-test map as a refinement proof.
+The binding driver runs observer, shared capture, block capture, and capture lock and generation tests. It does not accept a named-test map as a refinement proof.
 
 This branch uses the existing gate and binding driver. It adds no standalone checker crate, workspace, or lockfile.
 
-Downstream owns `scripts/node-observation` and must remove it or include it in its supply-chain audit before acceptance.
+The merged branch removed the retired standalone checker. The existing Rust tests and binding driver supply executable evidence.
 
-That downstream binding parser also assumes 18 interface tests and two storage unit tests. Those assumptions do not match this node revision.
-
-Downstream integration must take these canonical model files and combine gate registrations. It must preserve the Rocq registrations and the node binding driver.
+Run the TLA gate and its fixture separately. Both currently use fixed temporary log paths.
 
 The node package records gate registration evidence separately. The harness claim keeps its primary record under `docs/casper/cbc-evidence/` without node claim digests.
 

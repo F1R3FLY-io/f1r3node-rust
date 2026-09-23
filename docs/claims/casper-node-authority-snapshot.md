@@ -46,7 +46,11 @@ artifacts:
   - scripts/ci/check-formal-invariants.sh
   - formal/rocq/node_observation/_CoqProject
   - formal/rocq/node_observation/theories/BoundedCapture.v
+  - formal/rocq/node_observation/theories/InterfaceSafety.v
+  - formal/rocq/node_observation/theories/CaptureIntegrity.v
   - formal/rocq/node_observation/theories/MainTheorem.v
+  - scripts/ci/check-node-observation-bindings.sh
+  - formal/rocq/node_observation/README.md
 refutation: pending
 construction: pending
 binding: pending
@@ -128,3 +132,15 @@ Retain failing controls for invalid limits, unsupported backends, raw length, ma
 Verify that production store bytes are unchanged after successful and rejected captures. Verify that source and dependency inventories contain no unrelated changes.
 
 This work does not change the harness claims, approve a campaign, publish images, or merge a pull request.
+
+## Merged-source verification
+
+The evidence package for this cycle is not in the tree. The node session regenerates it under the evidence retention rule before any claim tier advances.
+
+The checkout did not contain the previously named `casper-node-claim-gate-8789c1c3e-01` package. This cycle supplies new evidence instead of reconstructing that missing result.
+
+The project exports 25 construction results. The [proof correspondence](../../formal/rocq/node_observation/README.md#boundary-correspondence) states their assumptions and limitations.
+
+The binding driver now includes the shared and block capture suites. It also runs the retained lock deadline and generation-change regressions.
+
+Complete canonical-schema refinement remains pending. All applicability decisions, source correspondence, and both claims still require named maintainer acceptance.

@@ -541,11 +541,49 @@ fn scratch_views_share_no_mutable_stores_with_each_other_or_production() {
     let snapshot = capture(&fx.dag, &fx.blocks, &request(&[])).unwrap();
     let view_a = snapshot.scratch_view().unwrap();
     let view_b = snapshot.scratch_view().unwrap();
+    let live = fx.dag.get_representation().unwrap();
+    assert!(!Arc::ptr_eq(
+        &view_a.representation.block_metadata_index,
+        &view_b.representation.block_metadata_index
+    ));
+    assert!(!Arc::ptr_eq(
+        &view_a.representation.block_metadata_index,
+        &live.block_metadata_index
+    ));
+    assert!(!Arc::ptr_eq(
+        &view_a.representation.lifecycle,
+        &view_b.representation.lifecycle
+    ));
+    assert!(!Arc::ptr_eq(
+        &view_a.representation.lifecycle,
+        &live.lifecycle
+    ));
+    assert!(!Arc::ptr_eq(
+        &view_a.representation.carrier_index,
+        &view_b.representation.carrier_index
+    ));
+    assert!(!Arc::ptr_eq(
+        &view_a.representation.carrier_index,
+        &live.carrier_index
+    ));
     assert_eq!(view_a.excluded_stores, &EXCLUDED_STORES);
     assert!(!view_a.observes_durable_work());
 
     let b2 = fx.chain[2].block_hash.clone();
     let g = fx.chain[0].block_hash.clone();
+    view_a
+        .representation
+        .put_cached_frontier(b2.clone(), g.clone())
+        .unwrap();
+    assert_eq!(
+        view_a.representation.get_cached_frontier(&b2).unwrap(),
+        Some(g.clone())
+    );
+    assert_eq!(
+        view_b.representation.get_cached_frontier(&b2).unwrap(),
+        None
+    );
+    assert_eq!(live.get_cached_frontier(&b2).unwrap(), None);
     view_a
         .representation
         .floor_index
@@ -1207,4 +1245,226 @@ fn capture_outcomes_match_the_bounded_capture_oracle() {
         }
     }
     assert_eq!(checked, 14);
+}
+
+struct CanonicalReader<'a>(&'a [u8]);
+
+impl<'a> CanonicalReader<'a> {
+    fn fixed<const N: usize>(&mut self) -> [u8; N] {
+        let (head, tail) = self.0.split_at(N);
+        self.0 = tail;
+        head.try_into().unwrap()
+    }
+
+    fn number(&mut self) -> u64 { u64::from_be_bytes(self.fixed()) }
+
+    fn bytes(&mut self) -> &'a [u8] {
+        let size = usize::try_from(self.number()).unwrap();
+        let (head, tail) = self.0.split_at(size);
+        self.0 = tail;
+        head
+    }
+
+    fn tag(&mut self, expected: &str) {
+        assert_eq!(self.bytes(), expected.as_bytes());
+    }
+
+    fn count(&mut self, expected: usize) {
+        assert_eq!(self.number(), expected as u64);
+    }
+
+    fn flag(&mut self, expected: bool) {
+        assert_eq!(self.fixed::<1>(), [u8::from(expected)]);
+    }
+
+    fn hashes<'b>(&mut self, hashes: impl ExactSizeIterator<Item = &'b BlockHash>) {
+        self.count(hashes.len());
+        for hash in hashes {
+            assert_eq!(self.bytes(), hash.as_ref());
+        }
+    }
+
+    fn availability(&mut self, value: &Availability<BlockHash>) {
+        match value {
+            Availability::Absent => self.flag(false),
+            Availability::Present(hash) => {
+                self.flag(true);
+                assert_eq!(self.bytes(), hash.as_ref());
+            }
+        }
+    }
+
+    fn metadata(&mut self, value: &BlockMetadata) {
+        assert_eq!(self.bytes(), value.block_hash.as_ref());
+        self.hashes(value.parents.iter());
+        assert_eq!(self.bytes(), value.sender.as_ref());
+        self.count(value.justifications.len());
+        for j in &value.justifications {
+            assert_eq!(self.bytes(), j.validator.as_ref());
+            assert_eq!(self.bytes(), j.latest_block_hash.as_ref());
+        }
+        self.count(value.weight_map.len());
+        for (validator, weight) in &value.weight_map {
+            assert_eq!(self.bytes(), validator.as_ref());
+            assert_eq!(i64::from_be_bytes(self.fixed()), *weight);
+        }
+        assert_eq!(i64::from_be_bytes(self.fixed()), value.block_number);
+        assert_eq!(i32::from_be_bytes(self.fixed()), value.sequence_number);
+        self.flag(value.invalid);
+        self.flag(value.directly_finalized);
+        self.flag(value.finalized);
+        assert_eq!(
+            u32::from_be_bytes(self.fixed()),
+            value.fault_tolerance_value.to_bits()
+        );
+        assert_eq!(self.bytes(), value.merge_base.as_ref());
+    }
+
+    fn snapshot(&mut self, snapshot: &DetachedDagSnapshot) {
+        self.tag("schema");
+        assert_eq!(u32::from_be_bytes(self.fixed()), snapshot.schema_version);
+        self.tag(snapshot.scope);
+        self.tag("limits");
+        let limits = &snapshot.limits;
+        for n in [
+            limits.read.max_value_bytes,
+            limits.read.max_total_bytes,
+            limits.read.max_records,
+            limits.read.max_operations,
+            limits.block_decode.max_compressed_bytes,
+            limits.block_decode.max_decompressed_bytes,
+            limits.block_decode.max_expansion_ratio,
+            limits.max_blocks,
+            limits.max_validators,
+            limits.max_edges,
+            limits.max_work,
+        ] {
+            self.count(n);
+        }
+        assert_eq!(self.number(), limits.lock_wait.as_secs());
+        assert_eq!(
+            u32::from_be_bytes(self.fixed()),
+            limits.lock_wait.subsec_nanos()
+        );
+        self.tag("read usage");
+        for n in [
+            snapshot.usage.bytes,
+            snapshot.usage.records,
+            snapshot.usage.operations,
+        ] {
+            self.count(n);
+        }
+        self.tag("coverage");
+        self.count(snapshot.coverage.held_blocks);
+        self.flag(snapshot.coverage.complete_held_dag);
+        self.count(snapshot.coverage.requested_bodies);
+        self.tag("generation");
+        assert_eq!(self.number(), snapshot.insertion_generation);
+        self.tag("transactions");
+        self.count(snapshot.transactions.len());
+        for t in &snapshot.transactions {
+            assert_eq!(self.bytes(), t.environment.as_bytes());
+            self.count(t.last_txn_id_before_open);
+            self.count(t.txn_id);
+            self.flag(t.last_txn_id_after_validation.is_some());
+            if let Some(n) = t.last_txn_id_after_validation {
+                self.count(n);
+            }
+        }
+        self.tag("dag_set");
+        self.hashes(snapshot.dag_set.iter());
+        self.tag("child_map");
+        self.count(snapshot.child_map.len());
+        for (parent, children) in &snapshot.child_map {
+            assert_eq!(self.bytes(), parent.as_ref());
+            self.hashes(children.iter());
+        }
+        self.tag("height_map");
+        self.count(snapshot.height_map.len());
+        for (height, hashes) in &snapshot.height_map {
+            assert_eq!(i64::from_be_bytes(self.fixed()), *height);
+            self.hashes(hashes.iter());
+        }
+        self.tag("block_number_map");
+        self.count(snapshot.block_number_map.len());
+        for (hash, number) in &snapshot.block_number_map {
+            assert_eq!(self.bytes(), hash.as_ref());
+            assert_eq!(i64::from_be_bytes(self.fixed()), *number);
+        }
+        for (tag, map) in [
+            ("main_parent_map", &snapshot.main_parent_map),
+            ("self_justification_map", &snapshot.self_justification_map),
+        ] {
+            self.tag(tag);
+            self.count(map.len());
+            for (hash, parent) in map {
+                assert_eq!(self.bytes(), hash.as_ref());
+                assert_eq!(self.bytes(), parent.as_ref());
+            }
+        }
+        self.tag("last_finalized_block");
+        self.flag(snapshot.last_finalized_block.is_some());
+        if let Some((hash, height)) = &snapshot.last_finalized_block {
+            assert_eq!(self.bytes(), hash.as_ref());
+            assert_eq!(i64::from_be_bytes(self.fixed()), *height);
+        }
+        self.tag("finalized_block_set");
+        self.hashes(snapshot.finalized_block_set.iter());
+        self.tag("latest_messages");
+        self.count(snapshot.latest_messages.len());
+        for (validator, hash) in &snapshot.latest_messages {
+            assert_eq!(self.bytes(), validator.as_ref());
+            assert_eq!(self.bytes(), hash.as_ref());
+        }
+        self.tag("invalid_blocks");
+        self.count(snapshot.invalid_blocks.len());
+        for (hash, metadata) in &snapshot.invalid_blocks {
+            assert_eq!(self.bytes(), hash.as_ref());
+            self.metadata(metadata);
+        }
+        self.tag("blocks");
+        self.count(snapshot.blocks.len());
+        for (hash, block) in &snapshot.blocks {
+            assert_eq!(self.bytes(), hash.as_ref());
+            self.metadata(&block.metadata);
+            self.availability(&block.floor);
+            self.availability(&block.frontier);
+        }
+        self.tag("bodies");
+        self.count(snapshot.bodies.len());
+        for (hash, body) in &snapshot.bodies {
+            assert_eq!(self.bytes(), hash.as_ref());
+            self.flag(matches!(body, BlockBody::Held(_)));
+            if let BlockBody::Held(bytes) = body {
+                assert_eq!(self.bytes(), bytes);
+            }
+        }
+        self.tag("work");
+        self.count(snapshot.work);
+        assert!(self.0.is_empty());
+    }
+}
+
+#[test]
+fn canonical_fields_round_trip_through_an_independent_reader() {
+    let fx = fixture("canonical-reader");
+    for seeds in [false, true] {
+        if seeds {
+            let key = BlockHashSerde(fx.chain[1].block_hash.clone());
+            let value = BlockHashSerde(fx.chain[0].block_hash.clone());
+            for store in ["floor-index", "frontier-index"] {
+                floor_store(fx.handle(store))
+                    .put_one(key.clone(), value.clone())
+                    .unwrap();
+            }
+        }
+        for held in [false, true] {
+            let mut bodies = vec![BlockHash::from(vec![0xee; 32])];
+            if held {
+                bodies.push(fx.chain[3].block_hash.clone());
+            }
+            let snapshot = capture(&fx.dag, &fx.blocks, &request(&bodies)).unwrap();
+            CanonicalReader(snapshot.canonical_bytes()).snapshot(&snapshot);
+        }
+    }
 }

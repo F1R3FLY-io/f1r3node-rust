@@ -8,7 +8,9 @@ This project proves challenge-allocation, cross-incarnation, and bounded-capture
 | --- | --- |
 | `ObserverSession` | Challenge allocation, replay refusal, checked counters, and incarnation-qualified tokens. |
 | `BoundedCapture` | Transaction clocks, capture observations, insertion generation, charge budgets, length prefixes, and the capture protocol. |
-| `MainTheorem` | The 14 exported results. |
+| `InterfaceSafety` | Directory and peer admission, identity-sensitive cleanup, awaited shutdown, and deadline admission. |
+| `CaptureIntegrity` | Complete rows, logical field framing, and fresh scratch storage. |
+| `MainTheorem` | The 25 exported results. |
 
 ## Correspondence
 
@@ -51,7 +53,7 @@ The correspondence depends on UUID formatting, decimal formatting, string equali
 | `capture_guard_order` | Every reachable capture state holds guards in acquisition order. |
 | `capture_detached` | Every reachable released, done, or rejected state holds no guard and no transaction. |
 
-`MainTheorem` exports all 14 results. Each result must report `Closed under the global context` after compilation.
+`MainTheorem` exports all 25 results. Each result must report `Closed under the global context` after compilation.
 
 No custom axiom, admission, or parameter is permitted in the trust base. Conditional library correspondence is not a kernel proof of those libraries.
 
@@ -65,7 +67,7 @@ make -j1
 coqchk -Q theories NodeObservation NodeObservation.MainTheorem
 ```
 
-The formal gate separately prints the assumptions of each exported theorem and requires 14 closed sets. Build success alone does not establish a closed assumption set.
+The formal gate separately prints the assumptions of each exported theorem and requires 25 closed sets. Build success alone does not establish a closed assumption set.
 
 The [TLA+ area](../../tlaplus/node_observation/README.md) contains the canonical session and capture models and the applicability review per property.
 
@@ -73,6 +75,40 @@ The `Begin` action projects to `Hello`. A successful `Reply` projects to `Respon
 
 The projection reverses the TLA+ history because `issued` stores the newest token first. Additional admission guards restrict enabled transitions without changing allocation.
 
-These projections are documented source arguments, not machine-checked refinement proofs. The theorems do not prove directory safety, cleanup, canonical identity, scratch independence, or the complete-row predicate.
+These projections are documented source arguments, not machine-checked refinement proofs. The additional modules prove conditional boundary properties. The following assumptions define their correspondence.
 
 Named maintainer review of every applicability decision and acceptance of both claims remain pending.
+
+## Boundary correspondence
+
+| Definition | Rust boundary | Assumption or limit |
+| --- | --- | --- |
+| `safe_path` | `safe_directory` examines every ancestor and the final directory. | Kernel metadata is accurate. Trusted owners do not replace path components during admission. |
+| `peer_admitted` | `Observer::session` checks UID, PID, and process start ticks. | Linux credentials and process metadata are accurate. Process metadata remains available. |
+| `cleanup` | `SocketGuard::drop` compares socket type, device, and inode. | The namespace remains stable between the metadata check and unlink. Unlink errors remain possible. |
+| `shutdown_run` | `NodeRuntime::start` returns from `main`, awaits `stop`, then handles exit. | The runtime executes this path. Abort, crashes, and destructor failures are outside this theorem. |
+| `write_admitted` | `Observer::write` rejects an expired deadline before output. | Tokio supplies a monotone clock and cooperative task scheduling. This theorem bounds admission, not operating-system latency. |
+| `lock_admitted` | All three capture guards receive one absolute deadline. | The lock library honors the deadline. An uncontended lock can succeed after that deadline. |
+| `rows_complete` | Capture requires metadata for held blocks and bodies for requested held blocks. | Row predicates represent successful decoding and identity checks. Missing cache seeds remain permitted. |
+| `canonical_record` | Logical fields have unambiguous length framing. | This normal form is not the Rust wire schema. Complete schema refinement remains pending. |
+| `populate`, `addresses_fresh` | `scratch_view` creates fresh stores and populates captured rows. | Rust allocation, ownership, and store isolation hold. Initialization errors prevent a returned view. |
+
+The canonical reader test decodes the production bytes independently and compares each field with the captured data. Four cases cover body and cache availability.
+
+The reader test does not prove every permitted schema value. The logical framing theorem does not establish SHA-256 collision freedom.
+
+The directory test checks all 4,096 leaf permission values. Separate tests check identity mismatches, expired output, socket identity, and awaited shutdown.
+
+Scratch tests compare mutable allocation identities and check independent metadata, floor, frontier, and block mutations.
+
+The additional exports are `observer_path_admission`, `observer_peer_admission`, `observer_cleanup_preserves_replacement`, `observer_shutdown_before_exit`, and `observer_write_before_deadline`.
+
+Capture adds `capture_lock_deadline`, `capture_complete_metadata`, `capture_complete_requested_bodies`, `capture_canonical_record_injective`, `capture_scratch_preserves_production`, and `capture_scratch_preserves_sibling`.
+
+The Kani prefix harnesses call `length_prefix` and `checked_prefixed_payload`, which the public encode and decode paths use.
+
+The public decoder formats the same errors after those checks. Native tests exercise allocation, formatting, and the complete decoder.
+
+The block preflight harness checks every `usize` length against `check_compressed_length`. Production calls this check before varint decoding or decompression.
+
+Kani verifies the arithmetic boundary. It does not verify allocation, diagnostic formatting, decompression, or the complete block decoder.

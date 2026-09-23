@@ -580,3 +580,59 @@ The strict audit returned exit 4 before the refresh with the new module unrecord
 The package `casper-node-claim-gate-03d7f1b27-01` records the tiers reached. Bulk evidence remains under the session scratch directory outside Git.
 
 The task stops at the acceptance gate. The proposed reviewer must review each applicability decision and accept both claims by naming the revision, both claim IDs, and the package.
+
+## Merged-source cycle: e4d97bb83
+
+This cycle verifies the merged working tree above `e4d97bb8356996a9371d6f54b6d9c05afe6378cb`. It creates no commit or merge.
+
+The harness session ported the source, proof, driver, and claim changes of this cycle onto the node branch on 2026-09-23. The prefix parser keeps the node branch design from `03d7f1b27`. The node records and the package remain pending.
+
+The earlier `casper-node-claim-gate-8789c1c3e-01` package was absent. The package for this cycle was withheld from the tree because it carried bulk logs and home-directory paths. The node session regenerates it under the evidence retention rule.
+
+### Changes
+
+`InterfaceSafety` adds conditional proofs for directory admission, peer identity, socket cleanup, awaited shutdown, and deadline admission.
+
+`CaptureIntegrity` adds complete-row proofs, a logical framing proof, and scratch-store isolation proofs. The formal gate now requires 25 closed assumption sets.
+
+The new Rust checks cover all 4,096 leaf permission values, peer mismatches, socket identity fields, expired writes, and awaited shutdown.
+
+The canonical reader independently decodes four capture cases. Scratch checks compare allocation identities and test frontier mutation isolation.
+
+The binding driver now runs the observer and capture suites. It also requires every test in `bindings.json` to report success.
+
+B8 now names the retained `generation_change_after_validation_rejects_capture` regression. The merged branch already contained that test.
+
+### Verification
+
+The bounded TLA gate passed 16 positive configurations and 88 expected violations. The node subset contains two positive configurations and 17 controls.
+
+The TLA fixture passed all 88 controls. The formal gate fixture passed 47 exact-exit refusal controls.
+
+The full Rocq gate passed with Rocq 9.1.1. All 25 node theorem exports have closed assumption sets.
+
+The final isolated Linux run passed 330 tests. One helper test is ignored by the test runner and invoked by its cross-process parent.
+
+Strict Clippy, the workspace check, formatting, and source identity comparisons passed. The driver retains separate identities for raw and debug-stripped observer executables.
+
+All nine Kani harnesses passed with Kani 0.67.0 and CBMC 6.8.0 on ARM64 Linux. The compiler uses the 2025-11-21 nightly.
+
+Kani checks the production prefix parser and compressed-length preflight. Public paths retain native tests for allocation, diagnostic formatting, and complete decoding.
+
+The prefix refactor preserves public errors and return values. The block decoder calls the extracted preflight before varint decoding or decompression.
+
+Kani 0.68 produced a compiler error and stalled on allocation paths. Retained logs also record the disk exhaustion and the unsuccessful solver attempts.
+
+### Limits
+
+The filesystem proofs assume accurate metadata and a stable namespace under trusted owners. Cleanup can still fail if unlink fails.
+
+Deadline proofs depend on the lock library, monotone clocks, and cooperative scheduling. They do not establish operating-system latency bounds.
+
+The canonical theorem covers logical framing. Complete refinement of the Rust wire schema remains pending, including every field and collection representation.
+
+The five proposed finite-domain classifications remain unaccepted. Both claims and all ledger tiers remain pending until the required evidence and named review exist.
+
+The existing workflow and TLA gate governance records keep their prior claim identities. The regenerated package will supply separate node claim views for those files.
+
+The six remaining STE findings occur in unchanged prose. The new and revised prose received a separate sentence-length review.

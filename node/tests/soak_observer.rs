@@ -516,6 +516,20 @@ async fn dropping_the_owner_cancels_a_pending_session() {
 }
 
 #[tokio::test]
+async fn awaited_stop_releases_a_pending_session_and_its_socket() {
+    let directory = Directory::new();
+    let observer = Observer::bind(&configuration(&directory, true))
+        .unwrap()
+        .unwrap()
+        .spawn();
+    let (mut stream, _) = connect(&directory.socket()).await;
+    observer.stop().await;
+    assert!(!directory.socket().exists());
+    closed(&mut stream).await;
+    assert!(UnixStream::connect(directory.socket()).await.is_err());
+}
+
+#[tokio::test]
 async fn duplicate_observer_does_not_remove_the_active_socket() {
     let directory = Directory::new();
     let conf = configuration(&directory, true);
