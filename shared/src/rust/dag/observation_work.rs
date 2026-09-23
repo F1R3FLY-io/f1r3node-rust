@@ -270,3 +270,27 @@ impl WorkMeter for CheckedWork {
     fn metadata_bytes(&self) -> u64 { self.budget.metadata_bytes }
     fn body_bytes(&self) -> u64 { self.budget.body_bytes }
 }
+
+pub fn sort_by_metered<T, W: WorkMeter>(
+    meter: &W,
+    values: &mut [T],
+    mut compare: impl FnMut(&T, &T) -> std::cmp::Ordering,
+) -> Result<(), KvStoreError> {
+    if !W::ENABLED {
+        values.sort_by(compare);
+        return Ok(());
+    }
+    for end in 1..values.len() {
+        let mut cursor = end;
+        while cursor > 0 {
+            meter.step(WorkKind::Traversal)?;
+            if compare(&values[cursor], &values[cursor - 1]) != std::cmp::Ordering::Less {
+                break;
+            }
+            meter.step(WorkKind::Traversal)?;
+            values.swap(cursor, cursor - 1);
+            cursor -= 1;
+        }
+    }
+    Ok(())
+}

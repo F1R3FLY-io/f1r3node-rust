@@ -937,3 +937,27 @@ async fn reference_refuses_restore_seeds_without_provenance() {
         "restore_seed_provenance_unavailable"
     );
 }
+
+#[test]
+fn metered_ordering_preserves_duplicates_and_stops_before_unbounded_sorting() {
+    use shared::rust::dag::observation_work::sort_by_metered;
+    for code in 0..4096u32 {
+        let values: Vec<_> = (0..6)
+            .map(|index| ((code >> (index * 2)) & 3) as u8)
+            .collect();
+        let mut expected = values.clone();
+        expected.sort();
+        let mut actual = values;
+        sort_by_metered(&meter(work_limits()), &mut actual, Ord::cmp).unwrap();
+        assert_eq!(actual, expected);
+    }
+    let work = meter(WorkLimits {
+        operations: 2,
+        ..work_limits()
+    });
+    assert!(sort_by_metered(&work, &mut [3, 2, 1], Ord::cmp).is_err());
+    assert_eq!(work.usage().0.operations, 2);
+    let work = meter(work_limits());
+    assert!(work.allocate(usize::MAX, 2).is_err());
+    assert_eq!(work.usage().2.as_deref(), Some("allocation_overflow"));
+}

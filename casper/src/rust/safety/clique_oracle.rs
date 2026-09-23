@@ -206,13 +206,17 @@ impl CliqueOracle {
     ) -> Result<WeightMap, KvStoreError> {
         meter.step(WorkKind::Oracle)?;
         meter.allocate(64, 128)?;
-        dag.lookup_unsafe_metered(meter, target_msg)
-            .and_then(|meta| match meta.parents.first() {
-                Some(main_parent) => dag
-                    .lookup_unsafe_metered(meter, main_parent)
-                    .map(|parent_meta| parent_meta.weight_map.into_iter().collect()),
-                None => Ok(meta.weight_map.into_iter().collect()),
-            })
+        let meta = dag.lookup_unsafe_metered(meter, target_msg)?;
+        let weights = match meta.parents.first() {
+            Some(parent) => dag.lookup_unsafe_metered(meter, parent)?.weight_map,
+            None => meta.weight_map,
+        };
+        let mut result = HashMap::new();
+        for (validator, weight) in weights {
+            meter.step(WorkKind::Oracle)?;
+            result.insert(validator, weight);
+        }
+        Ok(result)
     }
 
     /// If two validators will never have disagreement on target message
@@ -400,7 +404,11 @@ impl CliqueOracle {
             let yield_timeslice = run_cache.yield_timeslice;
 
             meter.allocate(agreeing_weight_map.len(), 512)?;
-            let agreeing_validators: BTreeSet<V> = agreeing_weight_map.keys().cloned().collect();
+            let mut agreeing_validators = BTreeSet::new();
+            for validator in agreeing_weight_map.keys() {
+                meter.step(WorkKind::Oracle)?;
+                agreeing_validators.insert(validator.clone());
+            }
             let mut latest_justifications_cache: BTreeMap<V, BTreeMap<V, M>> = BTreeMap::new();
             let mut pairwise_latest_messages: BTreeMap<V, M> = BTreeMap::new();
             // Conservative pruning: if validator has no latest message or no justifications
@@ -410,7 +418,10 @@ impl CliqueOracle {
                 meter.charge(
                     WorkKind::Allocation,
                     1,
-                    meter.metadata_bytes().saturating_mul(4),
+                    meter
+                        .metadata_bytes()
+                        .checked_mul(4)
+                        .ok_or_else(|| meter.reject("allocation_overflow"))?,
                 )?;
                 meter.step(WorkKind::Oracle)?;
                 meter.allocate(4, 256)?;
@@ -427,25 +438,27 @@ impl CliqueOracle {
                         cached.clone()
                     } else {
                         let metadata = dag.lookup_unsafe_metered(meter, &latest)?;
-                        let all: BTreeMap<V, M> = metadata
-                            .justifications
-                            .iter()
-                            .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
-                            .collect();
+                        let mut all = BTreeMap::new();
+                        for justification in &metadata.justifications {
+                            meter.step(WorkKind::Traversal)?;
+                            all.insert(
+                                justification.validator.clone(),
+                                justification.latest_block_hash.clone(),
+                            );
+                        }
                         run_cache
                             .latest_justifications_cache
                             .insert(validator.clone(), all.clone());
                         all
                     };
 
-                let relevant_justifications: BTreeMap<V, M> = all_justifications
-                    .iter()
-                    .filter_map(|(validator, hash)| {
-                        agreeing_validators
-                            .contains(validator)
-                            .then_some((validator.clone(), hash.clone()))
-                    })
-                    .collect();
+                let mut relevant_justifications = BTreeMap::new();
+                for (validator, hash) in &all_justifications {
+                    meter.step(WorkKind::Traversal)?;
+                    if agreeing_validators.contains(validator) {
+                        relevant_justifications.insert(validator.clone(), hash.clone());
+                    }
+                }
                 if relevant_justifications.is_empty() {
                     continue;
                 }
@@ -751,7 +764,7 @@ impl CliqueOracle {
             ftt.den,
             strict,
         );
-        if tracing::enabled!(target: "f1r3.trace.oracle", tracing::Level::DEBUG) {
+        if !W::ENABLED && tracing::enabled!(target: "f1r3.trace.oracle", tracing::Level::DEBUG) {
             let snapshot: Vec<String> = latest_messages
                 .iter()
                 .map(|(v, m)| {

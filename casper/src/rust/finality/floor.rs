@@ -32,7 +32,7 @@ use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::Bond;
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
-use shared::rust::dag::observation_work::{NoopWork, WorkKind, WorkMeter};
+use shared::rust::dag::observation_work::{sort_by_metered, NoopWork, WorkKind, WorkMeter};
 use shared::rust::store::key_value_store::MissingBlockContext;
 
 use crate::rust::errors::CasperError;
@@ -523,12 +523,28 @@ pub async fn floor_of_view_metered<W: WorkMeter>(
         }
         testimony.push((validator, hash));
     }
-    tips.sort();
-    tips.dedup();
+    sort_by_metered(meter, &mut tips, Ord::cmp)?;
+    if W::ENABLED {
+        let mut kept = 0;
+        for index in 0..tips.len() {
+            meter.step(WorkKind::Traversal)?;
+            if kept == 0 || tips[index] != tips[kept - 1] {
+                tips.swap(index, kept);
+                kept += 1;
+            }
+        }
+        tips.truncate(kept);
+    } else {
+        tips.dedup();
+    }
     if tips.is_empty() {
         return Ok(FloorOfView::NoAdvance);
     }
-    let live_snapshot: BTreeMap<Validator, BlockHash> = testimony.into_iter().collect();
+    let mut live_snapshot = BTreeMap::new();
+    for (validator, hash) in testimony {
+        meter.step(WorkKind::Traversal)?;
+        live_snapshot.insert(validator, hash);
+    }
 
     // Absence means one tip cannot be judged, so find which and abstain it
     // rather than the cycle. Probing only on failure keeps the healthy path to
@@ -763,7 +779,15 @@ pub async fn finalized_floor_with_candidates_metered<W: WorkMeter>(
     for f in inherited.into_iter().chain(std::iter::once(floor.clone())) {
         meter.step(WorkKind::Traversal)?;
         meter.allocate(4, 256)?;
-        if !settled.iter().any(|s| s.hash == f.hash) {
+        let mut present = false;
+        for settled_floor in &settled {
+            meter.step(WorkKind::Traversal)?;
+            if settled_floor.hash == f.hash {
+                present = true;
+                break;
+            }
+        }
+        if !present {
             settled.push(f);
         }
     }
@@ -877,12 +901,17 @@ async fn derive_floor_metered<W: WorkMeter>(
     // sound (no finalized cut common to all parents), that is a genuinely
     // incompatible finalized fork and is surfaced as an error, never papered
     // over.
-    let mut ordered: Vec<&Floor> = candidates.iter().collect();
-    ordered.sort_by(|a, b| {
+    meter.allocate(candidates.len(), std::mem::size_of::<&Floor>())?;
+    let mut ordered = Vec::with_capacity(candidates.len());
+    for candidate in &candidates {
+        meter.step(WorkKind::Traversal)?;
+        ordered.push(candidate);
+    }
+    sort_by_metered(meter, &mut ordered, |a, b| {
         b.block_number
             .cmp(&a.block_number)
             .then_with(|| b.hash.cmp(&a.hash))
-    });
+    })?;
 
     let mut chosen: Option<Floor> = None;
     let mut memo = IntroducedSigsMemo::new();
@@ -1072,11 +1101,15 @@ pub async fn floor_of_block_metered<W: WorkMeter>(
                 hash,
             });
         }
-        let latest_messages: BTreeMap<Validator, BlockHash> = metadata
-            .justifications
-            .iter()
-            .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
-            .collect();
+        meter.allocate(metadata.justifications.len(), 256)?;
+        let mut latest_messages = BTreeMap::new();
+        for justification in &metadata.justifications {
+            meter.step(WorkKind::Traversal)?;
+            latest_messages.insert(
+                justification.validator.clone(),
+                justification.latest_block_hash.clone(),
+            );
+        }
         let (floor, frontier) = derive_floor_metered(
             meter,
             dag,

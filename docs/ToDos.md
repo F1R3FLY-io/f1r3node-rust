@@ -155,7 +155,7 @@ tasks:
       - "The canonical identity covers every field that scratch construction and evaluation consume."
   - id: TASK-019-3
     title: "Batch B2: observer handle, detached evaluation, and reference comparison"
-    status: in_progress
+    status: review
     claimed_by: codex-batch-b2-20260923
     blocked_by: []
     plan: docs/plans/casper-node-observation-batch-b.md
@@ -165,6 +165,11 @@ tasks:
     implementation_authorization: "The user requested B2 completion on 2026-09-23. PR #447 review 5294038948 records predecessor acceptance at 4c0c0dbe7."
     claim: docs/claims/casper-node-authority-evaluation.md
     work_log: docs/work-logs/task-019-3-node-authority-evaluation.md
+    implementation_status: complete
+    verification_package: docs/cbc-evidence/runs/casper-node-authority-b2-d11acabcb-01/report.json
+    verification_status: "976 focused tests and all commit checks pass. The full Casper run exceeded 30 minutes."
+    completion_gate: "Step 7 remains pending for B2 proof obligations, semantic binding, and named maintainer acceptance."
+    strict_cbc_result: "Exit 4 with 13 pending mandatory records."
     prerequisites:
       - "Both predecessor claims must pass source-bound verification and named maintainer acceptance before B2 acceptance."
       - "A final file list covering the runtime, engine cell, Casper constructor, dispatch, and the six test fixtures that need the observer field."
@@ -247,6 +252,7 @@ tasks:
       - "Both claims remain pending. Acceptance needs named maintainer review of every applicability decision and the remaining construction evidence."
       - "No standalone checker crate was added. Downstream must remove its checker crate or include it in the supply-chain audit."
       - "Cross-incarnation identity, remaining construction proofs, Kani harnesses, complete Rust correspondence, and named maintainer acceptance remain pending."
+      - "Batch B2 changed five accepted artifacts after acceptance: the TLA+ README, the DAG storage file, the capture tests, the node observer, and its tests. Their records are pending for claim 003 at the current digest and retain the acceptance of claims 001 and 002 at 4c0c0dbe7 with the accepted digests."
       - "The named maintainer accepted both claims on 2026-09-23 at 4c0c0dbe7 on the cycle 02 package, with the five bounded-by-design decisions and the recorded construction gaps accepted. All 58 node records are discharged. The two gate-claim records in the union inventory stay pending under CLAIM-SOAK-GATE-001."
       - "Handoff cycle 02 at 78d696ea6 pulled the deterministic generation-rejection test across from the soak branch, reran the TLA gate and the Rocq kernel check, and refreshed every node record. Three blocking items remain: the applicability review, the acceptance, and the open construction proofs."
     acceptance:

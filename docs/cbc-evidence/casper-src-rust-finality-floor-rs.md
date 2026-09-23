@@ -1,4 +1,4 @@
-# CbC Evidence: casper/src/rust/safety/clique_oracle.rs
+# CbC Evidence: casper/src/rust/finality/floor.rs
 
 The B2 claim remains pending. The source manifest binds the recorded tests to these working-tree contents.
 Previous acceptance applies only to its recorded source revision.
@@ -6,12 +6,12 @@ Previous acceptance applies only to its recorded source revision.
 ```json
 {
   "artifact": {
-    "path": "casper/src/rust/safety/clique_oracle.rs",
-    "id": "casper-src-rust-safety-clique-oracle-rs",
+    "path": "casper/src/rust/finality/floor.rs",
+    "id": "casper-src-rust-finality-floor-rs",
     "commit": "d11acabcbd27b564eab7398778169cf3990762d1",
     "commit_is_base": true,
     "working_tree": true,
-    "sha256": "a42a10bbefe048652d3c588dc45336a685261c7f23b90dae54ab7e6de53a69bc"
+    "sha256": "9dbc91696e1b8f834f59635979f0c89a8f0efe3046ce9799e411780ee9516ee0"
   },
   "claim": "docs/claims/casper-node-authority-evaluation.md",
   "claim_ids": [
@@ -35,14 +35,6 @@ Previous acceptance applies only to its recorded source revision.
   },
   "soak": "pending",
   "waiver": null,
-  "verified_at": "2026-09-23T18:59:22.351007+00:00",
-  "previous_record": {
-    "path": "docs/cbc-evidence/casper-src-rust-safety-clique-oracle-rs.md",
-    "commit": "d11acabcbd27b564eab7398778169cf3990762d1",
-    "sha256": "59b9d1671876011b682291628956f0b7df6af522d1d90a37423a297be34aeb9b",
-    "artifact_sha256": "cc1b5940c981a336e3492c9cb4d3a810f0c0cf683ac5af2e3852c2c9f188b4f5",
-    "status": "pending",
-    "acceptance": null
-  }
+  "verified_at": "2026-09-23T18:59:22.351007+00:00"
 }
 ```

@@ -503,7 +503,18 @@ impl<'a> Reference<'a> {
             self.meter.step(WorkKind::Traversal)?;
             ordered.push((self.metadata(&hash)?.block_number, hash));
         }
-        ordered.sort_by(|a, b| b.cmp(a));
+        for position in 1..ordered.len() {
+            let mut at = position;
+            while at > 0 {
+                self.meter.step(WorkKind::Traversal)?;
+                if ordered[at - 1] >= ordered[at] {
+                    break;
+                }
+                self.meter.step(WorkKind::Traversal)?;
+                ordered.swap(at - 1, at);
+                at -= 1;
+            }
+        }
         'candidate: for (_, candidate) in ordered {
             self.meter.step(WorkKind::Traversal)?;
             for other in &inherited {

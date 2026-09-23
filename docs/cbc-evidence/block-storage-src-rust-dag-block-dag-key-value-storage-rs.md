@@ -1,50 +1,59 @@
 # CbC Evidence: block-storage/src/rust/dag/block_dag_key_value_storage.rs
 
-The capture claim remains pending. Local tests do not discharge the claim or qualify a live adapter.
-
-This record adds the Batch B1 capture boundary only. The file's existing `CLAIM-FINALITY-002` obligations are not discharged or waived by this record.
-
-The source and claim digests identify merge revision `8789c1c3e1ad71241d92d9bbdde2296d1e64851d`. The source digest also matches the current file.
-
-This refresh records source identity only. The referenced reconciliation report remains historical evidence and does not verify the merged implementation.
+The B2 claim remains pending. The source manifest binds the recorded tests to these working-tree contents.
+Previous acceptance applies only to its recorded source revision.
 
 ```json
 {
   "artifact": {
     "path": "block-storage/src/rust/dag/block_dag_key_value_storage.rs",
     "id": "block-storage-src-rust-dag-block-dag-key-value-storage-rs",
-    "commit": "78d696ea6780ca72105d9b35d2266b0329d777ed",
+    "commit": "d11acabcbd27b564eab7398778169cf3990762d1",
     "commit_is_base": true,
     "working_tree": true,
-    "sha256": "7bfd28ef62b84ee912a1c2979bd77d6f1f3d804c6cb5d6c9549f9f86ddf43bc2"
+    "sha256": "1736d6770bb72d2b4d768010920269da75901f89914080951e071cc78a6f0a06",
+    "accepted_sha256": "7bfd28ef62b84ee912a1c2979bd77d6f1f3d804c6cb5d6c9549f9f86ddf43bc2"
   },
-  "claim": "docs/claims/casper-node-authority-snapshot.md",
+  "claim": "docs/claims/casper-node-authority-evaluation.md",
   "claim_ids": [
-    "CLAIM-CASPER-NODE-OBSERVATION-002"
+    "CLAIM-CASPER-NODE-OBSERVATION-002",
+    "CLAIM-CASPER-NODE-OBSERVATION-003"
   ],
   "claim_digests": {
-    "docs/claims/casper-node-authority-snapshot.md": "741d16a73647f7107d44f7416dc1b878054ffbc4ae78136365b5fd536b271822"
+    "docs/claims/casper-node-authority-snapshot.md": "741d16a73647f7107d44f7416dc1b878054ffbc4ae78136365b5fd536b271822",
+    "docs/claims/casper-node-authority-evaluation.md": "d37e548ae04d8fb6bfce28665ef0bdd3538571a6b4a795d741ae01c1873ec813"
   },
   "adapter": null,
-  "status": "discharged",
-  "scope": "task-019-4-handoff-cycle-02",
+  "status": "pending",
+  "scope": "batch-b2-source-verification",
   "evidence": {
-    "kind": "tiered-evidence-accepted",
-    "ref": "docs/cbc-evidence/runs/casper-node-claim-gate-78d696ea6-01/report.json",
-    "sha256": "79361b7df306cde8f0b157d0749dd4b09e2a33b24dd9ad99710ff9d198ee43d2"
+    "kind": "source-bound-rust-evidence-pending-acceptance",
+    "ref": "docs/cbc-evidence/runs/casper-node-authority-b2-d11acabcb-01/report.json",
+    "sha256": "abd1403dde113356fffaf2f5e091c6a6d0b35205d6336d2d44ba08c4ec7db505"
   },
   "tiers": {
-    "refutation": "recorded",
-    "construction": "recorded-partial",
+    "refutation": "inherited-models-only",
+    "construction": "pending",
     "binding": "recorded-partial"
   },
   "soak": "pending",
   "waiver": null,
-  "verified_at": "2026-09-23T16:55:28Z",
+  "verified_at": "2026-09-23T18:59:22.351007+00:00",
   "previous_record": {
     "path": "docs/cbc-evidence/block-storage-src-rust-dag-block-dag-key-value-storage-rs.md",
-    "sha256": "eff9905b73dabb523847cdba283f0713c26eb28a2bd4ffed85bb67fbefae1405",
-    "commit": "03d7f1b27544b2c5a93b664d8684b24ea16cf3e9"
+    "commit": "d11acabcbd27b564eab7398778169cf3990762d1",
+    "sha256": "54d1a225ce55a19348b7d7b73aecb5910af463dcd9c04b59dc86619f135f5840",
+    "artifact_sha256": "7bfd28ef62b84ee912a1c2979bd77d6f1f3d804c6cb5d6c9549f9f86ddf43bc2",
+    "status": "discharged",
+    "acceptance": {
+      "reviewer": "jltatbeach",
+      "review_id": 5294038948,
+      "url": "https://github.com/F1R3FLY-io/f1r3node-rust/pull/447#pullrequestreview-5294038948",
+      "revision": "4c0c0dbe7c8958debefdb02f2b21795786c45900",
+      "submitted_at": "2026-09-23T16:55:28Z",
+      "package": "docs/cbc-evidence/runs/casper-node-claim-gate-78d696ea6-01",
+      "decisions": "A1, A2, A8, A10, B13 accepted as bounded by design; construction gaps A3, A4, A9, B9, B11, B12 and the A7 and B2 deadline parts accepted as recorded"
+    }
   },
   "accepted_claim_digests": {
     "docs/claims/casper-node-authority-snapshot.md": "234b65b479864c0ce6b45c45f8c2f2c971d01e7639fc2343ad0256a3d728e723"
@@ -57,6 +66,8 @@ This refresh records source identity only. The referenced reconciliation report 
     "submitted_at": "2026-09-23T16:55:28Z",
     "package": "docs/cbc-evidence/runs/casper-node-claim-gate-78d696ea6-01",
     "decisions": "A1, A2, A8, A10, B13 accepted as bounded by design; construction gaps A3, A4, A9, B9, B11, B12 and the A7 and B2 deadline parts accepted as recorded"
-  }
+  },
+  "accepted_at": "2026-09-23T16:55:28Z",
+  "acceptance_scope": "The acceptance applies to CLAIM-CASPER-NODE-OBSERVATION-001 and CLAIM-CASPER-NODE-OBSERVATION-002 at revision 4c0c0dbe7c8958debefdb02f2b21795786c45900 and the accepted digest. This record is pending for CLAIM-CASPER-NODE-OBSERVATION-003 at the current digest."
 }
 ```
