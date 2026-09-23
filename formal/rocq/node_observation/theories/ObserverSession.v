@@ -115,3 +115,28 @@ Proof.
   destruct (sequence s <? maximum) eqn:Hlimit; inversion Hstep; subst.
   apply allocate_valid. exact Hvalid.
 Qed.
+
+Definition qualified_token := (nat * token)%type.
+
+Definition qualify (incarnation : nat) (t : token) : qualified_token := (incarnation, t).
+
+Definition qualified_matches (left right : qualified_token) : bool :=
+  Nat.eqb (fst left) (fst right) && matches (snd left) (snd right).
+
+Theorem distinct_incarnations_never_match : forall a b left right,
+  a <> b -> qualified_matches (qualify a left) (qualify b right) = false.
+Proof.
+  intros a b left right Hneq. unfold qualified_matches, qualify. simpl.
+  apply Bool.andb_false_iff. left. apply Nat.eqb_neq. exact Hneq.
+Qed.
+
+Theorem qualified_replay_refused : forall incarnation events nonce old,
+  In old (issued (run initial events)) ->
+  qualified_matches (qualify incarnation old)
+    (qualify incarnation (nonce, S (sequence (run initial events)))) = false.
+Proof.
+  intros incarnation events nonce old Hin.
+  unfold qualified_matches, qualify. simpl.
+  apply Bool.andb_false_iff. right.
+  apply stale_request_refused; [apply run_valid; apply initial_valid | exact Hin].
+Qed.

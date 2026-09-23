@@ -6,7 +6,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use block_storage::rust::dag::block_dag_key_value_storage::{BlockDagKeyValueStorage, InsertMode};
 use block_storage::rust::dag::soak_snapshot::{
     capture, capture_observed, Availability, BlockBody, CaptureLimits, CapturePhase,
-    CaptureRequest, EXCLUDED_STORES, SNAPSHOT_SCHEMA_VERSION,
+    CaptureRequest, DetachedDagSnapshot, EXCLUDED_STORES, SNAPSHOT_SCHEMA_VERSION,
 };
 use block_storage::rust::key_value_block_store::{BlockDecodeLimits, KeyValueBlockStore};
 use models::rust::block_hash::{BlockHash, BlockHashSerde};
@@ -1054,4 +1054,157 @@ fn stored_block_round_trips_through_bounded_decoding() {
         .unwrap();
     let decoded = KeyValueBlockStore::decode_block_bounded(&raw, &limits().block_decode).unwrap();
     assert_eq!(&decoded, b1);
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Interference {
+    None,
+    InvalidLimits,
+    TooManyBlocks,
+    MissingMetadataRow,
+    MissingBodyRow,
+    DagEnvironmentWrite,
+    BlockEnvironmentWrite,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Scenario {
+    interference: Interference,
+    request_body: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Outcome {
+    Accepted,
+    RejectedInvalidLimits,
+    RejectedLimit,
+    RejectedIncomplete,
+    RejectedEnvironment(&'static str),
+}
+
+fn oracle(scenario: Scenario) -> Outcome {
+    let admitted = scenario.interference != Interference::InvalidLimits;
+    if !admitted {
+        return Outcome::RejectedInvalidLimits;
+    }
+    if scenario.interference == Interference::TooManyBlocks {
+        return Outcome::RejectedLimit;
+    }
+    let rows_complete = match scenario.interference {
+        Interference::MissingMetadataRow => false,
+        Interference::MissingBodyRow => !scenario.request_body,
+        _ => true,
+    };
+    if !rows_complete {
+        return Outcome::RejectedIncomplete;
+    }
+    match scenario.interference {
+        Interference::DagEnvironmentWrite => Outcome::RejectedEnvironment("dagstorage"),
+        Interference::BlockEnvironmentWrite => Outcome::RejectedEnvironment("blockstorage"),
+        _ => Outcome::Accepted,
+    }
+}
+
+fn classify(fx: &Fixture, result: Result<DetachedDagSnapshot, SnapshotError>) -> Outcome {
+    match result {
+        Ok(_) => Outcome::Accepted,
+        Err(SnapshotError::InvalidLimits(_)) => Outcome::RejectedInvalidLimits,
+        Err(SnapshotError::LimitExceeded { .. }) => Outcome::RejectedLimit,
+        Err(SnapshotError::Incomplete(_)) => Outcome::RejectedIncomplete,
+        Err(SnapshotError::EnvironmentChanged { environment, .. }) => {
+            if environment == fx.dag_env_path() {
+                Outcome::RejectedEnvironment("dagstorage")
+            } else if environment == fx.blocks_env_path() {
+                Outcome::RejectedEnvironment("blockstorage")
+            } else {
+                panic!("unexpected environment {environment}")
+            }
+        }
+        Err(other) => panic!("unclassified outcome {other:?}"),
+    }
+}
+
+fn production(scenario: Scenario) -> Outcome {
+    let fx = fixture("oracle");
+    let b1 = fx.chain[1].block_hash.clone();
+    let b2 = fx.chain[2].block_hash.clone();
+    let g = fx.chain[0].block_hash.clone();
+    let mut limits = limits();
+    match scenario.interference {
+        Interference::InvalidLimits => limits.max_work = 0,
+        Interference::TooManyBlocks => limits.max_blocks = 1,
+        Interference::MissingMetadataRow => {
+            metadata_store(fx.handle("block-metadata"))
+                .delete(vec![BlockHashSerde(b1.clone())])
+                .unwrap();
+        }
+        Interference::MissingBodyRow => {
+            fx.handle("blocks").delete(vec![b2.to_vec()]).unwrap();
+        }
+        _ => {}
+    }
+    let bodies: Vec<BlockHash> = if scenario.request_body {
+        vec![b2.clone()]
+    } else {
+        Vec::new()
+    };
+    let request = CaptureRequest {
+        limits,
+        bodies: &bodies,
+    };
+    let fx_ref = &fx;
+    let extra = child(9, vec![g.clone()], None);
+    let result = capture_observed(&fx.dag, &fx.blocks, &request, move |phase| {
+        if phase != CapturePhase::RowsRead {
+            return;
+        }
+        match scenario.interference {
+            Interference::DagEnvironmentWrite => {
+                let (b1, g) = (b1.clone(), g.clone());
+                fx_ref.write_from_other_thread("floor-index", move |store| {
+                    floor_store(store)
+                        .put_one(BlockHashSerde(b1), BlockHashSerde(g))
+                        .unwrap();
+                });
+            }
+            Interference::BlockEnvironmentWrite => {
+                let block = extra.clone();
+                fx_ref.write_from_other_thread("blocks", move |store| {
+                    let approved: Arc<dyn KeyValueStore> = store.clone();
+                    KeyValueBlockStore::new(store, approved)
+                        .put_block_message(&block)
+                        .unwrap();
+                });
+            }
+            _ => {}
+        }
+    });
+    classify(&fx, result)
+}
+
+#[test]
+fn capture_outcomes_match_the_bounded_capture_oracle() {
+    let interferences = [
+        Interference::None,
+        Interference::InvalidLimits,
+        Interference::TooManyBlocks,
+        Interference::MissingMetadataRow,
+        Interference::MissingBodyRow,
+        Interference::DagEnvironmentWrite,
+        Interference::BlockEnvironmentWrite,
+    ];
+    let mut checked = 0;
+    for interference in interferences {
+        for request_body in [false, true] {
+            let scenario = Scenario {
+                interference,
+                request_body,
+            };
+            let expected = oracle(scenario);
+            let observed = production(scenario);
+            assert_eq!(observed, expected, "scenario {scenario:?}");
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 14);
 }

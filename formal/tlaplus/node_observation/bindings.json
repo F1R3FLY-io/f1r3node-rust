@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "binding_kind": "provisional-property-to-executable-test-map",
   "machine_checked_refinement": false,
   "claims": [
@@ -17,7 +17,9 @@
               "source": "node/tests/soak_observer.rs",
               "name": "default_configuration_has_no_observer"
             }
-          ]
+          ],
+          "theorems": [],
+          "harnesses": []
         },
         {
           "property": 2,
@@ -32,7 +34,9 @@
               "source": "node/tests/soak_observer.rs",
               "name": "hocon_configuration_is_validated_and_cli_takes_precedence"
             }
-          ]
+          ],
+          "theorems": [],
+          "harnesses": []
         },
         {
           "property": 3,
@@ -47,7 +51,9 @@
               "source": "node/tests/soak_observer.rs",
               "name": "duplicate_observer_does_not_remove_the_active_socket"
             }
-          ]
+          ],
+          "theorems": [],
+          "harnesses": []
         },
         {
           "property": 4,
@@ -64,7 +70,9 @@
               "source": "node/tests/soak_observer.rs",
               "name": "a_different_process_cannot_receive_the_handshake"
             }
-          ]
+          ],
+          "theorems": [],
+          "harnesses": []
         },
         {
           "property": 5,
@@ -74,7 +82,7 @@
             "FreshChallenges",
             "ReplayRefused"
           ],
-          "coverage": "bounded-model-and-rust-tests",
+          "coverage": "bounded-model-construction-and-rust-tests",
           "tests": [
             {
               "source": "node/tests/soak_observer.rs",
@@ -98,7 +106,13 @@
               "source": "node/src/rust/soak_observer.rs",
               "name": "rust::soak_observer::linux::tests::exhausted_sequence_refuses_a_handshake"
             }
-          ]
+          ],
+          "theorems": [
+            "observer_replay_refused",
+            "observer_qualified_replay_refused",
+            "observer_cross_incarnation_distinct"
+          ],
+          "harnesses": []
         },
         {
           "property": 6,
@@ -108,7 +122,7 @@
             "FreshChallenges",
             "ReplayRefused"
           ],
-          "coverage": "bounded-model-and-rust-tests",
+          "coverage": "bounded-model-construction-and-rust-tests",
           "tests": [
             {
               "source": "node/tests/soak_observer.rs",
@@ -132,7 +146,12 @@
               "source": "node/src/rust/soak_observer.rs",
               "name": "rust::soak_observer::linux::tests::exhausted_sequence_refuses_a_handshake"
             }
-          ]
+          ],
+          "theorems": [
+            "observer_challenges_unique",
+            "observer_replay_refused"
+          ],
+          "harnesses": []
         },
         {
           "property": 7,
@@ -141,7 +160,7 @@
             "BoundDeadline",
             "SessionBudget"
           ],
-          "coverage": "bounded-model-and-rust-tests",
+          "coverage": "bounded-model-construction-and-rust-tests",
           "tests": [
             {
               "source": "node/tests/soak_observer.rs",
@@ -159,7 +178,12 @@
               "source": "node/tests/soak_observer.rs",
               "name": "session_budget_stops_only_the_observer"
             }
-          ]
+          ],
+          "theorems": [
+            "observer_counter_exhaustion_refused",
+            "observer_checked_allocation_valid"
+          ],
+          "harnesses": []
         },
         {
           "property": 8,
@@ -174,7 +198,9 @@
               "source": "node/tests/soak_observer.rs",
               "name": "mismatched_identities_and_fault_commands_are_rejected"
             }
-          ]
+          ],
+          "theorems": [],
+          "harnesses": []
         },
         {
           "property": 9,
@@ -193,7 +219,9 @@
               "source": "node/tests/soak_observer.rs",
               "name": "dropping_the_owner_cancels_a_pending_session"
             }
-          ]
+          ],
+          "theorems": [],
+          "harnesses": []
         },
         {
           "property": 10,
@@ -204,7 +232,9 @@
               "source": "node/tests/soak_observer.rs",
               "name": "secret_changes_do_not_change_the_public_configuration_digest"
             }
-          ]
+          ],
+          "theorems": [],
+          "harnesses": []
         }
       ]
     },
@@ -219,7 +249,7 @@
             "ValidAdmission",
             "BoundBytes"
           ],
-          "coverage": "bounded-model-and-rust-tests",
+          "coverage": "bounded-model-construction-and-rust-tests",
           "tests": [
             {
               "source": "shared/tests/soak_snapshot.rs",
@@ -240,6 +270,37 @@
             {
               "source": "block-storage/tests/soak_snapshot.rs",
               "name": "invalid_lock_deadline_is_rejected_before_guards_or_reads"
+            },
+            {
+              "source": "block-storage/tests/soak_snapshot.rs",
+              "name": "capture_outcomes_match_the_bounded_capture_oracle",
+              "kind": "bisimilarity-oracle"
+            }
+          ],
+          "theorems": [
+            "capture_budget_bounded",
+            "capture_overflow_fails_limit"
+          ],
+          "harnesses": [
+            {
+              "source": "shared/src/rust/store/soak_snapshot.rs",
+              "name": "check_limit_is_the_comparison"
+            },
+            {
+              "source": "shared/src/rust/store/soak_snapshot.rs",
+              "name": "checked_total_refuses_overflow"
+            },
+            {
+              "source": "shared/src/rust/store/soak_snapshot.rs",
+              "name": "charge_record_never_exceeds_limits_and_fails_atomically"
+            },
+            {
+              "source": "shared/src/rust/store/soak_snapshot.rs",
+              "name": "charge_operation_never_exceeds_limit_and_fails_atomically"
+            },
+            {
+              "source": "block-storage/src/rust/key_value_block_store.rs",
+              "name": "decode_limits_validate_iff_all_positive"
             }
           ]
         },
@@ -249,20 +310,24 @@
             "BoundLockWait",
             "GuardOrder"
           ],
-          "coverage": "bounded-model-and-rust-tests",
+          "coverage": "bounded-model-construction-and-rust-tests",
           "tests": [
             {
               "source": "block-storage/src/rust/dag/soak_snapshot.rs",
               "name": "rust::dag::soak_snapshot::tests::all_capture_guards_use_the_supplied_deadline"
             }
-          ]
+          ],
+          "theorems": [
+            "capture_guard_order"
+          ],
+          "harnesses": []
         },
         {
           "property": 3,
           "invariants": [
             "OpenIdentity"
           ],
-          "coverage": "bounded-model-and-rust-tests",
+          "coverage": "bounded-model-construction-and-rust-tests",
           "tests": [
             {
               "source": "shared/tests/soak_snapshot.rs",
@@ -272,7 +337,11 @@
               "source": "shared/tests/soak_snapshot.rs",
               "name": "separate_environments_are_opened_and_validated_together"
             }
-          ]
+          ],
+          "theorems": [
+            "capture_no_interference"
+          ],
+          "harnesses": []
         },
         {
           "property": 4,
@@ -280,7 +349,7 @@
             "OpenIdentity",
             "ValidatedIdentity"
           ],
-          "coverage": "bounded-model-and-rust-tests",
+          "coverage": "bounded-model-construction-and-rust-tests",
           "tests": [
             {
               "source": "shared/tests/soak_snapshot.rs",
@@ -290,14 +359,18 @@
               "source": "block-storage/tests/soak_snapshot.rs",
               "name": "capture_copies_the_held_dag_with_ordered_parents_and_availability_states"
             }
-          ]
+          ],
+          "theorems": [
+            "capture_no_interference"
+          ],
+          "harnesses": []
         },
         {
           "property": 5,
           "invariants": [
             "BoundBytes"
           ],
-          "coverage": "bounded-model-and-rust-tests",
+          "coverage": "bounded-model-construction-and-rust-tests",
           "tests": [
             {
               "source": "shared/tests/soak_snapshot.rs",
@@ -323,6 +396,29 @@
               "source": "block-storage/tests/soak_snapshot.rs",
               "name": "aggregate_parent_limit_precedes_decoding_of_later_metadata"
             }
+          ],
+          "theorems": [
+            "capture_prefix_roundtrip",
+            "capture_prefix_sound",
+            "capture_budget_bounded"
+          ],
+          "harnesses": [
+            {
+              "source": "shared/src/rust/store/soak_snapshot.rs",
+              "name": "length_prefix_roundtrip"
+            },
+            {
+              "source": "shared/src/rust/store/soak_snapshot.rs",
+              "name": "length_prefix_accepts_only_exact_declaration"
+            },
+            {
+              "source": "shared/src/rust/store/soak_snapshot.rs",
+              "name": "short_raw_is_malformed"
+            },
+            {
+              "source": "block-storage/src/rust/key_value_block_store.rs",
+              "name": "oversized_input_is_rejected_before_any_decode"
+            }
           ]
         },
         {
@@ -331,7 +427,7 @@
             "GuardOrder",
             "ReadOnly"
           ],
-          "coverage": "bounded-model-and-rust-tests",
+          "coverage": "bounded-model-construction-and-rust-tests",
           "tests": [
             {
               "source": "block-storage/tests/soak_snapshot.rs",
@@ -341,14 +437,19 @@
               "source": "block-storage/tests/soak_snapshot.rs",
               "name": "production_store_bytes_are_unchanged_by_successful_and_rejected_captures"
             }
-          ]
+          ],
+          "theorems": [
+            "capture_guard_order",
+            "capture_detached"
+          ],
+          "harnesses": []
         },
         {
           "property": 7,
           "invariants": [
             "ValidatedIdentity"
           ],
-          "coverage": "bounded-model-and-rust-tests",
+          "coverage": "bounded-model-construction-and-rust-tests",
           "tests": [
             {
               "source": "shared/tests/soak_snapshot.rs",
@@ -369,15 +470,24 @@
             {
               "source": "block-storage/tests/soak_snapshot.rs",
               "name": "block_store_environment_change_is_reported_separately"
+            },
+            {
+              "source": "block-storage/tests/soak_snapshot.rs",
+              "name": "capture_outcomes_match_the_bounded_capture_oracle",
+              "kind": "bisimilarity-oracle"
             }
-          ]
+          ],
+          "theorems": [
+            "capture_no_interference"
+          ],
+          "harnesses": []
         },
         {
           "property": 8,
           "invariants": [
             "GenerationStable"
           ],
-          "coverage": "bounded-model-and-partial-rust-tests",
+          "coverage": "bounded-model-construction-and-rust-tests",
           "tests": [
             {
               "source": "block-storage/tests/soak_snapshot.rs",
@@ -390,7 +500,11 @@
           ],
           "gaps": [
             "The node branch has no deterministic generation-change rejection test. The downstream-only test is not imported by this model reconciliation."
-          ]
+          ],
+          "theorems": [
+            "capture_generation_stable"
+          ],
+          "harnesses": []
         },
         {
           "property": 9,
@@ -410,8 +524,15 @@
             {
               "source": "block-storage/tests/soak_snapshot.rs",
               "name": "present_cache_seeds_are_captured_and_absent_seeds_stay_absent"
+            },
+            {
+              "source": "block-storage/tests/soak_snapshot.rs",
+              "name": "capture_outcomes_match_the_bounded_capture_oracle",
+              "kind": "bisimilarity-oracle"
             }
-          ]
+          ],
+          "theorems": [],
+          "harnesses": []
         },
         {
           "property": 10,
@@ -419,7 +540,7 @@
             "Detached",
             "ReadOnly"
           ],
-          "coverage": "bounded-model-and-rust-tests",
+          "coverage": "bounded-model-construction-and-rust-tests",
           "tests": [
             {
               "source": "block-storage/tests/soak_snapshot.rs",
@@ -429,7 +550,11 @@
               "source": "block-storage/tests/soak_snapshot.rs",
               "name": "production_store_bytes_are_unchanged_by_successful_and_rejected_captures"
             }
-          ]
+          ],
+          "theorems": [
+            "capture_detached"
+          ],
+          "harnesses": []
         },
         {
           "property": 11,
@@ -448,7 +573,9 @@
               "source": "block-storage/tests/soak_snapshot.rs",
               "name": "canonical_output_has_an_exact_byte_bound"
             }
-          ]
+          ],
+          "theorems": [],
+          "harnesses": []
         },
         {
           "property": 12,
@@ -463,7 +590,9 @@
               "source": "block-storage/tests/soak_snapshot.rs",
               "name": "scratch_block_stores_use_captured_bytes_and_are_independent"
             }
-          ]
+          ],
+          "theorems": [],
+          "harnesses": []
         },
         {
           "property": 13,
@@ -479,10 +608,19 @@
             {
               "source": "block-storage/tests/soak_snapshot.rs",
               "name": "in_memory_backend_is_unsupported"
+            },
+            {
+              "source": "block-storage/tests/soak_snapshot.rs",
+              "name": "capture_outcomes_match_the_bounded_capture_oracle",
+              "kind": "bisimilarity-oracle"
             }
-          ]
+          ],
+          "theorems": [],
+          "harnesses": []
         }
       ]
     }
-  ]
+  ],
+  "construction_project": "formal/rocq/node_observation",
+  "harness_tool": "kani"
 }

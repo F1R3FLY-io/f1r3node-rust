@@ -389,3 +389,122 @@ impl BoundedLmdbReader {
         Ok(identities)
     }
 }
+
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    #[kani::proof]
+    #[kani::unwind(10)]
+    fn length_prefix_roundtrip() {
+        let len: usize = kani::any();
+        kani::assume(len <= 4);
+        let payload: [u8; 4] = kani::any();
+        let raw = encode_length_prefixed(&payload[..len]);
+        assert_eq!(raw.len(), LENGTH_PREFIX_BYTES + len);
+        assert_eq!(
+            decode_length_prefixed(&raw).unwrap(),
+            payload[..len].to_vec()
+        );
+    }
+
+    #[kani::proof]
+    #[kani::unwind(14)]
+    fn length_prefix_accepts_only_exact_declaration() {
+        let raw: [u8; 12] = kani::any();
+        let mut prefix = [0u8; LENGTH_PREFIX_BYTES];
+        prefix.copy_from_slice(&raw[..LENGTH_PREFIX_BYTES]);
+        let declared = u64::from_le_bytes(prefix);
+        let decoded = decode_length_prefixed(&raw);
+        assert_eq!(decoded.is_ok(), declared == 4);
+        if let Ok(payload) = decoded {
+            assert_eq!(payload, raw[LENGTH_PREFIX_BYTES..].to_vec());
+        }
+    }
+
+    #[kani::proof]
+    fn short_raw_is_malformed() {
+        let len: usize = kani::any();
+        kani::assume(len < LENGTH_PREFIX_BYTES);
+        let raw = [0u8; LENGTH_PREFIX_BYTES];
+        assert!(matches!(
+            decode_length_prefixed(&raw[..len]),
+            Err(SnapshotError::Malformed(_))
+        ));
+    }
+
+    #[kani::proof]
+    fn check_limit_is_the_comparison() {
+        let observed: usize = kani::any();
+        let limit: usize = kani::any();
+        assert_eq!(check_limit("k", observed, limit).is_ok(), observed <= limit);
+    }
+
+    #[kani::proof]
+    fn checked_total_refuses_overflow() {
+        let current: usize = kani::any();
+        let amount: usize = kani::any();
+        match checked_total("k", current, amount) {
+            Ok(total) => assert_eq!(Some(total), current.checked_add(amount)),
+            Err(error) => {
+                assert!(current.checked_add(amount).is_none());
+                assert_eq!(error, SnapshotError::CounterOverflow("k"));
+            }
+        }
+    }
+
+    #[kani::proof]
+    fn charge_record_never_exceeds_limits_and_fails_atomically() {
+        let limits = ReadLimits {
+            max_value_bytes: kani::any(),
+            max_total_bytes: kani::any(),
+            max_records: kani::any(),
+            max_operations: kani::any(),
+        };
+        let mut usage = ReadUsage {
+            operations: kani::any(),
+            records: kani::any(),
+            bytes: kani::any(),
+        };
+        kani::assume(usage.records <= limits.max_records);
+        kani::assume(usage.bytes <= limits.max_total_bytes);
+        let before = usage;
+        let raw_len: usize = kani::any();
+        match usage.charge_record(&limits, raw_len) {
+            Ok(()) => {
+                assert!(usage.records <= limits.max_records);
+                assert!(usage.bytes <= limits.max_total_bytes);
+                assert_eq!(Some(usage.records), before.records.checked_add(1));
+                assert_eq!(Some(usage.bytes), before.bytes.checked_add(raw_len));
+                assert_eq!(usage.operations, before.operations);
+            }
+            Err(_) => assert_eq!(usage, before),
+        }
+    }
+
+    #[kani::proof]
+    fn charge_operation_never_exceeds_limit_and_fails_atomically() {
+        let limits = ReadLimits {
+            max_value_bytes: kani::any(),
+            max_total_bytes: kani::any(),
+            max_records: kani::any(),
+            max_operations: kani::any(),
+        };
+        let mut usage = ReadUsage {
+            operations: kani::any(),
+            records: kani::any(),
+            bytes: kani::any(),
+        };
+        kani::assume(usage.operations <= limits.max_operations);
+        let before = usage;
+        match usage.charge_operation(&limits) {
+            Ok(()) => {
+                assert!(usage.operations <= limits.max_operations);
+                assert_eq!(Some(usage.operations), before.operations.checked_add(1));
+                assert_eq!(usage.records, before.records);
+                assert_eq!(usage.bytes, before.bytes);
+            }
+            Err(_) => assert_eq!(usage, before),
+        }
+    }
+}
