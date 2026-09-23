@@ -357,6 +357,53 @@ impl FloorOfView {
 /// check the per-block derivation runs, so the read surface can never
 /// designate a state missing settled content. Both the finalization runner
 /// and the API path consume exactly this.
+/// The outcome a failed derivation becomes for the finalizer's own clock.
+/// At or below zero, incompatible majority-agreement candidates are an expected
+/// transient — hold the cycle. Above zero the same error is a genuine safety
+/// alarm and stays loud.
+fn hold_for(error: CasperError, ftt: FtThreshold) -> Result<FloorOfView, CasperError> {
+    match error {
+        CasperError::BlockNotHeld(missing, _) => Ok(FloorOfView::AbsenceHold { missing }),
+        CasperError::IncompatibleFinalizedFork(detail) if ftt.num <= 0 => {
+            Ok(FloorOfView::IncompatibilityHold { detail })
+        }
+        other => Err(other),
+    }
+}
+
+/// The tips whose floor and frontier this node can resolve. Run only after a
+/// derivation reported absence, to attribute it to the tips responsible.
+async fn decidable_tips(
+    dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
+    tips: &[BlockHash],
+    live_snapshot: &BTreeMap<Validator, BlockHash>,
+    ftt: FtThreshold,
+) -> Result<Vec<BlockHash>, CasperError> {
+    let mut decidable: Vec<BlockHash> = Vec::with_capacity(tips.len());
+    for tip in tips {
+        let undecidable = match floor_of_block(dag, block_store, tip, ftt).await {
+            Ok(_) => match parent_frontier(dag, tip, live_snapshot, ftt).await {
+                Ok(_) => None,
+                Err(CasperError::BlockNotHeld(missing, _)) => Some(missing),
+                Err(other) => return Err(other),
+            },
+            Err(CasperError::BlockNotHeld(missing, _)) => Some(missing),
+            Err(other) => return Err(other),
+        };
+        match undecidable {
+            Some(missing) => tracing::debug!(
+                target: "f1r3fly.finalizer",
+                tip = %PrettyPrinter::build_string_bytes(tip),
+                missing = %PrettyPrinter::build_string_bytes(&missing),
+                "abstaining a tip whose derivation needs a block below this node's history"
+            ),
+            None => decidable.push(tip.clone()),
+        }
+    }
+    Ok(decidable)
+}
+
 pub async fn floor_of_view(
     dag: &KeyValueDagRepresentation,
     block_store: &KeyValueBlockStore,
@@ -394,48 +441,31 @@ pub async fn floor_of_view(
     }
     tips.sort();
     tips.dedup();
-    let live_snapshot: BTreeMap<Validator, BlockHash> = testimony.into_iter().collect();
-
-    // Probed here rather than inside `finalized_floor`, which is also the
-    // consensus derivation and must keep failing loudly there.
-    let mut decidable: Vec<BlockHash> = Vec::with_capacity(tips.len());
-    for tip in tips {
-        let undecidable = match floor_of_block(dag, block_store, &tip, ftt).await {
-            Ok(_) => match parent_frontier(dag, &tip, &live_snapshot, ftt).await {
-                Ok(_) => None,
-                Err(CasperError::BlockNotHeld(missing, _)) => Some(missing),
-                Err(other) => return Err(other),
-            },
-            Err(CasperError::BlockNotHeld(missing, _)) => Some(missing),
-            Err(other) => return Err(other),
-        };
-        match undecidable {
-            Some(missing) => tracing::debug!(
-                target: "f1r3fly.finalizer",
-                tip = %PrettyPrinter::build_string_bytes(&tip),
-                missing = %PrettyPrinter::build_string_bytes(&missing),
-                "abstaining a tip whose derivation needs a block below this node's history"
-            ),
-            None => decidable.push(tip),
-        }
-    }
-    if decidable.is_empty() {
+    if tips.is_empty() {
         return Ok(FloorOfView::NoAdvance);
     }
-    let tips = decidable;
+    let live_snapshot: BTreeMap<Validator, BlockHash> = testimony.into_iter().collect();
 
+    // Absence means one tip cannot be judged, so find which and abstain it
+    // rather than the cycle. Probing only on failure keeps the healthy path to
+    // one resolution per tip: `parent_frontier` caches nothing, and its cost
+    // grows with the tip-to-frontier distance.
     let derived = match finalized_floor(dag, block_store, &tips, &live_snapshot, ftt).await {
         Ok(derived) => derived,
         Err(CasperError::BlockNotHeld(missing, _)) => {
-            return Ok(FloorOfView::AbsenceHold { missing })
+            let decidable = decidable_tips(dag, block_store, &tips, &live_snapshot, ftt).await?;
+            if decidable.is_empty() {
+                return Ok(FloorOfView::NoAdvance);
+            }
+            if decidable.len() == tips.len() {
+                return Ok(FloorOfView::AbsenceHold { missing });
+            }
+            match finalized_floor(dag, block_store, &decidable, &live_snapshot, ftt).await {
+                Ok(derived) => derived,
+                Err(error) => return hold_for(error, ftt),
+            }
         }
-        // At or below zero, incompatible majority-agreement candidates are an
-        // expected transient — hold the cycle. Above zero the same error is a
-        // genuine safety alarm and stays loud.
-        Err(CasperError::IncompatibleFinalizedFork(detail)) if ftt.num <= 0 => {
-            return Ok(FloorOfView::IncompatibilityHold { detail })
-        }
-        Err(other) => return Err(other),
+        Err(error) => return hold_for(error, ftt),
     };
     if derived.hash == current.hash || derived.block_number <= current.block_number {
         return Ok(FloorOfView::NoAdvance);
