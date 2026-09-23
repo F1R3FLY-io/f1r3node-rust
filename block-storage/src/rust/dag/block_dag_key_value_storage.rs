@@ -54,6 +54,7 @@ use models::rust::validator::{self, Validator, ValidatorSerde};
 use parking_lot::RwLock as PlRwLock;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+use shared::rust::dag::observation_work::{NoopWork, WorkKind, WorkMeter};
 use shared::rust::store::key_value_store::{KvStoreError, MissingBlockContext};
 use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
@@ -529,8 +530,62 @@ impl KeyValueDagRepresentation {
         Ok(None)
     }
 
+    pub fn lookup_metered<W: WorkMeter>(
+        &self,
+        meter: &W,
+        hash: &BlockHash,
+    ) -> Result<Option<BlockMetadata>, KvStoreError> {
+        meter.lookup()?;
+        self.lookup(hash)
+    }
+
+    pub fn lookup_unsafe_metered<W: WorkMeter>(
+        &self,
+        meter: &W,
+        hash: &BlockHash,
+    ) -> Result<BlockMetadata, KvStoreError> {
+        meter.lookup()?;
+        self.lookup_unsafe(hash)
+    }
+
+    pub fn own_testimony_metered<W: WorkMeter>(
+        &self,
+        meter: &W,
+        validator: &Validator,
+        hash: &BlockHash,
+    ) -> Result<Option<BlockMetadata>, KvStoreError> {
+        Ok(self
+            .lookup_metered(meter, hash)?
+            .filter(|meta| meta.sender == *validator))
+    }
+
     pub fn main_parent_chain(
         &self,
+        block_hash: BlockHash,
+        stop_at_height: i64,
+    ) -> Result<Vec<BlockHash>, KvStoreError> {
+        self.main_parent_chain_metered(&NoopWork, block_hash, stop_at_height)
+    }
+
+    pub fn is_in_main_chain(
+        &self,
+        ancestor: &BlockHash,
+        descendant: &BlockHash,
+    ) -> Result<bool, KvStoreError> {
+        self.is_in_main_chain_metered(&NoopWork, ancestor, descendant)
+    }
+
+    pub fn is_dag_ancestor(
+        &self,
+        ancestor: &BlockHash,
+        descendant: &BlockHash,
+    ) -> Result<bool, KvStoreError> {
+        self.is_dag_ancestor_metered(&NoopWork, ancestor, descendant)
+    }
+
+    pub fn main_parent_chain_metered<W: WorkMeter>(
+        &self,
+        meter: &W,
         block_hash: BlockHash,
         stop_at_height: i64,
     ) -> Result<Vec<BlockHash>, KvStoreError> {
@@ -538,6 +593,7 @@ impl KeyValueDagRepresentation {
         let mut current_hash = block_hash;
 
         loop {
+            meter.step(WorkKind::Traversal)?;
             let current_block_number = self.block_number_unsafe(&current_hash)?;
             if current_block_number <= stop_at_height {
                 break;
@@ -545,6 +601,7 @@ impl KeyValueDagRepresentation {
 
             match self.main_parent(&current_hash) {
                 Some(parent_hash) => {
+                    meter.allocate(2, 64)?;
                     result.push(parent_hash.clone());
                     current_hash = parent_hash;
                 }
@@ -555,8 +612,9 @@ impl KeyValueDagRepresentation {
         Ok(result)
     }
 
-    pub fn is_in_main_chain(
+    pub fn is_in_main_chain_metered<W: WorkMeter>(
         &self,
+        meter: &W,
         ancestor: &BlockHash,
         descendant: &BlockHash,
     ) -> Result<bool, KvStoreError> {
@@ -568,6 +626,7 @@ impl KeyValueDagRepresentation {
         let mut current_hash = descendant.clone();
 
         loop {
+            meter.step(WorkKind::Traversal)?;
             let current_height = self.block_number_unsafe(&current_hash)?;
             if current_height <= stop_height {
                 return Ok(current_hash == ancestor);
@@ -587,8 +646,9 @@ impl KeyValueDagRepresentation {
     /// when the target sits on a secondary (merged-in) branch. Height-pruned
     /// BFS up the parents — a block at or below the ancestor's height cannot
     /// have it among its strictly-lower parents, so that branch is pruned.
-    pub fn is_dag_ancestor(
+    pub fn is_dag_ancestor_metered<W: WorkMeter>(
         &self,
+        meter: &W,
         ancestor: &BlockHash,
         descendant: &BlockHash,
     ) -> Result<bool, KvStoreError> {
@@ -599,17 +659,21 @@ impl KeyValueDagRepresentation {
         let stop_height = self.block_number_unsafe(ancestor)?;
         let mut visited: HashSet<BlockHash> = HashSet::new();
         let mut queue: VecDeque<BlockHash> = VecDeque::new();
+        meter.allocate(2, 128)?;
         visited.insert(descendant.clone());
         queue.push_back(descendant.clone());
 
         while let Some(current) = queue.pop_front() {
+            meter.step(WorkKind::Traversal)?;
             if current == *ancestor {
                 return Ok(true);
             }
             if self.block_number_unsafe(&current)? <= stop_height {
                 continue;
             }
-            for parent in self.parents_unsafe(&current)? {
+            for parent in self.lookup_unsafe_metered(meter, &current)?.parents {
+                meter.step(WorkKind::Traversal)?;
+                meter.allocate(2, 128)?;
                 if visited.insert(parent.clone()) {
                     queue.push_back(parent);
                 }

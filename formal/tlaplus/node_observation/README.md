@@ -162,3 +162,60 @@ The node package records gate registration evidence separately. The harness clai
 The default legacy gate record also retains its own claim and historical source identity. Model reconciliation does not renew either governance claim.
 
 Named maintainer acceptance was recorded on 2026-09-23 at revision `4c0c0dbe7` on the package `casper-node-claim-gate-78d696ea6-01`. The two gate-claim records in the union inventory stay pending under their own claim. B2 planning is unblocked.
+
+
+## Batch B2 applicability review
+
+[CLAIM-CASPER-NODE-OBSERVATION-003](../../../docs/claims/casper-node-authority-evaluation.md) covers the detached authority observer.
+The earlier acceptance applies to claims 001 and 002 at their recorded revision.
+It does not accept this extension.
+
+B2 accepts positive request limits below the ceilings in the [batch plan](../../../docs/plans/casper-node-observation-batch-b.md#work-bounds).
+The ceilings bound each request.
+They do not establish correctness for every permitted DAG or installation history.
+
+Every classification below remains proposed.
+No named maintainer has accepted a B2 classification or waived a construction requirement.
+All applicable construction requirements remain pending.
+
+| Property | Domain and proposed classification | Rust evidence | Remaining requirement |
+| --- | --- | --- | --- |
+| C1: disabled startup | Every ordinary constructor route. Proposed bounded configuration property. | Default node configuration and disabled engine installation tests. | Review constructor coverage and the complete configuration domain. |
+| C2: narrow attachment | Every supported installation. Unbounded execution property. | The endpoint contains store handles and public adopted parameters. Test doubles reject forbidden calls. | Prove that attachment cannot invoke an excluded capability. |
+| C3: one attachment | Every installation history. Unbounded history property. | `OnceLock`, duplicate attachment tests, and observed engine installation tests. | Prove one successful attachment per Casper instance. |
+| C4: instance coverage | Every replacement, shutdown, and overlapping request. Unbounded history property. | Replacement, busy, cancellation, and closed observer tests. | Model concurrent replacement and response publication. |
+| C5: nonblocking records | Every queue state and checked counter value. Unbounded history property. | Queue loss, closed receiver, malformed hash, and counter overflow tests. | Prove the event ledger and overflow behavior across all histories. |
+| C6: event meaning | Every derivation, effect call, and captured finalized row. Unbounded execution property. | Distinct event variants and effect failure tests. | Bind live finalizer hooks to all effect outcomes. |
+| C7: request envelope | Every accepted authority request. Inherits the Batch A protocol domain. | Socket identity test and the existing session suite. | Extend the accepted correspondence to the authority operation. |
+| C8: detached capture | Every permitted DAG and capture interval. Inherits the B1 consistency obligation. | One capture call, independent scratch stores, and production byte comparisons. | Extend the capture correspondence through scratch reconstruction. |
+| C9: result identity | Every requested selection and authority configuration. Unbounded input property. | Exact and strict comparison tests require different authority digests. | Prove complete digest coverage and state the hash assumption. |
+| C10: adopted parameters | Every Casper construction route. Unbounded configuration property. | The test sets conflicting floating and exact thresholds and checks the exact result. | Bind all adoption routes to endpoint construction. |
+| C11: independent reference | Every permitted committee, DAG, and state lineage. Unbounded semantic property. | Exhaustive five-vertex clique graphs and threshold, traversal, cache, containment, and restore controls. | Prove reference correspondence across the full permitted domain. |
+| C12: work bounds | Every charged operation and request deadline. Unbounded execution property. | Shared path limits, clique limits, traversal limits, cancellation, and partial counter tests. | Bind every operation and allocation site to the charge rules. |
+| C13: distinct values | Every result state. Proposed bounded schema property. | Typed availability fields, exact witnesses, original bits, and unavailable display tests. | Review full schema coverage and numeric exceptional values. |
+| C14: unavailable inputs | Every absent body, target, restore input, or display input. Unbounded input property. | Missing target, body, and restore provenance tests. | Prove refusal completeness for all unsupported input states. |
+| C15: read-only behavior | Every observer request and ordinary consensus execution. Unbounded execution property. | Production byte comparisons and ordinary Casper and storage regressions. | Prove effect confinement and ordinary execution correspondence. |
+
+The independent reference reads immutable snapshot data.
+It does not call the production floor, oracle, clique, or traversal helpers.
+Both paths use the same bounded block decoder and captured source data.
+Those shared inputs and the decoder remain trusted dependencies of the comparison.
+
+The original oracle receives a separate scratch view.
+The reference ignores captured optimization caches only when captured ancestry reaches genesis.
+Truncated ancestry reports `restore_seed_provenance_unavailable`.
+The display projection reports `equivocation_snapshot_unavailable` because B1 excludes the equivocation tracker.
+
+Work counters describe instrumented algorithm operations.
+Preparation accounts for scratch capacity separately from measured decision counters.
+Allocation charges bound accounted payloads and collection capacity, not process memory or allocator latency.
+The existing capture budget theorems provide a reusable arithmetic argument.
+They do not prove that B2 charges every required operation.
+
+Live coverage starts with finalizer contexts created after attachment.
+Earlier contexts have no binding and fall outside this scope.
+A successful effect return does not establish persisted metadata.
+A separate capture must observe persisted metadata.
+
+B2 does not claim a live authority profile.
+The pending [work log](../../../docs/work-logs/task-019-3-node-authority-evaluation.md) records tests and the source-bound evidence package.

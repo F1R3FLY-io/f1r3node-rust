@@ -157,12 +157,12 @@ tasks:
     title: "Batch B2: observer handle, detached evaluation, and reference comparison"
     status: in_progress
     claimed_by: codex-batch-b2-20260923
-    blocked_by: [TASK-019-2, TASK-019-4]
+    blocked_by: []
     plan: docs/plans/casper-node-observation-batch-b.md
     planning_status: "Steps 1 through 4 complete at cef1f4b721b8109019459f11c53d49df00eb68f9."
     planning_authorization: "The user authorized planning steps 1 through 4 on 2026-09-23, before TASK-019-4 acceptance."
     implementation_authorized: true
-    implementation_authorization: "The user requested B2 completion on 2026-09-23. Implementation proceeds while predecessor acceptance remains pending."
+    implementation_authorization: "The user requested B2 completion on 2026-09-23. PR #447 review 5294038948 records predecessor acceptance at 4c0c0dbe7."
     claim: docs/claims/casper-node-authority-evaluation.md
     work_log: docs/work-logs/task-019-3-node-authority-evaluation.md
     prerequisites:

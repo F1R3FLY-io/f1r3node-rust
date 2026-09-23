@@ -101,6 +101,12 @@ impl Observer {
         }
     }
 
+    pub fn authority_handle(
+        &self,
+    ) -> Option<std::sync::Arc<casper::rust::soak_observer::ObserverController>> {
+        None
+    }
+
     pub async fn run(self) -> Result<(), ObserverError> { Err(ObserverError::UnsupportedPlatform) }
 }
 
@@ -210,12 +216,14 @@ mod linux {
         configuration_sha256: String,
         approved_request_sha256: String,
         operation: Operation,
+        authority: Option<casper::rust::soak_observer::evaluation::AuthorityRequest>,
     }
 
     #[derive(Deserialize)]
     #[serde(rename_all = "snake_case")]
     enum Operation {
         Capabilities,
+        AuthoritySnapshot,
     }
 
     pub struct Observer {
@@ -226,9 +234,20 @@ mod linux {
         owner_uid: u32,
         started: Instant,
         sequence: u64,
+        controller: std::sync::Arc<casper::rust::soak_observer::ObserverController>,
+    }
+
+    impl Drop for Observer {
+        fn drop(&mut self) { self.controller.close(); }
     }
 
     impl Observer {
+        pub fn authority_handle(
+            &self,
+        ) -> Option<std::sync::Arc<casper::rust::soak_observer::ObserverController>> {
+            Some(self.controller.clone())
+        }
+
         pub fn bind(node: &NodeConf) -> Result<Option<Self>, ObserverError> {
             let Some(config) = &node.soak_observer else {
                 return Ok(None);
@@ -287,7 +306,10 @@ mod linux {
                 inode: metadata.ino(),
             };
             fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+            let controller =
+                casper::rust::soak_observer::ObserverController::new(identity.incarnation.clone());
             Ok(Some(Self {
+                controller,
                 listener,
                 _socket: socket,
                 config: config.clone(),
@@ -372,14 +394,53 @@ mod linux {
             match request.operation {
                 Operation::Capabilities => {
                     let (sequence, monotonic_ns) = self.event()?;
-                    let capabilities: Vec<_> = ["authority", "publication", "durable_work", "fault_control", "recovery"]
-                        .into_iter().map(|name| json!({"name":name,"supported":false,"reason":"not_implemented_in_batch_a"})).collect();
+                    if request.authority.is_some() {
+                        return Err(ObserverError::Request);
+                    }
+                    let status = self.controller.status();
+                    let capabilities: Vec<_> = [
+                        "authority",
+                        "publication",
+                        "durable_work",
+                        "fault_control",
+                        "recovery",
+                    ]
+                    .into_iter()
+                    .map(|name| {
+                        if name == "authority" {
+                            json!({"name":name,"supported":status == "attached","reason":status})
+                        } else {
+                            json!({"name":name,"supported":false,"reason":"not_implemented"})
+                        }
+                    })
+                    .collect();
                     Self::write(&mut stream, &json!({
                         "kind": "capabilities", "identity": self.identity,
                         "request_id": request.request_id, "request_sha256": sha256(bytes),
                         "approved_request_sha256": self.config.approved_request_sha256,
                         "sequence":sequence, "monotonic_ns":monotonic_ns, "clock":"observer-monotonic",
                         "capabilities":capabilities, "live_profile_qualified":false
+                    }), deadline).await?;
+                }
+                Operation::AuthoritySnapshot => {
+                    let authority = request.authority.ok_or(ObserverError::Request)?;
+                    let result = self
+                        .controller
+                        .authority_snapshot(authority, deadline.into_std())
+                        .await;
+                    let (sequence, monotonic_ns) = self.event()?;
+                    let result = match result {
+                        Ok(value) => json!({"availability":"available","value":value}),
+                        Err(failure) => {
+                            json!({"availability":"unavailable","reason":failure.reason,"work":failure.work,"input_digest":null})
+                        }
+                    };
+                    Self::write(&mut stream, &json!({
+                        "kind":"authority_snapshot", "identity":self.identity,
+                        "request_id":request.request_id, "request_sha256":sha256(bytes),
+                        "approved_request_sha256":self.config.approved_request_sha256,
+                        "sequence":sequence, "monotonic_ns":monotonic_ns, "clock":"observer-monotonic",
+                        "result":result, "live_profile_qualified":false
                     }), deadline).await?;
                 }
             }
@@ -434,6 +495,9 @@ mod linux {
             Fixture {
                 directory,
                 observer: Observer {
+                    controller: casper::rust::soak_observer::ObserverController::new(
+                        Uuid::nil().to_string(),
+                    ),
                     listener,
                     _socket: SocketGuard {
                         path,

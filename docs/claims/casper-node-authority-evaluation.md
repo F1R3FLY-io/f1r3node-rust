@@ -6,6 +6,7 @@ status: pending
 adapter: null
 scope: batch-b2-detached-authority-evaluation
 artifacts:
+  - formal/tlaplus/node_observation/README.md
   - node/src/rust/runtime/node_runtime.rs
   - node/src/rust/runtime/setup.rs
   - node/src/rust/soak_observer.rs
@@ -48,7 +49,8 @@ It does not accept the Batch A, B1, or B2 claims.
 
 The [batch plan](../plans/casper-node-observation-batch-b.md) defines the implementation scope.
 The implementation starts at `4c0c0dbe7`.
-Batch A and B1 acceptance remains pending under TASK-019-4.
+TASK-019-4 records Batch A and B1 acceptance at `4c0c0dbe7`.
+That acceptance does not cover B2 changes.
 
 ## Required properties
 
@@ -58,6 +60,7 @@ Batch A and B1 acceptance remains pending under TASK-019-4.
 4. Coverage begins at attachment and ends at replacement or shutdown. A request rejects an instance change.
 5. Event insertion never waits for capacity. Loss and counter overflow prevent complete coverage.
 6. Live derivation, effect attempt, effect return, detached derivation, and observed persisted metadata remain distinct records.
+   Live coverage includes finalizer contexts created after attachment.
 7. Authority requests retain the Batch A identity, permission, challenge, frame, and deadline checks.
 8. Evaluation uses one B1 capture. It releases production guards before scratch construction, evaluation, or serialization.
 9. Exact, original, and reference paths identify their input scope and authority digest.
@@ -73,6 +76,7 @@ Batch A and B1 acceptance remains pending under TASK-019-4.
 Tests must cover all constructor routes, attachment states, request limits, replacement, shutdown, record loss, and unchanged production bytes.
 Reference controls must expose incorrect threshold, traversal, clique, cache, and containment behavior.
 A bounded test instance does not establish the complete unbounded property.
+The [area review](../../formal/tlaplus/node_observation/README.md#batch-b2-applicability-review) maps the B2 properties to their evidence and remaining requirements.
 Each property requires the applicability review and verification tiers defined by [the CbC policy](../cbc-verification-tiers.md).
 
 This claim remains pending until source-bound verification and named maintainer acceptance are recorded.

@@ -1208,3 +1208,62 @@ fn capture_outcomes_match_the_bounded_capture_oracle() {
     }
     assert_eq!(checked, 14);
 }
+
+#[test]
+fn metered_traversals_match_detached_results_and_stop_at_the_limit() {
+    use std::sync::atomic::AtomicBool;
+
+    use shared::rust::dag::observation_work::{CheckedWork, WorkLimits};
+    let fixture = fixture("metered-traversals");
+    let before = fixture.store_bytes();
+    let request = CaptureRequest {
+        limits: limits(),
+        bodies: &[],
+    };
+    let snapshot = capture(&fixture.dag, &fixture.blocks, &request).unwrap();
+    let scratch = snapshot.scratch_view().unwrap();
+    let dag = &scratch.representation;
+    let budget = WorkLimits {
+        operations: 1000,
+        allocated_bytes: 1 << 20,
+        clique_expansions: 100,
+        recursion_depth: 64,
+    };
+    let meter = CheckedWork::new(
+        budget.clone(),
+        Instant::now() + Duration::from_secs(5),
+        Arc::new(AtomicBool::new(false)),
+        4096,
+        0,
+    )
+    .unwrap();
+    let ancestor = &fixture.chain[0].block_hash;
+    let descendant = &fixture.chain[3].block_hash;
+    assert_eq!(
+        dag.is_in_main_chain_metered(&meter, ancestor, descendant)
+            .unwrap(),
+        dag.is_in_main_chain(ancestor, descendant).unwrap()
+    );
+    assert_eq!(
+        dag.is_dag_ancestor_metered(&meter, ancestor, descendant)
+            .unwrap(),
+        dag.is_dag_ancestor(ancestor, descendant).unwrap()
+    );
+    assert!(meter.usage().0.traversal > 0);
+    let limited = CheckedWork::new(
+        WorkLimits {
+            operations: 1,
+            ..budget
+        },
+        Instant::now() + Duration::from_secs(5),
+        Arc::new(AtomicBool::new(false)),
+        4096,
+        0,
+    )
+    .unwrap();
+    assert!(dag
+        .is_in_main_chain_metered(&limited, ancestor, descendant)
+        .is_err());
+    assert_eq!(limited.usage().0.operations, 1);
+    assert_eq!(before, fixture.store_bytes());
+}

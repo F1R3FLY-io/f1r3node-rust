@@ -60,6 +60,7 @@ fn spawn_named_task(
 pub struct NodeRuntime {
     node_conf: NodeConf,
     id: NodeIdentifier,
+    observer: Option<Arc<casper::rust::soak_observer::ObserverController>>,
 }
 
 impl NodeRuntime {
@@ -68,7 +69,21 @@ impl NodeRuntime {
     /// # Arguments
     /// * `node_conf` - Node configuration
     /// * `id` - Node identifier derived from TLS certificate
-    pub fn new(node_conf: NodeConf, id: NodeIdentifier) -> Self { Self { node_conf, id } }
+    pub fn new(node_conf: NodeConf, id: NodeIdentifier) -> Self {
+        Self {
+            node_conf,
+            id,
+            observer: None,
+        }
+    }
+
+    pub fn with_observer(
+        mut self,
+        observer: Option<Arc<casper::rust::soak_observer::ObserverController>>,
+    ) -> Self {
+        self.observer = observer;
+        self
+    }
 
     /// Main node entry point
     ///
@@ -250,6 +265,7 @@ impl NodeRuntime {
             event_bus.clone(),
             node_discovery.clone(),
             last_approved_block.clone(),
+            self.observer.clone(),
         )
         .await?;
 
@@ -1316,7 +1332,11 @@ pub async fn start(node_conf: NodeConf) -> eyre::Result<()> {
     info!("Node initialized with ID: {}", hex::encode(&id.key));
 
     // Create NodeRuntime instance
-    let runtime = NodeRuntime::new(node_conf, id);
+    let runtime = NodeRuntime::new(node_conf, id).with_observer(
+        observer
+            .as_ref()
+            .and_then(|observer| observer.authority_handle()),
+    );
 
     let observer = observer.map(|observer| observer.spawn());
     let result = runtime.main().await;
