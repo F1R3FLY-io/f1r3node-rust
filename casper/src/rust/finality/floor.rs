@@ -350,6 +350,53 @@ impl FloorOfView {
     }
 }
 
+/// The outcome a failed derivation becomes for the finalizer's own clock.
+/// At or below zero, incompatible majority-agreement candidates are an expected
+/// transient — hold the cycle. Above zero the same error is a genuine safety
+/// alarm and stays loud.
+fn hold_for(error: CasperError, ftt: FtThreshold) -> Result<FloorOfView, CasperError> {
+    match error {
+        CasperError::BlockNotHeld(missing, _) => Ok(FloorOfView::AbsenceHold { missing }),
+        CasperError::IncompatibleFinalizedFork(detail) if ftt.num <= 0 => {
+            Ok(FloorOfView::IncompatibilityHold { detail })
+        }
+        other => Err(other),
+    }
+}
+
+/// The tips whose floor and frontier this node can resolve. Run only after a
+/// derivation reported absence, to attribute it to the tips responsible.
+async fn decidable_tips(
+    dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
+    tips: &[BlockHash],
+    live_snapshot: &BTreeMap<Validator, BlockHash>,
+    ftt: FtThreshold,
+) -> Result<Vec<BlockHash>, CasperError> {
+    let mut decidable: Vec<BlockHash> = Vec::with_capacity(tips.len());
+    for tip in tips {
+        let undecidable = match floor_of_block(dag, block_store, tip, ftt).await {
+            Ok(_) => match parent_frontier(dag, tip, live_snapshot, ftt).await {
+                Ok(_) => None,
+                Err(CasperError::BlockNotHeld(missing, _)) => Some(missing),
+                Err(other) => return Err(other),
+            },
+            Err(CasperError::BlockNotHeld(missing, _)) => Some(missing),
+            Err(other) => return Err(other),
+        };
+        match undecidable {
+            Some(missing) => tracing::debug!(
+                target: "f1r3fly.finalizer",
+                tip = %PrettyPrinter::build_string_bytes(tip),
+                missing = %PrettyPrinter::build_string_bytes(&missing),
+                "abstaining a tip whose derivation needs a block below this node's history"
+            ),
+            None => decidable.push(tip.clone()),
+        }
+    }
+    Ok(decidable)
+}
+
 /// The LFB decision over the LIVE view — the one finality clock: derive the
 /// floor of the current frontier (the deduped latest-message blocks, over
 /// the live snapshot) and advance only onto a strictly higher floor whose
@@ -371,46 +418,54 @@ pub async fn floor_of_view(
     // filtering is sound here because this is the finalizer's own LFB
     // clock, not a consensus-visible derivation.
     let mut testimony: Vec<(Validator, BlockHash)> = Vec::new();
+    let mut tips: Vec<BlockHash> = Vec::new();
     for (validator, hash) in dag.latest_message_hashes() {
-        match dag.lookup(&hash).map_err(CasperError::from)? {
-            Some(metadata) if metadata.sender != validator => continue,
-            Some(_) => {}
-            // An unheld slot names a block below the restore horizon —
-            // catch-up can never deliver it, so keeping the slot turns
-            // the absence hold below into a permanent, silent LFB freeze.
-            // Skipping it abstains the validator from this node's clock,
-            // sound by the same node-local argument as the seed filter.
-            None => {
-                tracing::debug!(
-                    target: "f1r3fly.finalizer",
-                    validator = %PrettyPrinter::build_string_bytes(&validator),
-                    lm = %PrettyPrinter::build_string_bytes(&hash),
-                    "abstaining unheld latest-message slot from the floor derivation"
-                );
-                continue;
-            }
+        let Some(metadata) = dag
+            .own_testimony(&validator, &hash)
+            .map_err(CasperError::from)?
+        else {
+            tracing::debug!(
+                target: "f1r3fly.finalizer",
+                validator = %PrettyPrinter::build_string_bytes(&validator),
+                lm = %PrettyPrinter::build_string_bytes(&hash),
+                "abstaining unheld or unsigned latest-message slot from the floor derivation"
+            );
+            continue;
+        };
+        // A tip's candidates are bounded by its height, so one at or below the
+        // current floor cannot raise it. It still counts as agreement below.
+        if metadata.block_number > current.block_number {
+            tips.push(hash.clone());
         }
         testimony.push((validator, hash));
     }
-    let mut tips: Vec<BlockHash> = testimony.iter().map(|(_, hash)| hash.clone()).collect();
     tips.sort();
     tips.dedup();
     if tips.is_empty() {
         return Ok(FloorOfView::NoAdvance);
     }
     let live_snapshot: BTreeMap<Validator, BlockHash> = testimony.into_iter().collect();
+
+    // Absence means one tip cannot be judged, so find which and abstain it
+    // rather than the cycle. Probing only on failure keeps the healthy path to
+    // one resolution per tip: `parent_frontier` caches nothing, and its cost
+    // grows with the tip-to-frontier distance.
     let derived = match finalized_floor(dag, block_store, &tips, &live_snapshot, ftt).await {
         Ok(derived) => derived,
         Err(CasperError::BlockNotHeld(missing, _)) => {
-            return Ok(FloorOfView::AbsenceHold { missing })
+            let decidable = decidable_tips(dag, block_store, &tips, &live_snapshot, ftt).await?;
+            if decidable.is_empty() {
+                return Ok(FloorOfView::NoAdvance);
+            }
+            if decidable.len() == tips.len() {
+                return Ok(FloorOfView::AbsenceHold { missing });
+            }
+            match finalized_floor(dag, block_store, &decidable, &live_snapshot, ftt).await {
+                Ok(derived) => derived,
+                Err(error) => return hold_for(error, ftt),
+            }
         }
-        // At or below zero, incompatible majority-agreement candidates are an
-        // expected transient — hold the cycle. Above zero the same error is a
-        // genuine safety alarm and stays loud.
-        Err(CasperError::IncompatibleFinalizedFork(detail)) if ftt.num <= 0 => {
-            return Ok(FloorOfView::IncompatibilityHold { detail })
-        }
-        Err(other) => return Err(other),
+        Err(error) => return hold_for(error, ftt),
     };
     if derived.hash == current.hash || derived.block_number <= current.block_number {
         return Ok(FloorOfView::NoAdvance);
@@ -1473,14 +1528,14 @@ mod frontier_determinism_tests {
     }
 
     /// The absorb: a finalizer-view derivation whose walk steps off the
-    /// retention edge holds the cycle instead of failing the run. No seeds
-    /// involved — the real tip's own uncached floor recursion reaches the
-    /// absent parent — so this outcome is stable under the seeded-tip
-    /// filter too.
+    /// retention edge never fails the run. No seeds involved — the tip's own
+    /// uncached floor recursion reaches the absent parent — so the tip is
+    /// undecidable and abstains. It is the only one here, which leaves nothing
+    /// to derive from and no advance to make.
     #[tokio::test]
-    async fn a_walk_crossing_the_retention_edge_holds_the_cycle() {
+    async fn a_walk_crossing_the_retention_edge_abstains_the_tip() {
         let thr = FtThreshold::from_f32_lossy(0.1);
-        let (mut dag, absent, held) = mk_truncated_dag();
+        let (mut dag, _absent, held) = mk_truncated_dag();
         dag.latest_messages_map.insert(val(), held[4].clone());
         let current = Floor {
             hash: held[1].clone(),
@@ -1490,12 +1545,126 @@ mod frontier_determinism_tests {
         let outcome = floor_of_view(&dag, &mk_store(), &current, thr)
             .await
             .expect(
-                "absence during the finalizer's local read must hold the \
-                 cycle, never fail the run",
+                "absence during the finalizer's local read must abstain the \
+                 tip, never fail the run",
             );
         assert!(
-            matches!(outcome, FloorOfView::AbsenceHold { ref missing } if *missing == absent),
-            "the hold must name the block below the window; got {outcome:?}"
+            matches!(outcome, FloorOfView::NoAdvance),
+            "every tip abstained, so the clock stands still; got {outcome:?}"
+        );
+    }
+
+    /// A lagging validator's tip above the current floor, with no cached floor
+    /// to stop its descent, costs this node that validator's testimony for the
+    /// cycle — not the cycle itself.
+    #[tokio::test]
+    async fn an_undecidable_tip_abstains_instead_of_holding_the_cycle() {
+        let thr = FtThreshold::from_f32_lossy(0.1);
+        let (mut dag, absent, held) = mk_truncated_dag();
+
+        // The anchor's seed, so the healthy tip is decidable.
+        dag.put_cached_floor(held[3].clone(), held[1].clone())
+            .unwrap();
+        dag.put_cached_frontier(held[3].clone(), held[1].clone())
+            .unwrap();
+
+        // A lagging validator's own block, above the current floor, with no
+        // cached floor: its descent reaches the absent block.
+        let lagging = Bytes::from(vec![7; 65]);
+        let undecidable = h(70);
+        dag.block_metadata_index
+            .write()
+            .add(md(undecidable.clone(), vec![held[0].clone()], 86, &lagging))
+            .unwrap();
+        dag.dag_set.insert(undecidable.clone());
+        dag.block_number_map.insert(undecidable.clone(), 86);
+        dag.main_parent_map
+            .insert(undecidable.clone(), held[0].clone());
+        dag.latest_messages_map.insert(val(), held[4].clone());
+        dag.latest_messages_map.insert(lagging, undecidable);
+
+        let current = Floor {
+            hash: held[0].clone(),
+            block_number: seed_number(&dag, &held[0]),
+        };
+
+        let outcome = floor_of_view(&dag, &mk_store(), &current, thr)
+            .await
+            .expect("the finalizer's local read must not fail the run");
+        assert!(
+            !matches!(outcome, FloorOfView::AbsenceHold { ref missing } if *missing == absent),
+            "one undecidable tip must not freeze the clock for every validator; \
+             got {outcome:?}"
+        );
+        assert!(
+            matches!(outcome, FloorOfView::Advance(_)),
+            "the decidable tip still carries the floor; got {outcome:?}"
+        );
+    }
+
+    /// The restore fetches every latest message, so a validator that stopped
+    /// proposing leaves a held tip whose MAIN PARENT — what the oracle reads
+    /// the committee from — it never fetched.
+    #[tokio::test]
+    async fn a_tip_below_the_current_floor_is_not_a_candidate() {
+        let thr = FtThreshold::from_f32_lossy(0.1);
+        let (mut dag, absent, held) = mk_truncated_dag();
+
+        // The anchor derives forward from its seed, so the healthy tip is
+        // decidable without reaching below the window.
+        dag.put_cached_floor(held[3].clone(), held[1].clone())
+            .unwrap();
+        dag.put_cached_frontier(held[3].clone(), held[1].clone())
+            .unwrap();
+
+        // The stale validator's own block, sitting at the bottom of the held
+        // window: the restore fetched it as a latest message, but not its
+        // parent. Shipped cache entries make it a frontier pivot.
+        let stale_validator = Bytes::from(vec![7; 65]);
+        let stale_tip = h(70);
+        dag.block_metadata_index
+            .write()
+            .add(md(
+                stale_tip.clone(),
+                vec![absent.clone()],
+                84,
+                &stale_validator,
+            ))
+            .unwrap();
+        dag.dag_set.insert(stale_tip.clone());
+        dag.block_number_map.insert(stale_tip.clone(), 84);
+        dag.main_parent_map
+            .insert(stale_tip.clone(), absent.clone());
+        dag.put_cached_floor(stale_tip.clone(), stale_tip.clone())
+            .unwrap();
+        dag.put_cached_frontier(stale_tip.clone(), stale_tip.clone())
+            .unwrap();
+        dag.latest_messages_map.insert(val(), held[4].clone());
+        dag.latest_messages_map
+            .insert(stale_validator, stale_tip.clone());
+
+        let current = Floor {
+            hash: held[1].clone(),
+            block_number: seed_number(&dag, &held[1]),
+        };
+        assert!(
+            seed_number(&dag, &stale_tip) < current.block_number,
+            "the stale tip must sit below the current floor, or this fixture \
+             proves nothing"
+        );
+
+        let outcome = floor_of_view(&dag, &mk_store(), &current, thr)
+            .await
+            .expect("the finalizer's local read must not fail the run");
+        assert!(
+            !matches!(outcome, FloorOfView::AbsenceHold { ref missing } if *missing == absent),
+            "a tip below the floor must not be derived: its committee read \
+             names the block below the window and freezes the clock; got \
+             {outcome:?}"
+        );
+        assert!(
+            matches!(outcome, FloorOfView::Advance(_)),
+            "with the stale tip excluded the healthy tip derives cleanly; got {outcome:?}"
         );
     }
 
