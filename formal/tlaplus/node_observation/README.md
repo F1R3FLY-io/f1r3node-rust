@@ -174,7 +174,7 @@ B2 accepts positive request limits below the ceilings in the [batch plan](../../
 The ceilings bound each request.
 They do not establish correctness for every permitted DAG or installation history.
 
-Every classification below is proposed. No named maintainer has accepted a B2 classification or waived a construction requirement.
+The named maintainer accepted every classification below on 2026-09-23 in PR #447 review 5294038948 at revision `237e43d72`.
 The `F` proposals name a finite domain. The `U` rows require construction over every permitted history, and the construction column names the kernel-checked theorem where one exists.
 
 Batch B2 adds no bounded TLA+ model. Its refutation tier is inherited from the accepted session and capture models where a property extends them, and is otherwise absent.
@@ -182,21 +182,21 @@ The construction theorems live in the [`NodeAuthority` project](../../rocq/node_
 
 | Property | Class | Refutation | Construction | Binding | Decision |
 | --- | --- | --- | --- | --- | --- |
-| C1: disabled startup | F proposed | None | Not applicable proposed. The domain is the fixed set of constructor routes and the default configuration. | Default configuration and disabled installation tests. | Pending maintainer review. |
-| C2: narrow attachment | U | None | Pending. Capability exclusion is not modeled. | Endpoint construction and forbidden-call test doubles. | Pending. |
-| C3: one attachment | U | None | `authority_instance_attaches_at_most_once`, `authority_first_attachment_wins`. | Once-only attachment and replacement tests. | Construction recorded, acceptance pending. |
-| C4: instance coverage | U | None | `authority_replaced_binding_refused`, `authority_shutdown_refuses_all`, `authority_installation_never_wraps`. Concurrent replacement during response publication remains pending. | Replacement, busy, cancellation, and closed tests. | Partial construction, acceptance pending. |
-| C5: nonblocking records | U | None | `authority_queue_never_exceeds_capacity`, `authority_ledger_accounts_for_every_attempt`, `authority_complete_coverage_delivers_every_attempt`, `authority_sequence_exhaustion_refused`. The lost counter bound is trusted to the same checked pattern. | Queue loss, closed receiver, malformed hash, and overflow tests. | Construction recorded, acceptance pending. |
-| C6: event meaning | U | None | Pending. Finalizer hook placement is not modeled. | Event variant and effect failure tests. | Pending. |
-| C7: request envelope | U | Inherited `MC_ObserverSession` | Inherited accepted session theorems. The authority operation adds no challenge allocation. | Identity test and the session suite. | Inherited from claim 001, extension acceptance pending. |
-| C8: detached capture | U | Inherited `MC_BoundedCapture` | Inherited accepted capture theorems. Scratch reconstruction remains pending. | One capture call, scratch independence, and byte comparisons. | Inherited from claim 002, extension acceptance pending. |
-| C9: result identity | U | None | `authority_comparison_requires_equal_digest`. Digest coverage of every input remains a hash assumption. | Exact and strict comparison tests. | Partial construction, acceptance pending. |
-| C10: adopted parameters | U | None | Pending. Adoption routes are not modeled. | Conflicting threshold test. | Pending. |
-| C11: independent reference | U | None | Pending. Reference semantics are not mechanized. | Exhaustive five-vertex cliques and five reference controls. | Pending. |
-| C12: work bounds | U | None | `authority_shared_budget_bounded`, `authority_budget_failure_sticky`, `authority_budget_failure_keeps_usage`, `authority_paths_share_one_budget`, `authority_checked_overflow_is_limit_failure`. Charge placement at every operation remains pending. | Shared path, clique, traversal, cancellation, and partial counter tests. | Partial construction, acceptance pending. |
-| C13: distinct values | F proposed | None | Not applicable proposed. The domain is the fixed response schema. | Typed availability and unavailable display tests. | Pending maintainer review. |
-| C14: unavailable inputs | U | None | Pending. Refusal completeness is not modeled. | Missing target, body, and restore provenance tests. | Pending. |
-| C15: read-only behavior | U | None | Pending. Effect confinement is not modeled. | Production byte comparisons and ordinary regressions. | Pending. |
+| C1: disabled startup | F proposed | None | Not applicable proposed. The domain is the fixed set of constructor routes and the default configuration. | Default configuration and disabled installation tests. | Accepted as bounded by design. |
+| C2: narrow attachment | U | None | Pending. Capability exclusion is not modeled. | Endpoint construction and forbidden-call test doubles. | Construction gap accepted as recorded. |
+| C3: one attachment | U | None | `authority_instance_attaches_at_most_once`, `authority_first_attachment_wins`. | Once-only attachment and replacement tests. | Construction recorded, accepted. |
+| C4: instance coverage | U | None | `authority_replaced_binding_refused`, `authority_shutdown_refuses_all`, `authority_installation_never_wraps`. Concurrent replacement during response publication remains pending. | Replacement, busy, cancellation, and closed tests. | Partial construction, remaining part accepted as recorded. |
+| C5: nonblocking records | U | None | `authority_queue_never_exceeds_capacity`, `authority_ledger_accounts_for_every_attempt`, `authority_complete_coverage_delivers_every_attempt`, `authority_sequence_exhaustion_refused`. The lost counter bound is trusted to the same checked pattern. | Queue loss, closed receiver, malformed hash, and overflow tests. | Construction recorded, accepted. |
+| C6: event meaning | U | None | Pending. Finalizer hook placement is not modeled. | Event variant and effect failure tests. | Construction gap accepted as recorded. |
+| C7: request envelope | U | Inherited `MC_ObserverSession` | Inherited accepted session theorems. The authority operation adds no challenge allocation. | Identity test and the session suite. | Inherited from claim 001, extension accepted. |
+| C8: detached capture | U | Inherited `MC_BoundedCapture` | Inherited accepted capture theorems. Scratch reconstruction remains pending. | One capture call, scratch independence, and byte comparisons. | Inherited from claim 002, extension accepted. |
+| C9: result identity | U | None | `authority_comparison_requires_equal_digest`. Digest coverage of every input remains a hash assumption. | Exact and strict comparison tests. | Partial construction, remaining part accepted as recorded. |
+| C10: adopted parameters | U | None | Pending. Adoption routes are not modeled. | Conflicting threshold test. | Construction gap accepted as recorded. |
+| C11: independent reference | U | None | Pending. Reference semantics are not mechanized. | Exhaustive five-vertex cliques and five reference controls. | Construction gap accepted as recorded. |
+| C12: work bounds | U | None | `authority_shared_budget_bounded`, `authority_budget_failure_sticky`, `authority_budget_failure_keeps_usage`, `authority_paths_share_one_budget`, `authority_checked_overflow_is_limit_failure`. Charge placement at every operation remains pending. | Shared path, clique, traversal, cancellation, and partial counter tests. | Partial construction, remaining part accepted as recorded. |
+| C13: distinct values | F proposed | None | Not applicable proposed. The domain is the fixed response schema. | Typed availability and unavailable display tests. | Accepted as bounded by design. |
+| C14: unavailable inputs | U | None | Pending. Refusal completeness is not modeled. | Missing target, body, and restore provenance tests. | Construction gap accepted as recorded. |
+| C15: read-only behavior | U | None | Pending. Effect confinement is not modeled. | Production byte comparisons and ordinary regressions. | Construction gap accepted as recorded. |
 
 Five properties have complete or partial construction theorems. Eight properties keep pending construction with Rust tests only, and two of those inherit accepted theorems from claims 001 and 002. Two properties propose a bounded-by-design classification.
 

@@ -155,7 +155,8 @@ tasks:
       - "The canonical identity covers every field that scratch construction and evaluation consume."
   - id: TASK-019-3
     title: "Batch B2: observer handle, detached evaluation, and reference comparison"
-    status: review
+    status: complete
+    completed_on: "2026-09-23"
     claimed_by: codex-batch-b2-20260923
     blocked_by: []
     plan: docs/plans/casper-node-observation-batch-b.md
@@ -168,7 +169,11 @@ tasks:
     implementation_status: complete
     verification_package: docs/cbc-evidence/runs/casper-node-authority-b2-d11acabcb-01/report.json
     verification_status: "976 focused tests and all commit checks pass. The full Casper run exceeded 30 minutes."
-    completion_gate: "Step 7 remains pending for named maintainer acceptance. The applicability review and the construction cycle are recorded."
+    completion_gate: "Complete. The named maintainer accepted claim 003 on 2026-09-23 at 237e43d72."
+    accepted_by: jltatbeach
+    acceptance_record: https://github.com/F1R3FLY-io/f1r3node-rust/pull/447#pullrequestreview-5294038948
+    acceptance_revision: 237e43d723b9867985cd47fdfe312fd8d06352e8
+    acceptance_package: docs/cbc-evidence/runs/casper-node-authority-b2-d69e12151-02
     construction_cycle: batch-b2-construction-01
     construction_project: formal/rocq/node_authority
     construction_theorems: 15
@@ -261,6 +266,7 @@ tasks:
       - "No standalone checker crate was added. Downstream must remove its checker crate or include it in the supply-chain audit."
       - "Cross-incarnation identity, remaining construction proofs, Kani harnesses, complete Rust correspondence, and named maintainer acceptance remain pending."
       - "Batch B2 changed six accepted artifacts after acceptance: the TLA+ README, the DAG storage file, the capture tests, the node observer, its tests, and the formal gate script. Their records are pending for claim 003 at the current digest and retain the acceptance of claims 001 and 002 at 4c0c0dbe7 with the accepted digests. The other 52 accepted records stay discharged."
+      - "The named maintainer accepted claim 003 on 2026-09-23 at 237e43d72 on the construction-cycle package. The six changed artifacts are discharged again under claim 003 and keep both acceptances in their records."
       - "The named maintainer accepted both claims on 2026-09-23 at 4c0c0dbe7 on the cycle 02 package, with the five bounded-by-design decisions and the recorded construction gaps accepted. All 58 node records are discharged. The two gate-claim records in the union inventory stay pending under CLAIM-SOAK-GATE-001."
       - "Handoff cycle 02 at 78d696ea6 pulled the deterministic generation-rejection test across from the soak branch, reran the TLA gate and the Rocq kernel check, and refreshed every node record. Three blocking items remain: the applicability review, the acceptance, and the open construction proofs."
     acceptance:
@@ -331,7 +337,7 @@ tasks:
     node_pin_evidence: target/task-019-7-pin-e3c4e1418/report.json
     node_pin_patch: target/task-019-7-pin-e3c4e1418/node-pin.patch
     node_pin_branch: ci/repin-validator-lifecycle-settlement
-    node_pin_publication: "Pending separate commit, push, and PR authorization."
+    node_pin_publication: "The user requested the prepared pin PR. Commit checks and publication are in progress."
     observer_candidate_status: "Pending TASK-019-6 and subsequent dev CI publication."
     external_dependencies:
       - "The system-integration fix and promotion are merged. The node pin PR, live validation, and subsequent dev image publication remain pending."

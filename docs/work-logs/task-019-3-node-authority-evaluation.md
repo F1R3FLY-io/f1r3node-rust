@@ -1,12 +1,14 @@
 # TASK-019-3: Node authority evaluation
 
 ```yaml
-handoff_status: review
+handoff_status: ready
 base_revision: 4c0c0dbe7
 claimed_by: codex-batch-b2-20260923
 claim: docs/claims/casper-node-authority-evaluation.md
 implementation_authorized: true
-acceptance: pending
+acceptance: accepted
+acceptance_record: https://github.com/F1R3FLY-io/f1r3node-rust/pull/447#pullrequestreview-5294038948
+acceptance_revision: 237e43d723b9867985cd47fdfe312fd8d06352e8
 ```
 
 The user requested B2 completion on 2026-09-23.
@@ -142,4 +144,14 @@ The bindings manifest gains a claim 003 section that maps every property to name
 The five project files and the formal gate script join the claim 003 inventory with mandatory tags. The package `casper-node-authority-b2-d69e12151-02` records the tiers reached and names the source-bound package as its previous cycle. Every claim 003 record cites the new package. The formal gate script record keeps the acceptance of claims 001 and 002 beside its current digest.
 
 The task stops at the acceptance gate. The named maintainer must review each applicability decision and accept claim 003 by naming the revision, the claim ID, and the package.
+
+## Acceptance on 2026-09-23
+
+The named maintainer `jltatbeach` accepted claim 003 by editing PR #447 review 5294038948 in place. The appended text names the claim, revision `237e43d72`, and the package `casper-node-authority-b2-d69e12151-02`, and accepts C1 and C13 as bounded by design, the construction gaps and remaining parts as recorded, and the C7 and C8 extension.
+
+The review was verified against origin at 2026-09-23T21:01:02Z. Revision `237e43d72` is the first that contains the package and the `NodeAuthority` project.
+
+This recording sets the claim file to accepted, marks every B2 decision as accepted in the area README, and discharges all 19 claim 003 records with the review as acceptance evidence. The six records that also carry the acceptance of claims 001 and 002 keep both acceptances. The strict audit over the claim 003 inventory now exits 0.
+
+The area README, the project README, and the claim file changed in this recording. Each affected record keeps the acceptance-time digest beside the current one. The package directory is unchanged. TASK-019-3 is complete.
 

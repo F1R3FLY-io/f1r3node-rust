@@ -66,4 +66,4 @@ The [TLA+ area](../../tlaplus/node_observation/README.md#batch-b2-applicability-
 
 These theorems do not prove capability exclusion, finalizer hook placement, adoption routes, reference semantics, charge placement at every operation, refusal completeness, or effect confinement. Those properties keep pending construction.
 
-Named maintainer review of every B2 applicability decision and acceptance of the claim remain pending.
+Named maintainer review of every B2 applicability decision and acceptance of the claim were recorded on 2026-09-23 at revision `237e43d72`.

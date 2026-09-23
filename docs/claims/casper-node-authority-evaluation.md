@@ -2,7 +2,7 @@
 
 ```yaml
 claim_id: CLAIM-CASPER-NODE-OBSERVATION-003
-status: pending
+status: accepted
 adapter: null
 scope: batch-b2-detached-authority-evaluation
 artifacts:
@@ -44,6 +44,11 @@ refutation: inherited-models-only
 construction: recorded-partial
 binding: recorded
 soak: pending
+accepted_by: jltatbeach
+accepted_at: 2026-09-23T21:01:02Z
+accepted_revision: 237e43d723b9867985cd47fdfe312fd8d06352e8
+acceptance_record: https://github.com/F1R3FLY-io/f1r3node-rust/pull/447#pullrequestreview-5294038948
+acceptance_package: docs/cbc-evidence/runs/casper-node-authority-b2-d69e12151-02
 ```
 
 ## Authorization and scope
@@ -93,7 +98,7 @@ Batch B2 adds no bounded TLA+ model. The refutation tier is inherited from the a
 
 The binding tier maps every property to named tests in the [bindings manifest](../../formal/tlaplus/node_observation/bindings.json). The casper observer suite, the node observer suite, and the capture suite pass at the recorded revision.
 
-The [applicability review](../../formal/tlaplus/node_observation/README.md#batch-b2-applicability-review) lists every property's class, evidence, and decision status. Named maintainer review of each decision and acceptance of this claim remain pending.
+The [applicability review](../../formal/tlaplus/node_observation/README.md#batch-b2-applicability-review) lists every property's class, evidence, and decision status. The named maintainer reviewed each decision and accepted this claim on 2026-09-23 in PR #447 review 5294038948 at revision `237e43d72`. The soak field is outside that acceptance and is unchanged.
 
-This claim remains pending until source-bound verification and named maintainer acceptance are recorded.
+Source-bound verification and named maintainer acceptance were recorded on 2026-09-23.
 Unavailable display and restore inputs do not qualify a live authority profile.
