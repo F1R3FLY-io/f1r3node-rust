@@ -135,7 +135,9 @@ if [[ "$SOAK_PR" == true ]]; then
     TLC_WORKERS=2
 fi
 
-POST_FIX_CONFIGS+=(casper_soak/MC_CasperSoakHarness)
+POST_FIX_CONFIGS+=(casper_soak/MC_CasperSoakHarness
+    node_observation/MC_ObserverSession
+    node_observation/MC_BoundedCapture)
 
 if [[ "${RUN_EXHAUSTIVE_TLA:-0}" == "1" ]]; then
     POST_FIX_CONFIGS+=(
@@ -173,6 +175,22 @@ fi
 # <subdir>/<config>:<invariant>. Each must exit 12 with exactly that invariant;
 # scripts/ci/test-check-tla-invariants.sh reads this list rather than copying it.
 NEGATIVE_CONTROLS=(
+    node_observation/MC_ObserverSession_challenge_unsafe:FreshChallenge
+    node_observation/MC_ObserverSession_identity_unsafe:BoundIdentity
+    node_observation/MC_ObserverSession_frame_unsafe:BoundFrame
+    node_observation/MC_ObserverSession_deadline_unsafe:BoundDeadline
+    node_observation/MC_ObserverSession_repeat_unsafe:OneRequest
+    node_observation/MC_ObserverSession_budget_unsafe:SessionBudget
+    node_observation/MC_BoundedCapture_admission_unsafe:ValidAdmission
+    node_observation/MC_BoundedCapture_deadline_unsafe:BoundLockWait
+    node_observation/MC_BoundedCapture_order_unsafe:GuardOrder
+    node_observation/MC_BoundedCapture_open_unsafe:OpenIdentity
+    node_observation/MC_BoundedCapture_validation_unsafe:ValidatedIdentity
+    node_observation/MC_BoundedCapture_generation_unsafe:GenerationStable
+    node_observation/MC_BoundedCapture_incomplete_unsafe:CompleteRows
+    node_observation/MC_BoundedCapture_bytes_unsafe:BoundBytes
+    node_observation/MC_BoundedCapture_release_unsafe:Detached
+    node_observation/MC_BoundedCapture_write_unsafe:ReadOnly
     carrier_index/MC_CarrierIndex_dag_first_pre_fix:IndexCompleteForWindow
     carrier_index/MC_CarrierIndex_read_failure_pre_fix:AbsenceProofSound
     soak_disk/MC_SoakDiskAdmission_floor_only_pre_fix:AdmissionRequiresBand
@@ -251,7 +269,7 @@ NEGATIVE_CONTROLS=(
 # directories that is absent from NEGATIVE_CONTROLS is a broken registration,
 # not a manual control. Other areas keep manual controls until they opt in
 # (docs/formal-verification.md).
-REGISTERED_CONTROL_AREAS=(carrier_index deploy_storage soak_disk casper_soak)
+REGISTERED_CONTROL_AREAS=(carrier_index deploy_storage soak_disk casper_soak node_observation)
 for entry in "${POST_FIX_CONFIGS[@]}"; do
     area="${entry%%/*}"
     printf '%s\n' "${REGISTERED_CONTROL_AREAS[@]}" | grep -Fxq "$area" || continue

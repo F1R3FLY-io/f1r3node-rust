@@ -973,6 +973,95 @@ mod tests {
     use super::*;
 
     #[test]
+    fn generation_change_after_validation_rejects_capture() {
+        use std::sync::atomic::Ordering;
+
+        use rspace_plus_plus::rspace::shared::lmdb_dir_store_manager::{
+            Db, LmdbDirStoreManager, LmdbEnvConfig,
+        };
+
+        let directory = std::env::temp_dir().join(format!(
+            "capture-generation-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let stores = [
+            "block-metadata",
+            "equivocation-tracker",
+            "latest-messages",
+            "invalid-blocks",
+            "floor-index",
+            "frontier-index",
+            "deploy-lifecycle-events",
+            "deploy-lifecycle-terminal",
+            "carrier-index",
+            "carrier-index-meta",
+            "genesis-hash",
+            "blocks",
+            "blocks-approved",
+        ];
+        let mapping = stores
+            .into_iter()
+            .map(|name| {
+                (Db::new(name.to_string(), None), LmdbEnvConfig {
+                    name: "capture".to_string(),
+                    max_env_size: 16 * 1024 * 1024,
+                    max_dbs: 32,
+                })
+            })
+            .collect();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let (dag, blocks) = runtime.block_on(async {
+            let mut manager = LmdbDirStoreManager::new(directory.clone(), mapping);
+            let dag = BlockDagKeyValueStorage::new(&mut manager).await.unwrap();
+            let blocks = KeyValueBlockStore::create_from_kvm(&mut manager)
+                .await
+                .unwrap();
+            (dag, blocks)
+        });
+        let request = CaptureRequest {
+            limits: CaptureLimits {
+                read: ReadLimits {
+                    max_value_bytes: 4096,
+                    max_total_bytes: 65536,
+                    max_records: 100,
+                    max_operations: 1000,
+                },
+                block_decode: BlockDecodeLimits {
+                    max_compressed_bytes: 4096,
+                    max_decompressed_bytes: 4096,
+                    max_expansion_ratio: 16,
+                },
+                max_blocks: 100,
+                max_validators: 100,
+                max_edges: 100,
+                max_work: 100000,
+                lock_wait: Duration::from_secs(1),
+            },
+            bodies: &[],
+        };
+        let mut phases = Vec::new();
+        let result = capture_observed(&dag, &blocks, &request, |phase| {
+            phases.push(phase);
+            if phase == CapturePhase::Validated {
+                dag.dag_generation.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+        assert!(matches!(result, Err(SnapshotError::EnvironmentChanged {
+            environment, opened: 0, observed: 1,
+        }) if environment == "dag insertion generation"));
+        assert_eq!(phases.last(), Some(&CapturePhase::Validated));
+        assert!(dag.global_lock.try_write().is_some());
+        assert!(dag.block_metadata_index.try_write().is_some());
+        assert!(capture(&dag, &blocks, &request).is_ok());
+        drop((dag, blocks, runtime));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn all_capture_guards_use_the_supplied_deadline() {
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let dag = runtime.block_on(async {

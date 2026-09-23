@@ -1,6 +1,6 @@
 # CbC Evidence: block-storage/src/rust/dag/block_dag_key_value_storage.rs
 
-The capture claim remains pending. Local tests do not discharge the claim or qualify a live adapter.
+The capture claim remains pending. The verification package requires named maintainer acceptance. Live adapter qualification remains separate.
 
 This record adds the Batch B1 capture boundary only. The file's existing `CLAIM-FINALITY-002` obligations are not discharged or waived by this record.
 
@@ -9,7 +9,7 @@ This record adds the Batch B1 capture boundary only. The file's existing `CLAIM-
   "artifact": {
     "path": "block-storage/src/rust/dag/block_dag_key_value_storage.rs",
     "id": "block-storage-src-rust-dag-block-dag-key-value-storage-rs",
-    "commit": "4561e064a70b495fe07cbcf779bff375d636aaad",
+    "commit": "4aa93d11cf7a4c318074975dd4266208575c8aca",
     "commit_is_base": true,
     "working_tree": true,
     "sha256": "81b9d16d0321d7781dc392c7eab213d29d1858d20b64fcb0f18cf2cf2bc03f6f"
@@ -19,20 +19,20 @@ This record adds the Batch B1 capture boundary only. The file's existing `CLAIM-
     "CLAIM-CASPER-NODE-OBSERVATION-002"
   ],
   "claim_digests": {
-    "docs/claims/casper-node-authority-snapshot.md": "0a903c524a3e3e3b598fddd6ec149e578fb18f396199cd0ab5741faa87df6121"
+    "docs/claims/casper-node-authority-snapshot.md": "c2bd97d63c74e4fad19a8817a21e044fc358957623c3e8968c3f8535b60964c6"
   },
   "adapter": null,
   "status": "pending",
   "scope": "batch-b1-bounded-detached-capture",
   "evidence": {
-    "kind": "local-tests-not-discharge",
-    "ref": "docs/cbc-evidence/runs/casper-node-deadline-correction-4561e064a-01/report.json",
-    "sha256": "c8568def5c1d65b2a27c267335c66b56abc2ffc853735de92adeb1ae68b64340"
+    "kind": "bounded-models-and-source-bound-tests-awaiting-acceptance",
+    "ref": "docs/cbc-evidence/runs/casper-node-claim-gate-4aa93d11c-03/report.json",
+    "sha256": "dc7acd04b4da21aaac99b8a19d0bd56193a85a24a914e9bb09f0334892c6300c"
   },
   "previous_record": {
-    "commit": "4561e064a70b495fe07cbcf779bff375d636aaad",
+    "commit": "4aa93d11cf7a4c318074975dd4266208575c8aca",
     "path": "docs/cbc-evidence/block-storage-src-rust-dag-block-dag-key-value-storage-rs.md",
-    "sha256": "0577b399f6eda75e460bc1cb77cc624b7f4888eb0a58266527eca2c58393b3fe"
+    "sha256": "1d3ec5ec29fb4f9eedd878c041ac9d2834c366be0c14f9a28f4f3376921a5478"
   },
   "tiers": {
     "refutation": "pending",
@@ -41,6 +41,17 @@ This record adds the Batch B1 capture boundary only. The file's existing `CLAIM-
   },
   "soak": "pending",
   "waiver": null,
-  "verified_at": null
+  "verified_at": null,
+  "tier_results": {
+    "refutation": "passed-bounded-controls",
+    "construction": "passed-bounded-models-and-native-tests",
+    "binding": "passed-source-and-test-map-no-machine-refinement"
+  },
+  "previous_working_tree_record": {
+    "archive": "target/task-019-4-rust-verification/previous-metadata.tar.gz",
+    "archive_sha256": "b595d2a87fc11dadec09f4d8ac50cc09a977ffc537b945edf06900c742e2243d",
+    "member": "docs/cbc-evidence/block-storage-src-rust-dag-block-dag-key-value-storage-rs.md",
+    "sha256": "5399e95155c4cbecd33fe920e9985f11bd2fe38e17cb10d9af1c362abe6e7e30"
+  }
 }
 ```

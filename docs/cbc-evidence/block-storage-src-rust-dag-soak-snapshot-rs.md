@@ -1,36 +1,36 @@
 # CbC Evidence: block-storage/src/rust/dag/soak_snapshot.rs
 
-The capture claim remains pending. Local tests do not discharge the claim or qualify a live adapter.
+The capture claim remains pending. The verification package requires named maintainer acceptance. Live adapter qualification remains separate.
 
 ```json
 {
   "artifact": {
     "path": "block-storage/src/rust/dag/soak_snapshot.rs",
     "id": "block-storage-src-rust-dag-soak-snapshot-rs",
-    "commit": "4561e064a70b495fe07cbcf779bff375d636aaad",
+    "commit": "4aa93d11cf7a4c318074975dd4266208575c8aca",
     "commit_is_base": true,
     "working_tree": true,
-    "sha256": "c19898faa349b60042e61d4501282234c5070c13e17a9b48654feaa3325d5b29"
+    "sha256": "f2ec64e110d2b1218a5d1043438985976a6b72daf63dada86a805cdee664fcfc"
   },
   "claim": "docs/claims/casper-node-authority-snapshot.md",
   "claim_ids": [
     "CLAIM-CASPER-NODE-OBSERVATION-002"
   ],
   "claim_digests": {
-    "docs/claims/casper-node-authority-snapshot.md": "0a903c524a3e3e3b598fddd6ec149e578fb18f396199cd0ab5741faa87df6121"
+    "docs/claims/casper-node-authority-snapshot.md": "c2bd97d63c74e4fad19a8817a21e044fc358957623c3e8968c3f8535b60964c6"
   },
   "adapter": null,
   "status": "pending",
   "scope": "batch-b1-bounded-detached-capture",
   "evidence": {
-    "kind": "local-tests-not-discharge",
-    "ref": "docs/cbc-evidence/runs/casper-node-deadline-correction-4561e064a-01/report.json",
-    "sha256": "c8568def5c1d65b2a27c267335c66b56abc2ffc853735de92adeb1ae68b64340"
+    "kind": "bounded-models-and-source-bound-tests-awaiting-acceptance",
+    "ref": "docs/cbc-evidence/runs/casper-node-claim-gate-4aa93d11c-03/report.json",
+    "sha256": "dc7acd04b4da21aaac99b8a19d0bd56193a85a24a914e9bb09f0334892c6300c"
   },
   "previous_record": {
-    "commit": "4561e064a70b495fe07cbcf779bff375d636aaad",
+    "commit": "4aa93d11cf7a4c318074975dd4266208575c8aca",
     "path": "docs/cbc-evidence/block-storage-src-rust-dag-soak-snapshot-rs.md",
-    "sha256": "f441c086d4be533fcad75d58173776289337d74949bc813a39cd947b6e5da15f"
+    "sha256": "2caeec3ed62dd8b9971f2dfdd10afae9debde4feb0697e7a3358449f68226e86"
   },
   "tiers": {
     "refutation": "pending",
@@ -39,6 +39,17 @@ The capture claim remains pending. Local tests do not discharge the claim or qua
   },
   "soak": "pending",
   "waiver": null,
-  "verified_at": null
+  "verified_at": null,
+  "tier_results": {
+    "refutation": "passed-bounded-controls",
+    "construction": "passed-bounded-models-and-native-tests",
+    "binding": "passed-source-and-test-map-no-machine-refinement"
+  },
+  "previous_working_tree_record": {
+    "archive": "target/task-019-4-rust-verification/previous-metadata.tar.gz",
+    "archive_sha256": "b595d2a87fc11dadec09f4d8ac50cc09a977ffc537b945edf06900c742e2243d",
+    "member": "docs/cbc-evidence/block-storage-src-rust-dag-soak-snapshot-rs.md",
+    "sha256": "70f74e0d34495e67c3c9d418e6ece9760c8119239240db37e52706121a798be5"
+  }
 }
 ```

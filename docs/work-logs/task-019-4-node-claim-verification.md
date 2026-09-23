@@ -208,3 +208,67 @@ Four pending evidence records now bind the corrected bytes. Their previous versi
 Both claims, all verification tiers, and maintainer acceptance remain pending. No formal proof ran, and no acceptance request was sent.
 
 The source correction remains uncommitted. TASK-019-4 and B2 planning remain blocked, and TASK-019-6 still requires the minimum-code review before merge.
+
+## Bounded verification completion
+
+The correction later merged before checkout base `4aa93d11cf7a4c318074975dd4266208575c8aca`.
+The user requested completion of TASK-019-4 on 2026-09-22.
+The [new package](../cbc-evidence/runs/casper-node-claim-gate-4aa93d11c-02/report.json) identifies the base and exact working tree inputs.
+
+Two bounded TLA+ models now cover the observer session and detached capture.
+Both positive configurations pass. All 16 negative controls exit 12 with the expected invariant and a transition trace.
+Both CI tiers register these configurations. The gate regression passes with 87 registered controls.
+
+The capture model permits deadline expiry between lock acquisitions.
+It permits an uncontended acquisition after expiry, consistent with the lock implementation.
+The model bounds contended acquisitions and does not establish native scheduling latency.
+
+The source review added a direct generation-change regression.
+The test changes generation after reader validation and checks rejection, guard release, and a later successful capture.
+An isolated mutation disables only the generation comparison. The regression then fails its expected assertion with exit 101.
+The corrected source passes the same test. This change adds no production behavior.
+
+The fresh isolated build imports no host project objects.
+The initial run passes 64 tests. The final run includes the new regression and passes 65 tests.
+Strict Clippy passes for all targets in the shared, block-storage, and node packages.
+The interface executable has 18,050,808 bytes. The build disables debug information and uses no separate stripping step.
+
+The source audit verifies all 4,141 archived source files in the isolated volume.
+The binding check compares 1,130 Rust, protobuf, and Cargo inputs with the working tree.
+The property inventory maps all 23 required properties to named passing tests.
+The package records the four test executable hashes and the model input hashes.
+
+The binding is an explicit source correspondence with executable evidence. It is not a machine-checked refinement proof.
+The model scope records the trusted runtime assumptions and properties that require Rust tests.
+The transaction-open race has no deterministic executable injection. Its interval check has model evidence and source inspection.
+The shutdown regression still checks source ordering instead of a complete production node shutdown.
+
+Retained failures include the initial Java setup, an initial model parse error, and an incomplete state assignment in a revised deadline control.
+The binding checker rejected the incomplete control result. The corrected final run passes all 18 configurations.
+Three model-checker tests and three binding-checker tests pass, including rejection of missing evidence and changed source bytes.
+
+Seven existing mandatory records now identify the new package. The shared CI gate record also identifies the new registration evidence.
+Its prior harness discharge and historical record remain separately identified.
+The strict explicit-inventory status audit returns exit 4 for eight pending records.
+This status result does not invalidate the passing source binding check. It keeps the acceptance requirement visible.
+
+The package README contains the concrete acceptance request. No maintainer has accepted this package, and no request was posted externally.
+Both claims and their acceptance tiers remain pending. TASK-019-4 remains open for named acceptance and discharge.
+The new changes remain uncommitted. B2 planning, production campaigns, and baseline soaks did not start.
+
+## Rust verification tools
+
+The user requested replacement of the Python verification tools with Rust.
+The new `scripts/node-observation` crate provides `models` and `bindings` commands with shared model-result validation.
+The crate has a separate Cargo manifest and lockfile. The node workspace dependencies remain unchanged.
+
+All four new Python files were removed. Eight Rust tests preserve the rejection controls and cover timeouts, malformed manifests, and source paths outside the repository.
+Strict Clippy and formatting checks pass. The Rust model runner passes both positive models and all 16 negative controls.
+The Rust binding checker verifies all 23 properties and 1,130 retained node build inputs.
+
+The node source did not change during this correction. The earlier 65 passing tests remain the isolated execution evidence.
+The new check reuses those logs and verifies their source bindings. It does not claim another node rebuild.
+
+The [Rust package](../cbc-evidence/runs/casper-node-claim-gate-4aa93d11c-03/report.json) records the new tool identities and results.
+The previous package remains unchanged. Archives retain its source inputs, Python tools, and evidence records.
+The current claim inventories and evidence records now identify the Rust package. Named maintainer acceptance remains pending.

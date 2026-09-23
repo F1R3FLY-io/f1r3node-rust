@@ -183,15 +183,22 @@ tasks:
   - id: TASK-019-4
     title: "Source-bound verification and acceptance of the Batch A and Batch B1 claims"
     status: in_progress
+    implementation_status: complete
+    verification_status: bounded_models_and_source_bindings_passed
+    remaining_gate: named_maintainer_acceptance
     claimed_by: pi-session-01a0afde-d35c-70a2-b8c9-39aa11cbdfca
     claimed_at: 2026-09-22T14:15:47Z
     blocked_by: []
-    execution_revision: 6ea6bf029dc57caf1e5fb512a0eba88a846e959a
+    execution_revision: 4aa93d11cf7a4c318074975dd4266208575c8aca
+    verification_working_tree: true
+    verification_source_manifest: docs/cbc-evidence/runs/casper-node-claim-gate-4aa93d11c-03/sources.sha256
     correction_checkout_base: 4561e064a70b495fe07cbcf779bff375d636aaad
     correction_working_tree: true
     correction_source_manifest: docs/cbc-evidence/runs/casper-node-deadline-correction-4561e064a-01/sources.sha256
     work_log: docs/work-logs/task-019-4-node-claim-verification.md
     evidence:
+      - docs/cbc-evidence/runs/casper-node-claim-gate-4aa93d11c-03/report.json
+      - docs/cbc-evidence/runs/casper-node-claim-gate-4aa93d11c-02/report.json
       - docs/cbc-evidence/runs/casper-node-claim-gate-6ea6bf029-01/report.json
       - docs/cbc-evidence/runs/casper-node-deadline-correction-4561e064a-01/report.json
     claims: [CLAIM-CASPER-NODE-OBSERVATION-001, CLAIM-CASPER-NODE-OBSERVATION-002]
@@ -200,14 +207,16 @@ tasks:
     accepted_by: null
     acceptance_record: null
     notes:
+      - "The source correction is committed. The new verification package uses the checkout base plus an uncommitted generation regression and formal evidence."
+      - "Both bounded models pass. All 16 negative controls produce the exact expected counterexample."
+      - "The verification tools now use Rust. Eight checker tests, strict Clippy, all model checks, and all property bindings pass."
+      - "The isolated native rebuild passes 65 tests and strict Clippy. Disabling generation rejection makes its new regression fail."
+      - "The binding check covers all 23 properties and verifies 1,130 isolated build inputs. This is not a machine-checked refinement."
+      - "Both claim inventories include the models and verification scripts. The CI gate runs the models in both tiers."
+      - "The strict status audit returns exit 4 for eight pending artifacts, including the shared CI gate."
+      - "Seven existing evidence records and the CI registration record identify the new package. Historical evidence and separate claims remain intact."
+      - "The acceptance request is prepared in the package README. Named maintainer acceptance and discharge remain pending."
       - "The user placed this gate before B2 planning. B2 is not a prerequisite for verification of Batch A and B1."
-      - "The implementation input is available at the execution revision. TASK-019-2 remains open for this acceptance review, not as a circular prerequisite."
-      - "Maintainer identities do not constitute acceptance. Approval must name the reviewed revision, both claims, and the evidence package."
-      - "The intake audit reports seven pending mandatory artifacts. No observer-specific formal proof inputs are registered."
-      - "The initial package retains the lock-deadline counterexample and the interface fixture failure."
-      - "The user approved the five-file correction. All three capture locks use a checked deadline, and the test hashes its executable before the handshake."
-      - "The corrected isolated run passed 577 test executions, strict Clippy, the workspace check, and formatting checks. The interface executable has a separate debug-stripped identity."
-      - "Production limits remain unchanged. Seven mandatory records, the formal tiers, and named maintainer acceptance remain pending."
     acceptance:
       - "Strict source-bound audits pass for every artifact in both claim inventories at the accepted revision."
       - "Refutation, construction, and binding tiers are recorded with retained failing controls."
@@ -216,7 +225,7 @@ tasks:
     implementation_plan:
       - "Step 1. Author bounded TLA+ models under formal/tlaplus/node_observation/: MC_ObserverSession for challenge freshness, one request per session, deadline expiry, and session budget; MC_BoundedCapture for guard order, transaction-identity interval, environment-change rejection, incomplete-row rejection, and guard release. Add negative controls beside each positive configuration."
       - "Step 2. Register both models in scripts/ci/check-tla-invariants.sh and add the model files to both claim inventories. Record the refutation tier from the negative controls and the construction tier from the positive checks."
-      - "Step 3. Rerun the gate at the corrected revision de93425ee or later: isolated rebuild, strict explicit-inventory audit, and a new package casper-node-claim-gate-<revision>-02. The binding tier comes from the source-bound audit of the executable suites."
+      - "Step 3. Rerun the isolated rebuild at corrected revision de93425ee or later. Create a new casper-node-claim-gate-<revision>-02 package. Audit both explicit claim inventories. Bind every required property to named passing tests and matching isolated source inputs. A status audit alone cannot establish binding."
       - "Step 4. Request acceptance from the proposed reviewer as a PR #447 review comment that names the revision, both claim IDs, and the package path."
       - "Step 5. Record acceptance: fill accepted_by and acceptance_record, flip both claim files from pending, set verified_at on the seven records, and run the CbC discharge so the strict gate exits clean."
   - id: TASK-019-5
@@ -270,7 +279,9 @@ tasks:
 ---
 ```
 
-**Current state:** Batch A is implemented. Local B1 corrections address the four source findings, with 301 passing test executions. Both claims remain pending on formal evidence and maintainer acceptance under TASK-019-4. Batch B2 and Batch C remain unapproved. Candidate image publication waits on the system-integration pin under TASK-019-7. PR #447 targets `dev`.
+**Current state:** Batch A and the B1 corrections are implemented. TASK-019-4 now has passing bounded models, negative controls, source bindings, and 65 isolated test executions. Both claims await named maintainer acceptance of the new package.
+
+Batch B2 and Batch C remain unapproved. Candidate image publication waits on the system-integration pin under TASK-019-7. PR #447 targets `dev`.
 
 **Scope:** This epic owns node-side interfaces only. Harness verification, profile qualification, campaign execution, and baseline soaks belong to EPIC-017.
 

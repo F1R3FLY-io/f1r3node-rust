@@ -25,6 +25,7 @@ Thumbs.db
 Cargo.lock
 !/Cargo.lock
 !/scripts/soak-charts/Cargo.lock
+!/scripts/node-observation/Cargo.lock
 !/fuzz/Cargo.lock
 
 # BNFC generated
