@@ -15,7 +15,12 @@ trap record_exit EXIT
 cd "$ROOT"
 sha256sum Cargo.lock rust-toolchain.toml .cargo/config.toml node/Cargo.toml \
     node/src/rust/soak_observer.rs node/tests/soak_observer.rs \
-    scripts/ci/check-node-observation-bindings.sh > "$OUTPUT/inputs.sha256"
+    scripts/ci/check-node-observation-bindings.sh \
+    docs/claims/casper-node-observation.md docs/claims/casper-node-authority-snapshot.md \
+    formal/tlaplus/node_observation/*.tla formal/tlaplus/node_observation/*.cfg \
+    formal/tlaplus/node_observation/*.json formal/tlaplus/node_observation/README.md \
+    formal/rocq/node_observation/_CoqProject formal/rocq/node_observation/README.md \
+    formal/rocq/node_observation/theories/*.v > "$OUTPUT/inputs.sha256"
 rustc -vV > "$OUTPUT/compiler.txt"
 cargo test --locked -p node --lib --test soak_observer --no-run --message-format=json \
     > "$OUTPUT/build.jsonl" 2> "$OUTPUT/build.log"

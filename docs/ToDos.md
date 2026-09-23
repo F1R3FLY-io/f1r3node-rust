@@ -193,8 +193,11 @@ tasks:
       - docs/cbc-evidence/runs/casper-node-claim-gate-6ea6bf029-01/report.json
       - docs/cbc-evidence/runs/casper-node-deadline-correction-4561e064a-01/report.json
       - docs/cbc-evidence/runs/casper-node-challenge-freshness-3b1d2465a-01/report.json
+      - docs/cbc-evidence/runs/casper-node-model-reconciliation-10e7b8452-01/report.json
     verification_scope_confirmed: true
-    verification_cycle: challenge-allocation-01
+    verification_cycle: model-reconciliation-01
+    reconciliation_checkout_base: 10e7b8452824e12a1fe2743dca7989b79fce2133
+    reconciliation_working_tree: true
     claims: [CLAIM-CASPER-NODE-OBSERVATION-001, CLAIM-CASPER-NODE-OBSERVATION-002]
     eligible_maintainers: [spreston8, dylon, metaweta, jeffrey-l-turner, jltatbeach]
     proposed_reviewer: jltatbeach
@@ -211,7 +214,12 @@ tasks:
       - "Production limits remain unchanged. The repeated-nonce regression failed before the correction and passed afterward. The new isolated run passed 580 test executions."
       - "TLC passed the challenge model and its expected freshness violation. Four allocation theorems passed Rocq kernel checking with closed assumption sets."
       - "The bounded TLC gate passed 14 positive configurations and 62 expected violations. These results do not discharge either combined claim."
-      - "Cross-incarnation identity, remaining interface properties, capture proofs, Kani harnesses, complete Rust correspondence, and named maintainer acceptance remain pending."
+      - "The canonical model set combines the broader downstream models with the node freshness control. Both claim records remain pending."
+      - "The reconciliation gate passed 15 positive configurations and 78 expected violations. All 17 node controls remain registered, with four closed Rocq assumption sets."
+      - "The isolated binding driver passed 276 executions. Its input base is node revision 10e7b8452, not a harness merge revision."
+      - "The node package owns gate registration evidence. The harness keeps its primary gate record without node claim digests."
+      - "No standalone checker crate was added. Downstream must remove its checker crate or include it in the supply-chain audit."
+      - "Cross-incarnation identity, remaining construction proofs, Kani harnesses, complete Rust correspondence, and named maintainer acceptance remain pending."
     acceptance:
       - "Strict source-bound audits pass for every artifact in both claim inventories at the accepted revision."
       - "Refutation, construction, and binding tiers are recorded with retained failing controls."

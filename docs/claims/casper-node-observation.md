@@ -16,9 +16,25 @@ artifacts:
   - node/src/rust/diagnostics/tests.rs
   - node/tests/soak_observer.rs
   - formal/tlaplus/node_observation/ObserverSession.tla
+  - formal/tlaplus/node_observation/MC_ObserverSession.tla
   - formal/tlaplus/node_observation/MC_ObserverSession.cfg
+  - formal/tlaplus/node_observation/MC_ObserverSession_freshness_pre_fix.tla
   - formal/tlaplus/node_observation/MC_ObserverSession_freshness_pre_fix.cfg
+  - formal/tlaplus/node_observation/MC_ObserverSession_challenge_unsafe.tla
+  - formal/tlaplus/node_observation/MC_ObserverSession_challenge_unsafe.cfg
+  - formal/tlaplus/node_observation/MC_ObserverSession_identity_unsafe.tla
+  - formal/tlaplus/node_observation/MC_ObserverSession_identity_unsafe.cfg
+  - formal/tlaplus/node_observation/MC_ObserverSession_frame_unsafe.tla
+  - formal/tlaplus/node_observation/MC_ObserverSession_frame_unsafe.cfg
+  - formal/tlaplus/node_observation/MC_ObserverSession_deadline_unsafe.tla
+  - formal/tlaplus/node_observation/MC_ObserverSession_deadline_unsafe.cfg
+  - formal/tlaplus/node_observation/MC_ObserverSession_repeat_unsafe.tla
+  - formal/tlaplus/node_observation/MC_ObserverSession_repeat_unsafe.cfg
+  - formal/tlaplus/node_observation/MC_ObserverSession_budget_unsafe.tla
+  - formal/tlaplus/node_observation/MC_ObserverSession_budget_unsafe.cfg
   - formal/tlaplus/node_observation/README.md
+  - formal/tlaplus/node_observation/verification-plan.json
+  - formal/tlaplus/node_observation/bindings.json
   - formal/rocq/node_observation/_CoqProject
   - formal/rocq/node_observation/README.md
   - formal/rocq/node_observation/theories/ObserverSession.v
@@ -155,7 +171,11 @@ The user confirmed the TASK-019-4 implementation scope after the property review
 
 The first verification cycle concerns challenge allocation and replay within one observer lifetime. It does not discharge the other properties or establish cross-incarnation uniqueness.
 
-The added inventory names this cycle's inputs. Later cycles must register their approved inputs before implementation.
+The user then confirmed reconciliation with the broader downstream models on the node branch. The expanded inventory preserves both model families and the repeated-entropy control.
+
+The node branch owns the canonical models, configurations, and property map. Downstream integration must combine gate registrations without removing either branch's required checks.
+
+This reconciliation does not establish complete Rust correspondence or claim acceptance.
 
 ## Verification requirements
 

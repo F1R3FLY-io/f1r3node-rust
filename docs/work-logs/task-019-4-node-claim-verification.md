@@ -435,3 +435,87 @@ Both claims remain pending. The added verification artifacts also remain pending
 Remaining work includes cross-incarnation identity, the other interface properties, all capture properties, Kani arithmetic harnesses, and complete Rust correspondence.
 
 Named maintainer review must cover every applicability decision and the final source-bound package. B2 planning and task completion remain blocked.
+
+## Canonical model reconciliation
+
+The user confirmed reconciliation after the downstream branch identified two conflicting model sets. The node branch now owns one canonical set.
+
+The node base is `10e7b8452824e12a1fe2743dca7989b79fce2133`. Downstream `8a379f05a07974ae9af6b450e6cea5fa6da80e0f` identifies imported model inputs, not the evidence base.
+
+The [reconciliation package](../cbc-evidence/runs/casper-node-model-reconciliation-10e7b8452-01/report.json) records the working-tree inputs above that node base. It does not cite the harness merge as its source base.
+
+### Canonical set and registration union
+
+`ObserverSession.tla` combines sequence-based challenge allocation with the broader session predicates. Repeated random outputs remain permitted.
+
+`BoundedCapture.tla` retains the imported capture transition system. Entry modules share these two state machines rather than defining alternative implementations.
+
+The configuration inventory contains two positive cases and 17 negative cases. The negative cases preserve all 16 downstream controls and the node freshness control.
+
+The gate checks exact agreement between registrations, the JSON plan, and configuration files. It checks the complete canonical set in both gate tiers.
+
+The gate also preserves stricter output classification. Incomplete searches, absent traces, duplicate violations, unrelated errors, and contradictory output fail verification.
+
+The new fixtures fail against the old node gate with exit 1. That gate accepted a negative control without a trace.
+
+The retained failure is a gate regression, not a model counterexample. Its wrapper exits zero only after checking the expected failed assertion.
+
+### Claim-record separation
+
+The node package owns the node-specific gate registration view. That view binds both node claim digests and the current gate source.
+
+The default gate record retains its legacy governance claim and historical source identity. It no longer embeds node claim digests or node acceptance metadata.
+
+The harness keeps its own primary record under `docs/casper/cbc-evidence/`. Downstream integration must not replace that record with the node view.
+
+A gate source change can require a harness renewal. An unrelated node claim edit must not require that renewal merely through a shared digest field.
+
+The workflow record uses the same separation. Existing finality and governance obligations remain pending and unchanged in meaning.
+
+### Checker ownership and binding limits
+
+This branch adds no standalone checker crate, workspace, or lockfile. The existing gate and node binding driver execute the checks.
+
+The downloaded downstream crate was inspected only in ignored evidence storage. It was not added to the node tree or executed.
+
+Downstream must remove that crate or place it under its supply-chain audit before acceptance. Its dependency issue is not resolved by this node reconciliation.
+
+The downstream binding parser hardcodes 18 interface tests and two storage unit tests. This node revision instead has 19 interface tests and one capture-specific storage unit test.
+
+The canonical map also names supplemental node unit tests and records binding gaps. Downstream tooling must preserve those distinctions instead of silently dropping them.
+
+The map covers all 23 required property numbers and 64 test references. The references were checked against source declarations, not treated as semantic proofs.
+
+The deterministic generation-rejection test exists only downstream. The node map records this B8 gap and retains the available partial tests.
+
+No Rust implementation, Cargo manifest, Cargo lockfile, or supply-chain policy changed in this reconciliation. No B2 or campaign operation was added.
+
+### New verification results
+
+The session model passed with 745 generated states and 689 distinct states. The capture model passed with 20,376 generated states and 10,066 distinct states.
+
+All 17 node negative controls failed on their named invariants. The full bounded gate passed 15 positive configurations and 78 expected violations.
+
+The fixture suite passed with 78 registered controls. It also checked plan disagreement, duplicate entries, and unregistered controls in both node families.
+
+The four existing Rocq theorems rebuilt successfully. Kernel checking passed, and every assumption query reported `Closed under the global context`.
+
+The action projection to those theorems is documented, not machine-checked. The four theorems do not prove the additional session or capture properties.
+
+The isolated binding driver passed 257 node-library tests and 19 interface tests. One interface helper remained ignored when invoked directly.
+
+The driver checked 23,314 isolated-cache files before compilation. It imported no host-built project objects and did not use a fresh target directory.
+
+The driver recorded both raw and debug-stripped executable identities. It checked allocated sections, program headers, source hashes, and executable hashes.
+
+This cycle did not rerun the storage suites, workspace checks, or Clippy. Their earlier results remain historical evidence rather than new execution.
+
+Five active language-server checks reported no diagnostics for the changed shell and JSON files. The model and theorem compilers supplied separate formal checks.
+
+The STE check uses baselines for unchanged claim and tracker prose. Initial sentence, paragraph, semicolon, and baseline-coverage failures remain in the evidence.
+
+The index changed externally during verification, but HEAD remained at the node base. The assistant issued no staging, commit, merge, or push command.
+
+Both claims remain pending. All applicability decisions and complete Rust correspondence still require named maintainer review.
+
+B2 planning remains blocked. Downstream integration must take the canonical model files, preserve the Rocq and binding registrations, and combine gate registration lists.

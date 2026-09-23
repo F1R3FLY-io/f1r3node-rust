@@ -9,7 +9,7 @@ This record adds the Batch B1 capture boundary only. The file's existing `CLAIM-
   "artifact": {
     "path": "block-storage/src/rust/dag/block_dag_key_value_storage.rs",
     "id": "block-storage-src-rust-dag-block-dag-key-value-storage-rs",
-    "commit": "4561e064a70b495fe07cbcf779bff375d636aaad",
+    "commit": "10e7b8452824e12a1fe2743dca7989b79fce2133",
     "commit_is_base": true,
     "working_tree": true,
     "sha256": "81b9d16d0321d7781dc392c7eab213d29d1858d20b64fcb0f18cf2cf2bc03f6f"
@@ -19,20 +19,20 @@ This record adds the Batch B1 capture boundary only. The file's existing `CLAIM-
     "CLAIM-CASPER-NODE-OBSERVATION-002"
   ],
   "claim_digests": {
-    "docs/claims/casper-node-authority-snapshot.md": "0a903c524a3e3e3b598fddd6ec149e578fb18f396199cd0ab5741faa87df6121"
+    "docs/claims/casper-node-authority-snapshot.md": "4a2282757f77e01161e729f54c36b75c6c4074c9c8e37711d164cd64aa0196a8"
   },
   "adapter": null,
   "status": "pending",
   "scope": "batch-b1-bounded-detached-capture",
   "evidence": {
-    "kind": "local-tests-not-discharge",
-    "ref": "docs/cbc-evidence/runs/casper-node-deadline-correction-4561e064a-01/report.json",
-    "sha256": "c8568def5c1d65b2a27c267335c66b56abc2ffc853735de92adeb1ae68b64340"
+    "kind": "partial-reconciliation-not-discharge",
+    "ref": "docs/cbc-evidence/runs/casper-node-model-reconciliation-10e7b8452-01/report.json",
+    "sha256": "1ed89bb3221fddeba2782c1496f9f4a59a37a23359feea348bbc9f8981a3d09c"
   },
   "previous_record": {
-    "commit": "4561e064a70b495fe07cbcf779bff375d636aaad",
     "path": "docs/cbc-evidence/block-storage-src-rust-dag-block-dag-key-value-storage-rs.md",
-    "sha256": "0577b399f6eda75e460bc1cb77cc624b7f4888eb0a58266527eca2c58393b3fe"
+    "sha256": "1d3ec5ec29fb4f9eedd878c041ac9d2834c366be0c14f9a28f4f3376921a5478",
+    "archive": "records-pre-refresh"
   },
   "tiers": {
     "refutation": "pending",

@@ -7,7 +7,7 @@ The capture claim remains pending. Local tests do not discharge the claim or qua
   "artifact": {
     "path": "shared/src/rust/store/soak_snapshot.rs",
     "id": "shared-src-rust-store-soak-snapshot-rs",
-    "commit": "6198821283b960c3aafae1e8c35966b883dfd2f3",
+    "commit": "10e7b8452824e12a1fe2743dca7989b79fce2133",
     "commit_is_base": true,
     "working_tree": true,
     "sha256": "e6d91e9484a6ca5e95c892041c628cfe24eafb06b5923270868477a254c2712c"
@@ -17,20 +17,20 @@ The capture claim remains pending. Local tests do not discharge the claim or qua
     "CLAIM-CASPER-NODE-OBSERVATION-002"
   ],
   "claim_digests": {
-    "docs/claims/casper-node-authority-snapshot.md": "0a903c524a3e3e3b598fddd6ec149e578fb18f396199cd0ab5741faa87df6121"
+    "docs/claims/casper-node-authority-snapshot.md": "4a2282757f77e01161e729f54c36b75c6c4074c9c8e37711d164cd64aa0196a8"
   },
   "adapter": null,
   "status": "pending",
   "scope": "batch-b1-bounded-detached-capture",
   "evidence": {
-    "kind": "local-tests-not-discharge",
-    "ref": "docs/cbc-evidence/runs/casper-node-snapshot-completion-619882128-01/report.json",
-    "sha256": "73848a230f169a62736d60c5440fa2ea24b991ab7a6f80b0d138718547c9d5a7"
+    "kind": "partial-reconciliation-not-discharge",
+    "ref": "docs/cbc-evidence/runs/casper-node-model-reconciliation-10e7b8452-01/report.json",
+    "sha256": "1ed89bb3221fddeba2782c1496f9f4a59a37a23359feea348bbc9f8981a3d09c"
   },
   "previous_record": {
-    "commit": "6198821283b960c3aafae1e8c35966b883dfd2f3",
     "path": "docs/cbc-evidence/shared-src-rust-store-soak-snapshot-rs.md",
-    "sha256": "e02f773fe07f1a8038a696b15232addd7fee6c938daf8e04a736ac73e0c381e6"
+    "sha256": "017570c7942f1c269b60a54dee65542d155cdfac6059916780d932dbfd8818bf",
+    "archive": "records-pre-refresh"
   },
   "tiers": {
     "refutation": "pending",

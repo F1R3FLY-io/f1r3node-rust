@@ -46,6 +46,12 @@ Retained outside Git by the agent that ran the cycles. The digests bind that raw
 | `g0-hosted-d6aaba962-2026-09-08/manifest.json` | `618bd14f61760e12959e97636a6c7a46a4e8cd2c7f15381859058d305db634c8` |
 | `repin-962effd-2026-09-08/manifest.json` | `3858c683327fd88fff364fb1974adcadc748cea0464d1e26ea0989e406ca3e9e` |
 
+## Claim separation
+
+Node claims record their gate registration evidence in their own run packages. This record retains its primary claim and historical source identity.
+
+The harness claim keeps its separate record under `docs/casper/cbc-evidence/`. Node claim digests must not replace or extend that record.
+
 ## Open
 
 - Rulesets `devProtect` (15773875) and `masterProtect` (14299997) require `Lint` only. `TLA+ invariant check` is not required. The classic-protection endpoint returned 403.
@@ -64,29 +70,14 @@ Retained outside Git by the agent that ran the cycles. The digests bind that raw
   },
   "claim": "CLAIM-SOAK-GATE-001",
   "claim_ids": [
-    "CLAIM-SOAK-GATE-001",
-    "CLAIM-CASPER-NODE-OBSERVATION-001"
+    "CLAIM-SOAK-GATE-001"
   ],
-  "claim_digests": {
-    "docs/claims/casper-node-observation.md": "a6cf721403133c9ac7a812d5bb58aa8391212b5cab542170708cd10ddc0adcd4"
-  },
-  "node_verification": {
-    "kind": "partial-verification-not-discharge",
-    "ref": "docs/cbc-evidence/runs/casper-node-challenge-freshness-3b1d2465a-01/report.json",
-    "sha256": "1e063eec0183aa8a51b1561c35b5078031c23bb16876867705f04ae7c4d16dd9"
-  },
   "previous_record": {
     "commit": "3b1d2465a39b020426b3caa02bf5313d2b9fac5b",
     "path": "docs/cbc-evidence/scripts-ci-check-tla-invariants-sh.md",
     "sha256": "0aa564b1f65b136429ef9f3291021c31a121c9555180e9958c5432d7bc4e1d7b"
   },
-  "additional_claims": [
-    {
-      "path": "docs/claims/casper-node-observation.md",
-      "status": "pending",
-      "scope": "node-observation-model-registration"
-    }
-  ],
+  "verification_scope": "historical-gate-evidence-not-node-claim-renewal",
   "adapter": "embedded",
   "status": "pending",
   "evidence": {

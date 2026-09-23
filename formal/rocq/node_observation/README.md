@@ -45,6 +45,12 @@ coqchk -Q theories NodeObservation NodeObservation.MainTheorem
 
 The formal gate separately prints the assumptions of each exported theorem. Build success alone does not establish a closed assumption set.
 
-The [TLA+ area](../../tlaplus/node_observation/README.md) records the bounded counterexample and the Rust binding tests.
+The [TLA+ area](../../tlaplus/node_observation/README.md) contains the canonical session and capture models.
+
+Its `Begin` action projects to `Hello`. A successful `Reply` projects to `Response`, while `Tick` and `Close` project to `Rejected`.
+
+The projection reverses the TLA+ history because `issued` stores the newest token first. Additional admission guards restrict enabled transitions without changing allocation.
+
+This projection is a documented source argument, not a machine-checked refinement proof. The four theorems do not prove the additional session or capture invariants.
 
 Cross-incarnation uniqueness, the other Batch A properties, and all Batch B1 properties remain pending. Named maintainer review also remains pending.

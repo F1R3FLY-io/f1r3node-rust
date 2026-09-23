@@ -1,0 +1,488 @@
+{
+  "schema_version": 1,
+  "binding_kind": "provisional-property-to-executable-test-map",
+  "machine_checked_refinement": false,
+  "claims": [
+    {
+      "claim_id": "CLAIM-CASPER-NODE-OBSERVATION-001",
+      "claim": "docs/claims/casper-node-observation.md",
+      "model": "ObserverSession",
+      "properties": [
+        {
+          "property": 1,
+          "invariants": [],
+          "coverage": "rust-tests-only",
+          "tests": [
+            {
+              "source": "node/tests/soak_observer.rs",
+              "name": "default_configuration_has_no_observer"
+            }
+          ]
+        },
+        {
+          "property": 2,
+          "invariants": [],
+          "coverage": "rust-tests-only",
+          "tests": [
+            {
+              "source": "node/tests/soak_observer.rs",
+              "name": "configuration_limits_and_unknown_fields_are_rejected"
+            },
+            {
+              "source": "node/tests/soak_observer.rs",
+              "name": "hocon_configuration_is_validated_and_cli_takes_precedence"
+            }
+          ]
+        },
+        {
+          "property": 3,
+          "invariants": [],
+          "coverage": "rust-tests-only",
+          "tests": [
+            {
+              "source": "node/tests/soak_observer.rs",
+              "name": "unsafe_directories_links_and_existing_paths_are_rejected"
+            },
+            {
+              "source": "node/tests/soak_observer.rs",
+              "name": "duplicate_observer_does_not_remove_the_active_socket"
+            }
+          ]
+        },
+        {
+          "property": 4,
+          "invariants": [
+            "BoundIdentity"
+          ],
+          "coverage": "bounded-model-and-rust-tests",
+          "tests": [
+            {
+              "source": "node/tests/soak_observer.rs",
+              "name": "peer_start_identity_must_match"
+            },
+            {
+              "source": "node/tests/soak_observer.rs",
+              "name": "a_different_process_cannot_receive_the_handshake"
+            }
+          ]
+        },
+        {
+          "property": 5,
+          "invariants": [
+            "FreshChallenge",
+            "BoundIdentity",
+            "FreshChallenges",
+            "ReplayRefused"
+          ],
+          "coverage": "bounded-model-and-rust-tests",
+          "tests": [
+            {
+              "source": "node/tests/soak_observer.rs",
+              "name": "mismatched_identities_and_fault_commands_are_rejected"
+            },
+            {
+              "source": "node/tests/soak_observer.rs",
+              "name": "capabilities_are_bound_and_never_claim_live_qualification"
+            },
+            {
+              "source": "node/tests/soak_observer.rs",
+              "name": "session_sequences_match_an_independent_event_oracle"
+            }
+          ],
+          "supplemental_tests": [
+            {
+              "source": "node/src/rust/soak_observer.rs",
+              "name": "rust::soak_observer::linux::tests::repeated_entropy_cannot_replay_a_request"
+            },
+            {
+              "source": "node/src/rust/soak_observer.rs",
+              "name": "rust::soak_observer::linux::tests::exhausted_sequence_refuses_a_handshake"
+            }
+          ]
+        },
+        {
+          "property": 6,
+          "invariants": [
+            "FreshChallenge",
+            "OneRequest",
+            "FreshChallenges",
+            "ReplayRefused"
+          ],
+          "coverage": "bounded-model-and-rust-tests",
+          "tests": [
+            {
+              "source": "node/tests/soak_observer.rs",
+              "name": "replayed_challenges_and_previous_incarnations_are_rejected"
+            },
+            {
+              "source": "node/tests/soak_observer.rs",
+              "name": "capabilities_are_bound_and_never_claim_live_qualification"
+            },
+            {
+              "source": "node/tests/soak_observer.rs",
+              "name": "session_sequences_match_an_independent_event_oracle"
+            }
+          ],
+          "supplemental_tests": [
+            {
+              "source": "node/src/rust/soak_observer.rs",
+              "name": "rust::soak_observer::linux::tests::repeated_entropy_cannot_replay_a_request"
+            },
+            {
+              "source": "node/src/rust/soak_observer.rs",
+              "name": "rust::soak_observer::linux::tests::exhausted_sequence_refuses_a_handshake"
+            }
+          ]
+        },
+        {
+          "property": 7,
+          "invariants": [
+            "BoundFrame",
+            "BoundDeadline",
+            "SessionBudget"
+          ],
+          "coverage": "bounded-model-and-rust-tests",
+          "tests": [
+            {
+              "source": "node/tests/soak_observer.rs",
+              "name": "frame_limits_and_session_deadlines_close_connections"
+            },
+            {
+              "source": "node/tests/soak_observer.rs",
+              "name": "exact_frame_limit_succeeds_and_malformed_json_fails"
+            },
+            {
+              "source": "node/tests/soak_observer.rs",
+              "name": "only_one_session_is_active_and_disconnect_releases_it"
+            },
+            {
+              "source": "node/tests/soak_observer.rs",
+              "name": "session_budget_stops_only_the_observer"
+            }
+          ]
+        },
+        {
+          "property": 8,
+          "invariants": [],
+          "coverage": "rust-tests-only",
+          "tests": [
+            {
+              "source": "node/tests/soak_observer.rs",
+              "name": "capabilities_are_bound_and_never_claim_live_qualification"
+            },
+            {
+              "source": "node/tests/soak_observer.rs",
+              "name": "mismatched_identities_and_fault_commands_are_rejected"
+            }
+          ]
+        },
+        {
+          "property": 9,
+          "invariants": [],
+          "coverage": "rust-tests-only",
+          "tests": [
+            {
+              "source": "node/tests/soak_observer.rs",
+              "name": "runtime_source_returns_before_observer_cleanup_and_exit"
+            },
+            {
+              "source": "node/tests/soak_observer.rs",
+              "name": "cleanup_preserves_a_replacement_file"
+            },
+            {
+              "source": "node/tests/soak_observer.rs",
+              "name": "dropping_the_owner_cancels_a_pending_session"
+            }
+          ]
+        },
+        {
+          "property": 10,
+          "invariants": [],
+          "coverage": "rust-tests-only",
+          "tests": [
+            {
+              "source": "node/tests/soak_observer.rs",
+              "name": "secret_changes_do_not_change_the_public_configuration_digest"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "claim_id": "CLAIM-CASPER-NODE-OBSERVATION-002",
+      "claim": "docs/claims/casper-node-authority-snapshot.md",
+      "model": "BoundedCapture",
+      "properties": [
+        {
+          "property": 1,
+          "invariants": [
+            "ValidAdmission",
+            "BoundBytes"
+          ],
+          "coverage": "bounded-model-and-rust-tests",
+          "tests": [
+            {
+              "source": "shared/tests/soak_snapshot.rs",
+              "name": "invalid_limits_are_rejected_before_any_store_access"
+            },
+            {
+              "source": "shared/tests/soak_snapshot.rs",
+              "name": "total_bytes_records_and_operations_budgets_are_enforced"
+            },
+            {
+              "source": "block-storage/tests/soak_snapshot.rs",
+              "name": "invalid_limits_are_rejected_before_guards_or_reads"
+            },
+            {
+              "source": "block-storage/tests/soak_snapshot.rs",
+              "name": "lock_wait_without_a_representable_deadline_is_invalid"
+            },
+            {
+              "source": "block-storage/tests/soak_snapshot.rs",
+              "name": "invalid_lock_deadline_is_rejected_before_guards_or_reads"
+            }
+          ]
+        },
+        {
+          "property": 2,
+          "invariants": [
+            "BoundLockWait",
+            "GuardOrder"
+          ],
+          "coverage": "bounded-model-and-rust-tests",
+          "tests": [
+            {
+              "source": "block-storage/src/rust/dag/soak_snapshot.rs",
+              "name": "rust::dag::soak_snapshot::tests::all_capture_guards_use_the_supplied_deadline"
+            }
+          ]
+        },
+        {
+          "property": 3,
+          "invariants": [
+            "OpenIdentity"
+          ],
+          "coverage": "bounded-model-and-rust-tests",
+          "tests": [
+            {
+              "source": "shared/tests/soak_snapshot.rs",
+              "name": "stores_in_one_environment_share_one_transaction_and_a_second_same_thread_reader_fails"
+            },
+            {
+              "source": "shared/tests/soak_snapshot.rs",
+              "name": "separate_environments_are_opened_and_validated_together"
+            }
+          ]
+        },
+        {
+          "property": 4,
+          "invariants": [
+            "OpenIdentity",
+            "ValidatedIdentity"
+          ],
+          "coverage": "bounded-model-and-rust-tests",
+          "tests": [
+            {
+              "source": "shared/tests/soak_snapshot.rs",
+              "name": "unchanged_environment_validates_and_stored_bytes_are_untouched"
+            },
+            {
+              "source": "block-storage/tests/soak_snapshot.rs",
+              "name": "capture_copies_the_held_dag_with_ordered_parents_and_availability_states"
+            }
+          ]
+        },
+        {
+          "property": 5,
+          "invariants": [
+            "BoundBytes"
+          ],
+          "coverage": "bounded-model-and-rust-tests",
+          "tests": [
+            {
+              "source": "shared/tests/soak_snapshot.rs",
+              "name": "raw_length_is_checked_before_the_value_is_copied"
+            },
+            {
+              "source": "shared/tests/soak_snapshot.rs",
+              "name": "malformed_length_prefix_is_rejected"
+            },
+            {
+              "source": "block-storage/tests/soak_snapshot.rs",
+              "name": "bounded_block_decoding_rejects_oversized_lengths_before_allocation"
+            },
+            {
+              "source": "block-storage/tests/soak_snapshot.rs",
+              "name": "bounded_block_decoding_rejects_short_decompression_with_valid_zero_padding"
+            },
+            {
+              "source": "block-storage/tests/soak_snapshot.rs",
+              "name": "metadata_collections_are_bounded_before_typed_decoding"
+            },
+            {
+              "source": "block-storage/tests/soak_snapshot.rs",
+              "name": "aggregate_parent_limit_precedes_decoding_of_later_metadata"
+            }
+          ]
+        },
+        {
+          "property": 6,
+          "invariants": [
+            "GuardOrder",
+            "ReadOnly"
+          ],
+          "coverage": "bounded-model-and-rust-tests",
+          "tests": [
+            {
+              "source": "block-storage/tests/soak_snapshot.rs",
+              "name": "capture_copies_the_held_dag_with_ordered_parents_and_availability_states"
+            },
+            {
+              "source": "block-storage/tests/soak_snapshot.rs",
+              "name": "production_store_bytes_are_unchanged_by_successful_and_rejected_captures"
+            }
+          ]
+        },
+        {
+          "property": 7,
+          "invariants": [
+            "ValidatedIdentity"
+          ],
+          "coverage": "bounded-model-and-rust-tests",
+          "tests": [
+            {
+              "source": "shared/tests/soak_snapshot.rs",
+              "name": "write_between_open_and_validation_is_rejected"
+            },
+            {
+              "source": "shared/tests/soak_snapshot.rs",
+              "name": "value_changed_back_to_original_bytes_is_still_rejected"
+            },
+            {
+              "source": "block-storage/tests/soak_snapshot.rs",
+              "name": "finalization_row_write_without_generation_change_is_rejected"
+            },
+            {
+              "source": "block-storage/tests/soak_snapshot.rs",
+              "name": "cache_row_write_without_global_lock_is_rejected"
+            },
+            {
+              "source": "block-storage/tests/soak_snapshot.rs",
+              "name": "block_store_environment_change_is_reported_separately"
+            }
+          ]
+        },
+        {
+          "property": 8,
+          "invariants": [
+            "GenerationStable"
+          ],
+          "coverage": "bounded-model-and-partial-rust-tests",
+          "tests": [
+            {
+              "source": "block-storage/tests/soak_snapshot.rs",
+              "name": "captured_data_survives_later_live_mutations"
+            },
+            {
+              "source": "block-storage/tests/soak_snapshot.rs",
+              "name": "finalization_row_write_without_generation_change_is_rejected"
+            }
+          ],
+          "gaps": [
+            "The node branch has no deterministic generation-change rejection test. The downstream-only test is not imported by this model reconciliation."
+          ]
+        },
+        {
+          "property": 9,
+          "invariants": [
+            "CompleteRows"
+          ],
+          "coverage": "bounded-model-and-rust-tests",
+          "tests": [
+            {
+              "source": "block-storage/tests/soak_snapshot.rs",
+              "name": "held_block_without_metadata_row_is_incomplete_evidence"
+            },
+            {
+              "source": "block-storage/tests/soak_snapshot.rs",
+              "name": "held_block_without_body_row_is_incomplete_but_unknown_block_is_not_held"
+            },
+            {
+              "source": "block-storage/tests/soak_snapshot.rs",
+              "name": "present_cache_seeds_are_captured_and_absent_seeds_stay_absent"
+            }
+          ]
+        },
+        {
+          "property": 10,
+          "invariants": [
+            "Detached",
+            "ReadOnly"
+          ],
+          "coverage": "bounded-model-and-rust-tests",
+          "tests": [
+            {
+              "source": "block-storage/tests/soak_snapshot.rs",
+              "name": "capture_copies_the_held_dag_with_ordered_parents_and_availability_states"
+            },
+            {
+              "source": "block-storage/tests/soak_snapshot.rs",
+              "name": "production_store_bytes_are_unchanged_by_successful_and_rejected_captures"
+            }
+          ]
+        },
+        {
+          "property": 11,
+          "invariants": [],
+          "coverage": "rust-tests-only",
+          "tests": [
+            {
+              "source": "block-storage/tests/soak_snapshot.rs",
+              "name": "capture_copies_the_held_dag_with_ordered_parents_and_availability_states"
+            },
+            {
+              "source": "block-storage/tests/soak_snapshot.rs",
+              "name": "duration_identity_does_not_truncate_to_u64_nanoseconds"
+            },
+            {
+              "source": "block-storage/tests/soak_snapshot.rs",
+              "name": "canonical_output_has_an_exact_byte_bound"
+            }
+          ]
+        },
+        {
+          "property": 12,
+          "invariants": [],
+          "coverage": "rust-tests-only",
+          "tests": [
+            {
+              "source": "block-storage/tests/soak_snapshot.rs",
+              "name": "scratch_views_share_no_mutable_stores_with_each_other_or_production"
+            },
+            {
+              "source": "block-storage/tests/soak_snapshot.rs",
+              "name": "scratch_block_stores_use_captured_bytes_and_are_independent"
+            }
+          ]
+        },
+        {
+          "property": 13,
+          "invariants": [
+            "ValidAdmission"
+          ],
+          "coverage": "bounded-model-and-rust-tests",
+          "tests": [
+            {
+              "source": "shared/tests/soak_snapshot.rs",
+              "name": "unsupported_backend_is_rejected_instead_of_substituted"
+            },
+            {
+              "source": "block-storage/tests/soak_snapshot.rs",
+              "name": "in_memory_backend_is_unsupported"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

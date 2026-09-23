@@ -15,6 +15,34 @@ artifacts:
   - block-storage/src/rust/dag/block_metadata_store.rs
   - block-storage/src/rust/key_value_block_store.rs
   - block-storage/tests/soak_snapshot.rs
+  - formal/tlaplus/node_observation/BoundedCapture.tla
+  - formal/tlaplus/node_observation/MC_BoundedCapture.tla
+  - formal/tlaplus/node_observation/MC_BoundedCapture.cfg
+  - formal/tlaplus/node_observation/MC_BoundedCapture_admission_unsafe.tla
+  - formal/tlaplus/node_observation/MC_BoundedCapture_admission_unsafe.cfg
+  - formal/tlaplus/node_observation/MC_BoundedCapture_deadline_unsafe.tla
+  - formal/tlaplus/node_observation/MC_BoundedCapture_deadline_unsafe.cfg
+  - formal/tlaplus/node_observation/MC_BoundedCapture_order_unsafe.tla
+  - formal/tlaplus/node_observation/MC_BoundedCapture_order_unsafe.cfg
+  - formal/tlaplus/node_observation/MC_BoundedCapture_open_unsafe.tla
+  - formal/tlaplus/node_observation/MC_BoundedCapture_open_unsafe.cfg
+  - formal/tlaplus/node_observation/MC_BoundedCapture_validation_unsafe.tla
+  - formal/tlaplus/node_observation/MC_BoundedCapture_validation_unsafe.cfg
+  - formal/tlaplus/node_observation/MC_BoundedCapture_generation_unsafe.tla
+  - formal/tlaplus/node_observation/MC_BoundedCapture_generation_unsafe.cfg
+  - formal/tlaplus/node_observation/MC_BoundedCapture_incomplete_unsafe.tla
+  - formal/tlaplus/node_observation/MC_BoundedCapture_incomplete_unsafe.cfg
+  - formal/tlaplus/node_observation/MC_BoundedCapture_bytes_unsafe.tla
+  - formal/tlaplus/node_observation/MC_BoundedCapture_bytes_unsafe.cfg
+  - formal/tlaplus/node_observation/MC_BoundedCapture_release_unsafe.tla
+  - formal/tlaplus/node_observation/MC_BoundedCapture_release_unsafe.cfg
+  - formal/tlaplus/node_observation/MC_BoundedCapture_write_unsafe.tla
+  - formal/tlaplus/node_observation/MC_BoundedCapture_write_unsafe.cfg
+  - formal/tlaplus/node_observation/README.md
+  - formal/tlaplus/node_observation/verification-plan.json
+  - formal/tlaplus/node_observation/bindings.json
+  - scripts/ci/check-tla-invariants.sh
+  - scripts/ci/test-check-tla-invariants.sh
 refutation: pending
 construction: pending
 binding: pending
@@ -72,6 +100,12 @@ Both suites use LMDB environments on the local filesystem. No running node, live
 Unit and integration tests supply evidence but do not discharge this claim. Source-bound verification and explicit acceptance remain pending.
 
 ## Verification requirements
+
+The user confirmed model reconciliation on the node branch. The expanded inventory registers the bounded capture model and its ten negative controls.
+
+These controls test selected abstract transitions. They do not supply construction proofs, complete Rust correspondence, or named maintainer acceptance.
+
+The node package records gate registration evidence separately from the harness claim record. A node claim edit does not renew the harness claim.
 
 Retain failing controls for invalid limits, unsupported backends, raw length, malformed prefixes, record and operation budgets, environment changes, restored values, incomplete rows, oversized block lengths, and scratch independence.
 

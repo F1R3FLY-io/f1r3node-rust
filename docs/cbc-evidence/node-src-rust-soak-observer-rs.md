@@ -7,7 +7,7 @@ The interface claim remains pending. Local tests do not discharge the claim or q
   "artifact": {
     "path": "node/src/rust/soak_observer.rs",
     "id": "node-src-rust-soak-observer-rs",
-    "commit": "3b1d2465a39b020426b3caa02bf5313d2b9fac5b",
+    "commit": "10e7b8452824e12a1fe2743dca7989b79fce2133",
     "commit_is_base": true,
     "working_tree": true,
     "sha256": "542a454a57db3774663e7a2010ffdf5b0b7d746078fabbab7849404b5322f68d"
@@ -17,20 +17,20 @@ The interface claim remains pending. Local tests do not discharge the claim or q
     "CLAIM-CASPER-NODE-OBSERVATION-001"
   ],
   "claim_digests": {
-    "docs/claims/casper-node-observation.md": "a6cf721403133c9ac7a812d5bb58aa8391212b5cab542170708cd10ddc0adcd4"
+    "docs/claims/casper-node-observation.md": "3fc9de43df482f5c0ad240583dc7b4f12523e0881443348e9026dfc1539afe28"
   },
   "adapter": null,
   "status": "pending",
   "scope": "batch-a-local-capability-interface",
   "evidence": {
-    "kind": "partial-verification-not-discharge",
-    "ref": "docs/cbc-evidence/runs/casper-node-challenge-freshness-3b1d2465a-01/report.json",
-    "sha256": "1e063eec0183aa8a51b1561c35b5078031c23bb16876867705f04ae7c4d16dd9"
+    "kind": "partial-reconciliation-not-discharge",
+    "ref": "docs/cbc-evidence/runs/casper-node-model-reconciliation-10e7b8452-01/report.json",
+    "sha256": "1ed89bb3221fddeba2782c1496f9f4a59a37a23359feea348bbc9f8981a3d09c"
   },
   "previous_record": {
-    "commit": "3b1d2465a39b020426b3caa02bf5313d2b9fac5b",
     "path": "docs/cbc-evidence/node-src-rust-soak-observer-rs.md",
-    "sha256": "939e8c3db69c606b808d3208dd312b9aead7a25fa2923c1f44a6d9f1fcbd2889"
+    "sha256": "9cde766b0d9028fad203bd78740403e1525f1ca1339509fc30d1906694f6b0de",
+    "archive": "records-pre-refresh"
   },
   "tiers": {
     "refutation": "pending",

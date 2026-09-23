@@ -114,6 +114,7 @@ POST_FIX_CONFIGS=(
     soak_disk/MC_ReserveBound
     soak_disk/MC_RetentionReserve
     node_observation/MC_ObserverSession
+    node_observation/MC_BoundedCapture
 )
 
 TLC_WORKERS=auto
@@ -133,6 +134,7 @@ if [[ "$SOAK_PR" == true ]]; then
         soak_disk/MC_ReserveBound
         soak_disk/MC_RetentionReserve
         node_observation/MC_ObserverSession
+        node_observation/MC_BoundedCapture
     )
     TLC_WORKERS=2
 fi
@@ -174,6 +176,22 @@ fi
 # scripts/ci/test-check-tla-invariants.sh reads this list rather than copying it.
 NEGATIVE_CONTROLS=(
     node_observation/MC_ObserverSession_freshness_pre_fix:FreshChallenges
+    node_observation/MC_ObserverSession_challenge_unsafe:FreshChallenge
+    node_observation/MC_ObserverSession_identity_unsafe:BoundIdentity
+    node_observation/MC_ObserverSession_frame_unsafe:BoundFrame
+    node_observation/MC_ObserverSession_deadline_unsafe:BoundDeadline
+    node_observation/MC_ObserverSession_repeat_unsafe:OneRequest
+    node_observation/MC_ObserverSession_budget_unsafe:SessionBudget
+    node_observation/MC_BoundedCapture_admission_unsafe:ValidAdmission
+    node_observation/MC_BoundedCapture_deadline_unsafe:BoundLockWait
+    node_observation/MC_BoundedCapture_order_unsafe:GuardOrder
+    node_observation/MC_BoundedCapture_open_unsafe:OpenIdentity
+    node_observation/MC_BoundedCapture_validation_unsafe:ValidatedIdentity
+    node_observation/MC_BoundedCapture_generation_unsafe:GenerationStable
+    node_observation/MC_BoundedCapture_incomplete_unsafe:CompleteRows
+    node_observation/MC_BoundedCapture_bytes_unsafe:BoundBytes
+    node_observation/MC_BoundedCapture_release_unsafe:Detached
+    node_observation/MC_BoundedCapture_write_unsafe:ReadOnly
     carrier_index/MC_CarrierIndex_dag_first_pre_fix:IndexCompleteForWindow
     carrier_index/MC_CarrierIndex_read_failure_pre_fix:AbsenceProofSound
     soak_disk/MC_SoakDiskAdmission_floor_only_pre_fix:AdmissionRequiresBand
@@ -246,7 +264,7 @@ REGISTERED_CONTROL_AREAS=(carrier_index deploy_storage soak_disk node_observatio
 for entry in "${POST_FIX_CONFIGS[@]}"; do
     area="${entry%%/*}"
     printf '%s\n' "${REGISTERED_CONTROL_AREAS[@]}" | grep -Fx "$area" >/dev/null || continue
-    for cfg in "$TLA_ROOT/$entry"_*_pre_fix.cfg; do
+    for cfg in "$TLA_ROOT/$entry"_*_pre_fix.cfg "$TLA_ROOT/$entry"_*_unsafe.cfg; do
         [[ -f "$cfg" ]] || continue
         control="$area/$(basename "$cfg" .cfg)"
         if ! printf '%s\n' "${NEGATIVE_CONTROLS[@]}" | grep "^$control:" >/dev/null; then
@@ -255,6 +273,39 @@ for entry in "${POST_FIX_CONFIGS[@]}"; do
         fi
     done
 done
+
+plan="$TLA_ROOT/node_observation/verification-plan.json"
+plan_entries=$(jq -er '
+    .models as $models |
+    if ($models | length) == 19 and
+       ([$models[].module] | unique | length) == 19 and
+       ([$models[] | select(.expected_exit == 0) | .module] | sort) ==
+         ["MC_BoundedCapture", "MC_ObserverSession"] and
+       all($models[]; (.module | test("^MC_[A-Za-z_]+$")) and
+         .configuration == (.module + ".cfg") and
+         ((.expected_exit == 0 and .invariant == null) or
+          (.expected_exit == 12 and (.invariant | type) == "string" and
+           (.invariant | test("^[A-Za-z]+$")))))
+    then $models[] | .module + ":" + (.invariant // "")
+    else error("Invalid node model inventory") end' "$plan" | sort)
+registered_entries=$(
+    for entry in "${POST_FIX_CONFIGS[@]}"; do
+        [[ "$entry" != node_observation/* ]] || printf '%s:\n' "${entry#*/}"
+    done
+    for entry in "${NEGATIVE_CONTROLS[@]}"; do
+        [[ "$entry" != node_observation/* ]] || printf '%s\n' "${entry#*/}"
+    done
+)
+if [[ "$plan_entries" != "$(printf '%s\n' "$registered_entries" | sort)" ]]; then
+    echo 'ERROR: The node model plan and gate registrations differ.' >&2
+    exit 2
+fi
+plan_configs=$(printf '%s\n' "$plan_entries" | cut -d: -f1 | sort)
+actual_configs=$(for cfg in "$TLA_ROOT"/node_observation/MC_*.cfg; do basename "$cfg" .cfg; done | sort)
+if [[ "$plan_configs" != "$actual_configs" ]]; then
+    echo 'ERROR: The node model plan and configuration files differ.' >&2
+    exit 2
+fi
 
 failed=0
 timeouts=0
@@ -273,11 +324,6 @@ for check in "${POST_FIX_CONFIGS[@]}" "${NEGATIVE_CONTROLS[@]}"; do
     cfg="${entry##*/}"
     log="/tmp/tlc-${entry//\//-}.log"
     module="$cfg"
-    case "$entry" in
-        node_observation/MC_ObserverSession|node_observation/MC_ObserverSession_*_pre_fix)
-            module=ObserverSession
-            ;;
-    esac
     if [[ ! -f "$dir/$module.tla" || ! -f "$dir/$cfg.cfg" ]]; then
         echo "FAIL   $entry (missing $module.tla or $cfg.cfg in $dir — registered config not found)"
         failed=$((failed + 1))
@@ -291,10 +337,21 @@ for check in "${POST_FIX_CONFIGS[@]}" "${NEGATIVE_CONTROLS[@]}"; do
     status=$?
     set -e
     elapsed="$(($(date +%s) - started_epoch))s"
-    if ((status == 0)) && [[ -z "$expected_invariant" ]]; then
+    if ((status == 0)) && [[ -z "$expected_invariant" ]] &&
+        grep -Fxq 'Model checking completed. No error has been found.' "$log" &&
+        awk '/^Error:/ { invalid = 1 } END { exit invalid }' "$log"; then
         echo "OK     $entry ($elapsed)"
     elif ((status == 12)) && [[ -n "$expected_invariant" ]] &&
-        grep -Fxq "Error: Invariant $expected_invariant is violated." "$log"; then
+        awk -v expected="Error: Invariant $expected_invariant is violated." '
+            $0 == expected { violations++ }
+            /^Error:/ && $0 != expected && $0 != "Error: The behavior up to this point is:" { invalid = 1 }
+            /^Model checking completed\. No error has been found\.$/ { invalid = 1 }
+            /^Error: The behavior up to this point is:$/ { trace_header = 1; next }
+            trace_header && /^[[:space:]]*$/ { next }
+            trace_header && /^State 1:/ { found = 1 }
+            { trace_header = 0 }
+            END { exit !(found && violations == 1 && !invalid) }
+        ' "$log"; then
         echo "EXPECTED-FAIL $entry ($expected_invariant, $elapsed)"
     elif ((status == 124)); then
         echo "TIMEOUT $entry after $elapsed (cap $TLC_PER_CONFIG_TIMEOUT) — treat as failure; profile or split the config"

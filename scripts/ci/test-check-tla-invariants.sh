@@ -57,6 +57,20 @@ invariant="$(awk -F '\t' -v c="$config" '$1 == c { print $2 }' "$TEST_TLC_CONTRO
 if [[ "$config" == "${TEST_TLC_TARGET:-}" ]]; then
     case "$TEST_TLC_RESULT" in
         clean) printf 'Model checking completed. No error has been found.\n'; exit 0 ;;
+        incomplete) printf 'Finished in 0s.\n'; exit 0 ;;
+        contradictory)
+            printf 'Model checking completed. No error has been found.\n'
+            if [[ -z "$invariant" ]]; then
+                printf 'Error: The verifier encountered an unexpected failure.\n'
+                exit 0
+            fi ;;
+        extra-invariant) printf 'Error: Invariant TypeOK is violated.\n' ;;
+        duplicate-invariant) printf 'Error: Invariant %s is violated.\n' "$invariant" ;;
+        extra-error) printf 'Error: The verifier encountered an unexpected failure.\n' ;;
+        no-trace)
+            printf 'Error: Invariant %s is violated.\n' "$invariant"
+            printf 'Error: The behavior up to this point is:\n'
+            exit 12 ;;
         wrong-invariant) invariant=TypeOK ;;
         tool-error) printf 'Error: The configuration could not be parsed.\n'; exit 1 ;;
         wrong-exit) printf 'Error: Invariant %s is violated.\n' "$invariant"; exit 1 ;;
@@ -70,6 +84,7 @@ if [[ -z "$invariant" ]]; then
 fi
 printf 'Error: Invariant %s is violated.\n' "$invariant"
 printf 'Error: The behavior up to this point is:\n'
+printf 'State 1: <Initial predicate>\nfixture = TRUE\n'
 exit 12
 SH
 chmod +x "$WORK/bin/tlc"
@@ -98,7 +113,7 @@ mapfile -t AREAS < <(sed -n 's/^REGISTERED_CONTROL_AREAS=(\(.*\))$/\1/p' "$GATE"
 for area in "${AREAS[@]}"; do
     check="$(printf '%s\n' "${CONTROLS[@]}" | grep "^$area/" | awk 'NR == 1')" || fail "The area $area registers no control."
     target="${check%%:*}"
-    for result in clean wrong-invariant tool-error wrong-exit timeout missing; do
+    for result in clean wrong-invariant tool-error wrong-exit no-trace timeout missing; do
         config="$WORK/repo/formal/tlaplus/$target.cfg"
         [[ "$result" != missing ]] || mv "$config" "$config.saved"
         status=0
@@ -207,6 +222,12 @@ done
 checked >"$WORK/full"
 run_gate gate-pr || fail 'The PR-tier gate failed with the fixture.'
 checked >"$WORK/pr"
+for config in "$ROOT"/formal/tlaplus/node_observation/MC_*.cfg; do
+    entry="node_observation/$(basename "$config" .cfg)"
+    for tier in full pr; do
+        grep -Fxq "$entry" "$WORK/$tier" || fail "The $tier tier omits $entry."
+    done
+done
 if grep '^CHECK' "$WORK/run.log" | grep -vq 'cap 2m)'; then
     fail 'A PR-tier configuration is not under the two-minute cap.'
 fi
@@ -237,6 +258,28 @@ if run_gate pull_request TEST_TLC_TARGET="${baseline##*/}.cfg" TEST_TLC_RESULT=v
     fail 'A violated baseline did not fail the pull-request gate.'
 fi
 
+if run_gate pull_request TEST_TLC_TARGET="${baseline##*/}.cfg" TEST_TLC_RESULT=incomplete; then
+    fail 'An incomplete baseline search passed the pull-request gate.'
+fi
+grep -Fq "FAIL   $baseline (" "$WORK/run.log" ||
+    fail 'The gate failed for a reason other than the incomplete baseline search.'
+
+ambiguous_targets=("$baseline")
+for area in "${AREAS[@]}"; do
+    check="$(printf '%s\n' "${CONTROLS[@]}" | grep "^$area/" | awk 'NR == 1')"
+    ambiguous_targets+=("${check%%:*}")
+done
+for target in "${ambiguous_targets[@]}"; do
+    for result in contradictory extra-invariant duplicate-invariant extra-error; do
+        if [[ "$target" == "$baseline" && "$result" != contradictory ]]; then continue; fi
+        if run_gate pull_request TEST_TLC_TARGET="${target##*/}.cfg" TEST_TLC_RESULT="$result"; then
+            fail "The gate accepted ambiguous output for $target with result $result."
+        fi
+        grep -Fq "FAIL   $target (" "$WORK/run.log" ||
+            fail "The gate failed for a reason other than ambiguous output for $target."
+    done
+done
+
 # 3. Registration.
 tla="$WORK/repo/formal/tlaplus"
 planted="$tla/soak_disk/MC_SoakDiskAdmission_planted_pre_fix.cfg"
@@ -247,6 +290,25 @@ fi
 grep -q 'not registered in NEGATIVE_CONTROLS' "$WORK/run.log" ||
     fail 'The gate failed for a reason other than the unregistered control.'
 rm -f "$planted"
+for family in ObserverSession BoundedCapture; do
+    planted="$tla/node_observation/MC_${family}_planted_unsafe.cfg"
+    cp "$tla/node_observation/MC_${family}.cfg" "$planted"
+    if run_gate gate; then fail 'The gate accepted an unregistered node unsafe configuration.'; fi
+    grep -Fq 'not registered in NEGATIVE_CONTROLS' "$WORK/run.log" ||
+        fail 'The gate failed for a reason other than the unregistered node control.'
+    rm -f "$planted"
+done
+plan="$tla/node_observation/verification-plan.json"
+cp "$plan" "$WORK/plan.saved"
+jq '.models[2].invariant = "TypeOK"' "$WORK/plan.saved" > "$plan"
+if run_gate gate; then fail 'The gate accepted a model plan with a different invariant.'; fi
+grep -Fq 'The node model plan and gate registrations differ.' "$WORK/run.log" ||
+    fail 'The gate failed for a reason other than the model plan mismatch.'
+jq '.models += [.models[0]]' "$WORK/plan.saved" > "$plan"
+if run_gate gate; then fail 'The gate accepted a duplicated model plan entry.'; fi
+grep -Fq 'Invalid node model inventory' "$WORK/run.log" ||
+    fail 'The gate failed for a reason other than the duplicated plan entry.'
+cp "$WORK/plan.saved" "$plan"
 planted="$tla/replay_liveness/MC_ReplayHotLoop_planted_pre_fix.cfg"
 cp "$tla/replay_liveness/MC_ReplayHotLoop_quadratic_pre_fix.cfg" "$planted"
 run_gate gate || fail 'A manual control outside the registered areas failed the gate.'
