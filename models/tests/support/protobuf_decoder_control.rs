@@ -1,31 +1,10 @@
 use prost::bytes::{Buf, Bytes};
 use prost::Message;
 
-use crate::protobuf_decoder_oracle::legacy;
+use crate::protobuf_decoder_oracle::{enot_bytes, legacy};
 use crate::rhoapi::expr::ExprInstance;
 use crate::rhoapi::var::VarInstance;
 use crate::rhoapi::{self};
-
-fn enot_bytes(depth: usize, terminal: &[u8]) -> Vec<u8> {
-    let mut lengths = vec![terminal.len()];
-    for _ in 0..depth {
-        let child = *lengths.last().unwrap();
-        let not = 1 + prost::encoding::encoded_len_varint(child as u64) + child;
-        let expr = 1 + prost::encoding::encoded_len_varint(not as u64) + not;
-        lengths.push(1 + prost::encoding::encoded_len_varint(expr as u64) + expr);
-    }
-    let mut bytes = Vec::with_capacity(*lengths.last().unwrap());
-    for &child in lengths[..depth].iter().rev() {
-        let not = 1 + prost::encoding::encoded_len_varint(child as u64) + child;
-        let expr = 1 + prost::encoding::encoded_len_varint(not as u64) + not;
-        for (tag, length) in [(0x2a, expr), (0x2a, not), (0x0a, child)] {
-            bytes.push(tag);
-            prost::encoding::encode_varint(length as u64, &mut bytes);
-        }
-    }
-    bytes.extend_from_slice(terminal);
-    bytes
-}
 
 fn observe(mut input: impl Buf) -> (Result<Vec<u8>, prost::DecodeError>, usize) {
     let result = super::decode_par(&mut input).map(|value| value.encode_to_vec());

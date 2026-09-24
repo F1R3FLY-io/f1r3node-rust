@@ -75,6 +75,31 @@ macro_rules! route {
 
 pub(crate) use route;
 
+#[cfg(feature = "protobuf-projection-experiment")]
+#[path = "protobuf_decoder_measurement.rs"]
+mod measurement;
+
+pub(crate) fn enot_bytes(depth: usize, terminal: &[u8]) -> Vec<u8> {
+    let mut lengths = vec![terminal.len()];
+    for _ in 0..depth {
+        let child = *lengths.last().unwrap();
+        let not = 1 + prost::encoding::encoded_len_varint(child as u64) + child;
+        let expr = 1 + prost::encoding::encoded_len_varint(not as u64) + not;
+        lengths.push(1 + prost::encoding::encoded_len_varint(expr as u64) + expr);
+    }
+    let mut bytes = Vec::with_capacity(*lengths.last().unwrap());
+    for &child in lengths[..depth].iter().rev() {
+        let not = 1 + prost::encoding::encoded_len_varint(child as u64) + child;
+        let expr = 1 + prost::encoding::encoded_len_varint(not as u64) + not;
+        for (tag, length) in [(0x2a, expr), (0x2a, not), (0x0a, child)] {
+            bytes.push(tag);
+            prost::encoding::encode_varint(length as u64, &mut bytes);
+        }
+    }
+    bytes.extend_from_slice(terminal);
+    bytes
+}
+
 #[path = "../par_corpus/mod.rs"]
 mod corpus;
 

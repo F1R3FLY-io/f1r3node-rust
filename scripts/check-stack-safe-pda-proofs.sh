@@ -810,7 +810,7 @@ rocq_compile_with_closed_count theories/SubstitutionSchedule.v 21 \
   "substitution binder-family schedules and result placement"
 rocq_check_modules "substitution binder-family schedules" StackSafePDA.SubstitutionSchedule
 rocq_reject_placeholders theories/SubstitutionCost.v
-rocq_compile_with_closed_count theories/SubstitutionCost.v 16 \
+rocq_compile_with_closed_count theories/SubstitutionCost.v 24 \
   "substitution cost-event accounting and conditional partition budget"
 rocq_check_modules "substitution cost-event accounting" StackSafePDA.SubstitutionCost
 rocq_reject_placeholders theories/SubstitutionRegionTables.v
@@ -1045,13 +1045,14 @@ rholang_run_tests 9 --lib region_slot_tests
 rholang_run_tests 3 --lib new_injection_preserves_
 rpb3_run_tests 9 --lib incomplete_preservation_tests
 rpb3_run_tests 13 --lib protobuf_decoder_oracle::
+rpb3_run_tests 2 --release -j4 --features protobuf-projection-experiment --lib protobuf_decoder_oracle::measurement::measurement_
 rpb3_run_tests 2 --lib oracle_body_guards::
 rpb3_run_tests 5 --lib decoder_control_tests::
 rpb3_run_tests 1 --release -j4 --features protobuf-projection-experiment --lib deep_general_decoder_materializes_once_and_retires_failed_frames_on_small_stack
 rpb3_run_tests 6 --lib protobuf_par_accumulation_tests
 rpb3_run_tests 8 --lib payload_representation_tests
 rpb3_run_tests 5 --lib owned_cursor_tests
-rpb3_run_tests 5 --lib payload_mapping_tests
+rpb3_run_tests 10 --lib payload_mapping_tests
 rpb3_run_tests 6 --lib resident_ownership_tests
 rpb3_run_tests 8 --lib protobuf_owned_slots_tests
 rpb3_run_tests 7 --lib protobuf_construction_tests

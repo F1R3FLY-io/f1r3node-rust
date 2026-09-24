@@ -2579,7 +2579,7 @@ mod payload_representation_tests;
 
 #[cfg(test)]
 #[path = "../../tests/support/epm_payload_mapping.rs"]
-mod payload_mapping_tests;
+pub(crate) mod payload_mapping_tests;
 
 #[cfg(test)]
 #[path = "../../tests/support/epm_owned_retirement.rs"]

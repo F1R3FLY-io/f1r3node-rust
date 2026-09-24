@@ -9158,6 +9158,11 @@ The complete affected target then passes **7/7**, no skipped tests, in 3.795
 seconds (1.7 GiB service peak, zero swap). All nine depth-4,096 envelopes and
 256 KiB stacks are retained. J-218 preserves both receipts; this setup improvement
 is not reported as a decoder speedup. Other targets in the expanded run passed.
+The unchanged release gate 5917 subsequently passes **16/16** non-opt-in tests
+(five existing opt-in tests skipped): 229.914 seconds tests, 2.6 GiB service peak,
+zero swap. Depth 4,096, stack limits and the 120-second child watchdog are
+unchanged. J-218 records the receipt. Geometric resource qualification and full
+workspace acceptance remain open; J-219 preregisters experiment 348.
 
 ### 5.29 ParBag family and count-domain completeness [SS-A13, SS-A14, SS-Y9]
 

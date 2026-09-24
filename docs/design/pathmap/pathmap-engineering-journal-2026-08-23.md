@@ -16641,8 +16641,7 @@ not paired performance benchmarks. Native runs use the established systemd
 
 Theory SHA-256: `08510541823ccd9bf5e017f9da4cf54146ae296c97d723a1523bdce131f0557d`.
 
-**Still required.** The unchanged 5917 release gate, geometric control/successor
-resource measurements, and capped
+**Still required.** Geometric control/successor resource measurements and capped
 full-workspace acceptance remain required. This checkpoint does not close 8516,
 5834 or the campaign. The distinct imported-component defect 8518 remains open.
 
@@ -16672,6 +16671,128 @@ including all formal manifest bindings, arbitrary/truncated protobuf comparisons
 20,000-level decoding, group-bomb handling and deep escape encoding/validation.
 Together these qualify the listed focused targets; they are not a full-workspace
 pass and the setup change does not establish a production latency ratio.
+
+**Unchanged depth gate.** After checkpoint `b6f557c53`, the full non-opt-in release
+`rholang::stack_depth_gate` passes **16/16**, with its five existing opt-in tests
+skipped. No source, depth-4,096 ladder, stack limit or 120-second child watchdog
+was changed. Tests take 229.914 seconds; service runtime is 347.837 seconds,
+CPU time 666.476 seconds, peak memory 2.6 GiB and swap zero under an 8 GiB hard
+cap. Receipt `cutover-gate5917-r1.log` has SHA-256
+`c17a32653f23cbf40b11073569fd559f65e128d167a573b115a047122d96e108`.
+
+## J-219 — Planned decoder measurement protocol (2026-09-24)
+
+**Question and scope.** PgMCP experiment 348, hypothesis 348, belongs to required
+task 8516 under 5834 and campaign 4131. Does planned decoding remove repeated
+ancestor materialization without unacceptable shallow/wide costs or observable
+decode differences? This is a comparison with the repository's frozen decoder,
+not a claim about upstream PathMap lookup or end-to-end node throughput.
+
+**Instrument.** An opt-in ignored libtest lives under `models/tests/support/`
+and shares the existing test allocator and frozen routing machinery. It requires
+explicit arm, shape, size, entry, input-fragmentation and sample selectors. One
+cell/arm runs in each separately capped process. Fixture creation is outside the
+decode window. The window checkpoints successful decode with output retained,
+then drops the output before any witness encoding. A second, untimed decode
+produces observation digests. A begin record is flushed before work, a resource
+record before witness work, and a final witness record afterward. Missing final
+records are incomplete observations, not successful cells.
+
+Requested allocation bytes, successful allocation/reallocation calls, freed
+bytes, signed outstanding bytes and peak outstanding bytes are scoped instrument
+metrics. They are not allocator usable bytes, process RSS, or the transient
+internal peak of `realloc`. Input/seed owners remain live outside capture;
+negative decoder balances invalidate an owned-heap interpretation. Lifecycle
+balance after output drop is reported separately from retained output. Arithmetic
+overflow invalidates a record. Existing arena/finish/root-key counters are reused;
+they do not measure every planned node, score copy, digest or trie operation.
+Nonnegative balances do not establish allocation provenance: an external free
+can be masked by new allocation. Thus output-live and post-drop checkpoints
+remain signed net metrics, not total physical output size. Their difference is
+net bytes released during the drop interval. The fixture owners are retained to
+remove known external frees, not to claim universal allocator attribution.
+Timing is explicitly instrumented and includes recorder overhead in both arms.
+
+**Formal-first qualification.** Eight `ScopedHeapCost` statements extend the
+existing cost theory to signed balance, peak bounds/monotonicity, concatenated
+windows, allocation/drop and realloc conservation, negative external frees and
+empty traces. Compilation and independent kernel checking pass before recorder
+implementation: 24 closed declarations total, 15.539 seconds service,
+15.346 CPU seconds, 412.1 MiB peak and zero swap under 2 GiB. These arithmetic
+results do not prove native allocator behavior or decoder complexity. The catalog
+enumerates each binding plus scope/unwind/thread/overflow obligations.
+
+**Preregistered comparisons.** General ENot, mixed constructors, mixed explicit
+metadata, nested EPM Map and incomplete/failing cases use the geometric ladder
+16, 64, 256, 1,024, 2,048 and 4,096. Wide distinct/duplicate input uses
+1, 16, 256 and 4,096 occurrences. The retained canonical fast-path control also
+uses 20,000 levels. Prepared child bytes are reused through public Par, Message,
+nonempty merge, length-delimited merge and typed Send envelopes, with contiguous
+and fragmented input. This is a stratified matrix, not a mandatory full Cartesian
+product. New linear fixtures must first agree with independent shallow resident
+construction. Shallow correctness compares full bytes and metadata; separate
+processes compare protobuf, compact and bincode digests, multiplicity, metadata,
+literal errors and remaining input. Routing and final-finish expectations are
+entry-specific; only successful fragmented general Par roots require one finish.
+The valid-noncanonical control appends explicit root connective writes true then
+false; it must normalize to the original false-metadata ENot body. An incomplete
+term or invalid tag alone is not a substitute for this accepted-alias axis.
+
+Before each benchmark group, record `mpstat` and physical/SMT topology, choose a
+quiet core, and pin both arms identically. Follow the user's admission rule: defer
+when all or all but one or two physical cores are busy. Use equal per-arm systemd
+limits, zero swap and on-disk temporary storage. Record cold-process pilots before
+sampling. Completed fast cells use 31 AB/BA process pairs; pilot decode above one
+second uses seven pairs, and above 30 seconds remains capped pilot/censoring
+evidence. Both arms are attempted through depth 4,096. A control timeout is not
+assigned a latency sample or converted into a fabricated point speedup.
+
+Report median paired ratios, fixed-seed intervals and growth versus both depth
+and input bytes, separately for shallow, wide, mixed and Map cohorts. Exact
+observation/route mismatches fail qualification. Every reproducible allocation
+increase is recorded and investigated. An interval entirely above ratio one is
+slowdown evidence; a median slowdown over ten percent triggers investigation even
+if noisy. Neither is an approved waiver, and deep gains cannot cancel shallow
+regressions. Experiment 348's paired test is supplementary; no automatic pooled
+verdict across heterogeneous cells constitutes campaign acceptance. No performance
+measurements are yet reported in this preregistration.
+
+**Instrument qualification and pause handoff.** Initial native R1 fails to build
+because the new witness used bincode 2 API names in this bincode 1 workspace.
+The witness now uses the existing `bincode::serialize` contract; no dependency
+changes were made. R2 passes **31/31**, 690 skipped, in 24.423 seconds tests,
+91.928 seconds service, 223.929 CPU seconds, 2.3 GiB peak and zero swap. R3 adds
+the valid alias and final manifest bindings and passes **31/31**, 690 skipped:
+23.778 seconds tests, 90.338 seconds service, 217.590 CPU seconds, 2.3 GiB peak,
+zero swap under the 8 GiB cap. The shared allocator's properties use 1,024 cases
+with seed 5834; full shallow witness comparisons cover all selected entry modes
+and both buffer forms. The process runner's record/pair mutation self-tests pass.
+
+The frozen oracle was inadvertently reformatted through rustfmt's module
+traversal; its previously clean source was restored byte-for-byte from HEAD and
+is not part of this change. On resume, refresh the qualified feature binary from
+the committed sources before hashing it for measurements. Do not reuse an
+unidentified test executable. The runner requires all three instrument records,
+compares both arms' final witnesses, and distinguishes incomplete setup, measured
+decode and untimed witness phases; a non-timeout failure aborts collection.
+
+At the user's pause request, **no benchmark pilot or sampling run has started**.
+No owned heavy command remains running. Resume task 8516, not another task:
+refresh its scheduler claim, finish binary/runner qualification, record CPU
+admission, run the capped paired geometric pilots, investigate regressions,
+then perform broader release/workspace acceptance. The unchanged depth gate is
+already qualified at J-218; the campaign and 8516 are not complete.
+
+| Receipt under `target/verification/protobuf-attach-8516/` | SHA-256 |
+|---|---|
+| `measurement-formal-r1.log` | `bbcf60b4ac0281c6a4c195ddaf602ecc9c4fc363fa8fb95ddf4626975e7ccba8` |
+| `measurement-native-r1.log` | `2b506c10c90fd02e69ded8cba0fa673d163303af463182a71f76d8f607220f56` |
+| `measurement-native-r2.log` | `ef14abe6bcd3db79f34792a2375ec8b7ebd70db20ec7ce0678797ea097af4dfc` |
+| `measurement-native-r3.log` | `54dcc2f41e1a77b6e3ae0eeb2fb76db50e9912579c63cdf6c8b1ce9e6785284c` |
+| `measurement-runner-selftest-r1.log` | `106b385d6cedeb46fc8cb0f075eb3825cb3363c5a736cc5d0b5f94896082c892` |
+
+Cost-theory SHA-256:
+`676be3eb94c57f308b1c7ddc401880dd509107f25b964c19363905ed23cc62f6`.
 
 ## Upstream PathMap integration request register
 

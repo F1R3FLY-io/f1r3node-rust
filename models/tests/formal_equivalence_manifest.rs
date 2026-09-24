@@ -1048,15 +1048,36 @@ fn substitution_cost_model_binds_scoped_native_events() {
         "shallow_cuts_emit_no_descendant_payload",
         "compact_cuts_emit_no_descendant_payload",
         "original_cut_payload_cost_is_exact",
+        "step_preserves_signed_balance",
+        "peak_dominates_new_balance",
+        "peak_never_decreases",
+        "concatenated_windows_compose",
+        "allocation_then_drop_balances",
+        "reallocation_replaces_old_request",
+        "external_drop_remains_negative",
+        "no_event_preserves_meter",
     ] {
         assert!(theory.contains(&format!("Print Assumptions {theorem}.")));
     }
-    assert_eq!(theory.matches("Print Assumptions ").count(), 16);
+    assert_eq!(theory.matches("Print Assumptions ").count(), 24);
     for forbidden in ["Admitted.", "admit.", "Axiom ", "Parameter "] {
         assert!(!theory.contains(forbidden));
     }
     let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
-    assert!(has_runner_command(&runner, &["rocq_compile_with_closed_count", "theories/SubstitutionCost.v", "16"]));
+    assert!(has_runner_command(&runner, &["rocq_compile_with_closed_count", "theories/SubstitutionCost.v", "24"]));
+    assert!(has_runner_command(&runner, &["rpb3_run_tests", "10", "--lib", "payload_mapping_tests"]));
+    assert!(has_runner_command(&runner, &["rpb3_run_tests", "2", "--release", "-j4", "--features", "protobuf-projection-experiment",
+        "--lib", "protobuf_decoder_oracle::measurement::measurement_"]));
+    let measurement = read_repository_file("models/tests/support/protobuf_decoder_measurement.rs");
+    for witness in ["measurement_fixtures_match_independent_resident_oracles", "measurement_entries_preserve_full_observations_and_arm_routing"] {
+        assert!(measurement.contains(&format!("fn {witness}(")));
+    }
+    let meter = read_repository_file("models/tests/support/epm_payload_mapping.rs");
+    for witness in ["allocation_trace_matches_signed_reference", "allocation_meter_tracks_lifecycle_and_reallocation",
+        "allocation_meter_scopes_restore_after_unwind_and_reject_nesting", "allocation_meter_is_thread_local_and_observes_external_frees",
+        "allocation_meter_overflow_invalidates_instead_of_wrapping"] {
+        assert!(meter.contains(&format!("fn {witness}(")));
+    }
     assert!(has_runner_kernel_check(&runner, &["StackSafePDA.SubstitutionCost"]));
     assert!(read_repository_file("formal/rocq/stack_safe_pda/_CoqProject")
         .lines().any(|line| line == "theories/SubstitutionCost.v"));

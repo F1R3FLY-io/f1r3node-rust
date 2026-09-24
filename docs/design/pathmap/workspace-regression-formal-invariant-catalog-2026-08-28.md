@@ -977,7 +977,39 @@ from count alone. See [J-187](pathmap-engineering-journal-2026-08-23.md#j-187--2
 
 ## Substitution cost-event accounting (SCA, task 5916)
 
-The model `SubstitutionCost.v` counts explicit events, not elapsed time or
+### Scoped allocator extension (task 8516, formal-first)
+
+`ScopedHeapCost` in the same theory models successful allocation/reallocation
+requests as `(allocated, freed)` events. Signed outstanding bytes are requested
+minus freed bytes; the peak is the maximum sampled outstanding balance, not
+allocator usable size, RSS or transient realloc internals. Native bindings must
+retain input owners outside the measured window, mark arithmetic overflow as
+invalid and distinguish output retention from subsequent drop. These are
+measurement-instrument rules, not proofs of decoder complexity.
+
+| Statement | Required native witness before measurement |
+|---|---|
+| `step_preserves_signed_balance` | Generated event traces agree with an independent signed reference fold |
+| `peak_dominates_new_balance` | Every step's peak bounds its observed balance |
+| `peak_never_decreases` | Peak is monotone across each generated trace |
+| `concatenated_windows_compose` | Split trace accumulation equals one complete trace |
+| `allocation_then_drop_balances` | Known-size live allocation and full lifecycle checkpoints |
+| `reallocation_replaces_old_request` | Explicit grow/shrink realloc test and final drop |
+| `external_drop_remains_negative` | Dropping preexisting ownership remains a negative balance, not saturation to zero |
+| `no_event_preserves_meter` | Empty capture changes no counters; failed allocator events are not recorded |
+
+Additional Rust obligations not proved by the arithmetic model: panic-safe scope
+retirement, nested-capture rejection without losing the outer scope, thread
+isolation, failed allocation behavior and checked machine-width counters.
+
+The extended theory has 24 closed declarations and passes independent kernel
+checking before the recorder change. Instrument qualification passes 31/31
+focused tests, including generated trace arithmetic, real allocation/reallocation,
+negative external frees, thread/unwind/nesting and overflow controls. The
+workspace manifest binds all eight new statements and both fixture/routing
+tests. J-219 records exact receipts and the still-unmeasured resource protocol.
+
+The original `SubstitutionCost` module counts explicit events, not elapsed time or
 allocator behavior. Natural-number counters require checked native addition.
 A source partition, a complete native event trace and a linear local budget
 are premises to the resource bound, not conclusions about arbitrary Rust input.

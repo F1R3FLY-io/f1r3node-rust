@@ -1,4 +1,4 @@
-From Stdlib Require Import List Arith Lia.
+From Stdlib Require Import List Arith ZArith Lia.
 From StackSafePDA Require Import SubstitutionRegionEmission.
 Import ListNotations.
 Set Implicit Arguments.
@@ -184,3 +184,59 @@ Print Assumptions compact_cuts_emit_no_descendant_payload.
 Print Assumptions original_cut_payload_cost_is_exact.
 
 End SubstitutionCost.
+
+Module ScopedHeapCost.
+Open Scope Z_scope.
+
+Record meter := Meter { requested : Z; freed : Z; peak : Z }.
+Definition outstanding (m : meter) := requested m - freed m.
+Definition step (a f : Z) (m : meter) :=
+  Meter (requested m + a) (freed m + f)
+    (Z.max (peak m) (outstanding m + a - f)).
+Definition zero := Meter 0 0 0.
+Fixpoint run (events : list (Z * Z)) (m : meter) :=
+  match events with
+  | [] => m
+  | (a,f) :: rest => run rest (step a f m)
+  end.
+
+Theorem step_preserves_signed_balance : forall a f m,
+  outstanding (step a f m) = outstanding m + a - f.
+Proof. intros; unfold outstanding, step; cbn; lia. Qed.
+
+Theorem peak_dominates_new_balance : forall a f m,
+  outstanding (step a f m) <= peak (step a f m).
+Proof. intros; rewrite step_preserves_signed_balance; apply Z.le_max_r. Qed.
+
+Theorem peak_never_decreases : forall a f m,
+  peak m <= peak (step a f m).
+Proof. intros; apply Z.le_max_l. Qed.
+
+Theorem concatenated_windows_compose : forall xs ys m,
+  run (xs ++ ys) m = run ys (run xs m).
+Proof. induction xs as [|[a f] rest IH]; intros; cbn; auto. Qed.
+
+Theorem allocation_then_drop_balances : forall n,
+  outstanding (run [(n,0);(0,n)] zero) = 0.
+Proof. intros; unfold outstanding, zero; cbn; lia. Qed.
+
+Theorem reallocation_replaces_old_request : forall old new,
+  outstanding (run [(old,0);(new,old)] zero) = new.
+Proof. intros; unfold outstanding, zero; cbn; lia. Qed.
+
+Theorem external_drop_remains_negative : forall n, 0 < n ->
+  outstanding (run [(0,n)] zero) < 0.
+Proof. intros; unfold outstanding, zero; cbn; lia. Qed.
+
+Theorem no_event_preserves_meter : forall m, run [] m = m.
+Proof. reflexivity. Qed.
+
+Print Assumptions step_preserves_signed_balance.
+Print Assumptions peak_dominates_new_balance.
+Print Assumptions peak_never_decreases.
+Print Assumptions concatenated_windows_compose.
+Print Assumptions allocation_then_drop_balances.
+Print Assumptions reallocation_replaces_old_request.
+Print Assumptions external_drop_remains_negative.
+Print Assumptions no_event_preserves_meter.
+End ScopedHeapCost.

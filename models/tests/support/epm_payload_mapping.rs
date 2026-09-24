@@ -10,7 +10,59 @@ use super::*;
 
 thread_local! {
     static SPANS: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
-    static METER: Cell<Option<(usize, usize)>> = const { Cell::new(None) };
+    static METER: Cell<Option<AllocationCounts>> = const { Cell::new(None) };
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct AllocationCounts {
+    pub allocations: u64,
+    pub allocated: u64,
+    pub freed: u64,
+    pub peak: i128,
+    pub overflow: bool,
+}
+
+impl AllocationCounts {
+    pub(crate) fn outstanding(self) -> i128 { self.allocated as i128 - self.freed as i128 }
+
+    fn record(&mut self, allocated: usize, freed: usize) {
+        fn add(total: &mut u64, n: u64, overflow: &mut bool) {
+            match total.checked_add(n) {
+                Some(next) => *total = next,
+                None => *overflow = true,
+            }
+        }
+        add(
+            &mut self.allocations,
+            u64::from(allocated != 0),
+            &mut self.overflow,
+        );
+        add(&mut self.allocated, allocated as u64, &mut self.overflow);
+        add(&mut self.freed, freed as u64, &mut self.overflow);
+        self.peak = self.peak.max(self.outstanding());
+    }
+}
+
+struct MeterGuard;
+
+impl Drop for MeterGuard {
+    fn drop(&mut self) { METER.with(|meter| meter.set(None)); }
+}
+
+pub(crate) fn allocation_checkpoint() -> AllocationCounts {
+    METER.with(|meter| meter.get().expect("active allocation capture"))
+}
+
+pub(crate) fn capture_allocations<T>(run: impl FnOnce() -> T) -> (T, AllocationCounts) {
+    METER.with(|meter| {
+        assert!(meter.get().is_none(), "nested allocation capture");
+        meter.set(Some(AllocationCounts::default()));
+    });
+    let guard = MeterGuard;
+    let result = run();
+    let counts = allocation_checkpoint();
+    drop(guard);
+    (result, counts)
 }
 
 pub(super) fn observe_span(_: usize, scaffold: bool) {
@@ -26,8 +78,9 @@ static ALLOCATOR: Allocator = Allocator;
 
 fn record(allocated: usize, freed: usize) {
     let _ = METER.try_with(|meter| {
-        if let Some((a, f)) = meter.get() {
-            meter.set(Some((a + allocated, f + freed)));
+        if let Some(mut counts) = meter.get() {
+            counts.record(allocated, freed);
+            meter.set(Some(counts));
         }
     });
 }
@@ -266,18 +319,123 @@ fn compressed_stems_have_bounded_frames_scaffolds_and_retained_heap() {
             .try_map_resident::<()>(|_| panic!("dangling callback"))
             .unwrap();
         assert_eq!(SPANS.with(Cell::get), (2, 1));
-        METER.with(|m| m.set(Some((0, 0))));
-        drop(mapped);
-        let (allocated, freed) = METER.with(|m| m.replace(None).unwrap());
+        let ((), counts) = capture_allocations(|| drop(mapped));
+        assert!(!counts.overflow);
+        let (allocated, freed) = (counts.allocated, counts.freed);
         let retained = freed
             .checked_sub(allocated)
             .expect("drop frees retained trie storage");
         eprintln!("mapping stem bytes={length} retained_heap_bytes={retained}");
         assert!(
-            retained < length * 8 + 4096,
+            retained < (length * 8 + 4096) as u64,
             "unary prefix fragmented: {retained}"
         );
     }
+}
+
+proptest! {
+    #[test]
+    fn allocation_trace_matches_signed_reference(events in prop::collection::vec((0usize..65536, 0usize..65536), 0..256), split in any::<usize>()) {
+        let mut counts = AllocationCounts::default();
+        let mut balance = 0i128;
+        let mut peak = 0i128;
+        let mut requested = 0u64;
+        let mut freed = 0u64;
+        let mut calls = 0u64;
+        for &(a, f) in &events {
+            let old_peak = counts.peak;
+            counts.record(a, f);
+            balance += a as i128 - f as i128;
+            peak = peak.max(balance);
+            requested += a as u64;
+            freed += f as u64;
+            calls += u64::from(a != 0);
+            prop_assert_eq!(counts.outstanding(), balance);
+            prop_assert_eq!(counts.peak, peak);
+            prop_assert!(counts.peak >= old_peak && counts.peak >= balance);
+        }
+        prop_assert_eq!(counts.allocated, requested);
+        prop_assert_eq!(counts.freed, freed);
+        prop_assert_eq!(counts.allocations, calls);
+        prop_assert!(!counts.overflow);
+        let at = split % (events.len() + 1);
+        let mut composed = AllocationCounts::default();
+        for part in [&events[..at], &events[at..]] {
+            for &(a, f) in part { composed.record(a, f); }
+        }
+        prop_assert_eq!(counts, composed);
+    }
+}
+
+#[test]
+fn allocation_meter_tracks_lifecycle_and_reallocation() {
+    let ((live, grown, shrunk), complete) = capture_allocations(|| unsafe {
+        let layout = Layout::from_size_align(137, 8).unwrap();
+        let pointer = std::alloc::alloc(layout);
+        assert!(!pointer.is_null());
+        let live = allocation_checkpoint();
+        let pointer = std::alloc::realloc(pointer, layout, 1024);
+        assert!(!pointer.is_null());
+        let grown = allocation_checkpoint();
+        let layout = Layout::from_size_align(1024, 8).unwrap();
+        let pointer = std::alloc::realloc(pointer, layout, 64);
+        assert!(!pointer.is_null());
+        let shrunk = allocation_checkpoint();
+        std::alloc::dealloc(pointer, Layout::from_size_align(64, 8).unwrap());
+        (live, grown, shrunk)
+    });
+    assert_eq!(
+        (live.allocations, live.outstanding(), live.peak),
+        (1, 137, 137)
+    );
+    assert_eq!(
+        (grown.allocations, grown.outstanding(), grown.peak),
+        (2, 1024, 1024)
+    );
+    assert_eq!(
+        (shrunk.allocations, shrunk.outstanding(), shrunk.peak),
+        (3, 64, 1024)
+    );
+    assert_eq!(
+        (complete.outstanding(), complete.allocated, complete.freed),
+        (0, 1225, 1225)
+    );
+    assert!(!complete.overflow);
+}
+
+#[test]
+fn allocation_meter_scopes_restore_after_unwind_and_reject_nesting() {
+    assert_eq!(capture_allocations(|| ()).1, AllocationCounts::default());
+    assert!(catch_unwind(|| capture_allocations(|| panic!("meter unwind"))).is_err());
+    assert!(METER.with(Cell::get).is_none());
+    let _ = capture_allocations(|| {
+        assert!(catch_unwind(|| capture_allocations(|| ())).is_err());
+        assert!(METER.with(Cell::get).is_some());
+    });
+    assert!(METER.with(Cell::get).is_none());
+}
+
+#[test]
+fn allocation_meter_is_thread_local_and_observes_external_frees() {
+    let left = std::thread::spawn(|| capture_allocations(|| std::hint::black_box(vec![0u8; 137])));
+    let right = std::thread::spawn(|| capture_allocations(|| std::hint::black_box(vec![0u8; 251])));
+    let (left, lc) = left.join().unwrap();
+    let (right, rc) = right.join().unwrap();
+    assert_eq!(lc.outstanding(), 137);
+    assert_eq!(rc.outstanding(), 251);
+    assert_eq!(capture_allocations(|| drop(left)).1.outstanding(), -137);
+    assert_eq!(capture_allocations(|| drop(right)).1.outstanding(), -251);
+}
+
+#[test]
+fn allocation_meter_overflow_invalidates_instead_of_wrapping() {
+    let mut counts = AllocationCounts {
+        allocated: u64::MAX,
+        ..Default::default()
+    };
+    counts.record(1, 0);
+    assert!(counts.overflow);
+    assert_eq!(counts.allocated, u64::MAX);
 }
 
 #[test]
