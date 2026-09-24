@@ -351,7 +351,7 @@ pub fn test_framework_contracts(
                                         };
                                         let include = enabled_tests
                                             .as_ref()
-                                            .map_or(true, |tests| tests.contains(&test_name));
+                                            .is_none_or(|tests| tests.contains(&test_name));
                                         let output =
                                             vec![new_gbool_par(include, Vec::new(), false)];
                                         produce(&output, ack_channel).await?;
