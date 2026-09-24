@@ -16,7 +16,6 @@ ignore = [
   { id = "RUSTSEC-2021-0141", reason = "rholang directly uses dotenv 0.15.0. Migrate the OpenAI configuration loader to a maintained implementation." },
   { id = "RUSTSEC-2021-0153", reason = "hocon uses encoding through java-properties. Replace HOCON under TASK-012-5." },
   { id = "RUSTSEC-2024-0436", reason = "comm discovery tests use the paste procedural macro. Replace the test macro." },
-  { id = "RUSTSEC-2026-0247", reason = "imbl uses unmaintained bitmaps. This exception does not accept the separate memory-safety advisory RUSTSEC-2025-0167." },
   { id = "RUSTSEC-2024-0384", reason = "soak-charts uses instant through charton. This dependency is specific to WebAssembly targets." },
   { id = "RUSTSEC-2024-0437", reason = "The optional rust-bert feature uses protobuf 2.28.0 through rust_tokenizers. Untrusted model parsing requires review." },
   { id = "RUSTSEC-2025-0119", reason = "The optional rust-bert feature uses unmaintained number_prefix through cached-path." },
@@ -57,7 +56,6 @@ wildcards = "deny"
 allow-wildcard-paths = true
 highlight = "all"
 deny = [
-  { crate = "bitmaps:>=3.2.0", reason = "RUSTSEC-2025-0167 affects byte conversions introduced in 3.2.0. Use 3.1.0 until a reviewed replacement is available." },
   { crate = "rustls-webpki:<0.103.13", reason = "The legacy certificate verifier has been removed. Require the patched version." },
   { crate = "h2:<0.3.27", reason = "Only h2 0.3.27 has a legacy HTTP exception." },
   { crate = "h2:>0.3.27,<0.4.16", reason = "The maintained HTTP stack must include the empty DATA frame fix." },

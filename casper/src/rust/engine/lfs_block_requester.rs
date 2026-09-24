@@ -13,6 +13,7 @@ use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
     ApprovedBlock, BlockMessage, MergeableEntryResponse,
 };
+use models::rust::validator::Validator;
 use tokio::sync::{mpsc, Semaphore};
 
 use crate::rust::errors::CasperError;
@@ -268,11 +269,16 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
 
     /// Confirm key is Received if it was Requested.
     /// Returns updated state with the flags if Requested and last latest received.
+    /// `lowers_bound` is false for the genesis placeholder: it arrives as a
+    /// latest message at height 0, and lowering to `height - 1` puts the
+    /// acceptance window at -1, where the restore walks to genesis. It is still
+    /// consumed from `latest`, so the stream terminates.
     pub fn received(
         &self,
         k: Key,
         height: i64,
         latest_replacement: Option<Key>,
+        lowers_bound: bool,
     ) -> (Self, ReceiveInfo) {
         let is_req = self.d.get(&k) == Some(&ReqStatus::Requested);
 
@@ -299,7 +305,7 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
 
             // Calculate new minimum height if latest message
             // - we need parents of latest message so it's `-1`
-            let new_lower_bound = if is_latest {
+            let new_lower_bound = if is_latest && lowers_bound {
                 std::cmp::min(height - 1, self.lower_bound)
             } else {
                 self.lower_bound
@@ -362,10 +368,22 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
     pub fn is_finished(&self) -> bool { self.latest.is_empty() && self.d.is_empty() }
 }
 
+/// Whether the block filling a latest-message slot is the testimony of the
+/// validator whose slot it is. A bonded validator that never proposed has the
+/// genesis hash there instead, which no validator signed.
+fn slot_is_own_testimony(
+    latest_messages: &HashMap<BlockHash, Validator>,
+    block: &BlockMessage,
+) -> bool {
+    latest_messages
+        .get(&block.block_hash)
+        .is_some_and(|validator| *validator == block.sender)
+}
+
 struct StreamProcessor<'a, T: BlockRequesterOps> {
     requester: &'a mut T,
     st: Arc<Mutex<ST<BlockHash>>>,
-    latest_messages: HashSet<BlockHash>,
+    latest_messages: HashMap<BlockHash, Validator>,
     response_hash_sender: mpsc::Sender<BlockHash>,
 }
 
@@ -373,7 +391,7 @@ impl<'a, T: BlockRequesterOps> StreamProcessor<'a, T> {
     fn new(
         requester: &'a mut T,
         st: Arc<Mutex<ST<BlockHash>>>,
-        latest_messages: HashSet<BlockHash>,
+        latest_messages: HashMap<BlockHash, Validator>,
         response_hash_sender: mpsc::Sender<BlockHash>,
     ) -> Self {
         Self {
@@ -418,7 +436,7 @@ impl<'a, T: BlockRequesterOps> StreamProcessor<'a, T> {
 
             // if message received is latest as per approved block - add its self justification
             // to target latest messages that has to be pulled
-            let lm_replacement = if self.latest_messages.contains(&block.block_hash) {
+            let lm_replacement = if self.latest_messages.contains_key(&block.block_hash) {
                 tracing::info!(
                     "Block {} is a latest message, checking for self-justification replacement",
                     block_hash_str
@@ -434,8 +452,14 @@ impl<'a, T: BlockRequesterOps> StreamProcessor<'a, T> {
                 None
             };
 
-            let (new_state, receive_info) =
-                state.received(block.block_hash.clone(), block_number, lm_replacement);
+            let lowers_bound = slot_is_own_testimony(&self.latest_messages, block);
+
+            let (new_state, receive_info) = state.received(
+                block.block_hash.clone(),
+                block_number,
+                lm_replacement,
+                lowers_bound,
+            );
             *state = new_state;
             receive_info
         };
@@ -878,10 +902,15 @@ pub async fn stream<'a, T: BlockRequesterOps>(
 
     // Active validators as per approved block state
     // - for approved state to be complete it is required to have block from each of them
-    let latest_messages: HashSet<BlockHash> = block
+    let latest_messages: HashMap<BlockHash, Validator> = block
         .justifications
         .iter()
-        .map(|justification| justification.latest_block_hash.clone())
+        .map(|justification| {
+            (
+                justification.latest_block_hash.clone(),
+                justification.validator.clone(),
+            )
+        })
         .collect();
 
     let initial_hashes = {
@@ -893,7 +922,7 @@ pub async fn stream<'a, T: BlockRequesterOps>(
     // Requester state, fill with validators for required latest messages
     let st = Arc::new(Mutex::new(ST::new(
         initial_hashes,
-        Some(latest_messages.clone()),
+        Some(latest_messages.keys().cloned().collect()),
         Some(initial_minimum_height),
     )));
 
@@ -1367,4 +1396,120 @@ async fn create_stream_with_processor<'a, T: BlockRequesterOps>(
     };
 
     Ok(stream)
+}
+
+#[cfg(test)]
+mod window_tests {
+    use super::*;
+
+    fn hash(byte: u8) -> BlockHash { BlockHash::from(vec![byte; 32]) }
+
+    /// A joiner seeds `latest` from the approved block's justifications, so a
+    /// bonded validator that never proposed puts genesis there at height 0.
+    /// The window is the only bound on what the restore accepts and never
+    /// rises once lowered.
+    #[test]
+    fn a_genesis_placeholder_does_not_open_the_window_below_the_computed_floor() {
+        let floor = 25_824i64;
+        let genesis = hash(0xba);
+
+        let state = ST::new(
+            HashSet::from([hash(0x01)]),
+            Some(HashSet::from([genesis.clone()])),
+            Some(floor),
+        );
+        let (state, requested) = state.get_next(false);
+        assert!(
+            requested.contains(&genesis),
+            "the placeholder is requested as a latest message"
+        );
+
+        // Genesis has no sender, so the stream passes `lowers_bound = false`.
+        let (state, _) = state.received(genesis.clone(), 0, None, false);
+
+        assert!(
+            state.lower_bound >= floor,
+            "a latest message at height 0 must not lower the window below the \
+             computed floor; got {}",
+            state.lower_bound
+        );
+        assert!(
+            !state.latest.contains(&genesis),
+            "the seed must still be consumed from `latest`, or the stream never \
+             finishes waiting for it"
+        );
+        // The window is consumed as `block_number >= lower_bound`, so a bound
+        // below the floor is what admits the walk toward genesis.
+        assert!(
+            25_214i64 < state.lower_bound,
+            "a block 610 below the floor must fall outside the window"
+        );
+    }
+
+    /// The slot's own validator is the test, not a non-empty sender: genesis is
+    /// the only unsigned block today, but a slot filled by a block someone else
+    /// signed is the same bookkeeping, not testimony.
+    #[test]
+    fn only_the_slot_owners_own_block_lowers_the_window() {
+        use models::rust::block_implicits::get_random_block;
+
+        let validator = Validator::from(vec![0x11; 65]);
+        let other = Validator::from(vec![0x22; 65]);
+        let block = |sender: Option<Validator>| {
+            get_random_block(
+                Some(10),
+                None,
+                None,
+                None,
+                sender,
+                None,
+                None,
+                Some(vec![]),
+                None,
+                Some(vec![]),
+                None,
+                None,
+                None,
+                None,
+            )
+        };
+
+        let signed = block(Some(validator.clone()));
+        let latest = HashMap::from([(signed.block_hash.clone(), validator.clone())]);
+        assert!(slot_is_own_testimony(&latest, &signed));
+
+        let by_someone_else = block(Some(other));
+        let latest = HashMap::from([(by_someone_else.block_hash.clone(), validator.clone())]);
+        assert!(
+            !slot_is_own_testimony(&latest, &by_someone_else),
+            "a slot filled by another validator's block is not its testimony"
+        );
+
+        let genesis = block(Some(Validator::new()));
+        let latest = HashMap::from([(genesis.block_hash.clone(), validator)]);
+        assert!(!slot_is_own_testimony(&latest, &genesis));
+    }
+
+    /// The lowering itself is not the defect and must survive: a validator's
+    /// own latest message still opens the window by one, so its parents can be
+    /// fetched.
+    #[test]
+    fn a_signed_latest_message_still_lowers_the_window_by_one() {
+        let floor = 25_824i64;
+        let signed = hash(0x11);
+
+        let state = ST::new(
+            HashSet::from([hash(0x01)]),
+            Some(HashSet::from([signed.clone()])),
+            Some(floor),
+        );
+        let (state, _) = state.get_next(false);
+        let (state, _) = state.received(signed, floor, None, true);
+
+        assert_eq!(
+            state.lower_bound,
+            floor - 1,
+            "a signed latest message at the floor must still reach its parents"
+        );
+    }
 }
