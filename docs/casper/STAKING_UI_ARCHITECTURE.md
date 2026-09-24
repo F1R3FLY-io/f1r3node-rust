@@ -49,7 +49,7 @@ Read methods used by UI:
 - `getPendingUndelegations`
 - `getActiveValidators`
 - `getPendingWithdrawer`
-- `getMaximumBond`, `getEpochLength`, `getNumberOfActiveValidators`
+- `getMinimumBond`, `getMaximumBond`, `getEpochLength`, `getNumberOfActiveValidators`
 
 ### Layer 2: Wallet SDK / Integration Layer
 
@@ -87,10 +87,15 @@ Use this mental model in design and state management:
 
 Delegation is rejected when:
 
+`newDelegation < minimumBond`
+
+or:
+
 `selfBond + delegatedTotal + newDelegation > maximumBond`
 
 Implication for UI:
 
+- show minimum delegation size
 - show validator remaining delegation capacity
 - disable/guard over-cap delegation amounts before signing
 
@@ -292,6 +297,8 @@ Use stable message mapping for:
 - `Bond is less than minimum!`
 - `Bond is greater than maximum!`
 - `Public key is already bonded.`
+- `Delegation amount must be positive.`
+- `Delegation is less than minimum.`
 - `Validator is not bonded.`
 - `Validator has no active bond.`
 - `Validator is pending withdrawal.`
