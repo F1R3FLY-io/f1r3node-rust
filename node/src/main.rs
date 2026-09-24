@@ -368,6 +368,52 @@ fn generate_key(
     Ok(())
 }
 
+/// Get private key from either direct key or file path (equivalent to Scala's getPrivateKey)
+fn get_private_key(
+    maybe_private_key: Option<PrivateKey>,
+    maybe_private_key_path: Option<PathBuf>,
+    console_io: &mut impl node::rust::effects::console_io::ConsoleIO,
+) -> Result<PrivateKey> {
+    match maybe_private_key {
+        Some(key) => Ok(key),
+        None => match maybe_private_key_path {
+            Some(path) => decrypt_key_from_file(&path, console_io),
+            None => Err(eyre::eyre!("Private key is missing")),
+        },
+    }
+}
+
+/// Start node runtime (equivalent to Scala's NodeRuntime.start)
+async fn start_node_runtime(conf: NodeConf) -> Result<()> {
+    // --- Observability Setup ---
+    #[allow(unused_variables)]
+    let prometheus_reporter = node::rust::diagnostics::initialize_diagnostics(&conf)?;
+
+    node::rust::runtime::node_runtime::start(conf).await
+}
+
+/// Log configuration (equivalent to Scala's logConfiguration)
+async fn log_configuration(
+    conf: &NodeConf,
+    profile: &Profile,
+    config_file: Option<&PathBuf>,
+) -> Result<()> {
+    info!("Starting with profile {}", profile.name);
+
+    if let Some(config_file) = config_file {
+        info!(
+            "Using configuration file: {}",
+            config_file.canonicalize()?.display()
+        );
+    } else {
+        warn!("No configuration file found, using defaults");
+    }
+
+    info!("Running on network: {}", conf.protocol_server.network_id);
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod generate_key_tests {
     use std::collections::HashSet;
@@ -417,50 +463,4 @@ mod generate_key_tests {
 
         std::fs::remove_dir_all(&dir).expect("clean up test dir");
     }
-}
-
-/// Get private key from either direct key or file path (equivalent to Scala's getPrivateKey)
-fn get_private_key(
-    maybe_private_key: Option<PrivateKey>,
-    maybe_private_key_path: Option<PathBuf>,
-    console_io: &mut impl node::rust::effects::console_io::ConsoleIO,
-) -> Result<PrivateKey> {
-    match maybe_private_key {
-        Some(key) => Ok(key),
-        None => match maybe_private_key_path {
-            Some(path) => decrypt_key_from_file(&path, console_io),
-            None => Err(eyre::eyre!("Private key is missing")),
-        },
-    }
-}
-
-/// Start node runtime (equivalent to Scala's NodeRuntime.start)
-async fn start_node_runtime(conf: NodeConf) -> Result<()> {
-    // --- Observability Setup ---
-    #[allow(unused_variables)]
-    let prometheus_reporter = node::rust::diagnostics::initialize_diagnostics(&conf)?;
-
-    node::rust::runtime::node_runtime::start(conf).await
-}
-
-/// Log configuration (equivalent to Scala's logConfiguration)
-async fn log_configuration(
-    conf: &NodeConf,
-    profile: &Profile,
-    config_file: Option<&PathBuf>,
-) -> Result<()> {
-    info!("Starting with profile {}", profile.name);
-
-    if let Some(config_file) = config_file {
-        info!(
-            "Using configuration file: {}",
-            config_file.canonicalize()?.display()
-        );
-    } else {
-        warn!("No configuration file found, using defaults");
-    }
-
-    info!("Running on network: {}", conf.protocol_server.network_id);
-
-    Ok(())
 }
