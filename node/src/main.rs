@@ -382,29 +382,17 @@ mod generate_key_tests {
     }
 
     impl ConsoleIO for FixedPasswordConsole {
-        fn read_line(&mut self) -> Result<String> {
-            Ok(String::new())
-        }
+        fn read_line(&mut self) -> Result<String> { Ok(String::new()) }
 
-        fn read_password(&mut self, _prompt: &str) -> Result<String> {
-            Ok(self.password.clone())
-        }
+        fn read_password(&mut self, _prompt: &str) -> Result<String> { Ok(self.password.clone()) }
 
-        fn println_str(&mut self, _s: &str) -> Result<()> {
-            Ok(())
-        }
+        fn println_str(&mut self, _s: &str) -> Result<()> { Ok(()) }
 
-        fn println_colored(&mut self, _s: &ColoredString) -> Result<()> {
-            Ok(())
-        }
+        fn println_colored(&mut self, _s: &ColoredString) -> Result<()> { Ok(()) }
 
-        fn update_completion(&mut self, _history: &HashSet<String>) -> Result<()> {
-            Ok(())
-        }
+        fn update_completion(&mut self, _history: &HashSet<String>) -> Result<()> { Ok(()) }
 
-        fn close(&mut self) -> Result<()> {
-            Ok(())
-        }
+        fn close(&mut self) -> Result<()> { Ok(()) }
     }
 
     #[test]

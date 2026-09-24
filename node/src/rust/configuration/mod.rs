@@ -467,8 +467,7 @@ pub mod builder {
         fn explicit_path_wins_even_if_absent() {
             let data_dir = std::env::temp_dir().join("f1r3fly-config-path-test-explicit");
             let explicit = data_dir.join("custom.conf");
-            let (path, warnings) =
-                resolve_config_file_path(&data_dir, Some(explicit.clone()));
+            let (path, warnings) = resolve_config_file_path(&data_dir, Some(explicit.clone()));
             assert_eq!(path, explicit);
             assert!(warnings.is_empty());
         }
