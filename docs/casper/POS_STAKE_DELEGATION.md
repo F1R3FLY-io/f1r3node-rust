@@ -56,12 +56,14 @@ Effective stake is computed as:
 - `PoS("getDelegatedTotals", returnCh)`
 - `PoS("getDelegatorRewards", returnCh)`
 - `PoS("getPendingUndelegations", returnCh)`
+- `PoS("getMinimumBond", returnCh)`
 
 ### New write methods
 
 - `PoS("delegate", deployerId, validatorPk, amount, returnCh)`
   - Preconditions:
     - `amount > 0`
+    - `amount >= minimumBond`
     - validator exists in `allBonds`
     - validator self-bond is `> 0`
     - validator is not in `pendingWithdrawers`
@@ -252,6 +254,7 @@ Interpretation in wallet UI:
 Map these contract errors to stable SDK/user-facing codes:
 
 - `Delegation amount must be positive.`
+- `Delegation is less than minimum.`
 - `Validator is not bonded.`
 - `Validator has no active bond.`
 - `Validator is pending withdrawal.`
@@ -314,12 +317,14 @@ Expected invariants for valid state transitions:
 
 1. `delegatedTotals[v] == sum(delegations[d].getOrElse(v, 0) for all d)`
 2. Delegation can only target validators with active self-bond (`allBonds[v] > 0`).
-3. Validator with positive delegated total cannot enter pending withdrawal.
-4. On slash, validator self-bond, active delegated stake, and pending undelegation principal tied to that validator are slashed.
-5. Reward weighting and active-set selection use effective stake (`self + active delegated`), excluding pending undelegations.
-6. Undelegation request removes stake from effective bonds immediately and records unlocking principal in `pendingUndelegations`.
-7. Pending undelegation principal remains slashable until `completeUndelegate` transfers it out.
-8. Delegator rewards are persisted on-chain in `delegatorRewards` until claimed.
+3. Delegation amount is at least `minimumBond`, preventing one-unit delegator-map spam.
+4. Validator with positive delegated total cannot enter pending withdrawal.
+5. A validator cannot increase self-bond through `bond` after it is already bonded; effective stake cap growth is only admitted through `delegate` and checked against `maximumBond`.
+6. On slash, validator self-bond, active delegated stake, and pending undelegation principal tied to that validator are slashed.
+7. Reward weighting and active-set selection use effective stake (`self + active delegated`), excluding pending undelegations.
+8. Undelegation request removes stake from effective bonds immediately and records unlocking principal in `pendingUndelegations`.
+9. Pending undelegation principal remains slashable until `completeUndelegate` transfers it out.
+10. Delegator rewards are persisted on-chain in `delegatorRewards` until claimed.
 
 ## Operational Validation (April 20, 2026 UTC)
 
@@ -354,6 +359,20 @@ Observed last-finalized heights during this run were non-uniform across nodes (e
 2. Only one pending undelegation per `(delegator, validator)` pair is allowed at a time.
 3. Delegator rewards are tracked per delegator total (not bucketed per validator).
 4. `maximumBond` is enforced as an effective stake cap (`self + active delegated`), not just self-bond.
+5. Delegation and undelegation change effective stake immediately. A future protocol revision should move delegation activation/deactivation to an epoch snapshot if consensus requires epoch-fixed validator weights.
+6. Epoch reward distribution still scans the delegation maps. `minimumBond` raises the cost of state-growth attacks, but high-scale delegation should move to reward-per-share or equivalent lazy accounting before broad production use.
+7. Pending undelegation slashability is explicit current behavior. Operators and wallets must show that unlocking stake is still slashable until completion.
+
+## PR Review Risk Register
+
+| Review topic | Status in this branch |
+|---|---|
+| Validator/peer `InvalidBondsCache` after delegation | Fixed by using `getEffectiveBonds` for runtime consensus bond-cache reads while preserving `getBonds` raw self-bond semantics. |
+| Dust delegation creates unbounded recurring work | Mitigated by rejecting delegation amounts below `minimumBond`; full reward-per-share accounting remains follow-up protocol work. |
+| Effective-bond cap across self-bond changes | Covered by `bond` refusing already bonded validators and regression-tested after delegation; delegation remains the only public effective-stake growth path and checks `maximumBond`. |
+| Pending undelegations during slash | Current semantics intentionally slash pending undelegation escrow; docs and UI guide call this out explicitly. |
+| Repeated undelegation lifecycle | One pending undelegation per `(delegator, validator)` remains enforced and is regression-tested. |
+| Immediate epoch reward / consensus-weight activation | Still current semantics; must be decided with an epoch-snapshot design before production delegation rollout. |
 
 ## Minimal Usage Example (Rholang)
 
