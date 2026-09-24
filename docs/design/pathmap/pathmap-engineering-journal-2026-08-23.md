@@ -16372,6 +16372,86 @@ workspace run.
 
 Theory SHA-256: `210bc87431fed3a0014ea602758e7961d2a5a1b847437b12c5bc8b8c86d1f9e0`.
 
+## J-216 — Planned snapshot admission before decoder cutover (2026-09-24)
+
+**Requirement and timing.** Task 8516's general decoder cannot defer all EPathMap
+key checks to public materialization. Component planning assumes admitted canonical
+keys; late rejection could instead reach an assertion or allow a later malformed
+field to determine the error. This checkpoint therefore preserves the existing
+snapshot-completion admission boundary before changing generated frame payloads.
+It is not a new parser or a change to accepted Rholang semantics.
+
+**Formal-first contract.** EPR gains eight closed declarations (37 total). A snapshot
+contains mode, topology and ordered bindings; an opaque key validator supplies its
+existing error code. Admission first checks mode compatibility, then validates valued
+keys in order, then replaces the parent only on success. The model proves this
+transition commutes with payload denotation, failures preserve the parent, success
+installs the exact incoming image, neutral Empty permits either specialization, and
+first-key failure stops validation. A mutant checking keys before mode produces the
+wrong error. Validator correctness, protobuf parsing and physical cleanup are premises
+or separate obligations, not consequences of this abstract proof.
+
+Formal R1 failed an induction rewrite because `denote` had unfolded in the goal but
+not the induction hypothesis (514 ms service, 372.5 MiB peak). R2 aligns that unfolding
+and passes all 37 closed declarations plus independent kernel checking **before Rust**:
+13.876 seconds service, 13.672 CPU seconds, 392.3 MiB peak, zero swap, 2 GiB hard cap.
+The invariant catalog preregisters the corresponding native tests.
+
+**Implementation.** Resident and planned admission share the unchanged mode diagnostic
+and `canonical_key_metadata` strict/deferred policy. The planned read zipper checks a
+root value explicitly before advancing. It validates only valued endpoints: arbitrary
+value-free trie topology is not a sequence of Rholang keys. The incoming owner is
+guarded before acquiring an arena barrier, retains typed-empty Set/Map without
+normalization, and replaces the parent only after all checks succeed. The three
+enclosing metadata fields are untouched. Resident metadata aggregation stays in its
+existing owner; this refactor does not create a generic metadata framework.
+
+**Native qualification.** R1 stops before testing on a missing `ZipperMoving` import
+and a borrowed test snapshot retained across mutation (11.111 seconds service,
+1.5 GiB peak). Both are corrected. R2 passes 24/25 (7.277 seconds tests,
+69.420 seconds service, 232.127 CPU seconds, 2.7 GiB peak). Its only failure was a
+fixture assuming the empty escape encoding was strictly invalid; existing decoding
+accepts it. The test now retains that accepted case and uses an invalid-UTF-8 string
+to witness strict/deferred divergence. No production admission policy was changed.
+
+R3 enables instrumentation and passes **25/25**, 675 excluded: 7.351 seconds tests,
+70.735 seconds service, 237.118 CPU seconds, 2.9 GiB peak, zero swap. It includes
+four new admission witnesses, previous mapping/planned/resident ownership witnesses
+and both proof manifests. Fixed full diagnostic strings supplement the shared-helper
+differential. All nine mode pairs, replacement rather than union, fresh-arena typed
+Map adoption, metadata preservation, root/first-key failure, deep dangling topology,
+shared rejection and final cleanup are exercised. The generated test uses 1,024
+cases with seed 5834. Native limits are 6 GiB high/8 GiB hard, zero swap, four CPUs,
+four build/test workers and 900 seconds; compiler temporaries are on disk. Results
+are correctness observations, not application performance benchmarks.
+
+Default R4 passes **30/30**, 682 excluded, adding the existing EPM1 mixed-mode,
+neutral-empty, dangling-endpoint and compact line/branch/dense map compatibility
+cases: 7.371 seconds tests, 66.219 seconds service, 193.217 CPU seconds, 2.3 GiB
+peak and zero swap. All scoped verification processes have finished; shell syntax
+and diff whitespace checks pass. No full-workspace run or speedup is claimed.
+
+| Artifact under `target/verification/protobuf-attach-8516/` | SHA-256 |
+|---|---|
+| `admission-formal-r1.log` (proof rewrite failure) | `94fb060b8939286c5652c6acb147f9bf306c893b3994687eb5800c6b7d7f6ed3` |
+| `admission-formal-r2.log` | `b9027b54122986dbf204e657e414cb824557cbd2b83586358f3775593dd62a05` |
+| `admission-native-r1.log` (compile failure) | `a8ce79792967d9454511c7369ee4f2356299ca33ca882c1de8d8b636568a9bc0` |
+| `admission-native-r2.log` (fixture mismatch) | `856bbadc7f93a216c2cccc1c6543eb925b2f0e0518eac36565ef06f83b0b6610` |
+| `admission-native-r3.log` | `8e15a3af6256851fcb35189709952696985031f5453adf67b8705229d3357a64` |
+| `admission-native-r4.log` | `45322956ef156e91efea417d71f6ed0dc57348c8a44942122c40138fe9f5bb6e` |
+
+Theory SHA-256: `25e5283e03d5f6d297a94fa4c92baa46d3bbba19445062694ee90765f34777b5`.
+
+**Next integration boundaries.** Decoder routing must preserve the order: pending
+EPM framing/value completion, guarded adoption, mode check, key checks, publication,
+then the next protobuf field. Helper-level tests do not prove that future routing.
+Legacy field 8 still needs its own equivalence qualification before replacing its
+decode/re-encode path with validated-byte insertion. Source review supports that
+candidate, but `decode_trie_path_after_validation` remains fallible; validator success
+alone is not a proof that its semantic decoder would succeed. Legacy field 1,
+duplicate field/oneof reopening, the unchanged depth gate and full acceptance remain
+required parts of task 8516.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

@@ -750,7 +750,7 @@ rocq_compile_with_closed_count theories/ProtobufParAccumulation.v 13 \
   "ordered protobuf Par field accumulation"
 rocq_check_modules "ordered protobuf Par field accumulation" StackSafePDA.ProtobufParAccumulation
 rocq_reject_placeholders theories/EpmPayloadRepresentation.v
-rocq_compile_with_closed_count theories/EpmPayloadRepresentation.v 29 \
+rocq_compile_with_closed_count theories/EpmPayloadRepresentation.v 37 \
   "EPM payload representation and scaffold erasure"
 rocq_check_modules "EPM payload representation and scaffold erasure" StackSafePDA.EpmPayloadRepresentation
 rocq_reject_placeholders theories/ProtobufOwnedSlots.v
@@ -1052,6 +1052,7 @@ rpb3_run_tests 7 --lib protobuf_construction_tests
 rspace_preparation_run_tests 5 --lib stateful_retirement
 rpb3_run_tests 7 --lib owned_retirement_tests
 rpb3_run_tests 8 --lib planned_epm_ownership_tests
+rpb3_run_tests 4 --lib snapshot_admission_tests
 rpb3_run_tests 1 --release -j4 --features protobuf-projection-experiment --lib planned_handles_keep_exact_associations_without_resident_emission
 rpb3_run_tests 1 --release -j4 --features protobuf-projection-experiment --lib accumulation_emits_no_resident_root_until_requested
 rpb3_run_tests 1 --release -j4 --features protobuf-projection-experiment --lib incomplete_planning_has_no_resident_finish_events

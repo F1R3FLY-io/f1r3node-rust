@@ -337,6 +337,108 @@ Theorem mapping_first_error_mutant_is_observable :
     [(0, 1); (1, 2)] = ([0], inr 7).
 Proof. reflexivity. Qed.
 
+Inductive admission_error := ModeConflict | InvalidKey (code : nat).
+
+Definition compatible_mode current incoming :=
+  match current, incoming with
+  | MappingSet, MappingMap | MappingMap, MappingSet => false
+  | _, _ => true
+  end.
+
+Record snapshot (V : Type) := Snapshot {
+  snapshot_mode : mapping_mode;
+  snapshot_shape : list nat;
+  snapshot_bindings : bindings V
+}.
+Arguments Snapshot {V}.
+Arguments snapshot_mode {V}.
+Arguments snapshot_shape {V}.
+Arguments snapshot_bindings {V}.
+
+Definition map_snapshot {V W} (f : V -> W) (s : snapshot V) :=
+  Snapshot (snapshot_mode s) (snapshot_shape s) (denote f (snapshot_bindings s)).
+
+Fixpoint check_keys {V} (validate : nat -> option nat) (items : bindings V)
+    : list nat * option admission_error :=
+  match items with
+  | [] => ([], None)
+  | (key, _) :: rest =>
+      match validate key with
+      | Some code => ([key], Some (InvalidKey code))
+      | None => let '(trace, error) := check_keys validate rest in (key :: trace, error)
+      end
+  end.
+
+Definition check_snapshot {V} validate (current incoming : snapshot V) :=
+  if compatible_mode (snapshot_mode current) (snapshot_mode incoming)
+  then check_keys validate (snapshot_bindings incoming)
+  else ([], Some ModeConflict).
+
+Definition admit_snapshot {V} validate (current incoming : snapshot V) :=
+  let '(trace, error) := check_snapshot validate current incoming in
+  (trace, (match error with None => incoming | Some _ => current end, error)).
+
+Theorem key_validation_ignores_payload_representation {V W} (f : V -> W) validate items :
+  check_keys validate (denote f items) = check_keys validate items.
+Proof.
+  unfold denote.
+  induction items as [|[key value] rest IH]; cbn; [reflexivity|].
+  destruct (validate key); [reflexivity|]. now rewrite IH.
+Qed.
+
+Theorem snapshot_admission_commutes {V W} (f : V -> W) validate current incoming :
+  admit_snapshot validate (map_snapshot f current) (map_snapshot f incoming) =
+  let '(trace, (final, error)) := admit_snapshot validate current incoming in
+  (trace, (map_snapshot f final, error)).
+Proof.
+  unfold admit_snapshot, check_snapshot, map_snapshot; cbn.
+  destruct (compatible_mode (snapshot_mode current) (snapshot_mode incoming));
+    [|reflexivity].
+  rewrite key_validation_ignores_payload_representation.
+  destruct (check_keys validate (snapshot_bindings incoming)) as [trace [error|]];
+    reflexivity.
+Qed.
+
+Theorem snapshot_rejection_preserves_parent {V} validate (current incoming : snapshot V) trace code :
+  check_snapshot validate current incoming = (trace, Some code) ->
+  admit_snapshot validate current incoming = (trace, (current, Some code)).
+Proof. intro H. unfold admit_snapshot. now rewrite H. Qed.
+
+Theorem snapshot_success_installs_exact_image {V} validate (current incoming : snapshot V) trace :
+  check_snapshot validate current incoming = (trace, None) ->
+  admit_snapshot validate current incoming = (trace, (incoming, None)).
+Proof. intro H. unfold admit_snapshot. now rewrite H. Qed.
+
+Theorem mode_conflict_precedes_key_validation {V} validate (current incoming : snapshot V) :
+  compatible_mode (snapshot_mode current) (snapshot_mode incoming) = false ->
+  check_snapshot validate current incoming = ([], Some ModeConflict).
+Proof. intro H. unfold check_snapshot. now rewrite H. Qed.
+
+Theorem neutral_mode_accepts_every_mode mode :
+  compatible_mode MappingEmpty mode = true /\ compatible_mode mode MappingEmpty = true.
+Proof. destruct mode; split; reflexivity. Qed.
+
+Theorem first_key_failure_stops_validation {V} validate key (value : V) rest code :
+  validate key = Some code ->
+  check_keys validate ((key, value) :: rest) = ([key], Some (InvalidKey code)).
+Proof. intro H. cbn. now rewrite H. Qed.
+
+Theorem key_validation_before_mode_mutant_is_observable :
+  check_snapshot (fun _ => Some 7)
+    (Snapshot MappingSet [] ([] : bindings nat))
+    (Snapshot MappingMap [] [(0, 1)]) <>
+  check_keys (fun _ => Some 7) [(0, 1)].
+Proof. discriminate. Qed.
+
+Print Assumptions key_validation_ignores_payload_representation.
+Print Assumptions snapshot_admission_commutes.
+Print Assumptions snapshot_rejection_preserves_parent.
+Print Assumptions snapshot_success_installs_exact_image.
+Print Assumptions mode_conflict_precedes_key_validation.
+Print Assumptions neutral_mode_accepts_every_mode.
+Print Assumptions first_key_failure_stops_validation.
+Print Assumptions key_validation_before_mode_mutant_is_observable.
+
 Print Assumptions mapping_loop_refines_reference.
 Print Assumptions mapping_empty_accumulators_are_equivalent.
 Print Assumptions mapping_success_preserves_keys_and_trace.

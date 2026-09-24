@@ -1247,12 +1247,24 @@ fn epm_payload_representation_has_proof_and_native_bindings() {
         "mapping_preserves_shape_and_mode", "mapping_first_error_mutant_is_observable",
         "relative_spans_compose_exact_path", "scaffold_count_is_bounded_by_event_points",
         "changing_span_lengths_preserves_scaffold_work",
+        "key_validation_ignores_payload_representation", "snapshot_admission_commutes",
+        "snapshot_rejection_preserves_parent", "snapshot_success_installs_exact_image",
+        "mode_conflict_precedes_key_validation", "neutral_mode_accepts_every_mode",
+        "first_key_failure_stops_validation", "key_validation_before_mode_mutant_is_observable",
     ] {
         assert!(theory.contains(&format!("Print Assumptions {theorem}.")));
     }
     let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
-    assert_eq!(theory.matches("Print Assumptions ").count(), 29);
-    assert!(has_runner_command(&runner, &["rocq_compile_with_closed_count", "theories/EpmPayloadRepresentation.v", "29"]));
+    assert_eq!(theory.matches("Print Assumptions ").count(), 37);
+    assert!(has_runner_command(&runner, &["rocq_compile_with_closed_count", "theories/EpmPayloadRepresentation.v", "37"]));
+    assert!(has_runner_command(&runner, &["rpb3_run_tests", "4", "--lib", "snapshot_admission_tests"]));
+    let admission = read_repository_file("models/tests/support/epm_snapshot_admission.rs");
+    for witness in ["planned_and_resident_admission_match_generated_keys",
+        "all_modes_preserve_typed_empties_and_replace_instead_of_union",
+        "root_and_first_key_errors_preserve_mode_precedence_and_deferred_policy",
+        "dangling_topology_and_rejected_deep_snapshots_retire_on_small_stack"] {
+        assert!(admission.contains(&format!("fn {witness}(")));
+    }
     assert!(has_runner_kernel_check(&runner, &["StackSafePDA.EpmPayloadRepresentation"]));
     assert!(has_runner_command(&runner, &["rpb3_run_tests", "8", "--lib", "payload_representation_tests"]));
     assert!(has_runner_command(&runner, &["rpb3_run_tests", "5", "--lib", "owned_cursor_tests"]));

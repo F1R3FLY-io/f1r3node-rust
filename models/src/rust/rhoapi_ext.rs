@@ -659,7 +659,7 @@ fn copy_dropped_topology<V>(
 }
 
 #[allow(deprecated)]
-fn canonical_key_metadata(
+pub(crate) fn canonical_key_metadata(
     kind: &str,
     key: &[u8],
     validate: bool,
@@ -670,6 +670,20 @@ fn canonical_key_metadata(
         declared_canonical_path_metadata(key)
     };
     metadata.map_err(|error| DecodeError::new(format!("EPathMap {kind} key: {error:?}")))
+}
+
+#[allow(deprecated)]
+pub(crate) fn validate_snapshot_mode(
+    current: EPathMapMode,
+    incoming: EPathMapMode,
+) -> Result<(), DecodeError> {
+    if current != EPathMapMode::Empty && incoming != EPathMapMode::Empty && current != incoming {
+        return Err(DecodeError::new(format!(
+            "EPathMap trie_snapshot cannot change {:?} storage to {:?} storage",
+            current, incoming
+        )));
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2713,15 +2727,7 @@ impl EPathMap {
         repr: OwnedResidentEPathMap,
         validate_canonical_keys: bool,
     ) -> Result<(), DecodeError> {
-        let current = self.mode();
-        let incoming = repr.as_repr().mode();
-        if current != EPathMapMode::Empty && incoming != EPathMapMode::Empty && current != incoming
-        {
-            return Err(DecodeError::new(format!(
-                "EPathMap trie_snapshot cannot change {:?} storage to {:?} storage",
-                current, incoming
-            )));
-        }
+        validate_snapshot_mode(self.mode(), repr.as_repr().mode())?;
         self.ps = EntryTrie::from_owned_repr_with_key_validation(repr, validate_canonical_keys)?;
         Ok(())
     }

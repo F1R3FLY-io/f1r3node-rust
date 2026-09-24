@@ -3244,6 +3244,19 @@ impl ParConstruction {
         owner.with_barrier(PlannedEpmBarrier(barrier))
     }
 
+    pub(crate) fn own_decoded_epm_repr(
+        &mut self,
+        repr: EPathMapRepr<PlannedPar>,
+    ) -> OwnedPlannedEPathMap {
+        let owner = EpmReprOwner::new(repr, ArenaEpmBarrier(RefCell::new(self)));
+        let barrier = if matches!(owner.as_repr(), EPathMapRepr::Map(_)) {
+            Some(owner.barrier.make_barrier())
+        } else {
+            None
+        };
+        owner.with_barrier(PlannedEpmBarrier(barrier))
+    }
+
     /// Construct one top-level occurrence with its already-derived root
     /// summaries.
     ///

@@ -8,6 +8,46 @@ use crate::rust::par_construction::{
 
 type Result<T> = std::result::Result<T, ParConstructionError>;
 
+impl owned_slots::EPathMap {
+    pub(crate) fn replace_decoded_representation(
+        &mut self,
+        incoming: crate::rust::par_construction::OwnedPlannedEPathMap,
+        validate: bool,
+    ) -> std::result::Result<(), prost::DecodeError> {
+        use crate::rust::epathmap_trie_codec::EPathMapRepr;
+        use crate::rust::rhoapi_ext::{canonical_key_metadata, validate_snapshot_mode};
+        use pathmap::zipper::{Zipper, ZipperIteration, ZipperMoving};
+
+        fn keys<V: Clone + Send + Sync + Unpin + 'static>(
+            map: &pathmap::PathMap<V>,
+            kind: &str,
+            validate: bool,
+        ) -> std::result::Result<(), prost::DecodeError> {
+            let mut zipper = map.read_zipper();
+            if zipper.is_val() {
+                canonical_key_metadata(kind, zipper.path(), validate)?;
+            }
+            while zipper.to_next_val() {
+                canonical_key_metadata(kind, zipper.path(), validate)?;
+            }
+            Ok(())
+        }
+
+        validate_snapshot_mode(self.repr.as_repr().mode(), incoming.as_repr().mode())?;
+        match incoming.as_repr() {
+            EPathMapRepr::Empty => {}
+            EPathMapRepr::Set(map) => keys(map, "set", validate)?,
+            EPathMapRepr::Map(map) => keys(map, "map", validate)?,
+        }
+        self.repr = incoming;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+#[path = "../../../tests/support/epm_snapshot_admission.rs"]
+mod snapshot_admission_tests;
+
 pub(crate) struct PlanningProjection<'a> {
     arena: &'a mut ParConstruction,
     children: Vec<PlannedPar>,

@@ -9098,6 +9098,20 @@ consensus-visible change is introduced by this materialization helper.
 Expanded default qualification adds **34/34** passing tests, 653 excluded,
 8.635 seconds test time, 2.8 GiB service peak and zero swap under the same cap.
 
+J-216 qualifies planned snapshot admission before general decoder cutover. Eight
+formal-first statements raise EPR to 37 closed declarations; the native boundary
+guards incoming ownership, checks mode before keys, includes root-valued keys,
+ignores value-free topology and commits only on success. Typed-empty specialization
+and outer metadata are preserved. The four admission witnesses plus existing
+ownership/mapping controls pass **25/25** with instrumentation, 675 excluded,
+7.351 seconds test time, 2.9 GiB service peak, no swap under the 8 GiB cap.
+Deep rejection/final cleanup uses a 256 KiB stack; the journal records negative
+proof/build/fixture results and independent error controls. This does not establish
+generated decoder routing, legacy ingress, gate 5917 or full workspace acceptance.
+Default qualification additionally passes **30/30**, 682 excluded, including
+existing EPM1 compatibility cases: 7.371 seconds tests, 2.3 GiB service peak and
+zero swap under the same cap. J-216 retains the exact receipts and hashes.
+
 ### 5.29 ParBag family and count-domain completeness [SS-A13, SS-A14, SS-Y9]
 
 #### 5.29.1 The defects

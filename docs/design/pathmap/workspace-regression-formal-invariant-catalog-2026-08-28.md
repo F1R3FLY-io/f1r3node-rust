@@ -1662,8 +1662,8 @@ native panic, small-stack and rejection tests remain required. Public materializ
 must not be introduced at every nested component attachment.
 
 J-215 binds these obligations to five `payload_mapping_tests` witnesses and
-`public_materialization_preserves_topology_values_and_metadata`. EPR now exports
-29 closed declarations. Compilation and independent kernel checking precede Rust
+`public_materialization_preserves_topology_values_and_metadata`. J-215 qualified
+29 closed EPR declarations. Compilation and independent kernel checking precede Rust
 implementation. The mapper transfers Set/Empty ownership directly; Map uses guarded
 source/destination zippers and compressed relative spans. The generated differential
 observes every logical byte path independently, not just stored keys. Error and panic
@@ -1673,6 +1673,44 @@ checks typed modes, metadata set before admission, exact EPM1 snapshot bytes, de
 payloads and topology on 256 KiB, with one finish per Map value and none for Set/Empty.
 Retained-destination measurements are not peak-allocation or throughput evidence.
 General decoder routing and gate 5917 remain separate required work.
+
+### Planned snapshot admission (task 8516)
+
+Preregistered after `91879d500`, before changing the admission implementation.
+`snapshot` contains mode, topology and ordered bindings. Key identities are abstract
+natural numbers, and validation is an opaque function returning the existing error
+code or success. The model assumes that resident and planned payloads expose identical
+ordered keys; it does not prove canonical-path validation, codec completeness or the
+whole protobuf parser. Admission checks mode first, then keys, and commits only after
+success. Outer metadata is not part of the replaced snapshot.
+
+| Closed declaration | Required native admission witness |
+|---|---|
+| `key_validation_ignores_payload_representation`, `snapshot_admission_commutes` | Generated resident/planned acceptance, exact errors, modes and snapshot equivalence under strict and deferred validation |
+| `snapshot_rejection_preserves_parent` | Invalid keys and incompatible modes leave prior topology/bindings and metadata unchanged |
+| `snapshot_success_installs_exact_image` | Exact topology and typed-empty mode replacement; outer metadata/remainder unchanged |
+| `mode_conflict_precedes_key_validation`, `key_validation_before_mode_mutant_is_observable` | Conflicting incoming mode with malformed keys reports mode error, not key error |
+| `neutral_mode_accepts_every_mode` | All nine current/incoming mode combinations, including neutral reset |
+| `first_key_failure_stops_validation` | Multiple bad keys select the same first error in zipper order |
+
+Native tests must additionally exercise guarded failure retirement on a small stack.
+Canonical-value framing errors still belong to the pending decoder and occur before
+this boundary. Validation-before-later-field precedence requires generated decoder
+integration tests after routing; these helper tests cannot establish that routing.
+Legacy field-1/field-8 union and general parser transitions remain separate obligations.
+
+J-216 raises the exported EPR count to 37, compiled and independently kernel-checked
+before implementation. `epm_snapshot_admission.rs` binds these statements with four
+witnesses: `planned_and_resident_admission_match_generated_keys`,
+`all_modes_preserve_typed_empties_and_replace_instead_of_union`,
+`root_and_first_key_errors_preserve_mode_precedence_and_deferred_policy`, and
+`dangling_topology_and_rejected_deep_snapshots_retire_on_small_stack`.
+The shared-policy differential is supplemented by fixed diagnostic strings and an
+independent nine-cell mode truth table. Fresh-arena adoption checks the retained
+barrier; deep rejection retains a shared parent and checks its topology before final
+cleanup. Existing planned-owner tests supply independent unique retirement coverage.
+The feature-enabled 25-test selection passes with 1,024 property cases, seed 5834.
+Full decoder and parser-gate qualification are not inferred from this selection.
 
 ## EPM stateful ownership retirement (EOR, task 5834)
 
