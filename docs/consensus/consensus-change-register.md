@@ -5239,6 +5239,23 @@ J-189 records formal/native boundaries and the before/after regression receipts;
 broader replay qualification remains open. This supporting qualification does not
 retire CBR-044 or claim whole-interpreter equivalence.
 
+**CBR-044 implementation qualification (2026-09-24, task 8516, legacy ingress).**
+Legacy field-8 normalization is preserved: the previously accepted bare-escape
+list `0f 07 2a 05 a2 01 02 0a 00` still becomes the split key `0f 00 00`.
+Snapshot key identity is not normalized by this change. No protobuf/EPM1 format,
+hash preimage, language syntax, blessed contract or metering formula is changed.
+
+A deferred metadata scanner formerly rejected valid split keys whose first
+segment is escaped. It now dispatches on complete path form, retaining empty
+outer-list metadata rather than reading metadata from the first element.
+Strict validation already accepted these keys. Deferred-call acceptance therefore
+changes for this demonstrated class; bounded helper equivalence does not prove
+every production caller's consensus neutrality. This remains an implementation
+qualification within active CBR-044, not a new semantic ruling or its retirement.
+The general decoder cutover and full acceptance gates remain open. See
+[J-217](../design/pathmap/pathmap-engineering-journal-2026-08-23.md#j-217--legacy-key-normalization-and-planned-protobuf-ingress-2026-09-24)
+for formal/native evidence, failed controls and the independent depth oracle.
+
 **CBR-044 living implementation continuation (2026-08-25, descriptor-complete codec/admission
 equivalence; pgmcp #6019).** The one descriptor pass now emits a test-only seventh artifact that
 constructs 329 canonical witnesses over all 56 generated messages, every field, five oneofs and all

@@ -154,6 +154,7 @@
 //! structural value is `eval_stable_par`, and every accepted escape payload is
 //! canonical prost of a ¬`eval_stable_par` value.
 
+use std::borrow::Cow;
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -616,14 +617,7 @@ impl<'p> EncMachine<'p> {
         if let Some(list) = split_carrier_list(par_ref) {
             // Split form: per-element segments + the terminator. LIFO push:
             // terminator first so it emits LAST.
-            self.ops.push(EncOp::EmitTerminator);
-            for element in list.ps.into_iter().rev() {
-                self.ops.push(EncOp::Segment {
-                    par: EncPar::Owned(element),
-                    known_stable: stable.then_some(true),
-                    top_level: true,
-                });
-            }
+            self.push_split_list(list, stable);
         } else {
             // Bare form (a stable list carrier always splits above, so a
             // bare 0x0B segment is never emitted — the canonical-form rule
@@ -635,6 +629,17 @@ impl<'p> EncMachine<'p> {
             });
         }
         Ok(())
+    }
+
+    fn push_split_list(&mut self, list: EList, stable: bool) {
+        self.ops.push(EncOp::EmitTerminator);
+        for element in list.ps.into_iter().rev() {
+            self.ops.push(EncOp::Segment {
+                par: EncPar::Owned(element),
+                known_stable: stable.then_some(true),
+                top_level: true,
+            });
+        }
     }
 
     fn run(&mut self) -> Result<(), CodecError> {
@@ -1653,13 +1658,38 @@ fn canonical_unary_etuple_path(path: &[u8]) -> Option<(usize, i64)> {
 /// subranges of the root buffer, so a depth-N one-entry map chain touches each
 /// encoded byte at its owning layer instead of rebuilding N suffix tries.
 pub(crate) fn validate_canonical_path(path: &[u8]) -> Result<CanonicalPathMetadata, CodecError> {
+    validate_path_with_root(path, false).map(|(metadata, _)| metadata)
+}
+
+pub(crate) fn prepare_legacy_trie_path(
+    path: &[u8],
+) -> Result<(Cow<'_, [u8]>, CanonicalPathMetadata), CodecError> {
+    let (metadata, root) = validate_path_with_root(path, true)?;
+    let bytes = if let Some(list) = root.as_ref().and_then(split_carrier_list) {
+        let mut machine = EncMachine::new();
+        machine.push_split_list(list, false);
+        machine.run()?;
+        Cow::Owned(machine.into_buffer())
+    } else {
+        Cow::Borrowed(path)
+    };
+    Ok((bytes, metadata))
+}
+
+fn validate_path_with_root(
+    path: &[u8],
+    retain_bare_escape: bool,
+) -> Result<(CanonicalPathMetadata, Option<Par>), CodecError> {
     if canonical_unary_elist_path(path).is_some() || canonical_unary_etuple_path(path).is_some() {
-        return Ok(CanonicalPathMetadata {
-            stable: true,
-            reducer_eval_identity: true,
-            locally_free: Vec::new(),
-            connective_used: false,
-        });
+        return Ok((
+            CanonicalPathMetadata {
+                stable: true,
+                reducer_eval_identity: true,
+                locally_free: Vec::new(),
+                connective_used: false,
+            },
+            None,
+        ));
     }
 
     let mut tasks = vec![CanonicalValidationTask::Key {
@@ -1671,6 +1701,7 @@ pub(crate) fn validate_canonical_path(path: &[u8]) -> Result<CanonicalPathMetada
         root: true,
     }];
     let mut root_metadata = None;
+    let mut retained_root = None;
 
     while let Some(task) = tasks.pop() {
         match task {
@@ -1679,7 +1710,7 @@ pub(crate) fn validate_canonical_path(path: &[u8]) -> Result<CanonicalPathMetada
                 require_stable,
                 root,
             } => {
-                let declared_stable = path_declares_stable(region.as_slice())?;
+                let (declared_stable, form) = declared_path_shape(region.as_slice())?;
                 let validation =
                     DecMachine::new(region.as_slice(), DecMode::Validate).run_validation()?;
                 let stable = eval_stable_par_declared_keys(&validation.par)?;
@@ -1688,6 +1719,12 @@ pub(crate) fn validate_canonical_path(path: &[u8]) -> Result<CanonicalPathMetada
                     return Err(CodecError::CanonicalFormMismatch);
                 }
                 if root {
+                    if retain_bare_escape
+                        && form == CanonicalTopLevelPathForm::Bare
+                        && region.as_slice().first() == Some(&tag::ESCAPE)
+                    {
+                        retained_root = Some(validation.par.clone());
+                    }
                     root_metadata = Some(CanonicalPathMetadata {
                         stable,
                         reducer_eval_identity: reducer_eval_identity_par(&validation.par, stable),
@@ -1758,14 +1795,16 @@ pub(crate) fn validate_canonical_path(path: &[u8]) -> Result<CanonicalPathMetada
         }
     }
 
-    root_metadata.ok_or(CodecError::CanonicalFormMismatch)
+    root_metadata
+        .map(|metadata| (metadata, retained_root))
+        .ok_or(CodecError::CanonicalFormMismatch)
 }
 
 /// Decode one top-level TRIE path — the inverse of [`encode_trie_path`]:
 /// deterministic, left-to-right, iterative, and **UNBOUNDED IN DEPTH**. The
 /// `0x0F` escape arm is admitted at top-level segment positions (canonical-prost
-/// + ¬eval_stable enforced on payloads); every non-canonical byte shape is
-/// rejected (decode-accepts ≡ encoder-image).
+/// + ¬eval_stable enforced on payloads). Legacy bare-escape list aliases are
+/// accepted but normalize to split paths when re-encoded.
 ///
 /// ⚠ This used to say *"depth-limited"*, describing `COLLECTION_DEPTH_LIMIT = 32`
 /// — a cap **retired** from this module (see the notes at the top of the file and
@@ -2245,7 +2284,8 @@ struct DeclaredCanonicalPathMetadata<'a> {
 fn scan_declared_canonical_path_metadata(
     path: &[u8],
 ) -> Result<DeclaredCanonicalPathMetadata<'_>, CodecError> {
-    if path_declares_stable(path)? {
+    let (stable, form) = declared_path_shape(path)?;
+    if stable {
         return Ok(DeclaredCanonicalPathMetadata {
             stable: true,
             reducer_eval_identity: true,
@@ -2254,7 +2294,7 @@ fn scan_declared_canonical_path_metadata(
         });
     }
 
-    if path[0] != tag::ESCAPE {
+    if matches!(form, CanonicalTopLevelPathForm::Split) {
         return Ok(DeclaredCanonicalPathMetadata {
             stable: false,
             reducer_eval_identity: false,

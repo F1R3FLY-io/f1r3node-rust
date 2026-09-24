@@ -1712,6 +1712,51 @@ cleanup. Existing planned-owner tests supply independent unique retirement cover
 The feature-enabled 25-test selection passes with 1,024 property cases, seed 5834.
 Full decoder and parser-gate qualification are not inferred from this selection.
 
+### Legacy ingress staging and normalization (task 8516)
+
+Preregistered after `da67180c4`, before legacy ingress implementation. A concrete
+accepted bare-escape list is normalized by the existing field-8 reader: bytes
+`0f 07 2a 05 a2 01 02 0a 00` become `0f 00 00`. Therefore validation alone does
+not authorize copying every accepted path unchanged. The new route must preserve
+the old normalized key, not merely its decoded value. This is a legacy ingress
+requirement, not authority to change snapshot key identity or the accepted language.
+
+The formal model treats framing as ordered key/error events and normalization as a
+fallible key-to-key function. A reversed private accumulator refines the recursive
+reference. Published set membership is an extensional union; its list notation is
+a specification, not a proposed production Vec representation. Byte-codec equivalence,
+topology-prefix closure and physical trie ownership are separate native obligations.
+
+| Closed declaration | Required native witness |
+|---|---|
+| `legacy_stage_refines_reference`, `legacy_staging_ignores_representation` | Existing decoder/re-encoder versus planned ingress on generated framed keys and every canonical family; exact success/error and normalization |
+| `legacy_field_failure_is_atomic`, `legacy_first_frame_error_stops` | Malformed key/header after valid prefixes; prior parent and metadata unchanged; first error retained |
+| `legacy_map_mode_precedes_fields` | Typed-empty and populated Map rejection precedes malformed field bytes |
+| `legacy_empty_field_preserves_owner`, `legacy_merge_preserves_metadata` | Empty field retains neutral or typed Set mode, topology, enclosing metadata and remainder |
+| `legacy_success_is_membership_union`, `legacy_duplicate_keys_are_idempotent` | Overlap, repeated normalized aliases and insertion order produce the exact old set keys |
+| `legacy_normalization_is_observable` | Accepted bare-escape list alias is refiled under its normalized split key; raw-copy mutant differs |
+| `legacy_split_metadata_is_outer`, `legacy_leading_escape_dispatch_mutant_is_observable` | Compare declared and validated metadata for leading escaped and mixed split segments; the first segment's metadata is not the outer list's metadata |
+
+The normalization oracle remains the preexisting semantic decoder followed by its
+encoder. The implementation reuses the validator's already-decoded bare-escape root,
+after full validation completion and before publication. No claim of complete
+Rust/codec refinement follows from the abstract normalization premise.
+
+The two metadata dispatch statements were kernel-checked before correcting the
+declared metadata scanner (`legacy-formal-r3`, 49 closed declarations). They model
+the distinction between bare and split paths; they do not prove the byte classifier.
+Native differential witnesses bind that classifier to accepted path bytes.
+
+J-217 binds this extension to seven `epm_legacy_ingress.rs` witnesses and records
+17/17 instrumented and 26/26 default passing selections. The depth-8,192 helper
+uses an independent exact-byte oracle on a 256 KiB stack, not the old general
+decoder, whose repeated semantic-oracle run timed out. Full end-to-end decoding
+at that depth and unchanged gate 5917 remain explicit cutover obligations.
+The opaque-import segment-program defect discovered by the first tag-1 fixture
+is recorded as campaign bug 8518; the decoder fixture uses the actual owned
+expression planner. No import defect or general decoder acceptance is discharged
+by these helper passes.
+
 ## EPM stateful ownership retirement (EOR, task 5834)
 
 The initial `EpmOwnedRetirement.v` ownership layer has 24 exported closed statements

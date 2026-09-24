@@ -43,7 +43,7 @@ use rspace_plus_plus::rspace::pathmap_mutation::{
 
 use super::canonical_path::{
     declared_canonical_path_flags, declared_canonical_path_metadata, decode_trie_path,
-    encode_trie_path, encode_trie_path_with_stability, validate_canonical_path,
+    encode_trie_path, encode_trie_path_with_stability, prepare_legacy_trie_path, validate_canonical_path,
     CanonicalPathMetadata, CodecError,
 };
 use super::epathmap_trie_codec::{
@@ -96,6 +96,23 @@ where
     ModelPathMapPolicy: DisposeValue<V> + TeardownBarrier<V>,
 {
     NativePathCursor::<V, _, ModelPathMapPolicy>::new(map, path, &ModelPathMapPolicy).set_val(value)
+}
+
+pub(crate) fn insert_epm_set_key(map: &mut RholangSetPathMap, key: &[u8]) {
+    native_insert(map, key, ());
+}
+
+pub(crate) fn join_epm_set_keys(left: &RholangSetPathMap, right: &RholangSetPathMap) -> RholangSetPathMap {
+    join_exact_with_grafts(left, right).expect("unit payloads cannot conflict").0
+}
+
+#[allow(deprecated)]
+pub(crate) fn legacy_path_frames(region: &[u8]) -> impl Iterator<Item = Result<&[u8], DecodeError>> {
+    PathFrames::new(region).map(|frame| frame.map_err(|fault| match fault {
+        PathFrameError::LengthOverflow { .. } => DecodeError::new("EPathMap serialized_paths: key length overflow"),
+        PathFrameError::TruncatedKey { .. } => DecodeError::new("EPathMap serialized_paths: truncated key"),
+        PathFrameError::TruncatedLength { .. } => DecodeError::new("EPathMap serialized_paths: trailing bytes after the final key"),
+    }))
 }
 
 fn native_remove<V>(map: &mut pathmap::PathMap<V>, path: &[u8]) -> Option<V>
@@ -1127,15 +1144,25 @@ impl EntryTrie {
     /// verdict. It is `pub(crate)` and takes both together — never a bare key —
     /// so the only way to reach it is to have called the encoder.
     pub(crate) fn insert_encoded(&mut self, key: Vec<u8>, stable: bool, par: Par) -> Par {
+        self.insert_prepared_key(&key, CanonicalPathMetadata {
+            stable,
+            reducer_eval_identity: reducer_eval_identity_par(&par, stable),
+            connective_used: par.connective_used(),
+            locally_free: par.locally_free().to_vec(),
+        });
+        par
+    }
+
+    fn insert_prepared_key(&mut self, key: &[u8], metadata: CanonicalPathMetadata) {
         if matches!(self.representation(), EPathMapRepr::Map(_)) {
             panic!("set insertion attempted on map-mode EPathMap");
         }
-        self.entries_stable &= stable;
-        self.entries_reducer_eval_identity &= reducer_eval_identity_par(&par, stable);
-        self.any_connective_used |= par.connective_used();
+        self.entries_stable &= metadata.stable;
+        self.entries_reducer_eval_identity &= metadata.reducer_eval_identity;
+        self.any_connective_used |= metadata.connective_used;
         self.union_locally_free = crate::rust::utils::union(
             std::mem::take(&mut self.union_locally_free),
-            par.locally_free().to_vec(),
+            metadata.locally_free,
         );
         if matches!(self.representation(), EPathMapRepr::Empty) {
             self.replace_repr(OwnedResidentEPathMap::new(EPathMapRepr::Set(RholangSetPathMap::new()), ResidentEpmBarrier));
@@ -1143,12 +1170,11 @@ impl EntryTrie {
         let EPathMapRepr::Set(map) = self.representation_mut() else {
             unreachable!("map mode was rejected and empty mode was specialized")
         };
-        let replaced = native_insert(map, &key, ());
+        let replaced = native_insert(map, key, ());
         if replaced.is_none() {
             self.len += 1;
         }
         self.invalidate_derived();
-        par
     }
 
     /// Associate `value` with `key`, specializing neutral empty storage to
@@ -2747,22 +2773,11 @@ impl EPathMap {
             ));
         }
         let mut entries = EntryTrie::default();
-        for frame in PathFrames::new(region) {
-            let key = frame.map_err(|fault| match fault {
-                PathFrameError::LengthOverflow { .. } => {
-                    DecodeError::new("EPathMap serialized_paths: key length overflow")
-                }
-                PathFrameError::TruncatedKey { .. } => {
-                    DecodeError::new("EPathMap serialized_paths: truncated key")
-                }
-                PathFrameError::TruncatedLength { .. } => DecodeError::new(
-                    "EPathMap serialized_paths: trailing bytes after the final key",
-                ),
-            })?;
-            let par = decode_trie_path(key).map_err(|codec_error| {
+        for frame in legacy_path_frames(region) {
+            let (key, metadata) = prepare_legacy_trie_path(frame?).map_err(|codec_error| {
                 DecodeError::new(format!("EPathMap serialized_paths key: {codec_error:?}"))
             })?;
-            entries.insert_entry(par);
+            entries.insert_prepared_key(&key, metadata);
         }
         self.ps.extend_entries(&entries);
         Ok(())

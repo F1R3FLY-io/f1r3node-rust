@@ -8,15 +8,116 @@ use crate::rust::par_construction::{
 
 type Result<T> = std::result::Result<T, ParConstructionError>;
 
+#[allow(deprecated)]
+pub(crate) fn construction_error(error: ParConstructionError) -> prost::DecodeError {
+    prost::DecodeError::new(format!("protobuf construction: {error}"))
+}
+
+pub(crate) struct PublicProjection<'a> {
+    pub(crate) arena: &'a mut ParConstruction,
+}
+
+impl owned_slots::Projection for PublicProjection<'_> {
+    type Error = prost::DecodeError;
+
+    fn par(&mut self, value: ProtobufParBuilder) -> std::result::Result<rhoapi::Par, Self::Error> {
+        let value = self
+            .arena
+            .freeze_protobuf_par(value)
+            .map_err(construction_error)?;
+        self.arena.finish(value).map_err(construction_error)
+    }
+
+    fn epathmap(
+        &mut self,
+        value: owned_slots::EPathMap,
+    ) -> std::result::Result<rhoapi::EPathMap, Self::Error> {
+        let repr = self
+            .arena
+            .finish_epm_repr(value.repr)
+            .map_err(construction_error)?;
+        let mut result = rhoapi::EPathMap::default();
+        result.locally_free = value.locally_free;
+        result.connective_used = value.connective_used;
+        result.remainder = value.remainder;
+        result.replace_owned_decoded_representation_with(repr, false)?;
+        Ok(result)
+    }
+}
+
 impl owned_slots::EPathMap {
+    fn insert_legacy_key(&mut self, key: &[u8]) {
+        use crate::rust::epathmap_trie_codec::EPathMapRepr;
+        if matches!(self.repr.as_repr(), EPathMapRepr::Empty) {
+            *self.repr.as_repr_mut() = EPathMapRepr::Set(pathmap::PathMap::new());
+        }
+        let EPathMapRepr::Set(map) = self.repr.as_repr_mut() else {
+            unreachable!("legacy ingress rejects map mode before insertion")
+        };
+        crate::rust::rhoapi_ext::insert_epm_set_key(map, key);
+    }
+
+    #[allow(deprecated)]
+    pub(crate) fn insert_protobuf_par(
+        &mut self,
+        arena: &mut ParConstruction,
+        child: ProtobufParBuilder,
+    ) -> std::result::Result<(), prost::DecodeError> {
+        if self.repr.as_repr().mode() == crate::rust::epathmap_trie_codec::EPathMapMode::Map {
+            return Err(prost::DecodeError::new("EPathMap ps: EPathMap is in Map mode; Set operation would mix set and map membership"));
+        }
+        let child = arena
+            .freeze_protobuf_par(child)
+            .map_err(construction_error)?;
+        let key = arena
+            .canonical_path_bytes(child)
+            .map_err(construction_error)?;
+        self.insert_legacy_key(&key);
+        Ok(())
+    }
+
+    #[allow(deprecated)]
+    pub(crate) fn merge_serialized_paths(
+        &mut self,
+        region: &[u8],
+    ) -> std::result::Result<(), prost::DecodeError> {
+        use crate::rust::epathmap_trie_codec::{EPathMapMode, EPathMapRepr, EpmReprOwner};
+        use crate::rust::rhoapi_ext::{join_epm_set_keys, legacy_path_frames};
+
+        if self.repr.as_repr().mode() == EPathMapMode::Map {
+            return Err(prost::DecodeError::new(
+                "EPathMap serialized_paths cannot be merged into map-mode storage",
+            ));
+        }
+        let mut staged = Self::default();
+        for frame in legacy_path_frames(region) {
+            let (key, _) =
+                crate::rust::canonical_path::prepare_legacy_trie_path(frame?).map_err(|error| {
+                    prost::DecodeError::new(format!("EPathMap serialized_paths key: {error:?}"))
+                })?;
+            staged.insert_legacy_key(&key);
+        }
+        match (self.repr.as_repr(), staged.repr.as_repr()) {
+            (_, EPathMapRepr::Empty) => {}
+            (EPathMapRepr::Empty, _) => self.repr = staged.repr,
+            (EPathMapRepr::Set(left), EPathMapRepr::Set(right)) => {
+                let joined = join_epm_set_keys(left, right);
+                self.repr = EpmReprOwner::new(EPathMapRepr::Set(joined), Default::default());
+            }
+            _ => unreachable!("legacy ingress contains only Set or neutral Empty"),
+        }
+        Ok(())
+    }
+
     pub(crate) fn replace_decoded_representation(
         &mut self,
         incoming: crate::rust::par_construction::OwnedPlannedEPathMap,
         validate: bool,
     ) -> std::result::Result<(), prost::DecodeError> {
+        use pathmap::zipper::{Zipper, ZipperIteration, ZipperMoving};
+
         use crate::rust::epathmap_trie_codec::EPathMapRepr;
         use crate::rust::rhoapi_ext::{canonical_key_metadata, validate_snapshot_mode};
-        use pathmap::zipper::{Zipper, ZipperIteration, ZipperMoving};
 
         fn keys<V: Clone + Send + Sync + Unpin + 'static>(
             map: &pathmap::PathMap<V>,
@@ -47,6 +148,10 @@ impl owned_slots::EPathMap {
 #[cfg(test)]
 #[path = "../../../tests/support/epm_snapshot_admission.rs"]
 mod snapshot_admission_tests;
+
+#[cfg(test)]
+#[path = "../../../tests/support/epm_legacy_ingress.rs"]
+mod legacy_ingress_tests;
 
 pub(crate) struct PlanningProjection<'a> {
     arena: &'a mut ParConstruction,

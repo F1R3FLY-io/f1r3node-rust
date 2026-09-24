@@ -16452,6 +16452,106 @@ alone is not a proof that its semantic decoder would succeed. Legacy field 1,
 duplicate field/oneof reopening, the unchanged depth gate and full acceptance remain
 required parts of task 8516.
 
+## J-217 — Legacy key normalization and planned protobuf ingress (2026-09-24)
+
+**Question and scope.** Task 8516 must accept the same legacy EPathMap fields
+while replacing resident recursive children with construction plans. Field 1
+contains protobuf Par members; field 8 contains length-framed trie keys. A
+validated key is not necessarily a byte-for-byte fixed point of decode/encode.
+The accepted bare-escape list `0f 07 2a 05 a2 01 02 0a 00` is refiled by the old
+field-8 reader as `0f 00 00`. Inserting the original bytes would silently change
+membership and duplicate collapse. Snapshot keys are not legacy field-8 keys:
+this normalization must not be applied to their identity.
+
+**Design and method.** Reuse the canonical validator, retaining its already
+decoded root only for a bare escape. Complete every nested validation obligation
+before publishing. A split-eligible retained list uses the existing encoder's
+segment scheduling; other accepted keys borrow their original bytes. This avoids
+a second semantic decode, not every semantic decode: the existing escape
+validator still needs its decoded payload. There is no flattened entry authority.
+The resident reader folds the returned metadata; the planned reader stages unit
+keys in a guarded PathMap and commits one exact-graft union only on success.
+Empty fields preserve neutral/typed mode and topology. Map-mode refusal precedes
+framing. Planned field 1 freezes a completed builder and emits its canonical
+key directly, without finishing an intermediate resident Par. Public projection
+is a distinct final boundary, not a callback during every recursive attachment.
+
+**Formal-first qualification.** EPR adds ten staging/normalization declarations
+and two split-metadata dispatch declarations, totaling 49 exported closed
+statements. The model treats framing and fallible normalization as supplied
+functions; it proves publication, ordering, membership union and metadata
+properties, not a byte-parser or physical-PathMap refinement theorem. The
+invariant catalog binds native tests before implementation. Formal R1 required
+a missing natural-number type annotation (551 ms CPU, 374.9 MiB peak). R2
+passes 47 declarations and independent kernel checking before legacy Rust
+changes (13.587 seconds service, 391.1 MiB peak). R3 adds the reviewed metadata
+dispatch contract before its Rust repair and passes 49 declarations plus kernel
+checking (13.770 seconds service, 13.579 CPU seconds, 394.7 MiB peak).
+All formal runs use 1/2 GiB high/hard memory limits and zero swap.
+
+**Negative evidence retained.** The alias diagnostic passes 1/1. Native R1
+fails compilation because a test incorrectly unwraps an infallible constructor
+(11.187 seconds service, 1.2 GiB peak). R2 passes 2/4 executed tests; two fail
+because deferred metadata scanning mistakes a split path beginning with escape
+for a bare escape. One test is not run after fail-fast. The repair dispatches on
+the complete path form, so the split list gets its own outer metadata rather
+than its first element's metadata. Strict validation remains unchanged.
+
+R3 passes 5/7. A fixture importing an opaque stable component reaches a missing
+segment-program assertion; this is separately recorded as reachable campaign bug
+8518, not erased or declared fixed. The fixture now uses the decoder's actual
+owned-expression planning adapter. The other test calls the still-old general
+decoder repeatedly for an 8,192-deep ENot oracle and reaches the 900-second
+service cap (841.739 seconds test phase, 998.221 CPU seconds, 2.3 GiB service
+peak, zero swap). It is a timeout, not an OOM or a successful depth result.
+
+**Measured helper result.** Instrumented R4 passes **17/17**, 690 excluded, with
+1,024 generated cases and seed 5834: 1.925 seconds tests, 64.664 seconds service,
+221.526 CPU seconds, 2.7 GiB service peak and zero swap. The seven new witnesses
+cover alias normalization/idempotence, scalar/collection/escape fixtures, generated
+framed fields, first-error atomicity, typed modes, duplicate insertion, outer
+metadata, and union into value-free destination topology. The other ten tests
+cover snapshot admission, guarded payload mapping and the proof manifest.
+
+The depth-8,192 helper now uses an independent full-byte oracle: calculate
+protobuf lengths bottom-up, then emit the known Par/Expr/ENot field prefixes
+top-down. It passes on a 256 KiB stack in 74 ms, retaining the exact full-key,
+public projection, cleanup and zero-intermediate-finish assertions. This isolates
+the new helper without depending on the old general decoder. It does **not**
+qualify general decoding: the explicit 8,192-deep ENot end-to-end obligation and
+unchanged gate 5917 remain required after cutover. No throughput speedup follows
+from comparing R3's semantic-decoder workload to R4's independent oracle.
+Native runs use systemd 6/8 GiB high/hard limits, zero swap, four build/test
+workers, a four-CPU quota and on-disk compiler temporaries.
+
+Default R5 adds nine existing canonical-codec controls and passes **26/26**, 672
+excluded: 1.938 seconds tests, 65.557 seconds service, 224.705 CPU seconds,
+2.8 GiB service peak and zero swap. Those controls pin scalar bytes, bare/split
+framing, nested maps, escapes, list-vs-member identity and splitting policy.
+Shell syntax and diff whitespace checks pass. These are focused selections,
+not full-workspace acceptance.
+
+| Receipt under `target/verification/protobuf-attach-8516/` | SHA-256 |
+|---|---|
+| `legacy-formal-r1.log` | `f12cac1a3128d2aa50b33602b5457de2e0adecf33e30e86ea9b6dee2403c96f3` |
+| `legacy-formal-r2.log` | `3c89acd3d8178ed5a3de00e4f33f3a9ac3628886a5717d681f56f3f7e5ff07ac` |
+| `legacy-formal-r3.log` | `52b8c921e073e39d42f64cf9e6e1e78ab95f602fe4e1d2b90c3e36ed3389f868` |
+| `legacy-alias-r1.log` | `02c5bfcb38c68149f78d98d937cf44f3c2b9cf33d36b46b307833c62e94d6be8` |
+| `legacy-native-r1.log` | `48bdfbb01fe27a00a551c4f6d8935d67ba60cc469627718fd20310aaff123978` |
+| `legacy-native-r2.log` | `35e6c437e6847c3cdd7bcf52b64a91abefc106cc04fcceaa2357118c25043aee` |
+| `legacy-native-r3.log` | `417bb85f8cf830325b26349614c3e31a194bed3d8bc1f037fd0b53dfb09d0d82` |
+| `legacy-native-r4.log` | `49b34dda80fd4675d32f8f84593e66184356edeffe1adfdfa58fc116c8d5a3a0` |
+| `legacy-native-r5.log` | `54616c3f9b23c7969a5d134ee88e2dbc35a28ab13258d5c931585d738e0463ba` |
+
+EPR theory SHA-256: `99b0d39656639c88f5a360209789c2b00ede1ea49f3a789e625c1ec4be8b4e7d`.
+
+**Remaining boundaries.** The general decoder still uses resident frame values.
+Its control-state composition proof, owned-frame routing, frozen-oracle malformed
+and merge differentials, unchanged depth gate, geometric resource measurements
+and capped full-workspace acceptance remain open. The metadata repair changes
+deferred acceptance of an already strictly valid split key; the consensus register
+retains that narrow observation without claiming universal caller equivalence.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

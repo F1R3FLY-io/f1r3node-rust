@@ -430,6 +430,153 @@ Theorem key_validation_before_mode_mutant_is_observable :
   check_keys (fun _ => Some 7) [(0, 1)].
 Proof. discriminate. Qed.
 
+Fixpoint legacy_reference (normalize : nat -> nat + nat) (frames : list (nat + nat))
+    : list nat + nat :=
+  match frames with
+  | [] => inl []
+  | inr error :: _ => inr error
+  | inl key :: rest =>
+      match normalize key with
+      | inr error => inr error
+      | inl normalized =>
+          match legacy_reference normalize rest with
+          | inr error => inr error
+          | inl keys => inl (normalized :: keys)
+          end
+      end
+  end.
+
+Fixpoint legacy_stage (normalize : nat -> nat + nat) (frames : list (nat + nat))
+    (reversed : list nat) : list nat + nat :=
+  match frames with
+  | [] => inl (rev reversed)
+  | inr error :: _ => inr error
+  | inl key :: rest =>
+      match normalize key with
+      | inr error => inr error
+      | inl normalized => legacy_stage normalize rest (normalized :: reversed)
+      end
+  end.
+
+Theorem legacy_stage_refines_reference normalize frames : forall reversed,
+  legacy_stage normalize frames reversed =
+  match legacy_reference normalize frames with
+  | inl keys => inl (rev reversed ++ keys)
+  | inr error => inr error
+  end.
+Proof.
+  induction frames as [|[key|error] rest IH]; intro reversed; cbn;
+    [now rewrite app_nil_r| |reflexivity].
+  destruct (normalize key) as [normalized|error]; [|reflexivity].
+  rewrite IH. destruct (legacy_reference normalize rest); cbn; [|reflexivity].
+  now rewrite <- app_assoc.
+Qed.
+
+Theorem legacy_staging_ignores_representation before after frames :
+  (forall key, before key = after key) ->
+  legacy_reference before frames = legacy_reference after frames.
+Proof.
+  intro same. induction frames as [|[key|error] rest IH]; cbn;
+    try reflexivity. rewrite same. destruct (after key); [now rewrite IH|reflexivity].
+Qed.
+
+Record legacy_state := LegacyState {
+  legacy_mode : mapping_mode;
+  legacy_keys : list nat;
+  legacy_metadata : nat
+}.
+
+Inductive legacy_error := LegacyMapMode | LegacyCodec (code : nat).
+
+Definition legacy_commit current keys :=
+  match keys with
+  | [] => current
+  | _ :: _ => LegacyState MappingSet (keys ++ legacy_keys current) (legacy_metadata current)
+  end.
+
+Definition legacy_apply normalize current frames :=
+  match legacy_mode current with
+  | MappingMap => (current, Some LegacyMapMode)
+  | _ => match legacy_stage normalize frames [] with
+      | inl keys => (legacy_commit current keys, None)
+      | inr code => (current, Some (LegacyCodec code))
+      end
+  end.
+
+Theorem legacy_field_failure_is_atomic normalize current frames error :
+  snd (legacy_apply normalize current frames) = Some error ->
+  fst (legacy_apply normalize current frames) = current.
+Proof.
+  unfold legacy_apply. destruct (legacy_mode current); [| |reflexivity];
+    destruct (legacy_stage normalize frames []); cbn; intros H;
+    [discriminate|reflexivity|discriminate|reflexivity].
+Qed.
+
+Theorem legacy_map_mode_precedes_fields normalize keys metadata frames :
+  legacy_apply normalize (LegacyState MappingMap keys metadata) frames =
+    (LegacyState MappingMap keys metadata, Some LegacyMapMode).
+Proof. reflexivity. Qed.
+
+Theorem legacy_empty_field_preserves_owner normalize current :
+  fst (legacy_apply normalize current []) = current.
+Proof. unfold legacy_apply. destruct (legacy_mode current); reflexivity. Qed.
+
+Theorem legacy_merge_preserves_metadata normalize current frames :
+  legacy_metadata (fst (legacy_apply normalize current frames)) = legacy_metadata current.
+Proof.
+  unfold legacy_apply. destruct (legacy_mode current); [| |reflexivity];
+    destruct (legacy_stage normalize frames []) as [[|key rest]|error]; reflexivity.
+Qed.
+
+Theorem legacy_success_is_membership_union current keys query :
+  In query (legacy_keys (legacy_commit current keys)) <->
+  In query keys \/ In query (legacy_keys current).
+Proof.
+  destruct keys as [|key rest]; cbn; [tauto|].
+  unfold legacy_commit; cbn. rewrite in_app_iff. cbn. tauto.
+Qed.
+
+Theorem legacy_duplicate_keys_are_idempotent current key query :
+  In query (legacy_keys (legacy_commit current [key; key])) <->
+  In query (legacy_keys (legacy_commit current [key])).
+Proof. cbn. tauto. Qed.
+
+Theorem legacy_first_frame_error_stops normalize code rest reversed :
+  legacy_stage normalize (inr code :: rest) reversed = inr code.
+Proof. reflexivity. Qed.
+
+Theorem legacy_normalization_is_observable :
+  legacy_apply (fun key => inl (if key =? 7 then 3 else key))
+    (LegacyState MappingEmpty [] 9) [inl 7] <>
+  legacy_apply (fun key => inl key) (LegacyState MappingEmpty [] 9) [inl 7].
+Proof. discriminate. Qed.
+
+Print Assumptions legacy_stage_refines_reference.
+Print Assumptions legacy_staging_ignores_representation.
+Print Assumptions legacy_field_failure_is_atomic.
+Print Assumptions legacy_map_mode_precedes_fields.
+Print Assumptions legacy_empty_field_preserves_owner.
+Print Assumptions legacy_merge_preserves_metadata.
+Print Assumptions legacy_success_is_membership_union.
+Print Assumptions legacy_duplicate_keys_are_idempotent.
+Print Assumptions legacy_first_frame_error_stops.
+Print Assumptions legacy_normalization_is_observable.
+
+Inductive legacy_path_form := BarePath | SplitPath.
+Definition legacy_outer_metadata (form : legacy_path_form) (bare_metadata : nat) :=
+  match form with BarePath => bare_metadata | SplitPath => 0 end.
+
+Theorem legacy_split_metadata_is_outer metadata :
+  legacy_outer_metadata SplitPath metadata = 0.
+Proof. reflexivity. Qed.
+
+Theorem legacy_leading_escape_dispatch_mutant_is_observable :
+  legacy_outer_metadata SplitPath 7 <> legacy_outer_metadata BarePath 7.
+Proof. discriminate. Qed.
+
+Print Assumptions legacy_split_metadata_is_outer.
+Print Assumptions legacy_leading_escape_dispatch_mutant_is_observable.
+
 Print Assumptions key_validation_ignores_payload_representation.
 Print Assumptions snapshot_admission_commutes.
 Print Assumptions snapshot_rejection_preserves_parent.

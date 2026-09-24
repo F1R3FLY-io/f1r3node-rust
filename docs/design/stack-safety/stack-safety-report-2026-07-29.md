@@ -9112,6 +9112,27 @@ Default qualification additionally passes **30/30**, 682 excluded, including
 existing EPM1 compatibility cases: 7.371 seconds tests, 2.3 GiB service peak and
 zero swap under the same cap. J-216 retains the exact receipts and hashes.
 
+J-217 qualifies the legacy field-1/field-8 planned helpers and final public
+projection. It preserves the existing bare-escape list normalization instead of
+assuming every accepted key is an encoder fixed point. A split-path metadata
+dispatch defect is corrected; EPR now has 49 closed declarations, kernel checked
+before each corresponding Rust change. Instrumented qualification passes
+**17/17**, 690 excluded, in 1.925 seconds tests with 2.7 GiB service peak and zero
+swap under an 8 GiB cap. The depth-8,192 helper uses a full independent byte
+oracle on 256 KiB, with zero intermediate resident finishes (74 ms observed).
+This is not an application speedup measurement.
+
+The earlier helper run repeatedly invoked the old general decoder and timed out
+at the 900-second service cap; it did not OOM and does not qualify deep decoding.
+The explicit depth-8,192 ENot end-to-end obligation, unchanged gate 5917,
+general decoder cutover, geometric resource comparisons and full workspace
+acceptance remain open. Opaque imported components lacking canonical segment
+programs are separately tracked as campaign bug 8518. J-217 retains the negative
+receipts, proof boundaries and exact hashes; neither task is reported complete.
+Default qualification adds nine existing codec controls and passes **26/26**,
+672 excluded: 1.938 seconds tests, 2.8 GiB service peak and zero swap under the
+same cap. No full-workspace or application-performance result is inferred.
+
 ### 5.29 ParBag family and count-domain completeness [SS-A13, SS-A14, SS-Y9]
 
 #### 5.29.1 The defects

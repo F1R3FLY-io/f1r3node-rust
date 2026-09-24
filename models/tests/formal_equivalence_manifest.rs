@@ -1251,12 +1251,29 @@ fn epm_payload_representation_has_proof_and_native_bindings() {
         "snapshot_rejection_preserves_parent", "snapshot_success_installs_exact_image",
         "mode_conflict_precedes_key_validation", "neutral_mode_accepts_every_mode",
         "first_key_failure_stops_validation", "key_validation_before_mode_mutant_is_observable",
+        "legacy_stage_refines_reference", "legacy_staging_ignores_representation",
+        "legacy_field_failure_is_atomic", "legacy_map_mode_precedes_fields",
+        "legacy_empty_field_preserves_owner", "legacy_merge_preserves_metadata",
+        "legacy_success_is_membership_union", "legacy_duplicate_keys_are_idempotent",
+        "legacy_first_frame_error_stops", "legacy_normalization_is_observable",
+        "legacy_split_metadata_is_outer", "legacy_leading_escape_dispatch_mutant_is_observable",
     ] {
         assert!(theory.contains(&format!("Print Assumptions {theorem}.")));
     }
     let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
-    assert_eq!(theory.matches("Print Assumptions ").count(), 37);
-    assert!(has_runner_command(&runner, &["rocq_compile_with_closed_count", "theories/EpmPayloadRepresentation.v", "37"]));
+    assert_eq!(theory.matches("Print Assumptions ").count(), 49);
+    assert!(has_runner_command(&runner, &["rocq_compile_with_closed_count", "theories/EpmPayloadRepresentation.v", "49"]));
+    assert!(has_runner_command(&runner, &["rpb3_run_tests", "7", "--lib", "legacy_ingress_tests"]));
+    let legacy = read_repository_file("models/tests/support/epm_legacy_ingress.rs");
+    for witness in ["accepted_legacy_escape_alias_is_refiled_under_its_normalized_key",
+        "normalization_matches_every_scalar_collection_and_escape_boundary",
+        "framed_ingress_matches_frozen_reader_and_key_normalization",
+        "legacy_fields_are_atomic_mode_checked_and_metadata_preserving",
+        "planned_tag_one_and_public_projection_preserve_deep_values_without_internal_finishes",
+        "split_metadata_belongs_to_outer_list_not_first_segment",
+        "tag_one_preserves_modes_duplicates_and_outer_metadata"] {
+        assert!(legacy.contains(&format!("fn {witness}(")));
+    }
     assert!(has_runner_command(&runner, &["rpb3_run_tests", "4", "--lib", "snapshot_admission_tests"]));
     let admission = read_repository_file("models/tests/support/epm_snapshot_admission.rs");
     for witness in ["planned_and_resident_admission_match_generated_keys",
