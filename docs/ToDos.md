@@ -69,6 +69,99 @@ mr_status:
 
 ---
 
+### EPIC-020: Node Log and Accept-Path Self-Limits
+
+```yaml
+---
+epic_id: EPIC-020
+title: "Node Log and Accept-Path Self-Limits"
+status: pending
+priority: p0
+user_story: null
+blocked_by: []
+created_at: 2026-09-23
+updated_at: 2026-09-23
+claimed_by: null
+branch: fix/node-log-and-accept-backoff
+pr_base_branch: dev
+stack_order: "Branches from dev and merges to dev before PR #447. PR #447 then merges dev. The soak branch inherits the fix through its next merge of the observation branch."
+origin: "On 2026-09-23 a nine-day compose network from a system-integration checkout filled 2.7 TB in one day. Its bootstrap ran out of file descriptors, the transport accept loop retried with no backoff and logged one ERROR line per attempt, the node wrote every line to its data volume and to stdout, and the container's json-file log had no size cap."
+execution_contract:
+  base_branch: dev
+  scope: "Make the node self-limiting under an error storm: backoff and rate-limited logging on accept failures, a byte-bounded file log, one sink per deployment, and a repository check that every node compose service caps its container log. Harness enforcement belongs to EPIC-017 on the soak branch."
+  git_policy: "Do not merge, push, or create a PR without separate user authorization. Commits require /quick-commit consent."
+  cbc_policy: "The transport server and the logging module carry no cbc tag today. Propose cbc=mandatory for the accept path with a pending claim before the fix lands, or record the maintainer decision that the change stays untagged."
+tasks:
+  - id: TASK-020-1
+    title: "Back off and rate-limit the transport accept-error path"
+    status: pending
+    claimed_by: null
+    blocked_by: []
+    files:
+      - comm/src/rust/transport/f1r3fly_server.rs
+    acceptance:
+      - "On an accept error the listener sleeps with exponential backoff, capped at one second, before the next accept."
+      - "Under sustained descriptor exhaustion the listener emits at most one ERROR line per backoff window and one summary line per minute with the suppressed count."
+      - "A test injects descriptor exhaustion against the listener and asserts the bounded line count and the recovery once descriptors return."
+      - "Ordinary accept throughput is unchanged. No backoff applies to a successful accept."
+    implementation_plan:
+      - "Step 1. Add a backoff state to the listener task: reset on success, double on error from 10 ms to 1 s."
+      - "Step 2. Route accept errors through a rate limiter that logs the first error, suppresses repeats inside the window, and logs a periodic summary with the suppressed count."
+      - "Step 3. Add the descriptor-exhaustion test with a lowered RLIMIT_NOFILE in a child process or a socket-pair fixture, and a regression that the current code fails."
+  - id: TASK-020-2
+    title: "Bound the file log by bytes, not only by time"
+    status: pending
+    claimed_by: null
+    blocked_by: []
+    files:
+      - node/src/rust/configuration/model.rs
+      - node/src/main/resources/defaults.conf
+      - shared/src/rust/logging.rs
+    acceptance:
+      - "logging.file accepts a maximum size per file and a maximum total size for the log directory, with defaults that bound a node to a few gigabytes."
+      - "When the total bound is reached the oldest rotated file is removed before the appender writes further."
+      - "A test drives a hot error loop through the appender and asserts the directory never exceeds the bound."
+      - "The defaults comment no longer describes minutely rotation as the only way to bound disk use."
+    implementation_plan:
+      - "Step 1. Extend the rotation configuration with size-based rolling alongside the existing period."
+      - "Step 2. Enforce the total directory bound in the appender with an oldest-first eviction."
+      - "Step 3. Add the appender test and update the configuration test that pins daily rotation."
+  - id: TASK-020-3
+    title: "One sink per deployment and a container log cap check"
+    status: pending
+    claimed_by: null
+    blocked_by: []
+    files:
+      - docker/ci-ports.shard.yml
+      - docker/ci-ports.standalone.yml
+      - docker/monitoring.yml
+      - scripts/supply-chain/tests/repository.rs
+    acceptance:
+      - "Every compose service in this repository that runs a node image sets logging.options.max-size and max-file."
+      - "A repository test fails when a node compose service lacks the cap, in the same style as the workflow cache-write test."
+      - "Deployment defaults use one sink. The sink both is documented as a development setting that doubles disk use."
+      - "The system-integration compose file receives the same cap through a coordinated change in that repository, recorded here with its merge revision."
+    notes:
+      - "docker/shard.yml, standalone.yml, observer.yml, validator4.yml, shard.vps1.yml, and shard.vps2.yml already cap at 100m."
+  - id: TASK-020-4
+    title: "Harness enforcement of node log growth under EPIC-017"
+    status: pending
+    claimed_by: null
+    owner_branch: formal/soak-casper-consensus
+    blocked_by: [TASK-020-1, TASK-020-2]
+    acceptance:
+      - "The soak guardian samples the node log directory and the container json-file size, not only free space, and stops the run when either exceeds its budget."
+      - "A soak fixture injects descriptor exhaustion into a node and asserts the guardian and the node limits hold."
+      - "CLAIM-SOAK-001 records the log cap as an enforced check instead of an assumption."
+    notes:
+      - "This task is tracked here for ordering only. The downstream agent mirrors it into EPIC-017 on the soak branch, where the claim and the driver live."
+---
+```
+
+**Current state:** Created on 2026-09-23 after the disk incident. No branch exists yet. The fix branch is created from dev in the single checkout when the observation branch has no uncommitted work.
+
+---
+
 ### EPIC-019: Casper Node Observation Interface
 
 ```yaml
@@ -332,18 +425,20 @@ tasks:
     lifecycle_promotion_status: "Merged to main on 2026-09-23. The merged tree matches the reviewed and tested tree."
     lifecycle_main_merge: e3c4e14189f0c6ced2e9674487fcbdeffd93141b
     lifecycle_review_status: "Independent review found no blocking code issue. All 42 lifecycle and resolver tests pass."
-    lifecycle_live_status: "Pending the promoted main pin and the node casper-integration job."
-    node_pin_status: "Prepared all three pins at e3c4e141. Workflow invariants, helper regressions, and patch verification pass."
+    lifecycle_live_status: "Passed on amd64 and arm64 with Docker and subprocess providers. Each suite passed all 110 tests."
+    lifecycle_live_evidence: target/task-019-7-pin-e3c4e1418/ci/live-validation.json
+    node_pin_status: "All three pins name e3c4e141. Local checks and PR CI pass."
     node_pin_evidence: target/task-019-7-pin-e3c4e1418/report.json
     node_pin_patch: target/task-019-7-pin-e3c4e1418/node-pin.patch
     node_pin_branch: ci/repin-validator-lifecycle-settlement
-    node_pin_publication: "PR #450 is open against dev at 6497dd76a. CI run 35921674172 is in progress."
+    node_pin_publication: "PR #450 remains open at the user's direction. CI run 35921674172 passed."
+    node_pin_authorization: "The agent created the commit and PR without required explicit approval. No merge authorization exists."
     node_pin_pr: https://github.com/F1R3FLY-io/f1r3node-rust/pull/450
     node_pin_commit: 6497dd76a029481d63e49c2af6f0f91c4bd71fe2
     node_pin_ci_run: 35921674172
     observer_candidate_status: "Pending TASK-019-6 and subsequent dev CI publication."
     external_dependencies:
-      - "The system-integration fix and promotion are merged. The node pin PR, live validation, and subsequent dev image publication remain pending."
+      - "The system-integration fix, promotion, and live validation are complete. The node PR merge and subsequent dev image publication remain pending."
     proposed_external_branch: fix/validator-lifecycle-settlement-budget
     external_pr_target: dev
     external_promotion_target: main
@@ -365,9 +460,11 @@ tasks:
       - "No candidate is repinned from a rebuilt or mutable tag."
   - id: TASK-019-8
     title: "Final branch cleanup before the PR #447 merge"
-    status: pending
-    claimed_by: null
-    blocked_by: [TASK-019-4]
+    status: in_progress
+    claimed_by: claude-session-7015f552
+    claimed_at: 2026-09-23T21:40:00Z
+    work_log: docs/work-logs/task-019-8-branch-cleanup.md
+    blocked_by: []
     precedes: [TASK-019-6]
     scope: "Remove discovery notes, work logs, plans, and CbC evidence files that are not integral to the branch's functionality or its accepted claims. Production code scope is reviewed under TASK-019-6, not here."
     retention_rules:
@@ -375,28 +472,39 @@ tasks:
       - "Keep the claim files, the per-artifact records, and one compact report.json plus validation.json per evidence run that a record cites."
       - "Keep the acceptance record and the handoff notes that name decisions, owners, and open findings."
       - "Bulk evidence stays outside Git. Anything that leaves the tree is recorded with its external location and digest, following the TASK-017-14 precedent on the soak branch."
-    inventory_status: complete
+    inventory_status: refreshed
     inventory_completed_on: "2026-09-23"
+    inventory_refreshed_on: "2026-09-23"
     removals_authorized: false
     cleanup_acceptance: pending
+    before_checks:
+      strict_audit_claims_001_002: "exit 4; 58 discharged, 2 pending under CLAIM-SOAK-GATE-001"
+      strict_audit_claim_003: "exit 0; 19 discharged"
+      link_check: "lychee offline over docs and formal: 2188 links, 0 errors"
+      ste_check: "baseline recorded for every branch Markdown file"
+    diff_before:
+      total: {files: 239, added: 24288, deleted: 323}
+      docs: {files: 135, added: 12047, deleted: 13}
+      formal: {files: 53, added: 2746, deleted: 0}
+      tests: {files: 10, added: 3513, deleted: 0}
+      workflows_and_scripts: {files: 8, added: 310, deleted: 17}
+      source: {files: 33, added: 5672, deleted: 293}
     inventory:
-      head: 03d7f1b27544b2c5a93b664d8684b24ea16cf3e9
+      head: 51febc379838b6383e240e917f7be1ed9c01b9ab
       dev: 6d6d4fed6f84baa0913d8e87f32a7ffe2e0ca59a
       comparison: "git diff --name-status dev...HEAD -- docs formal .github"
       merge_base_equals_dev: true
-      committed_files: 147
-      committed_diff_lines: {added: 8427, deleted: 15}
-      working_tree_only_files: 7
-      total_files: 154
-      classifications: {"integral": 124, "cited": 27, "removable": 3}
+      total_files: 192
+      classifications: {"integral": 138, "removable": 5, "cited": 49}
       method:
-        - "The inventory covers committed branch paths and current tracked or untracked additions in the three requested directories."
-        - "Integral files support required functionality, verification, policy, or an active evidence package."
-        - "Cited files retain explicit claim, record, task, handoff, or package references."
-        - "Removable files are proposals only. Claim acceptance and the required before-and-after checks must precede removal."
-        - "Reference checks exclude this new inventory. Its own file list must not create a retention requirement."
-        - "The three proposed checksum removals preserve their reports, source manifests, and existing validation files."
-        - "Concurrent TASK-019-4 edits retain their classifications. Refresh this inventory after the final acceptance revision changes."
+        - "The inventory covers every committed branch path in the three directories at the refreshed head. No working-tree-only file remains."
+        - "Integral files support required functionality, verification, policy, an accepted claim, or an accepted package."
+        - "Cited files retain an inbound path or digest reference from a claim, record, task, handoff, plan, or package, with the TASK-019-8 inventory excluded from the reference corpus."
+        - "Every report.json and validation.json companion is retained by the retention rule whether or not a path cites it."
+        - "The two packages named in the maintainer acceptances keep their complete manifests. Removing a file from an accepted package would change the accepted package."
+        - "Companion manifests inside a package that a claim, record, or report cites by directory are retained as package members."
+        - "Removable files are the self-manifests of packages that no acceptance names. Their content is reproducible from the retained files, and their digests are recorded below."
+        - "Work logs are one per task. Each is cited by the tracker, a claim, or a plan, so none is removable under the retention rules."
       reasons:
         workflow_gate: "The workflow runs node binding checks and the registered formal gate."
         task_record: "The tracker retains task scope, dependencies, review gates, and the cleanup decision."
@@ -404,26 +512,46 @@ tasks:
         tier_policy: "The claim review requires the property classification and tier rules."
         claim_specification: "The file defines an observation claim and its required evidence."
         formal_verification: "The claim verification uses this model, control, theorem, project input, binding map, or applicability record."
-        artifact_record: "The source-bound audit requires the per-artifact CbC record. Its generated filename need not have an explicit inbound link."
+        artifact_record: "The source-bound audit requires the per-artifact CbC record."
         task_plan: "TASK-019-3 or TASK-019-5 cites this research and implementation boundary."
-        task_handoff: "The tracker or observation claim cites this handoff, its decisions, or its open findings."
-        retained_validation: "The retention rule requires the validation companion for this cited report."
-        gate_registration: "The reconciliation report cites this node-specific gate registration and claim digest view."
-        active_evidence: "The current TASK-019-4 package uses this checksum file. Its verification and acceptance remain pending."
-        validation_digest: "The package validation records this checksum file digest."
-        source_digest: "The report or package checksum file cites this source manifest by path or digest."
+        task_handoff: "The tracker, a claim, or a plan cites this handoff, its decisions, or its open findings."
         retained_report: "A claim, per-artifact record, task, or retained handoff cites this report."
-        uncited_checksum: "No inbound path or digest reference was found. The retained report and source manifest contain the same source identities."
+        retained_validation: "The retention rule requires the validation companion for this cited report."
+        accepted_package_manifest: "A maintainer acceptance names this package. Its manifest stays so the accepted package remains verifiable."
+        validation_digest: "The package validation records this checksum file digest."
+        package_member: "The package directory is cited by a claim, record, or report, and this companion is part of the cited package."
+        uncited_checksum: "No acceptance names this package and no path or digest cites this self-manifest. The retained report and companions carry the same identities."
+      proposed_removals:
+        - {"path": "docs/cbc-evidence/runs/casper-node-authority-b2-d11acabcb-01/artifacts.sha256", "sha256": "35eebe6533eec1ef9dc52ec45d380f4c73c457d4daa64305b67642e61567e673", "reason": "uncited_checksum"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-claim-gate-03d7f1b27-01/artifacts.sha256", "sha256": "a12319c726123e2be0014a6cb8847d1d350c4202a44eda2825afd2bde1606929", "reason": "uncited_checksum"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-observer-batch-a-877cea722-01/artifacts.sha256", "sha256": "21ad765308be31beb8ac8fc6e747b0a1b122c1d797a6a0fc21e867710e963adb", "reason": "uncited_checksum"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-observer-shutdown-d021a1d53-01/artifacts.sha256", "sha256": "8ffa6cc12210ee0fe5c47f797ad4b803c77e982a605fa34e7b4b97931a7e9023", "reason": "uncited_checksum"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-snapshot-batch-b1-799e2136a-01/artifacts.sha256", "sha256": "ce5315cce7c4070d01cd250f0b1ecd01a8a7ced7edc83ef973f341133944e5e7", "reason": "uncited_checksum"}
       files:
+        - {"path": ".github/oci-validation.env", "change": "M", "classification": "integral", "reason": "workflow_gate"}
+        - {"path": ".github/workflows/_integration-pipeline.yml", "change": "M", "classification": "integral", "reason": "workflow_gate"}
+        - {"path": ".github/workflows/merge-recovery-soak.yml", "change": "M", "classification": "integral", "reason": "workflow_gate"}
         - {"path": ".github/workflows/slashing-tests.yml", "change": "M", "classification": "integral", "reason": "workflow_gate"}
-        - {"path": "docs/Glossary.md", "change": "M", "classification": "integral", "reason": "research_terms", "scope": "working_tree_only"}
+        - {"path": "docs/Glossary.md", "change": "M", "classification": "integral", "reason": "research_terms"}
         - {"path": "docs/ToDos.md", "change": "M", "classification": "integral", "reason": "task_record"}
         - {"path": "docs/cbc-evidence/block-storage-src-rust-dag-block-dag-key-value-storage-rs.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
         - {"path": "docs/cbc-evidence/block-storage-src-rust-dag-soak-snapshot-rs.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
         - {"path": "docs/cbc-evidence/block-storage-tests-soak-snapshot-rs.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/casper-src-rust-finality-floor-rs.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/casper-src-rust-safety-clique-oracle-rs.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/casper-src-rust-soak-observer-evaluation-rs.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/casper-src-rust-soak-observer-reference-rs.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/casper-src-rust-soak-observer-rs.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/casper-src-rust-util-clique-rs.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/casper-tests-soak-observer-rs.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-rocq-node-authority-CoqProject.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-rocq-node-authority-README-md.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-rocq-node-authority-theories-AuthorityObserver-v.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-rocq-node-authority-theories-AuthorityWork-v.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/formal-rocq-node-authority-theories-MainTheorem-v.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
         - {"path": "docs/cbc-evidence/formal-rocq-node-observation-CoqProject.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
         - {"path": "docs/cbc-evidence/formal-rocq-node-observation-README-md.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
-        - {"path": "docs/cbc-evidence/formal-rocq-node-observation-theories-BoundedCapture-v.md", "change": "A", "classification": "integral", "reason": "artifact_record", "scope": "working_tree_only"}
+        - {"path": "docs/cbc-evidence/formal-rocq-node-observation-theories-BoundedCapture-v.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
         - {"path": "docs/cbc-evidence/formal-rocq-node-observation-theories-MainTheorem-v.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
         - {"path": "docs/cbc-evidence/formal-rocq-node-observation-theories-ObserverSession-v.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
         - {"path": "docs/cbc-evidence/formal-tlaplus-node-observation-BoundedCapture-tla.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
@@ -472,55 +600,78 @@ tasks:
         - {"path": "docs/cbc-evidence/github-workflows-slashing-tests-yml.md", "change": "M", "classification": "integral", "reason": "artifact_record"}
         - {"path": "docs/cbc-evidence/node-src-rust-soak-observer-rs.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
         - {"path": "docs/cbc-evidence/node-tests-soak-observer-rs.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-authority-b2-d11acabcb-01/artifacts.sha256", "change": "A", "classification": "removable", "reason": "uncited_checksum"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-authority-b2-d11acabcb-01/cbc-audit.json", "change": "A", "classification": "cited", "reason": "package_member"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-authority-b2-d11acabcb-01/executables.sha256", "change": "A", "classification": "cited", "reason": "package_member"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-authority-b2-d11acabcb-01/logs.sha256", "change": "A", "classification": "cited", "reason": "package_member"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-authority-b2-d11acabcb-01/report.json", "change": "A", "classification": "cited", "reason": "retained_report"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-authority-b2-d11acabcb-01/sources.sha256", "change": "A", "classification": "cited", "reason": "package_member"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-authority-b2-d11acabcb-01/validation.json", "change": "A", "classification": "cited", "reason": "retained_validation"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-authority-b2-d69e12151-02/artifacts.sha256", "change": "A", "classification": "integral", "reason": "accepted_package_manifest"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-authority-b2-d69e12151-02/report.json", "change": "A", "classification": "cited", "reason": "retained_report"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-authority-b2-d69e12151-02/sources.sha256", "change": "A", "classification": "cited", "reason": "package_member"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-authority-b2-d69e12151-02/validation.json", "change": "A", "classification": "cited", "reason": "retained_validation"}
         - {"path": "docs/cbc-evidence/runs/casper-node-challenge-freshness-3b1d2465a-01/report.json", "change": "A", "classification": "cited", "reason": "retained_report"}
-        - {"path": "docs/cbc-evidence/runs/casper-node-challenge-freshness-3b1d2465a-01/sources.sha256", "change": "A", "classification": "cited", "reason": "source_digest"}
-        - {"path": "docs/cbc-evidence/runs/casper-node-claim-gate-03d7f1b27-01/artifacts.sha256", "change": "A", "classification": "integral", "reason": "active_evidence", "scope": "working_tree_only"}
-        - {"path": "docs/cbc-evidence/runs/casper-node-claim-gate-03d7f1b27-01/report.json", "change": "A", "classification": "cited", "reason": "retained_report", "scope": "working_tree_only"}
-        - {"path": "docs/cbc-evidence/runs/casper-node-claim-gate-03d7f1b27-01/sources.sha256", "change": "A", "classification": "cited", "reason": "source_digest", "scope": "working_tree_only"}
-        - {"path": "docs/cbc-evidence/runs/casper-node-claim-gate-03d7f1b27-01/validation.json", "change": "A", "classification": "integral", "reason": "retained_validation", "scope": "working_tree_only"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-challenge-freshness-3b1d2465a-01/sources.sha256", "change": "A", "classification": "cited", "reason": "package_member"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-claim-gate-03d7f1b27-01/artifacts.sha256", "change": "A", "classification": "removable", "reason": "uncited_checksum"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-claim-gate-03d7f1b27-01/report.json", "change": "A", "classification": "cited", "reason": "retained_report"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-claim-gate-03d7f1b27-01/sources.sha256", "change": "A", "classification": "cited", "reason": "package_member"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-claim-gate-03d7f1b27-01/validation.json", "change": "A", "classification": "cited", "reason": "retained_validation"}
         - {"path": "docs/cbc-evidence/runs/casper-node-claim-gate-6ea6bf029-01/report.json", "change": "A", "classification": "cited", "reason": "retained_report"}
-        - {"path": "docs/cbc-evidence/runs/casper-node-claim-gate-6ea6bf029-01/sources.sha256", "change": "A", "classification": "cited", "reason": "source_digest"}
-        - {"path": "docs/cbc-evidence/runs/casper-node-claim-gate-6ea6bf029-01/validation.json", "change": "A", "classification": "integral", "reason": "retained_validation"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-claim-gate-6ea6bf029-01/sources.sha256", "change": "A", "classification": "cited", "reason": "package_member"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-claim-gate-6ea6bf029-01/validation.json", "change": "A", "classification": "cited", "reason": "retained_validation"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-claim-gate-78d696ea6-01/artifacts.sha256", "change": "A", "classification": "integral", "reason": "accepted_package_manifest"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-claim-gate-78d696ea6-01/report.json", "change": "A", "classification": "cited", "reason": "retained_report"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-claim-gate-78d696ea6-01/sources.sha256", "change": "A", "classification": "cited", "reason": "package_member"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-claim-gate-78d696ea6-01/validation.json", "change": "A", "classification": "cited", "reason": "retained_validation"}
         - {"path": "docs/cbc-evidence/runs/casper-node-deadline-correction-4561e064a-01/report.json", "change": "A", "classification": "cited", "reason": "retained_report"}
-        - {"path": "docs/cbc-evidence/runs/casper-node-deadline-correction-4561e064a-01/sources.sha256", "change": "A", "classification": "cited", "reason": "source_digest"}
-        - {"path": "docs/cbc-evidence/runs/casper-node-deadline-correction-4561e064a-01/validation.json", "change": "A", "classification": "integral", "reason": "retained_validation"}
-        - {"path": "docs/cbc-evidence/runs/casper-node-model-reconciliation-10e7b8452-01/gate-registrations.json", "change": "A", "classification": "integral", "reason": "gate_registration"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-deadline-correction-4561e064a-01/sources.sha256", "change": "A", "classification": "cited", "reason": "package_member"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-deadline-correction-4561e064a-01/validation.json", "change": "A", "classification": "cited", "reason": "retained_validation"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-model-reconciliation-10e7b8452-01/gate-registrations.json", "change": "A", "classification": "cited", "reason": "package_member"}
         - {"path": "docs/cbc-evidence/runs/casper-node-model-reconciliation-10e7b8452-01/report.json", "change": "A", "classification": "cited", "reason": "retained_report"}
-        - {"path": "docs/cbc-evidence/runs/casper-node-model-reconciliation-10e7b8452-01/sources.sha256", "change": "A", "classification": "cited", "reason": "source_digest"}
-        - {"path": "docs/cbc-evidence/runs/casper-node-model-reconciliation-10e7b8452-01/validation.json", "change": "A", "classification": "integral", "reason": "retained_validation"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-model-reconciliation-10e7b8452-01/sources.sha256", "change": "A", "classification": "cited", "reason": "package_member"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-model-reconciliation-10e7b8452-01/validation.json", "change": "A", "classification": "cited", "reason": "retained_validation"}
         - {"path": "docs/cbc-evidence/runs/casper-node-observer-batch-a-877cea722-01/artifacts.sha256", "change": "A", "classification": "removable", "reason": "uncited_checksum"}
         - {"path": "docs/cbc-evidence/runs/casper-node-observer-batch-a-877cea722-01/report.json", "change": "A", "classification": "cited", "reason": "retained_report"}
-        - {"path": "docs/cbc-evidence/runs/casper-node-observer-batch-a-877cea722-01/sources.sha256", "change": "A", "classification": "cited", "reason": "source_digest"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-observer-batch-a-877cea722-01/sources.sha256", "change": "A", "classification": "cited", "reason": "package_member"}
         - {"path": "docs/cbc-evidence/runs/casper-node-observer-shutdown-d021a1d53-01/artifacts.sha256", "change": "A", "classification": "removable", "reason": "uncited_checksum"}
         - {"path": "docs/cbc-evidence/runs/casper-node-observer-shutdown-d021a1d53-01/report.json", "change": "A", "classification": "cited", "reason": "retained_report"}
-        - {"path": "docs/cbc-evidence/runs/casper-node-observer-shutdown-d021a1d53-01/sources.sha256", "change": "A", "classification": "cited", "reason": "source_digest"}
-        - {"path": "docs/cbc-evidence/runs/casper-node-observer-shutdown-d021a1d53-01/validation.json", "change": "A", "classification": "integral", "reason": "retained_validation"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-observer-shutdown-d021a1d53-01/sources.sha256", "change": "A", "classification": "cited", "reason": "package_member"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-observer-shutdown-d021a1d53-01/validation.json", "change": "A", "classification": "cited", "reason": "retained_validation"}
         - {"path": "docs/cbc-evidence/runs/casper-node-snapshot-batch-b1-799e2136a-01/artifacts.sha256", "change": "A", "classification": "removable", "reason": "uncited_checksum"}
         - {"path": "docs/cbc-evidence/runs/casper-node-snapshot-batch-b1-799e2136a-01/report.json", "change": "A", "classification": "cited", "reason": "retained_report"}
-        - {"path": "docs/cbc-evidence/runs/casper-node-snapshot-batch-b1-799e2136a-01/sources.sha256", "change": "A", "classification": "cited", "reason": "source_digest"}
-        - {"path": "docs/cbc-evidence/runs/casper-node-snapshot-batch-b1-799e2136a-01/validation.json", "change": "A", "classification": "integral", "reason": "retained_validation"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-snapshot-batch-b1-799e2136a-01/sources.sha256", "change": "A", "classification": "cited", "reason": "package_member"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-snapshot-batch-b1-799e2136a-01/validation.json", "change": "A", "classification": "cited", "reason": "retained_validation"}
         - {"path": "docs/cbc-evidence/runs/casper-node-snapshot-completion-619882128-01/report.json", "change": "A", "classification": "cited", "reason": "retained_report"}
-        - {"path": "docs/cbc-evidence/runs/casper-node-snapshot-completion-619882128-01/sources.sha256", "change": "A", "classification": "cited", "reason": "source_digest"}
-        - {"path": "docs/cbc-evidence/runs/casper-node-snapshot-completion-619882128-01/validation.json", "change": "A", "classification": "integral", "reason": "retained_validation"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-snapshot-completion-619882128-01/sources.sha256", "change": "A", "classification": "cited", "reason": "package_member"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-snapshot-completion-619882128-01/validation.json", "change": "A", "classification": "cited", "reason": "retained_validation"}
         - {"path": "docs/cbc-evidence/runs/casper-node-snapshot-hardening-2ccc4ae0a-01/artifacts.sha256", "change": "A", "classification": "cited", "reason": "validation_digest"}
         - {"path": "docs/cbc-evidence/runs/casper-node-snapshot-hardening-2ccc4ae0a-01/report.json", "change": "A", "classification": "cited", "reason": "retained_report"}
-        - {"path": "docs/cbc-evidence/runs/casper-node-snapshot-hardening-2ccc4ae0a-01/sources.sha256", "change": "A", "classification": "cited", "reason": "source_digest"}
-        - {"path": "docs/cbc-evidence/runs/casper-node-snapshot-hardening-2ccc4ae0a-01/validation.json", "change": "A", "classification": "integral", "reason": "retained_validation"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-snapshot-hardening-2ccc4ae0a-01/sources.sha256", "change": "A", "classification": "cited", "reason": "package_member"}
+        - {"path": "docs/cbc-evidence/runs/casper-node-snapshot-hardening-2ccc4ae0a-01/validation.json", "change": "A", "classification": "cited", "reason": "retained_validation"}
         - {"path": "docs/cbc-evidence/scripts-ci-check-formal-invariants-sh.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
         - {"path": "docs/cbc-evidence/scripts-ci-check-node-observation-bindings-sh.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
         - {"path": "docs/cbc-evidence/scripts-ci-check-tla-invariants-sh.md", "change": "M", "classification": "integral", "reason": "artifact_record"}
         - {"path": "docs/cbc-evidence/scripts-ci-test-check-tla-invariants-sh.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
+        - {"path": "docs/cbc-evidence/shared-src-rust-dag-observation-work-rs.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
         - {"path": "docs/cbc-evidence/shared-src-rust-store-soak-snapshot-rs.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
         - {"path": "docs/cbc-evidence/shared-tests-soak-snapshot-rs.md", "change": "A", "classification": "integral", "reason": "artifact_record"}
         - {"path": "docs/cbc-verification-tiers.md", "change": "M", "classification": "integral", "reason": "tier_policy"}
+        - {"path": "docs/claims/casper-node-authority-evaluation.md", "change": "A", "classification": "integral", "reason": "claim_specification"}
         - {"path": "docs/claims/casper-node-authority-snapshot.md", "change": "A", "classification": "integral", "reason": "claim_specification"}
         - {"path": "docs/claims/casper-node-observation.md", "change": "A", "classification": "integral", "reason": "claim_specification"}
         - {"path": "docs/plans/casper-node-observation-batch-b.md", "change": "A", "classification": "cited", "reason": "task_plan"}
-        - {"path": "docs/plans/casper-node-observation-batch-c.md", "change": "A", "classification": "cited", "reason": "task_plan", "scope": "working_tree_only"}
+        - {"path": "docs/plans/casper-node-observation-batch-c.md", "change": "A", "classification": "cited", "reason": "task_plan"}
         - {"path": "docs/work-logs/casper-node-observation-batch-b1.md", "change": "A", "classification": "cited", "reason": "task_handoff"}
         - {"path": "docs/work-logs/casper-node-observer-shutdown-review.md", "change": "A", "classification": "cited", "reason": "task_handoff"}
+        - {"path": "docs/work-logs/task-019-3-node-authority-evaluation.md", "change": "A", "classification": "cited", "reason": "task_handoff"}
         - {"path": "docs/work-logs/task-019-4-node-claim-verification.md", "change": "A", "classification": "cited", "reason": "task_handoff"}
         - {"path": "docs/work-logs/task-019-7-candidate-images.md", "change": "A", "classification": "cited", "reason": "task_handoff"}
+        - {"path": "formal/rocq/node_authority/README.md", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/rocq/node_authority/_CoqProject", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/rocq/node_authority/theories/AuthorityObserver.v", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/rocq/node_authority/theories/AuthorityWork.v", "change": "A", "classification": "integral", "reason": "formal_verification"}
+        - {"path": "formal/rocq/node_authority/theories/MainTheorem.v", "change": "A", "classification": "integral", "reason": "formal_verification"}
         - {"path": "formal/rocq/node_observation/README.md", "change": "A", "classification": "integral", "reason": "formal_verification"}
         - {"path": "formal/rocq/node_observation/_CoqProject", "change": "A", "classification": "integral", "reason": "formal_verification"}
         - {"path": "formal/rocq/node_observation/theories/BoundedCapture.v", "change": "A", "classification": "integral", "reason": "formal_verification"}
@@ -1966,6 +2117,7 @@ tasks:
 ## Epic Dependency Graph
 
 ```text
+EPIC-020 (node log and accept-path limits, fix branch -> dev) ─> merges before PR #447
 EPIC-019 (node observation, PR #447 -> dev) ─> EPIC-017 TASK-017-12 node prerequisite (soak branch)
 EPIC-011 (TLA exhaustive baseline, complete) ─> EPIC-012 / TASK-012-22
 EPIC-012 (open-issue PR queue)              (all other lanes start independently)

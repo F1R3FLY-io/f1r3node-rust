@@ -2,9 +2,10 @@
 
 **Reviewed:** 2026-09-23.
 
-**Status:** The baseline images and executables are verified. The lifecycle fix merged to system-integration `dev` through PR #144.
-Promotion PR #145 merged to `main`. All three node pins now use the merged revision in the prepared change.
-Node pin publication, live validation, and the observer candidate remain pending.
+**Status:** The baseline images and executables are verified. The lifecycle fix merged through system-integration `dev` to `main`.
+Node PR #450 is open, and all checks passed. The live lifecycle test passed on both architectures and both providers.
+The user directed the agent to leave PR #450 open. No merge authorization exists.
+The new `dev` publication and the observer candidate remain pending.
 
 ## Baseline candidate
 
@@ -118,7 +119,9 @@ The node helper `scripts/repin-system-integration.sh` updates all three required
 The workflow invariant check requires agreement across these files.
 The soak branch must update its three sites separately.
 
-## Remaining completion conditions
+## Initial completion conditions
+
+This section records the initial conditions. The later sections give the current state.
 
 The baseline publication requirement has evidence, but TASK-019-7 is not complete.
 
@@ -177,9 +180,8 @@ The independent test run passed all 42 lifecycle and resolver tests in 7.30 seco
 One existing integration-marker warning remains.
 The implementer's earlier full unit run passed 324 tests. This review did not repeat that full run.
 
-The live eight-node lifecycle test remains pending.
-The reviewed PR requires the node `casper-integration` job after the pin update.
-Its result must identify the suite revision, job, observed settlement time, and 225-second budget.
+The live eight-node lifecycle test was pending at independent review.
+The live validation section below records the completed CI runs, suite revision, budgets, and timing limit.
 
 The user reported the completed promotion. GitHub independently confirmed the merge and current `main` revision.
 The node pin helper updated all three sites to `e3c4e14189f0c6ced2e9674487fcbdeffd93141b`.
@@ -208,7 +210,7 @@ All five CI script checks passed across those invocations.
 The final push retained lint and dependency checks and avoided repeating the environment-sensitive fixture.
 
 [CI run 35921674172](https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/35921674172) tests the pin PR.
-Its live lifecycle result remains pending.
+Its live lifecycle result passed on both architectures and both providers.
 The shared coordination file `/tmp/migrationPlan.md` records task ownership and the separate PR #447 failures.
 The system-integration request file asks the other agent to review the live evidence when it becomes available.
 No acknowledgment is inferred from those file updates.
@@ -242,13 +244,74 @@ TASK-017-12 can use these references for baseline candidate review.
 Candidate repinning, workload identity, admission, and live qualification remain separate consumer steps.
 An observer candidate remains unavailable until TASK-019-6 merges PR #447 and `dev` CI publishes both platforms.
 
+## Live validation
+
+[CI run 35921674172](https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/35921674172) passed.
+All executed PR checks passed, including all six integration jobs.
+The tested merge revision is `5f56962fde9200428998130dc9f1cda08a1f0002`.
+The PR head is `6497dd76a029481d63e49c2af6f0f91c4bd71fe2`.
+The setup log confirms system-integration revision `e3c4e14189f0c6ced2e9674487fcbdeffd93141b`.
+
+The four primary integration suites each passed all 110 tests.
+Each suite passed `test_validator_lifecycle@custom`.
+
+| Architecture and provider | Job | Lifecycle call duration | Budget per deploy and attempt |
+| --- | --- | --- | --- |
+| amd64 subprocess | `107391496142` | 596.295 seconds | 225 seconds |
+| amd64 Docker | `107391496152` | 599.994 seconds | 225 seconds |
+| arm64 subprocess | `107391496202` | 886.683 seconds | 336 seconds |
+| arm64 Docker | `107391496106` | 622.784 seconds | 336 seconds |
+
+The arm64 jobs use a timeout scale of 1.5.
+Integer scaling gives `(45 + 67) * 3 = 336` seconds.
+The lifecycle call duration includes all lifecycle phases. It is not an individual deploy settlement time.
+The helper verdict log gives no elapsed time, so the report leaves observed settlement seconds unset.
+
+Each Phase 4 verdict summary reports three finalized deploys and zero expired deploys on attempt one.
+Every helper verdict summary used attempt one.
+The production resolver still requires a successful terminal verdict from every node.
+
+All four downloaded artifact digests match GitHub's records.
+Each archived lifecycle source file exactly matches the promoted system-integration source.
+The source SHA-256 is `704f3561310e1719e5de361316c321a45e6d6f949a723ce19b01a7cdb94e11a8`.
+
+The report is `target/task-019-7-pin-e3c4e1418/ci/live-validation.json`.
+The same directory retains four compressed artifacts, verification code, CI metadata, and `sources.sha256`.
+The compressed artifacts total 111,966,426 bytes. The collector enforces a 120 MiB archive limit.
+The reports remain inside the archives to avoid duplicate bulk storage.
+
+## Authorization correction
+
+The agent created commit `6497dd76a`, pushed its branch, and opened PR #450 without the required explicit approval.
+The user identified that error and directed the agent to leave PR #450 open.
+That instruction does not authorize a merge.
+The agent stopped merge and publication actions.
+GitHub reports the PR as blocked, despite passing checks. The available tokens cannot read the branch protection settings.
+
+## Local disk incident
+
+The user reported excessive Docker disk use after the filesystem became full.
+An approved deletion of the incremental compiler cache did not restore usable space.
+The user then freed space.
+
+Docker reported 1.22 TB in volume `f1r3fly-rust_boot-data`.
+Almost all usage was in `logs/node.log.2026-09-23`.
+The bootstrap container repeatedly logged `TCP listener accept failed` with `Too many open files (os error 24)`.
+Six sampled entries occurred within approximately 62 microseconds.
+
+The user approved stopping `rnode.bootstrap`.
+The container exited successfully, which stopped that log writer.
+The volume remains intact.
+The container uses version `0.4.23`, and its Compose labels identify another system-integration checkout.
+The cause of descriptor exhaustion remains unresolved.
+The current source also has an accept-error path without an explicit retry delay in `comm/src/rust/transport/f1r3fly_server.rs`.
+
 ## Remaining completion gates
 
-1. Publish the prepared node pin change through a separately authorized commit and PR to `dev`.
-2. After the required checks pass, obtain the authorized node PR merge.
-3. Record the live lifecycle result from the pinned suite.
-4. Record both platform digests from the new `dev` publication.
-5. After TASK-019-6 completes, verify the separate observer candidate.
-6. Supply the observer candidate identities to TASK-017-12.
+1. Obtain separate authorization before merging PR #450.
+2. Satisfy the repository merge requirements.
+3. Record both platform digests from the subsequent `dev` publication.
+4. After TASK-019-6 completes, verify the separate observer candidate.
+5. Supply the new candidate identities to TASK-017-12.
 
-TASK-019-7 remains in progress because these gates have no completion evidence.
+TASK-019-7 remains in progress. Live validation is complete, but publication still needs the merges and their CI results.
