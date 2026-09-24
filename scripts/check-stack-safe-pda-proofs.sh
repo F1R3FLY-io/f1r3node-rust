@@ -757,6 +757,10 @@ rocq_reject_placeholders theories/ProtobufOwnedSlots.v
 rocq_compile_with_closed_count theories/ProtobufOwnedSlots.v 44 \
   "protobuf owned slot projection and schema rank"
 rocq_check_modules "protobuf owned slot projection and schema rank" StackSafePDA.ProtobufOwnedSlots
+rocq_reject_placeholders theories/ProtobufDecoderComposition.v
+rocq_compile_with_closed_count theories/ProtobufDecoderComposition.v 26 \
+  "protobuf decoder control composition"
+rocq_check_modules "protobuf decoder control composition" StackSafePDA.ProtobufDecoderComposition
 rocq_reject_placeholders theories/EpmOwnedRetirement.v
 rocq_compile_with_closed_count theories/EpmOwnedRetirement.v 32 \
   "stateful EPM barriers and affine ownership retirement"
@@ -1042,6 +1046,8 @@ rholang_run_tests 3 --lib new_injection_preserves_
 rpb3_run_tests 9 --lib incomplete_preservation_tests
 rpb3_run_tests 13 --lib protobuf_decoder_oracle::
 rpb3_run_tests 2 --lib oracle_body_guards::
+rpb3_run_tests 5 --lib decoder_control_tests::
+rpb3_run_tests 1 --release -j4 --features protobuf-projection-experiment --lib deep_general_decoder_materializes_once_and_retires_failed_frames_on_small_stack
 rpb3_run_tests 6 --lib protobuf_par_accumulation_tests
 rpb3_run_tests 8 --lib payload_representation_tests
 rpb3_run_tests 5 --lib owned_cursor_tests

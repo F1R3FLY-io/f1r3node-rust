@@ -16552,6 +16552,127 @@ and capped full-workspace acceptance remain open. The metadata repair changes
 deferred acceptance of an already strictly valid split key; the consensus register
 retains that narrow observation without claiming universal caller equivalence.
 
+## J-218 — General protobuf decoder uses planned owned frames (2026-09-24)
+
+**Required implementation, not a new parser.** Task 8516 now routes the general
+schema-generated protobuf machine through its previously qualified owned records
+and one `ParConstruction` arena. Par slots remain reopenable builders, rather
+than prematurely frozen handles: duplicate singular fields, repeated map-entry
+values and same-arm oneofs must keep merging. Completed Par components use the
+planned family adapters. Completed EPM map values freeze into same-arena handles;
+the pending trie uses a valid shared scaffold handle and transfers immediately
+into a guarded owner. Admission still precedes the next field. Ordinary public
+message roots project their raw records; attachment to a Par is the canonicalizing
+boundary. Public Par results materialize once at the final boundary.
+
+The top-level canonical-byte fast path is retained. Its direct borrowed-Buf
+nonconsumption behavior is explicitly pinned against the frozen reader; the
+Message entry consumes its own region. No claim that every public helper consumes
+all input is introduced. The inner EPM-value resident fast import is removed:
+that route now uses the same planned decoder rather than constructing a resident
+value only to put it back into a plan. This change needs resource qualification
+across shallow and deep inputs, not just a complexity argument.
+
+**Formal-first boundary.** The reviewed `ProtobufDecoderComposition.v` adds 26
+closed statements before routing changes. It covers representation-independent
+frame controls/context order, input save/restore, preincrement snapshot policy,
+admission-depth balance, first-error stopping, reopen/freeze boundaries and final
+projection/retirement protocol. Payload correspondence is a premise supplied by
+POS/PPA/DCC/EPR and their native bindings; physical cleanup relies on EOR and its
+Rust binding. It does not prove byte parsing, constructor equivalence, Rust
+lifetimes, machine performance or every caller history.
+
+Formal R1 fails because coqc is absent from the transient service PATH. R2 uses
+the installed absolute paths and passes compilation plus independent kernel
+checking: 12.793 seconds service, 12.555 CPU seconds, 350.9 MiB peak, no swap,
+2 GiB hard cap. The invariant catalog records every declaration's native
+obligation. The new theory and runner manifest are repository-owned inputs,
+not generated artifacts or an external Rocq parser dependency.
+
+**Control preservation.** Buffer limits, scalar merging, unknown-field skipping,
+attachment locations and input nesting retain their existing transitions. EPM
+depth decrements only after successful admission. Native Var remainder reopening
+uses an exhaustive bounded conversion; the empty wildcard pattern will fail to
+compile if that schema gains fields. The construction arena is the last Machine
+field. Machine cleanup drains frames, values, old oneofs and pending guarded
+tries before arena retirement, including success, refusal and unwinding paths.
+A second read-only review found no additional control/ownership defect, and
+requested independent context and partially populated Map cleanup controls.
+
+**Measured qualification and retained failure.** Default R1 passes **37/37**,
+611 excluded: 24.014 seconds tests, 80.221 seconds service, 199.802 CPU seconds,
+2.3 GiB peak and zero swap. This includes the independent frozen decoder,
+descriptor-complete fixtures, 1,024 arbitrary-buffer cases (seed 5834), root and
+partial merge observations, duplicate fields/oneofs/maps, construction and legacy
+ingress controls. Instrumented R2 passes 40/41; the new deep test sees zero final
+materializations because its contiguous input takes the retained byte-native
+fast path. Its guard correctly rejects this as a general-machine witness.
+R2 takes 24.635 seconds tests, 88.859 seconds service, 259.638 CPU seconds,
+3 GiB peak and zero swap; the production fast path is not disabled to fix the test.
+
+R3 supplies a fragmented input to force the general machine and passes **43/43**,
+670 excluded: 23.352 seconds tests, 88.558 seconds service, 267.225 CPU seconds,
+2.9 GiB peak and zero swap. The 8,192-deep ENot control checks exact independently
+constructed bytes, more than 8,192 live frames and exactly one final finish on
+256 KiB, then exercises deep failure teardown (229 ms for the combined test).
+The independent literal diagnostic fixes nearest-first locations as
+`ENot.p: Expr.expr_instance: Par.exprs`. Nested EPM fixtures compare truncations
+and fragmented buffers with the frozen reader and verify input/depth restoration.
+All native remainder alternatives are reopened pairwise.
+
+The unique pending-Map witness installs the first value into an 8,192-level
+branching trie, then rejects the second nested body. It checks the retained EPM
+attachment, one saved input, unbalanced-on-error depth and complete guarded
+machine retirement on 256 KiB (660 ms). A shallow instance independently
+compares with the frozen reader. These focused times are test observations,
+not paired performance benchmarks. Native runs use the established systemd
+6/8 GiB high/hard cap, zero swap, four build/test workers, four-CPU quota and
+900-second service ceiling; no stack override or stacker is introduced.
+
+| Receipt under `target/verification/protobuf-attach-8516/` | SHA-256 |
+|---|---|
+| `decoder-control-formal-r1.log` | `dbdbb9d06858fb348d1e01981fb3c746b2cd1412ecd79ada6fdc612630fa9b4f` |
+| `decoder-control-formal-r2.log` | `ce2cd03e43cfa2a303cc35200b76da55fc24c690f86534806f3ec92b0bdf3608` |
+| `cutover-native-r1.log` | `fb6e9a3aa0e2b9b6a0319e49a3ce5790900a6afc7c879d8cb84030b6c13c7097` |
+| `cutover-native-r2.log` | `e0a65249637865d3482d2938b9b0673a0f63d0fef7caa73171f563a7a4530d3a` |
+| `cutover-native-r3.log` | `cf73ebfe3021b40651975524f228b05c77a3cea0a0ed16b255642425f7ee40bf` |
+| `cutover-native-r4.log` | `4ed58fcc6e87584781258bab36c276b67992ac22973f28e2c3685793edaf99a9` |
+| `cutover-native-r5.log` | `5b66801288b1d32fe4cac4aa5a6dc8eed46631dd5091214c870d1cd5710485e8` |
+
+Theory SHA-256: `08510541823ccd9bf5e017f9da4cf54146ae296c97d723a1523bdce131f0557d`.
+
+**Still required.** The unchanged 5917 release gate, geometric control/successor
+resource measurements, and capped
+full-workspace acceptance remain required. This checkpoint does not close 8516,
+5834 or the campaign. The distinct imported-component defect 8518 remains open.
+
+**Fixture isolation, planned before the next run.** Expanded default R4 retains
+the original repeated resident-wrapping fixture and continues undisturbed. Its
+first three deep controls pass after approximately 277 seconds each; its
+nine-envelope control constructs the fixture nine times. A read-only plan review
+found the already-qualified `Par::wrap_unary_elist` equivalent for this exact
+singleton-list/default-metadata/zero-integer shape. The next run substitutes that
+constructor only for setup and adds an independent old-builder comparison at
+depths 0, 1, 4 and 32, checking protobuf, compact components, canonical paths,
+metadata and observed depth. `UnaryEListConstruction.v` already proves this
+constructor's refinement; the native comparison binds its use here. Every
+depth-4,096 operation, all nine envelopes and the 256 KiB stack remain unchanged.
+This fixture change does not claim to optimize arbitrary repeated resident
+wrapping and must not be reported as a decoder speedup.
+
+**Expanded outcome.** R4 finishes at the service cap with 116/117 passed and the
+nine-envelope case terminated at 823.139 seconds. Tests take 827.948 seconds;
+service runtime is 900.078 seconds, CPU time 3,093.829 seconds, peak memory 3 GiB
+and swap zero. This is a retained failed/censored run, not a pass or an OOM.
+R5 reruns the complete affected target with the qualified fixture plus its new
+independent control: **7/7 pass**, no skipped tests, 3.795 seconds tests,
+61.043 seconds service, 211.312 CPU seconds, 1.7 GiB peak and zero swap. All nine
+depth-4,096 envelopes pass in 3.795 seconds. The other expanded R4 targets passed,
+including all formal manifest bindings, arbitrary/truncated protobuf comparisons,
+20,000-level decoding, group-bomb handling and deep escape encoding/validation.
+Together these qualify the listed focused targets; they are not a full-workspace
+pass and the setup change does not establish a production latency ratio.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

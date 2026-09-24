@@ -3194,7 +3194,7 @@ impl ParConstruction {
         self.par(std::iter::empty(), Vec::new(), false)
     }
 
-    fn epm_barrier(&mut self) -> PlannedPar {
+    pub(crate) fn epm_barrier(&mut self) -> PlannedPar {
         if self.pars.is_empty() {
             self.empty_par().expect("neutral Par construction has bounded constant summaries")
         } else {

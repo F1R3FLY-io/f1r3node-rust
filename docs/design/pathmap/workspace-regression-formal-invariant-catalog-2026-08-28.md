@@ -1757,6 +1757,45 @@ is recorded as campaign bug 8518; the decoder fixture uses the actual owned
 expression planner. No import defect or general decoder acceptance is discharged
 by these helper passes.
 
+### Generated decoder control composition (task 8516)
+
+Preregistered after helper checkpoint `8b5c7d9c7`, before owned-frame routing.
+`ProtobufDecoderComposition.v` has 26 closed declarations, independently kernel
+checked before implementation (12.793 seconds service, 350.9 MiB peak, zero swap,
+2 GiB hard cap). Its first invocation failed because the service PATH did not
+contain coqc; the passing run uses the installed absolute paths. This is an
+abstract continuation/control model, not a new protobuf parser.
+
+| Closed declarations | Required implementation and native binding |
+|---|---|
+| `mapped_frame_preserves_control`, `mapped_frames_preserve_context_order`, `selected_error_and_contexts_are_preserved` | Owned Node/Attach/EPM records preserve kind, absolute remaining-byte limit and nearest-first pending attachment locations; compare frozen reader's exact errors |
+| `completed_body_restores_exact_parent`, `unfinished_body_cannot_restore`, `absent_parent_cannot_restore`, `enter_preserves_admission_depth`, `nested_inputs_restore_lifo` | Nested EPM value input is saved/restored LIFO only after full consumption; malformed nested bodies and split buffers retain consumption/error observations |
+| `snapshot_policy_uses_preincrement_depth`, `successful_admission_balances_depth`, `failed_admission_has_no_continuation`, `admission_without_snapshot_is_rejected` | Preserve validation policy at snapshot start, decrement only after successful admission, never resume parent after refusal; strict/deferred and nested map controls |
+| `routing_composes_payload_refinement`, `first_error_leaves_suffix_unvisited` | Frozen/schema/property differential compares result, selected error, consumed bytes and unvisited suffix; POS/PPA/DCC/EPR supply payload premises, not assumed byte-parser equivalence |
+| `reopenable_child_is_not_frozen`, `freeze_only_at_consuming_boundary`, `freezing_preserves_denotation`, `reopen_preserves_existing_builder` | Duplicate singular, same-oneof and repeated map-entry values retain builders; freeze only at completed component, EPM value, legacy member or public output consumption |
+| `guards_preserve_live_arena`, `projection_and_retirement_use_live_arena`, `final_projection_failure_is_not_published`, `projection_failure_trace_has_no_publication`, `success_retires_guards_and_arena_before_publication`, `every_guard_has_one_retirement_per_owned_slot` | Machine arena outlives projection and guarded frames; successful and rejected deep inputs retire without publishing a partial result; instrumented zero-intermediate-finish and small-stack checks |
+| `reversed_context_mutant_is_observable`, `premature_freeze_mutant_loses_reopenable_form` | Distinguishing nested error contexts and nonempty duplicate-field fixtures must fail under the wrong order or early-freeze route |
+
+The one-step payload correspondence and freeze denotation are explicit premises.
+Input identities and error codes are abstract observations, not parsed bytes.
+The final retirement trace is a specified protocol whose Rust binding remains
+to be tested; no Rust lifetime, allocation or whole-decoder proof is inferred.
+The unchanged 5917 depth gate and explicit 8,192-deep ENot end-to-end check remain
+required, alongside shallow/wide resource comparisons and full acceptance.
+
+The production routing is now implemented and J-218 records 43/43 instrumented
+focused passes. Five `protobuf_decoder_control.rs` tests bind general depth-8,192
+decoding, deep malformed-frame cleanup, unique partially populated branching Map
+retirement, nested input restoration, exhaustive current Var alternatives and a
+literal nearest-first diagnostic. The existing thirteen frozen-oracle tests bind
+descriptor/merge/oneof/metadata/error/consumption behavior; owned-slot and family
+adapter tests supply the corresponding payload premises. A contiguous-input
+fixture failed to exercise the general machine and is retained as negative
+evidence; its fragmented replacement retains depth and expected bytes.
+The legacy top-level canonical fast path's borrowed-Buf observation is explicitly
+unchanged, not covered by a new universal consumption claim. Full acceptance and
+resource comparisons remain open; the protocol model is not a Rust lifetime proof.
+
 ## EPM stateful ownership retirement (EOR, task 5834)
 
 The initial `EpmOwnedRetirement.v` ownership layer has 24 exported closed statements

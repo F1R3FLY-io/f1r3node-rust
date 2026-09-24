@@ -52,11 +52,34 @@ fn elist(par: Par) -> Par {
 }
 
 fn nested_list(depth: usize) -> Par {
+    Par::wrap_unary_elist(depth, new_gint_par(0, Vec::new(), false))
+        .expect("unary-list fixture depth is representable")
+}
+
+fn resident_nested_list(depth: usize) -> Par {
     let mut par = new_gint_par(0, Vec::new(), false);
     for _ in 0..depth {
         par = elist(par);
     }
     par
+}
+
+#[test]
+fn planned_fixture_matches_independent_resident_wrapping() {
+    for depth in [0, 1, 4, 32] {
+        let planned = nested_list(depth);
+        let resident = resident_nested_list(depth);
+        assert_eq!(planned.encode_to_vec(), resident.encode_to_vec());
+        assert_eq!(
+            planned.components().compact_bytes(),
+            resident.components().compact_bytes()
+        );
+        assert_eq!(encode_trie_path(&planned), encode_trie_path(&resident));
+        assert_eq!(planned.locally_free(), resident.locally_free());
+        assert_eq!(planned.connective_used(), resident.connective_used());
+        assert_eq!(par_depth(&planned), depth);
+        assert_eq!(par_depth(&resident), depth);
+    }
 }
 
 fn par_depth(par: &Par) -> usize {

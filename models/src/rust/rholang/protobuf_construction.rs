@@ -17,6 +17,22 @@ pub(crate) struct PublicProjection<'a> {
     pub(crate) arena: &'a mut ParConstruction,
 }
 
+impl From<rhoapi::Var> for owned_slots::Var {
+    fn from(value: rhoapi::Var) -> Self {
+        use owned_slots::VarVarInstance as Owned;
+        use rhoapi::var::VarInstance;
+        Self {
+            var_instance: value.var_instance.map(|variant| match variant {
+                VarInstance::BoundVar(value) => Owned::BoundVar(value),
+                VarInstance::FreeVar(value) => Owned::FreeVar(value),
+                VarInstance::Wildcard(rhoapi::var::WildcardMsg {}) => {
+                    Owned::Wildcard(owned_slots::WildcardMsg {})
+                }
+            }),
+        }
+    }
+}
+
 impl owned_slots::Projection for PublicProjection<'_> {
     type Error = prost::DecodeError;
 

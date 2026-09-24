@@ -9133,6 +9133,32 @@ Default qualification adds nine existing codec controls and passes **26/26**,
 672 excluded: 1.938 seconds tests, 2.8 GiB service peak and zero swap under the
 same cap. No full-workspace or application-performance result is inferred.
 
+J-218 implements the general generated decoder's owned-frame cutover. One
+construction arena replaces nested resident Par construction; builders remain
+reopenable until their consuming boundary, EPM values remain planned handles in
+guarded tries, and public projection materializes final outputs. The control
+composition model contributes 26 independently kernel-checked declarations before
+Rust routing changes. Instrumented qualification passes **43/43**, 670 excluded,
+23.352 seconds tests, 2.9 GiB service peak and zero swap under an 8 GiB cap.
+
+A fragmented-buffer depth-8,192 ENot run observes exactly one final materialization
+on 256 KiB and checks exact bytes plus failure cleanup; a separate unique branching
+Map run fails after one payload installation and retires all pending ownership on
+the same stack. The earlier contiguous-input fixture was rejected by its traversal
+guard, because it used the retained fast path. Independent literal error contexts
+and frozen-reader differentials qualify control observations; no parser-wide formal
+equivalence, application speedup or complete campaign acceptance follows. The
+unchanged 5917 gate, geometric measurements and full workspace remain required.
+
+Expanded default qualification records a 116/117 run capped at 900 seconds
+(3 GiB peak, zero swap); the nine-envelope test was still repeatedly constructing
+resident suffixes in its fixture. Its setup now uses the previously verified
+linear unary-list constructor, with a new independent shallow equivalence test.
+The complete affected target then passes **7/7**, no skipped tests, in 3.795
+seconds (1.7 GiB service peak, zero swap). All nine depth-4,096 envelopes and
+256 KiB stacks are retained. J-218 preserves both receipts; this setup improvement
+is not reported as a decoder speedup. Other targets in the expanded run passed.
+
 ### 5.29 ParBag family and count-domain completeness [SS-A13, SS-A14, SS-Y9]
 
 #### 5.29.1 The defects

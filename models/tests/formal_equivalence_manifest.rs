@@ -1383,6 +1383,45 @@ fn protobuf_owned_slots_have_proof_and_native_bindings() {
 }
 
 #[test]
+fn protobuf_decoder_control_composition_has_proof_and_native_bindings() {
+    let theory = read_repository_file("formal/rocq/stack_safe_pda/theories/ProtobufDecoderComposition.v");
+    for theorem in [
+        "mapped_frame_preserves_control", "mapped_frames_preserve_context_order",
+        "selected_error_and_contexts_are_preserved", "completed_body_restores_exact_parent",
+        "unfinished_body_cannot_restore", "absent_parent_cannot_restore",
+        "enter_preserves_admission_depth", "nested_inputs_restore_lifo",
+        "snapshot_policy_uses_preincrement_depth", "successful_admission_balances_depth",
+        "failed_admission_has_no_continuation", "admission_without_snapshot_is_rejected",
+        "routing_composes_payload_refinement", "first_error_leaves_suffix_unvisited",
+        "reopenable_child_is_not_frozen", "freeze_only_at_consuming_boundary",
+        "freezing_preserves_denotation", "reopen_preserves_existing_builder",
+        "guards_preserve_live_arena", "projection_and_retirement_use_live_arena",
+        "final_projection_failure_is_not_published", "projection_failure_trace_has_no_publication",
+        "success_retires_guards_and_arena_before_publication", "every_guard_has_one_retirement_per_owned_slot",
+        "reversed_context_mutant_is_observable", "premature_freeze_mutant_loses_reopenable_form",
+    ] {
+        assert!(theory.contains(&format!("Print Assumptions {theorem}.")));
+    }
+    assert_eq!(theory.matches("Print Assumptions ").count(), 26);
+    let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
+    assert!(has_runner_command(&runner, &["rocq_compile_with_closed_count", "theories/ProtobufDecoderComposition.v", "26"]));
+    assert!(has_runner_kernel_check(&runner, &["StackSafePDA.ProtobufDecoderComposition"]));
+    assert!(has_runner_command(&runner, &["rpb3_run_tests", "5", "--lib", "decoder_control_tests::"]));
+    assert!(has_runner_command(&runner, &["rpb3_run_tests", "1", "--release", "-j4", "--features",
+        "protobuf-projection-experiment", "--lib", "deep_general_decoder_materializes_once_and_retires_failed_frames_on_small_stack"]));
+    assert!(read_repository_file("formal/rocq/stack_safe_pda/_CoqProject").lines()
+        .any(|line| line == "theories/ProtobufDecoderComposition.v"));
+    let native = read_repository_file("models/tests/support/protobuf_decoder_control.rs");
+    for witness in ["deep_general_decoder_materializes_once_and_retires_failed_frames_on_small_stack",
+        "nested_snapshot_inputs_restore_parent_and_preserve_failure_contexts",
+        "epm_remainder_reopens_all_native_var_variants_without_losing_mode",
+        "nested_error_locations_have_an_independent_nearest_first_witness",
+        "partial_map_failure_retires_unique_deep_pending_topology_before_arena"] {
+        assert!(native.contains(&format!("fn {witness}(")));
+    }
+}
+
+#[test]
 fn epm_owned_retirement_has_explicit_proof_boundaries_and_native_bindings() {
     let theory = read_repository_file("formal/rocq/stack_safe_pda/theories/EpmOwnedRetirement.v");
     let names = [

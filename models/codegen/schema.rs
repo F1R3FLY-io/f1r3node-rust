@@ -11675,9 +11675,10 @@ fn emit_protobuf_decoder_pda(
 
 use std::mem;
 use prost::encoding;
-use crate::rhoapi::Par;
+use crate::rust::par_construction::{ParConstruction, PlannedPar, ProtobufParBuilder as Par};
 use crate::rust::epathmap_trie_codec::OwnedPendingEpmDecode;
-use crate::rust::rhoapi_ext::EPathMap;
+use crate::rust::rholang::protobuf_construction::{construction_error, PublicProjection};
+use owned_slots::EPathMap;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct DecodeStats {
@@ -11693,10 +11694,9 @@ enum Node {
             continue;
         }
         let variant = rust_type_name(msg.leaf_name());
-        let ty = msg.rust_path();
         writeln!(
             src,
-            "    {variant} {{ value: crate::rhoapi::{ty}, limit: usize }},"
+            "    {variant} {{ value: owned_slots::{variant}, limit: usize }},"
         )
         .expect("write protobuf decoder Node");
     }
@@ -11712,8 +11712,7 @@ enum Node {
             continue;
         }
         let variant = rust_type_name(msg.leaf_name());
-        let ty = msg.rust_path();
-        writeln!(src, "    {variant}(crate::rhoapi::{ty}),").expect("write protobuf decoder Value");
+        writeln!(src, "    {variant}(owned_slots::{variant}),").expect("write protobuf decoder Value");
     }
     src.push_str(
         "    Par(Par),\n\
@@ -11726,14 +11725,14 @@ enum Node {
     for (msg, fields) in &rows {
         let Some(fields) = fields else { continue };
         let owner = rust_type_name(msg.leaf_name());
-        let owner_ty = msg.rust_path();
+        let owner_ty = format!("owned_slots::{owner}");
         for field in fields.iter() {
             match &field.shape {
                 Shape::Message { .. } | Shape::RepeatedMessage { .. } | Shape::Map { .. } => {
                     let name = decoder_attach_name(&owner, &field.rust_name, None);
                     writeln!(
                         src,
-                        "    {name} {{ parent: crate::rhoapi::{owner_ty}, limit: usize }},"
+                        "    {name} {{ parent: {owner_ty}, limit: usize }},"
                     )
                     .expect("write protobuf decoder Attach");
                 }
@@ -11751,7 +11750,7 @@ enum Node {
                         );
                         writeln!(
                             src,
-                            "    {name} {{ parent: crate::rhoapi::{owner_ty}, limit: usize }},"
+                            "    {name} {{ parent: {owner_ty}, limit: usize }},"
                         )
                         .expect("write protobuf decoder oneof Attach");
                     }
@@ -11786,7 +11785,7 @@ enum Node {
          struct EpmFrame {\n\
              parent: EPathMap,\n\
 	             limit: usize,\n\
-	             pending: OwnedPendingEpmDecode,\n\
+	             pending: OwnedPendingEpmDecode<PlannedPar>,\n\
 	         }\n\n\
          enum Frame {\n\
              Node(Node),\n\
@@ -12082,6 +12081,7 @@ struct Machine<B> {
     values: Vec<Value>,
     garbage: Vec<Value>,
     stats: DecodeStats,
+    arena: ParConstruction,
 }
 
 impl<B: Buf> Machine<B> {
@@ -12098,6 +12098,7 @@ impl<B: Buf> Machine<B> {
                 max_frames: 1,
                 max_values: 0,
             },
+            arena: ParConstruction::new(),
         }
     }
 
@@ -12229,7 +12230,7 @@ fn emit_protobuf_decoder_message_step(
 ) {
     let owner = rust_type_name(msg.leaf_name());
     let method = msg.leaf_name().to_snake_case();
-    let ty = msg.rust_path();
+    let ty = format!("owned_slots::{owner}");
     let mut routes = String::new();
     let mut methods = String::new();
     for field in fields {
@@ -12240,7 +12241,7 @@ fn emit_protobuf_decoder_message_step(
         "    #[inline(never)]\n\
          fn step_{method}(\n\
              &mut self,\n\
-             mut value: crate::rhoapi::{ty},\n\
+             mut value: {ty},\n\
              limit: usize,\n\
          ) -> Result<(), DecodeError> {{\n\
              match self.buf.remaining().cmp(&limit) {{\n\
@@ -12282,7 +12283,7 @@ fn emit_protobuf_decoder_field_step(
     field: &Field,
 ) {
     let owner = rust_type_name(msg.leaf_name());
-    let owner_ty = format!("crate::rhoapi::{}", msg.rust_path());
+    let owner_ty = format!("owned_slots::{owner}");
     let name = &field.rust_name;
     let location = decoder_location_map(msg.leaf_name(), name);
     let method = format!(
@@ -12438,7 +12439,7 @@ fn emit_protobuf_decoder_oneof_steps(
     let owner = rust_type_name(msg.leaf_name());
     let name = &field.rust_name;
     let field_name = name.strip_prefix("r#").unwrap_or(name);
-    let oneof_ty = format!("crate::rhoapi::{}::{}", oneof.module, oneof.rust_ident);
+    let oneof_ty = format!("owned_slots::{owner}{}", oneof.rust_ident);
     let salvage = decoder_oneof_salvage_fn(oneof);
     for variant in &oneof.variants {
         let location = decoder_location_map(msg.leaf_name(), field_name);
@@ -12459,7 +12460,7 @@ fn emit_protobuf_decoder_oneof_steps(
             writeln!(
                 methods,
                 "    #[inline(never)]\n\
-                 fn {method}(&mut self, value: &mut crate::rhoapi::{}, limit: usize, protobuf_wire_type: WireType) -> Result<(), DecodeError> {{\n\
+                 fn {method}(&mut self, value: &mut owned_slots::{owner}, limit: usize, protobuf_wire_type: WireType) -> Result<(), DecodeError> {{\n\
                                          let child_limit = self.message_limit(protobuf_wire_type){location};\n\
                                          let child = match value.{name}.take() {{\n\
                                              Some({oneof_ty}::{}(child)) => child,\n\
@@ -12469,7 +12470,6 @@ fn emit_protobuf_decoder_oneof_steps(
                                          self.frames.push(Frame::Node(Node::{child} {{ value: child, limit: child_limit }}));\n\
                                          Ok(())\n\
                                      }}",
-                msg.rust_path(),
                 variant.rust_ident
             )
             .expect("write message oneof arm");
@@ -12478,7 +12478,7 @@ fn emit_protobuf_decoder_oneof_steps(
             writeln!(
                 methods,
                 "    #[inline(never)]\n\
-                 fn {method}(&mut self, value: &mut crate::rhoapi::{}, limit: usize, protobuf_wire_type: WireType) -> Result<(), DecodeError> {{\n\
+                 fn {method}(&mut self, value: &mut owned_slots::{owner}, limit: usize, protobuf_wire_type: WireType) -> Result<(), DecodeError> {{\n\
                                          let mut payload = Default::default();\n\
                                          encoding::{module}::merge(\n\
                                              protobuf_wire_type, &mut payload, &mut self.buf,\n\
@@ -12489,7 +12489,6 @@ fn emit_protobuf_decoder_oneof_steps(
                                          self.frames.push(Frame::Node(Node::{owner} {{ value: mem::take(value), limit }}));\n\
                                          Ok(())\n\
                                      }}",
-                msg.rust_path(),
                 variant.rust_ident
             )
             .expect("write scalar oneof arm");
@@ -12648,7 +12647,7 @@ fn emit_protobuf_decoder_epathmap_step(src: &mut String) {
                             limit,
                         }));
                         self.frames.push(Frame::Node(Node::Var {
-                            value: child,
+                            value: owned_slots::Var::from(child),
                             limit: child_limit,
                         }));
                     }
@@ -12673,7 +12672,7 @@ fn emit_protobuf_decoder_epathmap_step(src: &mut String) {
                             error
                         })?;
 	                        let validate_canonical = self.epm_depth == 0;
-	                        let pending = OwnedPendingEpmDecode::new(region, validate_canonical).map_err(|error| {
+	                        let pending = OwnedPendingEpmDecode::new_with_scaffold(region, validate_canonical, self.arena.epm_barrier()).map_err(|error| {
 	                            let mut error: DecodeError = error.into();
 	                            error.push("EPathMap", "trie_snapshot");
 	                            error
@@ -12701,17 +12700,6 @@ fn emit_protobuf_decoder_epathmap_step(src: &mut String) {
             error
         })?;
         if let Some(body) = next {
-            if let Some(value) =
-                crate::rust::par_bag::import_canonical_parbag_fast_path(body.as_ref())
-            {
-                frame.pending.push_value(value).map_err(|error| {
-                    let mut error: DecodeError = error.into();
-                    error.push("EPathMap", "trie_snapshot");
-                    error
-                })?;
-                self.frames.push(Frame::Epm(frame));
-                return Ok(());
-            }
             self.enter_input(body);
             self.frames.push(Frame::Attach(Attach::EPathMapSnapshotValue { frame }));
             self.frames.push(Frame::Node(Node::Par {
@@ -12729,13 +12717,8 @@ fn emit_protobuf_decoder_epathmap_step(src: &mut String) {
                 error.push("EPathMap", "trie_snapshot");
                 error
             })?;
-        if self.validate_epathmaps {
-            frame.parent.replace_decoded_representation(repr)?;
-        } else {
-            frame
-                .parent
-                .replace_decoded_representation_deferred_key_validation(repr)?;
-        }
+        let repr = self.arena.own_decoded_epm_repr(repr);
+        frame.parent.replace_decoded_representation(repr, self.validate_epathmaps)?;
         self.epm_depth = self
             .epm_depth
             .checked_sub(1)
@@ -12821,7 +12804,7 @@ fn emit_protobuf_decoder_attach_arms(
     for (msg, fields) in rows {
         let Some(fields) = fields else { continue };
         let owner = rust_type_name(msg.leaf_name());
-        let owner_ty = format!("crate::rhoapi::{}", msg.rust_path());
+        let owner_ty = format!("owned_slots::{owner}");
         for field in fields.iter() {
             let name = &field.rust_name;
             let display_name = name.strip_prefix("r#").unwrap_or(name);
@@ -12899,7 +12882,7 @@ fn emit_protobuf_decoder_attach_arms(
                 }
                 Shape::Oneof => {
                     let oneof = decoder_oneof(messages, oneofs, msg.leaf_name(), name);
-                    let oneof_ty = format!("crate::rhoapi::{}::{}", oneof.module, oneof.rust_ident);
+                    let oneof_ty = format!("owned_slots::{owner}{}", oneof.rust_ident);
                     for variant in oneof
                         .variants
                         .iter()
@@ -12953,7 +12936,9 @@ fn emit_protobuf_decoder_attach_arms(
         )
         .expect("write external Par attach route");
         let success = format!(
-            "                parent.merge_protobuf_component(&child)\n\
+            "                let component = child.plan(&mut self.arena).map_err(construction_error)\n\
+                     .map_err(|mut error| {{ error.push(\"Par\", {display_name:?}); error }})?;\n\
+                 self.arena.insert_protobuf_component(&mut parent, component).map_err(construction_error)\n\
                      .map_err(|mut error| {{ error.push(\"Par\", {display_name:?}); error }})?;\n\
                  self.frames.push(Frame::Node(Node::Par {{ value: parent, limit }}));"
         );
@@ -12983,8 +12968,7 @@ fn emit_protobuf_decoder_attach_arms(
         "attach_epath_map_ps",
         "mut parent: EPathMap, limit: usize",
         "Value::Par(child)",
-        "                let consumed = parent.try_insert_entry_replacing(child)?;\n\
-                         self.garbage.push(Value::Par(consumed));\n\
+        "                parent.insert_protobuf_par(&mut self.arena, child)?;\n\
                          self.frames.push(Frame::Node(Node::EPathMap { value: parent, limit }));",
         "EPathMap.ps",
         "Some(Value::EPathMap(parent))",
@@ -12994,7 +12978,7 @@ fn emit_protobuf_decoder_attach_arms(
         "attach_epath_map_remainder",
         "mut parent: EPathMap, limit: usize",
         "Value::Var(child)",
-        "                parent.remainder = Some(child);\n\
+        "                parent.remainder = Some(child.project(&mut PublicProjection { arena: &mut self.arena })?);\n\
                          self.frames.push(Frame::Node(Node::EPathMap { value: parent, limit }));",
         "EPathMap.remainder",
         "Some(Value::EPathMap(parent))",
@@ -13009,6 +12993,8 @@ fn emit_protobuf_decoder_attach_arms(
         self.leave_input();
         match child {
             Value::Par(child) => {
+                let child = self.arena.freeze_protobuf_par(child).map_err(construction_error)
+                    .map_err(|mut error| { error.push("EPathMap", "trie_snapshot"); error })?;
                 frame.pending.push_value(child).map_err(|error| {
                     let mut error: DecodeError = error.into();
                     error.push("EPathMap", "trie_snapshot");
@@ -13108,7 +13094,7 @@ fn emit_protobuf_decoder_salvage(
 ) {
     for oneof in oneofs {
         let function = decoder_oneof_salvage_fn(oneof);
-        let oneof_ty = format!("crate::rhoapi::{}::{}", oneof.module, oneof.rust_ident);
+        let oneof_ty = format!("owned_slots::{}", protobuf_owned_oneof_name(messages, oneof));
         writeln!(
             src,
             "fn {function}(value: Option<{oneof_ty}>, work: &mut Vec<Value>) {{\n\
@@ -13175,11 +13161,10 @@ impl<B> Machine<B> {
     for (msg, fields) in rows {
         let Some(fields) = fields else { continue };
         let owner = rust_type_name(msg.leaf_name());
-        let ty = msg.rust_path();
         writeln!(
             src,
             "                Value::{owner}(value) => {{\n\
-                                 let crate::rhoapi::{ty} {{"
+                                 let owned_slots::{owner} {{"
         )
         .expect("write salvage destructure header");
         for field in fields.iter() {
@@ -13337,7 +13322,7 @@ fn emit_protobuf_decoder_entries(
                      panic!(\"protobuf decoder invariant: {variant} left {{}} root values\", machine.values.len());\n\
                  }}\n\
                  match machine.values.pop().expect(\"the single checked root value exists\") {{\n\
-                     Value::{variant}(value) => Ok(value),\n\
+                     Value::{variant}(value) => value.project(&mut PublicProjection {{ arena: &mut machine.arena }}),\n\
                      other => {{\n\
                          let found = other.kind_name();\n\
                          machine.values.push(other);\n\
@@ -13350,7 +13335,7 @@ fn emit_protobuf_decoder_entries(
     }
 
     src.push_str(
-        r#"pub fn decode_epath_map<B: Buf>(buf: B) -> Result<EPathMap, DecodeError> {
+        r#"pub fn decode_epath_map<B: Buf>(buf: B) -> Result<crate::rhoapi::EPathMap, DecodeError> {
     #[cfg(test)]
     crate::protobuf_decoder_oracle::route!(decode_epath_map, buf);
     let mut machine = Machine::new(
@@ -13373,7 +13358,7 @@ fn emit_protobuf_decoder_entries(
         .pop()
         .expect("the single checked EPathMap root exists")
     {
-        Value::EPathMap(value) => Ok(value),
+        Value::EPathMap(value) => value.project(&mut PublicProjection { arena: &mut machine.arena }),
         other => {
             let found = other.kind_name();
             machine.values.push(other);
@@ -13382,13 +13367,13 @@ fn emit_protobuf_decoder_entries(
     }
 }
 
-pub fn decode_par<B: Buf>(buf: B) -> Result<Par, DecodeError> {
+pub fn decode_par<B: Buf>(buf: B) -> Result<crate::rhoapi::Par, DecodeError> {
     #[cfg(test)]
     crate::protobuf_decoder_oracle::route!(decode_par, buf);
     decode_par_with_stats(buf).map(|(value, _stats)| value)
 }
 
-pub(crate) fn decode_par_deferred_epathmap_validation<B: Buf>(buf: B) -> Result<Par, DecodeError> {
+pub(crate) fn decode_par_deferred_epathmap_validation<B: Buf>(buf: B) -> Result<crate::rhoapi::Par, DecodeError> {
     #[cfg(test)]
     crate::protobuf_decoder_oracle::route!(decode_par_deferred_epathmap_validation, buf);
     decode_par_with_epathmap_validation(buf, false).map(|(value, _stats)| value)
@@ -13396,7 +13381,7 @@ pub(crate) fn decode_par_deferred_epathmap_validation<B: Buf>(buf: B) -> Result<
 
 pub fn decode_par_with_stats<B: Buf>(
     buf: B,
-) -> Result<(Par, DecodeStats), DecodeError> {
+) -> Result<(crate::rhoapi::Par, DecodeStats), DecodeError> {
     #[cfg(test)]
     if crate::protobuf_decoder_oracle::enter_decoder() {
         let mut erased = buf;
@@ -13412,7 +13397,7 @@ pub fn decode_par_with_stats<B: Buf>(
 fn decode_par_with_epathmap_validation<B: Buf>(
     buf: B,
     validate_epathmaps: bool,
-) -> Result<(Par, DecodeStats), DecodeError> {
+) -> Result<(crate::rhoapi::Par, DecodeStats), DecodeError> {
     #[cfg(test)]
     crate::protobuf_decoder_oracle::assert_successor_body();
     // Exact canonical recursive shapes with a byte-native proof can be
@@ -13458,6 +13443,7 @@ fn decode_par_with_epathmap_validation<B: Buf>(
         .expect("the single checked Par root exists")
     {
         Value::Par(value) => {
+            let value = value.project(&mut PublicProjection { arena: &mut machine.arena })?;
             #[cfg(feature = "phase7-depth-histograms")]
             crate::rust::rholang::phase7_depth_histogram::record_par("protobuf_decoder", &value);
             Ok((value, stats))
@@ -13473,6 +13459,11 @@ fn decode_par_with_epathmap_validation<B: Buf>(
 #[cfg(test)]
 mod oracle_body_guards {
     include!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/support/protobuf_decoder_body_guards.rs"));
+}
+
+#[cfg(test)]
+mod decoder_control_tests {
+    include!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/support/protobuf_decoder_control.rs"));
 }
 
 "#,
