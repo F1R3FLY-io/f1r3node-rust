@@ -1,0 +1,124 @@
+//scalapackage coop.rchain.rholang.mint
+
+//requires Pos, RhoSpec
+
+new
+  rl(`rho:registry:lookup`),
+  vaultAddressOps(`rho:vault:address`),
+  RhoSpecCh,
+  PoSCh,
+  SystemVaultCh,
+  setup,
+  prepareUser,
+  test_delegation_review_guards
+in {
+  rl!(`rho:system:pos`, *PoSCh) |
+  rl!(`rho:vault:system`, *SystemVaultCh) |
+  rl!(`rho:id:zphjgsfy13h1k85isc8rtwtgt3t9zzt5pjd5ihykfmyapfc4wt3x5h`, *RhoSpecCh) |
+  for(@(_, RhoSpec) <- RhoSpecCh &
+      @(_, PoS) <- PoSCh &
+      @(_, SystemVault) <- SystemVaultCh) {
+    @RhoSpec!("testSuite", *setup,
+      [
+        ("delegation review guards", *test_delegation_review_guards)
+      ]
+    ) |
+
+    contract setup(_, retCh) = {
+      retCh!({})
+    } |
+
+    contract prepareUser(@pk, retCh) = {
+      new makeDeployerId(`rho:test:deployerId:make`),
+          deployerIdCh,
+          vaultAddrCh,
+          vaultCh
+      in {
+        vaultAddressOps!("fromPublicKey", pk.hexToBytes(), *vaultAddrCh) |
+        makeDeployerId!("deployerId", pk.hexToBytes(), *deployerIdCh) |
+        for (@vaultAddress <- vaultAddrCh &
+             @deployerId <- deployerIdCh) {
+          @SystemVault!("findOrCreate", vaultAddress, *vaultCh) |
+          for (@(true, vault) <- vaultCh) {
+            retCh!(pk.hexToBytes(), vaultAddress, vault, deployerId)
+          }
+        }
+      }
+    } |
+
+    contract test_delegation_review_guards(rhoSpec, _, ackCh) = {
+      new validatorSetupCh,
+          delegatorSetupCh,
+          bondCh,
+          minimumBondCh,
+          dustDelegateCh,
+          delegateCh,
+          rebondCh,
+          undelegateCh,
+          secondUndelegateCh,
+          selfBondsCh,
+          effectiveBondsCh,
+          delegatedTotalsCh,
+          pendingUndelegationsCh,
+          setBlockData(`rho:test:block:data:set`),
+          blockDataCh
+      in {
+        prepareUser!("6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a", *validatorSetupCh) |
+        prepareUser!("7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b", *delegatorSetupCh) |
+        for (@validatorPubKey, _, _, @validatorDeployerId <- validatorSetupCh &
+             @delegatorPubKey, _, _, @delegatorDeployerId <- delegatorSetupCh) {
+          match (100, 40, 10, 10) {
+            (validatorBond, delegationAmt, undelegationAmt, requestBlock) => {
+              @PoS!("bond", validatorDeployerId, validatorBond, *bondCh) |
+              for (@(true, _) <- bondCh) {
+                @PoS!("getMinimumBond", *minimumBondCh) |
+                for (@minimumBond <- minimumBondCh) {
+                  @PoS!("delegate", delegatorDeployerId, validatorPubKey, minimumBond - 1, *dustDelegateCh) |
+                  for (@(false, dustMsg) <- dustDelegateCh) {
+                    @PoS!("delegate", delegatorDeployerId, validatorPubKey, delegationAmt, *delegateCh) |
+                    for (@(true, _) <- delegateCh) {
+                      @PoS!("bond", validatorDeployerId, 50, *rebondCh) |
+                      for (@(false, rebondMsg) <- rebondCh) {
+                        setBlockData!("blockNumber", requestBlock, *blockDataCh) |
+                        for (_ <- blockDataCh) {
+                          @PoS!("undelegate", delegatorDeployerId, validatorPubKey, undelegationAmt, *undelegateCh) |
+                          for (@(true, _) <- undelegateCh) {
+                            @PoS!("undelegate", delegatorDeployerId, validatorPubKey, 1, *secondUndelegateCh) |
+                            for (@(false, secondMsg) <- secondUndelegateCh) {
+                              @PoS!("getBonds", *selfBondsCh) |
+                              @PoS!("getEffectiveBonds", *effectiveBondsCh) |
+                              @PoS!("getDelegatedTotals", *delegatedTotalsCh) |
+                              @PoS!("getPendingUndelegations", *pendingUndelegationsCh) |
+                              for (@selfBonds <- selfBondsCh &
+                                   @effectiveBonds <- effectiveBondsCh &
+                                   @delegatedTotals <- delegatedTotalsCh &
+                                   @pendingUndelegations <- pendingUndelegationsCh) {
+                                rhoSpec!("assertMany",
+                                  [
+                                    ((2, "==", minimumBond), "minimum bond getter exposes genesis parameter"),
+                                    (("Delegation is less than minimum.", "==", dustMsg), "delegation below minimumBond is rejected"),
+                                    (("Public key is already bonded.", "==", rebondMsg), "bond cannot mutate an already bonded validator after delegation"),
+                                    (("Pending undelegation already exists for validator.", "==", secondMsg), "a second pending undelegation for the pair is rejected"),
+                                    ((validatorBond, "==", selfBonds.get(validatorPubKey)), "self-bond stays unchanged"),
+                                    ((delegationAmt - undelegationAmt, "==", delegatedTotals.getOrElse(validatorPubKey, 0)), "delegated total reflects the active remainder"),
+                                    (((validatorBond + delegationAmt) - undelegationAmt, "==", effectiveBonds.get(validatorPubKey)), "effective bond reflects self plus active delegated remainder"),
+                                    ((true, "==", pendingUndelegations.getOrElse(delegatorPubKey, {}).contains(validatorPubKey)), "first undelegation remains pending")
+                                  ],
+                                  *ackCh
+                                )
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
