@@ -1404,6 +1404,75 @@ impl BarrierProvider<Par> for ResidentEpmBarrier {
 pub(crate) type OwnedResidentEPathMap = EpmReprOwner<Par, ResidentEpmBarrier>;
 
 impl<V: EpmPayload, B: BarrierProvider<V>> EpmReprOwner<V, B> {
+    pub(crate) fn try_map_resident<E>(
+        mut self,
+        mut convert: impl FnMut(&V) -> Result<Par, E>,
+    ) -> Result<OwnedResidentEPathMap, E> {
+        use pathmap::zipper::Zipper;
+
+        if !matches!(self.repr, EPathMapRepr::Map(_)) {
+            let repr = match std::mem::take(&mut self.repr) {
+                EPathMapRepr::Empty => EPathMapRepr::Empty,
+                EPathMapRepr::Set(map) => EPathMapRepr::Set(map),
+                EPathMapRepr::Map(_) => unreachable!(),
+            };
+            return Ok(OwnedResidentEPathMap::new(repr, ResidentEpmBarrier));
+        }
+        let EPathMapRepr::Map(source) = &self.repr else { unreachable!() };
+        let mut reader = source.read_zipper();
+        let mut destination = PendingWriter {
+            state: PendingWriterState::Map(WriteZipperOwned::new(), PendingScaffold::New(Par::default)),
+        };
+        let mut frames = Vec::new();
+        let mut span_len = 0;
+        let mut first_span = true;
+        'enter: loop {
+            let scaffold = reader.val().is_none() && !reader.path().is_empty();
+            if let Some(value) = reader.val() {
+                let value = convert(value)?;
+                let PendingWriterState::Map(writer, _) = &mut destination.state else { unreachable!() };
+                writer.set_val(value);
+            } else if scaffold {
+                destination.install_scaffold_value();
+            }
+            #[cfg(test)]
+            payload_mapping_tests::observe_span(span_len, scaffold);
+            frames.push((reader.child_mask().iter(), span_len, scaffold));
+            while let Some((children, _, _)) = frames.last_mut() {
+                if let Some(byte) = children.next() {
+                    let base = reader.path().len();
+                    reader.descend_to_byte(byte);
+                    while !reader.is_val() && reader.child_count() == 1 {
+                        let byte = reader.child_mask().iter().next().expect("one child");
+                        reader.descend_to_byte(byte);
+                    }
+                    let span = &reader.path()[base..];
+                    span_len = span.len();
+                    if first_span {
+                        destination.descend_first_span(span);
+                        first_span = false;
+                    } else {
+                        let PendingWriterState::Map(writer, _) = &mut destination.state else { unreachable!() };
+                        writer.descend_to(span);
+                    }
+                    continue 'enter;
+                }
+                let (_, length, scaffold) = frames.pop().expect("live mapping frame");
+                let PendingWriterState::Map(writer, _) = &mut destination.state else { unreachable!() };
+                if scaffold {
+                    remove_value_preserving_path(writer).expect("installed mapping scaffold").dispose();
+                }
+                if length != 0 {
+                    writer.ascend(length);
+                    reader.ascend(length);
+                }
+            }
+            break;
+        }
+        let repr = destination.into_repr().expect("mapping retains a live destination");
+        Ok(OwnedResidentEPathMap::new(repr, ResidentEpmBarrier))
+    }
+
     pub(crate) fn new(repr: EPathMapRepr<V>, barrier: B) -> Self {
         Self { repr, barrier }
     }
@@ -1549,23 +1618,31 @@ impl<V: EpmPayload> PendingWriter<V> {
     /// sentinel, while the map-level constructor is the public API that
     /// replaces that sentinel without installing a transient value.
     fn descend_first_byte(&mut self, byte: u8) {
+        self.descend_first_span(&[byte]);
+    }
+
+    fn descend_first_span(&mut self, span: &[u8]) {
         match std::mem::replace(&mut self.state, PendingWriterState::Discard) {
             PendingWriterState::Set(zipper) => {
                 let mut owner = EpmMapOwner::from_writer(zipper, PendingScaffold::Repeat(()));
-                owner.owned.as_mut().expect("the transferred EPM map owns its root").0.create_path([byte]);
+                owner.owned.as_mut().expect("the transferred EPM map owns its root").0.create_path(span);
                 let (zipper, _) = owner.into_writer_parts();
                 self.state = PendingWriterState::Set(zipper);
             }
             PendingWriterState::Map(zipper, scaffold) => {
                 let mut owner = EpmMapOwner::from_writer(zipper, scaffold);
-                owner.owned.as_mut().expect("the transferred EPM map owns its root").0.create_path([byte]);
+                owner.owned.as_mut().expect("the transferred EPM map owns its root").0.create_path(span);
                 let (zipper, scaffold) = owner.into_writer_parts();
                 self.state = PendingWriterState::Map(zipper, scaffold);
             }
             PendingWriterState::Empty => self.state = PendingWriterState::Empty,
             PendingWriterState::Discard => {}
         }
-        self.descend_to_byte(byte);
+        match &mut self.state {
+            PendingWriterState::Set(zipper) => zipper.descend_to(span),
+            PendingWriterState::Map(zipper, _) => zipper.descend_to(span),
+            PendingWriterState::Empty | PendingWriterState::Discard => {}
+        }
     }
 
     fn ascend_byte(&mut self) {
@@ -2499,6 +2576,10 @@ mod substitution_value_regions_tests;
 #[cfg(test)]
 #[path = "../../tests/support/epm_payload_representation.rs"]
 mod payload_representation_tests;
+
+#[cfg(test)]
+#[path = "../../tests/support/epm_payload_mapping.rs"]
+mod payload_mapping_tests;
 
 #[cfg(test)]
 #[path = "../../tests/support/epm_owned_retirement.rs"]

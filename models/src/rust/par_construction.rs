@@ -3559,6 +3559,13 @@ impl ParConstruction {
         Ok(planned)
     }
 
+    pub(crate) fn finish_epm_repr(
+        &self,
+        repr: OwnedPlannedEPathMap,
+    ) -> Result<epathmap_trie_codec::OwnedResidentEPathMap, ParConstructionError> {
+        repr.try_map_resident(|value| self.finish(*value))
+    }
+
     /// Emit the root planned `Par` into its sole resident representation.
     pub fn finish(&self, root: PlannedPar) -> Result<Par, ParConstructionError> {
         #[cfg(feature = "protobuf-projection-experiment")]

@@ -1,4 +1,4 @@
-use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use proptest::prelude::*;
 
@@ -12,6 +12,93 @@ fn small_stack(f: impl FnOnce() + std::marker::Send + 'static) {
         .unwrap()
         .join()
         .unwrap();
+}
+
+#[test]
+fn public_materialization_preserves_topology_values_and_metadata() {
+    small_stack(|| {
+        let mut arena = ParConstruction::new();
+        let mut child = arena.empty_par().unwrap();
+        let shell = Expr {
+            expr_instance: Some(ExprInstance::ENotBody(crate::rhoapi::ENot {
+                p: Some(Par::default()),
+            })),
+        };
+        for _ in 0..8192 {
+            let component = arena.expr_component(&shell, &[child], false).unwrap();
+            child = arena
+                .singleton_component(component, Vec::new(), false)
+                .unwrap();
+        }
+        let key = arena.empty_par().unwrap();
+        let encoded_key = arena.canonical_path_bytes(key).unwrap();
+        let expected_value = arena.finish(child).unwrap();
+        for mode in [EPathMapMode::Empty, EPathMapMode::Set, EPathMapMode::Map] {
+            let mut source = if mode == EPathMapMode::Empty {
+                OwnedPlannedEPathMap::default()
+            } else {
+                comb(&mut arena, mode, false)
+            };
+            match source.as_repr_mut() {
+                EPathMapRepr::Empty => {}
+                EPathMapRepr::Set(map) => {
+                    map.insert(&encoded_key, ());
+                }
+                EPathMapRepr::Map(map) => {
+                    map.insert(&encoded_key, child);
+                }
+            }
+            let expected_topology = epathmap_trie_codec::layout(source.as_repr())
+                .prefix()
+                .to_vec();
+            #[cfg(feature = "protobuf-projection-experiment")]
+            let mapped = {
+                let (mapped, totals) =
+                    substitution_cost::capture(|| arena.finish_epm_repr(source).unwrap());
+                assert_eq!(
+                    totals.get(substitution_cost::Metric::FinishAttempts),
+                    usize::from(mode == EPathMapMode::Map)
+                );
+                mapped
+            };
+            #[cfg(not(feature = "protobuf-projection-experiment"))]
+            let mapped = arena.finish_epm_repr(source).unwrap();
+            assert_eq!(
+                epathmap_trie_codec::layout(mapped.as_repr()).prefix(),
+                expected_topology
+            );
+            let mut public = EPathMap::default();
+            public.locally_free = vec![2];
+            public.connective_used = true;
+            public.remainder = Some(crate::rhoapi::Var::default());
+            public
+                .replace_owned_decoded_representation_with(mapped, true)
+                .unwrap();
+            assert_eq!(public.mode(), mode);
+            assert_eq!(public.locally_free, vec![2]);
+            assert!(public.connective_used);
+            assert!(public.remainder.is_some());
+            if mode == EPathMapMode::Map {
+                assert_eq!(
+                    public
+                        .entry_trie()
+                        .get_map_value_by_encoded_key(&encoded_key)
+                        .unwrap(),
+                    Some(&expected_value)
+                );
+            }
+            let mut expected_snapshot = expected_topology;
+            if mode == EPathMapMode::Map {
+                let body = expected_value.protobuf_bytes().unwrap();
+                prost::encoding::encode_varint(body.len() as u64, &mut expected_snapshot);
+                expected_snapshot.extend_from_slice(&body);
+            }
+            assert_eq!(public.trie_snapshot(), expected_snapshot);
+            let bytes = protobuf_encoder::encode_to_vec(&public);
+            assert!(!bytes.is_empty());
+            drop(public);
+        }
+    });
 }
 
 fn comb(arena: &mut ParConstruction, mode: EPathMapMode, valued: bool) -> OwnedPlannedEPathMap {

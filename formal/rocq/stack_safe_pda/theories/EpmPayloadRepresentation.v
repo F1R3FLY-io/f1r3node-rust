@@ -1,4 +1,4 @@
-From Stdlib Require Import List Arith Bool.
+From Stdlib Require Import List Arith Bool Lia.
 Import ListNotations.
 Set Implicit Arguments.
 
@@ -215,6 +215,139 @@ Proof. now rewrite cursor_take_is_ordered_partition. Qed.
 Theorem cursor_root_skip_mutant_is_observable {V} (root : V) rest shape :
   fst (cursor_take 1 (Cursor shape ((0, root) :: rest))) <> [].
 Proof. discriminate. Qed.
+
+Inductive mapping_mode := MappingEmpty | MappingSet | MappingMap.
+
+Section FallibleMapping.
+Context {V W E : Type} (convert : V -> W + E).
+
+Fixpoint mapping_reference (items : bindings V) : list nat * (bindings W + E) :=
+  match items with
+  | [] => ([], inl [])
+  | (key, value) :: rest =>
+      match convert value with
+      | inr error => ([key], inr error)
+      | inl mapped =>
+          let '(trace, result) := mapping_reference rest in
+          (key :: trace, match result with
+            | inl output => inl ((key, mapped) :: output)
+            | inr error => inr error
+            end)
+      end
+  end.
+
+Fixpoint mapping_loop (items : bindings V) (done : bindings W) (seen : list nat)
+    : list nat * (bindings W + E) :=
+  match items with
+  | [] => (rev seen, inl (rev done))
+  | (key, value) :: rest =>
+      match convert value with
+      | inr error => (rev (key :: seen), inr error)
+      | inl mapped => mapping_loop rest ((key, mapped) :: done) (key :: seen)
+      end
+  end.
+
+Theorem mapping_loop_refines_reference : forall items done seen,
+  mapping_loop items done seen =
+  let '(trace, result) := mapping_reference items in
+  (rev seen ++ trace, match result with
+    | inl output => inl (rev done ++ output)
+    | inr error => inr error
+    end).
+Proof.
+  induction items as [|[key value] rest IH]; intros done seen; cbn.
+  - now rewrite !app_nil_r.
+  - destruct (convert value) as [mapped|error]; cbn; [|reflexivity].
+    rewrite IH. destruct (mapping_reference rest) as [trace [output|error]]; cbn;
+      now rewrite <- !app_assoc.
+Qed.
+
+Theorem mapping_empty_accumulators_are_equivalent : forall items,
+  mapping_loop items [] [] = mapping_reference items.
+Proof.
+  intros. rewrite mapping_loop_refines_reference.
+  destruct (mapping_reference items) as [trace [output|error]]; reflexivity.
+Qed.
+
+Theorem mapping_success_preserves_keys_and_trace : forall items trace output,
+  mapping_reference items = (trace, inl output) ->
+  trace = map fst items /\ map fst output = map fst items.
+Proof.
+  induction items as [|[key value] rest IH]; intros trace output result; cbn in result.
+  - inversion result. auto.
+  - destruct (convert value) as [mapped|error]; [|discriminate].
+    destruct (mapping_reference rest) as [tail [values|error]] eqn:next; [|discriminate].
+    inversion result; subst. specialize (IH _ _ eq_refl).
+    destruct IH as [trace_ok keys_ok]. cbn. split; congruence.
+Qed.
+
+Theorem mapping_first_error_stops : forall key value rest error,
+  convert value = inr error ->
+  mapping_reference ((key, value) :: rest) = ([key], inr error).
+Proof. intros. cbn. now rewrite H. Qed.
+
+Theorem mapping_failure_cannot_publish : forall items trace error,
+  mapping_reference items = (trace, inr error) ->
+  (match snd (mapping_loop items [] []) with
+   | inl output => Some output | inr _ => None end) = None.
+Proof. intros. rewrite mapping_empty_accumulators_are_equivalent, H. reflexivity. Qed.
+
+Theorem mapping_success_exact_callback_count : forall items trace output,
+  mapping_reference items = (trace, inl output) -> length trace = length items.
+Proof.
+  intros. apply mapping_success_preserves_keys_and_trace in H.
+  rewrite (proj1 H), length_map. reflexivity.
+Qed.
+
+Theorem mapping_preserves_shape_and_mode : forall (mode : mapping_mode) (shape : list nat) items,
+  let result := (mode, shape, mapping_loop items [] []) in
+  fst (fst result) = mode /\ snd (fst result) = shape.
+Proof. intros. split; reflexivity. Qed.
+
+End FallibleMapping.
+
+Definition span_path (spans : list (list nat * bool)) := concat (map fst spans).
+Definition span_scaffolds (spans : list (list nat * bool)) :=
+  length (filter snd spans).
+
+Theorem relative_spans_compose_exact_path : forall prefix spans,
+  fold_left (@app nat) (map fst spans) prefix = prefix ++ span_path spans.
+Proof.
+  intros prefix spans. revert prefix. induction spans as [|[bytes scaffold] rest IH];
+    intro prefix; cbn; [now rewrite app_nil_r|].
+  rewrite IH. unfold span_path. cbn. now rewrite app_assoc.
+Qed.
+
+Theorem scaffold_count_is_bounded_by_event_points : forall spans,
+  span_scaffolds spans <= length spans.
+Proof.
+  unfold span_scaffolds. induction spans as [|[bytes scaffold] rest IH]; cbn;
+    [apply Nat.le_refl|]. destruct scaffold; cbn in *; lia.
+Qed.
+
+Theorem changing_span_lengths_preserves_scaffold_work : forall spans resize,
+  span_scaffolds (map (fun item => (resize (fst item), snd item)) spans) = span_scaffolds spans.
+Proof.
+  intros spans resize. unfold span_scaffolds. induction spans as [|[bytes scaffold] rest IH];
+    cbn; [reflexivity|]. destruct scaffold; cbn; now rewrite IH.
+Qed.
+
+Theorem mapping_first_error_mutant_is_observable :
+  mapping_reference (fun n : nat => if n =? 1 then inr 7 else inl n)
+    [(0, 1); (1, 2)] = ([0], inr 7).
+Proof. reflexivity. Qed.
+
+Print Assumptions mapping_loop_refines_reference.
+Print Assumptions mapping_empty_accumulators_are_equivalent.
+Print Assumptions mapping_success_preserves_keys_and_trace.
+Print Assumptions mapping_first_error_stops.
+Print Assumptions mapping_failure_cannot_publish.
+Print Assumptions mapping_success_exact_callback_count.
+Print Assumptions mapping_preserves_shape_and_mode.
+Print Assumptions mapping_first_error_mutant_is_observable.
+Print Assumptions relative_spans_compose_exact_path.
+Print Assumptions scaffold_count_is_bounded_by_event_points.
+Print Assumptions changing_span_lengths_preserves_scaffold_work.
 
 Print Assumptions erase_commutes_with_denotation.
 Print Assumptions install_commutes_with_denotation.

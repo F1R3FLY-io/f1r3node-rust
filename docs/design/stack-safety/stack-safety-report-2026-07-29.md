@@ -9078,6 +9078,26 @@ and full workspace acceptance remain open; no consensus-visible change is intend
 Feature-enabled resident/construction qualification additionally passes 26/26,
 664 excluded, in 8.734 seconds test time, 2.7 GiB peak and zero swap.
 
+J-215 implements guarded planned-to-resident EPM payload mapping. Set/Empty transfer
+without conversion; Map uses paired zippers over compressed spans, preserving
+root/prefix/dangling paths and first-error order without an entry projection.
+Eleven added abstract statements bring EPR to 29 closed declarations, kernel-checked
+before Rust. The native mapper and public-admission witnesses include depth-8,192
+branching and payloads on 256 KiB, error/unwind and exact snapshot/metadata checks.
+Feature qualification passes **28/28**, 668 excluded, in 3.336 seconds test time,
+2.2 GiB service peak and zero swap under an 8 GiB cap. A neutral-Empty test fixture
+failed in the preceding run and was corrected without removing its domain.
+
+For compressed stems of 64, 1,024 and 8,192 bytes, retained destination heap is
+160, 2,000 and 15,680 bytes respectively, with two event frames and one temporary
+value in each case. This bounds the tested fragmentation behavior; it is not peak
+heap or throughput evidence. J-215 records methods, proof boundaries and receipt
+hashes. General decoder routing, legacy ingress, unchanged gate 5917, geometric
+resource comparisons and full workspace acceptance remain open. No intended
+consensus-visible change is introduced by this materialization helper.
+Expanded default qualification adds **34/34** passing tests, 653 excluded,
+8.635 seconds test time, 2.8 GiB service peak and zero swap under the same cap.
+
 ### 5.29 ParBag family and count-domain completeness [SS-A13, SS-A14, SS-Y9]
 
 #### 5.29.1 The defects

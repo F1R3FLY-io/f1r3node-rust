@@ -1597,8 +1597,9 @@ is the existing native Var family, separately checked to reach neither Par nor E
 No byte parser, Rust memory/resource behavior, complete decoder refinement, or
 production performance theorem is claimed. Component planning is implemented and
 qualified separately from public projection; the general decoder still needs routing
-through these adapters. Public EPM materialization remains required. D's empty-EPM
-callback is a test double, not a production implementation.
+through these adapters. The public EPM materialization helper is qualified by
+J-215 below but is not yet wired into the general decoder. D's empty-EPM callback
+remains a test double, not a production implementation.
 
 ### Guarded consuming cursor extension (task 8516)
 
@@ -1634,6 +1635,44 @@ The topology observer enumerates every logical byte path through child masks,
 including absence of added paths. A separate uninterrupted consuming traversal
 is compared with an independently built ordered map. Retirement counts refer to
 tracked test payloads, not a Rust lifetime proof. J-213 retains all negative runs.
+
+### Fallible payload mapping and compressed spans (task 8516)
+
+Preregistered after `b031e0a3e`, before production mapping changes. Extend EPR
+with an ordered fallible reference and an accumulator machine. Map values are
+converted once in root-first lexicographic order; failure returns the first error,
+without publishing a partial destination. Set and Empty transfer without invoking
+the callback. Typed-empty modes and value-free topology remain observable.
+
+| Closed declaration | Required native witness |
+|---|---|
+| `mapping_loop_refines_reference`, `mapping_empty_accumulators_are_equivalent` | Generated binding/trace differential against an independent ordered reference |
+| `mapping_success_preserves_keys_and_trace`, `mapping_success_exact_callback_count` | Exact key/value correspondence, repeated payloads at distinct keys, root/prefix and sibling order |
+| `mapping_first_error_stops`, `mapping_failure_cannot_publish`, `mapping_first_error_mutant_is_observable` | Error injection at every callback ordinal; no later callback or partial public result |
+| `mapping_preserves_shape_and_mode` | Neutral and typed empties, dangling topology, both specializations, unchanged shared source |
+| `relative_spans_compose_exact_path` | Relative compressed-span traversal equals independent complete byte-path observations |
+| `scaffold_count_is_bounded_by_event_points`, `changing_span_lengths_preserves_scaffold_work` | Long unary stems do not create a scaffold/frame per byte; compare against branching fixtures |
+
+The span model assumes correct segmentation at values, branches and dangling
+endpoints; the native witness must establish this binding. It does not prove
+physical PathMap allocation behavior. Compression requires separate structural or
+allocation evidence, not merely identical ACT bytes. Existing scaffold-erasure and
+guarded-ownership obligations apply to partial destination and source cleanup;
+native panic, small-stack and rejection tests remain required. Public materialization
+must not be introduced at every nested component attachment.
+
+J-215 binds these obligations to five `payload_mapping_tests` witnesses and
+`public_materialization_preserves_topology_values_and_metadata`. EPR now exports
+29 closed declarations. Compilation and independent kernel checking precede Rust
+implementation. The mapper transfers Set/Empty ownership directly; Map uses guarded
+source/destination zippers and compressed relative spans. The generated differential
+observes every logical byte path independently, not just stored keys. Error and panic
+injection check exact callback prefixes; existing retirement witnesses support the
+cleanup boundary but do not constitute a Rust leak-freedom proof. The public witness
+checks typed modes, metadata set before admission, exact EPM1 snapshot bytes, deep
+payloads and topology on 256 KiB, with one finish per Map value and none for Set/Empty.
+Retained-destination measurements are not peak-allocation or throughput evidence.
+General decoder routing and gate 5917 remain separate required work.
 
 ## EPM stateful ownership retirement (EOR, task 5834)
 

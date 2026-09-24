@@ -1241,15 +1241,30 @@ fn epm_payload_representation_has_proof_and_native_bindings() {
         "cursor_take_is_ordered_partition", "cursor_take_conserves_bindings",
         "cursor_take_preserves_topology", "cursor_exhaustion_is_fused",
         "cursor_early_retirement_owns_exact_suffix", "cursor_root_skip_mutant_is_observable",
+        "mapping_loop_refines_reference", "mapping_empty_accumulators_are_equivalent",
+        "mapping_success_preserves_keys_and_trace", "mapping_first_error_stops",
+        "mapping_failure_cannot_publish", "mapping_success_exact_callback_count",
+        "mapping_preserves_shape_and_mode", "mapping_first_error_mutant_is_observable",
+        "relative_spans_compose_exact_path", "scaffold_count_is_bounded_by_event_points",
+        "changing_span_lengths_preserves_scaffold_work",
     ] {
         assert!(theory.contains(&format!("Print Assumptions {theorem}.")));
     }
     let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
-    assert_eq!(theory.matches("Print Assumptions ").count(), 18);
-    assert!(has_runner_command(&runner, &["rocq_compile_with_closed_count", "theories/EpmPayloadRepresentation.v", "18"]));
+    assert_eq!(theory.matches("Print Assumptions ").count(), 29);
+    assert!(has_runner_command(&runner, &["rocq_compile_with_closed_count", "theories/EpmPayloadRepresentation.v", "29"]));
     assert!(has_runner_kernel_check(&runner, &["StackSafePDA.EpmPayloadRepresentation"]));
     assert!(has_runner_command(&runner, &["rpb3_run_tests", "8", "--lib", "payload_representation_tests"]));
     assert!(has_runner_command(&runner, &["rpb3_run_tests", "5", "--lib", "owned_cursor_tests"]));
+    assert!(has_runner_command(&runner, &["rpb3_run_tests", "5", "--lib", "payload_mapping_tests"]));
+    let mapping = read_repository_file("models/tests/support/epm_payload_mapping.rs");
+    for witness in ["ordered_mapping_preserves_all_bindings_and_topology",
+        "modes_root_prefix_dense_siblings_and_repeated_values_are_exact",
+        "first_error_and_panic_stop_callbacks_without_publishing",
+        "compressed_stems_have_bounded_frames_scaffolds_and_retained_heap",
+        "deep_branching_success_error_and_unwind_are_stack_safe"] {
+        assert!(mapping.contains(&format!("fn {witness}(")));
+    }
     let cursor = read_repository_file("models/tests/support/epm_owned_cursor.rs");
     for witness in ["root_prefix_siblings_and_dangling_paths_are_preserved",
         "arbitrary_prefixes_partition_the_source_and_preserve_shared_roots",
@@ -1399,7 +1414,7 @@ fn epm_owned_retirement_has_explicit_proof_boundaries_and_native_bindings() {
     assert!(has_runner_kernel_check(&runner, &["StackSafePDA.EpmOwnedRetirement"]));
     assert!(has_runner_command(&runner, &["rspace_preparation_run_tests", "5", "--lib", "stateful_retirement"]));
     assert!(has_runner_command(&runner, &["rpb3_run_tests", "7", "--lib", "owned_retirement_tests"]));
-    assert!(has_runner_command(&runner, &["rpb3_run_tests", "7", "--lib", "planned_epm_ownership_tests"]));
+    assert!(has_runner_command(&runner, &["rpb3_run_tests", "8", "--lib", "planned_epm_ownership_tests"]));
     assert!(read_repository_file("formal/rocq/stack_safe_pda/_CoqProject").lines()
         .any(|line| line == "theories/EpmOwnedRetirement.v"));
     let native = read_repository_file("rspace++/tests/guarded_pathmap/stateful_retirement.rs");
@@ -1433,6 +1448,7 @@ fn epm_owned_retirement_has_explicit_proof_boundaries_and_native_bindings() {
         "planned_length_refusal_preserves_error_and_arena_reuse",
         "generated_mirror_replacement_and_projection_failure_retire_owned_maps",
         "arena_disposal_retires_planned_trie_nodes_on_small_stack",
+        "public_materialization_preserves_topology_values_and_metadata",
     ] {
         assert!(planned.contains(&format!("fn {witness}(")));
     }

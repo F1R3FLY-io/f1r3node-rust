@@ -16271,6 +16271,107 @@ No consensus-visible byte, matching, charge or persistence-format change is inte
 
 Theory SHA-256: `61ab2ba23cf2dc92a6e57becfdb38e5f7211c23443fac86fae5425e6d5ae1703`.
 
+## J-215 — Guarded fallible EPM payload mapping over compressed spans (2026-09-24)
+
+**Question and scope.** Task 8516 must turn a trie of planned Par handles into a
+resident `PathMap<Par>` at public materialization, without flattening keys or
+finishing each enclosing component during decoder attachment. An EPM is an EPathMap;
+its Empty, Set and Map modes remain distinct, including typed-empty tries. This
+checkpoint implements the materialization helper, not general decoder routing.
+
+**Design and formal-first evidence.** `EpmPayloadRepresentation.v` (EPR) adds an
+ordered fallible reference, its accumulator machine, and a relative-span model.
+The added statements specify first-error selection, exact callback order/count,
+nonpublication on failure, preserved keys/mode/topology, and scaffold work bounded
+by structural event points rather than stem length. The invariant catalog recorded
+the native obligations before implementation. The span proof assumes valid
+segmentation; it does not prove PathMap's physical representation or the Rust mapper.
+
+Formal R1 passes 26 closed declarations and kernel checking (12.432 seconds service,
+366.7 MiB peak). Extending to spans first produced an incomplete arithmetic proof
+in R2 (515 ms service, 362.8 MiB). Corrected R3 passes all **29 closed declarations**
+and kernel checking before Rust (13.579 seconds, 391.5 MiB). R4 rechecks the final
+explicit Empty/Set/Map model (13.361 seconds service, 13.180 CPU seconds, 391.4 MiB).
+Every formal run uses a 2 GiB memory cap, zero swap, one CPU and a 180-second limit.
+
+**Implementation and rationale.** `EpmReprOwner::try_map_resident` transfers Set
+and Empty directly, without a payload callback or empty-mode normalization. For Map,
+the immutable source stays guarded while a guarded destination write zipper is built.
+Root values are visited first, then keys in lexicographic byte order. Traversal groups
+unary value-free spans: a frame is needed only at a value, branch or dangling endpoint.
+Temporary values preserve otherwise value-free destination paths; removing them uses
+the existing descendant-aware `remove_value_preserving_path` policy. Error or unwind
+retains guarded ownership of both tries. `ParConstruction::finish_epm_repr` converts
+each planned value only at this materialization boundary.
+
+The algorithm is: enter an event point, convert its value or install a temporary
+path-preserving value; descend the next child and its unary value-free span; after
+all children, erase any temporary value and ascend by the saved span length; publish
+only after the root frame is exhausted. This preserves prefix compression without
+a `Vec<Par>`, entry sorting or a full-key buffer per endpoint.
+
+Review of pinned PathMap 0.2.2 found no suitable native fallible cross-payload mapper.
+Same-payload clone/graft preserves the payload type; cached postorder folds do not
+provide the required logical occurrence order and first-error callback contract.
+No PathMap fork or dependency change is introduced. This design does not promise
+preservation of arbitrary physical DAG sharing across a payload-type conversion.
+
+**Native observations.** Five mapper witnesses cover generated bindings and complete
+topology, all modes, root/prefix/dense siblings, repeated values, every injected error
+and panic position, retained shared source, long compressed stems and depth-8,192
+branching success/failure on 256 KiB. A separate public-materialization witness checks
+exact EPM1 bytes, metadata established before admission, deep payloads and topology;
+feature counters require one materialization per Map value and none for Set/Empty.
+
+The retained-storage witness meters net bytes released when the completed destination
+is dropped. It observes two traversal events and one temporary value for each stem:
+
+| Stem length (bytes) | Retained destination heap (bytes) |
+|---:|---:|
+| 64 | 160 |
+| 1,024 | 2,000 |
+| 8,192 | 15,680 |
+
+This is evidence against per-byte scaffold fragmentation, not a measurement of peak
+allocations, total allocated bytes, throughput, or a speedup over the old decoder.
+The topology oracle checks every logical prefix independently. The error tests do
+not independently count leaked payloads; existing guarded retirement tests support
+that boundary, without claiming whole-program ownership verification.
+
+Native R1 passes 5/5 mapper tests (1.950 seconds tests, 105.279 seconds service,
+339.164 CPU seconds, 2.9 GiB peak). Feature R2 passes 27/28: the new public fixture
+incorrectly called a Set/Map-only builder for neutral Empty. The corrected fixture
+retains Empty coverage and places metadata before admission. R3 passes **28/28**,
+668 excluded (3.336 seconds tests, 62.428 seconds service, 178.680 CPU seconds,
+2.2 GiB peak, zero swap). These runs use four build/test workers, 1,024 property
+cases, seed 5834, a 6 GiB high/8 GiB hard memory cap, no swap, four CPUs and a
+900-second limit, with compiler temporaries on disk. They are correctness runs,
+not CPU-isolated benchmarks.
+
+**Remaining requirements.** General generated decoder routing, legacy ingress,
+unchanged depth gate 5917, geometric time/space comparisons and full workspace
+acceptance are still required. No consensus-visible bytes, cost model, matching
+semantics or persistence format are intentionally changed by this helper.
+
+Expanded default R4 also passes **34/34**, 653 excluded, including the resident
+ownership cohort and updated proof/test manifest: 8.635 seconds tests, 73.513 seconds
+service, 247.873 CPU seconds, 2.8 GiB peak and zero swap. Shell syntax and diff
+whitespace checks pass. The distinct feature/default selections are not a full
+workspace run.
+
+| Artifact under `target/verification/protobuf-attach-8516/` | SHA-256 |
+|---|---|
+| `mapping-formal-r1.log` | `391d1c198751e1b3e91304c17e53f6eac0973235058385f067bc66b044d20955` |
+| `mapping-formal-r2.log` (incomplete proof) | `70897eca5a93108d314a005b877cb2d2947c756f8e1a0f1510eb1c1c6acbcfaa` |
+| `mapping-formal-r3.log` | `b054195ae3e07656166f58e0ae6969da4ff9a9ac1319b090926ba998a4380520` |
+| `mapping-formal-r4.log` | `dd4d98def04b4dd2090ba97910c21c62439434c9ef38e870e9bc00f8e08052bd` |
+| `mapping-native-r1.log` | `66a45b4d66ed5c6464769ed1a731e77186c30a477950abd5b6fce934fae6faea` |
+| `mapping-native-r2.log` (fixture refusal) | `8a7dcdc53e70721fdd347f8a02c508e8f59eb0252b466076408bdfc3dfceb3a8` |
+| `mapping-native-r3.log` | `085c5a36fd6bcf1750857d1fe055834c9397f306dc9220529dbf369de03c6104` |
+| `mapping-native-r4.log` | `bf2c16f56c8a539e5c2c7423c080197625556ecb6681311fdb02a58470aa2d49` |
+
+Theory SHA-256: `210bc87431fed3a0014ea602758e7961d2a5a1b847437b12c5bc8b8c86d1f9e0`.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
@@ -16305,6 +16406,19 @@ own performance requirements are not deferred by recording a request.
 | PMU-008 | Removal correctness; **reproduced on PathMap 0.2.2; descendant-supported policy active** | `rspace++/src/rspace/pathmap_mutation.rs::NativePathCursor::remove_val` delegates to `guarded_pathmap.rs::remove_value_preserving_path`. This is distinct from `rhoapi_ext.rs::native_remove`, which performs a presence check then native map removal. | Removing a value while retaining its path must not create a duplicate empty child when a same-key descendant already preserves it. Indexed, sequential and point readers must agree after removal; preserve sibling values, counts and CoW. | J-150 gives the dangling-descendant negative, root/absent/terminal distinctions, formal residual-support premise and positive native/teardown controls. Implementation coordinate `7b16c675a`; the maintained import gate in J-157 rechecks the extended leaf model. Logical proofs do not imply arbitrary private-callee unwind safety. | A released removal fix passes the same dangling-descendant, reader-agreement, topology/value/count, CoW and fixed-stack teardown gates; then remove the conditional native-flag policy. |
 | PMU-009 | Native lattice join; **shared dangling-edge panic reproduced, local zipper union active** | Set and map union share `join_exact_with_grafts`; unit values specialize the existing exact-value merge while topology is tracked independently. | Preserve shared dangling edges in dense `pjoin` and `join_into` even when both optional cofree components are absent; do not conflate an existing edge with an inhabited payload. | J-153: minimized set fixture, saved property seed, source/backtrace, eight unit-union proof reports and 23 passing EPathMap tests. `join_into` is not an accepted substitute for its identical failing assumption. | A released native union passes the same exact-topology, value, count, CoW and original-order tests and measured performance gates; retain the map exact-value contract independently. |
 | PMU-010 | Persistence/performance API; **optional candidate requested 2026-08-26; unmeasured** | Current `rspace++/src/rspace/data_index.rs::DataIndex::pending_delta`/`apply_delta` and `persistence/mutation.rs::record_data_delta`/`record_join_delta` use explicitly recorded `BagDelta` changes. They do not currently derive differences between two roots. | Consider a stable CoW revision-difference cursor over two immutable PathMap roots, skipping shared subtrees and lending changed logical paths with before/after presence and values. It must expose topology-only changes where requested, remain stack-safe, preserve both roots and avoid private-node inspection. | No adoption or speedup evidence is claimed. Before proposing adoption, compare against recorded deltas and an independent finite-map/topology oracle over insertion/removal/replacement, no-op, shared/unshared roots, snapshots and forced equal-value cases; measure fixed-delta cost against increasing unchanged history, allocations and RSS. | Only an approved released API with exact differential/resource evidence may replace the relevant comparison work. It must not replace WAL framing, transaction publication or durability authority; absence of this optional API does not block this documentation task or authorize delaying required persistence. |
+
+**PMU-011 — Optional fallible cross-payload mapping API (2026-09-24).** Against
+released PathMap 0.2.2, J-215 supplies a local guarded dual-zipper mapper. A native
+replacement should map each logical value occurrence exactly once in root-first
+lexicographic order, stop at the first callback error, preserve value-free topology
+and compression, retain source snapshots, and keep cleanup stack-safe on all exits.
+It must not substitute physical shared-node callback order for logical occurrences.
+J-215's five mapper witnesses and public-materialization witness are the acceptance
+seed; require geometric time/allocation evidence before claiming an upstream
+performance benefit. Adoption is optional and does not block local decoder work.
+Remove the local cross-payload traversal only after a released API passes the same
+mode/topology/error/ownership/resource gates; integration retains mode and publication
+policy. This is an API request, not a claim that upstream provides an incorrect mapper.
 
 The reachable pgmcp tracking item is `pathmap-upstream-integration-request-register` under
 `rpb3-single-parse-act-traversal-plan`, itself a descendant of epic 4131. New entries must include
