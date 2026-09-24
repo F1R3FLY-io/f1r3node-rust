@@ -519,6 +519,9 @@ in {
               contract PoS(@"getConsensusParameters", returnCh) = {
                 returnCh!(($$maxParentDepth$$, $$deployLifespan$$, $$minPhloPrice$$))
               } |
+              contract PoS(@"getMinimumBond", returnCh) = {
+                returnCh!($$minimumBond$$)
+              } |
               // Exposes maximumBond parameter to PoSTest.
               contract PoS(@"getMaximumBond", returnCh) = {
                 returnCh!($$maximumBond$$)
@@ -585,6 +588,8 @@ in {
                        @delegatorPk      <- userCh) {
                     if (amount <= 0) {
                       resultCh!(state, (false, "Delegation amount must be positive."))
+                    } else if (amount < $$minimumBond$$) {
+                      resultCh!(state, (false, "Delegation is less than minimum."))
                     } else if (state.get("allBonds").contains(validatorPk) == false) {
                       resultCh!(state, (false, "Validator is not bonded."))
                     } else if (state.get("allBonds").getOrElse(validatorPk, 0) <= 0) {
