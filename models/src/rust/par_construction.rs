@@ -393,6 +393,10 @@ mod planned_fragment_comparison_tests;
 #[path = "../../tests/support/protobuf_construction_resources.rs"]
 mod protobuf_construction_resource_tests;
 
+#[cfg(test)]
+#[path = "../../tests/support/planned_ground_leaves.rs"]
+mod planned_ground_leaf_tests;
+
 enum ProtoPiece {
     Bytes(Box<[u8]>),
     SharedBytes(Box<prost::bytes::Bytes>),
@@ -1212,7 +1216,14 @@ impl ParConstruction {
         &mut self,
         canonical_score: &[u8],
     ) -> Result<PlannedScore, ParConstructionError> {
-        let fragment = self.bytes(canonical_score.to_vec());
+        self.score_from_owned(canonical_score.to_vec())
+    }
+
+    fn score_from_owned(
+        &mut self,
+        canonical_score: Vec<u8>,
+    ) -> Result<PlannedScore, ParConstructionError> {
+        let fragment = self.bytes(canonical_score);
         self.score_from_pieces(vec![ScorePiece::Bytes(fragment)])
     }
 
@@ -1225,7 +1236,7 @@ impl ParConstruction {
     ) -> Result<PlannedScore, ParConstructionError> {
         let mut encoded = Vec::new();
         encode_order_key(canonical_score, &mut encoded);
-        self.score_from_encoded(&encoded)
+        self.score_from_owned(encoded)
     }
 
     /// One canonical integer score leaf.
@@ -2490,6 +2501,39 @@ impl ParConstruction {
         self.component(&canonical_shell, &wire_children, score, false)
     }
 
+    fn ground_expr_component(
+        &mut self,
+        shell: &Expr,
+    ) -> Result<PlannedComponent, ParConstructionError> {
+        let mut encoded_score = Vec::new();
+        assert!(super::par_bag::append_leaf_expr_score(
+            shell,
+            &mut encoded_score
+        ));
+        let mut encoded_protobuf = Vec::new();
+        assert!(super::par_bag::append_shallow_protobuf(
+            shell,
+            &mut encoded_protobuf
+        ));
+        let (canonical_segment, stable) = self.expr_canonical_segment(shell, &[])?;
+        let score = self.score_from_owned(encoded_score)?;
+        let protobuf = self.push_proto_node(if encoded_protobuf.is_empty() {
+            Vec::new()
+        } else {
+            vec![ProtoPiece::Bytes(encoded_protobuf.into_boxed_slice())]
+        })?;
+        let component = self.component_from_proto(
+            ParComponentTag::Expr,
+            score,
+            protobuf,
+            stable,
+            canonical_segment,
+        );
+        self.components[component.0].semantic_shape =
+            ComponentSemanticShape::Expr(PlannedExprSemantic::Inert);
+        Ok(component)
+    }
+
     fn schema_expr_component(
         &mut self,
         shell: &Expr,
@@ -2708,9 +2752,7 @@ impl ParConstruction {
 
         let Some(instance) = shell.expr_instance.as_ref() else {
             exact("absent Expr", 0, par_children.len())?;
-            let score = ExprSortMatcher::sort_match(shell).score;
-            let score = self.score_tree(&score)?;
-            return self.schema_expr_component(shell, &[], score);
+            return self.ground_expr_component(shell);
         };
 
         if matches!(
@@ -2820,8 +2862,11 @@ impl ParConstruction {
             | ExprInstance::GDouble(_)
             | ExprInstance::GBigInt(_)
             | ExprInstance::GBigRat(_)
-            | ExprInstance::GFixedPoint(_)
-            | ExprInstance::EVarBody(_) => {
+            | ExprInstance::GFixedPoint(_) => {
+                exact("leaf Expr", 0, par_children.len())?;
+                self.ground_expr_component(shell)
+            }
+            ExprInstance::EVarBody(_) => {
                 exact("leaf Expr", 0, par_children.len())?;
                 let score = ExprSortMatcher::sort_match(shell).score;
                 let score = self.score_tree(&score)?;

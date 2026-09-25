@@ -9194,6 +9194,21 @@ implementation; release models qualification passes 678/678 run, two skipped,
 195.3 MiB service peak and zero swap. Task 8516 and broader acceptance remain
 open; J-222 retains exact receipts and the formal/native proof boundary.
 
+J-223 removes per-ground-expression general-sorter startup by reusing existing
+byte encoders. Its new restricted-dispatch model passes compilation and kernel
+checking before implementation, and independent generic-sort/full-encoder
+properties pass within **682/682** release models tests (two skipped). At width
+4,096, distinct planned allocation requests fall from 61,143,691 to 9,501,323
+bytes and duplicate requests from 52,288,021 to 645,653 bytes. Duplicate peak is
+5,319 bytes, below the frozen control's 5,978 bytes. Distinct peak remains
+2,071,732 versus 416,984 bytes, and its cold instrumented latency is 8.969 versus
+3.498 ms. Full paired witnesses match; these pilots do not establish statistical
+acceptance. Remaining profile evidence points to root-key cursor/buffer startup,
+repeated point insertion and retained singleton fragment programs. No depth
+limit, stack enlargement, new schema or PathMap fork is introduced. Task 8516
+remains open while this allocation/time overhead and release qualification are
+resolved.
+
 ### 5.29 ParBag family and count-domain completeness [SS-A13, SS-A14, SS-Y9]
 
 #### 5.29.1 The defects

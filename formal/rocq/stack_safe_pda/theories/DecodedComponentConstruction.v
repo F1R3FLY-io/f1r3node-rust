@@ -430,3 +430,146 @@ Print Assumptions ignoring_tiebreak_mutant_is_detected.
 Print Assumptions ignoring_fragment_suffix_mutant_is_detected.
 
 End FragmentComparison.
+
+Module GroundLeafConstruction.
+
+Definition bytes := list nat.
+Inductive score_label := Atom (encoded : bytes) | Branch.
+Definition atom b : @tree score_label := Node (Atom b) FNil.
+Definition branch children : @tree score_label := Node Branch children.
+Definition score_algebra label children :=
+  match label with Atom b => b | Branch => [2] ++ concat children ++ [0] end.
+Definition encode_score := fold_tree score_algebra.
+
+Inductive shape :=
+| Absent (constructor : bytes)
+| Scalar (constructor payload : bytes)
+| Rational (constructor numerator denominator : bytes)
+| Fixed (constructor unscaled scale : bytes).
+
+Definition score_tree subject :=
+  match subject with
+  | Absent c => branch (FCons (atom c) FNil)
+  | Scalar c p => branch (FCons (atom c) (FCons (atom p) FNil))
+  | Rational c n d => branch (FCons (atom c) (FCons (atom n) (FCons (atom d) FNil)))
+  | Fixed c u s => branch (FCons (atom c) (FCons (atom u)
+      (FCons (branch (FCons (atom s) FNil)) FNil)))
+  end.
+
+Definition direct_score subject :=
+  match subject with
+  | Absent c => [2] ++ c ++ [0]
+  | Scalar c p => [2] ++ c ++ p ++ [0]
+  | Rational c n d => [2] ++ c ++ n ++ d ++ [0]
+  | Fixed c u s => [2] ++ c ++ u ++ [2] ++ s ++ [0; 0]
+  end.
+
+Theorem direct_score_refines_tree subject :
+  direct_score subject = encode_score (score_tree subject).
+Proof.
+  destruct subject; unfold encode_score, score_tree, direct_score;
+    cbn [branch atom fold_tree fold_forest score_algebra concat];
+    repeat rewrite app_nil_r; repeat rewrite <- app_assoc; reflexivity.
+Qed.
+
+Inductive wire := Scalars (body : bytes)
+| OneEdge (prefix tag child suffix : bytes).
+Definition wire_shell subject : DecodedComponentConstruction.shell :=
+  let literal b := Node (DecodedComponentConstruction.Literal b) FNil in
+  match subject with
+  | Scalars b => literal b
+  | OneEdge prefix tag child suffix =>
+      Node DecodedComponentConstruction.Sequence (FCons (literal prefix)
+        (FCons (Node (DecodedComponentConstruction.Delimited tag)
+          (FCons (literal child) FNil)) (FCons (literal suffix) FNil)))
+  end.
+Definition direct_wire subject :=
+  match subject with
+  | Scalars b => b
+  | OneEdge prefix tag child suffix =>
+      prefix ++ DecodedComponentConstruction.field tag child ++ suffix
+  end.
+
+Theorem direct_wire_refines_generated_program subject :
+  direct_wire subject =
+  DecodedComponentConstruction.planned_emit [] (wire_shell subject) [].
+Proof.
+  destruct subject; unfold direct_wire, wire_shell,
+    DecodedComponentConstruction.planned_emit;
+    cbn [fold_tree fold_forest DecodedComponentConstruction.emit_algebra concat];
+    repeat rewrite app_nil_r; reflexivity.
+Qed.
+
+Record leaf := Leaf {
+  score_shape : shape;
+  wire_program : wire;
+  path_segment : option bytes;
+  path_stable : bool
+}.
+Record component := Component {
+  score_bytes : bytes;
+  protobuf_bytes : bytes;
+  segment : option bytes;
+  stable : bool
+}.
+Definition general leaf := Component
+  (encode_score (score_tree (score_shape leaf)))
+  (DecodedComponentConstruction.planned_emit [] (wire_shell (wire_program leaf)) [])
+  (path_segment leaf) (path_stable leaf).
+Definition direct leaf := Component (direct_score (score_shape leaf))
+  (direct_wire (wire_program leaf)) (path_segment leaf) (path_stable leaf).
+
+Theorem complete_component_refines leaf : direct leaf = general leaf.
+Proof.
+  unfold direct, general.
+  now rewrite direct_score_refines_tree, direct_wire_refines_generated_program.
+Qed.
+
+Inductive expression := Ground (value : leaf) | VariableExpr | Recursive.
+Inductive outcome := Built (value : component) | ArityError | UseGeneral.
+Definition dispatch expression supplied :=
+  match expression with
+  | Ground value => if Nat.eqb supplied 0 then Built (direct value) else ArityError
+  | _ => UseGeneral
+  end.
+Definition reference expression supplied :=
+  match expression with
+  | Ground value => if Nat.eqb supplied 0 then Built (general value) else ArityError
+  | _ => UseGeneral
+  end.
+
+Theorem restricted_dispatch_refines expression supplied :
+  dispatch expression supplied = reference expression supplied.
+Proof.
+  destruct expression; cbn; try reflexivity.
+  rewrite complete_component_refines. reflexivity.
+Qed.
+
+Theorem recursive_empty_children_still_require_general :
+  dispatch Recursive 0 = UseGeneral.
+Proof. reflexivity. Qed.
+Theorem ground_extra_children_rejected value n :
+  dispatch (Ground value) (S n) = ArityError.
+Proof. reflexivity. Qed.
+Theorem owned_fragment_preserves_prefix (prior : list bytes) body :
+  firstn (length prior) (prior ++ [body]) = prior.
+Proof. rewrite firstn_app, firstn_all, Nat.sub_diag. now rewrite app_nil_r. Qed.
+Theorem owned_fragment_has_exact_payload (prior : list bytes) body :
+  nth_error (prior ++ [body]) (length prior) = Some body.
+Proof. rewrite nth_error_app2 by lia. now rewrite Nat.sub_diag. Qed.
+Theorem flattened_fixed_scale_mutant_is_detected :
+  direct_score (Fixed [11] [12] [13]) <>
+  direct_score (Rational [11] [12] [13]).
+Proof. discriminate. Qed.
+
+Print Assumptions direct_score_refines_tree.
+Print Assumptions direct_wire_refines_generated_program.
+Print Assumptions complete_component_refines.
+Print Assumptions restricted_dispatch_refines.
+Print Assumptions recursive_empty_children_still_require_general.
+Print Assumptions ground_extra_children_rejected.
+Print Assumptions owned_fragment_preserves_prefix.
+Print Assumptions owned_fragment_has_exact_payload.
+Print Assumptions flattened_fixed_scale_mutant_is_detected.
+
+End GroundLeafConstruction.

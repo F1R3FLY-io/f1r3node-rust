@@ -17076,6 +17076,124 @@ The measured binary SHA-256 is
 | `pilot-resource-batch-r1/observations.jsonl` | `202268429babf6f1381a4ab21a6c000e7ab94fec7cc68319d23f4b5b1020361a` |
 | `pilot-resource-deep-r1/observations.jsonl` | `af709b53c5346efea9519b78574d354226ee0549099658c43b02655b782a2b90` |
 
+**Stable checkpoint.** Commit `15c633335` contains this resource batch. The
+unchanged release `stack_depth_gate` then passes **16/16 run**, five existing
+opt-in tests skipped, in 229.282 seconds. Service peak is 2.3 GiB, zero swap;
+receipt `resource-batch-gate5917-r1.log` SHA-256
+`bf4f2b4b32bd6287f4a61c3e4240a52fe25d8b7846664072bde51a6cbb94e6eb`.
+This does not close the measured shallow regression or workspace acceptance.
+
+## J-223 — Reuse certified ground-expression encoders (2026-09-25)
+
+**Hypothesis and scope.** Continue task 8516's remaining shallow allocation
+regression. The J-222 plan review identifies per-ground-leaf startup of the
+general sorter, two 32-slot heterogeneous work vectors, a cloned expression,
+a score tree, an encoded-score copy and general protobuf planning. Reuse
+`par_bag::append_leaf_expr_score` and `append_shallow_protobuf` instead of
+introducing a second codec or changing unrelated traversal capacities.
+
+**Design.** Admit only absent Expr and the nine ground constructors certified
+by the existing leaf scorer. Preserve the existing zero-child arity check and
+its context. Move score/protobuf buffers into the existing fragment arena;
+retain the existing canonical-segment construction, stability and inert semantic
+shape. EVar and all recursive/incomplete routes retain their current planner.
+An empty supplied-child list alone is insufficient admission: a recursive shell
+may contain a placeholder Par that the shallow encoder could incorrectly emit.
+Also let general score-tree import move its owned encoded vector rather than
+copying it. Borrowed score imports still copy. No new fragment representation,
+checkpoint field, schema, public API or consensus encoding is introduced.
+
+**Formal boundary.** `GroundLeafConstruction` in
+`DecodedComponentConstruction.v` models direct emission versus tree folding
+for absent/scalar/rational/nested-fixed-point score shapes, zero/one-edge
+generated protobuf shells, complete component metadata, restricted dispatch,
+arity rejection and owned-fragment append. It treats existing primitive atom
+bytes and generated field bytes as inputs; it is not a proof of those Rust
+encoders, primitive numeric conversions, constructor coverage or allocator
+behavior. Compile and kernel-check this model before production changes.
+
+**Extracted native obligations.** Compare every admitted variant against the
+independent generic sorter plus score-tree encoder and full protobuf encoder,
+not merely against ParBag's now-shared helpers. Cover absent/default-valued
+oneofs, true-before-false scores, integer limits, NUL/non-ASCII text, zero-rich
+bytes, raw double bits including NaNs, arbitrary big-number payloads, rational
+parts and fixed-point scale limits. Check canonical segments/stability, inert
+shape, lengths/zero counts, extra-child rejection, EVar fallback and recursive
+missing-child rejection without placeholder emission. Retain recursive duplicate,
+malformed input and full observation witnesses. Measure the same wide/deep cells
+after consolidated native qualification; success must not be inferred from
+eliminating the sorter alone.
+
+**Formal verification receipt.** Compilation `leaf-proof-r4.log` succeeds
+(401 MiB peak, zero swap) and `leaf-kernel-r2.log` explicitly checks all nine
+new `GroundLeafConstruction` theorems (272.1 MiB peak, zero swap), before the
+production edits. SHA-256 values are respectively
+`a3e5384ce7c64bbaffca47472872c55f9982ec7f4b0df7d033b17e8c90679f41`
+and `b4d4a6258e2e3467fc7a6d370826c8e3cf955d8c0cf06fb8201ba8a4e36e4640`.
+Earlier compilation attempts failed on an implicit type argument and a reserved
+constructor name. The first kernel receipt checked an older compiled module
+after stderr was not captured; it is **invalid evidence for this extension**.
+Both streams are retained thereafter, and the successful receipt names the
+new theorems rather than relying solely on a success exit status.
+
+**Implemented binding.** `ground_expr_component` reuses the shared encoders
+and preserves canonical segments/inert semantics. `score_from_owned` transfers
+fresh buffers; genuinely borrowed imports still copy. Independent native tests
+compare all admitted variants with the generic sorter and full encoder, and
+test restricted dispatch plus reduced allocation volume. A read-only review
+finds no concrete regression.
+
+**VERIFIED / MEASURED.** Consolidated feature-enabled release models passes
+**682/682 run**, two skipped, 60.696 seconds tests; build/test service peak is
+2.5 GiB, zero swap. The same frozen/planned instrument reports:
+
+| Shape, 4,096 elements | Frozen decode | Planned decode | Frozen allocation calls / requested bytes / peak bytes | Planned allocation calls / requested bytes / peak bytes |
+|---|---:|---:|---|---|
+| Distinct integers | 3.498 ms | 8.969 ms | 32,701 / 5,293,333 / 416,984 | 90,129 / 9,501,323 / 2,071,732 |
+| Duplicate integer | 2.082 ms | 2.132 ms | 16,441 / 4,203,810 / 5,978 | 41,047 / 645,653 / 5,319 |
+
+Ground encoder reuse removes most cumulative allocation traffic: distinct
+requested bytes fall from J-222's 61,143,691 to 9,501,323; duplicate requests
+fall from 52,288,021 to 645,653. Duplicate planned peak is 5,319 bytes at widths
+16, 256 and 4,096. This does not establish timing parity: these are single cold
+instrumented observations, and the distinct case clearly remains slower and
+larger. All completed pairs match the full observation witnesses. The first
+collector stopped on CPU admission after seven pairs; the first attempt at the
+missing cell also refused admission before sampling. `pilot-ground-tail-r2`
+completes only that missing pair on admitted physical core 8. Partial receipts
+are retained, not silently discarded or combined into statistical acceptance.
+
+Headless `heaptrack --record-only` and `heaptrack_print` identify root
+`component_key` emission as remaining repeated allocation work: even literal
+fragments start score/protobuf cursors, and `finish` allocates a new key then
+performs separate point-insertion traversals for every endpoint. The arena's
+occurrence/component/score tables and singleton piece arrays still dominate
+retained construction memory. Drop/witness stacks are outside decode and must
+not be attributed to it. Profile capture peaks at 77.4 MiB; text rendering at
+52.6 MiB, zero swap. No GUI was opened.
+
+Next same-task design review recommends reusing the existing sorted-unique Bag
+writer and family-metric accumulator, emitting into one reusable key buffer,
+borrowing literal fragments directly, and compacting singleton fragment programs
+without enlarging decoder frames. Before implementation, bind complete-key order,
+metadata and singleton caches, partial-output disposal, compact-program ownership
+and exact empty/single/multiple transitions. No root projection, decoded vector,
+PathMap fork or new dependency is authorized. Task 8516 remains open.
+
+Receipts are under `target/verification/protobuf-attach-8516/`. Measured binary
+SHA-256: `ceb0fac2a0100cd8363924993778b4fd61b4289c8d737acf7abbec3d0c83a55d`.
+Source identities: `par_construction.rs`
+`59d833012f43c4006e2bed6d05302087d823304a6974a733684a783c87c797fc`;
+`par_bag.rs` `0ecd9dd6db90dceddd7c16c345d52cda40f7525317a1dd1ed438d79885f9a4e2`.
+
+| Receipt | SHA-256 |
+|---|---|
+| `ground-models-r1.log` | `c86d6d208b906e286a8857e0ec21036c2926d19a58e88e4ccab84bb54c45de00` |
+| `pilot-ground-r1/observations.jsonl` | `9394844c6c418f78fe66b70508da33cde94672ed508a569df6b41e0b3bc0e6cd` |
+| `pilot-ground-tail-r2/observations.jsonl` | `7e09086648ee6d7d824970f9c5320b7369eb0fae52977ab9e3188e83adab23fe` |
+| `heap-ground-wide-r1.zst` | `1e94afaae22e5be05a21d11b153f9f20af0950477263cb26e200200d72e8601e` |
+| `heap-ground-wide-r1-report.txt` | `354bb9e1a72e12d5087488e6ae646be2b32e7f5a93fe14ba0df6c805a7e71ff6` |
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

@@ -495,7 +495,7 @@ fn append_nonsemantic_order_key(out: &mut Vec<u8>) {
 /// `false` is returned before writing anything when the node contains a
 /// sequence, map, PathMap snapshot, or a message grandchild. Such nodes use the
 /// full generated stack-safe machine.
-fn append_shallow_protobuf(value: &dyn ProtobufNode, out: &mut Vec<u8>) -> bool {
+pub(crate) fn append_shallow_protobuf(value: &dyn ProtobufNode, out: &mut Vec<u8>) -> bool {
     let (_, descent) = value.protobuf_len_step(0);
     match descent {
         ProtobufDescent::Done => {
@@ -539,7 +539,7 @@ fn append_shallow_protobuf(value: &dyn ProtobufNode, out: &mut Vec<u8>) -> bool 
 /// Ground `Expr`s and absent `Expr` are canonical leaves. Encode their exact
 /// score directly instead of starting the general mutually-recursive sorter.
 /// Returns false for every arm that can contain or reorder child structure.
-fn append_leaf_expr_score(value: &Expr, out: &mut Vec<u8>) -> bool {
+pub(crate) fn append_leaf_expr_score(value: &Expr, out: &mut Vec<u8>) -> bool {
     let constructor = match value.expr_instance.as_ref() {
         None => Score::ABSENT,
         Some(ExprInstance::GBool(_)) => Score::BOOL,
