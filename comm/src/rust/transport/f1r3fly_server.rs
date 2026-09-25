@@ -163,6 +163,12 @@ impl F1r3flyServer {
 
         tracing::info!("F1r3fly server listening on {}", self.bind_addr);
 
+        Ok(self.incoming_from(TcpListenerStream::new(listener)))
+    }
+
+    fn incoming_from<S>(self, mut tcp_listener_stream: S) -> F1r3flyIncoming
+    where S: tokio_stream::Stream<Item = io::Result<tokio::net::TcpStream>> + Unpin + Send + 'static
+    {
         // Create channel for connection results
         let (tx, rx) = mpsc::channel(10); // Buffer up to 10 connections
 
@@ -173,8 +179,6 @@ impl F1r3flyServer {
 
         // Spawn background task to handle incoming connections
         let listener_task = tokio::spawn(async move {
-            let mut tcp_listener_stream = TcpListenerStream::new(listener);
-
             loop {
                 use tokio_stream::StreamExt;
 
@@ -271,10 +275,10 @@ impl F1r3flyServer {
             }
         });
 
-        Ok(F1r3flyIncoming {
+        F1r3flyIncoming {
             receiver: ReceiverStream::new(rx),
             _listener_task: listener_task,
-        })
+        }
     }
 }
 
@@ -457,3 +461,7 @@ mod tests {
         assert!(result.is_err());
     }
 }
+
+#[cfg(test)]
+#[path = "f1r3fly_server_resource_tests.rs"]
+mod resource_tests;
