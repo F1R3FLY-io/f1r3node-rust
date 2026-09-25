@@ -20,6 +20,9 @@ WITNESS_FIELDS = (
 def records(output):
     found = {}
     for line in output.splitlines():
+        prefix = f"test {TEST} ... "
+        if line.startswith(prefix):
+            line = line[len(prefix):]
         if line.startswith("DECODER_"):
             tag, body = line.split("\t", 1)
             if tag in found:
@@ -131,6 +134,7 @@ def self_test():
     value = {"DECODER_BEGIN": begin, "DECODER_RESULT": {"remaining": 0, "success": True}, "DECODER_WITNESS": witness}
     text = "\n".join(f"{k}\t{json.dumps(v)}" for k, v in value.items())
     assert records(text) == value
+    assert records(f"test {TEST} ... " + text) == value
     validate_pair(value, copy.deepcopy(value))
     for key in WITNESS_FIELDS:
         changed = copy.deepcopy(value)

@@ -16794,6 +16794,73 @@ already qualified at J-218; the campaign and 8516 are not complete.
 Cost-theory SHA-256:
 `676be3eb94c57f308b1c7ddc401880dd509107f25b964c19363905ed23cc62f6`.
 
+## J-220 — Decoder pilots expose a time/peak-space tradeoff (2026-09-25)
+
+**Resume and instrument repair.** Task 8516 continues experiment 348 from
+`9ab7b40f7`, without changing the frozen decoder or production code. Rebuilding
+the feature binary from committed sources succeeds in 67.665 seconds service,
+191.899 CPU seconds, 2.6 GiB peak and zero swap under 8 GiB. Binary SHA-256 is
+`f740e00303d738d07a6a153bb5c8f19b55082f56f29fc259d524b936a854f628`.
+The first real collector smoke run rejects successful frozen output because
+libtest prefixes its first line with the test name. The collector now strips
+only that exact known prefix, with a regression self-test. Its second smoke run
+completes both arms and validates the full paired witnesses. The failed first
+receipt remains evidence of an instrument defect, not a decoder failure.
+
+**Preliminary observations, not acceptance.** Each row below is one cold-process
+paired pilot of fragmented general ENot decoding, not a repeated timing estimate.
+This explicitly exercises the general path; the contiguous canonical fast path
+is unchanged. Both arms use the same binary, physical-core affinity, 6 GiB hard
+memory cap, zero swap and 180-second per-process ceiling. CPU admission is
+recorded before each pair. All completed pairs have identical protobuf, compact,
+bincode, metadata, cardinality, error and remaining-input witnesses.
+
+| Depth | Frozen decode ms | Planned decode ms | Frozen requested bytes | Planned requested bytes | Frozen / planned peak scoped net bytes |
+|---:|---:|---:|---:|---:|---:|
+| 16 | 3.056 | 0.327 | 1,364,858 | 204,720 | 71,480 / 72,583 |
+| 64 | 45.067 | 1.019 | 17,536,684 | 838,250 | 241,592 / 287,844 |
+| 256 | 718.302 | 3.769 | 270,461,836 | 3,407,850 | 922,040 / 1,146,020 |
+| 1,024 | 11,633.646 | 15.097 | 4,296,266,060 | 13,649,578 | 3,643,832 / 4,579,108 |
+| 2,048 | 46,749.267 | 30.790 | 17,191,157,714 | 27,352,354 | 7,272,888 / 9,160,416 |
+
+The requested-byte totals are cumulative allocation traffic, not resident RAM.
+The observed growth is consistent with eliminating repeated ancestor
+materialization, but no asymptotic proof or application speedup follows from these
+finite instrumented samples. Peak scoped net bytes increase by roughly a quarter
+at larger completed depths. That increase is explicitly retained for investigation;
+the time/allocation-traffic gains do not waive it. Depth 4,096, other shape/entry
+cohorts, paired sampling and broader acceptance remain outstanding at this entry.
+
+**Focused investigation.** Read-only review finds that `Machine::run` pops frames
+but retains their high-water capacity while the append-only construction arena
+grows on unwind and projects the final root. For ENot there are no nested EPM
+input buffers or discarded oneofs to explain the difference. This is a candidate
+mechanism, not measured attribution. First collect allocation-free phase/capacity
+observations. Releasing empty scratch before projection cannot remove an earlier
+parse-complete peak; do not assume that change alone fixes the increase, and do
+not adopt an amortized reclamation policy without evidence and formal-first
+lifetime/semantic obligations.
+
+Smoke receipts under `target/verification/protobuf-attach-8516/`:
+`pilot-smoke-r1-controller.log` SHA-256
+`a6a722b90877bf48808723102ff132efe0b77d2af18914ab72b66038df295d48`;
+`pilot-smoke-r2/observations.jsonl` SHA-256
+`41616d51819887c6f2f94e13937443c849c102408810d1055830b4649db8549a`.
+PgMCP artifact 688 preserves the smoke result and its limitations.
+
+**Completed depth-ladder pilot.** At depth 4,096 the frozen arm reaches the
+180-second service ceiling before emitting a measured-decode result. Its process
+peak is 13.9 MiB with zero swap; this is a timeout, not an OOM. No frozen latency
+sample or paired output-equivalence claim is assigned to that cell. The planned
+arm completes in 62.214 ms measured decode with 55,102,946 cumulative requested
+bytes and 18,352,224 peak scoped net bytes, one final finish, and a complete
+untimed witness. The existing independent depth-8,192 correctness gate remains
+separate evidence; it does not manufacture the missing paired pilot result.
+After output drop the planned arm's net balance is zero throughout the ladder.
+All depth-64 through depth-2,048 pairs complete and agree. Artifact 689 records
+all samples and censoring; `pilot-enot-r1/observations.jsonl` SHA-256 is
+`f8ca897fdf74f0140e5a0b4f998935ef9b587ed9952cc2151019b06121356169`.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
