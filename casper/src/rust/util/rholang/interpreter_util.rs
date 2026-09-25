@@ -51,6 +51,18 @@ pub fn mk_term(rho: &str, normalizer_env: HashMap<String, Par>) -> Result<Par, I
     Compiler::source_to_adt_with_normalizer_env(rho, normalizer_env)
 }
 
+/// The sigs a merge applied: sorted, since the set is unordered, and bounded.
+fn named_sigs(sigs: &std::collections::HashSet<prost::bytes::Bytes>) -> String {
+    const NAMED: usize = 8;
+    let mut ids: Vec<String> = sigs
+        .iter()
+        .map(|sig| hex::encode(&sig[..8.min(sig.len())]))
+        .collect();
+    ids.sort();
+    ids.truncate(NAMED);
+    ids.join(",")
+}
+
 /// Sigs whose LATEST canonical disposition across the FULL merge scope is a WIN.
 /// BFS-walks the closure of ALL `parents` (not just the main-parent chain) down to
 /// the deploy-lifespan floor, recording each sig's highest-block disposition: in a
@@ -1283,6 +1295,11 @@ pub async fn compute_parents_post_state(
                     post_state = %hex::encode(&cached.state[..8.min(cached.state.len())]),
                     n_rejected = cached.rejected_user.len(),
                     n_rejected_slash = cached.rejected_slashes.len(),
+                    // The FLOOR line carries this on a miss; without it here the
+                    // block's state parent goes unrecorded.
+                    base = cached.merge_base.as_ref().map(|hash| hex::encode(&hash[..8.min(hash.len())])),
+                    n_applied = cached.applied_from_scope.len(),
+                    applied = %named_sigs(&cached.applied_from_scope),
                     "merge.cpps: cache hit, merge skipped"
                 );
                 return Ok(cached);
@@ -2145,6 +2162,7 @@ pub async fn compute_parents_post_state(
                 n_rejected = merged.rejected_user.len(),
                 n_rejected_slash = merged.rejected_slashes.len(),
                 n_applied = merged.applied_from_scope.len(),
+                applied = %named_sigs(&merged.applied_from_scope),
                 "merge.cpps: cache put merged parents-post-state"
             );
             runtime_manager.put_cached_parents_post_state(cache_key, merged.clone());

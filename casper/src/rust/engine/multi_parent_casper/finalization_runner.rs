@@ -278,6 +278,49 @@ pub(crate) async fn run_queued_finalizer(
     }
 }
 
+/// The committee is read from the target's MAIN PARENT, so sibling branches
+/// carrying different bonds each clear the threshold under their own
+/// electorate; R-COMM requires `bonds_of(floor)`.
+async fn report_committee_drift(
+    dag: &block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation,
+    adopted: &BlockHash,
+    adopted_number: i64,
+) {
+    if !tracing::enabled!(target: "f1r3fly.finalizer", tracing::Level::WARN) {
+        return;
+    }
+    let used = match crate::rust::safety::clique_oracle::CliqueOracle::get_corresponding_weight_map(
+        adopted, dag,
+    )
+    .await
+    {
+        Ok(map) => map,
+        Err(_) => return,
+    };
+    let Ok(Some(floor_hash)) = dag.get_cached_floor(adopted) else {
+        return;
+    };
+    let Ok(Some(floor_meta)) = dag.lookup(&floor_hash) else {
+        return;
+    };
+    let floor_total: i64 = floor_meta.weight_map.values().sum();
+    let used_total: i64 = used.values().sum();
+    if used_total == floor_total {
+        return;
+    }
+    tracing::warn!(
+        target: "f1r3fly.finalizer",
+        adopted = %PrettyPrinter::build_string_bytes(adopted),
+        adopted_number,
+        floor = %PrettyPrinter::build_string_bytes(&floor_hash),
+        floor_number = floor_meta.block_number,
+        used_total,
+        floor_total,
+        "certification committee differs from the committee at this block's floor: \
+         sibling branches can clear the threshold under different electorates"
+    );
+}
+
 pub(crate) async fn compute_last_finalized_block(
     ctx: FinalizationContext,
 ) -> Result<BlockMessage, CasperError> {
@@ -474,6 +517,7 @@ pub(crate) async fn compute_last_finalized_block(
             )
             .await
             .map_err(CasperError::from)?;
+        report_committee_drift(&dag, &new_lfb.hash, new_lfb.block_number).await;
         // `floor_of_view` only ever returns an adoption that CAPTURES the
         // current LFB, so `extends_previous_lfb` is true by construction —
         // emitted anyway for parity with soak dashboards that alarm on it.

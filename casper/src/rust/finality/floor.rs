@@ -252,45 +252,85 @@ pub(crate) fn state_contains(
     memo: &mut IntroducedSigsMemo,
 ) -> Result<bool, CasperError> {
     if cand.hash == x.hash {
-        trace_containment(cand, x, "same-block", 0);
+        trace_containment(cand, x, "same-block", None, 0, &[]);
         return Ok(true);
     }
     let StateLineage::Meet(meet) = state_lineage_meet(dag, &cand.hash, &x.hash)? else {
-        trace_containment(cand, x, "disconnected-lineages", 0);
+        trace_containment(cand, x, "disconnected-lineages", None, 0, &[]);
         return Ok(false);
     };
     if meet == x.hash {
-        trace_containment(cand, x, "on-lineage", 0);
+        trace_containment(cand, x, "on-lineage", Some(&meet), 0, &[]);
         return Ok(true);
     }
     let settled = segment_introduced_sigs(dag, block_store, &x.hash, &meet, memo)?;
     if settled.is_empty() {
-        trace_containment(cand, x, "no-settled-content", 0);
+        trace_containment(cand, x, "no-settled-content", Some(&meet), 0, &[]);
         return Ok(true);
     }
     let carried = segment_introduced_sigs(dag, block_store, &cand.hash, &meet, memo)?;
     let missing = settled.difference(&carried).count();
     if missing == 0 {
-        trace_containment(cand, x, "contained", 0);
+        trace_containment(cand, x, "contained", Some(&meet), 0, &[]);
         Ok(true)
     } else {
-        trace_containment(cand, x, "missing-settled-sigs", missing);
+        let named: Vec<Bytes> = if containment_trace_enabled() {
+            settled
+                .difference(&carried)
+                .take(NAMED_SIGS)
+                .cloned()
+                .collect()
+        } else {
+            Vec::new()
+        };
+        trace_containment(
+            cand,
+            x,
+            "missing-settled-sigs",
+            Some(&meet),
+            missing,
+            &named,
+        );
         Ok(false)
     }
+}
+
+/// How many of the missing sigs a refusal names.
+const NAMED_SIGS: usize = 8;
+
+fn containment_trace_enabled() -> bool {
+    tracing::enabled!(target: "f1r3.trace.floor", tracing::Level::DEBUG)
 }
 
 /// Every containment verdict is logged with its exit reason: the check
 /// decides whether settled state survives a floor advance, and a live
 /// erasure investigation must be able to read WHY an advance was allowed
 /// or refused without re-deriving the walk.
-fn trace_containment(cand: &Floor, x: &Floor, verdict: &str, missing: usize) {
+///
+/// A refusal names the meet and the sigs themselves: a count cannot tell
+/// settled content genuinely dropped from content merged under another
+/// lineage.
+fn trace_containment(
+    cand: &Floor,
+    x: &Floor,
+    verdict: &str,
+    meet: Option<&BlockHash>,
+    missing: usize,
+    named: &[Bytes],
+) {
     tracing::debug!(
         target: "f1r3.trace.floor",
         cand = %PrettyPrinter::build_string_bytes(&cand.hash),
         cand_number = cand.block_number,
         settled = %PrettyPrinter::build_string_bytes(&x.hash),
         settled_number = x.block_number,
+        meet = meet.map(|hash| PrettyPrinter::build_string_bytes(hash)),
         missing_sigs = missing,
+        missing_sig_ids = %named
+            .iter()
+            .map(|sig| PrettyPrinter::build_string_bytes(sig))
+            .collect::<Vec<_>>()
+            .join(","),
         verdict,
         "state-containment verdict"
     );
@@ -474,11 +514,20 @@ pub async fn floor_of_view(
     match state_contains(dag, block_store, &derived, current, &mut memo) {
         Ok(true) => Ok(FloorOfView::Advance(derived)),
         Ok(false) => {
+            // A refused floor that descends from the current LFB is settled
+            // content a merge deduped, not a divergence.
             tracing::warn!(
                 target: "f1r3fly.finalizer",
                 derived = %PrettyPrinter::build_string_bytes(&derived.hash),
                 derived_number = derived.block_number,
                 current = %PrettyPrinter::build_string_bytes(&current.hash),
+                derived_descends_from_current = match dag
+                    .is_dag_ancestor(&current.hash, &derived.hash)
+                {
+                    Ok(true) => "yes",
+                    Ok(false) => "no",
+                    Err(_) => "walk-failed",
+                },
                 "floor-of-view does not capture the current LFB; holding"
             );
             Ok(FloorOfView::ContainmentHold { derived })
