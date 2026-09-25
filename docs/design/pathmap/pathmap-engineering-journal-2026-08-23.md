@@ -17404,8 +17404,12 @@ large rejected leaf followed by offset reuse, zero-allocation warmed candidates,
 pool-aware incomplete-component witness and metadata layout bindings all pass.
 The 64-byte checkpoint and 72-byte candidate tuple explicitly include the extra
 pool extent. This does not claim unchanged candidate storage or full-workspace
-qualification. Default-feature qualification and unchanged gate 5917 are running
-sequentially in `pool-default-gate-r1.log`, not yet accepted here.
+qualification. The subsequent sequential default-feature and unchanged gate
+5917 run succeeds: **681/681 models tests**, one skipped, in 61.674 seconds;
+**16/16 stack-depth tests**, five existing opt-in skips, in 198.484 seconds.
+The service peaks at 2.8 GiB with zero swap. No depth gate, native stack limit or
+fixture is weakened. This result does not discharge the remaining performance
+or broader workspace obligations. Implementation checkpoint: `ccb239b79`.
 
 **MEASURED resource outcome.** Binary SHA-256 is
 `2bad616ff18fab506ed6650b7813e26f5d41e155b0fbda4aeb1d02767f53f093`.
@@ -17440,6 +17444,7 @@ still requires independent analysis; streaming siblings cannot solve its peak.
 | Receipt | SHA-256 |
 |---|---|
 | `pool-native-r3.log` | `0ae449db2d6873328edff4c6ba1ffe270831e8adc8523461a8a9cc5eeac25686` |
+| `pool-default-gate-r1.log` | `8e93a3e905440d1f2eb4c801c2b85274788cf014754566c2586faaf61e3e3944` |
 | `pilot-pool-wide-r1/observations.jsonl` | `d1a34ba485d07ed1ece49f8eb92227df5735b6c217fec8ed37b2dae3f0b78934` |
 | `pilot-pool-deep-r1/observations.jsonl` | `0a131d81d7ce49303d4004eb2db0fba70e7d3f85b2a186761a45c7ca9eb13c79` |
 | `pilot-pool-mixed-tail-r2/observations.jsonl` | `5ada6dcd4067fdc6271e50dbbdbd73166d4e958edae74285c5bd05185637663b` |

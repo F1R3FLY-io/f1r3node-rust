@@ -9247,8 +9247,12 @@ for ENot because pooled capacity and the extra candidate checkpoint word have
 costs. All completed paired witnesses match; these are cold instrumented pilots,
 not statistical acceptance or process RSS. J-225 and PgMCP experiment 348,
 artifact 695 preserve receipts, the corrected layout-test expectation, admission
-refusals and the remaining acceptance obligations. Default-feature qualification
-and gate 5917 remain separately tracked; task 8516 is still open.
+refusals and the remaining acceptance obligations. Subsequent default-feature
+qualification passes **681/681** models tests, one skipped; unchanged gate 5917
+passes **16/16**, with five existing opt-in skips. The combined service peaks at
+2.8 GiB with zero swap. Implementation is committed as `ccb239b79`; these gates
+do not discharge resource regressions or full-workspace acceptance, so task 8516
+is still open.
 
 ### 5.29 ParBag family and count-domain completeness [SS-A13, SS-A14, SS-Y9]
 
