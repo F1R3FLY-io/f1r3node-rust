@@ -1309,6 +1309,16 @@ impl BlockDagKeyValueStorage {
 
         if block_exists {
             tracing::warn!("{}", log_already_stored);
+            // The finalized mark is the only thing an approved insert adds over an
+            // ordinary one, and nothing later revisits a root left unmarked.
+            if approved {
+                let mut block_metadata_guard = self.block_metadata_index.write();
+                block_metadata_guard.record_finalized(
+                    block.block_hash.clone(),
+                    HashSet::new(),
+                    1.0,
+                )?;
+            }
             self.get_representation_internal()
         } else {
             let block_hash = block.block_hash.clone();

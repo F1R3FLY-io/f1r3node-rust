@@ -2308,3 +2308,82 @@ async fn record_directly_finalized_rejects_unknown_hashes_and_propagates_effect_
     assert!(dag.is_finalized(&b1.block_hash));
     assert_eq!(dag.last_finalized_block(), b1.block_hash);
 }
+
+/// Genesis can reach the DAG as an ordinary block before the approved-block
+/// handshake completes. The approved insert is the only thing that marks it
+/// finalized, and it returns early on a block already stored, so the mark is
+/// skipped — while the API answers `isFinalized` from exactly that mark.
+///
+/// Nothing repairs it later: the finalization sweep gates descent on
+/// `!is_finalized`, so it stops at the first finalized ancestor and never
+/// reaches a genesis left behind under one.
+#[tokio::test]
+async fn genesis_is_finalized_even_when_it_reached_the_dag_before_the_approved_insert() {
+    use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
+
+    let mut kvm = InMemoryStoreManager::new();
+    let dag_storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+
+    let genesis = genesis_block();
+    dag_storage.insert(&genesis, InsertMode::Normal).unwrap();
+    dag_storage.insert(&genesis, InsertMode::Approved).unwrap();
+
+    let dag = dag_storage.get_representation().unwrap();
+    assert!(
+        dag.is_finalized(&genesis.block_hash),
+        "the approved insert marks genesis finalized however it first arrived"
+    );
+
+    let b1 = chain_block(1, vec![genesis.block_hash.clone()]);
+    let b2 = chain_block(2, vec![b1.block_hash.clone()]);
+    dag_storage.insert(&b1, InsertMode::Normal).unwrap();
+    dag_storage.insert(&b2, InsertMode::Normal).unwrap();
+    dag_storage
+        .record_directly_finalized(b1.block_hash.clone(), 1.0, |_| async { Ok(()) })
+        .await
+        .unwrap();
+    dag_storage
+        .record_directly_finalized(b2.block_hash.clone(), 1.0, |_| async { Ok(()) })
+        .await
+        .unwrap();
+
+    let dag = dag_storage.get_representation().unwrap();
+    assert!(
+        dag.is_finalized(&genesis.block_hash),
+        "the sweep stops at the first finalized ancestor, so a genesis missed \
+         at insert stays unfinalized for the life of the node"
+    );
+}
+
+/// The same race on the LFS restore path, where the approved block is the
+/// trimmed anchor rather than genesis. The anchor is the only finalized seed a
+/// restored node has, and floors derive forward from it, so an anchor that
+/// reached the DAG as settled history before the approved insert must still
+/// become the last finalized block.
+#[tokio::test]
+async fn a_restore_anchor_is_finalized_even_when_it_reached_the_dag_as_settled_history() {
+    use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
+
+    let mut kvm = InMemoryStoreManager::new();
+    let dag_storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+
+    let genesis = genesis_block();
+    dag_storage.insert(&genesis, InsertMode::Approved).unwrap();
+
+    let anchor = chain_block(5, vec![BlockHash::from(vec![0xaa; 32])]);
+    dag_storage
+        .insert(&anchor, InsertMode::SettledHistory)
+        .unwrap();
+    dag_storage.insert(&anchor, InsertMode::Approved).unwrap();
+
+    let dag = dag_storage.get_representation().unwrap();
+    assert!(
+        dag.is_finalized(&anchor.block_hash),
+        "the approved insert marks the restore anchor however it first arrived"
+    );
+    assert_eq!(
+        dag.last_finalized_block(),
+        anchor.block_hash,
+        "the anchor is the seed every derived floor descends from"
+    );
+}
