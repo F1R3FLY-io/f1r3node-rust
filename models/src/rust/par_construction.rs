@@ -384,6 +384,10 @@ mod planned_epm_ownership_tests;
 #[path = "../../tests/support/protobuf_construction.rs"]
 mod protobuf_construction_tests;
 
+#[cfg(test)]
+#[path = "../../tests/support/planned_fragment_comparison.rs"]
+mod planned_fragment_comparison_tests;
+
 enum ProtoPiece {
     Bytes(Box<[u8]>),
     SharedBytes(Box<prost::bytes::Bytes>),
@@ -3648,12 +3652,36 @@ impl ParConstruction {
         left.tag
             .cmp(&right.tag)
             .then_with(|| {
-                ScoreByteCursor::new(self, left.score).cmp(ScoreByteCursor::new(self, right.score))
+                match (self.score_fragment(left.score), self.score_fragment(right.score)) {
+                    (Some(left), Some(right)) => left.cmp(right),
+                    _ => ScoreByteCursor::new(self, left.score)
+                        .cmp(ScoreByteCursor::new(self, right.score)),
+                }
             })
             .then_with(|| {
-                WireByteCursor::new(self, WireRoot::Proto(left.protobuf))
-                    .cmp(WireByteCursor::new(self, WireRoot::Proto(right.protobuf)))
+                match (self.protobuf_fragment(left.protobuf), self.protobuf_fragment(right.protobuf)) {
+                    (Some(left), Some(right)) => left.cmp(right),
+                    _ => WireByteCursor::new(self, WireRoot::Proto(left.protobuf))
+                        .cmp(WireByteCursor::new(self, WireRoot::Proto(right.protobuf))),
+                }
             })
+    }
+
+    fn score_fragment(&self, root: PlannedScore) -> Option<&[u8]> {
+        match self.scores[root.0].pieces.as_slice() {
+            [] => Some(&[]),
+            [ScorePiece::Bytes(fragment)] => Some(&self.byte_fragments[*fragment]),
+            _ => None,
+        }
+    }
+
+    fn protobuf_fragment(&self, root: usize) -> Option<&[u8]> {
+        match self.protobuf_nodes[root].pieces.as_slice() {
+            [] => Some(&[]),
+            [ProtoPiece::Bytes(bytes)] => Some(bytes),
+            [ProtoPiece::SharedBytes(bytes)] => Some(bytes.as_ref().as_ref()),
+            _ => None,
+        }
     }
 
     fn emit_score(&self, root: PlannedScore, out: &mut Vec<u8>) {

@@ -16861,6 +16861,81 @@ All depth-64 through depth-2,048 pairs complete and agree. Artifact 689 records
 all samples and censoring; `pilot-enot-r1/observations.jsonl` SHA-256 is
 `f8ca897fdf74f0140e5a0b4f998935ef9b587ed9952cc2151019b06121356169`.
 
+## J-221 — Attribute wide decoder regressions before optimization (2026-09-25)
+
+**MEASURED, negative result.** Experiment 348's eight cold wide pilot pairs
+agree on complete output witnesses, but fail the intended resource outcome.
+At width 4,096, distinct integers take 3.533 ms frozen versus 21.437 ms planned;
+duplicates take 2.142 ms versus 6.378 ms. Planned cumulative allocation requests
+are 79,187,139 and 56,411,245 bytes, respectively, versus 5,293,333 and
+4,203,810 control bytes. Peak scoped net allocation is 7,740,692 and 1,914,805
+bytes versus 416,984 and 5,978 control bytes. These are instrumented pilots,
+not repeated statistical estimates or process RSS. Artifact 690 preserves the
+matrix; `pilot-wide-r1/observations.jsonl` SHA-256 is
+`cdd18f7f3632328ac730ce7dd677a673419c0c0d04be9361ce017631f8da6b86`.
+
+**MEASURED attribution.** Headless `heaptrack --record-only` and
+`heaptrack_print --merge-backtraces=0` on the J-220 binary identify two
+45,057-allocation score-comparison stacks inside the measured decode: 90,114
+temporary allocations out of 229,112 decode allocations. The independent
+untimed witness repeats those stacks; do not count it as measured decode work.
+The largest peak consumer, 5.77 MB, grows the occurrence-node arena through
+`push_occurrence_node`. Whole-process peak heap is 7.86 MB. Some optimized
+allocation-template symbols are folded, so the enclosing planner call sites,
+not an unrelated template type name, determine attribution. Recording and text
+analysis each use a 2 GiB hard cap and zero swap; neither opens a GUI.
+
+**DECISION, first bounded repair.** Compare borrowed bytes directly when both
+score roots consist of one literal fragment, or both protobuf roots are empty
+or single literal/shared fragments. Composite roots retain the existing lazy
+cursors. The rule depends on representation, not expression type or benchmark
+shape. No resident child is constructed and no planned graph is flattened.
+Tag ordering, score ordering and the protobuf tie-break remain in that order.
+The source change belongs in `par_construction.rs`; the independent tests
+belong under `models/tests/support/`. This does not repair retained persistent
+occurrence history or discarded duplicate candidate plans. Those remain
+required investigations in task 8516, not optional follow-up work.
+
+**Formal-first boundary and extracted obligations.** The `FragmentComparison`
+module in `DecodedComponentConstruction.v` models each piece by its emitted
+bytes. Before production edits, kernel-check its borrowed-fragment equality,
+complete comparison refinement, component ordering and equal-score tie-break,
+zero cursor starts for literals, graph fallback, and two discriminating mutants.
+Native property tests must bind these obligations to actual score/wire cursors,
+including empty/prefix/zero bytes, fragmented and child roots, shared protobuf
+bytes, equal scores with different bodies, and unchanged arena contents.
+Allocation tests must establish zero comparison allocations for the borrowed
+case. The abstraction does not prove Rust memory safety or the existing cursor
+implementation; native differential tests supply that implementation binding.
+No improved latency, peak or campaign completion is claimed before rerunning
+the original cohorts and broader gates.
+
+**First implementation qualification.** The eight new refinement/negative
+controls compile with all assumption reports closed; independent kernel checking
+passes in 13.072 service seconds, 275.2 MiB peak, zero swap under 2 GiB. The
+first compiler attempt exposed an explicit lemma-argument omission; r2 repairs
+the proof application without changing its statement. The production comparator
+now borrows eligible score/body slices and retains unchanged lazy graph fallback.
+Four focused tests pass, including a 128-case representation matrix and 1,600
+literal comparisons with zero measured allocations, requested bytes or frees.
+The full existing construction module passes **68/68**, no ignored tests, in
+2.76 test seconds, 163.5 MiB service peak, zero swap under 8 GiB. This includes
+depth 16,384 on a 256 KiB stack and persistent parallel/snapshot controls. The
+complete-key comparison is not used as an oracle for arbitrary generated score
+bytes: those may not belong to the prefix-free score language. Instead those
+tests compare directly with the original cursor expression and separately check
+that existing component key bytes and arena structure remain unchanged.
+
+Receipts below are relative to `target/verification/protobuf-attach-8516/`:
+
+| Receipt | SHA-256 |
+|---|---|
+| `heap-wide-planned-r1.zst` | `8257072f753955e0c1389da28925f1f2fbb8631c9885c77a58641449fb6028cb` |
+| `heap-wide-planned-r1-report.txt` | `d194a23a0eb9e0afac564ddd83f016d48d4c39575c3c82c9b33f1fd7aab8e519` |
+| `fragment-proof-r2.log` | `e3de83c5e6ffa82416af6e1ca1d4be40d6d11f9bb2e489c8b6d47de4540d5560` |
+| `fragment-kernel-r1.log` | `385927bf5b0769628935f7a1cbb74dc09d07ac40f13a61e0c46253df9daae800` |
+| `fragment-tests-r1.log` | `8dd32c47fa53d9974770b9d3ebc34377287b96dc248648365412245cad120628` |
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

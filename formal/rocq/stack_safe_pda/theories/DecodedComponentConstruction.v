@@ -341,3 +341,92 @@ Print Assumptions reordered_or_duplicated_children_change_observation.
 Print Assumptions bad_framing_mutant_changes_body_extent.
 
 End DecodedComponentConstruction.
+
+Module FragmentComparison.
+
+Definition bytes := list nat.
+Inductive piece := Literal (body : bytes) | Graph (denotation : bytes).
+Definition emit_piece p := match p with Literal b | Graph b => b end.
+Definition stream ps := concat (map emit_piece ps).
+Definition borrowed ps : option bytes :=
+  match ps with [] => Some [] | [Literal b] => Some b | _ => None end.
+
+Lemma borrowed_is_exact ps b : borrowed ps = Some b -> stream ps = b.
+Proof.
+  destruct ps as [|p ps]; cbn; intros H; try congruence.
+  destruct p; destruct ps; cbn in H; try discriminate.
+  inversion H; subst. cbn. now rewrite app_nil_r.
+Qed.
+
+Fixpoint lex (left right : bytes) : comparison :=
+  match left, right with
+  | [], [] => Eq | [], _ => Lt | _, [] => Gt
+  | x :: xs, y :: ys =>
+      match Nat.compare x y with Eq => lex xs ys | order => order end
+  end.
+
+Definition optimized left right :=
+  match borrowed left, borrowed right with
+  | Some l, Some r => lex l r
+  | _, _ => lex (stream left) (stream right)
+  end.
+
+Theorem comparison_refines left right :
+  optimized left right = lex (stream left) (stream right).
+Proof.
+  unfold optimized. destruct (borrowed left) eqn:L;
+    destruct (borrowed right) eqn:R; try reflexivity.
+  rewrite (borrowed_is_exact left L), (borrowed_is_exact right R). reflexivity.
+Qed.
+
+Definition then_compare first second := match first with Eq => second | _ => first end.
+Definition component tag_left tag_right score_left score_right body_left body_right :=
+  then_compare (Nat.compare tag_left tag_right)
+    (then_compare (optimized score_left score_right) (optimized body_left body_right)).
+
+Theorem component_order_refines tl tr sl sr bl br :
+  component tl tr sl sr bl br =
+  then_compare (Nat.compare tl tr)
+    (then_compare (lex (stream sl) (stream sr)) (lex (stream bl) (stream br))).
+Proof. unfold component. now rewrite !comparison_refines. Qed.
+
+Theorem equal_score_keeps_protobuf_tiebreak tl sl sr bl br :
+  stream sl = stream sr ->
+  component tl tl sl sr bl br = lex (stream bl) (stream br).
+Proof.
+  intros H. rewrite component_order_refines, Nat.compare_refl, H.
+  assert (Same : forall xs, lex xs xs = Eq).
+  { induction xs; cbn; auto. now rewrite Nat.compare_refl. }
+  rewrite Same. reflexivity.
+Qed.
+
+Definition cursor_starts left right :=
+  match borrowed left, borrowed right with Some _, Some _ => 0 | _, _ => 2 end.
+
+Theorem literal_comparison_has_no_cursor l r :
+  cursor_starts [Literal l] [Literal r] = 0.
+Proof. reflexivity. Qed.
+
+Theorem graph_representation_retains_fallback l r :
+  cursor_starts [Graph l] [Literal r] = 2 /\
+  optimized [Graph l] [Literal r] = lex l r.
+Proof. split; cbn; now rewrite ?app_nil_r. Qed.
+
+Theorem ignoring_tiebreak_mutant_is_detected :
+  component 4 4 [Literal [1]] [Literal [1]] [Literal [2]] [Literal [3]] <> Eq.
+Proof. discriminate. Qed.
+
+Theorem ignoring_fragment_suffix_mutant_is_detected :
+  optimized [Literal [1]; Literal [2]] [Literal [1]] <> Eq.
+Proof. discriminate. Qed.
+
+Print Assumptions borrowed_is_exact.
+Print Assumptions comparison_refines.
+Print Assumptions component_order_refines.
+Print Assumptions equal_score_keeps_protobuf_tiebreak.
+Print Assumptions literal_comparison_has_no_cursor.
+Print Assumptions graph_representation_retains_fallback.
+Print Assumptions ignoring_tiebreak_mutant_is_detected.
+Print Assumptions ignoring_fragment_suffix_mutant_is_detected.
+
+End FragmentComparison.

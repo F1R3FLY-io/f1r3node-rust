@@ -9164,6 +9164,19 @@ zero swap. Depth 4,096, stack limits and the 120-second child watchdog are
 unchanged. J-218 records the receipt. Geometric resource qualification and full
 workspace acceptance remain open; J-219 preregisters experiment 348.
 
+Experiment 348's 2026-09-25 pilots **do not pass resource acceptance**.
+Fragmented ENot depth 2,048 improves from 46.749 s frozen to 30.790 ms planned,
+but scoped net peak increases from 7,272,888 to 9,160,416 bytes. Frozen depth
+4,096 times out at 180 seconds (13.9 MiB process peak, zero swap); it supplies
+no latency point or paired witness. Wide 4,096 distinct/duplicate pilots regress
+from 3.533/2.142 ms to 21.437/6.378 ms, with substantially higher allocation
+traffic and scoped peaks. Headless heaptrack attributes 90,114 temporary
+allocation calls to score comparison in one distinct decode and its largest
+peak consumer to occurrence-node growth. Task 8516 remains open: deep time gains
+do not waive wide regressions or increased peak memory. These are cold
+instrumented pilots, not statistical acceptance or whole-application results;
+see J-220/J-221 in the PathMap engineering journal for receipts and limitations.
+
 ### 5.29 ParBag family and count-domain completeness [SS-A13, SS-A14, SS-Y9]
 
 #### 5.29.1 The defects
