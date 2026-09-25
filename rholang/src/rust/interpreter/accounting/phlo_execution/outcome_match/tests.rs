@@ -103,6 +103,57 @@ fn equal(left: CheckedPhloExecution<'_>, right: CheckedPhloExecution<'_>) -> boo
 }
 
 #[test]
+fn retained_acquisition_identity_is_compared_even_when_the_price_is_zero() {
+    let authority = Sig::Ground(vec![1]);
+    let free = PhloResource {
+        class: 2,
+        ..resource(&authority)
+    };
+    let base = checked(fresh(&[]));
+    let retained = [PhloResourceAmount {
+        resource: free,
+        quantity: 5,
+    }];
+    let actual = base.with_retained_acquisitions(&retained, &work()).unwrap();
+    assert_eq!(
+        base.retained_charge(PhloOutcome::Accepted(&[])),
+        actual.retained_charge(PhloOutcome::Accepted(&[]))
+    );
+    assert!(!equal(base, actual));
+    let split = [
+        PhloResourceAmount {
+            resource: free,
+            quantity: 2,
+        },
+        PhloResourceAmount {
+            resource: free,
+            quantity: 3,
+        },
+    ];
+    let equivalent = base.with_retained_acquisitions(&split, &work()).unwrap();
+    assert!(equal(actual, equivalent));
+    let changed = [PhloResourceAmount {
+        resource: PhloResource {
+            location: b"other",
+            ..free
+        },
+        quantity: 5,
+    }];
+    assert!(!equal(
+        actual,
+        base.with_retained_acquisitions(&changed, &work()).unwrap()
+    ));
+    let extra = [PhloResourceAmount {
+        resource: free,
+        quantity: 6,
+    }];
+    assert!(!equal(
+        actual,
+        base.with_retained_acquisitions(&extra, &work()).unwrap()
+    ));
+}
+
+#[test]
 fn equal_scalar_cost_does_not_match_different_typed_resources() {
     let authority = Sig::Ground(vec![1]);
     let other = Sig::Ground(vec![2]);

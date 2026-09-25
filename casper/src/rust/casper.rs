@@ -16,13 +16,14 @@ use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage
 use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use comm::rust::transport::transport_layer::TransportLayer;
-use crypto::rust::signatures::signed::{Cosigned, Signed};
+use crypto::rust::signatures::signed::Signed;
 use dashmap::DashSet;
 use models::rust::block_hash::BlockHash;
 use models::rust::bond_generation::BondGeneration;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, Bond, DeployData, Justification,
 };
+use models::rust::deploy_envelope::DeployEnvelope;
 use models::rust::deploy_id::DeployLookupId;
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
@@ -35,6 +36,7 @@ use crate::rust::engine::block_retriever::BlockRetriever;
 use crate::rust::engine::multi_parent_casper::MultiParentCasperImpl;
 use crate::rust::errors::CasperError;
 use crate::rust::estimator::Estimator;
+use crate::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::validate::Validate;
 
@@ -275,6 +277,16 @@ pub trait MultiParentCasper: Casper + Send + Sync {
 
     fn runtime_manager(&self) -> Arc<RuntimeManager>;
 
+    async fn accounting_context(&self) -> Result<Arc<AdoptedResourcePolicy>, CasperError> {
+        AdoptedResourcePolicy::load(
+            &self.runtime_manager(),
+            self.get_approved_block()?,
+            self.casper_shard_conf(),
+        )
+        .await
+        .map(Arc::new)
+    }
+
     fn get_validator(&self) -> Option<ValidatorIdentity>;
 
     async fn get_history_exporter(&self) -> Arc<dyn RSpaceExporter>;
@@ -304,7 +316,7 @@ pub trait MultiParentCasper: Casper + Send + Sync {
     ///
     /// Default returns an empty Vec — used by `NoopEngine` and other
     /// engine states where `with_casper()` returns `None`.
-    async fn list_pending_deploys(&self) -> Result<Vec<(Cosigned<DeployData>, bool)>, CasperError> {
+    async fn list_pending_deploys(&self) -> Result<Vec<(DeployEnvelope, bool)>, CasperError> {
         Ok(Vec::new())
     }
 }
@@ -422,6 +434,7 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
         block_retriever,
         event_publisher,
         runtime_manager,
+        accounting_context: Arc::new(tokio::sync::OnceCell::new()),
         estimator,
         block_store,
         block_dag_storage,

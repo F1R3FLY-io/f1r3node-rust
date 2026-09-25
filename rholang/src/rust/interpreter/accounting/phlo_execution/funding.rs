@@ -254,7 +254,10 @@ pub fn check_phlo_funding_family<'a>(
             let identity = match key {
                 PhloObligationKey::Fee => None,
                 PhloObligationKey::Resource(resource) => {
-                    Some(resource_key(*resource, &mut budget)?)
+                    Some((false, resource_key(*resource, &mut budget)?))
+                }
+                PhloObligationKey::RetainedResource(resource) => {
+                    Some((true, resource_key(*resource, &mut budget)?))
                 }
             };
             if let Some(previous) = occurrences.insert(identity, slot) {

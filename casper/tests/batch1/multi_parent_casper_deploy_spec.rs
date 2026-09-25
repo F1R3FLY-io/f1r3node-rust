@@ -137,7 +137,6 @@ async fn block_api_should_not_trigger_propose_for_a_duplicate_deploy() {
         &node.engine_cell,
         envelope,
         &Some(trigger),
-        0,
         false,
         &genesis.genesis_block.shard_id,
     )

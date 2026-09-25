@@ -1,11 +1,13 @@
 use std::collections::BTreeSet;
 use std::fmt::Debug;
 use std::hash::Hash;
+use std::sync::Arc;
 
 use serde::Serialize;
 
 use super::RSpace;
 use crate::rspace::errors::RSpaceError;
+use crate::rspace::rspace_interface::{RSpaceAccountingObserver, RSpaceOperationSource};
 use crate::rspace::trace::event::{COMM, Consume, Produce};
 
 impl<C, P, A, K> RSpace<C, P, A, K>
@@ -15,18 +17,30 @@ where
     A: Clone + Debug + Default + Serialize + 'static + Sync + Send,
     K: Clone + Debug + Default + Serialize + 'static + Sync + Send,
 {
-    pub(super) fn observe_comm(
+    pub(super) fn start_accounting_operation(
         &self,
-        comm: &COMM,
-        continuation: &K,
-        continuation_persistent: bool,
-        data_candidates: &[crate::rspace::internal::ConsumeCandidate<C, A>],
-    ) -> Result<(), RSpaceError> {
+        source: RSpaceOperationSource<'_>,
+        channels: &[C],
+        joins: &[Vec<C>],
+    ) -> Result<Option<Arc<dyn RSpaceAccountingObserver<C, P, A, K>>>, RSpaceError> {
         let observer = self
             .accounting_observer
             .read()
             .expect("accounting observer read lock")
             .clone();
+        if let Some(observer) = &observer {
+            observer.observe_operation_start(source, channels, joins)?;
+        }
+        Ok(observer)
+    }
+
+    pub(super) fn observe_comm(
+        observer: Option<&dyn RSpaceAccountingObserver<C, P, A, K>>,
+        comm: &COMM,
+        continuation: &K,
+        continuation_persistent: bool,
+        data_candidates: &[crate::rspace::internal::ConsumeCandidate<C, A>],
+    ) -> Result<(), RSpaceError> {
         if let Some(observer) = observer {
             let data = data_candidates
                 .iter()
@@ -38,17 +52,12 @@ where
     }
 
     pub(super) fn observe_produce(
-        &self,
+        observer: Option<&dyn RSpaceAccountingObserver<C, P, A, K>>,
         source: &Produce,
         channel: &C,
         data: &A,
         persistent: bool,
     ) -> Result<(), RSpaceError> {
-        let observer = self
-            .accounting_observer
-            .read()
-            .expect("accounting observer read lock")
-            .clone();
         if let Some(observer) = observer {
             observer.observe_produce(source, channel, data, persistent)?;
         }
@@ -56,7 +65,7 @@ where
     }
 
     pub(super) fn observe_consume(
-        &self,
+        observer: Option<&dyn RSpaceAccountingObserver<C, P, A, K>>,
         source: &Consume,
         channels: &[C],
         patterns: &[P],
@@ -64,11 +73,6 @@ where
         persistent: bool,
         peeks: &BTreeSet<i32>,
     ) -> Result<(), RSpaceError> {
-        let observer = self
-            .accounting_observer
-            .read()
-            .expect("accounting observer read lock")
-            .clone();
         if let Some(observer) = observer {
             observer.observe_consume(
                 source,

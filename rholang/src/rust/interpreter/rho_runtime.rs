@@ -7,9 +7,7 @@ use std::time::Instant;
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::expr::ExprInstance::{EMapBody, GByteArray};
 use models::rhoapi::tagged_continuation::TaggedCont;
-use models::rhoapi::{
-    BindPattern, Bundle, CostAuthority, Expr, ListParWithRandom, Par, TaggedContinuation, Var,
-};
+use models::rhoapi::{BindPattern, Bundle, Expr, ListParWithRandom, Par, TaggedContinuation, Var};
 use models::rust::block_hash::BlockHash;
 use models::rust::host_work::HostWorkLimits;
 use models::rust::par_map::ParMap;
@@ -21,12 +19,14 @@ use rspace_plus_plus::rspace::checkpoint::{Checkpoint, SoftCheckpoint};
 use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::history_repository::HistoryRepository;
-use rspace_plus_plus::rspace::internal::{Datum, Row, WaitingContinuation};
+use rspace_plus_plus::rspace::internal::{Datum, Install, Row, WaitingContinuation};
 use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 use rspace_plus_plus::rspace::r#match::Match;
 use rspace_plus_plus::rspace::replay_rspace_interface::IReplayRSpace;
 use rspace_plus_plus::rspace::rspace::{RSpace, RSpaceStore};
-use rspace_plus_plus::rspace::rspace_interface::{ISpace, RSpaceAccountingObserver};
+use rspace_plus_plus::rspace::rspace_interface::{
+    ISpace, RSpaceAccountingObserver, RSpaceOperationCompletion, RSpaceOperationSource,
+};
 use rspace_plus_plus::rspace::trace::event::{Consume, Produce, COMM};
 use rspace_plus_plus::rspace::trace::Log;
 use rspace_plus_plus::rspace::tuplespace_interface::Tuplespace;
@@ -35,14 +35,18 @@ use super::accounting::authority::ResourceMultiset;
 use super::accounting::cost_accounting::CostAccounting;
 use super::accounting::costs::Cost;
 use super::accounting::has_cost::HasCost;
-use super::accounting::{BillableTokenEvent, RuntimeBudget};
+use super::accounting::{
+    BillableTokenEvent, CheckedNativeOperationTrace, NativeRuntimeConfig,
+    NativeRuntimeReplaySession, RuntimeBudget,
+};
 use super::deterministic_reduction::{DeterministicRSpace, ReductionCoordinator};
 use super::dispatch::{RhoDispatch, RholangAndScalaDispatcher};
 use super::env::Env;
 use super::errors::InterpreterError;
+use super::execution_space::ExecutionSpace;
 use super::host_work::{HostWorkBudget, HostWorkReport};
 use super::interpreter::{EvaluateResult, Interpreter, InterpreterImpl};
-use super::reduce::DebruijnInterpreter;
+use super::reduce::{DebruijnInterpreter, ReducerCore};
 use super::registry::registry_bootstrap::ast;
 use super::substitute::Substitute;
 use super::system_processes::{
@@ -265,6 +269,46 @@ pub struct RhoRuntimeImpl {
 }
 
 impl RhoRuntimeImpl {
+    pub async fn evaluate_with_native_phlo(
+        &mut self,
+        term: &str,
+        normalizer_env: HashMap<String, Par>,
+        rand: Blake2b512Random,
+        authority_allocation: Option<ResourceMultiset<[u8; 32]>>,
+        config: NativeRuntimeConfig,
+    ) -> Result<EvaluateResult, InterpreterError> {
+        let start = Instant::now();
+        let checkpoint = self.reducer.space.create_soft_checkpoint().await;
+        let host_work = config.host_work();
+        let interpreter = InterpreterImpl::new(self.cost.clone(), self.merge_chs.clone());
+        let result = interpreter
+            .inj_attempt_with_native_phlo(
+                &self.reducer,
+                term,
+                normalizer_env,
+                rand,
+                authority_allocation,
+                config,
+            )
+            .await;
+        if host_work.is_rejected()
+            || result.as_ref().map_or(true, |evaluation| {
+                evaluation
+                    .errors
+                    .iter()
+                    .any(|error| matches!(error, InterpreterError::HostWorkRejected))
+            })
+        {
+            self.reducer
+                .space
+                .revert_to_soft_checkpoint(checkpoint)
+                .await?;
+        }
+        metrics::histogram!(EVALUATE_TIME_METRIC, "source" => RUNTIME_METRICS_SOURCE)
+            .record(start.elapsed().as_secs_f64());
+        result
+    }
+
     fn new(
         reducer: Arc<DebruijnInterpreter>,
         cost: RuntimeBudget,
@@ -517,27 +561,9 @@ impl RhoRuntime for RhoRuntimeImpl {
     }
 
     async fn set_invalid_blocks(&self, invalid_blocks: HashMap<BlockHash, Validator>) -> () {
-        let invalid_blocks: Par = Par::default().with_exprs(vec![Expr {
-            expr_instance: Some(EMapBody(ParMapTypeMapper::par_map_to_emap(
-                ParMap::create_from_sorted_par_map(SortedParMap::create_from_map(
-                    invalid_blocks
-                        .into_iter()
-                        .map(|(validator, block_hash)| {
-                            (
-                                Par::default().with_exprs(vec![Expr {
-                                    expr_instance: Some(GByteArray(validator.into())),
-                                }]),
-                                Par::default().with_exprs(vec![Expr {
-                                    expr_instance: Some(GByteArray(block_hash.into())),
-                                }]),
-                            )
-                        })
-                        .collect(),
-                )),
-            ))),
-        }]);
-
-        self.invalid_blocks_param.set_params(invalid_blocks).await
+        self.invalid_blocks_param
+            .set_params(invalid_blocks_par(invalid_blocks))
+            .await
     }
 
     async fn get_hot_changes(
@@ -586,9 +612,35 @@ struct RhoCommObserver {
     budget: RuntimeBudget,
 }
 
+#[cfg(test)]
+pub(crate) fn test_accounting_observer(
+    budget: RuntimeBudget,
+) -> Arc<dyn RSpaceAccountingObserver<Par, BindPattern, ListParWithRandom, TaggedContinuation>> {
+    Arc::new(RhoCommObserver { budget })
+}
+
 impl RSpaceAccountingObserver<Par, BindPattern, ListParWithRandom, TaggedContinuation>
     for RhoCommObserver
 {
+    fn observe_operation_start(
+        &self,
+        source: RSpaceOperationSource<'_>,
+        channels: &[Par],
+        joins: &[Vec<Par>],
+    ) -> Result<(), RSpaceError> {
+        self.budget
+            .start_native_operation(source, channels, joins)
+            .map_err(RSpaceError::from)
+    }
+
+    fn observe_operation_finish(
+        &self,
+        source: RSpaceOperationSource<'_>,
+        completion: RSpaceOperationCompletion,
+    ) {
+        self.budget.finish_native_operation(source, completion);
+    }
+
     fn observe_produce(
         &self,
         source: &Produce,
@@ -606,15 +658,18 @@ impl RSpaceAccountingObserver<Par, BindPattern, ListParWithRandom, TaggedContinu
                 identity,
                 super::accounting::authority::AuthorityByteEventKind::ProduceIntroduction,
             )
-            .map_err(interpreter_error_to_rspace)?;
-        let charge = super::accounting::byte_accounting::produce_introduction_charge(channel, data)
-            .map_err(|error| RSpaceError::InterpreterError(error.to_string()))?;
-        charge
-            .cost(super::accounting::byte_accounting::BYTE_COST_SCHEDULE_V1)
-            .map_err(|error| RSpaceError::InterpreterError(error.to_string()))?;
+            .map_err(RSpaceError::from)?;
+        let observed = super::accounting::observation_construction::produce_introduction(
+            source, channel, data, &authority,
+        )?;
         self.budget
-            .reserve_produce_introduction_measured(identity, &authority, charge, persistent)
-            .map_err(interpreter_error_to_rspace)
+            .reserve_produce_introduction_measured(
+                observed.event_id,
+                &observed.authority,
+                observed.measurement,
+                persistent,
+            )
+            .map_err(RSpaceError::from)
     }
 
     fn observe_consume(
@@ -624,11 +679,14 @@ impl RSpaceAccountingObserver<Par, BindPattern, ListParWithRandom, TaggedContinu
         patterns: &[BindPattern],
         continuation: &TaggedContinuation,
         persistent: bool,
-        _peeks: &std::collections::BTreeSet<i32>,
+        peeks: &std::collections::BTreeSet<i32>,
     ) -> Result<(), RSpaceError> {
         if !self.budget.has_comm_accounting_scope() || self.budget.is_unmetered() {
             return Ok(());
         }
+        self.budget
+            .observe_native_consume_peeks(peeks)
+            .map_err(RSpaceError::from)?;
         let identity = super::accounting::byte_accounting::consume_introduction_identity(source);
         let authority = self
             .budget
@@ -636,19 +694,22 @@ impl RSpaceAccountingObserver<Par, BindPattern, ListParWithRandom, TaggedContinu
                 identity,
                 super::accounting::authority::AuthorityByteEventKind::ConsumeIntroduction,
             )
-            .map_err(interpreter_error_to_rspace)?;
-        let charge = super::accounting::byte_accounting::consume_introduction_charge(
+            .map_err(RSpaceError::from)?;
+        let observed = super::accounting::observation_construction::consume_introduction(
+            source,
             channels,
             patterns,
             continuation,
-        )
-        .map_err(|error| RSpaceError::InterpreterError(error.to_string()))?;
-        charge
-            .cost(super::accounting::byte_accounting::BYTE_COST_SCHEDULE_V1)
-            .map_err(|error| RSpaceError::InterpreterError(error.to_string()))?;
+            &authority,
+        )?;
         self.budget
-            .reserve_consume_introduction_measured(identity, &authority, charge, persistent)
-            .map_err(interpreter_error_to_rspace)
+            .reserve_consume_introduction_measured(
+                observed.event_id,
+                &observed.authority,
+                observed.measurement,
+                persistent,
+            )
+            .map_err(RSpaceError::from)
     }
 
     fn observe_comm(
@@ -661,61 +722,46 @@ impl RSpaceAccountingObserver<Par, BindPattern, ListParWithRandom, TaggedContinu
         if !self.budget.has_comm_accounting_scope() || self.budget.is_unmetered() {
             return Ok(());
         }
-        let bytes = comm.cost_identity().bytes();
-        let identity: [u8; 32] = bytes
-            .try_into()
-            .map_err(|_| RSpaceError::BugFoundError("invalid COMM identity length".to_string()))?;
-        let mut authorities = Vec::<&CostAuthority>::new();
-        let mut persistent_regions = std::collections::BTreeSet::new();
-        if let Some(authority) = continuation.cost_authority.as_ref() {
-            authorities.push(authority);
-            if continuation_persistent {
-                for region in super::accounting::authority::authority_regions(authority)
-                    .map_err(|error| RSpaceError::InterpreterError(error.to_string()))?
-                    .into_keys()
-                {
-                    persistent_regions.insert(region);
-                }
-            }
-        }
-        for (datum, persistent) in data {
-            if let Some(authority) = datum.cost_authority.as_ref() {
-                authorities.push(authority);
-                if *persistent {
-                    for region in super::accounting::authority::authority_regions(authority)
-                        .map_err(|error| RSpaceError::InterpreterError(error.to_string()))?
-                        .into_keys()
-                    {
-                        persistent_regions.insert(region);
-                    }
-                }
-            }
-        }
-        let authority = super::accounting::authority::merge_authorities(authorities)
-            .map_err(|error| RSpaceError::InterpreterError(error.to_string()))?;
-        let authority = super::accounting::authority::instantiate_persistent_regions(
-            &authority,
-            &persistent_regions,
-            identity,
-        )
-        .map_err(|error| RSpaceError::InterpreterError(error.to_string()))?;
-        let byte_cost = super::accounting::byte_accounting::comm_charge(comm, data)
-            .map_err(|error| RSpaceError::InterpreterError(error.to_string()))?;
-        byte_cost
-            .cost(super::accounting::byte_accounting::BYTE_COST_SCHEDULE_V1)
-            .map_err(|error| RSpaceError::InterpreterError(error.to_string()))?;
         self.budget
-            .reserve_comm_authority_measured(identity, &authority, byte_cost)
-            .map_err(interpreter_error_to_rspace)?;
+            .observe_native_comm_source(comm)
+            .map_err(RSpaceError::from)?;
+        let observed = super::accounting::observation_construction::comm(
+            comm,
+            continuation,
+            continuation_persistent,
+            data,
+        )?;
+        self.budget
+            .reserve_comm_authority_measured(
+                observed.event_id,
+                &observed.authority,
+                observed.measurement,
+            )
+            .map_err(RSpaceError::from)?;
         Ok(())
     }
 }
 
-fn interpreter_error_to_rspace(error: InterpreterError) -> RSpaceError {
-    match error {
-        InterpreterError::OutOfPhlogistonsError => RSpaceError::OutOfPhlogistons,
-        other => RSpaceError::InterpreterError(other.to_string()),
+fn system_process_install(
+    (name, arity, remainder, body_ref): (Name, Arity, Remainder, BodyRef),
+) -> Result<(Vec<Par>, Install<BindPattern, TaggedContinuation>), RSpaceError> {
+    if arity < 0 {
+        return Err(RSpaceError::BugFoundError(
+            "negative system process arity".to_owned(),
+        ));
     }
+    Ok((vec![name], Install {
+        patterns: vec![BindPattern {
+            patterns: (0..arity).map(|i| new_freevar_par(i, Vec::new())).collect(),
+            remainder,
+            free_count: arity,
+        }],
+        continuation: TaggedContinuation {
+            tagged_cont: Some(TaggedCont::ScalaBodyRef(body_ref)),
+            guard: None,
+            cost_authority: None,
+        },
+    }))
 }
 
 async fn introduce_system_process<T>(
@@ -727,23 +773,16 @@ where
 {
     let mut results: Vec<Option<(TaggedContinuation, Vec<ListParWithRandom>)>> = Vec::new();
 
-    for (name, arity, remainder, body_ref) in processes {
-        let channels = vec![name];
-        let patterns = vec![BindPattern {
-            patterns: (0..arity).map(|i| new_freevar_par(i, Vec::new())).collect(),
-            remainder,
-            free_count: arity,
-        }];
-
-        let continuation = TaggedContinuation {
-            tagged_cont: Some(TaggedCont::ScalaBodyRef(body_ref)),
-            guard: None,
-            cost_authority: None,
-        };
+    for process in processes {
+        let (channels, install) = system_process_install(process).unwrap();
 
         for space in &mut spaces {
             let result = space
-                .install(channels.clone(), patterns.clone(), continuation.clone())
+                .install(
+                    channels.clone(),
+                    install.patterns.clone(),
+                    install.continuation.clone(),
+                )
                 .await;
             results.push(result.map_err(|err| panic!("{}", err)).unwrap());
         }
@@ -1249,7 +1288,7 @@ fn std_rho_chroma_processes() -> Vec<Definition> {
 fn std_rho_chroma_processes() -> Vec<Definition> { vec![] }
 
 fn dispatch_table_creator(
-    space: RhoISpace,
+    space: ExecutionSpace,
     dispatcher: RhoDispatch,
     block_data: Arc<tokio::sync::RwLock<BlockData>>,
     invalid_blocks: InvalidBlocks,
@@ -1352,7 +1391,7 @@ fn basic_processes() -> HashMap<String, Par> {
 }
 
 async fn setup_reducer(
-    rspace: RhoISpace,
+    rspace: ExecutionSpace,
     block_data_ref: Arc<tokio::sync::RwLock<BlockData>>,
     invalid_blocks: InvalidBlocks,
     deploy_data_ref: Arc<tokio::sync::RwLock<DeployData>>,
@@ -1366,10 +1405,7 @@ async fn setup_reducer(
     chromadb_service: SharedChromaDBService,
     cost: RuntimeBudget,
     reduction_coordinator: ReductionCoordinator,
-) -> Arc<DebruijnInterpreter> {
-    rspace.set_accounting_observer(Some(Arc::new(RhoCommObserver {
-        budget: cost.clone(),
-    })));
+) -> Arc<ReducerCore> {
     let reducer_cell = Arc::new(std::sync::OnceLock::new());
 
     let temp_dispatcher = Arc::new(RholangAndScalaDispatcher {
@@ -1403,8 +1439,8 @@ async fn setup_reducer(
     });
 
     let metering = super::metering::MeteredMachine::new(cost.clone());
-    let reducer = Arc::new(DebruijnInterpreter {
-        space: rspace.clone(),
+    let core = Arc::new(super::reduce::ReducerCore {
+        space: rspace,
         dispatcher: dispatcher.clone(),
         urn_map,
         merge_chs,
@@ -1417,8 +1453,8 @@ async fn setup_reducer(
         reduction_coordinator,
     });
 
-    reducer_cell.set(Arc::downgrade(&reducer)).ok().unwrap();
-    reducer
+    reducer_cell.set(Arc::downgrade(&core)).ok().unwrap();
+    core
 }
 
 fn setup_maps_and_refs(
@@ -1471,6 +1507,368 @@ fn setup_maps_and_refs(
     )
 }
 
+fn insert_mergeable_bindings(
+    urn_map: &mut HashMap<String, Par>,
+    mergeable_tags: &HashMap<Par, MergeType>,
+) -> Result<(), InterpreterError> {
+    let conflict =
+        |uri| InterpreterError::ReduceError(format!("duplicate mergeable tag URI: {uri}"));
+    let tag_uri_bindings = mergeable_tag_uri_bindings(mergeable_tags).map_err(conflict)?;
+    for (uri, tag_par) in tag_uri_bindings {
+        let merge_type = mergeable_tags
+            .get(&tag_par)
+            .expect("mergeable URI binding references configured tag");
+        tracing::info!(
+            target: "f1r3fly.merge.tag_check.validation",
+            uri,
+            merge_type = ?merge_type,
+            unforgeables = tag_par.unforgeables.len(),
+            exprs = tag_par.exprs.len(),
+            bundles = tag_par.bundles.len(),
+            "Mergeable tag URI binding inserted"
+        );
+        if urn_map.insert(uri.to_string(), tag_par).is_some() {
+            return Err(conflict(uri));
+        }
+    }
+    Ok(())
+}
+
+fn invalid_blocks_par(invalid_blocks: HashMap<BlockHash, Validator>) -> Par {
+    Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(EMapBody(ParMapTypeMapper::par_map_to_emap(
+            ParMap::create_from_sorted_par_map(SortedParMap::create_from_map(
+                invalid_blocks
+                    .into_iter()
+                    .map(|(validator, block_hash)| {
+                        (
+                            Par::default().with_exprs(vec![Expr {
+                                expr_instance: Some(GByteArray(validator.into())),
+                            }]),
+                            Par::default().with_exprs(vec![Expr {
+                                expr_instance: Some(GByteArray(block_hash.into())),
+                            }]),
+                        )
+                    })
+                    .collect(),
+            )),
+        ))),
+    }])
+}
+
+pub struct NativeReplayEnvironment {
+    session:
+        Arc<NativeRuntimeReplaySession<Par, BindPattern, ListParWithRandom, TaggedContinuation>>,
+    reducer: Arc<ReducerCore>,
+    budget: RuntimeBudget,
+    host: HostWorkBudget,
+    unavailable: bool,
+    evaluation_started: bool,
+    merge_chs: Arc<tokio::sync::RwLock<HashMap<Par, MergeType>>>,
+    pub block_data: Arc<tokio::sync::RwLock<BlockData>>,
+    pub invalid_blocks: InvalidBlocks,
+    pub deploy_data: Arc<tokio::sync::RwLock<DeployData>>,
+}
+
+pub struct NativeReplayEnvironmentCheckpoint {
+    session: super::accounting::NativeRuntimeReplayCheckpoint<
+        Par,
+        BindPattern,
+        ListParWithRandom,
+        TaggedContinuation,
+    >,
+    authority: super::accounting::NativeAuthorityCheckpoint,
+    evaluation_started: bool,
+    mergeable: HashMap<Par, MergeType>,
+}
+
+impl NativeReplayEnvironment {
+    pub async fn set_invalid_blocks(&self, invalid_blocks: HashMap<BlockHash, Validator>) {
+        self.invalid_blocks
+            .set_params(invalid_blocks_par(invalid_blocks))
+            .await;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn accounting_budget(&self) -> &RuntimeBudget { &self.budget }
+
+    fn ensure_available(&self) -> Result<(), RSpaceError> {
+        if self.unavailable {
+            Err(RSpaceError::InterpreterError(
+                "native replay evaluation was interrupted".to_owned(),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn ensure_evaluated(&self) -> Result<(), RSpaceError> {
+        self.ensure_available()?;
+        if !self.evaluation_started {
+            return Err(RSpaceError::InterpreterError(
+                "native replay evaluation has not started".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn ensure_fresh_evaluation(&self) -> Result<(), InterpreterError> {
+        self.ensure_available()?;
+        if self.evaluation_started {
+            return Err(InterpreterError::ReduceError(
+                "native replay evaluation requires restoration before another attempt".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub async fn checkpoint(
+        &mut self,
+    ) -> Result<NativeReplayEnvironmentCheckpoint, InterpreterError> {
+        self.ensure_available()?;
+        let authority = self.budget.native_authority_checkpoint()?;
+        let session = self.session.checkpoint().await?;
+        let mergeable = self.merge_chs.read().await;
+        super::accounting::clone_backing::reserve(&*mergeable, &self.host)?;
+        let mergeable = mergeable.clone();
+        Ok(NativeReplayEnvironmentCheckpoint {
+            session,
+            authority,
+            mergeable,
+            evaluation_started: self.evaluation_started,
+        })
+    }
+
+    pub async fn restore(
+        &mut self,
+        checkpoint: NativeReplayEnvironmentCheckpoint,
+    ) -> Result<(), InterpreterError> {
+        self.ensure_available()?;
+        self.unavailable = true;
+        self.restore_state(checkpoint).await
+    }
+
+    async fn restore_state(
+        &mut self,
+        checkpoint: NativeReplayEnvironmentCheckpoint,
+    ) -> Result<(), InterpreterError> {
+        if let Err(error) = self.session.restore(checkpoint.session).await {
+            self.unavailable = false;
+            return Err(error.into());
+        }
+        if let Err(error) = self.budget.restore_native_authority(checkpoint.authority) {
+            self.session.close().await?;
+            return Err(error);
+        }
+        *self.merge_chs.write().await = checkpoint.mergeable;
+        self.evaluation_started = checkpoint.evaluation_started;
+        self.unavailable = false;
+        Ok(())
+    }
+
+    pub async fn evaluate(
+        &mut self,
+        par: Par,
+        rand: Blake2b512Random,
+    ) -> Result<EvaluateResult, InterpreterError> {
+        self.ensure_fresh_evaluation()?;
+        let host = self.host.clone();
+        let interpreter = InterpreterImpl::new(self.budget.clone(), self.merge_chs.clone());
+        if host.is_rejected() {
+            return interpreter.host_rejected_result(Default::default());
+        }
+        let checkpoint = match self.checkpoint().await {
+            Ok(checkpoint) => checkpoint,
+            Err(_) if host.is_rejected() => {
+                return interpreter.host_rejected_result(Default::default());
+            }
+            Err(error) => return Err(error),
+        };
+        self.unavailable = true;
+        self.evaluation_started = true;
+        self.merge_chs.write().await.clear();
+        let scope = self.budget.enter_comm_accounting_scope();
+        let (execution, failures) = self
+            .reducer
+            .inj_with_observation(par, rand, Some(host.clone()))
+            .await;
+        drop(scope);
+        if host.is_rejected() {
+            let result = interpreter.host_rejected_result(failures);
+            self.restore_state(checkpoint).await?;
+            return result;
+        }
+        let result = async {
+            let evidence = self.session.completed_evidence().await?;
+            let mergeable = self.merge_chs.read().await;
+            super::accounting::clone_backing::reserve(&*mergeable, &host)?;
+            let mergeable = mergeable.clone();
+            if host.is_rejected() {
+                return Err(InterpreterError::HostWorkRejected);
+            }
+            interpreter.complete_replay_result(execution, failures, mergeable, evidence)
+        }
+        .await;
+        if result.is_err() {
+            self.restore_state(checkpoint).await?;
+            if host.is_rejected() {
+                return interpreter.host_rejected_result(failures);
+            }
+        }
+        self.unavailable = false;
+        result
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn evaluate_raw(
+        &mut self,
+        par: Par,
+        rand: Blake2b512Random,
+    ) -> (
+        Result<(), InterpreterError>,
+        super::accounting::economic_failure::EvaluationFailureSummary,
+    ) {
+        if let Err(error) = self.ensure_fresh_evaluation() {
+            return (
+                Err(error),
+                super::accounting::economic_failure::EvaluationFailureSummary::single(
+                    super::accounting::phlo_execution::PhloFailure::Platform,
+                ),
+            );
+        }
+        self.unavailable = true;
+        self.evaluation_started = true;
+        let _scope = self.budget.enter_comm_accounting_scope();
+        let result = self
+            .reducer
+            .inj_with_observation(par, rand, Some(self.host.clone()))
+            .await;
+        self.unavailable = false;
+        result
+    }
+
+    pub fn urn_map(&self) -> &HashMap<String, Par> { &self.reducer.urn_map }
+
+    pub fn mergeable_tags(&self) -> &HashMap<Par, MergeType> { &self.reducer.mergeable_tags }
+
+    pub async fn check_complete(&self) -> Result<(), RSpaceError> {
+        self.ensure_evaluated()?;
+        self.session.check_complete().await
+    }
+
+    pub async fn completed_usage(&self) -> Result<u64, RSpaceError> {
+        self.ensure_evaluated()?;
+        self.session.completed_usage().await
+    }
+
+    pub async fn completed_evidence(
+        &self,
+    ) -> Result<super::accounting::NativeReplayAccountingSnapshot, RSpaceError> {
+        self.ensure_evaluated()?;
+        self.session.completed_evidence().await
+    }
+
+    pub async fn export(
+        self,
+    ) -> Result<
+        rspace_plus_plus::rspace::replay_rspace::native_session::NativeReplayExport<
+            super::accounting::NativeReplayAccountingSnapshot,
+        >,
+        InterpreterError,
+    > {
+        self.ensure_evaluated()?;
+        Ok(self.session.export().await?)
+    }
+
+    pub async fn get_data(
+        &self,
+        channel: &Par,
+    ) -> Result<Vec<Datum<ListParWithRandom>>, RSpaceError> {
+        self.ensure_available()?;
+        self.session.get_data(channel).await
+    }
+
+    pub async fn get_data_with_host_work(
+        &self,
+        channel: &Par,
+        host: &HostWorkBudget,
+    ) -> Result<Vec<Datum<ListParWithRandom>>, RSpaceError> {
+        self.ensure_available()?;
+        self.session.get_data_with_host_work(channel, host).await
+    }
+
+    pub async fn get_joins(&self, channel: &Par) -> Result<Vec<Vec<Par>>, RSpaceError> {
+        self.ensure_available()?;
+        self.session.get_joins(channel).await
+    }
+}
+
+pub async fn create_native_replay_env(
+    trace: CheckedNativeOperationTrace,
+    history: RhoHistoryRepository,
+    matcher: Arc<Box<dyn Match<BindPattern, ListParWithRandom, TaggedContinuation>>>,
+    host: HostWorkBudget,
+    merge_chs: Arc<tokio::sync::RwLock<HashMap<Par, MergeType>>>,
+    mergeable_tags: Arc<HashMap<Par, MergeType>>,
+    extra_system_processes: &mut Vec<Definition>,
+    cost: RuntimeBudget,
+    external_services: ExternalServices,
+) -> Result<NativeReplayEnvironment, InterpreterError> {
+    if !cost.has_exclusive_authority_owner() {
+        return Err(InterpreterError::ReduceError(
+            "native replay environment requires exclusive runtime-budget ownership".to_owned(),
+        ));
+    }
+    if Arc::strong_count(&merge_chs) != 1 {
+        return Err(InterpreterError::ReduceError(
+            "native replay environment requires exclusive merge-tracker ownership".to_owned(),
+        ));
+    }
+    let (block_data, invalid_blocks, deploy_data, mut urn_map, proc_defs) =
+        setup_maps_and_refs(extra_system_processes);
+    insert_mergeable_bindings(&mut urn_map, &mergeable_tags)?;
+    let installations = proc_defs
+        .into_iter()
+        .map(system_process_install)
+        .collect::<Result<Vec<_>, _>>()?;
+    let session = Arc::new(trace.into_runtime_session(
+        history,
+        matcher,
+        host.clone(),
+        installations,
+        cost.clone(),
+    )?);
+    let reducer = setup_reducer(
+        session.execution_space(cost.clone()),
+        block_data.clone(),
+        invalid_blocks.clone(),
+        deploy_data.clone(),
+        extra_system_processes,
+        urn_map,
+        merge_chs.clone(),
+        mergeable_tags,
+        external_services.openai,
+        external_services.ollama,
+        external_services.grpc_client,
+        external_services.chroma,
+        cost.clone(),
+        ReductionCoordinator::default(),
+    )
+    .await;
+    Ok(NativeReplayEnvironment {
+        session,
+        reducer,
+        budget: cost,
+        host,
+        unavailable: false,
+        evaluation_started: false,
+        merge_chs,
+        block_data,
+        invalid_blocks,
+        deploy_data,
+    })
+}
+
 pub async fn create_rho_env<T>(
     mut rspace: T,
     merge_chs: Arc<tokio::sync::RwLock<HashMap<Par, MergeType>>>,
@@ -1494,29 +1892,15 @@ where
     let maps_and_refs = setup_maps_and_refs(extra_system_processes);
     let (block_data_ref, invalid_blocks, deploy_data_ref, mut urn_map, proc_defs) = maps_and_refs;
 
-    let tag_uri_bindings = mergeable_tag_uri_bindings(&mergeable_tags)
-        .unwrap_or_else(|uri| panic!("duplicate mergeable tag URI: {uri}"));
-    for (uri, tag_par) in tag_uri_bindings {
-        let merge_type = mergeable_tags
-            .get(&tag_par)
-            .expect("mergeable URI binding references configured tag");
-        let previous = urn_map.insert(uri.to_string(), tag_par.clone());
-        assert!(previous.is_none(), "duplicate mergeable tag URI: {uri}");
-        tracing::info!(
-            target: "f1r3fly.merge.tag_check.validation",
-            uri,
-            merge_type = ?merge_type,
-            unforgeables = tag_par.unforgeables.len(),
-            exprs = tag_par.exprs.len(),
-            bundles = tag_par.bundles.len(),
-            "Mergeable tag URI binding inserted"
-        );
-    }
+    insert_mergeable_bindings(&mut urn_map, &mergeable_tags).unwrap();
 
     let res = introduce_system_process(vec![&mut rspace], proc_defs).await;
     assert!(res.iter().all(|s| s.is_none()));
 
     let raw_rspace: RhoISpace = Arc::new(Box::new(rspace));
+    raw_rspace.set_accounting_observer(Some(Arc::new(RhoCommObserver {
+        budget: cost.clone(),
+    })));
     let reduction_coordinator = ReductionCoordinator::default();
     let scheduled_rspace: RhoISpace = Arc::new(Box::new(DeterministicRSpace::new(
         raw_rspace,
@@ -1528,8 +1912,8 @@ where
     let ollama_service = external_services.ollama.clone();
     let grpc_client_service = external_services.grpc_client.clone();
     let chromadb_service = external_services.chroma.clone();
-    let reducer = setup_reducer(
-        scheduled_rspace,
+    let core = setup_reducer(
+        scheduled_rspace.clone().into(),
         block_data_ref.clone(),
         invalid_blocks.clone(),
         deploy_data_ref.clone(),
@@ -1545,6 +1929,10 @@ where
         reduction_coordinator,
     )
     .await;
+    let reducer = Arc::new(DebruijnInterpreter {
+        space: scheduled_rspace,
+        core,
+    });
 
     (reducer, block_data_ref, invalid_blocks, deploy_data_ref)
 }

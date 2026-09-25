@@ -95,12 +95,243 @@ Proof.
   rewrite flat_authority_units_append, IHauthority1, IHauthority2. reflexivity.
 Qed.
 
+Definition restore_authority_node (node : flat_authority_node)
+  (state : option (list sig)) : option (list sig) :=
+  match state with
+  | None => None
+  | Some stack =>
+      match node with
+      | FlatUnit => Some (SUnit :: stack)
+      | FlatGround bytes => Some (SGround bytes :: stack)
+      | FlatQuote bytes => Some (SQuote bytes :: stack)
+      | FlatAnd =>
+          match stack with
+          | lhs :: rhs :: rest => Some (SAnd lhs rhs :: rest)
+          | _ => None
+          end
+      end
+  end.
+
+Definition restore_authority (nodes : list flat_authority_node) : option sig :=
+  match fold_right restore_authority_node (Some []) nodes with
+  | Some [authority] => Some authority
+  | _ => None
+  end.
+
+Theorem restore_flattened_authority_stack : forall authority stack,
+  fold_right restore_authority_node (Some stack) (flatten_authority authority) =
+  Some (authority :: stack).
+Proof.
+  induction authority; intros stack; simpl; try reflexivity.
+  rewrite fold_right_app, IHauthority2, IHauthority1. reflexivity.
+Qed.
+
+Theorem restore_flattened_authority_exact : forall authority,
+  restore_authority (flatten_authority authority) = Some authority.
+Proof. intros. unfold restore_authority. rewrite restore_flattened_authority_stack. reflexivity. Qed.
+
+Lemma restore_authority_node_preserves_encoding : forall node before after,
+  restore_authority_node node (Some before) = Some after ->
+  flat_map flatten_authority after = node :: flat_map flatten_authority before.
+Proof.
+  intros node before after restored. destruct node; simpl in restored;
+    try (inversion restored; reflexivity).
+  destruct before as [|left [|right rest]]; simpl in restored; try discriminate.
+  inversion restored. simpl. rewrite app_assoc. reflexivity.
+Qed.
+
+Lemma restored_authority_stack_preserves_encoding : forall nodes before after,
+  fold_right restore_authority_node (Some before) nodes = Some after ->
+  flat_map flatten_authority after = nodes ++ flat_map flatten_authority before.
+Proof.
+  induction nodes as [|node tail IH]; intros before after restored; simpl in *.
+  - inversion restored. reflexivity.
+  - destruct (fold_right restore_authority_node (Some before) tail) as [middle|] eqn:mid.
+    + pose proof (restore_authority_node_preserves_encoding node middle after restored) as step.
+      rewrite step, (IH before middle mid). reflexivity.
+    + destruct node; discriminate.
+Qed.
+
+Theorem restored_authority_has_exact_original_encoding : forall nodes authority,
+  restore_authority nodes = Some authority -> flatten_authority authority = nodes.
+Proof.
+  intros nodes authority restored. unfold restore_authority in restored.
+  destruct (fold_right restore_authority_node (Some []) nodes) as [stack|] eqn:decoded;
+    try discriminate.
+  destruct stack as [|head rest]; try discriminate.
+  destruct rest; try discriminate. inversion restored; subst.
+  pose proof (restored_authority_stack_preserves_encoding nodes [] [authority] decoded) as exact.
+  simpl in exact. now rewrite !app_nil_r in exact.
+Qed.
+
+Print Assumptions restore_flattened_authority_exact.
+Print Assumptions restored_authority_has_exact_original_encoding.
+
 Record prepaid_resource_key := {
   prepaid_location : nat;
   prepaid_class : nat;
   prepaid_terms : nat;
   prepaid_authority : sig
 }.
+
+Section MeasuredPrepaidBinding.
+Context {Shape : Type}.
+Variable shape_eq_dec : forall (left right : Shape), {left = right} + {left <> right}.
+Variable shape_weight : Shape -> nat.
+
+Fixpoint consume_measured_unit (index : nat) (resource : Shape)
+  (demand : list (Shape * nat)) : option (list (Shape * nat)) :=
+  match demand with
+  | [] => None
+  | (shape, quantity) :: tail =>
+      match index with
+      | 0 => if shape_eq_dec shape resource then
+          match quantity with 0 => None | S rest => Some ((shape, rest) :: tail) end
+          else None
+      | S next => match consume_measured_unit next resource tail with
+          | None => None | Some rest => Some ((shape, quantity) :: rest) end
+      end
+  end.
+
+Definition measured_usage (demand : list (Shape * nat)) :=
+  fold_right (fun entry total => snd entry * shape_weight (fst entry) + total) 0 demand.
+
+Theorem consumed_measured_unit_preserves_shapes : forall index resource before after,
+  consume_measured_unit index resource before = Some after -> map fst after = map fst before.
+Proof.
+  induction index; intros resource before after accepted;
+    destruct before as [|[shape quantity] tail]; simpl in accepted; try discriminate.
+  - destruct (shape_eq_dec shape resource); [|discriminate].
+    destruct quantity; inversion accepted. reflexivity.
+  - destruct (consume_measured_unit index resource tail) as [rest|] eqn:step; [|discriminate].
+    inversion accepted; subst. simpl. f_equal. eapply IHindex; eassumption.
+Qed.
+
+Theorem consumed_measured_unit_has_matching_positive_source : forall index resource before after,
+  consume_measured_unit index resource before = Some after ->
+  exists quantity, nth_error before index = Some (resource, S quantity).
+Proof.
+  induction index; intros resource before after accepted;
+    destruct before as [|[shape quantity] tail]; simpl in accepted; try discriminate.
+  - destruct (shape_eq_dec shape resource); [subst shape|discriminate].
+    destruct quantity; [discriminate|]. exists quantity. reflexivity.
+  - destruct (consume_measured_unit index resource tail) as [rest|] eqn:step; [|discriminate].
+    simpl. eapply IHindex; eassumption.
+Qed.
+
+Theorem consumed_measured_unit_preserves_weighted_quantity : forall index resource before after,
+  consume_measured_unit index resource before = Some after ->
+  measured_usage before = shape_weight resource + measured_usage after.
+Proof.
+  induction index; intros resource before after accepted;
+    destruct before as [|[shape quantity] tail]; simpl in accepted; try discriminate.
+  - destruct (shape_eq_dec shape resource); [subst shape|discriminate].
+    destruct quantity; [discriminate|]. inversion accepted; subst.
+    unfold measured_usage. simpl. lia.
+  - destruct (consume_measured_unit index resource tail) as [rest|] eqn:step; [|discriminate].
+    inversion accepted; subst. specialize (IHindex _ _ _ step).
+    unfold measured_usage in *. simpl in *. lia.
+Qed.
+
+Theorem consumed_measured_unit_cannot_increase_any_quantity : forall index resource before after position,
+  consume_measured_unit index resource before = Some after ->
+  nth position (map snd after) 0 <= nth position (map snd before) 0.
+Proof.
+  induction index; intros resource before after position accepted;
+    destruct before as [|[shape quantity] tail]; simpl in accepted; try discriminate.
+  - destruct (shape_eq_dec shape resource); [|discriminate].
+    destruct quantity; [discriminate|]. inversion accepted; subst.
+    destruct position; simpl; lia.
+  - destruct (consume_measured_unit index resource tail) as [rest|] eqn:step; [|discriminate].
+    inversion accepted; subst. destruct position; simpl; [lia|]. eapply IHindex; eassumption.
+Qed.
+
+Fixpoint bind_measured_units (assignments : list (nat * Shape)) demand :=
+  match assignments with
+  | [] => Some demand
+  | (index, resource) :: tail =>
+      match consume_measured_unit index resource demand with
+      | None => None | Some next => bind_measured_units tail next
+      end
+  end.
+
+Definition assigned_usage (assignments : list (nat * Shape)) :=
+  fold_right (fun entry total => shape_weight (snd entry) + total) 0 assignments.
+
+Theorem measured_binding_preserves_weighted_quantity : forall assignments before after,
+  bind_measured_units assignments before = Some after ->
+  measured_usage before = assigned_usage assignments + measured_usage after.
+Proof.
+  induction assignments as [|[index resource] tail IH]; intros before after accepted; simpl in accepted.
+  - inversion accepted; subst. reflexivity.
+  - destruct (consume_measured_unit index resource before) as [next|] eqn:step; [|discriminate].
+    specialize (IH _ _ accepted).
+    pose proof (consumed_measured_unit_preserves_weighted_quantity _ _ _ _ step).
+    unfold assigned_usage. simpl. unfold assigned_usage in IH. lia.
+Qed.
+
+Theorem measured_binding_never_overdraws : forall assignments before after,
+  bind_measured_units assignments before = Some after -> assigned_usage assignments <= measured_usage before.
+Proof. intros. apply measured_binding_preserves_weighted_quantity in H. lia. Qed.
+
+Theorem measured_binding_preserves_demand_shapes : forall assignments before after,
+  bind_measured_units assignments before = Some after -> map fst after = map fst before.
+Proof.
+  induction assignments as [|[index resource] tail IH]; intros before after accepted; simpl in accepted.
+  - inversion accepted; reflexivity.
+  - destruct (consume_measured_unit index resource before) as [next|] eqn:step; [|discriminate].
+    rewrite (IH _ _ accepted). eapply consumed_measured_unit_preserves_shapes; eassumption.
+Qed.
+
+Theorem measured_binding_preserves_operation_composition : forall first second before,
+  bind_measured_units (first ++ second) before =
+  match bind_measured_units first before with None => None | Some next => bind_measured_units second next end.
+Proof.
+  induction first as [|[index resource] tail IH]; intros second before; simpl; [reflexivity|].
+  destruct (consume_measured_unit index resource before); [apply IH|reflexivity].
+Qed.
+
+Theorem consumed_measured_unit_exact_position : forall index resource before after position,
+  consume_measured_unit index resource before = Some after ->
+  nth position (map snd before) 0 =
+    (if Nat.eq_dec index position then 1 else 0) + nth position (map snd after) 0.
+Proof.
+  induction index; intros resource before after position accepted;
+    destruct before as [|[shape quantity] tail]; simpl in accepted; try discriminate.
+  - destruct (shape_eq_dec shape resource); [|discriminate].
+    destruct quantity; [discriminate|]. inversion accepted; subst.
+    destruct position; simpl; reflexivity.
+  - destruct (consume_measured_unit index resource tail) as [rest|] eqn:step; [|discriminate].
+    inversion accepted; subst. destruct position; simpl; [reflexivity|].
+    specialize (IHindex _ _ _ position step).
+    destruct (Nat.eq_dec index position), (Nat.eq_dec (S index) (S position)); try lia.
+Qed.
+
+Theorem measured_binding_exact_position_counts : forall assignments before after position,
+  bind_measured_units assignments before = Some after ->
+  nth position (map snd before) 0 =
+    count_occ Nat.eq_dec (map fst assignments) position + nth position (map snd after) 0.
+Proof.
+  induction assignments as [|[index resource] tail IH]; intros before after position accepted;
+    simpl in accepted.
+  - inversion accepted; subst. reflexivity.
+  - destruct (consume_measured_unit index resource before) as [next|] eqn:step; [|discriminate].
+    specialize (IH _ _ position accepted).
+    pose proof (consumed_measured_unit_exact_position _ _ _ _ position step) as consumed.
+    simpl. destruct (Nat.eq_dec index position); simpl in *; lia.
+Qed.
+End MeasuredPrepaidBinding.
+
+Print Assumptions consumed_measured_unit_preserves_shapes.
+Print Assumptions consumed_measured_unit_has_matching_positive_source.
+Print Assumptions consumed_measured_unit_preserves_weighted_quantity.
+Print Assumptions consumed_measured_unit_cannot_increase_any_quantity.
+Print Assumptions measured_binding_preserves_weighted_quantity.
+Print Assumptions measured_binding_never_overdraws.
+Print Assumptions measured_binding_preserves_demand_shapes.
+Print Assumptions measured_binding_preserves_operation_composition.
+Print Assumptions consumed_measured_unit_exact_position.
+Print Assumptions measured_binding_exact_position_counts.
 
 Definition prepaid_key_eq_dec : forall (left right : prepaid_resource_key),
   {left = right} + {left <> right}.
@@ -451,3 +682,115 @@ Print Assumptions counted_exhaustion_matches_expansion.
 Print Assumptions counted_value_matches_expansion.
 Print Assumptions counted_split_preserves_quantity.
 Print Assumptions counted_split_preserves_value.
+
+Definition discharge_used (available required : nat) := Nat.min available required.
+Definition discharge_unused (available required : nat) := available - discharge_used available required.
+Definition discharge_fresh (available required : nat) := required - discharge_used available required.
+
+Theorem derived_discharge_preserves_supply_and_demand : forall available required,
+  available = discharge_used available required + discharge_unused available required /\
+  required = discharge_used available required + discharge_fresh available required.
+Proof.
+  intros. unfold discharge_unused, discharge_fresh, discharge_used.
+  pose proof (Nat.le_min_l available required).
+  pose proof (Nat.le_min_r available required). lia.
+Qed.
+
+Theorem derived_discharge_exhausts_compatible_supply : forall available required,
+  discharge_unused available required = 0 \/ discharge_fresh available required = 0.
+Proof.
+  intros. unfold discharge_unused, discharge_fresh, discharge_used.
+  destruct (Nat.le_ge_cases available required).
+  - rewrite Nat.min_l by assumption. left. lia.
+  - rewrite Nat.min_r by assumption. right. lia.
+Qed.
+
+Theorem exhausted_discharge_has_unique_quantities : forall available required used unused fresh,
+  available = used + unused -> required = used + fresh ->
+  (unused = 0 \/ fresh = 0) ->
+  used = discharge_used available required /\
+  unused = discharge_unused available required /\
+  fresh = discharge_fresh available required.
+Proof.
+  intros available required used unused fresh supply demand exhausted.
+  unfold discharge_unused, discharge_fresh, discharge_used.
+  destruct exhausted as [none|none].
+  - rewrite Nat.min_l by lia. lia.
+  - rewrite Nat.min_r by lia. lia.
+Qed.
+
+Theorem derived_discharge_stays_within_input_bound : forall maximum available required,
+  available <= maximum -> required <= maximum ->
+  discharge_used available required <= maximum /\
+  discharge_unused available required <= maximum /\
+  discharge_fresh available required <= maximum.
+Proof.
+  intros. pose proof (derived_discharge_preserves_supply_and_demand available required). lia.
+Qed.
+
+Theorem derived_discharge_respects_complete_key_counts : forall available required left right,
+  counted_quantity available left = counted_quantity available right ->
+  counted_quantity required left = counted_quantity required right ->
+  discharge_used (counted_quantity available left) (counted_quantity required left) =
+    discharge_used (counted_quantity available right) (counted_quantity required right) /\
+  discharge_unused (counted_quantity available left) (counted_quantity required left) =
+    discharge_unused (counted_quantity available right) (counted_quantity required right) /\
+  discharge_fresh (counted_quantity available left) (counted_quantity required left) =
+    discharge_fresh (counted_quantity available right) (counted_quantity required right).
+Proof. intros. now rewrite H, H0. Qed.
+
+Print Assumptions derived_discharge_preserves_supply_and_demand.
+Print Assumptions derived_discharge_exhausts_compatible_supply.
+Print Assumptions exhausted_discharge_has_unique_quantities.
+Print Assumptions derived_discharge_stays_within_input_bound.
+Print Assumptions derived_discharge_respects_complete_key_counts.
+
+Section RetainedAcquisition.
+Definition successful_acquisition_charge (consumed_fresh retained price : nat) :=
+  1 + consumed_fresh * price + retained * price.
+
+Theorem retained_acquisition_is_additional_backing : forall consumed_fresh retained price,
+  successful_acquisition_charge consumed_fresh retained price =
+    successful_acquisition_charge consumed_fresh 0 price + retained * price.
+Proof. intros. unfold successful_acquisition_charge. lia. Qed.
+
+Theorem retained_acquisition_preserves_consumption_partitions : forall available required retained,
+  available + discharge_fresh available required + retained =
+    required + (discharge_unused available required + retained).
+Proof.
+  intros. pose proof (derived_discharge_preserves_supply_and_demand available required). lia.
+Qed.
+
+Theorem retained_credit_requires_its_own_backing : forall consumed_fresh retained price,
+  0 < retained -> 0 < price ->
+  successful_acquisition_charge consumed_fresh 0 price <
+    successful_acquisition_charge consumed_fresh retained price.
+Proof. intros. unfold successful_acquisition_charge. nia. Qed.
+
+Theorem retained_acquisition_split_is_additive : forall consumed_fresh left right price,
+  successful_acquisition_charge consumed_fresh (left + right) price =
+    successful_acquisition_charge consumed_fresh left price + right * price.
+Proof. intros. unfold successful_acquisition_charge. nia. Qed.
+
+Theorem no_retained_acquisition_preserves_existing_charge : forall consumed_fresh price,
+  successful_acquisition_charge consumed_fresh 0 price = 1 + consumed_fresh * price.
+Proof. intros. unfold successful_acquisition_charge. lia. Qed.
+
+Theorem prepaid_consumption_is_not_new_backing : forall available required retained price,
+  required <= available ->
+  successful_acquisition_charge (discharge_fresh available required) retained price =
+    1 + retained * price.
+Proof. intros. unfold successful_acquisition_charge, discharge_fresh. rewrite Nat.min_r by assumption. lia. Qed.
+
+Theorem zero_price_retains_only_flat_fee : forall consumed_fresh retained,
+  successful_acquisition_charge consumed_fresh retained 0 = 1.
+Proof. intros. unfold successful_acquisition_charge. lia. Qed.
+End RetainedAcquisition.
+
+Print Assumptions retained_acquisition_is_additional_backing.
+Print Assumptions retained_acquisition_preserves_consumption_partitions.
+Print Assumptions retained_credit_requires_its_own_backing.
+Print Assumptions retained_acquisition_split_is_additive.
+Print Assumptions no_retained_acquisition_preserves_existing_charge.
+Print Assumptions prepaid_consumption_is_not_new_backing.
+Print Assumptions zero_price_retains_only_flat_fee.

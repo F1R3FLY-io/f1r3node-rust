@@ -10,13 +10,13 @@ use serde::Serialize;
 
 use super::RSpace;
 use crate::rspace::errors::RSpaceError;
-use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::internal::*;
 use crate::rspace::metrics_constants::{
     LOCKED_PRODUCE_SPAN, PRODUCE_COMM_LABEL, RSPACE_METRICS_SOURCE,
 };
 use crate::rspace::rspace_interface::{
-    MaybeConsumeResult, MaybeProduceCandidate, MaybeProduceResult,
+    MaybeConsumeResult, MaybeProduceCandidate, MaybeProduceResult, RSpaceAccountingObserver,
+    RSpaceOperationCompletion, RSpaceOperationSource,
 };
 use crate::rspace::space_matcher::SpaceMatcher;
 use crate::rspace::trace::event::{COMM, Produce};
@@ -44,7 +44,37 @@ where
         metrics::counter!("rspace.produce.get_joins_ns", "source" => RSPACE_METRICS_SOURCE)
             .increment(t0.elapsed().as_nanos() as u64);
 
-        self.observe_produce(produce_ref, &channel, &data, persist)?;
+        let source = RSpaceOperationSource::Produce(produce_ref);
+        let observer = self.start_accounting_operation(
+            source,
+            std::slice::from_ref(&channel),
+            &grouped_channels,
+        )?;
+        let result = self.locked_produce_observed(
+            channel,
+            data,
+            persist,
+            produce_ref,
+            grouped_channels,
+            observer.as_deref(),
+        );
+        if let Some(observer) = observer {
+            observer
+                .observe_operation_finish(source, RSpaceOperationCompletion::from_result(&result));
+        }
+        result
+    }
+
+    fn locked_produce_observed(
+        &self,
+        channel: C,
+        data: A,
+        persist: bool,
+        produce_ref: &Produce,
+        grouped_channels: Vec<Vec<C>>,
+        observer: Option<&dyn RSpaceAccountingObserver<C, P, A, K>>,
+    ) -> Result<MaybeProduceResult<C, P, A, K>, RSpaceError> {
+        Self::observe_produce(observer, produce_ref, &channel, &data, persist)?;
 
         let t1 = Instant::now();
         let extracted = self.extract_produce_candidate(grouped_channels, channel.clone(), Datum {
@@ -59,7 +89,7 @@ where
             Some(produce_candidate) => {
                 let t2 = Instant::now();
                 let result = self
-                    .process_match_found(produce_candidate, produce_ref, persist)
+                    .process_match_found(produce_candidate, produce_ref, persist, observer)
                     .map(|result| {
                         result.map(|consume_result| {
                             (consume_result.0, consume_result.1, produce_ref.clone())
@@ -135,6 +165,7 @@ where
         pc: ProduceCandidate<C, P, A, K>,
         produce_ref: &Produce,
         produce_persistent: bool,
+        observer: Option<&dyn RSpaceAccountingObserver<C, P, A, K>>,
     ) -> Result<MaybeConsumeResult<C, P, A, K>, RSpaceError> {
         let ProduceCandidate {
             channels,
@@ -164,7 +195,7 @@ where
             peeks.clone(),
             produce_counters_closure,
         );
-        self.observe_comm(&comm, _cont, *persist, &data_candidates)?;
+        Self::observe_comm(observer, &comm, _cont, *persist, &data_candidates)?;
         self.log_produce(produce_ref, produce_persistent);
         self.log_comm(comm, PRODUCE_COMM_LABEL);
 
@@ -200,7 +231,7 @@ where
         data_candidates: &[ConsumeCandidate<C, A>],
     ) {
         let mut sorted_candidates: Vec<_> = data_candidates.iter().collect();
-        sorted_candidates.sort_by_key(|candidate| candidate.datum_index);
+        sorted_candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.datum_index));
         let store = self.get_store();
         for consume_candidate in sorted_candidates {
             let channel = &consume_candidate.channel;
@@ -259,21 +290,6 @@ where
     }
 
     pub(super) fn shuffle_with_index<D: Serialize>(&self, t: Vec<D>) -> Vec<(D, i32)> {
-        let mut indexed_vec = t
-            .into_iter()
-            .enumerate()
-            .map(|(i, d)| (d, i as i32))
-            .collect::<Vec<_>>();
-        indexed_vec.sort_by(|(left, left_index), (right, right_index)| {
-            deterministic_candidate_hash(left)
-                .cmp(&deterministic_candidate_hash(right))
-                .then_with(|| left_index.cmp(right_index))
-        });
-        indexed_vec
+        crate::rspace::space_matcher::deterministic_candidates(t)
     }
-}
-
-fn deterministic_candidate_hash<D: Serialize>(candidate: &D) -> Blake2b256Hash {
-    let bytes = bincode::serialize(candidate).unwrap_or_default();
-    Blake2b256Hash::new(&bytes)
 }

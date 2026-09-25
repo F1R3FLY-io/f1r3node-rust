@@ -208,6 +208,27 @@ Recognition of a funded format does not activate that format, even when the call
 Funded execution requires a separate, explicit integration of admission, processed deploys, and replay.
 
 Historical pending-record reads repeat signature verification.
+
+### Pending API responses
+
+The pending API retains `DeployEnvelope` records through the Casper interface and `PendingDeploysSnapshot`.
+The query reads complete records from the configured pending and rejected stores.
+It does not use the proposal format gate to decode a read-only response.
+Listing a record does not permit its execution. Proposal admission still requires the active execution policy.
+
+The query preserves the existing validity-window and merge-scope filters.
+A record present in both queues appears once, with the rejected flag set.
+The optional deployer filter compares the checked primary public key.
+Results sort by timestamp, then typed deploy identity, before the existing result cap applies.
+Identity comparison uses the retained checked identity. It does not recompute a body-only commitment or substitute an empty commitment after failure.
+
+The gRPC response encodes the complete envelope, including signed funding terms and offered phlo parameters.
+Serialization errors produce an error response instead of a partial list.
+The HTTP response remains a summary of the body, primary signer, identity, and queue status.
+That summary is not a signed envelope and cannot replace one for submission or replay.
+
+The pending API regression covers funded and offered-funded records, exact envelope restoration, queue deduplication, primary filtering, and deterministic ordering.
+It also checks that the historical execution gate still rejects funded records after the query succeeds.
 This check prevents unchecked stored data from becoming authenticated runtime authority.
 Repeated-read tests cover threshold policies with 3, 17, and 65 members, including an absent first member.
 The database regression repeats these reads after two reopen cycles and checks that the historical record bytes remain unchanged.
@@ -296,7 +317,7 @@ Restore uses the following checks:
 5. Verify signatures and require agreement between the stored format, identity, and envelope.
 6. Require exact canonical protobuf re-encoding.
 
-Every read repeats these checks. Opening a store checks all records through a streaming iterator.
+Every envelope read repeats these checks. Opening a store checks all records through a streaming iterator.
 Malformed records produce an error. Validation does not delete or replace them.
 Canonical protobuf encoding preserves signed fields, policy members, selected witnesses, and the retained legacy signer order.
 It does not preserve arbitrary protobuf field order or unknown fields.
@@ -335,6 +356,19 @@ It does not copy historical rows into that namespace.
 `read_all_pending` returns checked records from all configured namespaces without granting execution permission.
 The historical `read_all_for_protocol` method rejects a nonempty funded namespace instead of returning an incomplete candidate set.
 `remove_pending` selects the namespace from the checked format and deletes only that record.
+
+`contains_pending_id` searches both historical and funded namespaces for the typed identity.
+It checks row presence without decoding the payload. It rejects an identity present in both namespaces.
+This membership check does not authenticate stored bytes or authorize execution.
+`remove_pending_by_id` first loads and checks the complete envelope, then removes its row from the selected namespace.
+An invalid envelope or ambiguous location causes an error before deletion.
+Both removal methods return the backend deletion count as a Boolean, not an earlier presence observation.
+Concurrent removals therefore report one successful deletion when no insertion intervenes.
+
+Admission duplicate checks and terminal cleanup use the typed identity methods.
+Proposal cleanup uses the checked pending record when that record is already available.
+These calls preserve the existing expiration, recovery, and terminal-status decisions.
+Separate namespace reads are not a cross-namespace transaction. Valid inserts retain the format-specific identity and namespace contract.
 These queue operations do not debit purses or publish execution effects.
 
 Each insertion uses atomic insert-if-absent in the selected namespace.
@@ -401,6 +435,8 @@ It also proves that successful decoding does not imply execution permission.
 Key-size lemmas establish the legacy payload bound and the exact configured-size condition.
 Pending-record lemmas preserve the complete envelope, derived identity, and original primary under the same codec premise.
 Routing lemmas separate funded formats from historical namespaces and preserve unrelated namespaces and keys.
+Deletion lemmas prove target removal, preservation of other namespaces and keys, idempotence, and commutativity.
+These lemmas model namespace routing. They do not prove the storage backend or cryptographic identity construction.
 Lookup lemmas reject two occupied locations and preserve a unique record.
 Batch lemmas preserve storage after preparation failure or transaction failure.
 They establish complete publication, unchanged unrelated rows, ordered batch composition, and last-write behavior for repeated keys.
@@ -424,6 +460,21 @@ The abstract contracts do not prove Rust refinement or shared-wallet settlement 
 The [model tests](../../../../models/src/rust/signed_phlo_deploy/envelope_tests.rs) check native round trips, format substitution, threshold witnesses, and canonical record rejection.
 The [storage tests](../../../../block-storage/src/rust/deploy/versioned_deploy_storage/tests.rs) check restart behavior, unchanged legacy records, corruption, duplicate races, and key limits.
 Facade tests exercise mixed-format operation histories, complete envelope retention, namespace isolation, restart, and concurrent insertion through cloned handles.
+Pending tests also cover typed membership, typed removal, concurrent removal, and rejection of ambiguous storage without deletion.
+Generated histories compare both removal methods and membership queries with an independent map of retained envelopes.
+
+| Deletion property | Native check |
+| --- | --- |
+| The selected row becomes absent. | Retirement examples and generated mixed-operation histories check absence after removal. |
+| Other namespaces remain unchanged. | Generated histories compare raw historical stores before and after funded operations. |
+| Other keys retain their complete envelopes. | The reference map checks all retained envelopes after each generated operation. |
+| Repeated deletion preserves absence. | Retirement examples and generated histories check repeated deletion and its return value. |
+| Deletion order does not change the result. | All 16 format pairs run in both orders and compare every remaining envelope. |
+
+Concurrent removal tests use eight cloned handles against both the in-memory backend and LMDB.
+These tests check one successful deletion per stored envelope without an intervening insertion.
+They supplement the abstract proofs with backend checks. They do not exhaust every operating-system schedule.
+
 Rejected-buffer tests exercise mixed-format batch histories, bounded preparation failure, cross-environment rejection, restart, and concurrent complete-batch outcomes.
 Generated batch histories compare full envelopes with an independent map, including empty batches and repeated keys.
 The [production transaction Loom tests](../../../../formal/loom/cost_accounting/tests/loom_production_sparse_transaction.rs) check competing mixed-namespace insertion and removal.
@@ -554,6 +605,61 @@ Cross-crate tests compare the metadata, normalizer environment, and random seed 
 The tests include threshold placeholders, noncanonical legacy primary order, generated offers, and wire round trips.
 Generated negative timestamps must fail payload construction before the helpers can create runtime context.
 These context tests do not replace interpreter, native settlement, or validator replay tests.
+
+### Interpreter processing boundary
+
+The user-deploy processor retains a `DeployEnvelope` throughout evaluation and result construction.
+Historical body-only callers construct that envelope before the existing soft checkpoint.
+The processor does not reconstruct body-only signatures from funded signatures.
+
+`RuntimeDeployRef` selects the existing context adapters without copying the source term.
+The retained envelope supplies system-process metadata, normalizer bindings, and the random seed.
+The meter receives the original bound commitment and the authority of the selected signers.
+Unsigned threshold members cannot become funding authorities.
+Historical signatures retain their existing meter initialization.
+
+The shared processor returns the complete `EvaluateResult` with the processed deploy.
+This result includes raw byte measurements, authority events, execution errors, and mergeable-channel changes.
+Native settlement must use these measurements with the authenticated resource policy.
+It must not reconstruct raw quantities from an already weighted cost.
+Historical callers retain their existing return values without cloning the complete evaluation result.
+
+Evaluation errors, invalid authority traces, and unresolved resource births retain the existing rollback behavior.
+The processed deploy retains its original signed envelope on success and failure.
+Failure measurements remain available after state rollback.
+These measurements do not authorize payment by themselves.
+
+Interpreter tests compare historical processing against the body-only evaluator, including costs, event logs, generated names, and resulting state roots.
+Funded tests check changed commitments, selected signers, threshold placeholders, wire round trips, exhaustion, and isolated concurrent runtime instances.
+Generated cases compare independent executions of an envelope and its decoded representation.
+This comparison is not a validator replay test.
+
+The interpreter fixtures test envelope transport, not funding sufficiency.
+Their records omit economic sources and eligible schedules and must not pass native funding admission.
+The runtime boundary does not activate funded network submission, proposal selection, or settlement.
+Those paths still require an authenticated policy, a sufficient funding proof, and replay verification.
+
+### Recorded-trace evaluation
+
+The replay evaluator accepts the retained envelope when its caller supplies an execution budget and an authority allocation.
+It uses the same bound commitment, selected signers, normalizer bindings, and random seed as play.
+The optional host-work budget remains separate from the economic budget.
+The evaluator does not derive funding permission from successful decoding.
+
+Historical legacy replay retains its existing body-context projection.
+This preserves the context previously obtained through `ProcessedDeploy::to_cosigned` without cloning the body.
+Bound formats use their retained context directly.
+The genesis path still rejects funded envelopes instead of treating them as system initialization.
+
+Recorded-trace tests execute a COMM in play and replay its recorded tuple-space events with a replay runtime.
+They compare costs, realized authority demand, raw byte measurements, meter identity, selected authority, and resulting state roots.
+Example cases and generated cohorts include unsigned threshold members.
+A negative test changes signed funding terms while retaining the recorded trace and requires replay rejection.
+
+These tests validate the interpreter boundary, not complete block replay or economic admission.
+Ordinary block replay still requires its funding certificate and authenticated state snapshot.
+Its current body-only settlement path cannot yet verify funded envelopes.
+Tests require funded genesis rejection and missing-certificate rejection to preserve these activation boundaries.
 
 The checked intent, family policy, native policy, and scoped capture retain the concrete envelope type.
 Each scoped capture retains an immutable reference to the original authenticated envelope.

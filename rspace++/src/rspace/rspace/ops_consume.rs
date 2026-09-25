@@ -14,7 +14,10 @@ use crate::rspace::internal::*;
 use crate::rspace::metrics_constants::{
     CONSUME_COMM_LABEL, LOCKED_CONSUME_SPAN, RSPACE_METRICS_SOURCE,
 };
-use crate::rspace::rspace_interface::{ContResult, MaybeConsumeResult, RSpaceResult};
+use crate::rspace::rspace_interface::{
+    ContResult, MaybeConsumeResult, RSpaceAccountingObserver, RSpaceOperationCompletion,
+    RSpaceOperationSource, RSpaceResult,
+};
 use crate::rspace::space_matcher::SpaceMatcher;
 use crate::rspace::trace::event::{COMM, Consume, Produce};
 
@@ -38,8 +41,44 @@ where
         let _span = tracing::info_span!(target: "f1r3fly.rspace", LOCKED_CONSUME_SPAN).entered();
         tracing::trace!(target: "f1r3fly.rspace.ops", mark = "started-locked-consume", "locked_consume");
 
+        let source = RSpaceOperationSource::Consume(consume_ref);
+        let observer = self.start_accounting_operation(source, channels, &[])?;
+        let result = self.locked_consume_observed(
+            channels,
+            patterns,
+            continuation,
+            persist,
+            peeks,
+            consume_ref,
+            observer.as_deref(),
+        );
+        if let Some(observer) = observer {
+            observer
+                .observe_operation_finish(source, RSpaceOperationCompletion::from_result(&result));
+        }
+        result
+    }
+
+    fn locked_consume_observed(
+        &self,
+        channels: &[C],
+        patterns: &[P],
+        continuation: &K,
+        persist: bool,
+        peeks: &BTreeSet<i32>,
+        consume_ref: &Consume,
+        observer: Option<&dyn RSpaceAccountingObserver<C, P, A, K>>,
+    ) -> Result<MaybeConsumeResult<C, P, A, K>, RSpaceError> {
         let t0 = Instant::now();
-        self.observe_consume(consume_ref, channels, patterns, continuation, persist, peeks)?;
+        Self::observe_consume(
+            observer,
+            consume_ref,
+            channels,
+            patterns,
+            continuation,
+            persist,
+            peeks,
+        )?;
         metrics::counter!("rspace.consume.log_ns", "source" => RSPACE_METRICS_SOURCE)
             .increment(t0.elapsed().as_nanos() as u64);
 
@@ -93,7 +132,7 @@ where
                     peeks.clone(),
                     produce_counters_closure,
                 );
-                self.observe_comm(&comm, continuation, persist, &data_candidates)?;
+                Self::observe_comm(observer, &comm, continuation, persist, &data_candidates)?;
                 self.log_consume(consume_ref);
                 self.log_comm(comm, CONSUME_COMM_LABEL);
                 self.store_persistent_data(&data_candidates);
@@ -152,7 +191,7 @@ where
 
     fn store_persistent_data(&self, data_candidates: &[ConsumeCandidate<C, A>]) {
         let mut sorted_candidates: Vec<_> = data_candidates.iter().collect();
-        sorted_candidates.sort_by_key(|candidate| candidate.datum_index);
+        sorted_candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.datum_index));
         let store = self.get_store();
         for consume_candidate in sorted_candidates {
             if !consume_candidate.datum.persist {

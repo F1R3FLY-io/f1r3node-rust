@@ -13,6 +13,7 @@ pub mod deterministic_reduction;
 pub mod dispatch;
 pub mod env;
 pub mod errors;
+pub mod execution_space;
 pub mod external_services;
 pub mod grpc_client_service;
 pub mod host_work;

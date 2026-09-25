@@ -120,15 +120,17 @@ async fn consensus_parameters_native_boundary_values_round_trip() {
     }
 }
 
-async fn adopted_parameters(
+async fn adopted_casper(
     genesis_context: &crate::util::genesis_builder::GenesisContext,
     local_values: (i32, i64, i64),
-) -> (i32, i64, i64) {
+) -> casper::rust::engine::multi_parent_casper::MultiParentCasperImpl<
+    comm::rust::test_instances::TransportLayerStub,
+> {
     use std::sync::{Arc, Mutex};
 
     use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
     use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-    use casper::rust::casper::{hash_set_casper, CasperShardConf, MultiParentCasper};
+    use casper::rust::casper::{hash_set_casper, CasperShardConf};
     use casper::rust::engine::block_retriever::BlockRetriever;
     use casper::rust::estimator::Estimator;
     use comm::rust::rp::connect::{Connections, ConnectionsCell};
@@ -179,8 +181,9 @@ async fn adopted_parameters(
     local_conf.max_parent_depth = local_values.0;
     local_conf.deploy_lifespan = local_values.1;
     local_conf.min_phlo_price = local_values.2;
+    local_conf.shard_name = genesis_context.genesis_block.shard_id.clone();
 
-    let casper = hash_set_casper(
+    hash_set_casper(
         block_retriever,
         F1r3flyEvents::new(),
         Arc::new(runtime_manager),
@@ -196,14 +199,90 @@ async fn adopted_parameters(
         casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
     )
     .await
-    .expect("hash_set_casper");
+    .expect("hash_set_casper")
+}
 
+async fn adopted_parameters(
+    genesis_context: &crate::util::genesis_builder::GenesisContext,
+    local_values: (i32, i64, i64),
+) -> (i32, i64, i64) {
+    use casper::rust::casper::MultiParentCasper;
+
+    let casper = adopted_casper(genesis_context, local_values).await;
     let adopted = casper.casper_shard_conf();
     (
         adopted.max_parent_depth,
         adopted.deploy_lifespan,
         adopted.min_phlo_price,
     )
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn genesis_policy_context_is_shared_only_after_successful_adoption() {
+    use std::sync::Arc;
+
+    use casper::rust::casper::MultiParentCasper;
+    use models::rust::phlo_schedule::{PhloGenesisPolicy, PhloResourceClassV1, PhloScheduleV1};
+
+    use crate::util::genesis_builder::GenesisBuilder;
+
+    let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(4));
+    parameters.2.proof_of_stake.min_phlo_price = 3;
+    let schedule = PhloScheduleV1 {
+        protocol_version: parameters.2.version as u64,
+        network: b"context-test",
+        shard: parameters.2.shard_id.as_bytes(),
+        settlement_asset: b"REV",
+        settlement_unit: b"atomic-REV",
+        decimal_scale: u8::try_from(parameters.2.native_token_decimals).unwrap(),
+        classes: vec![PhloResourceClassV1 {
+            identity: b"compute",
+            measurement_unit: b"COMM",
+            measurement_rule: [1; 32],
+            valuation_rule: [2; 32],
+            weight: 1,
+        }],
+        actual_price: 3,
+        compatibility_rule: [3; 32],
+    };
+    let policy = PhloGenesisPolicy::from_schedule(&schedule).unwrap();
+    parameters.2.resource_policy = Some(policy.clone());
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(parameters))
+        .await
+        .unwrap();
+    let mut node = adopted_casper(&genesis, (15, 50, 99)).await;
+    assert!(node.accounting_context.get().is_none());
+    assert_eq!(node.casper_shard_conf.min_phlo_price, 3);
+    node.casper_shard_conf.shard_name.clear();
+    assert!(node.accounting_context().await.is_err());
+    assert!(node.accounting_context.get().is_none());
+    node.casper_shard_conf.shard_name = genesis.genesis_block.shard_id.clone();
+    node.casper_shard_conf.min_phlo_price = 99;
+    assert!(node.accounting_context().await.is_err());
+    assert!(node.accounting_context.get().is_none());
+    node.casper_shard_conf.min_phlo_price = 3;
+    let (first, second) = tokio::join!(node.accounting_context(), node.accounting_context());
+    let (first, second) = (first.unwrap(), second.unwrap());
+    assert!(Arc::ptr_eq(&first, &second));
+    assert_eq!(first.genesis().record(), &policy);
+    assert_eq!(first.genesis().minimum_price(), 3);
+    assert_eq!(
+        first.genesis().genesis_root(),
+        &genesis.genesis_block.body.state.post_state_hash
+    );
+    let restarted = adopted_casper(&genesis, (7, 90, 0)).await;
+    let restored = restarted.accounting_context().await.unwrap();
+    assert!(!Arc::ptr_eq(&first, &restored));
+    assert_eq!(first.genesis().record(), restored.genesis().record());
+    assert_eq!(
+        first.genesis().genesis_root(),
+        restored.genesis().genesis_root()
+    );
+    assert_eq!(
+        first.genesis().minimum_price(),
+        restored.genesis().minimum_price()
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

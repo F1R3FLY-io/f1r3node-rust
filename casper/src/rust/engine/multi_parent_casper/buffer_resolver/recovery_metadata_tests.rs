@@ -124,6 +124,7 @@ async fn fixture() -> (
         block_retriever,
         event_publisher: F1r3flyEvents::new(),
         runtime_manager: Arc::new(runtime_manager),
+        accounting_context: Arc::new(tokio::sync::OnceCell::new()),
         estimator: Estimator::apply(),
         block_store,
         block_dag_storage,

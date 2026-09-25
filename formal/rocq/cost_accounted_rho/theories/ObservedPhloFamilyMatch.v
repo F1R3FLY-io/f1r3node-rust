@@ -363,3 +363,316 @@ Print Assumptions matching_resources_preserve_exact_multiplicity.
 Print Assumptions observed_matching_position_exact.
 Print Assumptions observed_context_match_exact.
 Print Assumptions scalar_charge_does_not_identify_execution.
+
+Definition retained_execution_case_match expected actual expected_output actual_output :=
+  execution_case_match expected actual && same_resources expected_output actual_output.
+
+Theorem retained_execution_case_match_exact : forall expected actual expected_output actual_output,
+  retained_execution_case_match expected actual expected_output actual_output = true <->
+  execution_case_equivalent expected actual /\ Permutation expected_output actual_output.
+Proof.
+  intros. unfold retained_execution_case_match.
+  rewrite andb_true_iff, execution_case_match_exact, same_resources_exact. reflexivity.
+Qed.
+
+Theorem retained_matching_preserves_every_output_quantity : forall expected actual expected_output actual_output resource,
+  retained_execution_case_match expected actual expected_output actual_output = true ->
+  resource_count expected_output resource = resource_count actual_output resource.
+Proof.
+  intros. apply retained_execution_case_match_exact in H. destruct H as [_ same].
+  unfold resource_count. now apply (proj1 (Permutation_count_occ prepaid_key_eq_dec _ _)).
+Qed.
+
+Theorem empty_retained_output_preserves_existing_match : forall expected actual,
+  retained_execution_case_match expected actual [] [] = execution_case_match expected actual.
+Proof. intros. unfold retained_execution_case_match. simpl. apply andb_true_r. Qed.
+
+Theorem consumption_match_cannot_hide_an_extra_retained_output : forall expected actual resource,
+  retained_execution_case_match expected actual [] [resource] = false.
+Proof.
+  intros. destruct (retained_execution_case_match expected actual [] [resource]) eqn:matched; auto.
+  apply retained_execution_case_match_exact in matched. destruct matched as [_ impossible].
+  apply Permutation_length in impossible. discriminate.
+Qed.
+
+Definition retained_outputs_allowed candidate (outputs : list prepaid_resource_key) :=
+  match outputs, case_outcome candidate with
+  | [], _ => true
+  | _, PhloAccepted [] => true
+  | _, _ => false
+  end.
+
+Theorem failed_execution_cannot_retain_new_acquisition : forall candidate outputs,
+  case_outcome candidate <> PhloAccepted [] ->
+  retained_outputs_allowed candidate outputs = true -> outputs = [].
+Proof.
+  intros candidate [|output rest] failed accepted; auto.
+  unfold retained_outputs_allowed in accepted.
+  destruct (case_outcome candidate) as [|[|failure failures]] eqn:outcome; try discriminate.
+  contradiction.
+Qed.
+
+Definition retained_case_obligation_keys candidate outputs :=
+  map (fun key => (false, key)) (case_obligation_keys candidate) ++
+  map (fun resource => (true, PhloResourceObligation resource)) outputs.
+
+Definition retained_case_amounts schedule candidate outputs :=
+  case_obligation_amounts schedule candidate ++
+  map (fun resource => resource_phlo schedule resource * phlo_actual_price schedule) outputs.
+
+Theorem retained_obligation_purposes_are_distinct : forall left right,
+  (false, PhloResourceObligation left) <> (true, PhloResourceObligation right).
+Proof. intros left right same. discriminate. Qed.
+
+Theorem retained_projection_keeps_complete_key_count : forall candidate outputs,
+  length (retained_case_obligation_keys candidate outputs) =
+  length (case_obligation_keys candidate) + length outputs.
+Proof. intros. unfold retained_case_obligation_keys. rewrite length_app, !length_map. reflexivity. Qed.
+
+Theorem retained_projection_sums_to_separate_backing : forall schedule candidate outputs,
+  fold_right Nat.add 0 (retained_case_amounts schedule candidate outputs) =
+    case_charge schedule candidate + execution_phlo schedule outputs * phlo_actual_price schedule.
+Proof.
+  intros schedule candidate outputs. unfold retained_case_amounts.
+  rewrite fold_right_app.
+  rewrite sum_priced_resource_occurrences.
+  rewrite <- projected_obligations_sum_to_retained_charge.
+  generalize (case_obligation_amounts schedule candidate). intro amounts.
+  induction amounts; simpl; lia.
+Qed.
+
+Definition retained_matching_positions snapshot outputs actual actual_output :=
+  filter (fun position =>
+    match nth_error (snapshot_branches snapshot) position with
+    | None => false
+    | Some branch => retained_execution_case_match
+        (snapshot_cases snapshot branch) actual (outputs branch) actual_output
+    end) (seq 0 (length (snapshot_branches snapshot))).
+
+Theorem retained_selected_position_has_matching_output : forall snapshot outputs actual actual_output selections selected,
+  select_equivalent_observed_positions selections
+    (retained_matching_positions snapshot outputs actual actual_output) = Some selected ->
+  exists branch, nth_error (snapshot_branches snapshot) selected = Some branch /\
+    execution_case_equivalent (snapshot_cases snapshot branch) actual /\
+    Permutation (outputs branch) actual_output.
+Proof.
+  intros snapshot outputs actual actual_output selections selected accepted.
+  apply selected_observed_position_has_one_complete_settlement in accepted.
+  destruct accepted as [member _]. unfold retained_matching_positions in member.
+  apply filter_In in member. destruct member as [_ matched].
+  destruct (nth_error (snapshot_branches snapshot) selected) as [branch|] eqn:found; try discriminate.
+  apply retained_execution_case_match_exact in matched.
+  exists branch. tauto.
+Qed.
+
+Print Assumptions retained_execution_case_match_exact.
+Print Assumptions retained_matching_preserves_every_output_quantity.
+Print Assumptions empty_retained_output_preserves_existing_match.
+Print Assumptions consumption_match_cannot_hide_an_extra_retained_output.
+Print Assumptions failed_execution_cannot_retain_new_acquisition.
+Print Assumptions retained_obligation_purposes_are_distinct.
+Print Assumptions retained_projection_keeps_complete_key_count.
+Print Assumptions retained_projection_sums_to_separate_backing.
+
+Definition match_rooted_retained_phlo_family (wallet_root prepaid_root : nat)
+  snapshot controls schedule outputs actual actual_output selections :=
+  if Nat.eqb wallet_root prepaid_root && observed_context_match snapshot controls schedule then
+    select_equivalent_observed_positions selections
+      (retained_matching_positions snapshot outputs actual actual_output)
+  else None.
+
+Theorem rooted_retained_match_rejects_cross_root : forall wallet_root prepaid_root
+  snapshot controls schedule outputs actual actual_output selections,
+  wallet_root <> prepaid_root ->
+  match_rooted_retained_phlo_family wallet_root prepaid_root snapshot controls schedule
+    outputs actual actual_output selections = None.
+Proof.
+  intros. unfold match_rooted_retained_phlo_family.
+  apply Nat.eqb_neq in H. rewrite H. reflexivity.
+Qed.
+
+Theorem rooted_retained_match_preserves_context_resources_and_settlement :
+  forall wallet_root prepaid_root snapshot controls schedule outputs actual actual_output selections selected,
+  match_rooted_retained_phlo_family wallet_root prepaid_root snapshot controls schedule
+    outputs actual actual_output selections = Some selected ->
+  wallet_root = prepaid_root /\
+  snapshot_controls snapshot = controls /\ snapshot_schedule snapshot = schedule /\
+  (exists branch, nth_error (snapshot_branches snapshot) selected = Some branch /\
+    execution_case_equivalent (snapshot_cases snapshot branch) actual /\
+    Permutation (outputs branch) actual_output) /\
+  forall position, In position (retained_matching_positions snapshot outputs actual actual_output) ->
+    selections position = selections selected.
+Proof.
+  intros wallet_root prepaid_root snapshot controls schedule outputs actual actual_output selections selected accepted.
+  unfold match_rooted_retained_phlo_family in accepted.
+  destruct (Nat.eqb wallet_root prepaid_root && observed_context_match snapshot controls schedule) eqn:context;
+    [|discriminate].
+  apply andb_true_iff in context. destruct context as [roots context].
+  apply Nat.eqb_eq in roots. apply observed_context_match_exact in context.
+  pose proof (retained_selected_position_has_matching_output _ _ _ _ _ _ accepted) as matched.
+  apply selected_observed_position_has_one_complete_settlement in accepted.
+  tauto.
+Qed.
+
+Theorem rooted_retained_match_preserves_existing_selection : forall root
+  snapshot controls schedule outputs actual actual_output selections,
+  snapshot_controls snapshot = controls -> snapshot_schedule snapshot = schedule ->
+  match_rooted_retained_phlo_family root root snapshot controls schedule
+    outputs actual actual_output selections =
+  select_equivalent_observed_positions selections
+    (retained_matching_positions snapshot outputs actual actual_output).
+Proof.
+  intros. unfold match_rooted_retained_phlo_family. rewrite Nat.eqb_refl.
+  assert (observed_context_match snapshot controls schedule = true)
+    by (apply observed_context_match_exact; auto).
+  now rewrite H1.
+Qed.
+
+Print Assumptions rooted_retained_match_rejects_cross_root.
+Print Assumptions rooted_retained_match_preserves_context_resources_and_settlement.
+Print Assumptions rooted_retained_match_preserves_existing_selection.
+Print Assumptions retained_selected_position_has_matching_output.
+
+Record quantity_capture_column := {
+  quantity_capture_key : bool * phlo_obligation_key;
+  quantity_capture_quantity : nat;
+  quantity_capture_amount : nat;
+  quantity_capture_contributions : list nat
+}.
+
+Definition capture_quantity_column (key : nat -> bool * phlo_obligation_key)
+    (quantity amount : nat -> nat) (contribution : nat -> nat -> nat)
+    (sources : list nat) (column : nat) :=
+  {| quantity_capture_key := key column;
+     quantity_capture_quantity := quantity column;
+     quantity_capture_amount := amount column;
+     quantity_capture_contributions := map (fun source => contribution source column) sources |}.
+
+Definition capture_quantity_columns key quantity amount contribution sources columns :=
+  map (capture_quantity_column key quantity amount contribution sources) columns.
+
+Theorem quantity_capture_preserves_column_count : forall key quantity amount contribution sources columns,
+  length (capture_quantity_columns key quantity amount contribution sources columns) = length columns.
+Proof. intros. apply length_map. Qed.
+
+Theorem quantity_capture_binds_every_field : forall key quantity amount contribution sources columns position original,
+  nth_error columns position = Some original ->
+  nth_error (capture_quantity_columns key quantity amount contribution sources columns) position =
+    Some (capture_quantity_column key quantity amount contribution sources original).
+Proof. intros. unfold capture_quantity_columns. now rewrite nth_error_map, H. Qed.
+
+Theorem quantity_capture_binds_each_source : forall key quantity amount contribution sources column position original,
+  nth_error sources position = Some original ->
+  nth_error (quantity_capture_contributions
+    (capture_quantity_column key quantity amount contribution sources column)) position =
+    Some (contribution original column).
+Proof. intros. simpl. now rewrite nth_error_map, H. Qed.
+
+Theorem quantity_capture_preserves_source_totals : forall key quantity amount contribution sources reordered column,
+  Permutation sources reordered ->
+  fold_right Nat.add 0 (quantity_capture_contributions
+    (capture_quantity_column key quantity amount contribution sources column)) =
+  fold_right Nat.add 0 (quantity_capture_contributions
+    (capture_quantity_column key quantity amount contribution reordered column)).
+Proof.
+  intros. simpl. apply Permutation_map with (f := fun source => contribution source column) in H.
+  induction H; simpl; lia.
+Qed.
+
+Theorem quantity_capture_preserves_wallet_debits : forall (contribution : nat -> nat -> nat) source columns reordered,
+  Permutation columns reordered ->
+  fold_right Nat.add 0 (map (fun column => contribution source column) columns) =
+  fold_right Nat.add 0 (map (fun column => contribution source column) reordered).
+Proof.
+  intros. apply Permutation_map with (f := fun column => contribution source column) in H.
+  induction H; simpl; lia.
+Qed.
+
+Theorem quantity_capture_preserves_all_columns : forall key quantity amount contribution sources columns reordered,
+  Permutation columns reordered ->
+  Permutation (capture_quantity_columns key quantity amount contribution sources columns)
+    (capture_quantity_columns key quantity amount contribution sources reordered).
+Proof. intros. now apply Permutation_map. Qed.
+
+Theorem zero_price_cannot_identify_retained_quantity : forall key contribution sources column first second,
+  first <> second ->
+  quantity_capture_amount (capture_quantity_column key (fun _ => first) (fun _ => 0)
+    contribution sources column) =
+  quantity_capture_amount (capture_quantity_column key (fun _ => second) (fun _ => 0)
+    contribution sources column) /\
+  quantity_capture_quantity (capture_quantity_column key (fun _ => first) (fun _ => 0)
+    contribution sources column) <>
+  quantity_capture_quantity (capture_quantity_column key (fun _ => second) (fun _ => 0)
+    contribution sources column).
+Proof. intros. simpl. auto. Qed.
+
+Print Assumptions quantity_capture_preserves_column_count.
+Print Assumptions quantity_capture_binds_every_field.
+Print Assumptions quantity_capture_binds_each_source.
+Print Assumptions quantity_capture_preserves_source_totals.
+Print Assumptions quantity_capture_preserves_wallet_debits.
+Print Assumptions quantity_capture_preserves_all_columns.
+Print Assumptions zero_price_cannot_identify_retained_quantity.
+
+Definition match_metered_rooted_phlo_family complete meter_usage derived_usage
+    wallet_root prepaid_root snapshot controls schedule outputs actual actual_output selections :=
+  if complete && Nat.eqb meter_usage derived_usage then
+    match_rooted_retained_phlo_family wallet_root prepaid_root snapshot controls schedule
+      outputs actual actual_output selections
+  else None.
+
+Theorem metered_family_rejects_incomplete_observations : forall meter_usage derived_usage
+    wallet_root prepaid_root snapshot controls schedule outputs actual actual_output selections,
+  match_metered_rooted_phlo_family false meter_usage derived_usage wallet_root prepaid_root
+    snapshot controls schedule outputs actual actual_output selections = None.
+Proof. reflexivity. Qed.
+
+Theorem metered_family_rejects_different_usage : forall complete meter_usage derived_usage
+    wallet_root prepaid_root snapshot controls schedule outputs actual actual_output selections,
+  meter_usage <> derived_usage ->
+  match_metered_rooted_phlo_family complete meter_usage derived_usage wallet_root prepaid_root
+    snapshot controls schedule outputs actual actual_output selections = None.
+Proof.
+  intros. unfold match_metered_rooted_phlo_family.
+  apply Nat.eqb_neq in H. rewrite H, andb_false_r. reflexivity.
+Qed.
+
+Theorem metered_family_exact_composition : forall complete meter_usage derived_usage
+    wallet_root prepaid_root snapshot controls schedule outputs actual actual_output selections selected,
+  match_metered_rooted_phlo_family complete meter_usage derived_usage wallet_root prepaid_root
+    snapshot controls schedule outputs actual actual_output selections = Some selected <->
+  complete = true /\ meter_usage = derived_usage /\
+  match_rooted_retained_phlo_family wallet_root prepaid_root snapshot controls schedule
+    outputs actual actual_output selections = Some selected.
+Proof.
+  intros. unfold match_metered_rooted_phlo_family.
+  destruct complete; simpl.
+  - destruct (Nat.eqb meter_usage derived_usage) eqn:same.
+    + apply Nat.eqb_eq in same. tauto.
+    + apply Nat.eqb_neq in same. split; [discriminate|tauto].
+  - split; [discriminate|intros [impossible _]; discriminate].
+Qed.
+
+Theorem metered_family_preserves_root_context_resources_and_settlement :
+  forall complete meter_usage derived_usage wallet_root prepaid_root snapshot controls schedule
+    outputs actual actual_output selections selected,
+  match_metered_rooted_phlo_family complete meter_usage derived_usage wallet_root prepaid_root
+    snapshot controls schedule outputs actual actual_output selections = Some selected ->
+  complete = true /\ meter_usage = derived_usage /\ wallet_root = prepaid_root /\
+  snapshot_controls snapshot = controls /\ snapshot_schedule snapshot = schedule /\
+  (exists branch, nth_error (snapshot_branches snapshot) selected = Some branch /\
+    execution_case_equivalent (snapshot_cases snapshot branch) actual /\
+    Permutation (outputs branch) actual_output) /\
+  forall position, In position (retained_matching_positions snapshot outputs actual actual_output) ->
+    selections position = selections selected.
+Proof.
+  intros. apply metered_family_exact_composition in H.
+  destruct H as [complete_checked [usage_checked matched]].
+  apply rooted_retained_match_preserves_context_resources_and_settlement in matched.
+  tauto.
+Qed.
+
+Print Assumptions metered_family_rejects_incomplete_observations.
+Print Assumptions metered_family_rejects_different_usage.
+Print Assumptions metered_family_exact_composition.
+Print Assumptions metered_family_preserves_root_context_resources_and_settlement.

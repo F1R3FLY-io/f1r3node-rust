@@ -31,7 +31,7 @@ use super::metrics_constants::{
 };
 use super::rspace_interface::{
     ContResult, ISpace, MaybeConsumeResult, MaybeProduceCandidate, MaybeProduceResult,
-    RSpaceAccountingObserver, RSpaceResult,
+    RSpaceAccountingObserver, RSpaceOperationCompletion, RSpaceOperationSource, RSpaceResult,
 };
 use super::striped_locks::{self, ChannelLockGuard};
 use super::trace::Log;
@@ -42,6 +42,11 @@ use crate::rspace::history::history_repository::HistoryRepository;
 use crate::rspace::hot_store::{HotStore, HotStoreInstances};
 use crate::rspace::internal::*;
 use crate::rspace::space_matcher::SpaceMatcher;
+
+mod native_directive;
+mod native_candidate;
+pub mod native_epoch;
+pub mod native_session;
 
 #[repr(C)]
 #[derive(Clone)]
@@ -155,11 +160,8 @@ where
 
         let changes = self.get_store().changes();
         let next_history = self.get_history_repository().checkpoint(changes);
+        let history_reader = next_history.get_history_reader(&next_history.root())?;
         *self.history_repository.write().expect("history write lock") = Arc::new(next_history);
-
-        let history_reader = self
-            .get_history_repository()
-            .get_history_reader(&self.get_history_repository().root())?;
 
         self.create_new_hot_store(history_reader);
         self.restore_installs();
@@ -697,7 +699,61 @@ where
 
         tracing::trace!(target: "f1r3fly.rspace.ops", channels = ?consume_ref.channel_hashes, persist, "replay.consume ENTER");
 
-        self.observe_consume(&consume_ref, &channels, &patterns, &continuation, persist, &peeks)?;
+        let source = RSpaceOperationSource::Consume(&consume_ref);
+        let observer = self.start_accounting_operation(source, &channels, &[])?;
+        let result = self.locked_consume_observed(
+            channels,
+            patterns,
+            continuation,
+            persist,
+            peeks,
+            consume_ref.clone(),
+            observer.as_deref(),
+        );
+        if let Some(observer) = observer {
+            observer
+                .observe_operation_finish(source, RSpaceOperationCompletion::from_result(&result));
+        }
+        result
+    }
+
+    fn locked_consume_observed(
+        &self,
+        channels: Vec<C>,
+        patterns: Vec<P>,
+        continuation: K,
+        persist: bool,
+        peeks: BTreeSet<i32>,
+        consume_ref: Consume,
+        observer: Option<&dyn RSpaceAccountingObserver<C, P, A, K>>,
+    ) -> Result<MaybeConsumeResult<C, P, A, K>, RSpaceError> {
+        if let Some(directive) = observer
+            .map(|observer| {
+                observer.replay_operation_directive(RSpaceOperationSource::Consume(&consume_ref))
+            })
+            .transpose()?
+            .flatten()
+        {
+            return self.replay_native_consume(
+                channels,
+                patterns,
+                continuation,
+                persist,
+                peeks,
+                consume_ref,
+                observer,
+                directive,
+            );
+        }
+        Self::observe_consume(
+            observer,
+            &consume_ref,
+            &channels,
+            &patterns,
+            &continuation,
+            persist,
+            &peeks,
+        )?;
 
         let wk = WaitingContinuation {
             patterns: patterns.clone(),
@@ -827,7 +883,8 @@ where
                             )
                         );
 
-                        self.observe_comm(
+                        Self::observe_comm(
+                            observer,
                             &comm_ref,
                             &wk.continuation,
                             wk.persist,
@@ -935,9 +992,55 @@ where
         let _span = tracing::info_span!(target: "f1r3fly.rspace", "locked-produce").entered();
         tracing::trace!(target: "f1r3fly.rspace.ops", mark = "started-locked-produce", "locked_produce");
 
-        self.observe_produce(&produce_ref, &channel, &data, persist)?;
-
         let grouped_channels = self.get_store().get_joins(&channel);
+        let source = RSpaceOperationSource::Produce(&produce_ref);
+        let observer = self.start_accounting_operation(
+            source,
+            std::slice::from_ref(&channel),
+            &grouped_channels,
+        )?;
+        let result = self.locked_produce_observed(
+            channel,
+            data,
+            persist,
+            produce_ref.clone(),
+            grouped_channels,
+            observer.as_deref(),
+        );
+        if let Some(observer) = observer {
+            observer
+                .observe_operation_finish(source, RSpaceOperationCompletion::from_result(&result));
+        }
+        result
+    }
+
+    fn locked_produce_observed(
+        &self,
+        channel: C,
+        data: A,
+        persist: bool,
+        produce_ref: Produce,
+        grouped_channels: Vec<Vec<C>>,
+        observer: Option<&dyn RSpaceAccountingObserver<C, P, A, K>>,
+    ) -> Result<MaybeProduceResult<C, P, A, K>, RSpaceError> {
+        if let Some(directive) = observer
+            .map(|observer| {
+                observer.replay_operation_directive(RSpaceOperationSource::Produce(&produce_ref))
+            })
+            .transpose()?
+            .flatten()
+        {
+            return self.replay_native_produce(
+                channel,
+                data,
+                persist,
+                produce_ref,
+                grouped_channels,
+                observer,
+                directive,
+            );
+        }
+        Self::observe_produce(observer, &produce_ref, &channel, &data, persist)?;
 
         self.increment_produce_counter(&produce_ref, persist);
         tracing::trace!(target: "f1r3fly.rspace.ops", channel = ?produce_ref.channel_hash, persist, "replay.produce ENTER");
@@ -977,7 +1080,15 @@ where
                     Some((comm, pc)) => {
                         tracing::trace!(target: "f1r3fly.rspace.ops", channel = ?produce_ref.channel_hash, "replay.produce OK: matched a recorded COMM (fired a waiting consume)");
                         let result = self
-                            .handle_match(pc, comms, &channel, &data, persist, &produce_ref)
+                            .handle_match(
+                                pc,
+                                comms,
+                                &channel,
+                                &data,
+                                persist,
+                                &produce_ref,
+                                observer,
+                            )
                             .map(|matched| {
                                 matched.map(|consume_result| {
                                     let p = comm
@@ -1108,6 +1219,7 @@ where
         data: &A,
         produced_persistently: bool,
         produce_ref: &Produce,
+        observer: Option<&dyn RSpaceAccountingObserver<C, P, A, K>>,
     ) -> Result<MaybeConsumeResult<C, P, A, K>, RSpaceError> {
         let ProduceCandidate {
             channels,
@@ -1139,7 +1251,7 @@ where
             comms
         );
 
-        self.observe_comm(&comm_ref, _cont, *persist, &data_candidates)?;
+        Self::observe_comm(observer, &comm_ref, _cont, *persist, &data_candidates)?;
 
         self.log_produce(produce_ref.clone(), channel, data, produced_persistently);
         self.log_comm(
@@ -1163,18 +1275,30 @@ where
         Ok(self.wrap_result(channels, continuation.clone(), consume_ref.clone(), data_candidates))
     }
 
-    fn observe_comm(
+    fn start_accounting_operation(
         &self,
-        comm: &COMM,
-        continuation: &K,
-        continuation_persistent: bool,
-        data_candidates: &[ConsumeCandidate<C, A>],
-    ) -> Result<(), RSpaceError> {
+        source: RSpaceOperationSource<'_>,
+        channels: &[C],
+        joins: &[Vec<C>],
+    ) -> Result<Option<Arc<dyn RSpaceAccountingObserver<C, P, A, K>>>, RSpaceError> {
         let observer = self
             .accounting_observer
             .read()
             .expect("accounting observer read lock")
             .clone();
+        if let Some(observer) = &observer {
+            observer.observe_operation_start(source, channels, joins)?;
+        }
+        Ok(observer)
+    }
+
+    fn observe_comm(
+        observer: Option<&dyn RSpaceAccountingObserver<C, P, A, K>>,
+        comm: &COMM,
+        continuation: &K,
+        continuation_persistent: bool,
+        data_candidates: &[ConsumeCandidate<C, A>],
+    ) -> Result<(), RSpaceError> {
         match observer {
             Some(observer) => {
                 let data = data_candidates
@@ -1188,17 +1312,12 @@ where
     }
 
     fn observe_produce(
-        &self,
+        observer: Option<&dyn RSpaceAccountingObserver<C, P, A, K>>,
         source: &Produce,
         channel: &C,
         data: &A,
         persistent: bool,
     ) -> Result<(), RSpaceError> {
-        let observer = self
-            .accounting_observer
-            .read()
-            .expect("accounting observer read lock")
-            .clone();
         match observer {
             Some(observer) => observer.observe_produce(source, channel, data, persistent),
             None => Ok(()),
@@ -1206,7 +1325,7 @@ where
     }
 
     fn observe_consume(
-        &self,
+        observer: Option<&dyn RSpaceAccountingObserver<C, P, A, K>>,
         source: &Consume,
         channels: &[C],
         patterns: &[P],
@@ -1214,11 +1333,6 @@ where
         persistent: bool,
         peeks: &BTreeSet<i32>,
     ) -> Result<(), RSpaceError> {
-        let observer = self
-            .accounting_observer
-            .read()
-            .expect("accounting observer read lock")
-            .clone();
         match observer {
             Some(observer) => observer.observe_consume(
                 source,
@@ -1422,7 +1536,7 @@ where
 
     fn store_persistent_data(&self, data_candidates: &[ConsumeCandidate<C, A>]) {
         let mut sorted_candidates: Vec<_> = data_candidates.iter().collect();
-        sorted_candidates.sort_by_key(|candidate| candidate.datum_index);
+        sorted_candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.datum_index));
         let store = self.get_store();
         for consume_candidate in sorted_candidates {
             if !consume_candidate.datum.persist {
@@ -1538,7 +1652,7 @@ where
         data_candidates: &[ConsumeCandidate<C, A>],
     ) {
         let mut sorted_candidates: Vec<_> = data_candidates.iter().collect();
-        sorted_candidates.sort_by_key(|candidate| candidate.datum_index);
+        sorted_candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.datum_index));
         let store = self.get_store();
         for consume_candidate in sorted_candidates {
             let channel = &consume_candidate.channel;

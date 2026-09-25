@@ -18,6 +18,15 @@ pub struct CausalPath {
 }
 
 impl CausalPath {
+    pub fn len(&self) -> usize { self.tail.depth }
+
+    pub fn is_empty(&self) -> bool { self.tail.depth == 0 }
+
+    pub fn segments_rev(&self) -> impl Iterator<Item = PathSegment> + '_ {
+        std::iter::successors(Some(self.tail.as_ref()), |node| node.parent.as_deref())
+            .filter_map(|node| node.segment)
+    }
+
     pub fn new() -> Self {
         Self {
             tail: Arc::new(PathNode {

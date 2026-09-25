@@ -60,6 +60,7 @@ use super::deterministic_reduction::{
 use super::dispatch::{DispatchType, RhoDispatch, RholangAndScalaDispatcher};
 use super::env::Env;
 use super::errors::InterpreterError;
+use super::execution_space::ExecutionSpace;
 use super::host_work::HostWorkBudget;
 use super::matcher::has_locally_free::HasLocallyFree;
 use super::metering::MeteredMachine;
@@ -137,6 +138,18 @@ pub struct EvalWorkStats {
 #[derive(Clone)]
 pub struct DebruijnInterpreter {
     pub space: RhoISpace,
+    pub(crate) core: Arc<ReducerCore>,
+}
+
+impl std::ops::Deref for DebruijnInterpreter {
+    type Target = ReducerCore;
+
+    fn deref(&self) -> &Self::Target { &self.core }
+}
+
+#[derive(Clone)]
+pub struct ReducerCore {
+    pub space: ExecutionSpace,
     pub dispatcher: RhoDispatch,
     pub urn_map: Arc<HashMap<String, Par>>,
     pub merge_chs: Arc<RwLock<HashMap<Par, MergeType>>>,
@@ -166,7 +179,7 @@ trait Method {
  * @param data  The par objects holding the processes being sent.
  * @param persistent  True if the write should remain in the tuplespace indefinitely.
  */
-impl DebruijnInterpreter {
+impl ReducerCore {
     pub fn eval_work_stats(&self) -> EvalWorkStats {
         EvalWorkStats {
             single_term_evaluations: self.single_term_evaluations.load(Ordering::Relaxed),
@@ -520,15 +533,19 @@ impl DebruijnInterpreter {
 
                 match dispatch_type {
                     DispatchType::NonDeterministicCall(ref output) => {
-                        let produce1 = produce_event.mark_as_non_deterministic(output.clone());
-                        self.space.update_produce(produce1).await;
+                        let produce1 = produce_event
+                            .clone()
+                            .mark_as_non_deterministic(output.clone());
+                        self.space.update_produce(&produce_event, produce1).await?;
                         Ok(dispatch_type)
                     }
 
                     DispatchType::FailedNonDeterministicCall(error) => {
                         // Mark the produce as failed for replay safety
                         let failed_produce = produce_event.with_error();
-                        self.space.update_produce(failed_produce).await;
+                        self.space
+                            .update_produce(&produce_event, failed_produce)
+                            .await?;
                         // Re-raise known error types as-is to preserve output_not_produced;
                         // wrap unknown errors in NonDeterministicProcessFailure.
                         match error {
@@ -3014,7 +3031,7 @@ impl DebruijnInterpreter {
 
     fn nth_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct NthMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> NthMethod<'a> {
@@ -3078,7 +3095,7 @@ impl DebruijnInterpreter {
 
     fn to_byte_array_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct ToByteArrayMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> ToByteArrayMethod<'a> {
@@ -3124,7 +3141,7 @@ impl DebruijnInterpreter {
 
     fn hex_to_bytes_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct HexToBytesMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> Method for HexToBytesMethod<'a> {
@@ -3173,7 +3190,7 @@ impl DebruijnInterpreter {
 
     fn bytes_to_hex_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct BytesToHexMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> Method for BytesToHexMethod<'a> {
@@ -3222,7 +3239,7 @@ impl DebruijnInterpreter {
 
     fn to_utf8_bytes_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct ToUtf8BytesMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> Method for ToUtf8BytesMethod<'a> {
@@ -3272,7 +3289,7 @@ impl DebruijnInterpreter {
 
     fn union_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct UnionMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> UnionMethod<'a> {
@@ -3399,7 +3416,7 @@ impl DebruijnInterpreter {
 
     fn diff_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct DiffMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> DiffMethod<'a> {
@@ -3525,7 +3542,7 @@ impl DebruijnInterpreter {
 
     fn intersection_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct IntersectionMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> IntersectionMethod<'a> {
@@ -3602,7 +3619,7 @@ impl DebruijnInterpreter {
 
     fn restriction_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct RestrictionMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> RestrictionMethod<'a> {
@@ -3679,7 +3696,7 @@ impl DebruijnInterpreter {
 
     fn drop_head_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct DropHeadMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> DropHeadMethod<'a> {
@@ -3785,7 +3802,7 @@ impl DebruijnInterpreter {
 
     fn run_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct RunMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> RunMethod<'a> {
@@ -3840,7 +3857,7 @@ impl DebruijnInterpreter {
 
     fn read_zipper_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct ReadZipperMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> ReadZipperMethod<'a> {
@@ -3895,7 +3912,7 @@ impl DebruijnInterpreter {
 
     fn read_zipper_at_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct ReadZipperAtMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> ReadZipperAtMethod<'a> {
@@ -3967,7 +3984,7 @@ impl DebruijnInterpreter {
 
     fn write_zipper_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct WriteZipperMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> WriteZipperMethod<'a> {
@@ -4022,7 +4039,7 @@ impl DebruijnInterpreter {
 
     fn write_zipper_at_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct WriteZipperAtMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> WriteZipperAtMethod<'a> {
@@ -4091,7 +4108,7 @@ impl DebruijnInterpreter {
 
     fn descend_to_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct DescendToMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> DescendToMethod<'a> {
@@ -4152,7 +4169,7 @@ impl DebruijnInterpreter {
 
     fn get_leaf_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct GetLeafMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> GetLeafMethod<'a> {
@@ -4237,7 +4254,7 @@ impl DebruijnInterpreter {
 
     fn get_subtrie_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct GetSubtrieMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> GetSubtrieMethod<'a> {
@@ -4318,7 +4335,7 @@ impl DebruijnInterpreter {
 
     fn set_leaf_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct SetLeafMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> SetLeafMethod<'a> {
@@ -4376,7 +4393,7 @@ impl DebruijnInterpreter {
 
     fn set_subtrie_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct SetSubtrieMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> SetSubtrieMethod<'a> {
@@ -4678,7 +4695,7 @@ impl DebruijnInterpreter {
 
     fn remove_leaf_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct RemoveLeafMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> RemoveLeafMethod<'a> {
@@ -4758,7 +4775,7 @@ impl DebruijnInterpreter {
 
     fn remove_branches_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct RemoveBranchesMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> RemoveBranchesMethod<'a> {
@@ -4859,7 +4876,7 @@ impl DebruijnInterpreter {
 
     fn graft_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct GraftMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> GraftMethod<'a> {
@@ -4969,7 +4986,7 @@ impl DebruijnInterpreter {
 
     fn join_into_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct JoinIntoMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> JoinIntoMethod<'a> {
@@ -5145,7 +5162,7 @@ impl DebruijnInterpreter {
 
     fn at_path_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct AtPathMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> AtPathMethod<'a> {
@@ -5240,7 +5257,7 @@ impl DebruijnInterpreter {
 
     fn path_exists_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct PathExistsMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> PathExistsMethod<'a> {
@@ -5317,7 +5334,7 @@ impl DebruijnInterpreter {
 
     fn create_path_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct CreatePathMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> CreatePathMethod<'a> {
@@ -5393,7 +5410,7 @@ impl DebruijnInterpreter {
 
     fn prune_path_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct PrunePathMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> PrunePathMethod<'a> {
@@ -5483,7 +5500,7 @@ impl DebruijnInterpreter {
 
     fn reset_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct ResetMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> ResetMethod<'a> {
@@ -5533,7 +5550,7 @@ impl DebruijnInterpreter {
 
     fn ascend_one_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct AscendOneMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> AscendOneMethod<'a> {
@@ -5588,7 +5605,7 @@ impl DebruijnInterpreter {
 
     fn ascend_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct AscendMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> AscendMethod<'a> {
@@ -5666,7 +5683,7 @@ impl DebruijnInterpreter {
 
     fn child_count_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct ChildCountMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> ChildCountMethod<'a> {
@@ -5769,7 +5786,7 @@ impl DebruijnInterpreter {
 
     fn descend_first_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct DescendFirstMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> DescendFirstMethod<'a> {
@@ -5856,7 +5873,7 @@ impl DebruijnInterpreter {
 
     fn descend_indexed_branch_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct DescendIndexedBranchMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> DescendIndexedBranchMethod<'a> {
@@ -5966,7 +5983,7 @@ impl DebruijnInterpreter {
 
     fn to_next_sibling_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct ToNextSiblingMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> ToNextSiblingMethod<'a> {
@@ -6067,7 +6084,7 @@ impl DebruijnInterpreter {
 
     fn to_prev_sibling_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct ToPrevSiblingMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> ToPrevSiblingMethod<'a> {
@@ -6170,7 +6187,7 @@ impl DebruijnInterpreter {
 
     fn add_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct AddMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> AddMethod<'a> {
@@ -6236,7 +6253,7 @@ impl DebruijnInterpreter {
 
     fn delete_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct DeleteMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> DeleteMethod<'a> {
@@ -6320,7 +6337,7 @@ impl DebruijnInterpreter {
 
     fn contains_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct ContainsMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> ContainsMethod<'a> {
@@ -6385,7 +6402,7 @@ impl DebruijnInterpreter {
 
     fn get_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct GetMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> GetMethod<'a> {
@@ -6439,7 +6456,7 @@ impl DebruijnInterpreter {
 
     fn get_or_else_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct GetOrElseMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> GetOrElseMethod<'a> {
@@ -6499,7 +6516,7 @@ impl DebruijnInterpreter {
 
     fn set_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct SetMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> SetMethod<'a> {
@@ -6562,7 +6579,7 @@ impl DebruijnInterpreter {
 
     fn keys_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct KeysMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> KeysMethod<'a> {
@@ -6621,7 +6638,7 @@ impl DebruijnInterpreter {
 
     fn size_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct SizeMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> SizeMethod<'a> {
@@ -6685,7 +6702,7 @@ impl DebruijnInterpreter {
 
     fn length_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct LengthMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> LengthMethod<'a> {
@@ -6741,7 +6758,7 @@ impl DebruijnInterpreter {
 
     fn slice_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct SliceMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> SliceMethod<'a> {
@@ -6835,7 +6852,7 @@ impl DebruijnInterpreter {
 
     fn take_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct TakeMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> TakeMethod<'a> {
@@ -6896,7 +6913,7 @@ impl DebruijnInterpreter {
 
     fn to_list_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct ToListMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> ToListMethod<'a> {
@@ -7011,7 +7028,7 @@ impl DebruijnInterpreter {
 
     fn to_set_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct ToSetMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> ToSetMethod<'a> {
@@ -7103,7 +7120,7 @@ impl DebruijnInterpreter {
 
     fn to_map_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct ToMapMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> ToMapMethod<'a> {
@@ -7207,7 +7224,7 @@ impl DebruijnInterpreter {
 
     fn to_string_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct ToStringMethod<'a> {
-            outer: &'a DebruijnInterpreter,
+            outer: &'a ReducerCore,
         }
 
         impl<'a> ToStringMethod<'a> {
@@ -7560,7 +7577,9 @@ impl DebruijnInterpreter {
 
         Ok(result)
     }
+}
 
+impl DebruijnInterpreter {
     pub fn new(
         space: RhoISpace,
         urn_map: Arc<HashMap<String, Par>>,
@@ -7573,6 +7592,27 @@ impl DebruijnInterpreter {
             space,
             reduction_coordinator.clone(),
         )));
+        let core = ReducerCore::new(
+            space.clone().into(),
+            urn_map,
+            merge_chs,
+            mergeable_tags,
+            cost,
+            reduction_coordinator,
+        );
+        Arc::new(Self { space, core })
+    }
+}
+
+impl ReducerCore {
+    pub fn new(
+        space: ExecutionSpace,
+        urn_map: Arc<HashMap<String, Par>>,
+        merge_chs: Arc<RwLock<HashMap<Par, MergeType>>>,
+        mergeable_tags: Arc<HashMap<Par, MergeType>>,
+        cost: RuntimeBudget,
+        reduction_coordinator: ReductionCoordinator,
+    ) -> Arc<Self> {
         let reducer_cell = Arc::new(std::sync::OnceLock::new());
         let dispatcher = Arc::new(RholangAndScalaDispatcher {
             _dispatch_table: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
@@ -7580,7 +7620,7 @@ impl DebruijnInterpreter {
         });
 
         let metering = MeteredMachine::new(cost.clone());
-        let reducer = Arc::new(DebruijnInterpreter {
+        let core = Arc::new(ReducerCore {
             space,
             dispatcher: dispatcher.clone(),
             urn_map,
@@ -7594,8 +7634,8 @@ impl DebruijnInterpreter {
             reduction_coordinator,
         });
 
-        reducer_cell.set(Arc::downgrade(&reducer)).ok().unwrap();
-        reducer
+        reducer_cell.set(Arc::downgrade(&core)).ok().unwrap();
+        core
     }
 }
 

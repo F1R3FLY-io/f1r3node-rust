@@ -30,6 +30,13 @@ A raw byte observation pairs accepted byte measurements with their optional lega
 It records evidence, not spendable funds.
 See [raw byte observations](casper/theory/cost-accounting-impl/raw-byte-observations.md).
 
+### Native budget trace
+
+A native budget trace records charge attempts and their decisions in original accounting order.
+Each attempt identifies its execution session, causal operation path, accounting stage, and exact observation.
+The checked trace preserves budget decisions during replay. Separate RSpace evidence must establish source authenticity and valid matching order.
+See the [native attempt replay contract](casper/theory/cost-accounting-impl/observed-funding-outcome.md#native-attempt-replay-contract).
+
 ### Price schedule
 
 A price schedule defines resource weights, monetary prices, the settlement asset, and fixed fees for an identified protocol context.
@@ -178,6 +185,15 @@ minimum-term floor.
 correctness — proved, model-checked, and tested — is the organizing concern.
 
 ## Canonical Terms
+
+### AVL index
+
+An AVL index stores keys in a balanced binary search tree.
+At each node, the child heights differ by at most one.
+Native accounting uses stable arena positions and reserves lookup, growth, and insertion work before publication.
+
+**Preferred usage.** Use this term for the private native-accounting indexes.
+*Distinguish from* the immutable sorted indexes used to check imported budget traces.
 
 ### Host-work unit
 

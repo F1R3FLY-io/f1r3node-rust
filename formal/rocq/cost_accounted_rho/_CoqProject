@@ -599,3 +599,17 @@ theories/StateImportScan.v
 theories/StateImportCheckpoint.v
 theories/StateImportRetry.v
 theories/CountedFundingProjection.v
+theories/PrepaidReceiptStorage.v
+theories/NativeAttemptReplay.v
+theories/NativeIndexBounds.v
+theories/NativeOperationJournal.v
+theories/NativeReplayDirective.v
+theories/NativeTraceOwnership.v
+theories/NativeDatumRetirement.v
+theories/NativeCheckpointBacking.v
+theories/NativeSourceEncoding.v
+theories/NativeLockPreparation.v
+theories/CheckpointLocalHandoff.v
+theories/NativeBorrowedHistory.v
+theories/NativeReplayAccounting.v
+theories/NativeReplayAuthentication.v

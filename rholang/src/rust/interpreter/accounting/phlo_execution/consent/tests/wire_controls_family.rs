@@ -10,6 +10,8 @@ use models::rust::phlo_wire::PhloWireLimits;
 use models::rust::signed_phlo_deploy::{FundedDeploy, FundedDeployLimits, OfferedFundedDeploy};
 
 use super::*;
+
+mod capture_quantities;
 use crate::rust::interpreter::accounting::phlo_controls::{
     PhloFundingTerms, PhloFundingTermsError,
 };
@@ -827,6 +829,55 @@ fn decoded_controls_and_sources_preserve_complete_family_charges_and_original_re
             ));
             assert_eq!(offered_success.amounts(), matched_success.amounts());
             assert_eq!(matched_success.scoped(), &accepted_capture);
+            let counted_required: Vec<_> = resources
+                .iter()
+                .map(|resource| {
+                    crate::rust::interpreter::accounting::phlo_execution::PhloResourceAmount {
+                        resource: *resource,
+                        quantity: 1,
+                    }
+                })
+                .collect();
+            let prepared = crate::rust::interpreter::accounting::phlo_execution::prepare_counted_phlo_discharge(
+                &[], &counted_required,
+                crate::rust::interpreter::accounting::phlo_execution::PhloDischargeLimits {
+                    execution: work, key: match_limits.key,
+                    aggregate_key_bytes: match_limits.aggregate_key_bytes,
+                }, &budget(),
+            ).unwrap();
+            let derived_success = native_policy
+                .capture_matching_discharge(
+                    checked,
+                    &prepared,
+                    PhloOutcome::Accepted(&[]),
+                    match_limits,
+                    capture_limits,
+                    &budget(),
+                )
+                .unwrap();
+            assert_eq!(derived_success, matched_success);
+            let derived_offered = offered_policy
+                .capture_matching_discharge(
+                    checked,
+                    &prepared,
+                    PhloOutcome::Accepted(&[]),
+                    match_limits,
+                    capture_limits,
+                    &budget(),
+                )
+                .unwrap();
+            assert_eq!(derived_offered, offered_success);
+            let derived_platform = native_policy
+                .capture_matching_discharge(
+                    checked,
+                    &prepared,
+                    PhloOutcome::Accepted(&[PhloFailure::Platform]),
+                    match_limits,
+                    capture_limits,
+                    &budget(),
+                )
+                .unwrap();
+            assert_eq!(derived_platform.scoped(), &rejected_capture);
             let matched_platform = native_policy
                 .capture_matching_execution(
                     execution,

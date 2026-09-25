@@ -9,6 +9,8 @@ use crate::rust::interpreter::accounting::phlo_execution::{
 };
 use crate::rust::interpreter::accounting::Sig;
 
+mod retained_acquisition;
+
 const ENVIRONMENT: PhloEnvironment<'static> = PhloEnvironment {
     decimal_scale: 8,
     protocol_version: 6,

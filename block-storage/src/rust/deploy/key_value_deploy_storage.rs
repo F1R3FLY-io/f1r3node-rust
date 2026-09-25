@@ -178,10 +178,61 @@ impl KeyValueDeployStorage {
         Ok(pending)
     }
 
+    pub fn contains_pending_id(&self, identity: &DeployLookupId) -> Result<bool, KvStoreError> {
+        let (store, key) = match identity {
+            DeployLookupId::Legacy(signature) => (
+                self.store.raw_store(),
+                self.store.encode_key(&signature.as_bytes().to_vec())?,
+            ),
+            DeployLookupId::V6(id) => (
+                self.envelope_store.raw_store(),
+                self.envelope_store.encode_key(id)?,
+            ),
+        };
+        let mut historical = false;
+        store.with_value(&key, &mut |value| {
+            historical = value.is_some();
+            Ok(())
+        })?;
+        let funded = self
+            .funded_store
+            .as_ref()
+            .map(|store| store.contains_id(identity))
+            .transpose()?
+            .unwrap_or(false);
+        if historical && funded {
+            return Err(KvStoreError::InvalidArgument(
+                "pending identity occurs in multiple stores".to_string(),
+            ));
+        }
+        Ok(historical || funded)
+    }
+
+    pub fn remove_pending_by_id(
+        &mut self,
+        identity: &DeployLookupId,
+    ) -> Result<bool, KvStoreError> {
+        match self.get_pending(identity)? {
+            Some(pending) => self.remove_pending(&pending),
+            None => Ok(false),
+        }
+    }
+
     pub fn remove_pending(&mut self, pending: &PendingDeploy) -> Result<bool, KvStoreError> {
         match pending.envelope().format() {
-            DeployEnvelopeFormat::Legacy => self.remove_by_sig(pending.deploy_id()),
-            DeployEnvelopeFormat::BodyV61 => self.remove_envelope_by_id(pending.deploy_id()),
+            DeployEnvelopeFormat::Legacy => Ok(self.store.raw_store().delete(vec![self
+                .store
+                .encode_key(&pending.deploy_id().to_vec())?])?
+                != 0),
+            DeployEnvelopeFormat::BodyV61 => {
+                let identity = DeployIdV6::try_from(pending.deploy_id().as_ref())
+                    .map_err(|error| KvStoreError::InvalidArgument(error.to_string()))?;
+                Ok(self
+                    .envelope_store
+                    .raw_store()
+                    .delete(vec![self.envelope_store.encode_key(&identity)?])?
+                    != 0)
+            }
             DeployEnvelopeFormat::Funded | DeployEnvelopeFormat::OfferedFunded => self
                 .funded_store
                 .as_ref()

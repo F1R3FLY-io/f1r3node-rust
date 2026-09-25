@@ -408,14 +408,7 @@ async fn apply_finalization_effects(
             {
                 let mut deploy_storage = ctx.deploy_storage.lock();
                 for signature in &terminal_deploy_signatures {
-                    match signature {
-                        models::rust::deploy_id::DeployLookupId::Legacy(signature) => {
-                            deploy_storage.remove_by_sig(signature.as_bytes())?;
-                        }
-                        models::rust::deploy_id::DeployLookupId::V6(deploy_id) => {
-                            deploy_storage.remove_envelope_by_id(deploy_id.as_ref())?;
-                        }
-                    }
+                    deploy_storage.remove_pending_by_id(signature)?;
                 }
             }
             let mut rejected = ctx

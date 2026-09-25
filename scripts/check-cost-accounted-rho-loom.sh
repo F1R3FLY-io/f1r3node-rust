@@ -27,9 +27,20 @@ fi
 echo "Checking Loom models: preemption bound=$preemptions, default branch bound=$branches."
 echo "A model can raise its branch bound explicitly. Early-success limits and checkpoint resume are prohibited."
 
-out="$(cd "$ROOT" && RUSTFLAGS="--cfg loom -C target-cpu=native" \
-  LOOM_MAX_PREEMPTIONS="$preemptions" LOOM_MAX_BRANCHES="$branches" \
-  timeout 900 cargo test --locked -p cost-accounting-loom-models 2>&1)"
+out="$(
+  {
+    cd "$ROOT" &&
+    RUSTFLAGS="--cfg loom -C target-cpu=native" \
+      LOOM_MAX_PREEMPTIONS="$preemptions" LOOM_MAX_BRANCHES="$branches" \
+      timeout 900 cargo test --locked -p cost-accounting-loom-models &&
+    RUSTFLAGS="-C target-cpu=native" \
+      LOOM_MAX_PREEMPTIONS="$preemptions" LOOM_MAX_BRANCHES="$branches" \
+      timeout 900 cargo test --locked -p rspace_plus_plus --test native_history_loom &&
+    RUSTFLAGS="-C target-cpu=native" \
+      LOOM_MAX_PREEMPTIONS="$preemptions" LOOM_MAX_BRANCHES="$branches" \
+      timeout 900 cargo test --locked -p rspace_plus_plus --test native_source_loom
+  } 2>&1
+)"
 rc=$?
 printf '%s\n' "$out"
 
@@ -54,6 +65,24 @@ if (( passed == 0 || failed != 0 || ignored != 0 || filtered != 0 )); then
   echo "Loom qualification requires passing tests with no failures, ignored tests, or filtered tests: $counts" >&2
   exit 1
 fi
+
+lock_out="$(
+  cd "$ROOT" &&
+  RUSTFLAGS="-C target-cpu=native" \
+    LOOM_MAX_PREEMPTIONS="$preemptions" LOOM_MAX_BRANCHES="$branches" \
+    timeout 900 cargo test --locked -p rspace_plus_plus --lib \
+      rspace::striped_locks::native::tests::loom_ 2>&1
+)"
+rc=$?
+printf '%s\n' "$lock_out"
+if (( rc != 0 )) ||
+  ! grep -qF 'test result: ok. 2 passed; 0 failed; 0 ignored;' <<< "$lock_out" ||
+  ! grep -qF 'test rspace::striped_locks::native::tests::loom_lock_preparation_respects_atomic_shared_budget ... ok' <<< "$lock_out" ||
+  ! grep -qF 'test rspace::striped_locks::native::tests::loom_separate_budget_check_and_update_allows_unpaid_lock_preparation - should panic ... ok' <<< "$lock_out"; then
+  echo "Native lock preparation qualification did not complete both expected Loom tests." >&2
+  exit 1
+fi
+passed=$((passed + 2))
 
 echo "Loom passed: $passed tests completed within preemption bound $preemptions."
 echo "This result does not establish unbounded exploration or full production refinement."

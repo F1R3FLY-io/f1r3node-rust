@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use models::rhoapi::CostAuthority;
+use thiserror::Error;
 
 use super::authority::{AuthorityByteEvent, AuthorityByteEventKind};
 use super::byte_accounting::ByteCharge;
@@ -36,7 +37,61 @@ pub struct ByteObservationSnapshot {
     pub history_lost: bool,
 }
 
+#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
+pub enum ByteMeasurementError {
+    #[error("byte measurement history is incomplete")]
+    Incomplete,
+    #[error("byte measurement entry limit exceeded")]
+    EntryLimit,
+    #[error("byte measurement total overflow")]
+    Overflow,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct CheckedByteMeasurements<'a> {
+    rows: &'a [Arc<ByteObservation>],
+    totals: ByteCharge,
+}
+
+impl CheckedByteMeasurements<'_> {
+    pub fn rows(&self) -> &[Arc<ByteObservation>] { self.rows }
+
+    pub fn totals(&self) -> ByteCharge { self.totals }
+}
+
 impl ByteObservationSnapshot {
+    pub fn checked_measurements(
+        &self,
+        maximum_entries: usize,
+    ) -> Result<CheckedByteMeasurements<'_>, ByteMeasurementError> {
+        if self.rows.len() > maximum_entries {
+            return Err(ByteMeasurementError::EntryLimit);
+        }
+        if !self.metered_context || self.history_lost {
+            return Err(ByteMeasurementError::Incomplete);
+        }
+        let mut totals = ByteCharge::default();
+        for row in &self.rows {
+            let raw = row.measurement.ok_or(ByteMeasurementError::Incomplete)?;
+            totals.introduction_bytes = totals
+                .introduction_bytes
+                .checked_add(raw.introduction_bytes)
+                .ok_or(ByteMeasurementError::Overflow)?;
+            totals.transfer_bytes = totals
+                .transfer_bytes
+                .checked_add(raw.transfer_bytes)
+                .ok_or(ByteMeasurementError::Overflow)?;
+            totals.trace_bytes = totals
+                .trace_bytes
+                .checked_add(raw.trace_bytes)
+                .ok_or(ByteMeasurementError::Overflow)?;
+        }
+        Ok(CheckedByteMeasurements {
+            rows: &self.rows,
+            totals,
+        })
+    }
+
     pub fn has_complete_measurements(&self) -> bool {
         self.metered_context
             && !self.history_lost
@@ -54,13 +109,49 @@ impl ByteObservationSnapshot {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default)]
 pub(super) struct ByteObservationLog {
     rows: Vec<Arc<ByteObservation>>,
     history_lost: bool,
+    native_capacity: usize,
 }
 
+impl Clone for ByteObservationLog {
+    fn clone(&self) -> Self {
+        Self {
+            rows: self.rows.clone(),
+            history_lost: self.history_lost,
+            native_capacity: self.native_capacity.min(self.rows.len()),
+        }
+    }
+}
+
+impl PartialEq for ByteObservationLog {
+    fn eq(&self, other: &Self) -> bool {
+        self.rows == other.rows && self.history_lost == other.history_lost
+    }
+}
+
+impl Eq for ByteObservationLog {}
+
 impl ByteObservationLog {
+    pub(super) fn has_complete_history(&self) -> bool { !self.history_lost }
+
+    pub(super) fn rows(&self) -> &[Arc<ByteObservation>] { &self.rows }
+
+    pub(super) fn reserve_native(
+        &mut self,
+        additional: usize,
+        host: &crate::rust::interpreter::host_work::HostWorkBudget,
+    ) -> Result<(), crate::rust::interpreter::errors::InterpreterError> {
+        super::native_runtime::index::reserve_vector(
+            &mut self.rows,
+            &mut self.native_capacity,
+            additional,
+            host,
+        )
+    }
+
     pub(super) fn try_reserve(
         &mut self,
         additional: usize,
@@ -88,6 +179,7 @@ impl ByteObservationLog {
     pub(super) fn reset(&mut self) {
         self.rows.clear();
         self.history_lost = false;
+        self.native_capacity = 0;
     }
 }
 

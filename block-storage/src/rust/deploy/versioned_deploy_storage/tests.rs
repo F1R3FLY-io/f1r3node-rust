@@ -546,8 +546,12 @@ async fn pending_facade_retains_all_formats_across_restart_and_preserves_legacy_
             .unwrap();
         assert_eq!(restored.envelope(), record.envelope());
     }
-    assert!(store.remove_pending(&records[2]).unwrap());
-    assert!(!store.remove_pending(&records[2]).unwrap());
+    assert!(store
+        .remove_pending_by_id(records[2].typed_deploy_id())
+        .unwrap());
+    assert!(!store
+        .remove_pending_by_id(records[2].typed_deploy_id())
+        .unwrap());
     assert_eq!(store.read_all_pending().unwrap().len(), 3);
     assert_eq!(store.store.raw_store().to_map().unwrap(), legacy);
     assert_eq!(store.envelope_store.raw_store().to_map().unwrap(), plain);
@@ -570,6 +574,182 @@ async fn pending_facade_requires_explicit_limits_and_rejects_wrong_namespace_row
         .await
         .is_err());
     assert!(!historical.non_empty().unwrap());
+}
+
+#[tokio::test]
+async fn pending_identity_lookup_includes_funded_namespaces() {
+    let mut manager = InMemoryStoreManager::new();
+    let mut store = KeyValueDeployStorage::new_with_limits(&mut manager, limits())
+        .await
+        .unwrap();
+    for record in pending_formats() {
+        store.add_pending_if_absent(&record).unwrap();
+        let found = store.contains_pending_id(record.typed_deploy_id()).unwrap();
+        assert!(
+            found,
+            "missing {:?} pending envelope",
+            record.envelope().format()
+        );
+    }
+}
+
+#[tokio::test]
+async fn pending_identity_retirement_includes_funded_namespaces() {
+    let mut manager = InMemoryStoreManager::new();
+    let mut store = KeyValueDeployStorage::new_with_limits(&mut manager, limits())
+        .await
+        .unwrap();
+    for record in pending_formats() {
+        store.add_pending_if_absent(&record).unwrap();
+        let removed = store
+            .remove_pending_by_id(record.typed_deploy_id())
+            .unwrap();
+        assert!(
+            removed,
+            "retained {:?} terminal envelope",
+            record.envelope().format()
+        );
+        assert!(store
+            .get_pending(record.typed_deploy_id())
+            .unwrap()
+            .is_none());
+        assert!(!store.contains_pending_id(record.typed_deploy_id()).unwrap());
+        assert!(!store
+            .remove_pending_by_id(record.typed_deploy_id())
+            .unwrap());
+    }
+}
+
+#[tokio::test]
+async fn pending_identity_removal_has_one_winner_across_handles() {
+    let mut manager = InMemoryStoreManager::new();
+    let mut store = KeyValueDeployStorage::new_with_limits(&mut manager, limits())
+        .await
+        .unwrap();
+    check_concurrent_pending_removal(&mut store);
+}
+
+#[tokio::test]
+async fn pending_identity_lmdb_removal_has_one_winner_across_handles() {
+    let directory = scratch();
+    let mut manager = manager(directory.path().to_path_buf());
+    let mut store = KeyValueDeployStorage::new_with_limits(&mut manager, limits())
+        .await
+        .unwrap();
+    check_concurrent_pending_removal(&mut store);
+    drop(store);
+    manager.shutdown().await.unwrap();
+}
+
+fn check_concurrent_pending_removal(store: &mut KeyValueDeployStorage) {
+    for record in pending_formats() {
+        store.add_pending_if_absent(&record).unwrap();
+        let barrier = Barrier::new(8);
+        let removed = std::thread::scope(|scope| {
+            let threads: Vec<_> = (0..8)
+                .map(|_| {
+                    let mut handle = store.clone();
+                    let identity = record.typed_deploy_id();
+                    let barrier = &barrier;
+                    scope.spawn(move || {
+                        barrier.wait();
+                        handle.remove_pending_by_id(identity).unwrap()
+                    })
+                })
+                .collect();
+            threads
+                .into_iter()
+                .map(|thread| usize::from(thread.join().unwrap()))
+                .sum::<usize>()
+        });
+        assert_eq!(removed, 1, "{:?}", record.envelope().format());
+        assert!(!store.contains_pending_id(record.typed_deploy_id()).unwrap());
+    }
+}
+
+#[tokio::test]
+async fn pending_identity_deletions_commute_for_all_format_pairs() {
+    let records = pending_formats();
+    for first in &records {
+        for second in &records {
+            let mut first_manager = InMemoryStoreManager::new();
+            let mut second_manager = InMemoryStoreManager::new();
+            let mut forward = KeyValueDeployStorage::new_with_limits(&mut first_manager, limits())
+                .await
+                .unwrap();
+            let mut reverse = KeyValueDeployStorage::new_with_limits(&mut second_manager, limits())
+                .await
+                .unwrap();
+            for record in &records {
+                forward.add_pending_if_absent(record).unwrap();
+                reverse.add_pending_if_absent(record).unwrap();
+            }
+            forward
+                .remove_pending_by_id(first.typed_deploy_id())
+                .unwrap();
+            forward
+                .remove_pending_by_id(second.typed_deploy_id())
+                .unwrap();
+            reverse
+                .remove_pending_by_id(second.typed_deploy_id())
+                .unwrap();
+            reverse
+                .remove_pending_by_id(first.typed_deploy_id())
+                .unwrap();
+            for record in &records {
+                let left = forward
+                    .get_pending(record.typed_deploy_id())
+                    .unwrap()
+                    .map(PendingDeploy::into_envelope);
+                let right = reverse
+                    .get_pending(record.typed_deploy_id())
+                    .unwrap()
+                    .map(PendingDeploy::into_envelope);
+                assert_eq!(left, right);
+                assert_eq!(
+                    left.is_some(),
+                    record.typed_deploy_id() != first.typed_deploy_id()
+                        && record.typed_deploy_id() != second.typed_deploy_id()
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn pending_identity_ambiguous_removal_preserves_both_namespaces() {
+    let mut manager = InMemoryStoreManager::new();
+    let mut store = KeyValueDeployStorage::new_with_limits(&mut manager, limits())
+        .await
+        .unwrap();
+    let records = pending_formats();
+    let record = &records[3];
+    store.add_pending_if_absent(record).unwrap();
+    let DeployLookupId::V6(identity) = record.typed_deploy_id() else {
+        panic!("funded identity")
+    };
+    store
+        .envelope_store
+        .put_one(
+            identity.clone(),
+            records[1].envelope().body_envelope().unwrap().clone(),
+        )
+        .unwrap();
+    let historical_before = store.envelope_store.raw_store().to_map().unwrap();
+    let funded_raw = manager
+        .store(DeployEnvelopeStoreKind::Pending.namespace().to_string())
+        .await
+        .unwrap();
+    let funded_before = funded_raw.to_map().unwrap();
+    assert!(store.contains_pending_id(record.typed_deploy_id()).is_err());
+    assert!(store
+        .remove_pending_by_id(record.typed_deploy_id())
+        .is_err());
+    assert_eq!(
+        store.envelope_store.raw_store().to_map().unwrap(),
+        historical_before
+    );
+    assert_eq!(funded_raw.to_map().unwrap(), funded_before);
 }
 
 #[tokio::test]
@@ -611,7 +791,7 @@ proptest! {
 
     #[test]
     fn pending_facade_histories_preserve_complete_envelopes_and_namespace_isolation(
-        operations in proptest::collection::vec((0u8..3, 0usize..4), 0..40),
+        operations in proptest::collection::vec((0u8..5, 0usize..4), 0..40),
     ) {
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let mut manager = InMemoryStoreManager::new();
@@ -629,6 +809,8 @@ proptest! {
                     expected.insert(record.typed_deploy_id().clone(), record.envelope().clone());
                 }
                 1 => prop_assert_eq!(store.remove_pending(record).unwrap(), expected.remove(record.typed_deploy_id()).is_some()),
+                2 => prop_assert_eq!(store.remove_pending_by_id(record.typed_deploy_id()).unwrap(), expected.remove(record.typed_deploy_id()).is_some()),
+                3 => prop_assert_eq!(store.contains_pending_id(record.typed_deploy_id()).unwrap(), expected.contains_key(record.typed_deploy_id())),
                 _ => prop_assert_eq!(store.get_pending(record.typed_deploy_id()).unwrap().map(PendingDeploy::into_envelope), expected.get(record.typed_deploy_id()).cloned()),
             }
             if index >= 2 {

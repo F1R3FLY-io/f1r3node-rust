@@ -227,6 +227,249 @@ Print Assumptions native_checked_binding_rejects_colliding_scope_keys.
 Print Assumptions native_checked_binding_cannot_rebind_root_or_cohort.
 Print Assumptions native_before_after_labels_do_not_prove_snapshot_consistency.
 
+Section NativeExecutionBinding.
+Context {Root Envelope Controls : Type}.
+Variable root_eq : forall (left right : Root), {left = right} + {left <> right}.
+Variable envelope_eq : forall (left right : Envelope), {left = right} + {left <> right}.
+Variable controls_eq : forall (left right : Controls), {left = right} + {left <> right}.
+
+Record native_execution_authorization := {
+  execution_authorized_root : Root;
+  execution_authorized_envelope : Envelope;
+  execution_authorized_controls : Controls
+}.
+
+Definition bind_native_execution authorized root envelope controls :=
+  if root_eq root (execution_authorized_root authorized) then
+    if envelope_eq envelope (execution_authorized_envelope authorized) then
+      if controls_eq controls (execution_authorized_controls authorized) then Some authorized else None
+    else None
+  else None.
+
+Theorem native_execution_binding_exact : forall authorized root envelope controls bound,
+  bind_native_execution authorized root envelope controls = Some bound <->
+  bound = authorized /\ root = execution_authorized_root authorized /\
+  envelope = execution_authorized_envelope authorized /\
+  controls = execution_authorized_controls authorized.
+Proof.
+  intros. unfold bind_native_execution.
+  destruct (root_eq root (execution_authorized_root authorized));
+    destruct (envelope_eq envelope (execution_authorized_envelope authorized));
+    destruct (controls_eq controls (execution_authorized_controls authorized));
+    split; intros H; try discriminate; try (inversion H; subst; tauto); tauto.
+Qed.
+
+Theorem native_execution_binding_accepts_authorized_inputs : forall authorized,
+  bind_native_execution authorized (execution_authorized_root authorized)
+    (execution_authorized_envelope authorized) (execution_authorized_controls authorized) = Some authorized.
+Proof.
+  intros. apply native_execution_binding_exact. repeat split; reflexivity.
+Qed.
+
+Theorem native_execution_binding_rejects_substitution : forall authorized root envelope controls,
+  (root <> execution_authorized_root authorized \/
+   envelope <> execution_authorized_envelope authorized \/
+   controls <> execution_authorized_controls authorized) ->
+  bind_native_execution authorized root envelope controls = None.
+Proof.
+  intros authorized root envelope controls changed.
+  destruct (bind_native_execution authorized root envelope controls) as [bound|] eqn:checked; auto.
+  apply native_execution_binding_exact in checked. tauto.
+Qed.
+
+Theorem native_execution_binding_same_authorization_agrees : forall authorized
+    root_left envelope_left controls_left left root_right envelope_right controls_right right,
+  bind_native_execution authorized root_left envelope_left controls_left = Some left ->
+  bind_native_execution authorized root_right envelope_right controls_right = Some right ->
+  left = right /\ root_left = root_right /\ envelope_left = envelope_right /\ controls_left = controls_right.
+Proof.
+  intros authorized root_left envelope_left controls_left left root_right envelope_right controls_right right one two.
+  apply native_execution_binding_exact in one, two.
+  destruct one as [-> [-> [-> ->]]]. destruct two as [-> [-> [-> ->]]].
+  repeat split; reflexivity.
+Qed.
+End NativeExecutionBinding.
+
+Section NativeReplaySettlementBoundary.
+Context {Root Evidence : Type}.
+
+Definition replay_settlement_state (before after : Root) (failed : bool) : Root :=
+  if failed then before else after.
+
+Definition complete_funded_replay (authorized complete failed : bool)
+    (before after : Root) (evidence : Evidence) : option (Root * Evidence) :=
+  if authorized && complete then
+    Some (replay_settlement_state before after failed, evidence)
+  else None.
+
+Theorem funded_replay_completion_exact : forall authorized complete failed before after evidence result,
+  complete_funded_replay authorized complete failed before after evidence = Some result <->
+  authorized = true /\ complete = true /\
+  result = (replay_settlement_state before after failed, evidence).
+Proof.
+  intros [] [] [] before after evidence result;
+    unfold complete_funded_replay, replay_settlement_state; simpl; intuition congruence.
+Qed.
+
+Theorem funded_replay_incomplete_has_no_settlement : forall authorized failed before after evidence,
+  complete_funded_replay authorized false failed before after evidence = None.
+Proof. intros []; reflexivity. Qed.
+
+Theorem funded_replay_unauthorized_has_no_settlement : forall complete failed before after evidence,
+  complete_funded_replay false complete failed before after evidence = None.
+Proof. reflexivity. Qed.
+
+Theorem funded_replay_failure_keeps_evidence : forall before after evidence,
+  complete_funded_replay true true true before after evidence = Some (before, evidence).
+Proof. reflexivity. Qed.
+
+Theorem funded_replay_success_keeps_effects : forall before after evidence,
+  complete_funded_replay true true false before after evidence = Some (after, evidence).
+Proof. reflexivity. Qed.
+
+Theorem funded_replay_failure_ignores_partial_state : forall before left right evidence,
+  complete_funded_replay true true true before left evidence =
+  complete_funded_replay true true true before right evidence.
+Proof. reflexivity. Qed.
+
+Theorem funded_replay_does_not_fabricate_evidence : forall authorized complete failed before after evidence root captured,
+  complete_funded_replay authorized complete failed before after evidence = Some (root, captured) ->
+  captured = evidence.
+Proof.
+  intros. apply funded_replay_completion_exact in H.
+  destruct H as [_ [_ H]]. now inversion H.
+Qed.
+End NativeReplaySettlementBoundary.
+
+Section BoundNativeReplaySettlement.
+Context {Root Envelope Controls Evidence : Type}.
+Variable root_eq : forall (a b : Root), {a = b} + {a <> b}.
+Variable envelope_eq : forall (a b : Envelope), {a = b} + {a <> b}.
+Variable controls_eq : forall (a b : Controls), {a = b} + {a <> b}.
+
+Definition complete_bound_funded_replay authorized root envelope controls complete failed after (evidence : Evidence) :=
+  match bind_native_execution root_eq envelope_eq controls_eq authorized root envelope controls with
+  | Some _ => complete_funded_replay true complete failed root after evidence
+  | None => None
+  end.
+
+Theorem bound_funded_replay_checks_every_input : forall authorized root envelope controls complete failed after evidence result,
+  complete_bound_funded_replay authorized root envelope controls complete failed after evidence = Some result <->
+  root = execution_authorized_root authorized /\
+  envelope = execution_authorized_envelope authorized /\
+  controls = execution_authorized_controls authorized /\ complete = true /\
+  result = (replay_settlement_state root after failed, evidence).
+Proof.
+  intros. unfold complete_bound_funded_replay.
+  destruct (bind_native_execution root_eq envelope_eq controls_eq authorized root envelope controls)
+    as [bound|] eqn:binding.
+  - apply native_execution_binding_exact in binding.
+    rewrite funded_replay_completion_exact. tauto.
+  - split; [discriminate|]. intros [Hroot [Henvelope [Hcontrols _]]].
+    subst root envelope controls.
+    rewrite native_execution_binding_accepts_authorized_inputs in binding. discriminate.
+Qed.
+
+Theorem bound_funded_replay_rejects_any_substitution : forall authorized root envelope controls complete failed after evidence,
+  (root <> execution_authorized_root authorized \/
+   envelope <> execution_authorized_envelope authorized \/
+   controls <> execution_authorized_controls authorized) ->
+  complete_bound_funded_replay authorized root envelope controls complete failed after evidence = None.
+Proof.
+  intros. unfold complete_bound_funded_replay.
+  rewrite native_execution_binding_rejects_substitution by assumption. reflexivity.
+Qed.
+
+Theorem bound_funded_replay_preserves_failed_charge_evidence : forall authorized after evidence,
+  complete_bound_funded_replay authorized (execution_authorized_root authorized)
+    (execution_authorized_envelope authorized) (execution_authorized_controls authorized)
+    true true after evidence = Some (execution_authorized_root authorized, evidence).
+Proof.
+  intros. unfold complete_bound_funded_replay.
+  rewrite native_execution_binding_accepts_authorized_inputs. reflexivity.
+Qed.
+End BoundNativeReplaySettlement.
+
+Section NativeSettlementRoots.
+Context {Root Evidence : Type}.
+Variable root_eq : forall (a b : Root), {a = b} + {a <> b}.
+
+Definition settlement_roots_match (expected actual : Root * Root) :=
+  if root_eq (fst expected) (fst actual) then
+    if root_eq (snd expected) (snd actual) then true else false
+  else false.
+
+Definition funded_settlement_roots authorized complete failed (before after : Root) (evidence : Evidence) :=
+  match complete_funded_replay authorized complete failed before after evidence with
+  | Some (working, checked) => Some ((before, working), checked)
+  | None => None
+  end.
+
+Theorem settlement_roots_match_exact : forall expected actual,
+  settlement_roots_match expected actual = true <-> expected = actual.
+Proof.
+  intros [captured working] [other_captured other_working].
+  unfold settlement_roots_match; simpl.
+  destruct (root_eq captured other_captured); destruct (root_eq working other_working);
+    split; intros; try discriminate; congruence.
+Qed.
+
+Theorem settlement_roots_preserve_both_bindings : forall captured working observed runtime,
+  settlement_roots_match (captured, working) (observed, runtime) = true ->
+  captured = observed /\ working = runtime.
+Proof. intros. apply settlement_roots_match_exact in H. inversion H. auto. Qed.
+
+Theorem settlement_roots_reject_either_substitution : forall captured working observed runtime,
+  (captured <> observed \/ working <> runtime) ->
+  settlement_roots_match (captured, working) (observed, runtime) = false.
+Proof.
+  intros captured working observed runtime different.
+  destruct (settlement_roots_match (captured, working) (observed, runtime)) eqn:checked; auto.
+  apply settlement_roots_preserve_both_bindings in checked. tauto.
+Qed.
+
+Theorem funded_settlement_roots_keep_original_capture : forall authorized complete failed
+    before after evidence roots checked,
+  funded_settlement_roots authorized complete failed before after evidence = Some (roots, checked) ->
+  authorized = true /\ complete = true /\ fst roots = before /\
+  snd roots = replay_settlement_state before after failed /\ checked = evidence.
+Proof.
+  intros authorized complete failed before after evidence roots checked accepted.
+  unfold funded_settlement_roots in accepted.
+  destruct (complete_funded_replay authorized complete failed before after evidence)
+    as [[working value]|] eqn:replayed; [|discriminate].
+  apply funded_replay_completion_exact in replayed.
+  destruct replayed as [auth [done same]]. inversion same; subst.
+  inversion accepted; subst. simpl. repeat split; reflexivity.
+Qed.
+
+Theorem successful_replay_accepts_its_distinct_working_root : forall before after evidence,
+  funded_settlement_roots true true false before after evidence = Some ((before, after), evidence) /\
+  settlement_roots_match (before, after) (before, after) = true.
+Proof. intros. split; [reflexivity|apply settlement_roots_match_exact; reflexivity]. Qed.
+
+Theorem failed_replay_keeps_original_root_and_evidence : forall before after evidence,
+  funded_settlement_roots true true true before after evidence = Some ((before, before), evidence).
+Proof. reflexivity. Qed.
+
+Theorem unauthorized_replay_cannot_supply_settlement_roots : forall complete failed before after evidence,
+  funded_settlement_roots false complete failed before after evidence = None.
+Proof. reflexivity. Qed.
+
+Theorem incomplete_replay_cannot_supply_settlement_roots : forall authorized failed before after evidence,
+  funded_settlement_roots authorized false failed before after evidence = None.
+Proof. intros []; reflexivity. Qed.
+End NativeSettlementRoots.
+
+Example original_root_only_guard_rejects_a_valid_replay :
+  settlement_roots_match Nat.eq_dec (1, 2) (1, 2) = true /\ (1 =? 2) = false.
+Proof. split; reflexivity. Qed.
+
+Print Assumptions native_execution_binding_exact.
+Print Assumptions native_execution_binding_accepts_authorized_inputs.
+Print Assumptions native_execution_binding_rejects_substitution.
+Print Assumptions native_execution_binding_same_authorization_agrees.
+
 Record direct_wallet_row := {
   wallet_row_custody : nat;
   wallet_row_capacity : nat;

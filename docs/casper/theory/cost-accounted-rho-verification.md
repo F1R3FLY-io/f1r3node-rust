@@ -32,7 +32,7 @@ become channels, tokens become messages on those channels, and signed
 processes must consume fuel before they can communicate.
 
 This article presents a machine-checked proof of that claim, mechanized
-in **Rocq 9.1.1** across 221 modules and 83,386 lines of development, and
+in **Rocq 9.1.1** across 235 modules and 88,454 lines of development, and
 complements it with a **TLA+** finite-state model verified by TLC. The required
 aggregate gate also cross-checks symbolic N-ary authority, the typed threat and
 search-frontier models, and replay-root materialization with Apalache. The
@@ -54,10 +54,15 @@ axiom-free forward weak-barb propagation from a replicated body to both
 the primitive replicator and Meredith's reflective replication encoding
 (`preplicate_bang_encoding_body_barbs_sound`,
 `replication_encoding_forward_barb_sound`).
-All 4,171 `Qed.`/`Defined.` proof terms belong to the current source inventory.
+All 4,631 `Qed.`/`Defined.` proof terms belong to the current source inventory.
 Source counts alone do not establish that an aggregate verification run passed.
 The [economic failure observation](cost-accounting-impl/economic-failure-observation.md) connects failure-summary proofs to concurrent recorder tests and preserves the legacy public error contract.
 The [observed outcome matcher](cost-accounting-impl/observed-funding-outcome.md) binds complete execution evidence to one equivalent prepared settlement and rejects ambiguous captures.
+The [prepaid receipt store](cost-accounting-impl/prepaid-receipt-storage.md) proves exact replacement and owned-batch publication over arbitrary keys and values.
+Those storage proofs do not establish the economic validity of receipt contents or complete funding publication.
+The source-bucket model also preserves all receipt occurrences through arbitrary finite removal histories.
+It separates persistent produce-hash identity from inventory positions that can change after consumption.
+This model does not prove complete stack-tail migration or authenticate the acquisition records themselves.
 The [checked wallet adapter](cost-accounting-impl/lexicographic-minimax-funding.md#checked-wallet-settlement-requests) preserves authenticated custody, native amounts, and cursor context through request preparation.
 Its proofs cover projection and zero-row omission, not the authenticity of runtime observations or complete deployment publication.
 The [checked envelope store](cost-accounting-impl/signed-phlo-deploy-envelope.md#checked-envelope-retention) preserves complete signed payloads through explicit format dispatch and canonical record validation.
@@ -96,6 +101,41 @@ The [augmentation-history proof](cost-accounting-impl/lexicographic-minimax-fund
 The [parent-edge model](cost-accounting-impl/lexicographic-minimax-funding.md#recorded-parent-edges-and-operation-paths) derives valid operation paths from recorded discovery histories.
 The [complete fixed-flow reference](cost-accounting-impl/lexicographic-minimax-funding.md#complete-fixed-flow-reference) proves candidate coverage and connects the optimum to a valid assignment matrix.
 The aggregate gate rejects admitted proofs and unsupported axiom declarations.
+The [replay occurrence ledger](cost-accounting-impl/observed-funding-outcome.md#replay-occurrence-ledger) binds reservations and rollback to checked operation slots.
+Its concurrent model checks exact outcomes, exclusive ownership, publication-order undo, and checkpoint ancestry with two workers and two slots.
+Three negative controls expose cursor-only restore, nonexclusive boundaries, and incorrect outcomes.
+Property tests compare generated histories with an independent prefix reference. Loom tests execute the production transition code with instrumented mutexes.
+`NativeReplayAccounting.v` proves subset charge bounds, publication permutation, exact rollback, and authenticated stage coverage.
+Its concurrent model checks completed usage and stage order with two workers, two slots, and three starts.
+Four negative controls expose omitted observations, repeated stages, retry charges, and missing usage rollback.
+The production ledger authenticates operation-linked observations and couples completed usage to slot publication and undo.
+`NativeReplayAuthentication.v` proves exact logical COMM and canonical footprint comparison, including preservation of declared conflicts.
+Its bounded concurrent model checks those prerequisites under channel exclusion and rejects two bypass mutations.
+The reservation requires a checked footprint before introduction and an actual logical COMM source before its budget observation.
+Generated tests check canonical channel unions. Mutation tests change logical source fields while preserving valid budget evidence.
+These checks assume that the caller supplies the actual guarded state. They do not establish prestate payload provenance.
+Candidate preparation tests exercise actual RSpace matching without tuple mutation, including repeated channels, prospective counters, and unselected produce triggers.
+The selection proofs cover ordered candidates after spatial matching. They establish exact source checks and telemetry-independent eligibility, not a proof of the Rust matcher.
+These checks do not establish candidate provenance, dependency readiness, or complete native replay. Native funded ingress remains disabled.
+The [coupled checkpoint contract](cost-accounting-impl/observed-funding-outcome.md#coupled-checkpoint-contract) separates channel waits, tuple effects, and ledger publication.
+Its five negative controls reject unlocked capture, partial restore, premature release, preparation-time mutation, and counter loss.
+This bounded model assumes private backing handles and an infallible publication interval. It does not prove Rust refinement or complete native operation integration.
+The private session implements capture and restore, including completed budget usage.
+Native operation tickets, actual candidate checks, and dependency readiness remain required before activation.
+`NativeCheckpointBacking.v` proves metadata backing bounds from standard-library layout and occupancy premises.
+Allocator-instrumented tests check the resulting byte bound. This proof does not cover cold-history materialization or complete payload cleanup.
+Four additional lemmas establish field-bound composition, complete clone reservation, prepaid publication or cancellation, and source preservation after reservation rejection.
+These lemmas assume valid field and container bounds. They do not prove the Rust allocator or generated clone implementations.
+The structural copy traversal checks every protobuf field and variant, including quoted terms and nested cost annotations.
+Allocation tests measure generated term copies, compound authority copies, every expression variant, and hash tables with retained capacity.
+Failure tests reject unpaid preparation, checkpoint capture, and result capture without changing authority state.
+A restoration regression requires new payment for vector capacity that the checkpoint copy did not retain.
+Two capacity lemmas establish the copied backing limit and the requirement to reserve later growth.
+A counterexample shows why copying unused source capacity would bypass that requirement.
+Prepaid publication and cancellation tests finish after host rejection without another reservation.
+The [borrowed cold-history reader](cost-accounting-impl/observed-funding-outcome.md#borrowed-cold-history-reads) reserves host work before allocation, lookup, and framing scans.
+`NativeBorrowedHistory.v` proves span safety, strict traversal progress, row bounds, hash framing, and consumer prerequisites.
+These contracts do not establish full Rust parser refinement, typed payload allocation bounds, or native session integration.
 The [ownership consent record](cost-accounting-impl/ownership-transfer-consent.md) separates arbitrary-list and transfer-history proofs from native phlo integration.
 The [persistent allowance record](cost-accounting-impl/persistent-funding-allowance.md) records mixed-history conservation proofs, generated model regressions, and bounded concurrent checks.
 Those proofs preserve captured reservation terms but do not establish reservation backing or concurrent native ownership transfer.
@@ -113,6 +153,237 @@ Each accepted occurrence retains its raw tuple and an optional legacy event proj
 Unit-authority communication can retain a raw receipt without a legacy byte charge.
 The proofs preserve rejection, retry suppression, occurrence multiplicity, and snapshot alignment.
 They also establish compatible update commutation and reject completeness claims for legacy-only rows.
+Counted capture preserves every row and bounds each raw dimension independently.
+Its proofs establish acceptance of complete, bounded snapshots and show that every prefix fits when the complete total fits.
+Append and permutation lemmas justify aggregation without deduplication or dependence on publication order.
+Rust properties compare checked totals with a wider integer reference, including missing measurements and independent overflow boundaries.
+These guarantees cover raw measurement capture, not prepaid provenance or complete wallet settlement.
+
+The observation-construction lemmas preserve actual identity, authority, event kind, raw measurements, and quantities under each native schedule.
+Play and typed replay share Rust constructors. Tests compare their results with live-budget records and generated byte measurements.
+These constructors do not prove source-to-payload correspondence or complete host-work coverage.
+The [construction contract](cost-accounting-impl/observed-funding-outcome.md#shared-observation-construction) states those remaining integration requirements.
+
+`NativeReplayAccounting.v` also models permanent closure after incomplete publication.
+Its history lemmas cover arbitrary completion sequences. Success preserves existing closure, and independent completion results commute.
+Loom imports the production guard and tests concurrent completion, explicit closure, and an unsafe flag-reset control.
+These results establish the closure guard contract, not complete atomic publication of tuples and accounting state.
+
+The same module proves error-class preservation across any number of interpreter-to-RSpace round trips.
+Its constructors distinguish economic rejection, host rejection, and structural failure. Error messages cannot change these classes.
+Rust properties exercise repeated conversions, nested host errors, and misleading error messages.
+Integration tests check host rejection in the live observer and checkpoint restoration after host exhaustion.
+These results establish error transport, not complete runtime failure atomicity or complete host-resource bounds.
+
+`NativeOperationJournal.v` also proves exact predecessor readiness, independent eligibility, slot-renaming preservation, and rechecking after restoration.
+The private replay session waits outside its gate and channel guards, then rechecks readiness under the ledger mutex before reservation.
+The direct reservation entry point uses the same atomic dependency check and preserves exclusive checkpoint boundaries.
+`NativeReplayReadiness.tla` checks three slots and one restore, with negative controls for retained waiting leases, omitted rechecks, and direct-entry dependency bypass.
+Generated direct-entry histories check declared dependencies, cancellation, exact usage, and restoration.
+Loom imports the production ledger to check predecessor publication and cancellation, independent reservations, and restoration between readiness and reservation.
+These checks do not establish stage-level retry provenance or complete funded-runtime integration.
+Rust properties check generated predecessor sets. Integration tests check reversed slot order, checkpoint access during waits, closure, and overlapping independent matches.
+These checks exclude stage-level retry ownership and complete funded-contract replay.
+
+`NativeReplayAuthentication.v` binds consume sources and peek indexes as separate inputs.
+Its counterexample shows that source equality alone permits changed peek indexes.
+The exact-input lemmas require matching peek sets before a stored receive can publish.
+Rust import properties check arbitrary valid subsets. Integration tests compare joins, mixed persistence, peeks, denial, and restoration with ordinary execution.
+The fixed matrix covers 256 two-channel combinations. Generated tests extend the join to four channels.
+These tests use the production matcher but do not execute a complete funded contract.
+
+The execution adapter connects `ReducerCore` to the checked native session without granting storage-administration methods.
+Parsed-process regressions compare actual reduction, denied COMMs, error classification, tuples, joins, and completed phlo usage with recorded execution.
+Generated scheduler tests reject join reads across mixed parallel frontiers and check exact successful effects and boundary release.
+Ledger properties check that only a complete, open boundary returns a final charge, including zero-charge slots and arbitrary restoration histories.
+Loom imports the production ledger and checks this accessor during publication, restoration, and closure interleavings.
+These tests do not establish complete funded-runtime evidence or wallet settlement.
+
+The producer-result extension of `NativeReplayAuthentication.v` requires exact logical source, status flags, and ordered output bytes after dispatch.
+Its counterexample proves that an unchanged logical source cannot authenticate changed output.
+Rust tests mutate each field, compare generated output lists, and inject failure at each comparison-reservation boundary.
+These proofs specify result equality. They do not prove the correctness of external services or source-to-payload provenance.
+
+The private-initialization section of `NativeReplayAccounting.v` proves complete preparation, request-count preservation, append composition, and failure rejection over arbitrary finite lists.
+The model exposes an initialized result only if every preparation succeeds.
+It does not model the internal RSpace installer or establish a Rust refinement proof.
+Generated Rust tests install distinct templates and reject each installation-reservation boundary.
+They check exact continuation contents, joins, checkpoint restoration, unchanged history roots, and isolation from independent sessions.
+Example tests reject invalid template shapes and matching prestate data without consuming stored data.
+
+The native environment shares system-process setup with ordinary execution.
+Callback regressions cover hashing, block context, deploy context, custom handlers, generated payloads, and denied COMMs.
+They compare completed charges and tuple effects, and reject changed context before successful replay completion.
+Initialization occurs before shared access. Existing concurrent session tests cover publication and restoration after construction.
+These checks do not establish full allocation bounds, external-service correctness, or wallet settlement.
+
+Replay-to-funding tests extend those fixtures through counted resource discharge, obligation projection, canonical allocation, and native settlement amounts.
+An independent reference sums all four weighted resource dimensions over authority leaves.
+The fixture uses that reference for both recorded usage and denial thresholds.
+Nonzero-price cases compare complete obligation keys, quantities, assignments, and cursors before and after replay and restoration.
+Generated cases vary one through nine owners. A separate example uses 33 owners.
+These counts bound the tests, not the funding implementation.
+The tests enforce the projection and conservation contracts in `NativeReplayAccounting.v`, `PrepaidResourceDischarge.v`, and `SignedPhloFunding.v`.
+They supply funding eligibility and fresh resources. They do not establish signed consent, persistent wallet mutation, or complete funding-family production.
+
+The separate native COMM integration fixture connects authorized wallet snapshots to original execution and independent native replay.
+It covers one-owner and three-owner signed envelopes at a nonzero adopted price, with success and user-error cases.
+The test compares four private settlement roots and every source balance, then rejects a repeated settlement without a state change.
+It also rejects altered sessions, usage, trace coverage, and exhausted host budgets.
+`NativeFundingSnapshot.v` proves the adapter's completion gate, failure-state selection, and evidence-preservation contract.
+The prepaid variant consumes one of two rooted cells and checks exact receipt preservation for the remaining cell.
+Both variants supply an explicit funding case. They do not prove complete family generation or production issuance of prepaid resources.
+The root-binding section of `NativeFundingSnapshot.v` preserves the original funding root separately from the completed runtime root.
+Its lemmas reject substitution of either binding and prohibit incomplete or unauthorized replay from supplying settlement roots.
+`NativeSettlementRoots.tla` checks these bindings and independent settlement eligibility for two workers.
+Negative controls expose original-root-only runtime checks and funding recapture after execution.
+Separate controls expose missing checks for submitted funding and runtime roots.
+
+The completion-evidence section of `NativeReplayAccounting.v` specifies the granted-row projection after complete replay.
+Six lemmas establish the completeness requirement, exact projection, membership, append composition, capacity bound, and permutation preservation.
+Rust properties check original order, repeated identifiers, denied rows, retry exclusion, shared payload identity, and failure before unpaid traversal or backing allocation.
+The production adapter obtains the evidence while the exclusive session boundary remains held.
+Loom checks that parallel publishers and restoration cannot change the completed ledger during that boundary.
+Callback regressions compare the projected measurements with the original runtime measurements and reject new snapshots after restoration or closure.
+These snapshots prove historical accounting completion only. They do not freeze state or independently authorize settlement.
+
+The authority-projection section of `NativeReplayAccounting.v` specifies balances for an arbitrary purse type and finite event lists.
+Ten lemmas cover publication, cancellation, permutation, capacity bounds, exact restoration, complete event coverage, and detection of missing debits.
+The capacity theorem requires unique event ownership and a sufficient allocation for the complete event set.
+These are authority-unit contracts. They do not select a monetary allocation or change price semantics.
+
+`NativeSourceEncoding.v` proves byte preservation and bounded successful encoding for reserved output chunks.
+It also proves rejection without a source result and preservation of identities computed from equal encodings.
+Native source constructors reserve buffer growth, byte writes, sorting, and digest output before those operations.
+Generated tests compare every source field with legacy constructors and exercise exact budgets and rejected writes.
+Allocator instrumentation checks encoder allocation requests for nested Rholang values.
+The typed input adapter uses the checkpoint field walker before encoding.
+`NativeCheckpointBacking.v` proves that inspection preserves verification charges and removes only payload-copy backing from the modeled charge trace.
+Every successful clone budget permits inspection, and every inspection prefix fits its complete trace budget.
+Generated Rust tests check exact budgets, rejection below each required dimension, unchanged inputs, and prepaid worklist allocations.
+Session regressions exercise a single source through authority resolution, operation execution, rejection, and checkpoint restoration.
+These checks do not bound arbitrary custom serializer work before output or establish complete native execution resource bounds.
+
+`NativeReplayAuthority.tla` checks concurrent authority reservations, publication, cancellation, capture, and restoration.
+Its checked instance has two workers, two purses, two COMM events, one transfer event, one denied event, and four preparation attempts.
+Overlapping demands exercise shared capacity. The purse count bounds this model-checking instance, not the implementation or the Rocq theorem.
+Three negative controls omit a COMM debit, omit authority restoration, or exclude pending reservations from the capacity check.
+They must violate `ExactAuthority`, `ExactAuthority`, and `NoOverdraw`, respectively.
+The model assumes authenticated grants and unique event identities. It does not establish matching, retry provenance, or complete runtime integration.
+
+`authority_replay_contract_tests.rs` checks production authority accounting against these algebraic contracts.
+Generated histories mix COMM charges, repeated identities, transfer preparation, commit, cancellation, and transfer rollback across one through 32 purses.
+Threaded cases make COMM charges compete with transfer reservations and check capacity preservation after cancellation.
+These tests cover the shared budget behavior. The native replay adapter must additionally reproduce that behavior during execution and coupled restoration.
+
+Native replay publication tests exercise the runtime budget's prepared authority effects, not only the mathematical projection.
+Sparse-ledger properties compare arbitrary maps and operation sequences with the existing copying resource algebra, including full-width overflow and explicit zero entries.
+Failed updates must preserve every original balance, including keys checked before the failing key.
+Loom imports the production sparse update functions and checks shared-purse capacity, publication, cancellation, reentry, and failed concurrent updates.
+This checks the imported transitions under instrumented mutexes, not the complete interpreter or allocator.
+Generated cases prepare multiple effects, permute publication order, cancel selected effects, and compare each purse's realized and reserved demand.
+Examples reject an unpublished retry owner, changed retry authority, duplicate fresh events, pending-stack overdraw, active checkpoints, and foreign generations.
+Parsed-process regressions compare play and replay authority events, realized demand, rejected frontiers, and byte-observation multiplicity.
+They restore tuple, replay-ledger, and authority state, then repeat execution to detect duplicate charges.
+A cancellation fixture holds the deploy-context lock and interrupts evaluation. The interrupted environment rejects reuse and completed-evidence export.
+These tests do not instrument the complete authority implementation with Loom or establish complete authority-copy allocation bounds.
+
+Native evaluation uses the ordinary interpreter's result assembly and error handling with the checked replay snapshot.
+The contracts in `EconomicFailureSummary.v` require platform failures to veto retained charges, regardless of concurrent user failures.
+The replay accounting lemmas require complete operation coverage before evidence export.
+These contracts are prerequisites for result assembly. They are not a proof of refinement for the complete Rust environment.
+
+Parsed-process tests compare every accounting result field with recorded execution and checked replay evidence.
+They cover empty processes, successful execution, denied introductions, denied COMMs, system callbacks, and both supported mergeable channel types.
+Generated callback cases vary payloads and compare complete result evidence after checkpoint restoration.
+Repeated evaluation without restoration must fail without changing the completed authority state.
+An empty trace cannot supply completed evidence before evaluation.
+
+Host-rejection regressions cover failure before evaluation, during checkpoint preparation, and after a published COMM.
+Each result must carry a platform veto, zero cost, and no accounting recordings or authority receipts.
+Mid-execution rejection must restore tuple and authority state.
+These tests establish the tested evaluation boundary behavior. Wallet settlement requires separate integration evidence.
+
+`NativeReplayExport.tla` separates concurrent operation preparation, tuple mutation, accounting publication, evidence capture, persistence, closure, and export.
+Its instance uses two workers, every subset of granted operations, and one restoration.
+The model checks complete evidence, consistent state capture, persistence before export, and one successful export per session.
+Negative controls permit incomplete replay, release the boundary early, omit persistence, or permit reuse.
+Each control must violate its named invariant before the safe configuration qualifies.
+The model treats a root as an injective state identity and persistence as an acknowledged storage action.
+It does not prove cryptographic collision resistance, backend crash recovery, or allocation bounds.
+
+Native-session properties generate retained and discarded histories across five channels and reopen the exported root to compare exact data.
+These boundary properties use a test epoch. They do not independently establish operation-journal completeness.
+Examples check rejection before publication, concurrent exporters, shared backing stores, and a persistence panic that prevents further session access.
+Parsed Rholang tests compare native and recorded state roots for empty processes, persistent sends, joins, mergeable channels, and denied charges.
+They also compare the exported operation journal and accounting observations.
+
+The replay-ledger Loom target imports production `ReplayState` and models export competing with restoration and an observer.
+It requires stable evidence until persistence and closure. Its negative control publishes an export before the modeled storage acknowledgment.
+The target does not execute the native history writer under Loom.
+Full persistence resource bounds and funded settlement composition remain separate obligations.
+
+`CheckpointLocalHandoff.v` specifies local-state preservation when a history reader fails after backend root publication.
+The proof covers arbitrary finite failure prefixes, every local-state projection, the original retry trace, and independent local publications.
+`CheckpointLocalHandoff.tla` checks two checkpoint workers with interleaved preparation, failure, retry, and publication.
+Its negative controls publish local history or drain traces before reader preparation and must violate failure-state preservation.
+Rust fault-injection properties compare retries with execution without injected failures, including repeated errors and independent concurrent instances.
+These contracts require exclusive checkpoint ownership per instance. They do not prove backend crash atomicity or allocation bounds.
+See [local checkpoint publication](cost-accounting-impl/observed-funding-outcome.md#local-checkpoint-publication) for the implementation sequence and model limits.
+
+`NativeDatumRetirement.v` also proves exact retirement selection and requested result-array backing bounds over arbitrary finite lists.
+Incoming and persistent tuples cannot enter the retirement selection. The selection length cannot exceed the candidate count.
+The backing bound includes both result entries and retirement indexes. It composes across batches.
+Rust properties check exact selection, original match order, backing requests, and checked overflow.
+Reservation-failure tests reject each preparation boundary. A clone-rejection fixture checks that preparation moves channels and payloads.
+The shared fallible heapsort has generated ordering and failure-permutation tests. These results do not establish full runtime allocation bounds or funded-contract integration.
+
+The native region projection retains complete region evidence for each positive measured dimension.
+Its theorems quantify over arbitrary region types and list sizes, rather than a fixed wallet count.
+They establish exact source and quantity, completeness, multiplicity, append composition, and permutation preservation.
+Rust properties check the full dimension-region product, and paired runtime tests compare complete demand through recorded replay.
+These projection proofs do not authenticate custody, acquisition terms, or receipt backing.
+
+The purse projection attaches canonical signature channels without replacing original region or authority evidence.
+Its five lemmas preserve complete evidence, counts, aliased demands, permutations, and the original region-to-channel binding.
+They assume a fixed channel function, not an injective function.
+The native mapping rejects conflicting region identities and preserves distinct authorities that share a channel.
+Independent channel-reference tests cover atom hashes, compound multiplicity, unit authority, limits, and repeated observations.
+This model does not establish spending permission or complete native settlement.
+
+The acquisition-demand projection binds complete located measurements to exact selected schedule bytes.
+Eight lemmas preserve source evidence, typed fields, occurrence counts, permutations, append composition, quantities across term changes, weighted usage, and prefix bounds.
+Rust properties use independent wider-integer charge calculations and compare complete ordered evidence under input permutation and changed acquisition prices.
+Native tests check the adopted genesis policy and replay the same measured resource demands through the existing discharge and execution checkers.
+These checks do not authorize current-price substitution for historical prepaid terms or establish complete funded admission.
+
+Nine additional lemmas define exact native execution reservations and preserve the dimension-region valuation sum.
+They establish rejection without a changed counter, zero-charge acceptance, composition, conditional commutation, and machine-bound refinement.
+The [reservation contract](cost-accounting-impl/raw-byte-observations.md#native-execution-reservations) separates runtime enforcement from complete funded-deployment integration.
+Its concurrent model includes prepared workers, competing identities, cancellation, and quiescent reset.
+Mutation controls expose stale-counter acceptance and cross-generation workers.
+Rust properties compare native reservations with typed acquisition usage, including arbitrary authority cohorts and full-width quantities.
+The Loom test covers the actual prepared-charge and reservation types within a shared receipt-publication critical section, not the complete RSpace transaction.
+
+Six acceptance lemmas preserve exact receipt-ledger usage, the execution ceiling, compatible retries, and distinct nonpersistent occurrences.
+Runtime history properties compare these transitions after each generated operation.
+Threaded tests exercise competing identities and arbitrary-size authority representations under the production accounting lock.
+Native play and recorded replay compare complete measurements, unsigned usage, consumed replay events, and final RSpace roots.
+These tests do not establish the complete authenticated funding and settlement path.
+
+`PrepaidResourceDischarge.v` also models explicit-stack restoration of stored authority nodes.
+Five reconstruction lemmas establish stack composition, exact round trips, and exact original encoding for every successful result.
+The native decoder preserves the original resource location, class, acquisition terms, and full authority tree.
+Independent parser properties cover incomplete trees, multiple trees, arbitrary authority bytes, and exact limits.
+The rooted prepaid inventory uses that decoder and retains original acquisition evidence separately from current physical authority.
+These representation proofs do not establish transfer authorization or authenticate backing by themselves.
+
+The same theory models sequential binding of prepaid units to measured demand positions.
+Ten lemmas establish matching positive sources, unchanged shapes, per-position residual bounds, exact consumption counts, weighted conservation, and sequence composition.
+Exact counts remain necessary when resource valuation or price is zero.
+The native implementation binds unique rooted prefixes and preserves original acquisition terms while constructing residual fresh demand.
+Property tests check count conservation, operation order, composition, typed identity, original terms, host limits, and independently calculated charges.
+The model abstracts resource shapes and weights. It does not prove physical capture, ownership transfer, canonical search completeness, or the complete funded lifecycle.
 
 The receipt model's reset clears both occurrence rows and identity history.
 An allocation update that clears rows but retains persistent retry metadata is not this reset.
@@ -268,7 +539,7 @@ This article proves that claim. Concretely, we contribute:
    calculus, its compositional translation back into pure rho, and the
    infrastructure (`Split`, `Join`, persistent mediators) required to
    discharge the paper's five reduction rules (Section 5). The
-   development spans 221 modules and 83,386 lines, with 4,171 `Qed.` or
+   development spans 235 modules and 88,454 lines, with 4,631 `Qed.` or
    `Defined.` proof obligations and zero `Admitted` / `admit` /
    `Axiom` declarations.
 
@@ -433,9 +704,9 @@ the proof context.
 
 | Metric                                           | Value                                                      |
 |--------------------------------------------------|------------------------------------------------------------|
-| Rocq source files                                | 221 modules                                                |
-| Total lines of Rocq                              | 83,386                                                     |
-| Proven lemmas and theorems (`Qed.` / `Defined.`) | 4,171                                                      |
+| Rocq source files                                | 235 modules                                                |
+| Total lines of Rocq                              | 88,454                                                     |
+| Proven lemmas and theorems (`Qed.` / `Defined.`) | 4,631                                                      |
 | `Admitted` / `admit`                             | **0**                                                      |
 | Named `Axiom` declarations                       | **0**                                                      |
 | Proof assistant                                  | Rocq (Coq) 9.1.1 (also typechecks under 9.1.0)             |
@@ -457,7 +728,7 @@ on any axiom from Section 12.2.1.
 
 ### 1.7 Module Dependency Graph
 
-The foundational 32-module subgraph of the 220-module formalization
+The foundational 32-module subgraph of the 235-module formalization
 (`formal/rocq/cost_accounted_rho/theories`) organizes into **seven dependency
 tiers**. Figure 1.7 renders that foundational subgraph, transitively reduced
 (`tred`) to its minimal skeleton: an edge `A → B` reads "module `B` imports
@@ -467,7 +738,7 @@ tier is its depth in the import order; the tiers refine — and are colour-keyed
 cool→warm to match — the proof-layer narrative of
 [§7.1](#71-the-proof-layers).
 
-![Dependency graph of the foundational cost-accounted-rho proof subgraph. The graph shows 32 foundational Rocq modules in seven dependency tiers. The current 220-module catalog also includes native syntax, GSLT interfaces, authority, settlement, admission, spatial and modal checks, and refinement modules. The repository's _CoqProject lists every module.](diagrams/module-dependency-graph.svg)
+![Dependency graph of the foundational cost-accounted-rho proof subgraph. The graph shows 32 foundational Rocq modules in seven dependency tiers. The current 235-module catalog also includes native syntax, GSLT interfaces, authority, settlement, admission, spatial and modal checks, and refinement modules. The repository's _CoqProject lists every module.](diagrams/module-dependency-graph.svg)
 
 (*Source: [`diagrams/module-dependency-graph.dot`](diagrams/module-dependency-graph.dot) — render with `tred docs/casper/theory/diagrams/module-dependency-graph.dot | dot -Tsvg -o docs/casper/theory/diagrams/module-dependency-graph.svg` (or `./render.sh module-dependency-graph.dot`). Edges are extracted from the foundational modules' `Require Import` statements; `tred` removes transitively redundant edges. The authoritative full ordered catalog is `formal/rocq/cost_accounted_rho/_CoqProject`.*)
 

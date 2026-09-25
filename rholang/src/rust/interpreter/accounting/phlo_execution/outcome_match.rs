@@ -2,20 +2,17 @@ use std::mem::size_of;
 use std::num::NonZeroUsize;
 
 use models::rust::host_work::HostWorkDimension;
-use models::rust::phlo_obligation::{
-    PhloObligationKeyError, PhloObligationKeyLimits, PhloObligationKeyV1,
-};
+use models::rust::phlo_obligation::{PhloObligationKeyError, PhloObligationKeyLimits};
 use thiserror::Error;
 
+use super::partition::{normalize_partition, NormalizedPartition, PhloPartitionError};
 use super::{
-    resource_key_with_host_work, CheckedNativeSignedPhloFamilyPolicy, CheckedPhloExecution,
-    NativePhloPolicyError, NativeScopedPhloFundingCapture, PhloCaptureLimits, PhloExecutionError,
-    PhloExecutionLimits, PhloOutcome, ResourceEntries, WorkBudget,
+    CheckedNativeSignedPhloFamilyPolicy, CheckedPhloExecution, NativePhloPolicyError,
+    NativeScopedPhloFundingCapture, PhloCaptureLimits, PhloExecutionError, PhloExecutionLimits,
+    PhloOutcome, WorkBudget,
 };
 use crate::rust::interpreter::accounting::economic_failure::EvaluationFailureSummary;
-use crate::rust::interpreter::accounting::monetary_allocation::{
-    canonical_funding_key_order, filled_vec, reserve_work, FundingSearchError,
-};
+use crate::rust::interpreter::accounting::monetary_allocation::{reserve_work, FundingSearchError};
 use crate::rust::interpreter::accounting::phlo_controls::{CheckedPhloControls, PhloSchedule};
 use crate::rust::interpreter::host_work::HostWorkBudget;
 
@@ -51,11 +48,14 @@ enum ObservedOutcome {
     Accepted(EvaluationFailureSummary),
 }
 
-#[derive(Debug)]
-struct NormalizedPartition {
-    keys: Vec<Vec<u8>>,
-    quantities: Vec<u64>,
-    order: Vec<usize>,
+impl From<PhloPartitionError> for PhloOutcomeMatchError {
+    fn from(error: PhloPartitionError) -> Self {
+        match error {
+            PhloPartitionError::Execution(error) => Self::Execution(error),
+            PhloPartitionError::Key(error) => Self::Key(error),
+            PhloPartitionError::Search(error) => Self::Search(error),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -87,103 +87,25 @@ fn normalize_outcome(
     })
 }
 
-fn normalize_partition(
-    resources: ResourceEntries<'_>,
-    limits: PhloObligationKeyLimits,
-    remaining_bytes: &mut usize,
-    keys_work: &mut WorkBudget,
-    budget: &HostWorkBudget,
-) -> Result<NormalizedPartition, PhloOutcomeMatchError> {
-    reserve_work(budget, HostWorkDimension::SearchCandidates, resources.len())?;
-    reserve_work(
-        budget,
-        HostWorkDimension::SearchStateBytes,
-        resources
-            .len()
-            .checked_mul(
-                size_of::<Vec<u8>>() + size_of::<&[u8]>() + size_of::<u64>() + size_of::<usize>(),
-            )
-            .ok_or(FundingSearchError::Overflow)?,
-    )?;
-    let mut keys = filled_vec(resources.len(), Vec::new())?;
-    let mut quantities = filled_vec(resources.len(), 0_u64)?;
-    for ((key, quantity), entry) in keys.iter_mut().zip(&mut quantities).zip(resources.iter()) {
-        *quantity = entry.quantity;
-        let resource =
-            resource_key_with_host_work(entry.resource, keys_work, Some(budget))?.into_wire()?;
-        reserve_work(
-            budget,
-            HostWorkDimension::VerificationOperations,
-            resource
-                .authority
-                .len()
-                .checked_mul(2)
-                .and_then(|n| n.checked_add(16))
-                .ok_or(FundingSearchError::Overflow)?,
-        )?;
-        let mut key_limits = limits;
-        key_limits.wire.total_bytes = key_limits.wire.total_bytes.min(*remaining_bytes);
-        let record = PhloObligationKeyV1::Resource(resource);
-        let prepared = record.prepare_encoding(key_limits)?;
-        reserve_work(
-            budget,
-            HostWorkDimension::SearchStateBytes,
-            prepared.encoded_len(),
-        )?;
-        reserve_work(
-            budget,
-            HostWorkDimension::VerificationOperations,
-            prepared.encoded_len(),
-        )?;
-        *remaining_bytes = remaining_bytes
-            .checked_sub(prepared.encoded_len())
-            .ok_or(FundingSearchError::Overflow)?;
-        *key = prepared.encode()?;
-    }
-    let mut refs = filled_vec(keys.len(), &[][..])?;
-    for (reference, key) in refs.iter_mut().zip(&keys) {
-        *reference = key;
-    }
-    let sorted = canonical_funding_key_order(&refs, budget)?;
-    let mut order: Vec<usize> = Vec::new();
-    order
-        .try_reserve_exact(sorted.len())
-        .map_err(|_| FundingSearchError::AllocationFailed)?;
-    for index in sorted {
-        if let Some(previous) = order.last().copied() {
-            reserve_work(
-                budget,
-                HostWorkDimension::VerificationOperations,
-                keys[index]
-                    .len()
-                    .min(keys[previous].len())
-                    .checked_add(1)
-                    .ok_or(FundingSearchError::Overflow)?,
-            )?;
-            if keys[index] == keys[previous] {
-                quantities[previous] = quantities[previous]
-                    .checked_add(quantities[index])
-                    .ok_or(PhloExecutionError::ArithmeticOverflow)?;
-                continue;
-            }
-        }
-        order.push(index);
-    }
-    Ok(NormalizedPartition {
-        keys,
-        quantities,
-        order,
-    })
-}
-
 fn normalize_execution<'a>(
     execution: CheckedPhloExecution<'a>,
     limits: PhloOutcomeMatchLimits,
     budget: &HostWorkBudget,
 ) -> Result<NormalizedExecution<'a>, PhloOutcomeMatchError> {
-    let parts = execution.witness().parts();
+    let [available, required, used, unused, fresh] = execution.witness().parts();
+    let parts = [
+        available,
+        required,
+        used,
+        unused,
+        fresh,
+        super::ResourceEntries {
+            occurrences: &[],
+            counted: execution.retained_acquisitions(),
+        },
+    ];
     let mut remaining = limits.execution.resource_entries;
-    for part in parts {
+    for part in &parts {
         remaining = remaining
             .checked_sub(part.len())
             .ok_or(PhloExecutionError::TooManyResourceEntries)?;
@@ -191,11 +113,11 @@ fn normalize_execution<'a>(
     reserve_work(
         budget,
         HostWorkDimension::SearchStateBytes,
-        5 * size_of::<NormalizedPartition>(),
+        6 * size_of::<NormalizedPartition>(),
     )?;
     let mut partitions = Vec::new();
     partitions
-        .try_reserve_exact(5)
+        .try_reserve_exact(6)
         .map_err(|_| FundingSearchError::AllocationFailed)?;
     let mut keys_work = WorkBudget {
         remaining_nodes: limits.execution.authority_nodes,
@@ -322,7 +244,11 @@ fn reserve_capture_comparison<A>(
     reserve_work(
         budget,
         HostWorkDimension::VerificationOperations,
-        capture.amounts().len(),
+        capture
+            .amounts()
+            .len()
+            .checked_mul(2)
+            .ok_or(FundingSearchError::Overflow)?,
     )?;
     for row in capture.eligible() {
         reserve_work(
@@ -357,6 +283,9 @@ fn equivalent_captures<A>(
     Ok(a.sources() == b.sources()
         && a.obligation_keys() == b.obligation_keys()
         && a.amounts() == b.amounts()
+        && a.obligations()
+            .map(|item| item.quantity())
+            .eq(b.obligations().map(|item| item.quantity()))
         && a.eligible() == b.eligible()
         && a.assignment() == b.assignment()
         && left.resource_transition() == right.resource_transition()
@@ -364,6 +293,20 @@ fn equivalent_captures<A>(
 }
 
 impl<'a, A> CheckedNativeSignedPhloFamilyPolicy<'a, A> {
+    pub fn capture_matching_discharge(
+        &self,
+        controls: CheckedPhloControls<'_>,
+        discharge: &super::PreparedPhloDischarge<'_>,
+        outcome: PhloOutcome<'_>,
+        limits: PhloOutcomeMatchLimits,
+        capture_limits: PhloCaptureLimits,
+        budget: &HostWorkBudget,
+    ) -> Result<NativeScopedPhloFundingCapture<'a, A>, PhloOutcomeMatchError> {
+        let observed =
+            super::check_counted_phlo_execution(controls, discharge.witness(), limits.execution)?;
+        self.capture_matching_execution(observed, outcome, limits, capture_limits, budget)
+    }
+
     pub fn capture_matching_execution(
         &self,
         observed: CheckedPhloExecution<'_>,

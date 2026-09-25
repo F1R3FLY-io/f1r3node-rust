@@ -17,10 +17,11 @@ use block_storage::rust::dag::block_dag_key_value_storage::{
 };
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use comm::rust::transport::transport_layer::TransportLayer;
-use crypto::rust::signatures::signed::{Cosigned, Signed};
+use crypto::rust::signatures::signed::Signed;
 use models::rust::block_hash::{BlockHash, BlockHashSerde};
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
+use models::rust::deploy_envelope::DeployEnvelope;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
 use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporter;
@@ -32,6 +33,7 @@ use crate::rust::casper::{
 };
 use crate::rust::engine::block_retriever::AdmitHashReason;
 use crate::rust::errors::CasperError;
+use crate::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::validator_identity::ValidatorIdentity;
 
@@ -315,6 +317,21 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasper for MultiParentCasperImp
 
     fn runtime_manager(&self) -> Arc<RuntimeManager> { self.runtime_manager.clone() }
 
+    async fn accounting_context(&self) -> Result<Arc<AdoptedResourcePolicy>, CasperError> {
+        self.accounting_context
+            .get_or_try_init(|| async {
+                AdoptedResourcePolicy::load(
+                    &self.runtime_manager,
+                    &self.approved_block,
+                    &self.casper_shard_conf,
+                )
+                .await
+                .map(Arc::new)
+            })
+            .await
+            .cloned()
+    }
+
     fn casper_shard_conf(&self) -> &CasperShardConf { &self.casper_shard_conf }
 
     fn rejected_deploy_buffer_contains(
@@ -346,7 +363,7 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasper for MultiParentCasperImp
             .await
     }
 
-    async fn list_pending_deploys(&self) -> Result<Vec<(Cosigned<DeployData>, bool)>, CasperError> {
+    async fn list_pending_deploys(&self) -> Result<Vec<(DeployEnvelope, bool)>, CasperError> {
         super::block_admission::admit_list_pending_deploys(self).await
     }
 }

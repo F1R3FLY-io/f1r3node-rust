@@ -12,10 +12,11 @@ use block_storage::rust::dag::block_dag_key_value_storage::{
 };
 use block_storage::rust::deploy::pending_deploy::PendingDeploy;
 use comm::rust::transport::transport_layer::TransportLayer;
-use crypto::rust::signatures::signed::{Cosigned, Signed};
+use crypto::rust::signatures::signed::Signed;
 use models::rust::block_hash::{BlockHash, BlockHashSerde};
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
+use models::rust::deploy_envelope::DeployEnvelope;
 use models::rust::deploy_id::{DeployIdV6, DeployLookupId, LegacyDeploySignature};
 use models::rust::normalizer_env::normalizer_env_from_deploy;
 use rspace_plus_plus::rspace::history::Either;
@@ -173,16 +174,7 @@ fn deploy_is_known<T: TransportLayer + Send + Sync>(
     this: &MultiParentCasperImpl<T>,
     deploy_id: &DeployLookupId,
 ) -> Result<bool, CasperError> {
-    let in_pool = match deploy_id {
-        DeployLookupId::Legacy(signature) => this
-            .deploy_storage
-            .lock()
-            .contains_sig(signature.as_bytes())?,
-        DeployLookupId::V6(deploy_id) => this
-            .deploy_storage
-            .lock()
-            .contains_envelope(deploy_id.as_ref())?,
-    };
+    let in_pool = this.deploy_storage.lock().contains_pending_id(deploy_id)?;
     if in_pool {
         return Ok(true);
     }
@@ -315,14 +307,7 @@ pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
         {
             let mut storage = this.deploy_storage.lock();
             for sig in &terminalized {
-                match sig {
-                    models::rust::deploy_id::DeployLookupId::Legacy(signature) => {
-                        storage.remove_by_sig(signature.as_bytes())?;
-                    }
-                    models::rust::deploy_id::DeployLookupId::V6(deploy_id) => {
-                        storage.remove_envelope_by_id(deploy_id.as_ref())?;
-                    }
-                }
+                storage.remove_pending_by_id(sig)?;
             }
         }
     }
@@ -560,7 +545,7 @@ pub(crate) async fn admit_has_pending_deploys_in_storage_for_snapshot<
 /// `is_rejected = true` (the buffer dedups storage in its first clause).
 pub(crate) async fn admit_list_pending_deploys<T: TransportLayer + Send + Sync>(
     this: &MultiParentCasperImpl<T>,
-) -> Result<Vec<(Cosigned<DeployData>, bool)>, CasperError> {
+) -> Result<Vec<(DeployEnvelope, bool)>, CasperError> {
     let snapshot = this.get_snapshot().await?;
     let latest_block_number = snapshot.dag.latest_block_number();
     let earliest_block_number = crate::rust::util::deploy_window::earliest_valid_after(
@@ -591,12 +576,9 @@ pub(crate) async fn admit_list_pending_deploys<T: TransportLayer + Send + Sync>(
         .map(|deploy| deploy.typed_deploy_id().clone())
         .collect();
 
-    let mut out: Vec<(Cosigned<DeployData>, bool)> = Vec::with_capacity(rejected.len());
+    let mut out: Vec<(DeployEnvelope, bool)> = Vec::with_capacity(rejected.len());
 
-    let fresh = this
-        .deploy_storage
-        .lock()
-        .read_all_for_protocol(snapshot.on_chain_state.shard_conf.casper_version)?;
+    let fresh = this.deploy_storage.lock().read_all_pending()?;
     for deploy in fresh {
         if buffered_sigs.contains(deploy.typed_deploy_id()) {
             continue;
@@ -607,12 +589,7 @@ pub(crate) async fn admit_list_pending_deploys<T: TransportLayer + Send + Sync>(
             current_time_millis,
             &deploy,
         ) {
-            out.push((
-                deploy
-                    .into_body_envelope()
-                    .map_err(CasperError::RuntimeError)?,
-                false,
-            ));
+            out.push((deploy.into_envelope(), false));
         }
     }
 
@@ -628,12 +605,7 @@ pub(crate) async fn admit_list_pending_deploys<T: TransportLayer + Send + Sync>(
             current_time_millis,
             &deploy,
         ) {
-            out.push((
-                deploy
-                    .into_body_envelope()
-                    .map_err(CasperError::RuntimeError)?,
-                true,
-            ));
+            out.push((deploy.into_envelope(), true));
         }
     }
 

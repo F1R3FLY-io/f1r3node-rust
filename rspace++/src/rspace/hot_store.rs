@@ -269,6 +269,16 @@ where
     P: Clone,
     K: Clone,
 {
+    pub fn snapshot_layout() -> (usize, usize) {
+        let bytes = std::mem::size_of::<
+            [imbl::HashMap<Vec<C>, Vec<Arc<WaitingContinuation<P, K>>>>; NUM_SHARDS],
+        >() + std::mem::size_of::<
+            [imbl::HashMap<Vec<C>, WaitingContinuation<P, K>>; NUM_SHARDS],
+        >() + std::mem::size_of::<[imbl::HashMap<C, Vec<Datum<A>>>; NUM_SHARDS]>() +
+            2 * std::mem::size_of::<[imbl::HashMap<C, Vec<Vec<C>>>; NUM_SHARDS]>();
+        (5 * NUM_SHARDS, bytes)
+    }
+
     // Builds a sharded HotStoreState from plain flat maps -- the shape
     // tests and other call sites naturally construct fixture data in.
     // Shards each flat map by key, same as the live ShardedMap would.

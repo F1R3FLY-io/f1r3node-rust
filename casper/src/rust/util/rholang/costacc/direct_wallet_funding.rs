@@ -30,6 +30,12 @@ pub use settlement::{
     PreparedDirectWalletSettlement,
 };
 
+mod execution;
+pub use execution::{
+    NativeAttemptSettlementInput, NativeAttemptSettlementLimits, NativeFundedAttempt,
+    NativeFundedExecutionContext, NativeFundedReplayInput, NativeFundedReplayLimits,
+};
+
 #[derive(Clone, Copy, Debug)]
 pub struct DirectWalletFundingLimits {
     pub members: NonZeroUsize,

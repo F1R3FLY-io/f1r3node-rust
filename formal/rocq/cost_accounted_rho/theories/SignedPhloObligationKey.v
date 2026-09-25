@@ -4,13 +4,16 @@ Import ListNotations.
 
 Inductive phlo_obligation_record :=
 | PhloWireFee
-| PhloWireResource (resource : phlo_resource_record).
+| PhloWireResource (resource : phlo_resource_record)
+| PhloWireRetainedResource (resource : phlo_resource_record).
 
 Definition phlo_obligation_fields domain resource_domain width count_width record :=
   match record with
   | PhloWireFee => [domain; [0]; []]
   | PhloWireResource resource =>
       [domain; [1]; phlo_resource_bytes resource_domain width count_width resource]
+  | PhloWireRetainedResource resource =>
+      [domain; [2]; phlo_resource_bytes resource_domain width count_width resource]
   end.
 
 Definition phlo_obligation_bytes domain resource_domain width count_width record :=
@@ -20,7 +23,8 @@ Definition phlo_obligation_fits domain resource_domain width count_width maximum
   phlo_fields_fit width maximum (phlo_obligation_fields domain resource_domain width count_width record) /\
   match record with
   | PhloWireFee => True
-  | PhloWireResource resource => phlo_resource_fits resource_domain width count_width maximum resource
+  | PhloWireResource resource | PhloWireRetainedResource resource =>
+      phlo_resource_fits resource_domain width count_width maximum resource
   end.
 
 Theorem phlo_obligation_encoding_binds_kind_and_resource : forall domain resource_domain width count_width maximum first second,
@@ -33,8 +37,8 @@ Proof.
   intros domain resource_domain width count_width maximum first second positive [first_fields first_resource] [second_fields second_resource] same.
   unfold phlo_obligation_bytes in same.
   apply (phlo_field_sequences_cannot_alias width maximum) in same; auto.
-  destruct first; destruct second; simpl in same; try discriminate; [reflexivity|].
-  injection same as resources. f_equal.
+  destruct first; destruct second; simpl in same; try discriminate; try reflexivity;
+  injection same as resources; f_equal;
   eapply phlo_resource_encoding_binds_every_component; eauto.
 Qed.
 
@@ -69,7 +73,8 @@ Definition phlo_obligation_encoded_size (domain : list nat) resource_domain widt
   3 * width + length domain + 1 +
     match record with
     | PhloWireFee => 0
-    | PhloWireResource resource => phlo_resource_encoded_size resource_domain width count_width resource
+    | PhloWireResource resource | PhloWireRetainedResource resource =>
+        phlo_resource_encoded_size resource_domain width count_width resource
     end.
 
 Theorem phlo_node_size_is_exact : forall width node,
@@ -99,8 +104,8 @@ Theorem phlo_obligation_size_is_exact : forall domain resource_domain width coun
     phlo_obligation_encoded_size domain resource_domain width count_width record.
 Proof.
   intros. unfold phlo_obligation_bytes, phlo_obligation_fields, phlo_obligation_encoded_size.
-  destruct record; rewrite phlo_fields_encoded_length; simpl; [lia|].
-  rewrite phlo_resource_size_is_exact. lia.
+  destruct record; rewrite phlo_fields_encoded_length; simpl; try lia;
+  rewrite phlo_resource_size_is_exact; lia.
 Qed.
 
 Definition phlo_streamed_nodes width nodes :=
@@ -140,17 +145,20 @@ Definition phlo_streamed_obligation domain resource_domain width count_width rec
   | PhloWireResource resource => phlo_fields width [domain; [1]] ++
       phlo_word width (phlo_resource_encoded_size resource_domain width count_width resource) ++
       phlo_streamed_resource resource_domain width count_width resource
+  | PhloWireRetainedResource resource => phlo_fields width [domain; [2]] ++
+      phlo_word width (phlo_resource_encoded_size resource_domain width count_width resource) ++
+      phlo_streamed_resource resource_domain width count_width resource
   end.
 
 Theorem phlo_streamed_obligation_preserves_bytes : forall domain resource_domain width count_width record,
   phlo_streamed_obligation domain resource_domain width count_width record =
     phlo_obligation_bytes domain resource_domain width count_width record.
 Proof.
-  intros. destruct record; [reflexivity|].
-  unfold phlo_streamed_obligation, phlo_obligation_bytes, phlo_obligation_fields.
-  rewrite phlo_streamed_resource_preserves_bytes, <- phlo_resource_size_is_exact.
-  unfold phlo_fields. cbn [map concat]. unfold phlo_field.
-  repeat rewrite app_nil_r. repeat rewrite app_assoc. reflexivity.
+  intros. destruct record; try reflexivity;
+  unfold phlo_streamed_obligation, phlo_obligation_bytes, phlo_obligation_fields;
+  rewrite phlo_streamed_resource_preserves_bytes, <- phlo_resource_size_is_exact;
+  unfold phlo_fields; cbn [map concat]; unfold phlo_field;
+  repeat rewrite app_nil_r; repeat rewrite app_assoc; reflexivity.
 Qed.
 
 Definition phlo_push_capacity used capacity :=
@@ -190,6 +198,20 @@ Qed.
 Theorem phlo_obligation_encoding_preserves_occurrence_count : forall domain resource_domain width count_width records,
   length (map (phlo_obligation_bytes domain resource_domain width count_width) records) = length records.
 Proof. intros. apply length_map. Qed.
+
+Theorem consumed_and_retained_obligations_cannot_alias : forall domain resource_domain width count_width maximum left right,
+  0 < width ->
+  phlo_obligation_fits domain resource_domain width count_width maximum (PhloWireResource left) ->
+  phlo_obligation_fits domain resource_domain width count_width maximum (PhloWireRetainedResource right) ->
+  phlo_obligation_bytes domain resource_domain width count_width (PhloWireResource left) <>
+    phlo_obligation_bytes domain resource_domain width count_width (PhloWireRetainedResource right).
+Proof.
+  intros domain resource_domain width count_width maximum left right positive first second same.
+  pose proof (phlo_obligation_encoding_binds_kind_and_resource _ _ _ _ _ _ _ positive first second same).
+  discriminate.
+Qed.
+
+Print Assumptions consumed_and_retained_obligations_cannot_alias.
 
 Theorem equal_encoded_phlo_obligations_have_equal_properties : forall (property : phlo_obligation_record -> nat)
   domain resource_domain width count_width maximum first second,

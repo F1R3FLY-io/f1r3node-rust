@@ -26,6 +26,11 @@ fn resource(authority: &Sig) -> PhloResource<'_> {
     }
 }
 
+fn restore_budget() -> HostWorkBudget {
+    use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
+    HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(100_000_000)))
+}
+
 #[test]
 fn phlo_wire_key_uses_the_same_authority_nodes_as_native_permissions() {
     let signature = Sig::And(
@@ -56,6 +61,9 @@ fn phlo_wire_key_uses_the_same_authority_nodes_as_native_permissions() {
     assert_eq!(internal.location, decoded.location);
     assert_eq!(internal.class, decoded.class as usize);
     assert_eq!(internal.acquisition_terms, decoded.acquisition_terms);
+    let restored =
+        RestoredPhloResource::from_wire_key(&decoded, LIMITS, &restore_budget()).unwrap();
+    assert_eq!(restored.resource(), native);
 }
 
 #[test]
@@ -131,6 +139,12 @@ fn phlo_wire_key_does_not_limit_compound_authorities_to_two_wallets() {
         assert_eq!(key.authority.len(), 2 * count as usize - 1);
         let wire = key.encode(WIRE).unwrap();
         assert_eq!(PhloResourceKeyV1::decode(&wire, WIRE).unwrap(), key);
+        assert_eq!(
+            RestoredPhloResource::from_wire_key(&key, LIMITS, &restore_budget())
+                .unwrap()
+                .resource(),
+            resource(&signature)
+        );
     }
 }
 
@@ -225,5 +239,112 @@ proptest! {
         let rhs_wire = second.wire_key(LIMITS).unwrap().encode(WIRE).unwrap();
         prop_assert_eq!(lhs == rhs, lhs_wire == rhs_wire);
         prop_assert_eq!(PhloResourceKeyV1::decode(&lhs_wire, WIRE).unwrap(), first.wire_key(LIMITS).unwrap());
+        let decoded = PhloResourceKeyV1::decode(&lhs_wire, WIRE).unwrap();
+        let restored = RestoredPhloResource::from_wire_key(&decoded, LIMITS, &restore_budget()).unwrap();
+        prop_assert_eq!(restored.resource(), first);
+    }
+}
+
+#[test]
+fn phlo_resource_restoration_enforces_exact_limits_and_host_work() {
+    use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
+    let authority = Sig::And(
+        Box::new(Sig::Ground(vec![1])),
+        Box::new(Sig::Quote(vec![2, 3])),
+    );
+    let key = resource(&authority).wire_key(LIMITS).unwrap();
+    let exact = PhloExecutionLimits {
+        resource_entries: 1,
+        authority_nodes: 3,
+        key_bytes: 16,
+    };
+    assert_eq!(
+        RestoredPhloResource::from_wire_key(&key, exact, &restore_budget())
+            .unwrap()
+            .resource(),
+        resource(&authority)
+    );
+    for (limits, error) in [
+        (
+            PhloExecutionLimits {
+                resource_entries: 0,
+                ..exact
+            },
+            PhloExecutionError::TooManyResourceEntries,
+        ),
+        (
+            PhloExecutionLimits {
+                authority_nodes: 2,
+                ..exact
+            },
+            PhloExecutionError::TooManyAuthorityNodes,
+        ),
+        (
+            PhloExecutionLimits {
+                key_bytes: 15,
+                ..exact
+            },
+            PhloExecutionError::TooManyKeyBytes,
+        ),
+    ] {
+        assert_eq!(
+            RestoredPhloResource::from_wire_key(&key, limits, &restore_budget()).unwrap_err(),
+            error
+        );
+    }
+    for dimension in [
+        HostWorkDimension::SearchStateBytes,
+        HostWorkDimension::VerificationOperations,
+        HostWorkDimension::VerificationBytes,
+    ] {
+        let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(100_000_000));
+        limits.set(dimension, HostWorkLimit::new(0));
+        let budget = HostWorkBudget::new(limits);
+        assert!(matches!(
+            RestoredPhloResource::from_wire_key(&key, exact, &budget),
+            Err(PhloExecutionError::HostWork(_))
+        ));
+        assert!(budget.is_rejected());
+    }
+}
+
+fn reference_restore(nodes: &[AuthorityNode<'_>], index: &mut usize) -> Option<Sig> {
+    let node = nodes.get(*index)?;
+    *index += 1;
+    Some(match node {
+        AuthorityNode::Unit => Sig::Unit,
+        AuthorityNode::Ground(bytes) => Sig::Ground(bytes.to_vec()),
+        AuthorityNode::Quote(bytes) => Sig::Quote(bytes.to_vec()),
+        AuthorityNode::And => Sig::And(
+            Box::new(reference_restore(nodes, index)?),
+            Box::new(reference_restore(nodes, index)?),
+        ),
+    })
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(512))]
+    #[test]
+    fn phlo_resource_restoration_rejects_incomplete_or_multiple_trees(tags in prop::collection::vec(0_u8..4, 0..128)) {
+        let nodes: Vec<_> = tags.iter().map(|tag| match tag {
+            0 => AuthorityNode::Unit,
+            1 => AuthorityNode::Ground(b"owner"),
+            2 => AuthorityNode::Quote(b"owner"),
+            _ => AuthorityNode::And,
+        }).collect();
+        let key = PhloResourceKeyV1 { location: b"slot", class: u32::MAX, acquisition_terms: b"original", authority: nodes };
+        let original = key.clone();
+        let mut index = 0;
+        let expected = reference_restore(&key.authority, &mut index).filter(|_| index == key.authority.len());
+        let actual = RestoredPhloResource::from_wire_key(&key, LIMITS, &restore_budget());
+        match expected {
+            Some(authority) => {
+                let restored = actual.unwrap();
+                prop_assert_eq!(restored.resource().authority, &authority);
+                prop_assert_eq!(restored.resource().wire_key(LIMITS).unwrap(), key.clone());
+            }
+            None => prop_assert_eq!(actual.unwrap_err(), PhloExecutionError::MalformedFundingAuthority),
+        }
+        prop_assert_eq!(key, original);
     }
 }

@@ -1218,6 +1218,7 @@ impl TestNode {
             block_retriever: block_retriever.clone(),
             event_publisher: event_publisher.clone(),
             runtime_manager: Arc::new(runtime_manager.clone()),
+            accounting_context: Arc::new(tokio::sync::OnceCell::new()),
             estimator: estimator.clone(),
             block_store: block_store.clone(),
             block_dag_storage: block_dag_storage.clone(),

@@ -354,6 +354,7 @@ impl From<RSpaceError> for InterpreterError {
     fn from(err: RSpaceError) -> InterpreterError {
         match err {
             RSpaceError::OutOfPhlogistons => InterpreterError::OutOfPhlogistonsError,
+            RSpaceError::HostWorkRejected => InterpreterError::HostWorkRejected,
             other => InterpreterError::RSpaceError(other),
         }
     }
@@ -364,7 +365,14 @@ impl From<HostWorkReservationError> for InterpreterError {
 }
 
 impl From<InterpreterError> for RSpaceError {
-    fn from(error: InterpreterError) -> Self { RSpaceError::InterpreterError(error.to_string()) }
+    fn from(error: InterpreterError) -> Self {
+        match error {
+            InterpreterError::OutOfPhlogistonsError => Self::OutOfPhlogistons,
+            InterpreterError::HostWorkRejected => Self::HostWorkRejected,
+            InterpreterError::RSpaceError(error) => error,
+            other => Self::InterpreterError(other.to_string()),
+        }
+    }
 }
 
 impl From<openai_api_rs::v1::error::APIError> for InterpreterError {
@@ -663,6 +671,57 @@ mod tests {
         let io = std::io::Error::other("disk gone");
         let from_io: InterpreterError = io.into();
         assert_eq!(from_io, InterpreterError::IoError("disk gone".to_string()));
+    }
+
+    #[test]
+    fn resource_errors_keep_their_class_across_rspace() {
+        for expected in [
+            InterpreterError::HostWorkRejected,
+            InterpreterError::OutOfPhlogistonsError,
+        ] {
+            let transported = RSpaceError::from(expected.clone());
+            assert_eq!(InterpreterError::from(transported), expected);
+        }
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn error_transport_preserves_class_at_every_hop(
+            host in proptest::bool::ANY,
+            hops in 0usize..256,
+            wrapped in proptest::bool::ANY,
+        ) {
+            let expected = if host {
+                RSpaceError::HostWorkRejected
+            } else {
+                RSpaceError::OutOfPhlogistons
+            };
+            let mut transported = expected.clone();
+            for _ in 0..hops {
+                let interpreter = if wrapped {
+                    InterpreterError::RSpaceError(transported)
+                } else {
+                    InterpreterError::from(transported)
+                };
+                transported = RSpaceError::from(interpreter);
+                proptest::prop_assert_eq!(&transported, &expected);
+            }
+        }
+
+        #[test]
+        fn opaque_errors_never_gain_resource_authority(
+            suffix in ".{0,80}",
+            hops in 0usize..64,
+        ) {
+            for prefix in ["Out of phlogistons", "Host work budget rejected evaluation."] {
+                let expected = RSpaceError::InterpreterError(format!("{prefix}{suffix}"));
+                let mut transported = expected.clone();
+                for _ in 0..hops {
+                    transported = RSpaceError::from(InterpreterError::from(transported));
+                    proptest::prop_assert_eq!(&transported, &expected);
+                }
+            }
+        }
     }
 
     #[test]

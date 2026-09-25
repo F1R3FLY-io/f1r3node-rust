@@ -1,4 +1,4 @@
-From Stdlib Require Import Arith.PeanoNat Lists.List Lia.
+From Stdlib Require Import Arith.PeanoNat Lists.List Bool.Bool Lia.
 From CostAccountedRho Require Import SignedPhloWire.
 Import ListNotations.
 
@@ -252,3 +252,156 @@ Print Assumptions phlo_class_wire_encoding_is_injective.
 Print Assumptions phlo_class_map_preserves_records.
 Print Assumptions phlo_class_list_wire_preserves_order_and_count.
 Print Assumptions phlo_schedule_wire_binds_every_component.
+
+Definition native_rule_fields_match expected offered :=
+  if list_eq_dec Nat.eq_dec (class_record_unit expected) (class_record_unit offered) then
+    if list_eq_dec Nat.eq_dec (class_record_measurement expected) (class_record_measurement offered) then
+      if list_eq_dec Nat.eq_dec (class_record_valuation expected) (class_record_valuation offered)
+      then true else false
+    else false
+  else false.
+
+Theorem native_rule_match_preserves_interpretation : forall expected offered,
+  native_rule_fields_match expected offered = true <->
+  class_record_unit expected = class_record_unit offered /\
+  class_record_measurement expected = class_record_measurement offered /\
+  class_record_valuation expected = class_record_valuation offered.
+Proof.
+  intros. unfold native_rule_fields_match.
+  repeat destruct (list_eq_dec _ _ _); intuition congruence.
+Qed.
+
+Definition native_class_supported registry offered :=
+  existsb (fun expected => native_rule_fields_match expected offered) registry.
+
+Definition accept_native_schedule registry compatibility schedule :=
+  if list_eq_dec Nat.eq_dec compatibility (schedule_record_compatibility schedule) then
+    if forallb (native_class_supported registry) (schedule_record_classes schedule)
+    then Some schedule else None
+  else None.
+
+Theorem accepted_native_schedule_keeps_every_field : forall registry compatibility schedule accepted,
+  accept_native_schedule registry compatibility schedule = Some accepted -> accepted = schedule.
+Proof.
+  intros. unfold accept_native_schedule in H.
+  destruct (list_eq_dec _ _ _); [destruct (forallb _ _)|]; inversion H; reflexivity.
+Qed.
+
+Theorem accepted_native_schedule_has_supported_rules : forall registry compatibility schedule accepted offered,
+  accept_native_schedule registry compatibility schedule = Some accepted ->
+  In offered (schedule_record_classes accepted) ->
+  exists expected, In expected registry /\
+    class_record_unit expected = class_record_unit offered /\
+    class_record_measurement expected = class_record_measurement offered /\
+    class_record_valuation expected = class_record_valuation offered.
+Proof.
+  intros registry compatibility schedule accepted offered checked included.
+  pose proof (accepted_native_schedule_keeps_every_field _ _ _ _ checked) as same.
+  subst accepted. unfold accept_native_schedule in checked.
+  destruct (list_eq_dec _ _ _); [|discriminate].
+  destruct (forallb _ _) eqn:supported; [|discriminate].
+  apply forallb_forall with (x := offered) in supported; auto.
+  unfold native_class_supported in supported. apply existsb_exists in supported.
+  destruct supported as [expected [present matched]].
+  exists expected. split; auto. now apply native_rule_match_preserves_interpretation.
+Qed.
+
+Theorem accepted_native_schedule_keeps_compatibility : forall registry compatibility schedule accepted,
+  accept_native_schedule registry compatibility schedule = Some accepted ->
+  schedule_record_compatibility accepted = compatibility.
+Proof.
+  intros. unfold accept_native_schedule in H.
+  destruct (list_eq_dec _ _ _) as [same|different]; [|discriminate].
+  destruct (forallb _ _); inversion H; subst; auto.
+Qed.
+
+Theorem unsupported_native_rule_cannot_be_activated : forall registry compatibility schedule offered,
+  In offered (schedule_record_classes schedule) ->
+  native_class_supported registry offered = false ->
+  accept_native_schedule registry compatibility schedule = None.
+Proof.
+  intros registry compatibility schedule offered included unsupported.
+  unfold accept_native_schedule. destruct (list_eq_dec _ _ _); [|reflexivity].
+  destruct (forallb _ _) eqn:supported; [|reflexivity].
+  apply forallb_forall with (x := offered) in supported; auto. congruence.
+Qed.
+
+Print Assumptions native_rule_match_preserves_interpretation.
+Print Assumptions accepted_native_schedule_keeps_every_field.
+Print Assumptions accepted_native_schedule_has_supported_rules.
+Print Assumptions accepted_native_schedule_keeps_compatibility.
+Print Assumptions unsupported_native_rule_cannot_be_activated.
+
+Definition phlo_class_record_eq_dec : forall (left right : phlo_class_record),
+  {left = right} + {left <> right}.
+Proof. decide equality; try apply Nat.eq_dec; apply list_eq_dec; apply Nat.eq_dec. Defined.
+
+Definition phlo_schedule_record_eq_dec : forall (left right : phlo_schedule_record),
+  {left = right} + {left <> right}.
+Proof.
+  decide equality; try apply Nat.eq_dec; apply list_eq_dec;
+    first [apply Nat.eq_dec | apply phlo_class_record_eq_dec].
+Defined.
+
+Definition compatible_acquisition_terms policy original :=
+  if phlo_schedule_record_eq_dec (schedule_at_offer original 0) (schedule_at_offer policy 0)
+  then Some original else None.
+
+Theorem compatible_acquisition_keeps_original : forall policy original accepted,
+  compatible_acquisition_terms policy original = Some accepted -> accepted = original.
+Proof.
+  intros. unfold compatible_acquisition_terms in H.
+  destruct (phlo_schedule_record_eq_dec _ _); inversion H; reflexivity.
+Qed.
+
+Theorem compatible_acquisition_iff_complete_policy : forall policy original,
+  compatible_acquisition_terms policy original = Some original <->
+  schedule_policy_fields original = schedule_policy_fields policy.
+Proof.
+  intros. unfold compatible_acquisition_terms.
+  destruct (phlo_schedule_record_eq_dec _ _) as [same|different].
+  - split; auto. intros _.
+    apply (f_equal schedule_policy_fields) in same.
+    repeat rewrite offered_schedule_keeps_complete_policy in same. exact same.
+  - split; [discriminate|]. intros same. exfalso. apply different.
+    apply policy_and_offer_determine_complete_schedule.
+    + now rewrite offered_schedule_keeps_complete_policy.
+    + reflexivity.
+Qed.
+
+Theorem compatible_acquisition_does_not_reprice : forall policy original accepted,
+  compatible_acquisition_terms policy original = Some accepted ->
+  schedule_record_price accepted = schedule_record_price original.
+Proof.
+  intros. now rewrite (compatible_acquisition_keeps_original _ _ _ H).
+Qed.
+
+Theorem acquisition_compatibility_is_independent_of_purchase_price : forall policy original price,
+  compatible_acquisition_terms policy (schedule_at_offer original price) =
+  option_map (fun accepted => schedule_at_offer accepted price)
+    (compatible_acquisition_terms policy original).
+Proof.
+  intros. unfold compatible_acquisition_terms.
+  rewrite genesis_policy_canonical_price_is_not_an_offer with (second := schedule_record_price original).
+  assert (schedule_at_offer original (schedule_record_price original) = original) as same
+    by (destruct original; reflexivity).
+  rewrite same. destruct (phlo_schedule_record_eq_dec _ _); reflexivity.
+Qed.
+
+Theorem incompatible_acquisition_cannot_supply_a_checked_record : forall policy original,
+  schedule_policy_fields original <> schedule_policy_fields policy ->
+  compatible_acquisition_terms policy original = None.
+Proof.
+  intros policy original different.
+  destruct (compatible_acquisition_terms policy original) as [accepted|] eqn:checked; auto.
+  pose proof (compatible_acquisition_keeps_original _ _ _ checked) as same. subst accepted.
+  apply compatible_acquisition_iff_complete_policy in checked. contradiction.
+Qed.
+
+Print Assumptions phlo_class_record_eq_dec.
+Print Assumptions phlo_schedule_record_eq_dec.
+Print Assumptions compatible_acquisition_keeps_original.
+Print Assumptions compatible_acquisition_iff_complete_policy.
+Print Assumptions compatible_acquisition_does_not_reprice.
+Print Assumptions acquisition_compatibility_is_independent_of_purchase_price.
+Print Assumptions incompatible_acquisition_cannot_supply_a_checked_record.

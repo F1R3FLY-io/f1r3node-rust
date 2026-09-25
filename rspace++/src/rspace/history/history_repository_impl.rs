@@ -12,6 +12,7 @@ use super::history_action::{DeleteAction, HistoryAction, InsertAction};
 use super::history_reader::HistoryReader;
 use super::history_repository::{PREFIX_DATUM, PREFIX_JOINS, PREFIX_KONT};
 use super::instances::rspace_history_reader_impl::RSpaceHistoryReaderImpl;
+use super::native_reader::NativeHistoryReader;
 use crate::rspace::errors::HistoryError;
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::hashing::stable_hash_provider::{hash, hash_from_vec};
@@ -41,6 +42,7 @@ pub struct HistoryRepositoryImpl<C, P, A, K> {
     pub current_history: Arc<Mutex<Box<dyn History>>>,
     pub roots_repository: Arc<Mutex<RootRepository>>,
     pub leaf_store: Arc<dyn KeyValueStore>,
+    pub node_store: Arc<dyn KeyValueStore>,
     pub rspace_exporter: Arc<dyn RSpaceExporter>,
     pub rspace_importer: Arc<dyn RSpaceImporter>,
     pub _marker: PhantomData<(C, P, A, K)>,
@@ -99,6 +101,7 @@ where
             current_history: self.current_history.clone(),
             roots_repository: self.roots_repository.clone(),
             leaf_store: self.leaf_store.clone(),
+            node_store: self.node_store.clone(),
             rspace_exporter: self.rspace_exporter.clone(),
             rspace_importer: self.rspace_importer.clone(),
             _marker: PhantomData,
@@ -444,6 +447,7 @@ where
             current_history: Arc::new(Mutex::new(new_history)),
             roots_repository: self.roots_repository.clone(),
             leaf_store: self.leaf_store.clone(),
+            node_store: self.node_store.clone(),
             rspace_exporter: self.rspace_exporter.clone(),
             rspace_importer: self.rspace_importer.clone(),
             _marker: PhantomData,
@@ -466,6 +470,7 @@ where
             current_history: Arc::new(Mutex::new(next)),
             roots_repository: self.roots_repository.clone(),
             leaf_store: self.leaf_store.clone(),
+            node_store: self.node_store.clone(),
             rspace_exporter: self.rspace_exporter.clone(),
             rspace_importer: self.rspace_importer.clone(),
             _marker: PhantomData,
@@ -499,6 +504,10 @@ where
     fn root(&self) -> Blake2b256Hash {
         let history_lock = lock_current_history(&self.current_history);
         history_lock.root()
+    }
+
+    fn native_history_reader(&self, state_hash: [u8; 32]) -> NativeHistoryReader<'_> {
+        NativeHistoryReader::new(state_hash, self.node_store.as_ref(), self.leaf_store.as_ref())
     }
 
     fn record_root(&self, root: &Blake2b256Hash) -> Result<(), HistoryError> {

@@ -5,6 +5,7 @@ use shared::rust::store::key_value_store::KvStoreError;
 #[derive(Debug, Clone, PartialEq)]
 pub enum RSpaceError {
     OutOfPhlogistons,
+    HostWorkRejected,
     InterpreterError(String),
     HistoryError(HistoryError),
     RadixTreeError(RadixTreeError),
@@ -26,6 +27,7 @@ impl std::fmt::Display for RSpaceError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             RSpaceError::OutOfPhlogistons => write!(f, "Out of phlogistons"),
+            RSpaceError::HostWorkRejected => write!(f, "Host work budget rejected evaluation."),
             RSpaceError::InterpreterError(err) => write!(f, "Interpreter Error: {}", err),
             RSpaceError::HistoryError(err) => write!(f, "History Error: {}", err),
             RSpaceError::RadixTreeError(err) => write!(f, "Radix Tree Error: {}", err),

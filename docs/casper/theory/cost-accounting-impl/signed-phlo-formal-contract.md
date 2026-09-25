@@ -195,6 +195,36 @@ The lifespan upper bound matches the integer domain of deploy-validity calculati
 The garbage collector obtains configuration from running Casper, not a separate startup copy.
 It skips collection until Casper becomes available.
 
+The HTTP and gRPC status contracts use the same adopted minimum once their engine exposes running Casper.
+Before that point, status reports the configured bootstrap minimum for diagnostics, as upstream does.
+This diagnostic fallback does not authorize deployment or replace failed genesis adoption.
+Each request reads the current engine, so a previous status response cannot cache authority across engine replacement.
+
+`running_status_uses_adopted_minimum` and `running_status_ignores_bootstrap` specify the running-state selection rule.
+`startup_status_uses_bootstrap` specifies the separate diagnostic case.
+`running_status_history_agrees` covers arbitrary finite histories with identical adopted records and different bootstrap values.
+The proofs assume that each observed running record came from successful adoption.
+They do not prove network delivery, simultaneous HTTP and gRPC observations, or the complete engine lifecycle.
+
+The endpoint regressions call both service implementations through a shared `EngineCell`.
+Boundary cases include zero, `i64::MAX`, startup, replacement, and return to an engine without Casper.
+Generated histories exercise independently selected bootstrap values and adopted prices.
+The test compares both responses only when the engine remains unchanged across their reads.
+
+Deploy admission checks expiration at the next block height, using the adopted lifespan.
+The DAG API named `latest_block_number()` already returns the maximum stored height plus one for a nonempty DAG.
+Adding another increment would reject a deploy one block too early.
+The empty-DAG value remains zero, matching the existing DAG API.
+
+`next_block_deploy_window_exact` specifies the strict window against the maximum stored height.
+`next_block_deploy_boundary_rejects` rejects equality at the expiration boundary.
+`next_block_deploy_admission_refines_tip` shows that next-block acceptance implies tip-window acceptance, but not the converse.
+Native boundary tests cover the submission callback, so a rejected deploy cannot enter the pool through this path.
+Admission returns an error when the maximum stored height has no representable successor.
+`checked_next_height_exact` and `checked_next_height_preserves_machine_range` specify that arithmetic boundary.
+Full-width generated tests compare native submission with an independent `i128` window predicate.
+The deploy API does not accept a separate node-local minimum-price argument.
+
 [`consensus_parameter_tests.rs`](../../../../casper/src/rust/rholang/consensus_parameter_tests.rs) checks numeric boundaries, malformed results, and generated inputs against an independent range predicate.
 [`chain_parameters.rs`](../../../../casper/tests/util/rholang/chain_parameters.rs) checks actual genesis storage, chain queries, and concurrent adoption with different local settings.
 Its startup-reader regression requires absent parameter data and unavailable state roots to cause errors, without a local fallback.

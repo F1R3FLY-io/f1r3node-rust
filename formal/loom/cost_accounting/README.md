@@ -4,6 +4,14 @@ This crate runs Loom models without the full node dependency graph. Each test ca
 
 Loom explores schedules both with and without `--cfg loom`. That flag does not change a model into a single execution.
 
+The qualification script also runs the [borrowed history tests](../../../rspace++/tests/native_history_loom.rs) in the RSpace crate.
+These tests execute the production reader with Loom threads and a Loom reservation meter.
+They use ordinary dependency compilation because global `--cfg loom` disables Tokio networking required by the storage dependency graph.
+The reader workers use one-megabyte coroutine stacks for debug hash computation.
+The tests default to three preemptions. `LOOM_MAX_PREEMPTIONS` can select a different bound.
+They test budgets from zero through ten reservations and include a non-atomic reservation control.
+The immutable backend uses ordinary locks. These tests cover reader reservation ordering, not backend transaction isolation or the production host-budget atomics.
+
 ## Production correspondence
 
 The [production cache tests](tests/loom_production_replay_cache.rs) import the actual [cache transition module](../../../casper/src/rust/util/rholang/replay_cache_state.rs).
@@ -23,6 +31,38 @@ These tests do not execute the Rholang interpreter, protobuf normalization, or p
 The [persistent charging tests](tests/loom_execution_result_reuse.rs) remain abstract models. They do not establish production charging correctness by themselves.
 
 Other files retain their documented abstraction boundaries. Importing one production module does not establish production correspondence for every model.
+
+The [native source tests](../../../rspace++/tests/native_source_loom.rs) call the production source constructor with an instrumented shared backing meter.
+Two workers require separate reservations for their channel and source digests. Atomic reservations prevent completed sources from exceeding the shared allowance.
+A negative control separates the budget check from its update and must violate that bound.
+The meter replaces the host-budget boundary. These tests do not instrument arbitrary serializer code or the production host-budget atomics.
+
+The [native authority tests](tests/loom_native_authority_sparse_ledger.rs) import the production per-key debit update functions.
+Two workers share one purse and each holds another purse.
+The tests vary capacity, cancellation, and reentry, and check held authority against published and pending demand after each transition.
+Concurrent overflow and underflow attempts must leave all balances unchanged.
+The surrounding mutex models the runtime authority lock. These tests do not execute the complete interpreter or its allocator.
+
+The [native replay ledger tests](tests/loom_native_replay_ledger.rs) import the production occurrence-ledger state transitions.
+Concurrent workers exercise duplicate reservation, independent publication, cancellation, and exclusive boundaries during restore or closure.
+Weighted charges check exact completed usage and suffix subtraction. Production tests also exercise full-width arithmetic and generated command histories.
+Export tests add a competing restorer and an observer. Published evidence requires a modeled storage acknowledgment and permanent ledger closure.
+A negative control omits that acknowledgment and must fail. These tests do not execute the native history writer under Loom.
+These checks do not instrument observation authentication, the matcher, dependency scheduling, or complete tuple-state publication.
+The [replay accounting contract](../../../docs/casper/theory/cost-accounting-impl/observed-funding-outcome.md#replay-occurrence-ledger) defines those separate obligations.
+
+The [native replay dependency tests](tests/loom_native_replay_dependencies.rs) import the same production ledger and its atomic readiness check.
+A dependent operation can reserve only after predecessor publication, not while the predecessor holds a ticket or after cancellation.
+Independent operations can reserve concurrently. A restore between readiness and reservation must prevent reservation against the discarded predecessor.
+Checkpoint validation rejects discarded publication serials. These tests do not execute notification delivery, retry-stage provenance, or the complete funded runtime.
+
+The [publication closure tests](tests/loom_native_publication_closure.rs) import the production native-session publication guard.
+Two threads exercise independent success, incomplete publication, and explicit closure with Loom atomics.
+Success disarms only its local guard. It never clears shared closure.
+The invalidation callback runs after the closed flag becomes visible. Successful completion does not invoke that callback.
+An unsafe flag-reset control must produce its named assertion failure.
+These tests use no preemption, permutation, duration, or checkpoint limit. A 1,000-branch limit fails on exhaustion.
+They establish guard and callback ordering, not tuple-state atomicity, notification delivery, scheduler readiness, or full replay-session integration.
 
 The [completion-query tests](tests/loom_production_effect_observation.rs) import the production ledger's [query kernel](../../../block-storage/src/rust/finality/finalization_ledger/effect_observation.rs).
 Each point read acquires a separate model store guard.

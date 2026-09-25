@@ -29,8 +29,12 @@ use super::accounting::economic_failure::{
 use super::accounting::phlo_execution::PhloFailure;
 use super::accounting::RuntimeBudget;
 use super::errors::InterpreterError;
+use super::execution_space::{ExecutionBackend, ExecutionSpace};
 use super::host_work::HostWorkBudget;
 use super::rho_runtime::RhoISpace;
+
+#[cfg(test)]
+mod capability_tests;
 
 type ParticipantId = CausalPath;
 
@@ -198,7 +202,7 @@ impl Drop for DirectExecutionGuard {
 }
 
 pub async fn root<T>(
-    space: RhoISpace,
+    space: impl Into<ExecutionSpace>,
     budget: RuntimeBudget,
     coordinator: ReductionCoordinator,
     future: impl Future<Output = T>,
@@ -207,7 +211,7 @@ pub async fn root<T>(
 }
 
 pub async fn root_with_host_work<T>(
-    space: RhoISpace,
+    space: impl Into<ExecutionSpace>,
     budget: RuntimeBudget,
     coordinator: ReductionCoordinator,
     host_work: Option<HostWorkBudget>,
@@ -222,7 +226,7 @@ pub async fn root_with_host_work<T>(
 }
 
 pub(crate) async fn root_with_observation<T>(
-    space: RhoISpace,
+    space: impl Into<ExecutionSpace>,
     budget: RuntimeBudget,
     coordinator: ReductionCoordinator,
     host_work: Option<HostWorkBudget>,
@@ -235,7 +239,7 @@ pub(crate) async fn root_with_observation<T>(
     let session_id = budget.deploy_id();
     let evaluation_guard = coordinator.enter_evaluation().await;
     let session = Arc::new(ReductionSession::new(
-        space,
+        space.into(),
         budget,
         host_work,
         evaluation_guard,
@@ -305,7 +309,7 @@ struct SessionState {
 }
 
 struct ReductionSession {
-    space: RhoISpace,
+    space: ExecutionSpace,
     budget: RuntimeBudget,
     host_work: Option<HostWorkBudget>,
     failures: FailureRecorder,
@@ -370,6 +374,23 @@ enum Completion {
     },
 }
 
+impl Intent {
+    fn reject(self, order: OperationOrder, error: RSpaceError) -> Completion {
+        match self {
+            Self::Produce { response, .. } => Completion::Produce {
+                order,
+                response,
+                result: Err(error),
+            },
+            Self::Consume { response, .. } => Completion::Consume {
+                order,
+                response,
+                result: Err(error),
+            },
+        }
+    }
+}
+
 impl Completion {
     fn order(&self) -> &OperationOrder {
         match self {
@@ -401,7 +422,7 @@ struct PreparedIntent {
 
 impl ReductionSession {
     fn new(
-        space: RhoISpace,
+        space: ExecutionSpace,
         budget: RuntimeBudget,
         host_work: Option<HostWorkBudget>,
         evaluation_guard: OwnedRwLockReadGuard<()>,
@@ -635,12 +656,20 @@ impl ReductionSession {
         Self::claim_driver(&mut state)
     }
 
-    async fn prepare(&self, order: OperationOrder, intent: Intent) -> PreparedIntent {
+    async fn prepare(
+        &self,
+        order: OperationOrder,
+        intent: Intent,
+    ) -> Result<PreparedIntent, Completion> {
         let mut footprint = BTreeSet::new();
         match &intent {
             Intent::Produce { channel, data, .. } => {
                 insert_channel(&mut footprint, channel);
-                for join in self.space.get_joins(channel.clone()).await {
+                let joins = match self.space.get_joins(channel.clone()).await {
+                    Ok(joins) => joins,
+                    Err(error) => return Err(intent.reject(order, error)),
+                };
+                for join in joins {
                     for joined_channel in join {
                         insert_channel(&mut footprint, &joined_channel);
                     }
@@ -662,11 +691,11 @@ impl ReductionSession {
                 );
             }
         }
-        PreparedIntent {
+        Ok(PreparedIntent {
             order,
             footprint,
             intent,
-        }
+        })
     }
 
     async fn execute(&self, prepared: PreparedIntent) -> Completion {
@@ -718,8 +747,12 @@ impl ReductionSession {
             std::mem::take(&mut state.intents)
         };
         let mut prepared = Vec::with_capacity(intents.len());
+        let mut completions = Vec::new();
         for (order, intent) in intents {
-            prepared.push(self.prepare(order, intent).await);
+            match self.prepare(order, intent).await {
+                Ok(intent) => prepared.push(intent),
+                Err(completion) => completions.push(completion),
+            }
         }
         let components = conflict_components(prepared);
         let mut component_futures = FuturesUnordered::new();
@@ -733,7 +766,6 @@ impl ReductionSession {
                 completed
             });
         }
-        let mut completions = Vec::new();
         while let Some(mut component) = component_futures.next().await {
             completions.append(&mut component);
         }
@@ -822,12 +854,17 @@ fn conflict_components(mut intents: Vec<PreparedIntent>) -> Vec<Vec<PreparedInte
 #[derive(Clone)]
 pub struct DeterministicRSpace {
     inner: RhoISpace,
+    execution: ExecutionSpace,
     coordinator: ReductionCoordinator,
 }
 
 impl DeterministicRSpace {
     pub fn new(inner: RhoISpace, coordinator: ReductionCoordinator) -> Self {
-        Self { inner, coordinator }
+        Self {
+            execution: scheduled_execution(inner.clone().into()),
+            inner,
+            coordinator,
+        }
     }
 }
 
@@ -952,26 +989,9 @@ impl ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> for Determi
         MaybeConsumeResult<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
         RSpaceError,
     > {
-        match current() {
-            Some(context) => {
-                context
-                    .session
-                    .submit_consume(
-                        &context,
-                        channels,
-                        patterns,
-                        continuation,
-                        persistent,
-                        peeks,
-                    )
-                    .await
-            }
-            None => {
-                self.inner
-                    .consume(channels, patterns, continuation, persistent, peeks)
-                    .await
-            }
-        }
+        self.execution
+            .consume(channels, patterns, continuation, persistent, peeks)
+            .await
     }
 
     async fn produce(
@@ -983,15 +1003,7 @@ impl ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> for Determi
         MaybeProduceResult<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
         RSpaceError,
     > {
-        match current() {
-            Some(context) => {
-                context
-                    .session
-                    .submit_produce(&context, channel, data, persistent)
-                    .await
-            }
-            None => self.inner.produce(channel, data, persistent).await,
-        }
+        self.execution.produce(channel, data, persistent).await
     }
 
     async fn install(
@@ -1024,6 +1036,78 @@ impl ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> for Determi
 
     async fn set_report_phase(&self, phase: ReportPhase) {
         self.inner.set_report_phase(phase).await;
+    }
+}
+
+pub(crate) fn scheduled_execution(inner: ExecutionSpace) -> ExecutionSpace {
+    ExecutionSpace::new(ScheduledExecution { inner })
+}
+
+struct ScheduledExecution {
+    inner: ExecutionSpace,
+}
+
+#[async_trait]
+impl ExecutionBackend for ScheduledExecution {
+    async fn consume(
+        &self,
+        channels: Vec<Par>,
+        patterns: Vec<BindPattern>,
+        continuation: TaggedContinuation,
+        persistent: bool,
+        peeks: BTreeSet<i32>,
+    ) -> Result<super::execution_space::ConsumeResult, RSpaceError> {
+        match current() {
+            Some(context) => {
+                context
+                    .session
+                    .submit_consume(
+                        &context,
+                        channels,
+                        patterns,
+                        continuation,
+                        persistent,
+                        peeks,
+                    )
+                    .await
+            }
+            None => {
+                self.inner
+                    .consume(channels, patterns, continuation, persistent, peeks)
+                    .await
+            }
+        }
+    }
+
+    async fn produce(
+        &self,
+        channel: Par,
+        data: ListParWithRandom,
+        persistent: bool,
+    ) -> Result<super::execution_space::ProduceResult, RSpaceError> {
+        match current() {
+            Some(context) => {
+                context
+                    .session
+                    .submit_produce(&context, channel, data, persistent)
+                    .await
+            }
+            None => self.inner.produce(channel, data, persistent).await,
+        }
+    }
+
+    async fn get_joins(&self, channel: Par) -> Result<Vec<Vec<Par>>, RSpaceError> {
+        self.inner.get_joins(channel).await
+    }
+
+    async fn is_replay(&self) -> bool { self.inner.is_replay().await }
+
+    async fn update_produce(
+        &self,
+        original: &Produce,
+        updated: Produce,
+    ) -> Result<(), RSpaceError> {
+        self.inner.update_produce(original, updated).await
     }
 }
 

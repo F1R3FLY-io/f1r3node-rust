@@ -19,17 +19,30 @@ pub use family_policy::{
 mod consent;
 mod intent;
 mod capture;
+mod cell_backing;
 mod policy_capture;
 mod native_policy;
 mod outcome_match;
+mod partition;
+mod discharge;
+mod retained_acquisition;
+mod retained_births;
+mod restored_resource;
+mod measured_prepaid;
 pub use capture::{
-    CanonicalPhloFundingCapture, CapturedPhloSource, PhloCaptureError, PhloCaptureLimits,
+    CanonicalPhloFundingCapture, CapturedPhloObligation, CapturedPhloSource, PhloCaptureError,
+    PhloCaptureLimits,
+};
+pub use cell_backing::{
+    CapturedRetainedCellBacking, RetainedCellBackingError, RetainedCellBackingLimits,
+    RetainedCellContribution,
 };
 pub use consent::{
     check_phlo_family_consent, check_phlo_family_wire_consent, CheckedPhloBoundFamilyConsent,
     CheckedPhloFamilyConsent, CheckedPhloFamilyWireConsent, DecodedPhloFamilyIntent,
     DecodedPhloFamilyWireIntent, PhloConsentError, PhloConsentLimits, PhloSourceConsent,
 };
+pub use discharge::{prepare_counted_phlo_discharge, PhloDischargeLimits, PreparedPhloDischarge};
 pub use funding::{
     check_phlo_funding_family, CheckedPhloFundingFamily, NativePhloAmountError,
     NativePhloSourceAmounts, PhloFundingCase, PhloFundingError, PhloFundingLimits,
@@ -40,6 +53,10 @@ pub use intent::{
     PhloFundingIntentCheckError, PhloFundingIntentView, SignedPhloConsentError,
     SignedPhloConsentLimits,
 };
+pub use measured_prepaid::{
+    bind_measured_phlo_prepaid, MeasuredPhloPrepaidError, MeasuredPhloPrepaidUse,
+    PreparedMeasuredPhloDemand,
+};
 pub use native_policy::{
     CheckedNativeSignedPhloFamilyPolicy, NativePhloPolicyError, NativeScopedPhloFundingCapture,
 };
@@ -49,9 +66,15 @@ pub use obligations::{
     PhloObligationFundingProposal, PhloObligationKey,
 };
 pub use outcome_match::{PhloOutcomeMatchError, PhloOutcomeMatchLimits};
+pub use partition::PhloPartitionError;
 pub use policy_capture::{
     CheckedSignedPhloFamilyPolicy, PhloFamilyCursorSnapshot, PhloPolicyCaptureError,
     PhloScopedCursorSnapshot, ScopedPhloFundingCapture,
+};
+pub use restored_resource::RestoredPhloResource;
+pub use retained_births::{
+    CheckedRetainedBirthFunding, RetainedBirthFunding, RetainedBirthFundingError,
+    RetainedBirthFundingLimits,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -173,6 +196,8 @@ pub struct CheckedPhloExecution<'a> {
     prepaid_usage: u64,
     fresh_usage: u64,
     acquisition_charge: u64,
+    retained_acquisitions: &'a [PhloResourceAmount<'a>],
+    retained_acquisition_value: u64,
     limits: PhloExecutionLimits,
 }
 
@@ -201,8 +226,15 @@ impl<'a> CheckedPhloExecution<'a> {
 
     pub fn fresh_usage(self) -> u64 { self.fresh_usage }
 
+    pub fn retained_acquisitions(self) -> &'a [PhloResourceAmount<'a>] {
+        self.retained_acquisitions
+    }
+
+    pub fn retained_acquisition_value(self) -> u64 { self.retained_acquisition_value }
+
     pub fn retained_charge(self, outcome: PhloOutcome<'_>) -> u64 {
         match outcome {
+            PhloOutcome::Accepted([]) => self.acquisition_charge + self.retained_acquisition_value,
             PhloOutcome::Accepted(failures)
                 if failures.iter().all(|failure| *failure == PhloFailure::User) =>
             {
@@ -229,6 +261,8 @@ pub enum PhloExecutionError {
     TooManyKeyBytes,
     #[error("phlo resource contains an unsupported funding authority")]
     UnsupportedFundingAuthority,
+    #[error("phlo resource authority does not contain exactly one complete tree")]
+    MalformedFundingAuthority,
     #[error("phlo resource class is absent from the selected schedule")]
     UnknownResourceClass,
     #[error("weighted resource use exceeds the checked execution bound")]
@@ -532,6 +566,8 @@ fn check_execution_resources<'a>(
         prepaid_usage,
         fresh_usage,
         acquisition_charge,
+        retained_acquisitions: &[],
+        retained_acquisition_value: 0,
         limits,
     })
 }

@@ -717,6 +717,56 @@ Print Assumptions routed_write_preserves_other_keys.
 Print Assumptions duplicate_envelope_locations_reject.
 Print Assumptions unique_envelope_location_preserved.
 
+Definition routed_envelope_delete
+    (state : nat -> nat -> option retained_deploy_envelope)
+    format key namespace query :=
+  if Nat.eqb namespace (envelope_store_route format) && Nat.eqb query key
+  then None else state namespace query.
+
+Theorem routed_delete_removes_target : forall state format key,
+  routed_envelope_delete state format key (envelope_store_route format) key = None.
+Proof. intros. unfold routed_envelope_delete. now rewrite !Nat.eqb_refl. Qed.
+
+Theorem routed_delete_preserves_other_namespaces : forall state format key namespace query,
+  namespace <> envelope_store_route format ->
+  routed_envelope_delete state format key namespace query = state namespace query.
+Proof.
+  intros state format key namespace query distinct.
+  unfold routed_envelope_delete. apply Nat.eqb_neq in distinct. now rewrite distinct.
+Qed.
+
+Theorem routed_delete_preserves_other_keys : forall state format key namespace query,
+  query <> key ->
+  routed_envelope_delete state format key namespace query = state namespace query.
+Proof.
+  intros state format key namespace query distinct.
+  unfold routed_envelope_delete. apply Nat.eqb_neq in distinct. rewrite distinct.
+  now destruct (Nat.eqb namespace (envelope_store_route format)).
+Qed.
+
+Theorem routed_delete_is_idempotent : forall state format key namespace query,
+  routed_envelope_delete (routed_envelope_delete state format key) format key namespace query =
+  routed_envelope_delete state format key namespace query.
+Proof.
+  intros. unfold routed_envelope_delete.
+  now destruct (Nat.eqb namespace (envelope_store_route format) && Nat.eqb query key).
+Qed.
+
+Theorem routed_deletions_commute : forall state first first_key second second_key namespace query,
+  routed_envelope_delete (routed_envelope_delete state first first_key) second second_key namespace query =
+  routed_envelope_delete (routed_envelope_delete state second second_key) first first_key namespace query.
+Proof.
+  intros. unfold routed_envelope_delete.
+  destruct (Nat.eqb namespace (envelope_store_route first) && Nat.eqb query first_key),
+    (Nat.eqb namespace (envelope_store_route second) && Nat.eqb query second_key); reflexivity.
+Qed.
+
+Print Assumptions routed_delete_removes_target.
+Print Assumptions routed_delete_preserves_other_namespaces.
+Print Assumptions routed_delete_preserves_other_keys.
+Print Assumptions routed_delete_is_idempotent.
+Print Assumptions routed_deletions_commute.
+
 Definition legacy_order_projection (signers : list nat) order :=
   map (nth_error signers) order.
 

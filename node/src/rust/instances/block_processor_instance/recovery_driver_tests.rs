@@ -128,6 +128,7 @@ impl Fixture {
             block_retriever: retriever,
             event_publisher: F1r3flyEvents::new(),
             runtime_manager: Arc::new(runtime),
+            accounting_context: Arc::new(tokio::sync::OnceCell::new()),
             estimator: Estimator::apply(),
             block_store: KeyValueBlockStore::create_from_kvm(&mut manager)
                 .await

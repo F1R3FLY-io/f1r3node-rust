@@ -27,6 +27,7 @@ use crate::rust::util::rholang::system_deploy_user_error::SystemDeployUserError;
 pub struct CheckedDirectWalletSettlement<'a, A = FundedDeploy> {
     snapshot: &'a DirectWalletPolicySnapshot<'a, A>,
     capture: NativeScopedPhloFundingCapture<'a, A>,
+    execution_root: [u8; 32],
 }
 
 pub struct PreparedDirectWalletSettlement<'s, 'a, A = FundedDeploy> {
@@ -222,6 +223,7 @@ impl<'a, A> CheckedDirectWalletPolicy<'a, A> {
         Ok(CheckedDirectWalletSettlement {
             snapshot: self.snapshot(),
             capture,
+            execution_root: self.snapshot().wallets().pre_state_root(),
         })
     }
 }
@@ -229,6 +231,18 @@ impl<'a, A> CheckedDirectWalletPolicy<'a, A> {
 impl<'a, A> CheckedDirectWalletSettlement<'a, A> {
     pub fn snapshot(&self) -> &'a DirectWalletPolicySnapshot<'a, A> { self.snapshot }
     pub fn capture(&self) -> &NativeScopedPhloFundingCapture<'a, A> { &self.capture }
+
+    pub(super) fn bind_execution_root(mut self, root: [u8; 32]) -> Self {
+        self.execution_root = root;
+        self
+    }
+
+    pub(in crate::rust::util::rholang::costacc) fn check_execution_root(
+        &self,
+        actual: &[u8],
+    ) -> Result<(), CasperError> {
+        super::execution::check_execution_root(&self.execution_root, actual)
+    }
 
     pub fn prepare_request<'s>(
         &'s self,

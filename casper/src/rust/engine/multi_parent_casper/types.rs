@@ -44,6 +44,7 @@ use crate::rust::engine::block_retriever::BlockRetriever;
 use crate::rust::estimator::Estimator;
 use crate::rust::finality::certificate::CertificateVerificationSchedule;
 use crate::rust::finality::finalization_schedule::FinalizationSchedule;
+use crate::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::validator_identity::ValidatorIdentity;
 
@@ -73,6 +74,7 @@ pub struct MultiParentCasperImpl<T: TransportLayer + Send + Sync> {
     /// `tokio::sync::Mutex` is no longer load-bearing and was dropped at
     /// merge time. Callers reach the manager by cloning the `Arc` directly.
     pub runtime_manager: Arc<RuntimeManager>,
+    pub accounting_context: Arc<tokio::sync::OnceCell<Arc<AdoptedResourcePolicy>>>,
     pub estimator: Estimator,
     pub block_store: KeyValueBlockStore,
     pub block_dag_storage: BlockDagKeyValueStorage,

@@ -31,7 +31,10 @@ fn check(cache: &Cache, max_entries: usize, max_bytes: usize) {
     let (count, retained) = cache.stats();
     assert!(count <= max_entries);
     assert!(retained <= max_bytes);
-    assert_eq!(retained, cache.entries().map(|(k, v)| charge(k, v)).sum());
+    assert_eq!(
+        retained,
+        cache.entries().map(|(k, v)| charge(k, v)).sum::<usize>()
+    );
     for (key, value) in cache.entries() {
         assert_eq!(*key, value.context);
     }

@@ -19,9 +19,7 @@ use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::interpreter::EvaluateResult;
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
-use rholang::rust::interpreter::system_processes::{
-    BlockData, DeployData as SystemProcessDeployData,
-};
+use rholang::rust::interpreter::system_processes::BlockData;
 use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::Either;
@@ -1084,41 +1082,16 @@ impl ReplayRuntimeOps {
         // preserving the block-level authority reservation for settlement.
         let fallback = self.runtime_ops.runtime.create_soft_checkpoint().await;
 
-        let deploy_data = SystemProcessDeployData {
-            timestamp: processed_deploy.body().time_stamp,
-            authority: rholang::rust::interpreter::system_processes::DeployAuthority::Legacy(
-                processed_deploy.primary().pk.clone(),
-            ),
-            deploy_id: processed_deploy.primary().sig.to_vec(),
-        };
-        self.runtime_ops.runtime.set_deploy_data(deploy_data).await;
-
         let mut user_eval_result = match execution_authority {
             Some((budget, authority_allocation)) => {
-                let cosigned = processed_deploy
-                    .to_cosigned()
-                    .map_err(CasperError::InvalidCostSettlement)?;
-                match host_work {
-                    Some(host_work) => {
-                        self.runtime_ops
-                            .evaluate_cosigned_with_budget_and_authority_and_host_work(
-                                &cosigned,
-                                budget,
-                                Some(authority_allocation),
-                                host_work,
-                            )
-                            .await?
-                    }
-                    None => {
-                        self.runtime_ops
-                            .evaluate_cosigned_with_budget_and_authority(
-                                &cosigned,
-                                budget,
-                                Some(authority_allocation),
-                            )
-                            .await?
-                    }
-                }
+                self.runtime_ops
+                    .evaluate_replay_envelope(
+                        processed_deploy.envelope(),
+                        budget,
+                        Some(authority_allocation),
+                        host_work,
+                    )
+                    .await?
             }
             None => {
                 let cosigned = processed_deploy

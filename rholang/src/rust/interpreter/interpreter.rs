@@ -17,7 +17,10 @@ use super::accounting::byte_receipts::ByteObservationSnapshot;
 use super::accounting::costs::Cost;
 use super::accounting::economic_failure::{classify_errors, EvaluationFailureSummary};
 use super::accounting::phlo_execution::PhloFailure;
-use super::accounting::{RuntimeBudget, SignedProcess};
+use super::accounting::{
+    NativeBudgetRecording, NativeReplayAccountingSnapshot, NativeRuntimeConfig, RuntimeBudget,
+    SignedProcess,
+};
 use super::compiler::compiler::Compiler;
 use super::errors::InterpreterError;
 use super::host_work::HostWorkBudget;
@@ -25,7 +28,11 @@ use super::metrics_constants::{
     INJ_ATTEMPT_BUILD_NORMALIZED_TERM_TIME_METRIC, INJ_ATTEMPT_REDUCE_TERM_TIME_METRIC,
     INTERPRETER_METRICS_SOURCE,
 };
-use super::reduce::DebruijnInterpreter;
+use super::reduce::{DebruijnInterpreter, ReducerCore};
+
+#[cfg(test)]
+#[path = "interpreter_source_tests.rs"]
+mod source_tests;
 
 //See rholang/src/main/scala/coop/rchain/rholang/interpreter/Interpreter.scala
 
@@ -43,6 +50,10 @@ pub struct EvaluateResult {
     pub authority_realized: ResourceMultiset<[u8; 32]>,
     pub authority_stack_births: Vec<AuthorityStackBirth>,
     pub quantitative_byte_cost: u64,
+    pub native_phlo_usage: Option<u64>,
+    pub native_budget_recording: Option<NativeBudgetRecording>,
+    pub native_operation_recording:
+        Option<std::sync::Arc<[super::accounting::NativeOperationRecord]>>,
 }
 
 #[allow(async_fn_in_trait)]
@@ -81,6 +92,7 @@ impl Interpreter for InterpreterImpl {
             rand,
             authority_allocation,
             None,
+            None,
         )
         .await
     }
@@ -89,7 +101,7 @@ impl Interpreter for InterpreterImpl {
 impl InterpreterImpl {
     pub async fn inj_attempt_with_host_work(
         &self,
-        reducer: &DebruijnInterpreter,
+        reducer: &ReducerCore,
         term: &str,
         initial_phlo: Cost,
         normalizer_env: HashMap<String, Par>,
@@ -105,19 +117,44 @@ impl InterpreterImpl {
             rand,
             authority_allocation,
             Some(host_work),
+            None,
+        )
+        .await
+    }
+
+    pub async fn inj_attempt_with_native_phlo(
+        &self,
+        reducer: &ReducerCore,
+        term: &str,
+        normalizer_env: HashMap<String, Par>,
+        rand: Blake2b512Random,
+        authority_allocation: Option<ResourceMultiset<[u8; 32]>>,
+        config: NativeRuntimeConfig,
+    ) -> Result<EvaluateResult, InterpreterError> {
+        let host_work = config.host_work();
+        self.inj_attempt_inner(
+            reducer,
+            term,
+            Cost::create(0, "native resource reservation"),
+            normalizer_env,
+            rand,
+            authority_allocation,
+            Some(host_work),
+            Some(config),
         )
         .await
     }
 
     async fn inj_attempt_inner(
         &self,
-        reducer: &DebruijnInterpreter,
+        reducer: &ReducerCore,
         term: &str,
         initial_phlo: Cost,
         normalizer_env: HashMap<String, Par>,
         rand: Blake2b512Random,
         authority_allocation: Option<ResourceMultiset<[u8; 32]>>,
         host_work: Option<HostWorkBudget>,
+        native: Option<NativeRuntimeConfig>,
     ) -> Result<EvaluateResult, InterpreterError> {
         // Using tracing events for async context
         // Scala spans: "set-initial-cost", "build-normalized-term", "reduce-term"
@@ -137,87 +174,22 @@ impl InterpreterImpl {
                 authority_realized: ResourceMultiset::default(),
                 authority_stack_births: Vec::new(),
                 quantitative_byte_cost: 0,
+                native_phlo_usage: None,
+                native_budget_recording: None,
+                native_operation_recording: None,
             });
         }
 
-        if let Some(host_work) = &host_work {
-            let source_bytes = u64::try_from(term.len()).map_err(|_| {
-                InterpreterError::BugFoundError(
-                    "structural source byte count does not fit in u64".to_string(),
-                )
-            })?;
-            if host_work
-                .reserve(
-                    HostWorkDimension::StructuralBytes,
-                    HostWorkUnits::new(source_bytes),
-                )
-                .is_err()
-            {
-                return self.handle_error(InterpreterError::HostWorkRejected);
-            }
+        let native_mode = native.is_some();
+        if let Some(native) = native {
+            self.c.reset_for_native_execution(native)?;
         }
-
         let evaluation_result: Result<EvaluateResult, InterpreterError> = {
             // Phase: build-normalized-term — parse the source string into an AST.
-            let parsed = {
-                let phase_start = Instant::now();
-                event!(
-                    Level::DEBUG,
-                    mark = "started-build-normalized-term",
-                    "inj_attempt"
-                );
-                let result = match Compiler::source_to_adt_with_normalizer_env(term, normalizer_env)
-                {
-                    Ok(p) => {
-                        event!(
-                            Level::DEBUG,
-                            mark = "finished-build-normalized-term",
-                            "inj_attempt"
-                        );
-                        Ok(p)
-                    }
-                    Err(e) => {
-                        event!(
-                            Level::DEBUG,
-                            mark = "failed-build-normalized-term",
-                            "inj_attempt"
-                        );
-                        Err(self.handle_error(InterpreterError::ParserError(e.to_string())))
-                    }
-                };
-                metrics::histogram!(
-                    INJ_ATTEMPT_BUILD_NORMALIZED_TERM_TIME_METRIC,
-                    "source" => INTERPRETER_METRICS_SOURCE
-                )
-                .record(phase_start.elapsed().as_secs_f64());
-                match result {
-                    Ok(p) => p,
-                    Err(err) => return err,
-                }
+            let parsed = match Self::parse_source(term, normalizer_env, host_work.as_ref()) {
+                Ok(parsed) => parsed,
+                Err(error) => return self.handle_error(error),
             };
-            if let Some(host_work) = &host_work {
-                let normalized_bytes = u64::try_from(parsed.encoded_len()).map_err(|_| {
-                    InterpreterError::BugFoundError(
-                        "normalized process byte count does not fit in u64".to_string(),
-                    )
-                })?;
-                let structural_items = Self::structural_items(&parsed)?;
-                if host_work
-                    .reserve(
-                        HostWorkDimension::StructuralBytes,
-                        HostWorkUnits::new(normalized_bytes),
-                    )
-                    .and_then(|_| {
-                        host_work.reserve(
-                            HostWorkDimension::StructuralItems,
-                            HostWorkUnits::new(structural_items),
-                        )
-                    })
-                    .is_err()
-                {
-                    return self.handle_error(InterpreterError::HostWorkRejected);
-                }
-            }
             // Trace: set-initial-cost (matching Scala's Span[F].traceI("set-initial-cost"))
             let parsed = {
                 event!(
@@ -230,7 +202,9 @@ impl InterpreterImpl {
                     self.c.signature(),
                     u64::try_from(initial_phlo.value).unwrap_or(0),
                 );
-                self.c.reset_from_signed_process(&signed_process);
+                if !native_mode {
+                    self.c.reset_from_signed_process(&signed_process);
+                }
                 if let Some(allocation) = authority_allocation {
                     self.c.install_authority_allocation(allocation);
                 }
@@ -272,25 +246,7 @@ impl InterpreterImpl {
                 Ok(()) => {
                     event!(Level::DEBUG, mark = "finished-reduce-term", "inj_attempt");
                     let mergeable_channels = { self.merge_chs.read().await.clone() };
-                    let byte_observations = self.c.byte_observations();
-                    let authority_byte_events = byte_observations.legacy_events();
-                    let quantitative_byte_cost = authority_byte_events
-                        .iter()
-                        .try_fold(0_u64, |sum, event| sum.checked_add(event.amount))
-                        .expect("validated byte-cost trace overflow");
-
-                    Ok(EvaluateResult {
-                        cost: self.c.total_cost(),
-                        errors: Vec::new(),
-                        economic_failures,
-                        mergeable: mergeable_channels,
-                        authority_events: self.c.authority_events(),
-                        authority_byte_events,
-                        byte_observations,
-                        authority_realized: self.c.authority_realized(),
-                        authority_stack_births: self.c.authority_stack_births(),
-                        quantitative_byte_cost,
-                    })
+                    self.capture_result(Vec::new(), economic_failures, mergeable_channels, None)
                 }
                 Err(e) => {
                     event!(Level::DEBUG, mark = "failed-reduce-term", "inj_attempt");
@@ -303,6 +259,72 @@ impl InterpreterImpl {
 }
 
 impl InterpreterImpl {
+    pub fn parse_source(
+        term: &str,
+        normalizer_env: HashMap<String, Par>,
+        host: Option<&HostWorkBudget>,
+    ) -> Result<Par, InterpreterError> {
+        if let Some(host) = host {
+            let bytes = u64::try_from(term.len()).map_err(|_| {
+                InterpreterError::BugFoundError(
+                    "structural source byte count does not fit in u64".to_owned(),
+                )
+            })?;
+            host.reserve(
+                HostWorkDimension::StructuralBytes,
+                HostWorkUnits::new(bytes),
+            )
+            .map_err(|_| InterpreterError::HostWorkRejected)?;
+        }
+        let phase_start = Instant::now();
+        event!(
+            Level::DEBUG,
+            mark = "started-build-normalized-term",
+            "inj_attempt"
+        );
+        let result = Compiler::source_to_adt_with_normalizer_env(term, normalizer_env)
+            .map_err(|error| InterpreterError::ParserError(error.to_string()));
+        if result.is_ok() {
+            event!(
+                Level::DEBUG,
+                mark = "finished-build-normalized-term",
+                "inj_attempt"
+            );
+        } else {
+            event!(
+                Level::DEBUG,
+                mark = "failed-build-normalized-term",
+                "inj_attempt"
+            );
+        }
+        metrics::histogram!(
+            INJ_ATTEMPT_BUILD_NORMALIZED_TERM_TIME_METRIC,
+            "source" => INTERPRETER_METRICS_SOURCE
+        )
+        .record(phase_start.elapsed().as_secs_f64());
+        let parsed = result?;
+        if let Some(host) = host {
+            let bytes = u64::try_from(parsed.encoded_len()).map_err(|_| {
+                InterpreterError::BugFoundError(
+                    "normalized process byte count does not fit in u64".to_owned(),
+                )
+            })?;
+            let items = Self::structural_items(&parsed)?;
+            host.reserve(
+                HostWorkDimension::StructuralBytes,
+                HostWorkUnits::new(bytes),
+            )
+            .and_then(|_| {
+                host.reserve(
+                    HostWorkDimension::StructuralItems,
+                    HostWorkUnits::new(items),
+                )
+            })
+            .map_err(|_| InterpreterError::HostWorkRejected)?;
+        }
+        Ok(parsed)
+    }
+
     pub fn new(
         cost: RuntimeBudget,
         merge_chs: Arc<RwLock<HashMap<Par, MergeType>>>,
@@ -346,6 +368,15 @@ impl InterpreterImpl {
         error: InterpreterError,
         economic_failures: EvaluationFailureSummary,
     ) -> Result<EvaluateResult, InterpreterError> {
+        self.handle_observed_error_with_evidence(error, economic_failures, None)
+    }
+
+    fn handle_observed_error_with_evidence(
+        &self,
+        error: InterpreterError,
+        economic_failures: EvaluationFailureSummary,
+        evidence: Option<NativeReplayAccountingSnapshot>,
+    ) -> Result<EvaluateResult, InterpreterError> {
         if matches!(
             &error,
             InterpreterError::ParserError(_) | InterpreterError::HostWorkRejected
@@ -361,6 +392,9 @@ impl InterpreterImpl {
                 authority_realized: ResourceMultiset::default(),
                 authority_stack_births: Vec::new(),
                 quantitative_byte_cost: 0,
+                native_phlo_usage: None,
+                native_budget_recording: None,
+                native_operation_recording: None,
             });
         }
 
@@ -369,8 +403,65 @@ impl InterpreterImpl {
             InterpreterError::AggregateError { interpreter_errors } => interpreter_errors,
             error => vec![error],
         };
-        let byte_observations = self.c.byte_observations();
-        let authority_byte_events = byte_observations.legacy_events();
+        self.capture_result(errors, economic_failures, HashMap::new(), evidence)
+    }
+
+    pub(crate) fn complete_replay_result(
+        &self,
+        execution: Result<(), InterpreterError>,
+        economic_failures: EvaluationFailureSummary,
+        mergeable: HashMap<Par, MergeType>,
+        evidence: NativeReplayAccountingSnapshot,
+    ) -> Result<EvaluateResult, InterpreterError> {
+        match execution {
+            Ok(()) => self.capture_result(Vec::new(), economic_failures, mergeable, Some(evidence)),
+            Err(error) => {
+                self.handle_observed_error_with_evidence(error, economic_failures, Some(evidence))
+            }
+        }
+    }
+
+    pub(crate) fn host_rejected_result(
+        &self,
+        failures: EvaluationFailureSummary,
+    ) -> Result<EvaluateResult, InterpreterError> {
+        self.handle_observed_error(
+            InterpreterError::HostWorkRejected,
+            failures.union(EvaluationFailureSummary::single(PhloFailure::Platform)),
+        )
+    }
+
+    fn capture_result(
+        &self,
+        errors: Vec<InterpreterError>,
+        economic_failures: EvaluationFailureSummary,
+        mergeable: HashMap<Par, MergeType>,
+        evidence: Option<NativeReplayAccountingSnapshot>,
+    ) -> Result<EvaluateResult, InterpreterError> {
+        self.c.reserve_native_result_backing()?;
+        let (
+            byte_observations,
+            native_phlo_usage,
+            native_budget_recording,
+            native_operation_recording,
+        ) = match evidence {
+            Some(evidence) => {
+                let (recording, operations, observations) = evidence.into_parts();
+                (
+                    observations,
+                    Some(recording.used),
+                    Some(recording),
+                    Some(operations),
+                )
+            }
+            None => (
+                self.c.byte_observations(),
+                self.c.native_phlo_usage(),
+                self.c.native_budget_recording()?,
+                self.c.native_operation_recording()?,
+            ),
+        };
+        let authority_byte_events = self.c.result_legacy_events(&byte_observations)?;
         let quantitative_byte_cost = authority_byte_events
             .iter()
             .try_fold(0_u64, |sum, event| sum.checked_add(event.amount))
@@ -379,13 +470,16 @@ impl InterpreterImpl {
             cost: self.c.total_cost(),
             errors,
             economic_failures,
-            mergeable: HashMap::new(),
+            mergeable,
             authority_events: self.c.authority_events(),
             authority_byte_events,
             byte_observations,
             authority_realized: self.c.authority_realized(),
             authority_stack_births: self.c.authority_stack_births(),
             quantitative_byte_cost,
+            native_phlo_usage,
+            native_budget_recording,
+            native_operation_recording,
         })
     }
 }

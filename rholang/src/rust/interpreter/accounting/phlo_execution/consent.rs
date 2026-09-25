@@ -332,7 +332,8 @@ fn validate_phlo_family_consent<'a>(
         for (slot, key) in case.obligations.keys().iter().enumerate() {
             let resource = match key {
                 PhloObligationKey::Fee => None,
-                PhloObligationKey::Resource(resource) => {
+                PhloObligationKey::Resource(resource)
+                | PhloObligationKey::RetainedResource(resource) => {
                     Some(resource_key(*resource, &mut budget)?)
                 }
             };

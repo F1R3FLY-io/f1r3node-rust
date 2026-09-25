@@ -238,6 +238,7 @@ async fn create_engine_cell(node: &TestNode) -> EngineCell {
         block_retriever: node.casper.block_retriever.clone(),
         event_publisher: node.casper.event_publisher.clone(),
         runtime_manager: node.casper.runtime_manager.clone(),
+        accounting_context: node.casper.accounting_context.clone(),
         estimator: node.casper.estimator.clone(),
         block_store: node.casper.block_store.clone(),
         block_dag_storage: node.casper.block_dag_storage.clone(),

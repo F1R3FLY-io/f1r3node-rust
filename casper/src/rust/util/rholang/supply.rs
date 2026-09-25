@@ -147,6 +147,33 @@ pub fn supply_channel(sig: &Sig) -> Par {
     SignatureChannel::from_sig(sig).par
 }
 
+fn check_stack_captures(
+    live: &[Datum<ListParWithRandom>],
+    selected: &[&PurseStack],
+) -> Result<(), CasperError> {
+    let Some(first) = selected.first() else {
+        return Ok(());
+    };
+    let head =
+        first.stack.cells.first().ok_or_else(|| {
+            CasperError::InvalidCostSettlement("captured stack is empty".to_string())
+        })?;
+    let inventory = decode_purse_inventory(live, head)?;
+    let by_index = inventory
+        .stacks
+        .iter()
+        .map(|stack| (stack.datum_index, stack))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    for captured in selected {
+        if by_index.get(&captured.datum_index).copied() != Some(*captured) {
+            return Err(CasperError::InvalidCostSettlement(
+                "authority stack capture differs from the complete live inventory".to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub async fn apply_stack_pops(
     runtime_ops: &mut RuntimeOps,
     stacks: &[PurseStack],
@@ -162,9 +189,7 @@ pub async fn apply_stack_pops(
         ));
     }
 
-    let mut removals =
-        std::collections::BTreeMap::<Vec<u8>, (Par, Vec<(i32, [u8; 32], ListParWithRandom)>)>::new(
-        );
+    let mut removals = std::collections::BTreeMap::<Vec<u8>, (Par, Vec<&PurseStack>)>::new();
     let mut tails = Vec::<([u8; 32], Par, ListParWithRandom, bool)>::new();
     for (stack_id, pop_count) in stack_pops {
         if *pop_count == 0 {
@@ -172,7 +197,7 @@ pub async fn apply_stack_pops(
                 "authority stack settlement contains a zero pop count".to_string(),
             ));
         }
-        let stack = by_id.get(stack_id).ok_or_else(|| {
+        let stack = by_id.get(stack_id).copied().ok_or_else(|| {
             CasperError::InvalidCostSettlement(
                 "authority stack settlement references an unknown stack".to_string(),
             )
@@ -187,17 +212,11 @@ pub async fn apply_stack_pops(
                 "authority stack settlement exceeds the stack length".to_string(),
             ));
         }
-        let original = ListParWithRandom {
-            pars: Vec::new(),
-            random_state: stack.random_state.clone(),
-            cost_authority: None,
-            cost_stack: Some(stack.stack.clone()),
-        };
         removals
             .entry(stack.channel.encode_to_vec())
             .or_insert_with(|| (stack.channel.clone(), Vec::new()))
             .1
-            .push((stack.datum_index, *stack_id, original));
+            .push(stack);
 
         let remaining = stack.stack.cells[pop_count..].to_vec();
         if let Some(head) = remaining.first() {
@@ -218,35 +237,21 @@ pub async fn apply_stack_pops(
     }
 
     for (_, channel_removals) in removals.values_mut() {
-        channel_removals.sort_by(|left, right| right.0.cmp(&left.0));
+        channel_removals.sort_by(|left, right| right.datum_index.cmp(&left.datum_index));
     }
     for (channel, channel_removals) in removals.values() {
         let live = runtime_ops.runtime.reducer.space.get_data(channel).await;
-        for (index, _stack_id, expected) in channel_removals {
-            let datum = usize::try_from(*index)
-                .ok()
-                .and_then(|index| live.get(index))
-                .ok_or_else(|| {
-                    CasperError::InvalidCostSettlement(
-                        "authority stack moved before atomic settlement".to_string(),
-                    )
-                })?;
-            if &datum.a != expected {
-                return Err(CasperError::InvalidCostSettlement(
-                    "authority stack changed before atomic settlement".to_string(),
-                ));
-            }
-        }
+        check_stack_captures(&live, channel_removals)?;
     }
     let checkpoint = runtime_ops.runtime.create_soft_checkpoint().await;
     let mutation = async {
         for (_channel_key, (channel, channel_removals)) in removals {
-            for (index, stack_id, _) in channel_removals {
+            for stack in channel_removals {
                 runtime_ops
                     .runtime
                     .reducer
                     .space
-                    .remove_data_at_recorded(&channel, index, &stack_id)
+                    .remove_data_at_recorded(&channel, stack.datum_index, &stack.instance_id)
                     .await
                     .map_err(|error| {
                         CasperError::RuntimeError(format!(
@@ -288,6 +293,243 @@ mod tests {
     use rholang::rust::interpreter::accounting::Sig;
 
     use super::*;
+
+    #[tokio::test]
+    async fn stack_pop_rejects_altered_capture_metadata_before_mutation() {
+        use std::collections::{BTreeMap, HashMap};
+        use std::sync::Arc;
+
+        use models::rhoapi::cost_signature::Value;
+        use rholang::rust::interpreter::external_services::ExternalServices;
+        use rholang::rust::interpreter::matcher::r#match::Matcher;
+        use rholang::rust::interpreter::rho_runtime::create_runtime_from_kv_store;
+        use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+        use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+
+        let store = InMemoryStoreManager::new().r_space_stores().await.unwrap();
+        let mut runtime = RuntimeOps::new(
+            create_runtime_from_kv_store(
+                store,
+                Arc::new(HashMap::new()),
+                false,
+                &mut Vec::new(),
+                Arc::new(Box::new(Matcher)),
+                ExternalServices::noop(),
+            )
+            .await,
+        );
+        let head = CostSignature {
+            value: Some(Value::Ground(b"head".to_vec())),
+        };
+        let channel = supply_channel(&Sig::Ground(b"head".to_vec()));
+        for random in [1, 2] {
+            runtime
+                .runtime
+                .reducer
+                .space
+                .produce(
+                    channel.clone(),
+                    ListParWithRandom {
+                        pars: Vec::new(),
+                        random_state: vec![random],
+                        cost_authority: None,
+                        cost_stack: Some(CostStack {
+                            cells: vec![head.clone(), head.clone()],
+                        }),
+                    },
+                    false,
+                )
+                .await
+                .unwrap();
+        }
+        let base = runtime.runtime.create_checkpoint().await;
+        for field in 0..8 {
+            runtime.runtime.reset(&base.root).await.unwrap();
+            let inventory = decode_purse_inventory(
+                &runtime.runtime.reducer.space.get_data(&channel).await,
+                &head,
+            )
+            .unwrap();
+            let mut selected = inventory
+                .stacks
+                .iter()
+                .find(|stack| stack.datum_index == 0)
+                .unwrap()
+                .clone();
+            let mut earlier = inventory
+                .stacks
+                .iter()
+                .find(|stack| stack.datum_index == 1)
+                .unwrap()
+                .clone();
+            match field {
+                0 => selected.source_hash[0] ^= 1,
+                1 => selected.persistent = !selected.persistent,
+                2 => selected.instance_id[0] ^= 1,
+                3 => selected.datum_index = -1,
+                4 => selected.channel = Par::default(),
+                5 => selected.random_state.push(0),
+                6 => selected.stack.cells.pop().map(|_| ()).unwrap(),
+                _ => {
+                    earlier = selected.clone();
+                    selected.instance_id[0] ^= 1;
+                }
+            }
+            let pops = BTreeMap::from([(earlier.instance_id, 1), (selected.instance_id, 1)]);
+            let result = apply_stack_pops(&mut runtime, &[earlier, selected], &pops).await;
+            assert!(
+                result.is_err(),
+                "altered captured field {field} was accepted"
+            );
+            let after = runtime.runtime.create_checkpoint().await;
+            assert_eq!(after.root, base.root);
+        }
+    }
+
+    #[tokio::test]
+    async fn full_stack_capture_check_preserves_tail_state_and_replay() {
+        use std::collections::BTreeMap;
+
+        use models::rhoapi::cost_signature::Value;
+        use rholang::rust::interpreter::test_utils::resources::create_runtimes;
+        use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+        use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+
+        let store = InMemoryStoreManager::new().r_space_stores().await.unwrap();
+        let (play, replay, _) = create_runtimes(store, false, &mut Vec::new()).await;
+        let mut native = RuntimeOps::new(play);
+        let mut replay = RuntimeOps::new(replay);
+        let signatures = (1..=3)
+            .map(|value| CostSignature {
+                value: Some(Value::Ground(vec![value])),
+            })
+            .collect::<Vec<_>>();
+        let channel = supply_channel(&Sig::Ground(vec![1]));
+        for random in [1, 1, 2] {
+            native
+                .runtime
+                .reducer
+                .space
+                .produce(
+                    channel.clone(),
+                    ListParWithRandom {
+                        pars: Vec::new(),
+                        random_state: vec![random],
+                        cost_authority: None,
+                        cost_stack: Some(CostStack {
+                            cells: signatures.clone(),
+                        }),
+                    },
+                    false,
+                )
+                .await
+                .unwrap();
+        }
+        let base = native.runtime.create_checkpoint().await;
+        let inventory = decode_purse_inventory(
+            &native.runtime.reducer.space.get_data(&channel).await,
+            &signatures[0],
+        )
+        .unwrap();
+        assert_eq!(inventory.stacks.len(), 3);
+        let pops = inventory
+            .stacks
+            .iter()
+            .enumerate()
+            .map(|(index, stack)| (stack.instance_id, index as u64 + 1))
+            .collect::<BTreeMap<_, _>>();
+        apply_stack_pops(&mut native, &inventory.stacks, &pops)
+            .await
+            .unwrap();
+        assert!(native
+            .runtime
+            .reducer
+            .space
+            .get_data(&channel)
+            .await
+            .is_empty());
+        for count in [1, 2] {
+            let tail_channel = supply_channel(&Sig::Ground(vec![count as u8 + 1]));
+            let tails = decode_purse_inventory(
+                &native.runtime.reducer.space.get_data(&tail_channel).await,
+                &signatures[count],
+            )
+            .unwrap();
+            assert_eq!(tails.stacks.len(), 1);
+            assert_eq!(tails.stacks[0].stack.cells, signatures[count..]);
+            assert_eq!(
+                tails.stacks[0].random_state,
+                inventory.stacks[count - 1].random_state
+            );
+            assert!(!tails.stacks[0].persistent);
+            assert_ne!(
+                tails.stacks[0].source_hash,
+                inventory.stacks[count - 1].source_hash
+            );
+        }
+        let trace = native.runtime.take_event_log().await;
+        let retained = native.runtime.create_checkpoint().await;
+        replay.runtime.reset(&base.root).await.unwrap();
+        replay.runtime.rig(trace).await.unwrap();
+        let replay_inventory = decode_purse_inventory(
+            &replay.runtime.reducer.space.get_data(&channel).await,
+            &signatures[0],
+        )
+        .unwrap();
+        assert_eq!(replay_inventory, inventory);
+        apply_stack_pops(&mut replay, &replay_inventory.stacks, &pops)
+            .await
+            .unwrap();
+        replay.runtime.check_replay_data().await.unwrap();
+        assert_eq!(replay.runtime.create_checkpoint().await.root, retained.root);
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config::with_cases(256))]
+
+        #[test]
+        fn stack_capture_preflight_refines_complete_record_equality(
+            seeds in proptest::collection::vec(proptest::prelude::any::<u8>(), 1..20),
+            cell_count in 1usize..16,
+            selector in proptest::prelude::any::<usize>(),
+            mutation in 0usize..8,
+        ) {
+            use models::rhoapi::cost_signature::Value;
+
+            let head = CostSignature { value: Some(Value::Ground(b"property-slot".to_vec())) };
+            let channel = supply_channel(&Sig::Ground(b"property-slot".to_vec()));
+            let data = seeds.iter().map(|seed| Datum::create(
+                &channel,
+                ListParWithRandom {
+                    pars: Vec::new(),
+                    random_state: vec![*seed],
+                    cost_authority: None,
+                    cost_stack: Some(CostStack { cells: vec![head.clone(); cell_count] }),
+                },
+                false,
+            )).collect::<Vec<_>>();
+            let inventory = decode_purse_inventory(&data, &head).unwrap();
+            let index = selector % inventory.stacks.len();
+            let mut selected = inventory.stacks[index].clone();
+            match mutation {
+                0 => {},
+                1 => selected.instance_id[0] ^= 1,
+                2 => selected.source_hash[0] ^= 1,
+                3 => selected.channel = Par::default(),
+                4 => selected.datum_index = -1,
+                5 => selected.persistent = true,
+                6 => selected.random_state.push(0),
+                _ => { selected.stack.cells.pop(); },
+            }
+            let expected = inventory.stacks.iter().any(|stack| stack == &selected);
+            proptest::prop_assert_eq!(check_stack_captures(&data, &[&selected]).is_ok(), expected);
+            let mut batch = inventory.stacks.iter().collect::<Vec<_>>();
+            batch.push(&selected);
+            proptest::prop_assert_eq!(check_stack_captures(&data, &batch).is_ok(), expected);
+            batch.reverse();
+            proptest::prop_assert_eq!(check_stack_captures(&data, &batch).is_ok(), expected);
+        }
+    }
 
     /// The shared-basis integration invariant (handoff Coordination, Stage B
     /// Decision 5): `supply_channel(s)` is exactly `SignatureChannel::from_sig`

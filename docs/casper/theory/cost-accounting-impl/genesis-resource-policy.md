@@ -76,6 +76,60 @@ The caller must recover required state or reject the operation, not construct a 
 A local read failure does not prove that a block is invalid.
 Production admission must preserve the existing dependency-recovery and error-classification rules.
 
+`AdoptedResourcePolicy` owns the loaded policy after checking the adopted minimum, protocol version, shard, and native rule interpretations.
+Its fields are private. Later changes to a configuration value cannot change the retained policy or its minimum.
+The native family binding accepts this retained context instead of separate policy and configuration arguments.
+It checks the captured execution parameters and the selected schedule before checking signed family consent and allocation.
+
+Running Casper exposes this context through `accounting_context()`.
+Concurrent requests share one successful initialization within that Casper instance.
+Failed initialization does not publish a context or prevent a later retry.
+Other Casper instances initialize independently. This mechanism does not serialize execution or establish a cross-validator lock.
+Initialization queries the original approved genesis, not the latest finalized state or candidate wallet state.
+Historical paths that do not request offered funding do not require a policy record merely to construct Casper.
+
+### Executable native rules
+
+The native resolver checks each declared measurement rule, measurement unit, and valuation rule before adoption succeeds.
+It also checks the resource compatibility rule.
+Matching genesis and signed schedule bytes alone does not establish that the binary implements those rules.
+
+Each identifier below is the Blake2b-256 digest of its exact UTF-8 domain string.
+The native implementation compares all 32 identifier bytes.
+
+| Dimension | Measurement unit | Measurement domain |
+| --- | --- | --- |
+| Compute | `COMM` | `f1r3node:phlo-measurement:comm-occurrence:v1` |
+| Introduction | `byte` | `f1r3node:phlo-measurement:canonical-introduction-bytes:v1` |
+| Transfer | `byte` | `f1r3node:phlo-measurement:canonical-delivery-bytes:v1` |
+| Trace | `byte` | `f1r3node:phlo-measurement:canonical-trace-footprint-bytes:v1` |
+
+The [measurement contract](resource-units-and-measurement.md) defines these quantities and their observation boundaries.
+Compute denotes COMM occurrences, not machine time or reducer instructions.
+The valuation domain is `f1r3node:phlo-valuation:authority-leaf-occurrences:v1`.
+This valuation counts ground and quoted authority occurrences, including repetitions, and assigns zero units to unit authority.
+The selected class weight then scales that count. It is not a wallet-count multiplier or a cost-sharing weight.
+
+The compatibility domain is `f1r3node:phlo-compatibility:exact-location-class-terms-authority:v1`.
+It requires equality of location, class, acquisition terms, and complete authority structure.
+The resolver does not authenticate prepaid acquisition provenance or replace the execution witness checks.
+
+Native resolution supports one declared class per measurement dimension, with at most four classes in this implementation.
+This limit applies to implemented measurement rules, not funding wallets, owners, or ownership transfers.
+Duplicate dimensions reject because they would give one observation multiple class assignments.
+Class order does not define measurement meaning. The resolver retains the exact index assigned by the authenticated policy.
+Unknown rules or incompatible units reject without selecting a default.
+
+A subset policy does not provide omitted resources for free.
+Requesting an omitted dimension returns `Missing`, which the native producer must treat as an error.
+Resolution leaves class identities, weights, offered prices, denominations, and the original policy record unchanged.
+It does not enable an incomplete producer or bypass native admission, resource sufficiency, or settlement verification.
+
+[`NativePhloRules`](../../../../rholang/src/rust/interpreter/accounting/native_phlo_rules.rs) implements this resolver.
+Its tests cover all full-class permutations, rule-bit mutations, missing and duplicate dimensions, and generated weights and prices.
+The `SignedPhloSchedule.v` rule lemmas prove preservation of supported interpretation fields, compatibility, and the complete accepted schedule.
+They do not prove that runtime measurements or prepaid provenance satisfy the complete native producer contract.
+
 `bind_native_family_from_genesis` compares the selected funding schedule with the loaded policy.
 It also requires the adopted minimum to equal the minimum captured from that genesis root.
 Matching policy bytes alone cannot authorize a minimum taken from another genesis or local configuration.
@@ -88,10 +142,39 @@ Later wallet deposits, ownership transfers, local restarts, and other available 
 The policy record does not implement arbitrary new measurement rules merely because their identifiers decode successfully.
 The execution adapter must support every activated rule and reject unsupported combinations before economic mutation.
 
+### Original acquisition terms
+
+`AdoptedResourcePolicy::check_acquisition_terms` checks a canonical original schedule against the complete retained policy.
+The comparison excludes only the original actual price.
+It retains protocol, network, shard, denomination, ordered classes, measurement rules, valuation rules, weights, and compatibility.
+The existing schedule decoder also checks the fixed fee representation and all wire limits.
+
+The result, `CompatibleAcquisitionTerms`, retains the exact input bytes, decoded original schedule, and a reference to the adopted context.
+Private fields prevent callers from constructing an unchecked result.
+The result exposes no mutable schedule or policy reference.
+A later selected offer cannot replace the original price or acquisition bytes.
+
+For example, compatible rights acquired at price 12 retain price 12 when a later process offers price 20.
+The check does not use current wallet balances or apply a new owner's purchase ceiling to an earlier acquisition.
+It does not authorize that earlier acquisition either.
+The receipt producer must separately establish original funding authority, valid purchase terms, backing, and the actual live resource.
+Even a zero-price schedule can pass compatibility without proving any spendable credit.
+
+The returned type establishes policy compatibility only.
+The [prepaid receipt contract](prepaid-receipt-storage.md) requires stronger evidence before consumption or issuance.
+Original acquisition bytes remain part of the exact resource key.
+Policy compatibility does not make different acquisition records interchangeable or permit fresh acquisition to bypass compatible prepaid rights.
+
+The bound applies to each schedule input.
+The enclosing producer must also limit aggregate receipt counts, bytes, and verification work before processing a batch.
+This method does not establish a batch-wide memory or execution bound.
+
 ## Verification boundaries
 
 [`SignedPhloSchedule.v`](../../../../formal/rocq/cost_accounted_rho/theories/SignedPhloSchedule.v) proves price-independent policy preservation and exact offered-price reconstruction.
 Its provenance lemmas prove missing-policy rejection, wrong-root rejection, validator agreement, and preservation when other state changes.
+Its acquisition lemmas prove full-policy equality, original-record preservation, price independence of compatibility, and rejection of changed policy fields.
+These acquisition lemmas do not prove backing or authorize credit creation.
 The storage model assumes that authenticated reads preserve the contents at the genesis root.
 These lemmas do not prove native storage integrity or ceremony authentication.
 
@@ -101,14 +184,20 @@ The offered-price theorem then preserves the authoritative minimum and every req
 
 [`GenesisResourcePolicy.tla`](../../../../formal/tlaplus/cost_accounted_rho/GenesisResourcePolicy.tla) models independent validator requests and completions, local advancement, restart, and state availability changes.
 The checked configuration contains three validators and two distinct state roots with different policies.
-The safety invariants require genesis authority and agreement among successful loads.
+Each validator has an independent set of supported policies. A restart can change that set and clears the retained context.
+The safety invariants require genesis authority, agreement among successful loads, and supported interpretation for every adopted policy.
 One negative control selects the latest local root and must violate genesis authority.
 A second keeps the genesis policy but substitutes another root's minimum. This control must also violate genesis authority.
+A third omits rule validation and must violate supported interpretation.
 This model establishes neither month-long uptime nor unbounded network liveness.
 
 Rust property tests exercise full-width prices, generated class lists, policy preservation, canonical round trips, and altered weights.
 Example tests cover truncation, domain confusion, nonzero record prices, trailing data, and context mismatch.
 Native tests construct genesis records, load them concurrently, reject absent records and altered schedules, and reread original policy after another genesis exists.
+Context tests compare admission and captured parameters with the formal equality predicate across full-width numeric inputs.
+Acquisition tests cover every policy component, class order and count, original price preservation, truncation, malformed lengths, domain errors, and oversized input.
+Generated tests vary original prices, later prices, and class weights without changing previously checked records.
+Native constructor tests check failed initialization, concurrent readers, and reconstruction from the same genesis with different bootstrap settings.
 Ceremony tests reject omitted or different expected policy records before approval.
 The funded-settlement regression uses the loaded genesis policy with changing wallet roots and retained resource and fee cursors.
 It also rejects identical policy bytes from a genesis with a different minimum, even when the supplied local context permits the offer.

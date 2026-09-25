@@ -4,7 +4,7 @@ use models::rust::host_work::HostWorkDimension;
 use models::rust::phlo_obligation::PhloObligationKeyLimits;
 use thiserror::Error;
 
-use super::{CheckedPhloFundingIntent, PhloFundingSource, PhloObligationError};
+use super::{CheckedPhloFundingIntent, PhloFundingSource, PhloObligationError, PhloObligationKey};
 use crate::rust::interpreter::accounting::monetary_allocation::{
     canonicalize_funding_problem, check_funding_assignment, filled_vec, reserve_work,
     FundingAssignmentError, FundingIdentityError, FundingMinimaxProblem, FundingReservationError,
@@ -43,6 +43,7 @@ pub struct CanonicalPhloFundingCapture<'a> {
     branch: usize,
     sources: Vec<CapturedPhloSource<'a>>,
     obligation_keys: Vec<Vec<u8>>,
+    original_obligation_positions: Vec<usize>,
     amounts: Vec<u64>,
     eligible: Vec<Vec<bool>>,
     assignment: Vec<Vec<u64>>,
@@ -56,6 +57,48 @@ impl<'a> CanonicalPhloFundingCapture<'a> {
     pub fn amounts(&self) -> &[u64] { &self.amounts }
     pub fn eligible(&self) -> &[Vec<bool>] { &self.eligible }
     pub fn assignment(&self) -> &[Vec<u64>] { &self.assignment }
+
+    pub fn obligations(&self) -> impl ExactSizeIterator<Item = CapturedPhloObligation<'_, 'a>> {
+        (0..self.original_obligation_positions.len()).map(|position| CapturedPhloObligation {
+            capture: self,
+            position,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct CapturedPhloObligation<'c, 'a> {
+    capture: &'c CanonicalPhloFundingCapture<'a>,
+    position: usize,
+}
+
+impl<'c, 'a> CapturedPhloObligation<'c, 'a> {
+    pub fn key(self) -> PhloObligationKey<'a> {
+        let family = self.capture.intent.bound().consent().family();
+        family.cases()[self.capture.branch].obligations.keys()
+            [self.capture.original_obligation_positions[self.position]]
+    }
+
+    pub fn quantity(self) -> u64 {
+        let family = self.capture.intent.bound().consent().family();
+        family.cases()[self.capture.branch].obligations.quantities()
+            [self.capture.original_obligation_positions[self.position]]
+    }
+
+    pub fn encoded_key(self) -> &'c [u8] { &self.capture.obligation_keys[self.position] }
+
+    pub fn amount(self) -> u64 { self.capture.amounts[self.position] }
+
+    pub fn contributions(
+        self,
+    ) -> impl ExactSizeIterator<Item = (CapturedPhloSource<'a>, u64)> + 'c {
+        self.capture
+            .sources
+            .iter()
+            .copied()
+            .zip(&self.capture.assignment)
+            .map(move |(source, row)| (source, row[self.position]))
+    }
 }
 
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
@@ -140,7 +183,7 @@ impl<'a> CheckedPhloFundingIntent<'a> {
                 size_of::<CapturedPhloSource>() + size_of::<Vec<bool>>() + size_of::<Vec<u64>>(),
             )
             .and_then(|x| {
-                m.checked_mul(size_of::<Vec<u8>>() + size_of::<u64>())
+                m.checked_mul(size_of::<Vec<u8>>() + size_of::<u64>() + size_of::<usize>())
                     .and_then(|y| x.checked_add(y))
             })
             .and_then(|x| {
@@ -164,6 +207,7 @@ impl<'a> CheckedPhloFundingIntent<'a> {
             .map_err(|_| FundingSearchError::AllocationFailed)?;
         let mut obligation_keys = filled_vec(m, Vec::new())?;
         let mut amounts = filled_vec(m, 0_u64)?;
+        let mut original_obligation_positions = filled_vec(m, 0_usize)?;
         let mut eligible = filled_vec(n, Vec::new())?;
         let mut assignment = filled_vec(n, Vec::new())?;
         let selected = family.selected_assignment(branch)?;
@@ -210,6 +254,7 @@ impl<'a> CheckedPhloFundingIntent<'a> {
             obligation_keys[j] = filled_vec(keys[original].len(), 0_u8)?;
             obligation_keys[j].copy_from_slice(&keys[original]);
             amounts[j] = case.obligations.amounts()[original];
+            original_obligation_positions[j] = original;
         }
         reserve_work(
             budget,
@@ -244,6 +289,7 @@ impl<'a> CheckedPhloFundingIntent<'a> {
             branch,
             sources,
             obligation_keys,
+            original_obligation_positions,
             amounts,
             eligible,
             assignment,

@@ -316,7 +316,6 @@ impl DeployService for DeployGrpcServiceV1Impl {
             &self.engine_cell,
             cosigned_deploy,
             &self.trigger_propose_f,
-            self.min_phlo_price,
             self.is_node_read_only,
             &self.shard_id,
         )
@@ -830,30 +829,30 @@ impl DeployService for DeployGrpcServiceV1Impl {
             Some(request.deployer_pubkey.as_ref())
         };
 
-        match BlockAPI::list_pending_deploys(&self.engine_cell, deployer).await {
-            Ok(snapshot) => {
-                let deploys: Vec<PendingDeployInfo> = snapshot
+        let result = BlockAPI::list_pending_deploys(&self.engine_cell, deployer)
+            .await
+            .and_then(|snapshot| {
+                let deploys = snapshot
                     .deploys
                     .into_iter()
-                    .map(|(envelope, is_rejected)| PendingDeployInfo {
-                        deploy: Some(
-                            models::rust::casper::protocol::casper_message::DeployData::to_proto_cosigned(
-                                &envelope,
-                            ),
-                        ),
-                        is_rejected,
+                    .map(|(envelope, is_rejected)| {
+                        Ok(PendingDeployInfo {
+                            deploy: Some(envelope.to_proto().map_err(eyre::Report::msg)?),
+                            is_rejected,
+                        })
                     })
-                    .collect();
-                let payload = PendingDeploysResponsePayload {
+                    .collect::<Result<Vec<_>, eyre::Report>>()?;
+                Ok(PendingDeploysResponsePayload {
                     deploys,
                     total_available: snapshot.total_available,
-                };
-                Ok(tonic::Response::new(PendingDeploysResponse {
-                    message: Some(
-                        models::casper::v1::pending_deploys_response::Message::Payload(payload),
-                    ),
-                }))
-            }
+                })
+            });
+        match result {
+            Ok(payload) => Ok(tonic::Response::new(PendingDeploysResponse {
+                message: Some(
+                    models::casper::v1::pending_deploys_response::Message::Payload(payload),
+                ),
+            })),
             Err(e) => {
                 error!("Deploy service method error get_pending_deploys: {}", e);
                 Ok(tonic::Response::new(PendingDeploysResponse {
@@ -1112,6 +1111,10 @@ impl DeployService for DeployGrpcServiceV1Impl {
 
         let is_validator = self.trigger_propose_f.is_some();
         let is_ready = self.is_ready.load(Ordering::Relaxed);
+        let min_phlo_price = match self.engine_cell.get().await.with_casper() {
+            Some(casper) => casper.casper_shard_conf().min_phlo_price,
+            None => self.min_phlo_price,
+        };
         let current_epoch = if self.epoch_length > 0 && lfb_number >= 0 {
             lfb_number / self.epoch_length as i64
         } else {
@@ -1128,7 +1131,7 @@ impl DeployService for DeployGrpcServiceV1Impl {
             shard_id: self.shard_id.clone(),
             peers,
             nodes,
-            min_phlo_price: self.min_phlo_price,
+            min_phlo_price,
             peer_list,
             native_token_name: self.native_token_name.clone(),
             native_token_symbol: self.native_token_symbol.clone(),
@@ -1303,8 +1306,106 @@ mod tests {
                 assert!(!status.is_validator);
                 assert_eq!(status.last_finalized_block_number, -1);
                 assert_eq!(status.current_epoch, 0);
+                assert_eq!(status.min_phlo_price, 1);
             }
             other => panic!("expected Status, got {:?}", other),
+        }
+    }
+
+    async fn status_price_history(bootstrap: i64, history: &[Option<i64>]) {
+        use casper::rust::casper::test_helpers::TestCasperWithSnapshot;
+        use casper::rust::engine::engine::{noop, Engine};
+        use casper::rust::engine::engine_with_casper::EngineWithCasper;
+
+        use crate::rust::api::web_api::{WebApi, WebApiImpl};
+
+        let mut grpc = service();
+        grpc.min_phlo_price = bootstrap;
+        let web = WebApiImpl::new(
+            grpc.api_max_blocks_limit,
+            grpc.dev_mode,
+            grpc.network_id.clone(),
+            grpc.shard_id.clone(),
+            bootstrap,
+            grpc.native_token_name.clone(),
+            grpc.native_token_symbol.clone(),
+            grpc.native_token_decimals,
+            grpc.is_node_read_only,
+            grpc.block_report_api.clone(),
+            grpc.transfer_unforgeable.clone(),
+            Arc::new(grpc.engine_cell.clone()),
+            grpc.rp_conf_cell.clone(),
+            grpc.connections_cell.clone(),
+            grpc.node_discovery.clone(),
+            None,
+            grpc.epoch_length,
+            0,
+            grpc.is_ready.clone(),
+        );
+        for adopted in history {
+            let engine: Arc<dyn Engine> = match adopted {
+                Some(price) => {
+                    let mut snapshot = TestCasperWithSnapshot::create_empty_snapshot();
+                    snapshot.on_chain_state.shard_conf.min_phlo_price = *price;
+                    Arc::new(EngineWithCasper::new(Arc::new(
+                        TestCasperWithSnapshot::new(
+                            snapshot,
+                            models::rust::block_implicits::get_random_block_default(),
+                        ),
+                    )))
+                }
+                None => Arc::new(noop()),
+            };
+            grpc.engine_cell.set(engine).await;
+            let (grpc_result, web_result) =
+                tokio::join!(grpc.status(tonic::Request::new(())), web.status(),);
+            let grpc_price = match grpc_result.unwrap().into_inner().message.unwrap() {
+                models::casper::v1::status_response::Message::Status(status) => {
+                    status.min_phlo_price
+                }
+                other => panic!("expected Status, got {other:?}"),
+            };
+            let expected = adopted.unwrap_or(bootstrap);
+            assert_eq!(
+                grpc_price, expected,
+                "gRPC minimum must follow the current engine"
+            );
+            assert_eq!(
+                web_result.unwrap().min_phlo_price,
+                expected,
+                "HTTP minimum must follow the current engine"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn status_price_uses_adopted_values_across_engine_replacements() {
+        for bootstrap in [0, 1, 99, i64::MAX] {
+            status_price_history(bootstrap, &[
+                None,
+                Some(0),
+                Some(10),
+                Some(i64::MAX),
+                None,
+                Some(1),
+            ])
+            .await;
+        }
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config::with_cases(256))]
+
+        #[test]
+        fn status_price_refines_arbitrary_engine_histories(
+            bootstrap in 0i64..=i64::MAX,
+            history in proptest::collection::vec(proptest::option::of(0i64..=i64::MAX), 1..33),
+        ) {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(status_price_history(bootstrap, &history));
         }
     }
 

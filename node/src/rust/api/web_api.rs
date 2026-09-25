@@ -426,6 +426,10 @@ impl WebApi for WebApiImpl {
 
         let is_validator = self.trigger_propose_f.is_some();
         let is_ready = self.is_ready.load(Ordering::Relaxed);
+        let min_phlo_price = match self.engine_cell.get().await.with_casper() {
+            Some(casper) => casper.casper_shard_conf().min_phlo_price,
+            None => self.min_phlo_price,
+        };
         let current_epoch = if self.epoch_length > 0 && lfb_number >= 0 {
             lfb_number / self.epoch_length as i64
         } else {
@@ -442,7 +446,7 @@ impl WebApi for WebApiImpl {
             shard_id: self.shard_id.clone(),
             peers,
             nodes,
-            min_phlo_price: self.min_phlo_price,
+            min_phlo_price,
             peer_list,
             native_token_name: self.native_token_name.clone(),
             native_token_symbol: self.native_token_symbol.clone(),
@@ -473,7 +477,6 @@ impl WebApi for WebApiImpl {
             &self.engine_cell,
             cosigned_deploy,
             &self.trigger_propose_f,
-            self.min_phlo_price,
             self.is_node_read_only,
             &self.shard_id,
         )
@@ -747,17 +750,10 @@ impl WebApi for WebApiImpl {
             .deploys
             .into_iter()
             .map(|(envelope, is_rejected)| {
-                let dd = envelope.data();
+                let dd = envelope.body();
                 let signed = envelope.primary();
-                let deploy_id = if envelope.is_envelope_bound() {
-                    envelope
-                        .envelope_commitment()
-                        .expect("validated protocol-v6 envelope")
-                } else {
-                    signed.sig.clone()
-                };
                 PendingDeployJson {
-                    deploy_id: hex::encode(deploy_id),
+                    deploy_id: hex::encode(envelope.identity().as_bytes()),
                     term: dd.term.clone(),
                     timestamp: dd.time_stamp,
                     valid_after_block_number: dd.valid_after_block_number,

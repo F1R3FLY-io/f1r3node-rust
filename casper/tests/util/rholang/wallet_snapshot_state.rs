@@ -9,12 +9,15 @@ use models::rhoapi::cost_signature::Value;
 use models::rust::phlo_controls::{PhloControlsLimits, PhloControlsV1};
 use models::rust::phlo_intent::{PhloFundingIntentLimits, PhloFundingIntentV1};
 use models::rust::phlo_obligation::PhloObligationKeyLimits;
-use models::rust::phlo_schedule::{PhloResourceClassV1, PhloScheduleV1};
+use models::rust::phlo_schedule::PhloScheduleV1;
 use models::rust::phlo_source::{PhloSourceLimits, PhloSourcePolicyV1};
 use models::rust::phlo_wire::PhloWireLimits;
 use models::rust::signed_phlo_deploy::{FundedDeploy, FundedDeployLimits, OfferedFundedDeploy};
 use rholang::rust::interpreter::accounting::monetary_allocation::{
     FundingSearchLimits, MonetaryCursor, MonetaryCursorTransition,
+};
+use rholang::rust::interpreter::accounting::native_phlo_rules::{
+    native_resource_compatibility_rule, NativePhloDimension,
 };
 use rholang::rust::interpreter::accounting::phlo_controls::{
     check_phlo_controls, PhloFundingTerms,
@@ -31,6 +34,12 @@ use super::*;
 
 #[path = "wallet_snapshot_context.rs"]
 mod context;
+
+#[path = "wallet_settlement_checkpoint.rs"]
+mod settlement_checkpoint;
+
+#[path = "native_comm_settlement.rs"]
+mod native_comm_settlement;
 
 async fn balances_at(
     manager: &RuntimeManager,
@@ -114,15 +123,9 @@ fn funded_snapshot_envelope(
         settlement_asset: b"REV",
         settlement_unit: b"phlo",
         decimal_scale: 8,
-        classes: vec![PhloResourceClassV1 {
-            identity: b"COMM",
-            measurement_unit: b"authority demand",
-            measurement_rule: [2; 32],
-            valuation_rule: [3; 32],
-            weight: 1,
-        }],
+        classes: vec![NativePhloDimension::Compute.resource_class(b"COMM", 1)],
         actual_price: 1,
-        compatibility_rule: [4; 32],
+        compatibility_rule: native_resource_compatibility_rule(),
     };
     let record = PhloFundingIntentV1 {
         schedule_commitment: schedule.digest(controls.schedule(1)).unwrap(),
@@ -386,6 +389,7 @@ async fn policy_snapshot_pins_wallet_and_both_cursor_scopes_to_each_requested_ro
         let genesis_policy = casper::rust::util::rholang::costacc::genesis_resource_policy::GenesisResourcePolicy::load(
             &manager, &policy_genesis,
         ).await.unwrap();
+        let adopted_policy = genesis_policy.clone().adopt(&adopted_shard).unwrap();
         let initial = policy_genesis.body.state.post_state_hash;
         let offered = Cosigned::create_single_envelope(
             OfferedFundedDeploy::new(
@@ -720,19 +724,166 @@ async fn policy_snapshot_pins_wallet_and_both_cursor_scopes_to_each_requested_ro
             &stricter_policy, &budget(),
         ), Err(DirectWalletPolicySnapshotError::ChainMinimumMismatch)));
         let offered_policy = offered_new
-            .bind_native_family_from_genesis(
+            .bind_native_family_in_context(
                 &view,
                 &family,
                 terms,
                 signed_limits,
                 policy_limits,
-                &adopted_shard,
-                &genesis_policy,
+                &adopted_policy,
                 &budget(),
             )
             .unwrap()
             .unwrap();
         assert!(std::ptr::eq(offered_policy.snapshot(), &offered_new));
+        {
+            use models::rust::deploy_envelope::{DeployEnvelope, DeployEnvelopeLimits};
+            use rholang::rust::interpreter::accounting::native_phlo_rules::NativePhloRegionLimits;
+
+            let payload = FundedDeployLimits {
+                deploy_bytes: 2_097_152,
+                signing: limits.funding.wire,
+                funding: limits.funding,
+            };
+            let envelope_limits = DeployEnvelopeLimits {
+                payload,
+                members: limits.members,
+            };
+            let retained = DeployEnvelope::from_proto(
+                OfferedFundedDeploy::to_proto(&offered).unwrap(),
+                envelope_limits,
+            ).unwrap();
+            let regions = NativePhloRegionLimits {
+                regions: 1024,
+                encoded_authority_bytes: 1_048_576,
+            };
+            let context = || casper::rust::util::rholang::costacc::direct_wallet_funding::NativeFundedExecutionContext {
+                block_data: BlockData::from_block(&block),
+                invalid_blocks: HashMap::new(),
+                trace: rholang::rust::interpreter::accounting::native_phlo_rules::NativeBudgetTraceLimits { attempts: 100_000, path_segments: 4096, regions },
+                host_work: budget(),
+            };
+            let (first, second) = tokio::join!(
+                manager.evaluate_native_funded(
+                    &offered_policy, &retained, &adopted_policy, &policy_binding, context(),
+                ),
+                manager.evaluate_native_funded(
+                    &offered_policy, &retained, &adopted_policy, &policy_binding, context(),
+                ),
+            );
+            for attempt in [first, second] {
+                let mut attempt = attempt.unwrap();
+                assert!(std::ptr::eq(attempt.policy(), &offered_policy));
+                assert!(attempt.evaluation().errors.is_empty(), "{:?}", attempt.evaluation().errors);
+                assert_eq!(attempt.evaluation().native_phlo_usage, Some(0));
+                assert!(attempt.evaluation().byte_observations.has_complete_measurements());
+                assert_eq!(attempt.runtime().runtime.get_root().await.bytes(), newest.as_ref());
+                assert_eq!(attempt.runtime().runtime.create_checkpoint().await.root.bytes(), newest.as_ref());
+                assert_eq!(attempt.runtime().runtime.cost.deploy_id().as_slice(), retained.identity().as_bytes());
+                {
+                    use casper::rust::util::rholang::costacc::direct_wallet_funding::{
+                        NativeAttemptSettlementInput, NativeAttemptSettlementLimits,
+                    };
+                    use casper::rust::util::rholang::costacc::prepaid_receipts::{
+                        NativeMeasuredSettlementLimits, NativePrepaidCellLimits,
+                        NativePrepaidDemandLimits, NativePrepaidInventoryLimits, PrepaidCellLimits,
+                        PrepaidReceiptBucketLimits, PrepaidReceiptLimits, PrepaidStackCaptureLimits,
+                    };
+                    use rholang::rust::interpreter::accounting::native_phlo_rules::{
+                        NativePhloAcquisitionLimits, NativePhloPurseLimits,
+                    };
+                    let cells = PrepaidCellLimits { cells: 0, wire: limits.funding.wire };
+                    let cell = NativePrepaidCellLimits {
+                        wire: limits.funding.wire, authority_nodes: 16, sources: 1,
+                    };
+                    let execution_limits = PhloExecutionLimits {
+                        resource_entries: 1, authority_nodes: 16, key_bytes: 1_048_576,
+                    };
+                    let captured = manager.capture_prepaid_stacks(
+                        newest.as_ref().try_into().unwrap(), &[], &adopted_policy,
+                        PrepaidStackCaptureLimits {
+                            stacks: 0, physical_cells: 0, physical_bytes: 1_048_576,
+                            bucket: PrepaidReceiptBucketLimits { occurrences: 0, wire: limits.funding.wire },
+                            cells, native_cell: cell,
+                            receipts: PrepaidReceiptLimits { entries: 0, value_bytes: 1_048_576, batch_bytes: 1_048_576 },
+                        }, &budget(),
+                    ).unwrap();
+                    let inventory = captured.resource_inventory(
+                        NativePrepaidInventoryLimits { cells, cell, execution: execution_limits }, &budget(),
+                    ).unwrap();
+                    let terms = policy_record.encode(limits.funding.controls.schedule(1)).unwrap();
+                    let measured_limits = NativeAttemptSettlementLimits {
+                        observations: 16, regions,
+                        purses: NativePhloPurseLimits { bindings: 16, encoded_binding_bytes: 1_048_576 },
+                        acquisition: NativePhloAcquisitionLimits {
+                            schedule: limits.funding.controls.schedule(1), entries: 16,
+                        },
+                        demand: NativePrepaidDemandLimits { draws: 0, authority_bytes: 1_048_576, execution: execution_limits },
+                        settlement: NativeMeasuredSettlementLimits {
+                            matching: PhloOutcomeMatchLimits {
+                                execution: execution_limits, key: policy_limits.keys,
+                                aggregate_key_bytes: policy_limits.aggregate_key_bytes, cases: family_limits.cases,
+                            },
+                            capture: PhloCaptureLimits {
+                                funding: FundingSearchLimits { source_cap: one, obligation_cap: one },
+                                key: policy_limits.keys, aggregate_key_bytes: policy_limits.aggregate_key_bytes,
+                            },
+                        },
+                    };
+                    let input = || NativeAttemptSettlementInput {
+                        inventory: &inventory, schedule: &policy_binding, terms: &terms,
+                        draws: &[], demand_positions: &[], retained: &[],
+                    };
+                    let no_work = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(0)));
+                    assert!(attempt.capture_measured_settlement(input(), measured_limits, &no_work).is_err());
+                    let settlement = attempt.capture_measured_settlement(input(), measured_limits, &budget()).unwrap();
+                    assert!(std::ptr::eq(settlement.snapshot(), &offered_new));
+                    assert_eq!(settlement.capture().amounts()[0].fee(), 1);
+                    assert_eq!(settlement.capture().amounts()[0].acquisition(), 0);
+                    let mut request = settlement.prepare_request(
+                        [0xdc; 32], &treasury, Blake2b512Random::create_from_bytes(&[0xdc]), &budget(),
+                    ).unwrap();
+                    let (_, result, _) = attempt.runtime().play_system_deploy_internal(&mut request.request().unwrap()).await.unwrap();
+                    assert!(matches!(result, Either::Right(())));
+                    let post = attempt.runtime().runtime.create_checkpoint().await.root.to_bytes_prost();
+                    assert_eq!(system_vault_balance(&manager, &post, &wallet).await, 5);
+                    assert_eq!(system_vault_balance(&manager, &newest, &wallet).await, 6);
+                }
+            }
+            for change in 0..3 {
+                let mut body = offered.data.body().clone();
+                if change == 0 {
+                    body.term = "@0!(7)".to_owned();
+                }
+                let changed = Cosigned::create_single_envelope(
+                    OfferedFundedDeploy::new(
+                        body,
+                        offered.data.funding_intent().to_vec(),
+                        if change == 1 { 9 } else { 8 },
+                        if change == 2 { 2 } else { 1 },
+                        payload,
+                    ).unwrap(),
+                    Box::new(Secp256k1),
+                    PrivateKey::from_bytes(&[0xca; 32]),
+                ).unwrap();
+                let changed = DeployEnvelope::from_proto(
+                    OfferedFundedDeploy::to_proto(&changed).unwrap(), envelope_limits,
+                ).unwrap();
+                let error = manager.evaluate_native_funded(
+                    &offered_policy, &changed, &adopted_policy, &policy_binding, context(),
+                ).await.err().expect("a different authenticated envelope must not reuse this policy");
+                assert!(matches!(error, CasperError::InvalidCostSettlement(message)
+                    if message.contains("envelope differs")));
+            }
+            let mut changed_schedule = policy_record.clone();
+            changed_schedule.actual_price += 1;
+            let changed_binding = rholang::rust::interpreter::accounting::phlo_controls::PhloScheduleBinding::new(
+                &changed_schedule, limits.funding.controls.schedule(changed_schedule.classes.len()),
+            ).unwrap();
+            assert!(manager.evaluate_native_funded(
+                &offered_policy, &retained, &adopted_policy, &changed_binding, context(),
+            ).await.is_err());
+        }
         assert_eq!(
             checked_policy
                 .snapshot()
@@ -957,6 +1108,15 @@ async fn policy_snapshot_pins_wallet_and_both_cursor_scopes_to_each_requested_ro
             .await
             .unwrap();
             let expected_fee = i64::from(failures.is_empty());
+            settlement_checkpoint::verify(
+                &manager,
+                &checked,
+                &adopted_policy,
+                &treasury,
+                &post,
+                failures.is_empty(),
+            )
+            .await;
             assert_eq!(
                 system_vault_balance(&manager, &post, &wallet).await,
                 6 - expected_fee
@@ -982,19 +1142,27 @@ async fn policy_snapshot_pins_wallet_and_both_cursor_scopes_to_each_requested_ro
                 &budget()
             )
             .is_err());
+        settlement_checkpoint::verify_retained(
+            &manager,
+            &offered,
+            limits,
+            &adopted_policy,
+            &treasury,
+            &newest,
+        )
+        .await;
         let zero_cases = [cases[1]];
         let zero_family =
             check_phlo_funding_family(&sources, &zero_cases, record.total_exposure, family_limits)
                 .unwrap();
         let zero_policy = offered_new
-            .bind_native_family_from_genesis(
+            .bind_native_family_in_context(
                 &view,
                 &zero_family,
                 terms,
                 signed_limits,
                 policy_limits,
-                &adopted_shard,
-                &genesis_policy,
+                &adopted_policy,
                 &budget(),
             )
             .unwrap()

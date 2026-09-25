@@ -654,7 +654,7 @@ async fn prepare_user_deploys_with_policy(
             expired_buffered.len()
         );
         for deploy in &expired_buffered {
-            deploy_storage_guard.remove_envelope_by_id(deploy.deploy_id())?;
+            deploy_storage_guard.remove_pending(deploy)?;
         }
         rejected_deploy_buffer
             .lock()
@@ -1411,7 +1411,7 @@ async fn prepare_user_deploys_with_policy(
         );
         let expired_list: Vec<PendingDeploy> = all_expired.into_iter().cloned().collect();
         for deploy in &expired_list {
-            deploy_storage_guard.remove_envelope_by_id(deploy.deploy_id())?;
+            deploy_storage_guard.remove_pending(deploy)?;
         }
 
         // Also purge expired sigs from the rejected-deploy buffer.
@@ -2040,10 +2040,7 @@ fn quarantine_refund_failure_deploy(
         .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
     let removed_from_deploy_storage = {
         let mut storage = deploy_storage.lock();
-        match &deploy_id {
-            DeployLookupId::Legacy(signature) => storage.remove_by_sig(signature.as_bytes())?,
-            DeployLookupId::V6(deploy_id) => storage.remove_envelope_by_id(deploy_id.as_ref())?,
-        }
+        storage.remove_pending_by_id(&deploy_id)?
     };
     let removed_from_rejected_buffer = rejected_deploy_buffer
         .lock()
@@ -2109,7 +2106,7 @@ fn drain_selected_recovered_deploys_from_deploy_storage(
     {
         let mut storage = deploy_storage.lock();
         for deploy in &selected_recovered {
-            if storage.remove_envelope_by_id(deploy.deploy_id())? {
+            if storage.remove_pending(deploy)? {
                 tracing::info!(
                     target: "f1r3fly.casper.deploy_lifecycle",
                     event = "storage_removed",
@@ -2146,7 +2143,7 @@ fn purge_recovered_already_in_scope(
     }
 
     for deploy in &recovered_done {
-        deploy_storage.remove_envelope_by_id(deploy.deploy_id())?;
+        deploy_storage.remove_pending(deploy)?;
     }
     Ok(recovered_done.len())
 }
@@ -4184,10 +4181,6 @@ mod tests {
         }
     }
 
-    fn signing_validator_identity(byte: u8) -> ValidatorIdentity {
-        ValidatorIdentity::new(&PrivateKey::from_bytes(&[byte & 0x7f; 32]))
-    }
-
     fn is_recovered_deploy_leader(
         casper_snapshot: &CasperSnapshot,
         validator_identity: &ValidatorIdentity,
@@ -4435,46 +4428,74 @@ mod tests {
         block
     }
 
-    fn insert_settled_test_block(
+    async fn insert_finalized_test_floor(
         dag: &block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage,
-        block: &BlockMessage,
+        block_store: &KeyValueBlockStore,
+        floor: &mut BlockMessage,
     ) {
-        let citer_identity = signing_validator_identity(0xEE);
-        let citer_sender: Bytes = citer_identity.public_key.bytes.clone().into();
-        let anchor_height = block.body.state.block_number.max(1);
-        let mut anchor = test_block(
-            invalid_block_hash(0xEC),
-            validator(0xED),
+        use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
+
+        assert!(floor.body.state.block_number > 0);
+        let mut genesis = test_block(
+            invalid_block_hash(0),
+            validator(1),
             Vec::new(),
-            anchor_height,
+            0,
             Vec::new(),
         );
-        anchor.body.state.bonds = vec![Bond {
-            validator: citer_sender.clone(),
-            stake: 100,
-        }];
-        anchor.body.state.bond_generations = vec![ValidatorBondGeneration {
-            validator: citer_sender.clone(),
-            generation: BondGeneration::GENESIS,
-        }];
-        anchor.block_hash = proto_util::hash_block(&anchor);
-        let citer = citer_identity.sign_block(&test_block(
-            invalid_block_hash(0xEF),
-            citer_sender,
-            vec![block.block_hash.clone()],
-            anchor_height + 1,
-            Vec::new(),
-        ));
-        let proof = models::rust::block_metadata::ValidatedSettledHistoryAdmission::new(
-            block,
-            &anchor,
-            &citer,
-            BondGeneration::GENESIS,
-            100,
+        genesis.header.finalized_floor = None;
+        genesis.finalized_floor_certificate = None;
+        block_store
+            .put_block_message(&genesis)
+            .expect("store genesis");
+        dag.insert(&genesis, InsertMode::ApprovedGenesis)
+            .expect("initialize approved genesis");
+        let base = dag
+            .capture_finalization_base()
+            .expect("genesis finalization base");
+        let mut previous = genesis.block_hash.clone();
+        for height in 1..=floor.body.state.block_number {
+            let mut block = test_block(
+                invalid_block_hash(u8::try_from(height).expect("fixture height")),
+                validator(1),
+                vec![genesis.block_hash.clone()],
+                height,
+                Vec::new(),
+            );
+            block.header.parents_hash_list = vec![previous];
+            let certificate = block.finalized_floor_certificate.as_mut().unwrap();
+            certificate.target_block_number = 0;
+            block.header.finalized_floor = Some(certificate.commitment(Bytes::from(vec![3; 32])));
+            if height == floor.body.state.block_number {
+                floor.header.parents_hash_list = block.header.parents_hash_list;
+                floor.header.finalized_floor = block.header.finalized_floor;
+                floor.finalized_floor_certificate = block.finalized_floor_certificate;
+                block = floor.clone();
+            }
+            block_store
+                .put_block_message(&block)
+                .expect("store ordinary ancestor");
+            dag.insert(&block, InsertMode::Normal)
+                .expect("insert ordinary ancestor");
+            previous = block.block_hash;
+        }
+        dag.record_directly_finalized_atomic(
+            &base.head,
+            floor.block_hash.clone(),
+            "test".to_string(),
+            1.0,
+            |_, _| async { Ok(()) },
         )
-        .expect("settled-history proof");
-        dag.insert_settled_history_certified(block, &proof)
-            .expect("insert settled-history test block");
+        .await
+        .expect("finalize ordinary test floor");
+        let representation = dag.get_representation().expect("finalized DAG");
+        assert_eq!(representation.last_finalized_block(), floor.block_hash);
+        let metadata = representation
+            .lookup_unsafe(&floor.block_hash)
+            .expect("floor metadata");
+        assert!(metadata.directly_finalized && metadata.finalized && metadata.is_accepted());
+        assert!(!metadata.approved_genesis);
+        assert!(metadata.settled_history_admission.is_none());
     }
 
     fn certify_snapshot_floor(snapshot: &mut CasperSnapshot, floor: &BlockMessage) {
@@ -7663,47 +7684,35 @@ mod tests {
         )
         .expect("retry deploy");
 
-        // Floor pinned at #55: the parentless root reads as genesis to the
-        // cold frontier walk (finalized by definition), so the derived floor
-        // is the root. The tip sits at #60 and proposes #61, so the
-        // tip-clock window (edge 6+50 = 56) is closed for the valid_after-6
-        // deploy while the floor-clock window (bound 55-50 = 5) is open.
-        // The floor block carries the retry's kept rejection record — a
-        // settled adjudication inside the walk window (#11..) — so the
-        // retry gate is open.
-        let mut genesis_block = test_block(
+        let mut floor = test_block(
             invalid_block_hash(0xA0),
             validator(1),
             Vec::new(),
             55,
             Vec::new(),
         );
-        genesis_block.body.rejected_deploys = vec![current_rejected(
+        floor.body.rejected_deploys = vec![current_rejected(
             &retry,
-            genesis_block.block_hash.clone(),
+            floor.block_hash.clone(),
             models::rust::casper::protocol::casper_message::RejectedDeployReason::MergeConflict,
         )];
-        genesis_block = signing_validator_identity(0xE1).sign_block(&genesis_block);
+        insert_finalized_test_floor(&dag_storage, &block_store, &mut floor).await;
         let parent_block = test_block(
             invalid_block_hash(0xA1),
             validator(1),
-            vec![genesis_block.block_hash.clone()],
+            vec![floor.block_hash.clone()],
             60,
             Vec::new(),
         );
         block_store
-            .put_block_message(&genesis_block)
-            .expect("store genesis");
-        block_store
             .put_block_message(&parent_block)
             .expect("store parent");
-        insert_settled_test_block(&dag_storage, &genesis_block);
         dag_storage
             .insert(&parent_block, InsertMode::Normal)
             .expect("insert parent");
         snapshot.dag = dag_storage.get_representation().expect("dag");
         snapshot.parents = vec![parent_block];
-        certify_snapshot_floor(&mut snapshot, &genesis_block);
+        certify_snapshot_floor(&mut snapshot, &floor);
 
         seed_current_deploys(&deploy_storage, [&retry]);
         rejected_deploy_buffer
@@ -7798,7 +7807,7 @@ mod tests {
             floor.block_hash.clone(),
             models::rust::casper::protocol::casper_message::RejectedDeployReason::MergeConflict,
         )];
-        floor = signing_validator_identity(0xE2).sign_block(&floor);
+        insert_finalized_test_floor(&dag_storage, &block_store, &mut floor).await;
         let left = test_block(
             invalid_block_hash(0xB1),
             validator(1),
@@ -7816,7 +7825,6 @@ mod tests {
         for block in [&floor, &left, &right] {
             block_store.put_block_message(block).expect("store block");
         }
-        insert_settled_test_block(&dag_storage, &floor);
         dag_storage
             .insert(&left, InsertMode::Normal)
             .expect("insert left parent");

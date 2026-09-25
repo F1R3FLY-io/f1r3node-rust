@@ -10,6 +10,7 @@ use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::history::history::{History, HistoryInstances};
 use crate::rspace::history::history_reader::HistoryReader;
 use crate::rspace::history::history_repository_impl::HistoryRepositoryImpl;
+use crate::rspace::history::native_reader::NativeHistoryReader;
 use crate::rspace::history::root_repository::RootRepository;
 use crate::rspace::history::roots_store::RootsStoreInstances;
 use crate::rspace::hot_store_action::HotStoreAction;
@@ -53,6 +54,8 @@ pub trait HistoryRepository<C: Clone, P: Clone, A: Clone, K: Clone>: Send + Sync
     ) -> Result<RSpaceHistoryReaderImpl<C, P, A, K>, HistoryError>;
 
     fn root(&self) -> Blake2b256Hash;
+
+    fn native_history_reader(&self, state_hash: [u8; 32]) -> NativeHistoryReader<'_>;
 
     /// Record a root hash in the roots store so that subsequent `reset` calls
     /// can find it via `validate_and_set_current_root`. This is needed during
@@ -114,7 +117,7 @@ where
             roots_key_value_store.clone(),
         );
         let importer = RSpaceImporterStore::create(
-            history_key_value_store,
+            history_key_value_store.clone(),
             cold_key_value_store.clone(),
             roots_key_value_store,
         );
@@ -123,6 +126,7 @@ where
             current_history: Arc::new(Mutex::new(Box::new(history))),
             roots_repository: Arc::new(Mutex::new(roots_repository)),
             leaf_store: cold_key_value_store,
+            node_store: history_key_value_store,
             rspace_exporter: Arc::new(exporter),
             rspace_importer: Arc::new(importer),
             _marker: PhantomData,

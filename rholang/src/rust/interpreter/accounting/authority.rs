@@ -458,7 +458,7 @@ fn reserve_authority_discovery(
     Ok(())
 }
 
-fn reserve_authority_signature_tree(
+pub fn reserve_authority_signature_tree(
     signature: &CostSignature,
     host_work: &HostWorkBudget,
     observed_depth: &mut u64,

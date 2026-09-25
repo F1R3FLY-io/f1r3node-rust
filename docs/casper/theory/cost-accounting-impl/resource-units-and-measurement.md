@@ -107,10 +107,139 @@ It does not independently retain both raw dimensions in that record.
 New multidimensional pricing must retain or deterministically reconstruct the original quantities from authenticated event inputs.
 It cannot infer both raw dimensions from their weighted sum or reuse that sum under a different schedule.
 
+The [raw observation projection](raw-byte-observations.md#native-resource-class-projection) retains each positive dimension with its complete source observation and captured resource-class index.
+It counts one interaction per recorded COMM, not one per owner or stack-transfer event.
+Class resolution completes before the projection becomes available to its caller.
+This measurement stage does not construct prepaid resources or authorize settlement.
+
 The current `ProcessedDeploy.cost` combines COMM units and quantitative byte cost.
 That compatibility field is not a complete monetary allocation witness.
 It does not replace per-authority demand, payer consent, asset identity, captured exposure, or the separate fee.
 Historical replay must keep the historical field meaning and tariff.
+
+### Region-qualified demand
+
+`NativePhloMeasurements::region_demands` validates region evidence before exposing the native demand projection.
+Each result retains its complete source observation, resource-class index, dimension, positive quantity, and original `CostRegion`.
+The region contains its execution-instance identifier and complete authority signature.
+An execution-instance identifier does not identify a persistent funding purse.
+The projection does not replace one identifier with the other.
+
+For an observation $`e`$, let $`M(e)`$ contain its positive measured dimensions and quantities.
+Let $`R(e)`$ contain its canonical authority regions.
+The projection constructs:
+
+```math
+D(e)=[(e,d,q,r)\mid(d,q)\in M(e),\ r\in R(e)].
+```
+
+The list retains every dimension-region pair, including regions with unit authority and repeated observations.
+Compound authority remains intact. The projection does not split its signature into wallets or multiply the COMM count by signer count.
+A quantity remains one counted entry, even at the maximum native integer value.
+
+```text
+For each captured observation:
+    Bound the cumulative region count.
+    Validate region identity lengths and signature presence.
+    Reserve signature-tree work before canonical validation.
+    Bound cumulative encoded authority bytes and reserve validation work.
+    Require strictly ordered, distinct region identities and canonical signatures.
+Reject positive measurements without authority regions.
+Expose each positive dimension paired with each original region.
+```
+
+Validation completes before the caller receives the projection.
+The projection borrows immutable observations and regions. Iteration does not clone signatures or allocate per resource unit.
+Limits apply across the complete capture, including repeated rows.
+The signature-tree budget bounds the cost-signature tree. It is not a separate bound on arbitrary processes inside quoted names.
+Existing process admission and host-work controls retain that responsibility.
+
+This validation establishes evidence shape, not authenticated origin, wallet consent, or spendable backing.
+Native execution must bind the retained region to actual custody and eligible stack positions before resource matching.
+Acquisition terms must come from authenticated funding state, not current prices inferred from measurement quantities.
+No result from this projection alone authorizes a debit or receipt issuance.
+
+The region-projection theorems in `PairedByteReceipts.v` quantify over arbitrary complete region values and region lists.
+They prove exact evidence retention, positive quantity, completeness, multiplicity, append composition, and permutation preservation.
+Generated Rust tests compare an independent dimension-region product and exercise malformed evidence and limits.
+Recorded execution and replay tests compare complete region-qualified demand, not only totals.
+This borrowed projection introduces no shared mutable state. Synchronization remains in observation capture and atomic settlement.
+
+### Resources acquired for later execution
+
+New resources consumed immediately and new resources retained for later execution have different results.
+The fresh partition contains the former. It must not also become retained supply.
+`CheckedPhloExecution::with_retained_acquisitions` attaches an explicit, counted retained-acquisition output to the checked consumption witness.
+It preserves the original five consumption partitions.
+
+Let $`B`$ denote newly acquired resources that remain after successful execution.
+Let $`V`$ denote the existing class-weight and authority-occurrence valuation, and let $`p`$ denote the checked acquisition price.
+The successful monetary charge is:
+
+```math
+C = 1 + p V(F) + p V(B).
+```
+
+The flat fee remains one total monetary unit.
+Compatible prepaid consumption adds no new acquisition charge.
+An empty retained output preserves the previous charge and obligation bytes.
+A zero-weight or zero-price output still has a complete resource identity and quantity.
+The checker must not omit that output merely because its monetary value is zero.
+
+Retained acquisition does not add a COMM or change measured consumption.
+The existing `phloLimit` checks consumption against its certified resource bound.
+Signed source debit caps, exposure caps, available balances, and resource permissions cover both acquisition obligations together.
+Retained acquisition is not permission to exceed those monetary limits.
+Its constructor also checks combined resource-entry, authority-node, key-byte, host-work, quantity, and monetary arithmetic bounds.
+
+The funding projection uses separate obligation identities:
+
+| Kind | Wire tag | Meaning |
+| --- | --- | --- |
+| Fee | `0` | The separate deployment fee. |
+| Resource | `1` | Newly acquired resources consumed by this execution. |
+| Retained resource | `2` | Newly acquired resources retained for later execution. |
+
+The domain remains `f1r3node:phlo-obligation:v1`. Each non-fee payload contains a complete canonical resource key.
+Existing fee and consumed-resource encodings remain byte-identical.
+Older decoders reject the new tag. Activation therefore requires the complete supported funding implementation, not mixed decoder behavior.
+Canonical allocation treats the two resource purposes as distinct obligations, even when their resource keys match.
+Both purposes require explicit permission for that complete resource key.
+
+```text
+Validate the existing consumption witness.
+Check the retained output with the same aggregate structural limits.
+Combine equal retained keys with checked quantities.
+Compute the additional acquisition value under the checked schedule.
+Project separate consumed and retained obligations, with one fee.
+Verify source permissions, capacities, caps, and canonical allocation for the complete result.
+Match the complete observed consumption witness and retained output before settlement.
+```
+
+Admission rejection and execution failure cannot publish newly acquired retained resources.
+The obligation projector rejects a nonempty retained output for those outcomes.
+Classified user failures can still retain the approved billable consumption and fee under the existing failure policy.
+That failed outcome must contain no retained acquisition output.
+
+The acquisition constructor and funding checker do not authenticate actual stack births or execute wallet debits.
+The native producer must bind each retained output to an authorized physical birth and original acquisition receipt.
+The [birth-capture contract](prepaid-receipt-storage.md#bind-retained-acquisition-to-physical-births) checks quantities, cell authorities, selected acquisition terms, and live physical occurrences.
+That capture does not itself establish causal birth evidence or atomic receipt issuance.
+Wallet debits, physical resources, receipt records, and application effects must publish within the same rollback boundary.
+One consumed-resource assignment cannot fund a second retained output.
+
+Rocq proves additional-backing conservation, additive splitting, prepaid non-rebilling, and unchanged charging when the retained output is empty.
+The obligation-wire proof binds the distinct purpose tags and complete resource payloads.
+Generated tests compare the charge and quantities with an independent arithmetic oracle.
+Native Rust funding tests cover arbitrary wallet cohorts, source permissions, total exposure, failures, overflow, and representation bounds.
+Outcome matching compares retained identities and quantities even when their monetary values match or equal zero.
+These pure checks introduce no shared mutable state. They do not prove atomic native issuance or replay publication.
+
+Sources:
+
+- [Region projection](../../../../rholang/src/rust/interpreter/accounting/native_phlo_rules/measurements/regions.rs)
+- [Region regression tests](../../../../rholang/src/rust/interpreter/accounting/native_phlo_rules/measurements/regions/tests.rs)
+- [Projection model](../../../../formal/rocq/cost_accounted_rho/theories/PairedByteReceipts.v)
 
 ## Counted resource representation
 
@@ -170,6 +299,59 @@ They check wallet debits, separate fees, resource and fee cursors, resource iden
 Boundary tests cover maximum quantities, arithmetic overflow, zero quantities, and representation limits.
 The existing observation-log Loom tests cover concurrent measurement publication. These pure representation functions introduce no new shared-memory boundary.
 These proofs and tests do not establish production schedule authentication or complete funded execution and replay.
+
+### Derived prepaid discharge
+
+`prepare_counted_phlo_discharge` constructs the three result partitions from typed available supply and required demand.
+For each complete resource key $`k`$, define $`a=N_A(k)`$ and $`r=N_R(k)`$.
+The construction uses:
+
+```math
+u=\min(a,r),\qquad n=a-u,\qquad f=r-u.
+```
+
+Here, $`u,n,f`$ are the used, unused, and fresh quantities for that key.
+These quantities uniquely satisfy both partition equations and prepaid exhaustion.
+Different acquisition terms remain different keys, even when their monetary values match.
+The construction never substitutes current terms for original terms.
+
+```text
+Check the combined input entry count.
+Encode complete keys with shared structural and byte budgets.
+Sort and combine equal keys with checked quantity addition.
+Merge the sorted supply and demand groups.
+For each key, calculate used, unused, and fresh quantities.
+Emit positive quantities within the remaining witness and host-work limits.
+Return the prepared five-partition witness.
+```
+
+The constructor shares canonical key normalization with the outcome matcher.
+It retains borrowed original inputs and allocates result entries by distinct key count, not by resource quantity.
+Each represented output entry also consumes the complete witness's structural budget.
+Encoded-key comparisons and allocations consume host work.
+A failure exposes no prepared result and mutates no resource, wallet, or receipt.
+
+`PreparedPhloDischarge` is not authenticated supply or a funding certificate.
+The existing execution checker must still validate the selected resource classes, usage bound, and checked price controls.
+The signed-policy method `capture_matching_discharge` performs that check before matching the complete prepared outcome family.
+Native callers must supply authenticated available resources and required demand derived from actual execution.
+The constructor does not establish their origin or authorize receipt issuance.
+
+The discharge proofs establish conservation, exhaustion, unique quantities, and bounded results for arbitrary natural-number inputs.
+Rust rejects quantity overflow before construction succeeds.
+Generated tests compare the constructor with an independent expanded-occurrence model across all complete key fields.
+They also compare input permutations, split quantities, and existing checked execution charges.
+Boundary tests cover maximum native quantities, incompatible keys, representation limits, and host-work exhaustion.
+Signed-family tests compare the derived capture with the existing capture, including offered-price envelopes and platform-failure outcomes.
+
+The constructor is a pure operation over borrowed inputs. It introduces no new shared mutable state or synchronization.
+Concurrent observation capture and atomic economic publication remain separate verification obligations.
+
+Sources:
+
+- [Discharge constructor](../../../../rholang/src/rust/interpreter/accounting/phlo_execution/discharge.rs)
+- [Constructor regressions](../../../../rholang/src/rust/interpreter/accounting/phlo_execution/discharge/tests.rs)
+- [Shared key normalization](../../../../rholang/src/rust/interpreter/accounting/phlo_execution/partition.rs)
 
 ## Storage lifetime and prepaid resources
 

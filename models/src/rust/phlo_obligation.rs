@@ -12,6 +12,7 @@ pub const PHLO_OBLIGATION_V1_DOMAIN: &[u8] = b"f1r3node:phlo-obligation:v1";
 pub enum PhloObligationKeyV1<'a> {
     Fee,
     Resource(PhloResourceKeyV1<'a>),
+    RetainedResource(PhloResourceKeyV1<'a>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -67,7 +68,7 @@ impl<'a> PhloObligationKeyV1<'a> {
             .ok_or(PhloWireError::LimitExceeded)?;
         let resource = match self {
             Self::Fee => None,
-            Self::Resource(resource) => {
+            Self::Resource(resource) | Self::RetainedResource(resource) => {
                 Some(resource.prepare_encoding(limits.resource(available))?)
             }
         };
@@ -79,6 +80,11 @@ impl<'a> PhloObligationKeyV1<'a> {
             .filter(|size| *size <= limits.wire.total_bytes)
             .ok_or(PhloWireError::LimitExceeded)?;
         Ok(PhloObligationEncoding {
+            kind: match self {
+                Self::Fee => 0,
+                Self::Resource(_) => 1,
+                Self::RetainedResource(_) => 2,
+            },
             resource,
             size,
             limits: limits.wire,
@@ -102,12 +108,17 @@ impl<'a> PhloObligationKeyV1<'a> {
                 payload,
                 limits.resource(payload.len()),
             )?)),
+            ([2], _) => Ok(Self::RetainedResource(PhloResourceKeyV1::decode(
+                payload,
+                limits.resource(payload.len()),
+            )?)),
             _ => Err(PhloObligationKeyError::InvalidKind),
         }
     }
 }
 
 pub struct PhloObligationEncoding<'record, 'data> {
+    kind: u8,
     resource: Option<PhloResourceEncoding<'record, 'data>>,
     size: usize,
     limits: PhloWireLimits,
@@ -120,7 +131,7 @@ impl PhloObligationEncoding<'_, '_> {
         let mut output = PhloWireEncoder::with_capacity(self.limits, self.size)?;
         output.bytes(PHLO_OBLIGATION_V1_DOMAIN)?;
         if let Some(resource) = &self.resource {
-            output.bytes(&[1])?;
+            output.bytes(&[self.kind])?;
             output
                 .u64(u64::try_from(resource.size).map_err(|_| PhloWireError::LengthOutOfRange)?)?;
             resource.write_to(&mut output)?;

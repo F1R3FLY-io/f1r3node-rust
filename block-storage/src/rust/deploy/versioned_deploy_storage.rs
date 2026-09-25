@@ -63,6 +63,17 @@ impl FundedDeployStorage {
         Ok(envelope)
     }
 
+    pub fn contains_id(&self, identity: &DeployLookupId) -> Result<bool, KvStoreError> {
+        let mut present = false;
+        self.0
+            .store
+            .with_value(&self.0.encode_key(identity)?, &mut |value| {
+                present = value.is_some();
+                Ok(())
+            })?;
+        Ok(present)
+    }
+
     pub fn insert_if_absent(&self, envelope: &DeployEnvelope) -> Result<bool, KvStoreError> {
         Self::check(envelope)?;
         self.0.insert_if_absent(envelope)

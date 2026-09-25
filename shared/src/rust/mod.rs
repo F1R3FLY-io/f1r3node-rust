@@ -1,5 +1,7 @@
+pub mod collection_backing;
 pub mod dag;
 pub mod env;
+pub mod fallible_sort;
 pub mod grpc;
 pub mod hashable_set;
 pub mod metrics_constants;

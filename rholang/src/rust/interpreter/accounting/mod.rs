@@ -41,13 +41,30 @@ pub mod resource_logic;
 pub mod authority;
 pub mod byte_accounting;
 pub mod byte_receipts;
+pub(crate) mod observation_construction;
 pub mod monetary_allocation;
 pub mod phlo_bounds;
 pub mod phlo_controls;
+pub mod native_phlo_rules;
 pub mod phlo_execution;
 pub mod economic_failure;
+mod native_runtime;
+pub(crate) use native_runtime::{clone_backing, NativeAuthorityCheckpoint};
+pub use native_runtime::{
+    CheckedNativeOperationJournal, CheckedNativeOperationTrace, NativeBudgetRecording,
+    NativeBudgetRetry, NativeCommRecord, NativeCommSource, NativeConsumeSource,
+    NativeObservationLink, NativeOperationJournalError, NativeOperationJournalLimits,
+    NativeOperationOccurrence, NativeOperationRecord, NativeOperationReplay, NativeOperationSource,
+    NativeOperationTraceError, NativeOperationTraceLimits, NativeProduceSource,
+    NativeReplayAccountingSnapshot, NativeReplayBoundary, NativeReplayCheckpoint,
+    NativeReplayError, NativeReplayOutcome, NativeReplayPublication, NativeReplayReservation,
+    NativeReplayRestore, NativeRuntimeConfig, NativeRuntimeReplayCheckpoint,
+    NativeRuntimeReplaySession,
+};
 
 const DEPLOY_SIGNATURE_DOMAIN: &[u8] = b"f1r3node:cost-accounted-rho:deploy-signature:v1";
+#[cfg(test)]
+mod authority_replay_contract_tests;
 /// Domain separator for compound (multi-signer) deploy signatures. Distinct
 /// from the legacy single-sig `DEPLOY_SIGNATURE_DOMAIN` so legacy deploys on
 /// chain retain their existing `deploy_id`s, while multi-sig deploys get a
@@ -122,8 +139,9 @@ pub struct RuntimeBudget {
     authority_state: Arc<Mutex<AuthorityRuntimeState>>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Default)]
 struct AuthorityRuntimeState {
+    native: Option<NativeRuntimeConfig>,
     allocation: authority::ResourceMultiset<[u8; 32]>,
     enforce_allocation: bool,
     events: BTreeMap<[u8; 32], AuthorityRuntimeEvent>,
@@ -134,6 +152,8 @@ struct AuthorityRuntimeState {
     stack_births: BTreeMap<[u8; 32], authority::AuthorityStackBirth>,
     pending_stack_transfers: BTreeMap<[u8; 32], PendingAuthorityStackTransfer>,
     pending_stack_event_ids: BTreeSet<[u8; 32]>,
+    pending_replay_events: BTreeMap<[u8; 32], AuthorityRuntimeEvent>,
+    pending_replay_rows: usize,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -482,6 +502,11 @@ impl RuntimeBudget {
 
     pub fn reserve_comm_identity(&self, identity: [u8; 32]) -> Result<(), InterpreterError> {
         let mut state = self.authority_state.lock().expect("authority state");
+        if state.native.is_some() {
+            return Err(InterpreterError::ReduceError(
+                "native execution requires measured COMM authority".to_owned(),
+            ));
+        }
         self.reserve_consensus_identity(identity, BillableKind::Comm, 1, "COMM reduction")?;
         if self.has_comm_accounting_scope() && !self.is_unmetered() {
             state.byte_observations.mark_incomplete();
@@ -520,9 +545,7 @@ impl RuntimeBudget {
             BillableKind::RSpaceProduce,
             authority::AuthorityByteEventKind::ProduceIntroduction,
             cost_authority,
-            measurement
-                .cost(byte_accounting::BYTE_COST_SCHEDULE_V1)
-                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?,
+            self.measured_legacy_cost(measurement)?,
             persistent,
             "RSpace produce introduction bytes",
             Some(measurement),
@@ -632,9 +655,7 @@ impl RuntimeBudget {
             BillableKind::RSpaceConsume,
             authority::AuthorityByteEventKind::ConsumeIntroduction,
             cost_authority,
-            measurement
-                .cost(byte_accounting::BYTE_COST_SCHEDULE_V1)
-                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?,
+            self.measured_legacy_cost(measurement)?,
             persistent,
             "RSpace consume introduction bytes",
             Some(measurement),
@@ -655,13 +676,8 @@ impl RuntimeBudget {
         if !self.has_comm_accounting_scope() || self.unmetered.load(Ordering::Acquire) != 0 {
             return Ok(());
         }
-        let canonical_authority = authority::canonical_authority(cost_authority)
-            .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
-        if canonical_authority.regions.is_empty() {
-            return Err(InterpreterError::ReduceError(
-                authority::AuthorityError::MissingAuthority.to_string(),
-            ));
-        }
+        let canonical_authority =
+            observation_construction::canonical_observation_authority(cost_authority)?;
         let observation = Arc::new(byte_receipts::ByteObservation {
             event_id: identity,
             kind: byte_kind,
@@ -669,13 +685,21 @@ impl RuntimeBudget {
             measurement,
             legacy_amount: (byte_cost > 0).then_some(byte_cost),
         });
+        let prepared = self.prepare_native_observation(&observation)?;
         if !persistent {
             let mut state = self.authority_state.lock().expect("authority state");
             state
                 .byte_observations
                 .try_reserve(1)
                 .map_err(|_| InterpreterError::HostWorkRejected)?;
-            self.reserve_consensus_identity(identity, kind, byte_cost, description)?;
+            self.reserve_observation_usage(
+                &mut state,
+                prepared.as_ref(),
+                identity,
+                kind,
+                byte_cost,
+                description,
+            )?;
             state.byte_observations.push(observation);
             return Ok(());
         }
@@ -685,6 +709,10 @@ impl RuntimeBudget {
             .lock()
             .expect("persistent introduction set");
         if let Some(existing) = introductions.get(&key) {
+            if prepared.is_some() {
+                let mut state = self.authority_state.lock().expect("authority state");
+                return self.record_native_retry(&mut state, prepared.as_ref());
+            }
             if !existing.accepts_retry(&observation) {
                 return Err(InterpreterError::ReduceError(
                     authority::AuthorityError::EventIdentityConflict.to_string(),
@@ -697,7 +725,14 @@ impl RuntimeBudget {
             .byte_observations
             .try_reserve(1)
             .map_err(|_| InterpreterError::HostWorkRejected)?;
-        self.reserve_consensus_identity(identity, kind, byte_cost, description)?;
+        self.reserve_observation_usage(
+            &mut state,
+            prepared.as_ref(),
+            identity,
+            kind,
+            byte_cost,
+            description,
+        )?;
         state.byte_observations.push(Arc::clone(&observation));
         introductions.insert(key, observation);
         Ok(())
@@ -737,7 +772,7 @@ impl RuntimeBudget {
         cost_authority: &CostAuthority,
         byte_cost: u64,
     ) -> Result<(), InterpreterError> {
-        self.reserve_authority_identities(&[identity], cost_authority, Some(byte_cost), None, true)
+        self.reserve_authority_identity(identity, cost_authority, byte_cost, None)
     }
 
     pub fn reserve_comm_authority_measured(
@@ -746,16 +781,8 @@ impl RuntimeBudget {
         cost_authority: &CostAuthority,
         measurement: byte_accounting::ByteCharge,
     ) -> Result<(), InterpreterError> {
-        let cost = measurement
-            .cost(byte_accounting::BYTE_COST_SCHEDULE_V1)
-            .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
-        self.reserve_authority_identities(
-            &[identity],
-            cost_authority,
-            Some(cost),
-            Some(measurement),
-            true,
-        )
+        let cost = self.measured_legacy_cost(measurement)?;
+        self.reserve_authority_identity(identity, cost_authority, cost, Some(measurement))
     }
 
     pub fn prepare_authority_stack_transfer(
@@ -813,6 +840,7 @@ impl RuntimeBudget {
             || events.keys().any(|identity| {
                 state.events.contains_key(identity)
                     || state.pending_stack_event_ids.contains(identity)
+                    || state.pending_replay_events.contains_key(identity)
             })
         {
             return Err(InterpreterError::ReduceError(
@@ -943,118 +971,96 @@ impl RuntimeBudget {
         Ok(())
     }
 
-    fn reserve_authority_identities(
+    fn reserve_authority_identity(
         &self,
-        identities: &[[u8; 32]],
+        identity: [u8; 32],
         cost_authority: &CostAuthority,
-        comm_byte_cost: Option<u64>,
+        comm_byte_cost: u64,
         measurement: Option<byte_accounting::ByteCharge>,
-        existing_is_idempotent: bool,
     ) -> Result<(), InterpreterError> {
         if !self.has_comm_accounting_scope() || self.unmetered.load(Ordering::Acquire) != 0 {
             return Ok(());
         }
-        let canonical_authority = authority::canonical_authority(cost_authority)
-            .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
-        if canonical_authority.regions.is_empty() {
-            return Err(InterpreterError::ReduceError(
-                authority::AuthorityError::MissingAuthority.to_string(),
-            ));
-        }
-        let mut state = self.authority_state.lock().expect("authority state");
+        let canonical_authority =
+            observation_construction::canonical_observation_authority(cost_authority)?;
         let demand = authority::authority_demand(&canonical_authority)
             .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
-        let legacy_amount = comm_byte_cost.filter(|cost| *cost > 0 && !demand.0.is_empty());
-        let mut unique_identities = BTreeSet::new();
-        for identity in identities {
-            if !unique_identities.insert(*identity) {
-                return Err(InterpreterError::ReduceError(
-                    authority::AuthorityError::EventIdentityConflict.to_string(),
-                ));
-            }
-            if let Some(existing) = state.events.get(identity) {
-                if !existing_is_idempotent || existing.authority != canonical_authority {
-                    return Err(InterpreterError::ReduceError(
-                        authority::AuthorityError::EventIdentityConflict.to_string(),
-                    ));
-                }
-                if measurement.is_some()
-                    && !existing.byte_observation.as_ref().is_some_and(|row| {
-                        row.measurement == measurement
-                            && row.legacy_amount == legacy_amount
-                            && row.kind == authority::AuthorityByteEventKind::Comm
-                    })
-                {
-                    return Err(InterpreterError::ReduceError(
-                        authority::AuthorityError::EventIdentityConflict.to_string(),
-                    ));
-                }
-                unique_identities.remove(identity);
-            }
-            if state.pending_stack_event_ids.contains(identity) {
-                return Err(InterpreterError::ReduceError(
-                    authority::AuthorityError::EventIdentityConflict.to_string(),
-                ));
-            }
+        let legacy_amount = (comm_byte_cost > 0 && !demand.0.is_empty()).then_some(comm_byte_cost);
+        let observation = Arc::new(byte_receipts::ByteObservation {
+            event_id: identity,
+            kind: authority::AuthorityByteEventKind::Comm,
+            authority: canonical_authority.clone(),
+            measurement,
+            legacy_amount,
+        });
+        let prepared = self.prepare_native_observation(&observation)?;
+        let mut state = self.authority_state.lock().expect("authority state");
+        if state.pending_stack_event_ids.contains(&identity)
+            || state.pending_replay_events.contains_key(&identity)
+        {
+            return Err(InterpreterError::ReduceError(
+                authority::AuthorityError::EventIdentityConflict.to_string(),
+            ));
         }
-        let aggregate_demand = unique_identities
-            .iter()
-            .try_fold(authority::ResourceMultiset::default(), |aggregate, _| {
-                aggregate.checked_add(&demand)
-            })
-            .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+        if let Some(existing) = state.events.get(&identity) {
+            if prepared.is_some() {
+                return self.record_native_retry(&mut state, prepared.as_ref());
+            }
+            if existing.authority != canonical_authority
+                || (measurement.is_some()
+                    && !existing
+                        .byte_observation
+                        .as_ref()
+                        .is_some_and(|row| row.as_ref() == observation.as_ref()))
+            {
+                return Err(InterpreterError::ReduceError(
+                    authority::AuthorityError::EventIdentityConflict.to_string(),
+                ));
+            }
+            return Ok(());
+        }
         let next_reserved = state
             .reserved
-            .checked_add(&aggregate_demand)
+            .checked_add(&demand)
             .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
         if state.enforce_allocation && !state.allocation.dominates(&next_reserved) {
-            for identity in unique_identities {
-                state.frontier.insert(identity, canonical_authority.clone());
-            }
+            state.frontier.insert(identity, canonical_authority);
             return Err(InterpreterError::OutOfPhlogistonsError);
         }
         let next_realized = state
             .realized
-            .checked_add(&aggregate_demand)
+            .checked_add(&demand)
             .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
         state
             .byte_observations
-            .try_reserve(unique_identities.len())
+            .try_reserve(1)
             .map_err(|_| InterpreterError::HostWorkRejected)?;
-        if let Some(byte_cost) = comm_byte_cost.filter(|_| !demand.0.is_empty()) {
-            let weight = byte_cost
-                .checked_add(1)
-                .ok_or(InterpreterError::OutOfPhlogistonsError)?;
-            for identity in &unique_identities {
-                if let Err(error) = self.reserve_consensus_identity(
-                    *identity,
-                    BillableKind::Comm,
-                    weight,
-                    "COMM authority and byte debit",
-                ) {
-                    state
-                        .frontier
-                        .insert(*identity, canonical_authority.clone());
-                    return Err(error);
-                }
+        if state.native.is_some() || !demand.0.is_empty() {
+            let weight = if state.native.is_some() {
+                0
+            } else {
+                comm_byte_cost
+                    .checked_add(1)
+                    .ok_or(InterpreterError::OutOfPhlogistonsError)?
+            };
+            if let Err(error) = self.reserve_observation_usage(
+                &mut state,
+                prepared.as_ref(),
+                identity,
+                BillableKind::Comm,
+                weight,
+                "COMM authority and byte debit",
+            ) {
+                state.frontier.insert(identity, canonical_authority);
+                return Err(error);
             }
         }
-        let legacy_amount = legacy_amount.filter(|_| self.unmetered.load(Ordering::Acquire) == 0);
-        for identity in unique_identities {
-            let observation = Arc::new(byte_receipts::ByteObservation {
-                event_id: identity,
-                kind: authority::AuthorityByteEventKind::Comm,
-                authority: canonical_authority.clone(),
-                measurement,
-                legacy_amount,
-            });
-            state.byte_observations.push(Arc::clone(&observation));
-            state.events.insert(identity, AuthorityRuntimeEvent {
-                authority: canonical_authority.clone(),
-                debit: demand.clone(),
-                byte_observation: Some(observation),
-            });
-        }
+        state.byte_observations.push(Arc::clone(&observation));
+        state.events.insert(identity, AuthorityRuntimeEvent {
+            authority: canonical_authority,
+            debit: demand,
+            byte_observation: Some(observation),
+        });
         state.realized = next_realized;
         state.reserved = next_reserved;
         Ok(())
@@ -1614,6 +1620,7 @@ impl RuntimeBudget {
             .clear();
         {
             let mut authority = self.authority_state.lock().expect("authority state");
+            authority.native = None;
             authority.allocation = authority::ResourceMultiset::default();
             authority.enforce_allocation = false;
             authority.events.clear();
@@ -1624,6 +1631,8 @@ impl RuntimeBudget {
             authority.stack_births.clear();
             authority.pending_stack_transfers.clear();
             authority.pending_stack_event_ids.clear();
+            authority.pending_replay_events.clear();
+            authority.pending_replay_rows = 0;
         }
         *cache = None;
     }

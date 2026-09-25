@@ -60,5 +60,7 @@ features = [
 ]
 
 [dev-dependencies]
+loom = "=0.7.2"
+tempfile = { workspace = true }
 test-env-helpers = "0.2.2"
 metrics-util = { workspace = true }

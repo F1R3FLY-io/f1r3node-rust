@@ -2,6 +2,7 @@ use std::any::Any;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
+use proptest::prelude::*;
 use shared::rust::ByteBuffer;
 use shared::rust::store::key_value_store::{
     AtomicStoreMutation, AtomicStoreOperation, EntryReader, KeyValueStore, KvStoreError,
@@ -359,4 +360,128 @@ async fn checkpoint_handoff_read_failure_retains_replay_state() {
     assert!(retry.log.is_empty());
     replay.check_replay_data().await.unwrap();
     assert!(lost.is_empty(), "checkpoint read failure lost replay state: {lost:?}");
+}
+
+async fn prepare_generated(space: &impl ISpace<String, Wildcard, String, Cont>, payloads: &[i32]) {
+    prepare_space(space).await;
+    for (index, value) in payloads.iter().enumerate() {
+        assert!(
+            operation_context::scope(
+                order(u64::try_from(index).unwrap() + 3),
+                space.produce("generated-channel".to_string(), value.to_string(), false),
+            )
+            .await
+            .unwrap()
+            .is_none()
+        );
+    }
+}
+
+async fn check_generated_retry(payloads: &[i32], failures: usize) {
+    let (control_store, _) = fault_store().await;
+    let control = RSpace::<String, Wildcard, String, Cont>::create(
+        control_store,
+        Arc::new(Box::new(AlwaysMatch)),
+    )
+    .unwrap();
+    prepare_generated(&control, payloads).await;
+    let expected = control.create_checkpoint().await.unwrap();
+
+    let (store, fault) = fault_store().await;
+    let (play, replay) = RSpace::<String, Wildcard, String, Cont>::create_with_replay(
+        store,
+        Arc::new(Box::new(AlwaysMatch)),
+    )
+    .unwrap();
+    prepare_generated(&play, payloads).await;
+    let repository = play.get_history_repository();
+    let hot_store = play.get_store();
+    let actions = hot_store.changes();
+    let log = play.event_log.lock().unwrap().clone();
+    let ordered = play.ordered_event_log.lock().unwrap().clone();
+    let counters: Vec<_> = play
+        .produce_counter
+        .iter()
+        .map(|s| s.lock().unwrap().clone())
+        .collect();
+    let installs = installed_state(&play);
+    for attempt in 1..=failures {
+        fault.lock().unwrap().armed = true;
+        let result = play.create_checkpoint().await;
+        assert!(matches!(result, Err(ref error) if error.to_string().contains(READ_FAILURE)));
+        assert_eq!(fault.lock().unwrap().failures, attempt);
+        assert!(Arc::ptr_eq(&repository, &play.get_history_repository()));
+        assert_eq!(repository.root(), play.get_history_repository().root());
+        assert!(Arc::ptr_eq(&hot_store, &play.get_store()));
+        assert_eq!(actions, play.get_store().changes());
+        assert_eq!(log, *play.event_log.lock().unwrap());
+        assert_eq!(ordered, *play.ordered_event_log.lock().unwrap());
+        assert_eq!(
+            counters,
+            play.produce_counter
+                .iter()
+                .map(|s| s.lock().unwrap().clone())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(installs, installed_state(&play));
+    }
+    let actual = play.create_checkpoint().await.unwrap();
+    assert_eq!(actual.root, expected.root);
+    assert_eq!(actual.log, expected.log);
+    let empty = play.create_checkpoint().await.unwrap();
+    assert_eq!(empty.root, expected.root);
+    assert!(empty.log.is_empty());
+
+    replay.rig(expected.log).await.unwrap();
+    prepare_generated(&replay, payloads).await;
+    let repository = replay.get_history_repository();
+    let hot_store = replay.get_store();
+    let installed_channels = vec!["installed-service".to_string()];
+    let installs = replay
+        .get_waiting_continuations(installed_channels.clone())
+        .await;
+    assert!(!installs.is_empty());
+    let actions = hot_store.changes();
+    for attempt in 1..=failures {
+        fault.lock().unwrap().armed = true;
+        let result = replay.create_checkpoint().await;
+        assert!(matches!(result, Err(ref error) if error.to_string().contains(READ_FAILURE)));
+        assert_eq!(fault.lock().unwrap().failures, failures + attempt);
+        assert!(Arc::ptr_eq(&repository, &replay.get_history_repository()));
+        assert_eq!(repository.root(), replay.get_history_repository().root());
+        assert!(Arc::ptr_eq(&hot_store, &replay.get_store()));
+        assert_eq!(actions, replay.get_store().changes());
+        assert_eq!(
+            installs,
+            replay
+                .get_waiting_continuations(installed_channels.clone())
+                .await
+        );
+        replay.check_replay_data().await.unwrap();
+    }
+    let actual = replay.create_checkpoint().await.unwrap();
+    assert_eq!(actual.root, expected.root);
+    assert!(actual.log.is_empty());
+    assert!(replay.create_checkpoint().await.unwrap().log.is_empty());
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(16))]
+
+    #[test]
+    fn checkpoint_handoff_generated_failures_preserve_exact_retry(
+        payloads in prop::collection::vec(any::<i32>(), 0..9),
+        failures in 1usize..5,
+    ) {
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
+            .block_on(check_generated_retry(&payloads, failures));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn checkpoint_handoff_independent_workers_preserve_exact_retry() {
+    let left = tokio::spawn(async { check_generated_retry(&[7, 7, 11], 3).await });
+    let right = tokio::spawn(async { check_generated_retry(&[-5, 0, i32::MAX], 2).await });
+    left.await.unwrap();
+    right.await.unwrap();
 }

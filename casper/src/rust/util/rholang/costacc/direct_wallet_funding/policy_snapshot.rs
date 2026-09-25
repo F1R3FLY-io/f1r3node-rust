@@ -22,6 +22,9 @@ use crate::rust::casper::CasperShardConf;
 use crate::rust::errors::CasperError;
 use crate::rust::util::rholang::acceptance::monetary_fee::native_fee_policy_context;
 use crate::rust::util::rholang::acceptance::{RuntimeManagerSupplyReader, SupplyReader};
+use crate::rust::util::rholang::costacc::genesis_resource_policy::{
+    AdoptedResourcePolicy, GenesisResourcePolicy,
+};
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
 #[derive(Debug)]
@@ -355,33 +358,43 @@ impl DirectWalletPolicySnapshot<'_, OfferedFundedDeploy> {
         signed_limits: SignedPhloConsentLimits,
         policy_limits: PhloFamilyFundingLimits,
         adopted_shard: &CasperShardConf,
-        genesis_policy: &crate::rust::util::rholang::costacc::genesis_resource_policy::GenesisResourcePolicy,
+        genesis_policy: &GenesisResourcePolicy,
         budget: &HostWorkBudget,
     ) -> Result<
         Option<CheckedDirectWalletPolicy<'s, OfferedFundedDeploy>>,
         DirectWalletPolicySnapshotError,
     > {
         check_genesis_minimum(genesis_policy.minimum_price(), adopted_shard)?;
-        let descriptor = genesis_policy
-            .record()
-            .schedule()
-            .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
-        let binding =
-            rholang::rust::interpreter::accounting::phlo_controls::PhloScheduleBinding::new(
-                &descriptor,
-                models::rust::phlo_schedule::PhloGenesisPolicy::LIMITS,
-            )
-            .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
-        self.bind_native_family(
+        let context = genesis_policy.clone().adopt(adopted_shard)?;
+        self.bind_native_family_in_context(
             view,
             family,
             terms,
             signed_limits,
             policy_limits,
-            adopted_shard,
-            binding.policy(),
+            &context,
             budget,
         )
+    }
+
+    pub fn bind_native_family_in_context<'s>(
+        &'s self,
+        view: &'s PhloFundingIntentView<'s>,
+        family: &'s CheckedPhloFundingFamily<'s>,
+        terms: PhloFundingTerms<'s>,
+        signed_limits: SignedPhloConsentLimits,
+        policy_limits: PhloFamilyFundingLimits,
+        context: &AdoptedResourcePolicy,
+        budget: &HostWorkBudget,
+    ) -> Result<
+        Option<CheckedDirectWalletPolicy<'s, OfferedFundedDeploy>>,
+        DirectWalletPolicySnapshotError,
+    > {
+        context.check_controls(family.cases()[0].obligations.execution().controls())?;
+        context.genesis().check_funding_intent(view)?;
+        self.bind_native_family_with(policy_limits, budget, || {
+            self.wallets.bind_family(view, family, terms, signed_limits)
+        })
     }
 }
 

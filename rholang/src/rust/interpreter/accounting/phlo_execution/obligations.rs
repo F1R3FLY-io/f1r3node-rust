@@ -27,6 +27,7 @@ pub use policy::{
 pub enum PhloObligationKey<'a> {
     Fee,
     Resource(PhloResource<'a>),
+    RetainedResource(PhloResource<'a>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -92,12 +93,18 @@ impl<'a> CheckedPhloObligations<'a> {
                 PhloObligationKey::Resource(resource) => PhloObligationKeyV1::Resource(
                     resource_key_with_host_work(*resource, &mut budget, host)?.into_wire()?,
                 ),
+                PhloObligationKey::RetainedResource(resource) => {
+                    PhloObligationKeyV1::RetainedResource(
+                        resource_key_with_host_work(*resource, &mut budget, host)?.into_wire()?,
+                    )
+                }
             };
             let mut key_limits = limits;
             key_limits.wire.total_bytes = key_limits.wire.total_bytes.min(remaining);
             let nodes = match &record {
                 PhloObligationKeyV1::Fee => 0,
-                PhloObligationKeyV1::Resource(resource) => resource.authority.len(),
+                PhloObligationKeyV1::Resource(resource)
+                | PhloObligationKeyV1::RetainedResource(resource) => resource.authority.len(),
             };
             reserve_key_work(
                 host,
@@ -158,6 +165,8 @@ pub enum PhloObligationError {
     ArithmeticOverflow,
     #[error("phlo obligation total differs from the checked retained charge")]
     ChargeMismatch,
+    #[error("failed or rejected execution cannot retain newly acquired resources")]
+    RetainedResourcesOnFailure,
 }
 
 pub fn project_phlo_obligations<'a>(
@@ -166,9 +175,14 @@ pub fn project_phlo_obligations<'a>(
     obligation_cap: NonZeroUsize,
 ) -> Result<CheckedPhloObligations<'a>, PhloObligationError> {
     let fresh = execution.witness().parts()[4];
+    let retained = execution.retained_acquisitions();
+    if !retained.is_empty() && !matches!(outcome, PhloOutcome::Accepted([])) {
+        return Err(PhloObligationError::RetainedResourcesOnFailure);
+    }
     let count = fresh
         .len()
-        .checked_add(1)
+        .checked_add(retained.len())
+        .and_then(|n| n.checked_add(1))
         .ok_or(PhloObligationError::TooManyObligations)?
         .min(obligation_cap.get());
     let charge = execution.retained_charge(outcome);
@@ -194,7 +208,11 @@ pub fn project_phlo_obligations<'a>(
         remaining_bytes: execution.limits.key_bytes,
     };
     let schedule = execution.controls().schedule();
-    for entry in fresh.iter() {
+    for (is_retained, entry) in fresh
+        .iter()
+        .map(|entry| (false, entry))
+        .chain(retained.iter().copied().map(|entry| (true, entry)))
+    {
         let resource = entry.resource;
         let key = resource_key(resource, &mut budget)?;
         let amount = if billable {
@@ -208,6 +226,7 @@ pub fn project_phlo_obligations<'a>(
         total = total
             .checked_add(amount)
             .ok_or(PhloObligationError::ArithmeticOverflow)?;
+        let key = (is_retained, key);
         if let Some(index) = indices.get(&key).copied() {
             quantities[index] = quantities[index]
                 .checked_add(entry.quantity)
@@ -220,7 +239,11 @@ pub fn project_phlo_obligations<'a>(
                 return Err(PhloObligationError::TooManyObligations);
             }
             indices.insert(key, keys.len());
-            keys.push(PhloObligationKey::Resource(resource));
+            keys.push(if is_retained {
+                PhloObligationKey::RetainedResource(resource)
+            } else {
+                PhloObligationKey::Resource(resource)
+            });
             amounts.push(amount);
             quantities.push(entry.quantity);
         }

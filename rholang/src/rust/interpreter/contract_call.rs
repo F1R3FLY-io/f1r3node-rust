@@ -5,7 +5,7 @@ use prost::Message;
 
 use super::dispatch::{DispatchType, RhoDispatch};
 use super::errors::InterpreterError;
-use super::rho_runtime::RhoISpace;
+use super::execution_space::ExecutionSpace;
 
 /**
  * This is a tool for unapplying the messages sent to the system contracts.
@@ -28,7 +28,7 @@ use super::rho_runtime::RhoISpace;
  * See rholang/src/main/scala/coop/rchain/rholang/interpreter/ContractCall.scala
  */
 pub struct ContractCall {
-    pub space: RhoISpace,
+    pub space: ExecutionSpace,
     pub dispatcher: RhoDispatch,
 }
 

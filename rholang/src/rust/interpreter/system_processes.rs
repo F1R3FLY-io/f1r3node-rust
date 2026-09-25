@@ -32,13 +32,13 @@ use shared::rust::{BitSet, Byte};
 use super::contract_call::ContractCall;
 use super::dispatch::RhoDispatch;
 use super::errors::{illegal_argument_error, InterpreterError};
+use super::execution_space::ExecutionSpace;
 use super::grpc_client_service::GrpcClientService;
 use super::ollama_service::{ChatMessage, SharedOllamaService};
 use super::openai_service::SharedOpenAIService;
 use super::pretty_printer::PrettyPrinter;
 use super::registry::registry::Registry;
 use super::registry::{semver, versioned_urn};
-use super::rho_runtime::RhoISpace;
 use super::rho_type::{
     RhoBoolean, RhoByteArray, RhoDeployId, RhoDeployerId, RhoList, RhoName, RhoNumber,
     RhoSingleCustodyId, RhoString, RhoSysAuthToken, RhoUri,
@@ -335,7 +335,7 @@ pub fn non_deterministic_ops() -> HashSet<i64> {
 
 #[derive(Clone)]
 pub struct ProcessContext {
-    pub space: RhoISpace,
+    pub space: ExecutionSpace,
     pub dispatcher: RhoDispatch,
     pub block_data: Arc<tokio::sync::RwLock<BlockData>>,
     pub invalid_blocks: InvalidBlocks,
@@ -350,7 +350,7 @@ pub struct ProcessContext {
 
 impl ProcessContext {
     pub fn create(
-        space: RhoISpace,
+        space: ExecutionSpace,
         dispatcher: RhoDispatch,
         block_data: Arc<tokio::sync::RwLock<BlockData>>,
         invalid_blocks: InvalidBlocks,
@@ -596,7 +596,7 @@ impl DeployData {
 #[derive(Clone)]
 pub struct SystemProcesses {
     pub dispatcher: RhoDispatch,
-    pub space: RhoISpace,
+    pub space: ExecutionSpace,
     pub block_data: Arc<tokio::sync::RwLock<BlockData>>,
     pub deploy_data: Arc<tokio::sync::RwLock<DeployData>>,
     /// Shared with `ProcessContext` and `DebruijnInterpreter`. The
@@ -614,7 +614,7 @@ pub struct SystemProcesses {
 impl SystemProcesses {
     fn create(
         dispatcher: RhoDispatch,
-        space: RhoISpace,
+        space: ExecutionSpace,
         block_data: Arc<tokio::sync::RwLock<BlockData>>,
         deploy_data: Arc<tokio::sync::RwLock<DeployData>>,
         urn_map: Arc<HashMap<String, Par>>,

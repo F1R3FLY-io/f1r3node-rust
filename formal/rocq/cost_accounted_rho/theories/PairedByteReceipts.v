@@ -236,6 +236,21 @@ Definition raw_only_byte_row authority event :=
      paired_weight := quantitative_byte_debit byte_cost_schedule_v1 event;
      paired_legacy_visible := false; paired_raw := Some (receipt_of_event event) |}.
 
+Theorem reconstructed_native_observation_retains_actual_fields : forall authority event,
+  paired_identity (raw_only_byte_row authority event) = byte_event_id event /\
+  paired_authority (raw_only_byte_row authority event) = authority /\
+  paired_kind (raw_only_byte_row authority event) = byte_event_kind_of event /\
+  paired_raw (raw_only_byte_row authority event) = Some (receipt_of_event event) /\
+  paired_legacy_entry (raw_only_byte_row authority event) = None.
+Proof. intros. repeat split. Qed.
+
+Theorem native_and_legacy_construction_preserve_same_measurement : forall schedule authority event,
+  paired_identity (raw_only_byte_row authority event) = paired_identity (measured_byte_row schedule authority event) /\
+  paired_authority (raw_only_byte_row authority event) = paired_authority (measured_byte_row schedule authority event) /\
+  paired_kind (raw_only_byte_row authority event) = paired_kind (measured_byte_row schedule authority event) /\
+  paired_raw (raw_only_byte_row authority event) = paired_raw (measured_byte_row schedule authority event).
+Proof. intros. repeat split. Qed.
+
 Definition attempt_raw_only_bytes authority event state :=
   if paired_identity_compatible authority event (paired_rows state) then
     if paired_event_is_deduplicated event && paired_identity_seen authority event (paired_rows state) then
@@ -481,3 +496,659 @@ Print Assumptions raw_only_retry_is_atomic.
 Print Assumptions v1_zero_weight_iff_all_raw_dimensions_zero.
 Print Assumptions compatible_identity_has_exact_raw_receipt.
 Print Assumptions raw_only_and_charged_concurrent_orders_agree.
+
+Definition empty_raw_receipt :=
+  {| receipt_introduction := 0; receipt_transfer := 0; receipt_trace := 0 |}.
+
+Definition add_raw_receipts left right :=
+  {| receipt_introduction := receipt_introduction left + receipt_introduction right;
+     receipt_transfer := receipt_transfer left + receipt_transfer right;
+     receipt_trace := receipt_trace left + receipt_trace right |}.
+
+Definition raw_row_dimensions row :=
+  match paired_raw row with Some raw => raw | None => empty_raw_receipt end.
+
+Fixpoint raw_rows_total rows :=
+  match rows with
+  | [] => empty_raw_receipt
+  | row :: tail => add_raw_receipts (raw_row_dimensions row) (raw_rows_total tail)
+  end.
+
+Definition raw_total_fits maximum total :=
+  (receipt_introduction total <=? maximum) &&
+  (receipt_transfer total <=? maximum) &&
+  (receipt_trace total <=? maximum).
+
+Definition capture_counted_receipts maximum entries snapshot :=
+  let rows := owned_receipt_rows snapshot in
+  let total := raw_rows_total rows in
+  if receipt_snapshot_complete snapshot && (length rows <=? entries) && raw_total_fits maximum total
+  then Some (rows, total) else None.
+
+Theorem counted_receipts_preserve_all_rows : forall maximum entries snapshot rows total,
+  capture_counted_receipts maximum entries snapshot = Some (rows, total) ->
+  rows = owned_receipt_rows snapshot /\ total = raw_rows_total rows.
+Proof.
+  intros. unfold capture_counted_receipts in H. destruct (_ && _); inversion H; auto.
+Qed.
+
+Theorem counted_receipts_require_complete_snapshot : forall maximum entries snapshot rows total,
+  capture_counted_receipts maximum entries snapshot = Some (rows, total) ->
+  receipt_snapshot_complete snapshot = true.
+Proof.
+  intros. unfold capture_counted_receipts in H.
+  destruct (_ && _) eqn:accepted; [|discriminate].
+  apply andb_true_iff in accepted as [prefix _].
+  apply andb_true_iff in prefix as [complete _]. exact complete.
+Qed.
+
+Theorem counted_receipts_require_every_raw_occurrence : forall maximum entries snapshot rows total row,
+  capture_counted_receipts maximum entries snapshot = Some (rows, total) ->
+  In row rows -> exists raw, paired_raw row = Some raw.
+Proof.
+  intros maximum entries snapshot rows total row accepted included.
+  pose proof (counted_receipts_require_complete_snapshot _ _ _ _ _ accepted) as complete.
+  apply receipt_snapshot_completeness_requires_all_three_conditions in complete as [_ [_ present]].
+  pose proof (counted_receipts_preserve_all_rows _ _ _ _ _ accepted) as [same _].
+  subst rows. now apply present.
+Qed.
+
+Theorem counted_receipts_bound_every_dimension : forall maximum entries snapshot rows total,
+  capture_counted_receipts maximum entries snapshot = Some (rows, total) ->
+  length rows <= entries /\ receipt_introduction total <= maximum /\
+  receipt_transfer total <= maximum /\ receipt_trace total <= maximum.
+Proof.
+  intros. unfold capture_counted_receipts in H.
+  destruct (_ && _) eqn:accepted; [|discriminate]. inversion H; subst.
+  unfold raw_total_fits in accepted.
+  repeat rewrite andb_true_iff in accepted.
+  repeat rewrite Nat.leb_le in accepted. tauto.
+Qed.
+
+Theorem raw_receipt_totals_append : forall left right,
+  raw_rows_total (left ++ right) = add_raw_receipts (raw_rows_total left) (raw_rows_total right).
+Proof.
+  induction left as [|head tail IH]; intros right; simpl.
+  - destruct (raw_rows_total right); reflexivity.
+  - rewrite IH. unfold add_raw_receipts. simpl. f_equal; lia.
+Qed.
+
+Theorem raw_receipt_totals_permutation : forall left right,
+  Permutation left right -> raw_rows_total left = raw_rows_total right.
+Proof.
+  intros left right same. induction same; simpl.
+  - reflexivity.
+  - now rewrite IHsame.
+  - unfold add_raw_receipts. simpl. f_equal; lia.
+  - congruence.
+Qed.
+
+Theorem raw_receipt_totals_keep_repeated_occurrences : forall row rows,
+  raw_rows_total (row :: row :: rows) =
+  add_raw_receipts (raw_row_dimensions row)
+    (add_raw_receipts (raw_row_dimensions row) (raw_rows_total rows)).
+Proof. reflexivity. Qed.
+
+Theorem counted_receipts_accept_complete_bounded_snapshot : forall maximum entries snapshot,
+  receipt_snapshot_complete snapshot = true ->
+  length (owned_receipt_rows snapshot) <= entries ->
+  raw_total_fits maximum (raw_rows_total (owned_receipt_rows snapshot)) = true ->
+  capture_counted_receipts maximum entries snapshot =
+    Some (owned_receipt_rows snapshot, raw_rows_total (owned_receipt_rows snapshot)).
+Proof.
+  intros maximum entries snapshot complete bounded fits.
+  unfold capture_counted_receipts. apply Nat.leb_le in bounded.
+  rewrite complete, bounded, fits. reflexivity.
+Qed.
+
+Theorem bounded_raw_total_bounds_every_prefix : forall maximum prefix suffix,
+  raw_total_fits maximum (raw_rows_total (prefix ++ suffix)) = true ->
+  raw_total_fits maximum (raw_rows_total prefix) = true.
+Proof.
+  intros maximum prefix suffix fits. rewrite raw_receipt_totals_append in fits.
+  unfold raw_total_fits, add_raw_receipts in *. simpl in *.
+  repeat rewrite andb_true_iff in *.
+  repeat rewrite Nat.leb_le in *. lia.
+Qed.
+
+Print Assumptions counted_receipts_preserve_all_rows.
+Print Assumptions counted_receipts_require_complete_snapshot.
+Print Assumptions counted_receipts_require_every_raw_occurrence.
+Print Assumptions counted_receipts_bound_every_dimension.
+Print Assumptions raw_receipt_totals_append.
+Print Assumptions raw_receipt_totals_permutation.
+Print Assumptions raw_receipt_totals_keep_repeated_occurrences.
+Print Assumptions counted_receipts_accept_complete_bounded_snapshot.
+Print Assumptions bounded_raw_total_bounds_every_prefix.
+
+Definition native_row_quantity dimension row :=
+  match dimension with
+  | 0 => match paired_kind row with CommunicationEvent _ => 1 | _ => 0 end
+  | 1 => receipt_introduction (raw_row_dimensions row)
+  | 2 => receipt_transfer (raw_row_dimensions row)
+  | 3 => receipt_trace (raw_row_dimensions row)
+  | _ => 0
+  end.
+
+Record native_measurement_occurrence := {
+  native_occurrence_row : paired_byte_row;
+  native_occurrence_dimension : nat;
+  native_occurrence_quantity : nat
+}.
+
+Definition project_native_row row :=
+  filter (fun occurrence => 0 <? native_occurrence_quantity occurrence)
+    (map (fun dimension =>
+      {| native_occurrence_row := row;
+         native_occurrence_dimension := dimension;
+         native_occurrence_quantity := native_row_quantity dimension row |}) (seq 0 4)).
+
+Definition project_native_rows rows := flat_map project_native_row rows.
+
+Definition native_dimension_total dimension rows :=
+  fold_right (fun row total => native_row_quantity dimension row + total) 0 rows.
+
+Theorem native_projection_keeps_source_and_exact_positive_quantity : forall row occurrence,
+  In occurrence (project_native_row row) ->
+  native_occurrence_row occurrence = row /\
+  native_occurrence_dimension occurrence < 4 /\
+  native_occurrence_quantity occurrence = native_row_quantity (native_occurrence_dimension occurrence) row /\
+  0 < native_occurrence_quantity occurrence.
+Proof.
+  intros row occurrence included. unfold project_native_row in included.
+  apply filter_In in included as [mapped positive].
+  apply in_map_iff in mapped as [dimension [same bounded]].
+  subst occurrence. apply in_seq in bounded. simpl in *.
+  apply Nat.ltb_lt in positive. repeat split; auto; lia.
+Qed.
+
+Theorem native_projection_contains_every_positive_dimension : forall row dimension,
+  dimension < 4 -> 0 < native_row_quantity dimension row ->
+  In {| native_occurrence_row := row;
+        native_occurrence_dimension := dimension;
+        native_occurrence_quantity := native_row_quantity dimension row |} (project_native_row row).
+Proof.
+  intros row dimension bounded positive. unfold project_native_row.
+  apply filter_In. split.
+  - apply in_map_iff. exists dimension. split; [reflexivity|]. apply in_seq. lia.
+  - simpl. now apply Nat.ltb_lt.
+Qed.
+
+Theorem native_projection_preserves_append : forall left right,
+  project_native_rows (left ++ right) = project_native_rows left ++ project_native_rows right.
+Proof. intros. apply flat_map_app. Qed.
+
+Theorem native_projection_preserves_repeated_occurrences : forall row rows,
+  project_native_rows (row :: row :: rows) =
+    project_native_row row ++ project_native_row row ++ project_native_rows rows.
+Proof. reflexivity. Qed.
+
+Theorem positive_native_occurrence_has_positive_total : forall dimension row rows,
+  In row rows -> 0 < native_row_quantity dimension row ->
+  0 < native_dimension_total dimension rows.
+Proof.
+  intros dimension row rows. induction rows as [|head tail IH]; simpl; intros included positive.
+  - contradiction.
+  - destruct included as [same|included].
+    + subst head. unfold native_dimension_total. simpl. lia.
+    + specialize (IH included positive). unfold native_dimension_total in *. simpl. lia.
+Qed.
+
+Theorem native_dimension_totals_ignore_order : forall dimension left right,
+  Permutation left right -> native_dimension_total dimension left = native_dimension_total dimension right.
+Proof.
+  intros dimension left right same. unfold native_dimension_total. induction same; simpl; lia.
+Qed.
+
+Theorem native_quantities_ignore_legacy_projection : forall first second dimension,
+  paired_kind first = paired_kind second -> paired_raw first = paired_raw second ->
+  native_row_quantity dimension first = native_row_quantity dimension second.
+Proof.
+  intros first second dimension kinds raw.
+  unfold native_row_quantity, raw_row_dimensions. rewrite kinds, raw. reflexivity.
+Qed.
+
+Theorem native_and_legacy_construction_preserve_all_native_quantities : forall schedule authority event dimension,
+  native_row_quantity dimension (raw_only_byte_row authority event) =
+  native_row_quantity dimension (measured_byte_row schedule authority event).
+Proof. intros. apply native_quantities_ignore_legacy_projection; reflexivity. Qed.
+
+Print Assumptions native_projection_keeps_source_and_exact_positive_quantity.
+Print Assumptions native_projection_contains_every_positive_dimension.
+Print Assumptions native_projection_preserves_append.
+Print Assumptions native_projection_preserves_repeated_occurrences.
+Print Assumptions positive_native_occurrence_has_positive_total.
+Print Assumptions native_dimension_totals_ignore_order.
+Print Assumptions native_quantities_ignore_legacy_projection.
+
+Section NativeRegionProjection.
+Context {Region : Type}.
+Variable regions_of : paired_byte_row -> list Region.
+
+Definition project_native_regions row :=
+  flat_map (fun occurrence => map (fun region => (occurrence, region)) (regions_of row))
+    (project_native_row row).
+
+Definition project_native_region_rows rows := flat_map project_native_regions rows.
+
+Theorem native_regions_preserve_exact_evidence : forall row occurrence region,
+  In (occurrence, region) (project_native_regions row) <->
+  In occurrence (project_native_row row) /\ In region (regions_of row).
+Proof.
+  intros. unfold project_native_regions. rewrite in_flat_map. split.
+  - intros [source [present mapped]]. apply in_map_iff in mapped as [r [same included]].
+    inversion same; subst. auto.
+  - intros [present included]. exists occurrence. split; [assumption|].
+    apply in_map. assumption.
+Qed.
+
+Theorem native_regions_keep_source_dimension_and_quantity : forall row occurrence region,
+  In (occurrence, region) (project_native_regions row) ->
+  native_occurrence_row occurrence = row /\
+  native_occurrence_dimension occurrence < 4 /\
+  native_occurrence_quantity occurrence = native_row_quantity (native_occurrence_dimension occurrence) row /\
+  0 < native_occurrence_quantity occurrence /\ In region (regions_of row).
+Proof.
+  intros row occurrence region included.
+  apply native_regions_preserve_exact_evidence in included as [present included].
+  apply native_projection_keeps_source_and_exact_positive_quantity in present. tauto.
+Qed.
+
+Theorem native_regions_include_every_positive_dimension : forall row dimension region,
+  dimension < 4 -> 0 < native_row_quantity dimension row -> In region (regions_of row) ->
+  In ({| native_occurrence_row := row;
+         native_occurrence_dimension := dimension;
+         native_occurrence_quantity := native_row_quantity dimension row |}, region)
+    (project_native_regions row).
+Proof.
+  intros. apply native_regions_preserve_exact_evidence. split; [|assumption].
+  now apply native_projection_contains_every_positive_dimension.
+Qed.
+
+Theorem native_regions_preserve_multiplicity : forall row,
+  length (project_native_regions row) =
+  length (project_native_row row) * length (regions_of row).
+Proof.
+  intros row. unfold project_native_regions.
+  induction (project_native_row row) as [|head tail IH]; simpl; [reflexivity|].
+  rewrite length_app, length_map, IH. reflexivity.
+Qed.
+
+Theorem native_region_projection_preserves_append : forall left right,
+  project_native_region_rows (left ++ right) =
+  project_native_region_rows left ++ project_native_region_rows right.
+Proof. intros. apply flat_map_app. Qed.
+
+Theorem native_region_projection_preserves_repeated_occurrences : forall row rows,
+  project_native_region_rows (row :: row :: rows) =
+  project_native_regions row ++ project_native_regions row ++ project_native_region_rows rows.
+Proof. reflexivity. Qed.
+
+Theorem native_region_projection_preserves_permutation : forall left right,
+  Permutation left right ->
+  Permutation (project_native_region_rows left) (project_native_region_rows right).
+Proof.
+  intros left right same. induction same; unfold project_native_region_rows in *; simpl in *.
+  - apply Permutation_refl.
+  - now apply Permutation_app_head.
+  - rewrite !app_assoc. apply Permutation_app_tail. apply Permutation_app_comm.
+  - eapply Permutation_trans; eassumption.
+Qed.
+End NativeRegionProjection.
+
+Print Assumptions native_regions_preserve_exact_evidence.
+Print Assumptions native_regions_keep_source_dimension_and_quantity.
+Print Assumptions native_regions_include_every_positive_dimension.
+Print Assumptions native_regions_preserve_multiplicity.
+Print Assumptions native_region_projection_preserves_append.
+Print Assumptions native_region_projection_preserves_repeated_occurrences.
+Print Assumptions native_region_projection_preserves_permutation.
+
+Section NativePurseProjection.
+Context {Region Channel : Type}.
+Variable channel_of : Region -> Channel.
+
+Definition locate_native_demands (demands : list (native_measurement_occurrence * Region)) :=
+  map (fun demand => (demand, channel_of (snd demand))) demands.
+
+Theorem native_purse_projection_keeps_complete_evidence : forall demands,
+  map fst (locate_native_demands demands) = demands.
+Proof. induction demands; simpl; congruence. Qed.
+
+Theorem native_purse_projection_keeps_every_occurrence : forall demands,
+  length (locate_native_demands demands) = length demands.
+Proof. intros. apply length_map. Qed.
+
+Theorem native_purse_aliases_do_not_merge_demands : forall left right rest,
+  channel_of (snd left) = channel_of (snd right) ->
+  locate_native_demands (left :: right :: rest) =
+  (left, channel_of (snd left)) :: (right, channel_of (snd right)) :: locate_native_demands rest.
+Proof. reflexivity. Qed.
+
+Theorem native_purse_projection_preserves_permutation : forall left right,
+  Permutation left right ->
+  Permutation (locate_native_demands left) (locate_native_demands right).
+Proof. intros. now apply Permutation_map. Qed.
+
+Theorem native_purse_binding_preserves_original_region : forall demands occurrence region channel,
+  In ((occurrence, region), channel) (locate_native_demands demands) ->
+  In (occurrence, region) demands /\ channel = channel_of region.
+Proof.
+  intros demands occurrence region channel included.
+  apply in_map_iff in included as [[source owner] [same present]].
+  simpl in same. inversion same. subst. auto.
+Qed.
+End NativePurseProjection.
+
+Print Assumptions native_purse_projection_keeps_complete_evidence.
+Print Assumptions native_purse_projection_keeps_every_occurrence.
+Print Assumptions native_purse_aliases_do_not_merge_demands.
+Print Assumptions native_purse_projection_preserves_permutation.
+Print Assumptions native_purse_binding_preserves_original_region.
+
+Section NativeAcquisitionDemand.
+Context {Region Location Authority Terms Class : Type}.
+Variable location_of : Region -> Location.
+Variable authority_of : Region -> Authority.
+Variable class_of : nat -> Class.
+
+Record native_acquisition_demand := {
+  acquisition_source : native_measurement_occurrence * Region;
+  acquisition_location : Location;
+  acquisition_class : Class;
+  acquisition_terms : Terms;
+  acquisition_authority : Authority;
+  acquisition_quantity : nat
+}.
+
+Definition acquire_native_demand terms (source : native_measurement_occurrence * Region) :=
+  {| acquisition_source := source;
+     acquisition_location := location_of (snd source);
+     acquisition_class := class_of (native_occurrence_dimension (fst source));
+     acquisition_terms := terms;
+     acquisition_authority := authority_of (snd source);
+     acquisition_quantity := native_occurrence_quantity (fst source) |}.
+
+Definition acquire_native_demands terms sources := map (acquire_native_demand terms) sources.
+
+Theorem native_acquisition_keeps_complete_evidence : forall terms sources,
+  map acquisition_source (acquire_native_demands terms sources) = sources.
+Proof. induction sources; simpl; congruence. Qed.
+
+Theorem native_acquisition_keeps_exact_resource : forall terms source,
+  let resource := acquire_native_demand terms source in
+  acquisition_location resource = location_of (snd source) /\
+  acquisition_class resource = class_of (native_occurrence_dimension (fst source)) /\
+  acquisition_terms resource = terms /\
+  acquisition_authority resource = authority_of (snd source) /\
+  acquisition_quantity resource = native_occurrence_quantity (fst source).
+Proof. intros. repeat split; reflexivity. Qed.
+
+Theorem native_acquisition_preserves_occurrence_count : forall terms sources,
+  length (acquire_native_demands terms sources) = length sources.
+Proof. intros. apply length_map. Qed.
+
+Theorem native_acquisition_preserves_permutation : forall terms left right,
+  Permutation left right ->
+  Permutation (acquire_native_demands terms left) (acquire_native_demands terms right).
+Proof. intros. now apply Permutation_map. Qed.
+
+Theorem native_acquisition_preserves_append : forall terms left right,
+  acquire_native_demands terms (left ++ right) =
+  acquire_native_demands terms left ++ acquire_native_demands terms right.
+Proof. intros. apply map_app. Qed.
+
+Theorem native_acquisition_terms_do_not_change_measurement : forall old_terms new_terms sources,
+  map acquisition_quantity (acquire_native_demands old_terms sources) =
+  map acquisition_quantity (acquire_native_demands new_terms sources).
+Proof. induction sources; simpl; congruence. Qed.
+
+Variable weight : Class -> nat.
+Variable authority_value : Authority -> nat.
+
+Definition acquisition_usage resource :=
+  acquisition_quantity resource * weight (acquisition_class resource) *
+  authority_value (acquisition_authority resource).
+
+Definition measured_authority_usage source :=
+  native_occurrence_quantity (fst source) *
+  weight (class_of (native_occurrence_dimension (fst source))) *
+  authority_value (authority_of (snd source)).
+
+Theorem native_acquisition_preserves_weighted_usage : forall terms sources,
+  fold_right (fun resource total => acquisition_usage resource + total) 0
+    (acquire_native_demands terms sources) =
+  fold_right (fun source total => measured_authority_usage source + total) 0 sources.
+Proof.
+  intros terms sources. induction sources; simpl; [reflexivity|].
+  rewrite IHsources. unfold acquisition_usage, measured_authority_usage. reflexivity.
+Qed.
+
+Theorem native_acquisition_bound_includes_every_prefix : forall terms prefix suffix bound,
+  fold_right (fun resource total => acquisition_usage resource + total) 0
+    (acquire_native_demands terms (prefix ++ suffix)) <= bound ->
+  fold_right (fun resource total => acquisition_usage resource + total) 0
+    (acquire_native_demands terms prefix) <= bound.
+Proof.
+  intros terms prefix. induction prefix as [|head tail IH]; simpl; intros suffix bound fits.
+  - lia.
+  - specialize (IH suffix (bound - acquisition_usage (acquire_native_demand terms head))).
+    assert (enough : acquisition_usage (acquire_native_demand terms head) <= bound) by lia.
+    assert (rest : fold_right (fun resource total => acquisition_usage resource + total) 0
+      (acquire_native_demands terms tail) <=
+      bound - acquisition_usage (acquire_native_demand terms head)).
+    { apply IH. lia. }
+    lia.
+Qed.
+End NativeAcquisitionDemand.
+
+Print Assumptions native_acquisition_keeps_complete_evidence.
+Print Assumptions native_acquisition_keeps_exact_resource.
+Print Assumptions native_acquisition_preserves_occurrence_count.
+Print Assumptions native_acquisition_preserves_permutation.
+Print Assumptions native_acquisition_preserves_append.
+Print Assumptions native_acquisition_terms_do_not_change_measurement.
+Print Assumptions native_acquisition_preserves_weighted_usage.
+Print Assumptions native_acquisition_bound_includes_every_prefix.
+
+Definition native_live_reservation limit used charge :=
+  if used + charge <=? limit then Some (used + charge) else None.
+
+Theorem native_live_reservation_exact : forall limit used charge next,
+  native_live_reservation limit used charge = Some next ->
+  next = used + charge /\ next <= limit.
+Proof.
+  intros limit used charge next accepted. unfold native_live_reservation in accepted.
+  destruct (used + charge <=? limit) eqn:fits; [|discriminate].
+  apply Nat.leb_le in fits. inversion accepted. auto.
+Qed.
+
+Theorem native_live_reservation_complete : forall limit used charge,
+  used + charge <= limit ->
+  native_live_reservation limit used charge = Some (used + charge).
+Proof.
+  intros limit used charge fits. unfold native_live_reservation.
+  now rewrite (proj2 (Nat.leb_le _ _) fits).
+Qed.
+
+Theorem native_live_reservation_rejects_excess : forall limit used charge,
+  native_live_reservation limit used charge = None <-> limit < used + charge.
+Proof.
+  intros. unfold native_live_reservation. destruct (_ <=? _) eqn:fits.
+  - apply Nat.leb_le in fits. split; [discriminate|lia].
+  - apply Nat.leb_gt in fits. split; auto.
+Qed.
+
+Theorem native_live_reservation_zero_is_valid_at_ceiling : forall limit,
+  native_live_reservation limit limit 0 = Some limit.
+Proof. intros. unfold native_live_reservation. rewrite Nat.add_0_r, Nat.leb_refl. reflexivity. Qed.
+
+Theorem native_live_reservations_compose : forall limit used first middle second final,
+  native_live_reservation limit used first = Some middle ->
+  native_live_reservation limit middle second = Some final ->
+  native_live_reservation limit used (first + second) = Some final.
+Proof.
+  intros limit used first middle second final one two.
+  apply native_live_reservation_exact in one, two. destruct one as [-> _].
+  destruct two as [-> fits].
+  replace (used + first + second) with (used + (first + second)) by lia.
+  apply native_live_reservation_complete. lia.
+Qed.
+
+Theorem native_live_reservations_commute_when_jointly_funded : forall limit used first second,
+  used + first + second <= limit ->
+  native_live_reservation limit used first = Some (used + first) /\
+  native_live_reservation limit (used + first) second = Some (used + first + second) /\
+  native_live_reservation limit used second = Some (used + second) /\
+  native_live_reservation limit (used + second) first = Some (used + first + second).
+Proof.
+  intros limit used first second fits. repeat split;
+    try (apply native_live_reservation_complete; lia).
+  replace (used + first + second) with (used + second + first) by lia.
+  apply native_live_reservation_complete. lia.
+Qed.
+
+Theorem native_live_reservation_bounded_machine_refinement : forall maximum limit used charge next,
+  limit <= maximum ->
+  native_live_reservation limit used charge = Some next ->
+  used <= maximum /\ charge <= maximum /\ next <= maximum.
+Proof.
+  intros maximum limit used charge next bound accepted.
+  apply native_live_reservation_exact in accepted. destruct accepted. lia.
+Qed.
+
+Definition native_dimension_region_usage weight quantity values :=
+  fold_right (fun value total => weight * value * quantity + total) 0 values.
+
+Theorem native_dimension_region_usage_exact : forall weight quantity values,
+  native_dimension_region_usage weight quantity values =
+  weight * fold_right Nat.add 0 values * quantity.
+Proof.
+  intros weight quantity values. induction values as [|value tail IH]; simpl.
+  - unfold native_dimension_region_usage. simpl. lia.
+  - unfold native_dimension_region_usage in *. simpl in *. rewrite IH. nia.
+Qed.
+
+Theorem native_dimension_region_usage_preserves_duplicates : forall weight quantity value values,
+  native_dimension_region_usage weight quantity (value :: value :: values) =
+  2 * (weight * value * quantity) + native_dimension_region_usage weight quantity values.
+Proof. intros. unfold native_dimension_region_usage. simpl. lia. Qed.
+
+Print Assumptions native_live_reservation_exact.
+Print Assumptions native_live_reservation_complete.
+Print Assumptions native_live_reservation_rejects_excess.
+Print Assumptions native_live_reservation_zero_is_valid_at_ceiling.
+Print Assumptions native_live_reservations_compose.
+Print Assumptions native_live_reservations_commute_when_jointly_funded.
+Print Assumptions native_live_reservation_bounded_machine_refinement.
+Print Assumptions native_dimension_region_usage_exact.
+Print Assumptions native_dimension_region_usage_preserves_duplicates.
+
+Section NativeObservationAcceptance.
+Context {Key Row : Type}.
+Variable key_eq : forall (left right : Key), {left = right} + {left <> right}.
+Variable row_eq : forall (left right : Row), {left = right} + {left <> right}.
+Variable charge_of : Row -> nat.
+
+Record native_observation_state := {
+  native_used : nat;
+  native_rows : list (Key * Row)
+}.
+
+Fixpoint native_find (key : Key) (rows : list (Key * Row)) : option Row :=
+  match rows with
+  | [] => None
+  | (stored_key, row) :: tail => if key_eq key stored_key then Some row else native_find key tail
+  end.
+
+Definition native_append limit key row state :=
+  match native_live_reservation limit (native_used state) (charge_of row) with
+  | None => None
+  | Some next => Some {| native_used := next; native_rows := (key, row) :: native_rows state |}
+  end.
+
+Definition native_accept limit (idempotent : bool) key row state :=
+  if idempotent then
+    match native_find key (native_rows state) with
+    | Some stored => if row_eq row stored then Some state else None
+    | None => native_append limit key row state
+    end
+  else native_append limit key row state.
+
+Definition native_ledger_usage (rows : list (Key * Row)) :=
+  fold_right (fun entry total => charge_of (snd entry) + total) 0 rows.
+
+Theorem native_append_preserves_exact_receipt_and_usage : forall limit key row state next,
+  native_append limit key row state = Some next ->
+  native_used next = native_used state + charge_of row /\
+  native_used next <= limit /\
+  native_rows next = (key, row) :: native_rows state.
+Proof.
+  intros limit key row state next accepted. unfold native_append in accepted.
+  destruct (native_live_reservation _ _ _) eqn:reserve; [|discriminate].
+  apply native_live_reservation_exact in reserve. inversion accepted; subst. simpl. tauto.
+Qed.
+
+Theorem native_accept_preserves_exact_ledger : forall limit idempotent key row state next,
+  native_used state = native_ledger_usage (native_rows state) ->
+  native_accept limit idempotent key row state = Some next ->
+  native_used next = native_ledger_usage (native_rows next).
+Proof.
+  intros limit idempotent key row state next exact accepted.
+  unfold native_accept in accepted. destruct idempotent.
+  - destruct (native_find _ _) as [stored|] eqn:found.
+    + destruct (row_eq _ _); [now inversion accepted; subst|discriminate].
+    + apply native_append_preserves_exact_receipt_and_usage in accepted.
+      destruct accepted as [used [_ rows]]. rewrite used, rows. unfold native_ledger_usage in *. simpl. lia.
+  - apply native_append_preserves_exact_receipt_and_usage in accepted.
+    destruct accepted as [used [_ rows]]. rewrite used, rows. unfold native_ledger_usage in *. simpl. lia.
+Qed.
+
+Theorem native_accept_preserves_ceiling : forall limit idempotent key row state next,
+  native_used state <= limit ->
+  native_accept limit idempotent key row state = Some next -> native_used next <= limit.
+Proof.
+  intros limit idempotent key row state next bounded accepted.
+  unfold native_accept in accepted. destruct idempotent.
+  - destruct (native_find _ _) as [stored|].
+    + destruct (row_eq _ _); [now inversion accepted; subst|discriminate].
+    + now apply native_append_preserves_exact_receipt_and_usage in accepted as [_ [fits _]].
+  - now apply native_append_preserves_exact_receipt_and_usage in accepted as [_ [fits _]].
+Qed.
+
+Theorem native_compatible_retry_preserves_the_entire_state : forall limit key row state,
+  native_find key (native_rows state) = Some row ->
+  native_accept limit true key row state = Some state.
+Proof.
+  intros limit key row state found. unfold native_accept. rewrite found.
+  destruct (row_eq row row); congruence.
+Qed.
+
+Theorem native_incompatible_retry_rejects : forall limit key row stored state,
+  native_find key (native_rows state) = Some stored -> row <> stored ->
+  native_accept limit true key row state = None.
+Proof.
+  intros limit key row stored state found different. unfold native_accept. rewrite found.
+  destruct (row_eq row stored); congruence.
+Qed.
+
+Theorem native_repeated_nonpersistent_occurrences_remain_distinct : forall limit key row state middle final,
+  native_accept limit false key row state = Some middle ->
+  native_accept limit false key row middle = Some final ->
+  native_used final = native_used state + 2 * charge_of row /\
+  native_rows final = (key, row) :: (key, row) :: native_rows state.
+Proof.
+  intros limit key row state middle final first second.
+  unfold native_accept in first, second.
+  apply native_append_preserves_exact_receipt_and_usage in first, second.
+  destruct first as [one [_ rows_one]]. destruct second as [two [_ rows_two]].
+  split; [lia|]. now rewrite rows_two, rows_one.
+Qed.
+End NativeObservationAcceptance.
+
+Print Assumptions native_append_preserves_exact_receipt_and_usage.
+Print Assumptions native_accept_preserves_exact_ledger.
+Print Assumptions native_accept_preserves_ceiling.
+Print Assumptions native_compatible_retry_preserves_the_entire_state.
+Print Assumptions native_incompatible_retry_rejects.
+Print Assumptions native_repeated_nonpersistent_occurrences_remain_distinct.

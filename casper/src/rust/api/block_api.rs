@@ -282,17 +282,18 @@ async fn submit_deploy_with_engine(
     })?;
 
     let dag = casper.block_dag().await?;
-    let latest_block_number = dag.latest_block_number();
+    let next_block_number = match dag.height_map.get_max() {
+        Some((height, _)) => height
+            .checked_add(1)
+            .ok_or_else(|| eyre::eyre!("Could not deploy: next block number overflow"))?,
+        None => 0,
+    };
     let deploy_lifespan = casper.casper_shard_conf().deploy_lifespan;
-    if deploy_is_block_expired(
-        valid_after_block_number,
-        latest_block_number,
-        deploy_lifespan,
-    )? {
+    if deploy_is_block_expired(valid_after_block_number, next_block_number, deploy_lifespan)? {
         return Err(eyre::Report::new(DeployValidationError {
             message: format!(
                 "Deploy validAfterBlockNumber {} has expired at block {} with deploy lifespan {}.",
-                valid_after_block_number, latest_block_number, deploy_lifespan
+                valid_after_block_number, next_block_number, deploy_lifespan
             ),
         }));
     }
@@ -719,8 +720,6 @@ impl BlockAPI {
         engine_cell: &EngineCell,
         d: Signed<DeployData>,
         trigger_propose: &Option<Arc<ProposeFunction>>,
-        // Retained for API compatibility; authority reservation does not use it.
-        _min_phlo_price: i64,
         is_node_read_only: bool,
         shard_id: &str,
     ) -> ApiErr<String> {
@@ -755,8 +754,6 @@ impl BlockAPI {
         engine_cell: &EngineCell,
         cosigned: crypto::rust::signatures::signed::Cosigned<DeployData>,
         trigger_propose: &Option<Arc<ProposeFunction>>,
-        // Retained for API compatibility; authority reservation does not use it.
-        _min_phlo_price: i64,
         is_node_read_only: bool,
         shard_id: &str,
     ) -> ApiErr<String> {
@@ -2012,14 +2009,10 @@ impl BlockAPI {
             deploys.retain(|(deploy, _)| deploy.primary().pk.bytes.as_ref() == pk);
         }
         deploys.sort_by(|(left, _), (right, _)| {
-            left.data()
+            left.body()
                 .time_stamp
-                .cmp(&right.data().time_stamp)
-                .then_with(|| {
-                    let left_id = left.envelope_commitment().unwrap_or_default();
-                    let right_id = right.envelope_commitment().unwrap_or_default();
-                    left_id.cmp(&right_id)
-                })
+                .cmp(&right.body().time_stamp)
+                .then_with(|| left.identity().cmp(right.identity()))
         });
 
         let total_available = deploys.len() as u32;
@@ -2310,6 +2303,80 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
     use super::*;
+
+    async fn submit_at_tip(tip: i64, lifespan: i64, valid_after: i64) -> (ApiErr<String>, usize) {
+        use crate::rust::casper::test_helpers::TestCasperWithSnapshot;
+        use crate::rust::engine::engine_with_casper::EngineWithCasper;
+
+        let mut snapshot = TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot.dag.height_map.insert(tip, imbl::HashSet::new());
+        snapshot.on_chain_state.shard_conf.deploy_lifespan = lifespan;
+        let engine_cell = EngineCell::init();
+        engine_cell
+            .set(Arc::new(EngineWithCasper::new(Arc::new(
+                TestCasperWithSnapshot::new(
+                    snapshot,
+                    models::rust::block_implicits::get_random_block_default(),
+                ),
+            ))))
+            .await;
+        let calls = AtomicUsize::new(0);
+        let result = submit_deploy_with_engine(&engine_cell, &None, valid_after, |_| {
+            calls.fetch_add(1, AtomicOrdering::SeqCst);
+            Ok(Either::Right(vec![1; 32]))
+        })
+        .await;
+        (result, calls.load(AtomicOrdering::SeqCst))
+    }
+
+    #[tokio::test]
+    async fn adopted_lifespan_submission_rejects_the_next_block_boundary() {
+        for (tip, lifespan) in [(55, 50), (0, 1), (i64::MAX - 1, i64::from(i32::MAX))] {
+            let boundary = tip + 1 - lifespan;
+            let (result, calls) = submit_at_tip(tip, lifespan, boundary).await;
+            assert!(
+                result.is_err(),
+                "a deploy expired in the next block must not enter the pool"
+            );
+            assert_eq!(calls, 0);
+            assert!(result.unwrap_err().to_string().contains("has expired"));
+            let (result, calls) = submit_at_tip(tip, lifespan, boundary + 1).await;
+            assert!(result.is_ok());
+            assert_eq!(calls, 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn adopted_lifespan_submission_rejects_unrepresentable_next_height() {
+        let (result, calls) = submit_at_tip(i64::MAX, 50, i64::MAX).await;
+        assert!(result.is_err());
+        assert_eq!(calls, 0);
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("next block number overflow"));
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config::with_cases(256))]
+
+        #[test]
+        fn adopted_lifespan_submission_refines_full_width_window(
+            tip in 0i64..=i64::MAX,
+            lifespan in 1i64..=i64::from(i32::MAX),
+            valid_after in proptest::prelude::any::<i64>(),
+        ) {
+            let (result, calls) = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(submit_at_tip(tip, lifespan, valid_after));
+            let expected = tip < i64::MAX
+                && i128::from(valid_after) > i128::from(tip) + 1 - i128::from(lifespan);
+            proptest::prop_assert_eq!(result.is_ok(), expected);
+            proptest::prop_assert_eq!(calls, usize::from(expected));
+        }
+    }
 
     #[test]
     fn block_expiration_matches_the_strict_deploy_window() {

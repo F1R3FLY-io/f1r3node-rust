@@ -67,8 +67,43 @@ fn obligation_kind_has_exact_framing_and_roundtrips() {
 }
 
 #[test]
+fn retained_resource_has_distinct_kind_and_preserves_complete_payload() {
+    let key = resource();
+    let payload = key.encode(limits().resource(8192)).unwrap();
+    let retained = PhloObligationKeyV1::RetainedResource(key.clone());
+    let wire = retained.encode(limits()).unwrap();
+    assert_eq!(wire, pack(&[PHLO_OBLIGATION_V1_DOMAIN, &[2], &payload]));
+    assert_ne!(
+        wire,
+        PhloObligationKeyV1::Resource(key).encode(limits()).unwrap()
+    );
+    assert_eq!(
+        PhloObligationKeyV1::decode(&wire, limits()).unwrap(),
+        retained
+    );
+    assert_eq!(
+        retained.prepare_encoding(limits()).unwrap().encoded_len(),
+        wire.len()
+    );
+    for size in [wire.len() - 1, wire.len()] {
+        let bound = PhloObligationKeyLimits {
+            wire: PhloWireLimits {
+                total_bytes: size,
+                ..limits().wire
+            },
+            ..limits()
+        };
+        assert_eq!(retained.encode(bound).is_ok(), size == wire.len());
+        assert_eq!(
+            PhloObligationKeyV1::decode(&wire, bound).is_ok(),
+            size == wire.len()
+        );
+    }
+}
+
+#[test]
 fn unknown_domains_kind_widths_and_fee_payloads_reject() {
-    for kind in [&[][..], &[2], &[0, 0], &[1, 0]] {
+    for kind in [&[][..], &[3], &[0, 0], &[1, 0], &[2, 0]] {
         assert_eq!(
             PhloObligationKeyV1::decode(&pack(&[PHLO_OBLIGATION_V1_DOMAIN, kind, &[]]), limits()),
             Err(PhloObligationKeyError::InvalidKind)
@@ -96,6 +131,7 @@ fn every_truncation_and_trailing_suffix_rejects() {
     for key in [
         PhloObligationKeyV1::Fee,
         PhloObligationKeyV1::Resource(resource()),
+        PhloObligationKeyV1::RetainedResource(resource()),
     ] {
         let wire = key.encode(limits()).unwrap();
         for end in 0..wire.len() {
@@ -140,17 +176,21 @@ proptest! {
         location in prop::collection::vec(any::<u8>(), 0..64),
         terms in prop::collection::vec(any::<u8>(), 0..64),
         owner in prop::collection::vec(any::<u8>(), 0..64),
-        class in any::<u32>(), quoted in any::<bool>(),
+        class in any::<u32>(), quoted in any::<bool>(), retained in any::<bool>(),
     ) {
         let authority = if quoted { PhloAuthorityNode::Quote(&owner) } else { PhloAuthorityNode::Ground(&owner) };
-        let key = PhloObligationKeyV1::Resource(PhloResourceKeyV1 { location: &location, class, acquisition_terms: &terms, authority: vec![authority] });
+        let resource = PhloResourceKeyV1 { location: &location, class, acquisition_terms: &terms, authority: vec![authority] };
+        let key = if retained { PhloObligationKeyV1::RetainedResource(resource.clone()) } else { PhloObligationKeyV1::Resource(resource.clone()) };
+        let other_purpose = if retained { PhloObligationKeyV1::Resource(resource) } else { PhloObligationKeyV1::RetainedResource(resource) };
         let wire = key.encode(limits()).unwrap();
         let prepared = key.prepare_encoding(limits()).unwrap();
         prop_assert_eq!(prepared.encoded_len(), wire.len());
         prop_assert_eq!(prepared.encode().unwrap(), wire.clone());
         prop_assert_eq!(PhloObligationKeyV1::decode(&wire, limits()).unwrap(), key);
         prop_assert!(PhloObligationKeyV1::Fee.encode(limits()).unwrap() < wire);
-        let other = PhloObligationKeyV1::Resource(PhloResourceKeyV1 { location: &location, class: class ^ 1, acquisition_terms: &terms, authority: vec![authority] });
+        prop_assert_ne!(other_purpose.encode(limits()).unwrap(), wire.clone());
+        let other_resource = PhloResourceKeyV1 { location: &location, class: class ^ 1, acquisition_terms: &terms, authority: vec![authority] };
+        let other = if retained { PhloObligationKeyV1::RetainedResource(other_resource) } else { PhloObligationKeyV1::Resource(other_resource) };
         prop_assert_ne!(other.encode(limits()).unwrap(), wire);
     }
 }

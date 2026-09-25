@@ -27,12 +27,8 @@ use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
     Bond, DeployData, Event, ProcessedDeploy, ProcessedSystemDeploy, SystemDeployData,
 };
+use models::rust::deploy_envelope::DeployEnvelope;
 use models::rust::host_work::HostWorkLimits;
-// `normalizer_env_from_deploy` is replaced by `normalizer_env_from_cosigned_deploy`
-// at the only remaining call site (inside `evaluate_cosigned`). The legacy `evaluate`
-// path uplifts `Signed<DeployData>` to `Cosigned<DeployData>` via
-// `Cosigned::from_single_signer` and delegates, so the legacy env builder is no
-// longer reached from runtime.rs.
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
 use models::rust::sorted_par_hash_set::SortedParHashSet;
@@ -64,6 +60,10 @@ use rspace_plus_plus::rspace::history::instances::radix_history::RadixHistory;
 use rspace_plus_plus::rspace::history::Either;
 use rspace_plus_plus::rspace::merger::merging_logic::{MergeType, NumberChannelsEndVal};
 use rspace_plus_plus::rspace::trace::event::{Event as RSpaceEvent, IOEvent};
+
+#[path = "runtime/deploy_context.rs"]
+mod deploy_context;
+use deploy_context::RuntimeDeployRef;
 
 #[derive(Clone, Copy)]
 enum DefaultCostAuthority {
@@ -1517,15 +1517,38 @@ impl RuntimeOps {
         report_exhaustion: bool,
         host_work: Option<HostWorkBudget>,
     ) -> Result<(ProcessedDeploy, HashMap<Par, MergeType>, bool), CasperError> {
+        let envelope =
+            DeployEnvelope::from_body_envelope(cosigned).map_err(CasperError::RuntimeError)?;
+        let (processed, evaluation, exhausted) = self
+            .process_envelope_with_budget_and_authority_mode_and_host_work(
+                envelope,
+                budget,
+                authority_allocation,
+                default_authority,
+                report_exhaustion,
+                host_work,
+            )
+            .await?;
+        Ok((processed, evaluation.mergeable, exhausted))
+    }
+
+    async fn process_envelope_with_budget_and_authority_mode_and_host_work(
+        &mut self,
+        envelope: DeployEnvelope,
+        budget: Cost,
+        authority_allocation: Option<ResourceMultiset<[u8; 32]>>,
+        default_authority: DefaultCostAuthority,
+        report_exhaustion: bool,
+        host_work: Option<HostWorkBudget>,
+    ) -> Result<(ProcessedDeploy, EvaluateResult, bool), CasperError> {
         // INNER soft-checkpoint — wraps the USER DEPLOY only. On a failed user
         // deploy it reverts that deploy's effects (D3: no pre-charge state).
-        let mut deploy_result =
-            ProcessedDeploy::empty_from_cosigned(&cosigned).map_err(CasperError::RuntimeError)?;
+        let mut deploy_result = ProcessedDeploy::from_envelope(envelope);
         let fallback = self.runtime.create_soft_checkpoint().await;
 
         let eval_result = match self
-            .evaluate_cosigned_with_budget_and_authority_mode(
-                &cosigned,
+            .evaluate_runtime_deploy(
+                RuntimeDeployRef::Retained(deploy_result.envelope()),
                 budget,
                 authority_allocation,
                 default_authority,
@@ -1569,13 +1592,12 @@ impl RuntimeOps {
             .errors
             .iter()
             .any(|error| matches!(error, InterpreterError::OutOfPhlogistonsError));
-        let deploy_id = crate::rust::util::rholang::acceptance::admission_deploy_id(&cosigned);
 
         let deploy_log = deploy_log
             .into_iter()
             .map(event_converter::to_casper_event)
             .collect::<Vec<_>>();
-        deploy_result.cost = Cost::to_proto(eval_result.cost);
+        deploy_result.cost = Cost::to_proto(eval_result.cost.clone());
         deploy_result.deploy_log = deploy_log;
         deploy_result.is_failed = !eval_succeeded;
         deploy_result.authority_cost_witness = Some(CostAuthorityWitnessProto {
@@ -1622,13 +1644,13 @@ impl RuntimeOps {
             self.runtime.revert_to_soft_checkpoint(fallback).await;
             if !exhausted || report_exhaustion {
                 interpreter_util::print_deploy_errors(
-                    &Bytes::copy_from_slice(deploy_id.as_bytes()),
+                    &Bytes::copy_from_slice(deploy_result.typed_deploy_id().as_bytes()),
                     &eval_result.errors,
                 );
             }
         }
 
-        Ok((deploy_result, eval_result.mergeable, exhausted))
+        Ok((deploy_result, eval_result, exhausted))
     }
 
     pub(crate) async fn resolve_authority_stack_births(
@@ -2587,19 +2609,25 @@ impl RuntimeOps {
         .await
     }
 
-    pub(crate) async fn evaluate_cosigned_with_budget_and_authority_and_host_work(
+    pub(crate) async fn evaluate_replay_envelope(
         &mut self,
-        cosigned: &crypto::rust::signatures::signed::Cosigned<DeployData>,
+        envelope: &DeployEnvelope,
         budget: Cost,
         authority_allocation: Option<ResourceMultiset<[u8; 32]>>,
-        host_work: HostWorkBudget,
+        host_work: Option<HostWorkBudget>,
     ) -> Result<EvaluateResult, CasperError> {
-        self.evaluate_cosigned_with_budget_and_authority_mode(
-            cosigned,
+        let deploy = match envelope.view() {
+            models::rust::deploy_envelope::DeployEnvelopeRef::Legacy(body) => {
+                RuntimeDeployRef::Body(body)
+            }
+            _ => RuntimeDeployRef::Retained(envelope),
+        };
+        self.evaluate_runtime_deploy(
+            deploy,
             budget,
             authority_allocation,
             DefaultCostAuthority::Funders,
-            Some(host_work),
+            host_work,
         )
         .await
     }
@@ -2612,60 +2640,37 @@ impl RuntimeOps {
         default_authority: DefaultCostAuthority,
         host_work: Option<HostWorkBudget>,
     ) -> Result<EvaluateResult, CasperError> {
-        let deploy_data = SystemProcessDeployData::from_cosigned(cosigned);
-        self.runtime.set_deploy_data(deploy_data).await;
-        self.runtime.cost.set_unmetered(false);
+        self.evaluate_runtime_deploy(
+            RuntimeDeployRef::Body(cosigned),
+            budget,
+            authority_allocation,
+            default_authority,
+            host_work,
+        )
+        .await
+    }
 
-        // Decouple the wire-signature deploy identity from the funding
-        // authority: verified signer public keys select canonical SystemVault
-        // payers, while nested signed regions and located stacks refine the
-        // authority during reduction. `funding_sig` is the shared derivation
-        // used by admission and replay and excludes unsigned threshold
-        // placeholders.
-        match default_authority {
-            DefaultCostAuthority::Funders => {
-                let funding = accounting::funding_sig(cosigned);
-                if cosigned.is_envelope_bound() {
-                    let deploy_id: [u8; 32] = cosigned
-                        .envelope_commitment()
-                        .expect("validated protocol-v6 envelope identity")
-                        .as_ref()
-                        .try_into()
-                        .expect("protocol-v6 deploy identity width");
-                    self.runtime.cost.set_deploy_id_funded(deploy_id, funding);
-                } else if cosigned.is_compound() {
-                    let sigs: Vec<&[u8]> =
-                        cosigned.signers().iter().map(|s| s.sig.as_ref()).collect();
-                    self.runtime
-                        .cost
-                        .set_deploy_signatures_funded(&sigs, funding);
-                } else {
-                    self.runtime
-                        .cost
-                        .set_deploy_signature_funded(&cosigned.primary().sig, funding);
-                }
-            }
-            DefaultCostAuthority::Unit => self.runtime.cost.reset_for_system_deploy(),
-        }
+    async fn evaluate_runtime_deploy(
+        &mut self,
+        deploy: RuntimeDeployRef<'_>,
+        budget: Cost,
+        authority_allocation: Option<ResourceMultiset<[u8; 32]>>,
+        default_authority: DefaultCostAuthority,
+        host_work: Option<HostWorkBudget>,
+    ) -> Result<EvaluateResult, CasperError> {
+        self.prepare_runtime_deploy(deploy, default_authority).await;
 
         // Production bounded play and replay pass the same finite
         // authority-derived capacity here. The unbounded default remains only
         // for non-consensus exploratory and system-facing callers that do not
         // produce an admitted user-deploy certificate.
-        let normalizer_env =
-            models::rust::normalizer_env::normalizer_env_from_cosigned_deploy(cosigned);
-        let initial_rand = Tools::user_deploy_rng(cosigned);
-        metrics::counter!(
-            crate::rust::metrics_constants::USER_DEPLOY_EVALUATION_ATTEMPTS_METRIC,
-            "source" => CASPER_METRICS_SOURCE,
-            "origin" => self.user_execution_origin
-        )
-        .increment(1);
+        let normalizer_env = deploy.normalizer_env();
+        let initial_rand = deploy.rng();
         let result = match host_work {
             Some(host_work) => {
                 self.runtime
                     .evaluate_with_authority_and_host_work_budget(
-                        &cosigned.data.term,
+                        &deploy.body().term,
                         budget,
                         normalizer_env,
                         initial_rand,
@@ -2677,7 +2682,7 @@ impl RuntimeOps {
             None => {
                 self.runtime
                     .evaluate_with_authority(
-                        &cosigned.data.term,
+                        &deploy.body().term,
                         budget,
                         normalizer_env,
                         initial_rand,
@@ -2691,6 +2696,55 @@ impl RuntimeOps {
             Ok(eval_result) => Ok(eval_result),
             Err(e) => Err(CasperError::InterpreterError(e)),
         }
+    }
+
+    pub(crate) async fn evaluate_native_envelope(
+        &mut self,
+        envelope: &DeployEnvelope,
+        config: accounting::NativeRuntimeConfig,
+    ) -> Result<EvaluateResult, CasperError> {
+        let deploy = RuntimeDeployRef::Retained(envelope);
+        self.prepare_runtime_deploy(deploy, DefaultCostAuthority::Funders)
+            .await;
+        self.runtime
+            .evaluate_with_native_phlo(
+                &deploy.body().term,
+                deploy.normalizer_env(),
+                deploy.rng(),
+                None,
+                config,
+            )
+            .await
+            .map_err(CasperError::InterpreterError)
+    }
+
+    async fn prepare_runtime_deploy(
+        &self,
+        deploy: RuntimeDeployRef<'_>,
+        default_authority: DefaultCostAuthority,
+    ) {
+        self.runtime.set_deploy_data(deploy.metadata()).await;
+        self.runtime.cost.set_unmetered(false);
+
+        // Decouple the wire-signature deploy identity from the funding
+        // authority: verified signer public keys select canonical SystemVault
+        // payers, while nested signed regions and located stacks refine the
+        // authority during reduction. `funding_sig` is the shared derivation
+        // used by admission and replay and excludes unsigned threshold
+        // placeholders.
+        match default_authority {
+            DefaultCostAuthority::Funders => {
+                deploy.install_authority(&self.runtime.cost);
+            }
+            DefaultCostAuthority::Unit => self.runtime.cost.reset_for_system_deploy(),
+        }
+
+        metrics::counter!(
+            crate::rust::metrics_constants::USER_DEPLOY_EVALUATION_ATTEMPTS_METRIC,
+            "source" => CASPER_METRICS_SOURCE,
+            "origin" => self.user_execution_origin
+        )
+        .increment(1);
     }
 
     pub async fn evaluate_system_source<S: SystemDeployTrait>(
@@ -3272,6 +3326,10 @@ impl RuntimeOps {
 #[cfg(test)]
 #[path = "consensus_parameter_tests.rs"]
 mod consensus_parameter_tests;
+
+#[cfg(test)]
+#[path = "runtime/envelope_tests.rs"]
+mod envelope_tests;
 
 #[cfg(test)]
 mod tests {

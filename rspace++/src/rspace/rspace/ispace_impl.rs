@@ -69,13 +69,11 @@ where
                 tracing::info_span!(target: "f1r3fly.rspace", HISTORY_CHECKPOINT_SPAN).entered();
             self.get_history_repository().checkpoint(changes)
         };
+        let history_reader = next_history.get_history_reader(&next_history.root())?;
         *self.history_repository.write().expect("history write lock") = Arc::new(next_history);
 
         let log = self.take_ordered_event_log();
         self.reset_produce_counter();
-
-        let history_repo = self.get_history_repository();
-        let history_reader = history_repo.get_history_reader(&history_repo.root())?;
 
         self.create_new_hot_store(history_reader);
         self.restore_installs();

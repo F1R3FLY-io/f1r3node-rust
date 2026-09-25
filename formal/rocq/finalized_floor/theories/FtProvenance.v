@@ -187,6 +187,81 @@ Proof.
   exfalso. apply malformed. reflexivity.
 Qed.
 
+Definition advertised_minimum (bootstrap : Z) (running : option chain_parameters) : Z :=
+  match running with
+  | Some adopted => chain_minimum_price adopted
+  | None => bootstrap
+  end.
+
+Theorem running_status_uses_adopted_minimum : forall bootstrap adopted,
+  advertised_minimum bootstrap (Some adopted) = chain_minimum_price adopted.
+Proof. reflexivity. Qed.
+
+Theorem running_status_ignores_bootstrap : forall first second adopted,
+  advertised_minimum first (Some adopted) = advertised_minimum second (Some adopted).
+Proof. reflexivity. Qed.
+
+Theorem startup_status_uses_bootstrap : forall bootstrap,
+  advertised_minimum bootstrap None = bootstrap.
+Proof. reflexivity. Qed.
+
+Theorem running_status_history_agrees : forall first second history,
+  map (fun p => advertised_minimum first (Some p)) history =
+  map (fun p => advertised_minimum second (Some p)) history.
+Proof. reflexivity. Qed.
+
+Print Assumptions running_status_uses_adopted_minimum.
+Print Assumptions running_status_ignores_bootstrap.
+Print Assumptions startup_status_uses_bootstrap.
+Print Assumptions running_status_history_agrees.
+
+Definition next_block_deploy_open (valid_after tip lifespan : Z) : bool :=
+  (tip + 1 - lifespan <? valid_after)%Z.
+
+Theorem next_block_deploy_window_exact : forall valid_after tip lifespan,
+  next_block_deploy_open valid_after tip lifespan = true <->
+  (tip + 1 < valid_after + lifespan)%Z.
+Proof. intros. unfold next_block_deploy_open. rewrite Z.ltb_lt. lia. Qed.
+
+Theorem next_block_deploy_boundary_rejects : forall tip lifespan,
+  next_block_deploy_open (tip + 1 - lifespan) tip lifespan = false.
+Proof. intros. unfold next_block_deploy_open. apply Z.ltb_irrefl. Qed.
+
+Theorem next_block_deploy_admission_refines_tip : forall valid_after tip lifespan,
+  next_block_deploy_open valid_after tip lifespan = true ->
+  (tip - lifespan <? valid_after)%Z = true.
+Proof. intros. apply Z.ltb_lt. apply next_block_deploy_window_exact in H. lia. Qed.
+
+Print Assumptions next_block_deploy_window_exact.
+Print Assumptions next_block_deploy_boundary_rejects.
+Print Assumptions next_block_deploy_admission_refines_tip.
+
+Definition checked_next_height (tip : Z) : option Z :=
+  if (tip <? 9223372036854775807)%Z then Some (tip + 1)%Z else None.
+
+Theorem checked_next_height_exact : forall tip next,
+  checked_next_height tip = Some next <->
+  (tip < 9223372036854775807)%Z /\ next = (tip + 1)%Z.
+Proof.
+  intros tip next. unfold checked_next_height.
+  destruct (tip <? 9223372036854775807)%Z eqn:bound.
+  - apply Z.ltb_lt in bound. split.
+    + intros equal. inversion equal; subst. split; auto.
+    + intros [_ ->]. reflexivity.
+  - apply Z.ltb_ge in bound. split; [discriminate|intros [H _]; lia].
+Qed.
+
+Theorem checked_next_height_preserves_machine_range : forall tip next,
+  (0 <= tip)%Z -> checked_next_height tip = Some next ->
+  (1 <= next <= 9223372036854775807)%Z.
+Proof. intros. apply checked_next_height_exact in H0. lia. Qed.
+
+Theorem exhausted_height_rejects : checked_next_height 9223372036854775807 = None.
+Proof. reflexivity. Qed.
+
+Print Assumptions checked_next_height_exact.
+Print Assumptions checked_next_height_preserves_machine_range.
+Print Assumptions exhausted_height_rejects.
 Print Assumptions chain_parameter_ranges_exact.
 Print Assumptions chain_parameter_values_injective.
 Print Assumptions chain_parameter_disagreement_changes_values.

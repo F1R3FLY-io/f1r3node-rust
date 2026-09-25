@@ -420,6 +420,13 @@ fn loom_owned_log_snapshot_survives_quiescent_reset_and_new_publication() {
 
 fn assert_component_pairs(snapshot: &ByteObservationSnapshot) {
     assert!(snapshot.has_complete_measurements());
+    let checked = snapshot.checked_measurements(snapshot.rows.len()).unwrap();
+    assert_eq!(checked.rows(), snapshot.rows.as_slice());
+    assert_eq!(checked.totals(), ByteCharge {
+        introduction_bytes: snapshot.rows.len() as u64,
+        transfer_bytes: snapshot.rows.len() as u64 * 2,
+        trace_bytes: snapshot.rows.len() as u64 * 3,
+    });
     for row in &snapshot.rows {
         let measurement = row.measurement.unwrap();
         assert_eq!(
@@ -434,8 +441,161 @@ fn assert_component_pairs(snapshot: &ByteObservationSnapshot) {
     }
 }
 
+#[test]
+fn counted_measurements_preserve_repeated_raw_only_rows_without_expansion() {
+    let raw = ByteCharge {
+        introduction_bytes: u64::MAX / 2,
+        transfer_bytes: u64::MAX / 2,
+        trace_bytes: u64::MAX / 2,
+    };
+    let row = Arc::new(ByteObservation {
+        authority: authority(true),
+        measurement: Some(raw),
+        legacy_amount: None,
+        ..(*paired_row(1)).clone()
+    });
+    let snapshot = ByteObservationSnapshot {
+        rows: vec![Arc::clone(&row), Arc::clone(&row)],
+        metered_context: true,
+        history_lost: false,
+    };
+    let counted = snapshot.checked_measurements(2).unwrap();
+    assert!(std::ptr::eq(counted.rows(), snapshot.rows.as_slice()));
+    assert_eq!(Arc::strong_count(&row), 3);
+    assert_eq!(counted.totals(), ByteCharge {
+        introduction_bytes: u64::MAX - 1,
+        transfer_bytes: u64::MAX - 1,
+        trace_bytes: u64::MAX - 1,
+    });
+    assert!(snapshot.legacy_events().is_empty());
+    assert_eq!(
+        snapshot.checked_measurements(1),
+        Err(ByteMeasurementError::EntryLimit)
+    );
+}
+
+#[test]
+fn counted_measurements_require_complete_history_and_measurement_context() {
+    for metered_context in [false, true] {
+        for history_lost in [false, true] {
+            for measured in [false, true] {
+                let snapshot = ByteObservationSnapshot {
+                    rows: vec![Arc::new(ByteObservation {
+                        measurement: measured.then_some(ByteCharge::default()),
+                        ..(*paired_row(1)).clone()
+                    })],
+                    metered_context,
+                    history_lost,
+                };
+                let before = snapshot.clone();
+                let captured = snapshot.checked_measurements(1);
+                assert_eq!(
+                    captured.is_ok(),
+                    metered_context && !history_lost && measured
+                );
+                if captured.is_err() {
+                    assert_eq!(captured, Err(ByteMeasurementError::Incomplete));
+                }
+                assert_eq!(snapshot, before);
+            }
+        }
+    }
+    let empty = ByteObservationSnapshot {
+        metered_context: true,
+        ..Default::default()
+    };
+    assert_eq!(
+        empty.checked_measurements(0).unwrap().totals(),
+        ByteCharge::default()
+    );
+    assert_eq!(
+        ByteObservationSnapshot::default().checked_measurements(0),
+        Err(ByteMeasurementError::Incomplete)
+    );
+}
+
+#[test]
+fn counted_measurements_reject_each_dimension_overflow_without_mutation() {
+    for raw in [
+        ByteCharge {
+            introduction_bytes: u64::MAX,
+            ..Default::default()
+        },
+        ByteCharge {
+            transfer_bytes: u64::MAX,
+            ..Default::default()
+        },
+        ByteCharge {
+            trace_bytes: u64::MAX,
+            ..Default::default()
+        },
+    ] {
+        let first = Arc::new(ByteObservation {
+            measurement: Some(raw),
+            ..(*paired_row(1)).clone()
+        });
+        let mut snapshot = ByteObservationSnapshot {
+            rows: vec![first],
+            metered_context: true,
+            history_lost: false,
+        };
+        assert_eq!(snapshot.checked_measurements(2).unwrap().totals(), raw);
+        snapshot.rows.push(paired_row(2));
+        let before = snapshot.clone();
+        assert_eq!(
+            snapshot.checked_measurements(2),
+            Err(ByteMeasurementError::Overflow)
+        );
+        assert_eq!(snapshot, before);
+    }
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
+
+    #[test]
+    fn counted_measurements_match_wide_reference_and_preserve_permutations(
+        samples in prop_oneof![
+            prop::collection::vec((0_u64..1000, 0_u64..1000, 0_u64..1000,
+                any::<u16>(), any::<bool>(), any::<bool>()), 0..65),
+            prop::collection::vec((any::<u64>(), any::<u64>(), any::<u64>(),
+                any::<u16>(), any::<bool>(), any::<bool>()), 0..65),
+        ],
+        maximum_entries in 0_usize..65,
+    ) {
+        let mut reference = [0_u128; 3];
+        let rows: Vec<_> = samples.iter().map(|&(introduction_bytes, transfer_bytes, trace_bytes, _, unit, legacy)| {
+            reference[0] += u128::from(introduction_bytes);
+            reference[1] += u128::from(transfer_bytes);
+            reference[2] += u128::from(trace_bytes);
+            Arc::new(ByteObservation {
+                authority: authority(unit),
+                measurement: Some(ByteCharge { introduction_bytes, transfer_bytes, trace_bytes }),
+                legacy_amount: legacy.then_some(7),
+                ..(*paired_row(1)).clone()
+            })
+        }).collect();
+        let snapshot = ByteObservationSnapshot { rows, metered_context: true, history_lost: false };
+        let before = snapshot.clone();
+        let result = snapshot.checked_measurements(maximum_entries);
+        let fits = samples.len() <= maximum_entries && reference.iter().all(|&n| n <= u128::from(u64::MAX));
+        prop_assert_eq!(result.is_ok(), fits);
+        if let Ok(ref checked) = result {
+            prop_assert_eq!(checked.rows(), snapshot.rows.as_slice());
+            prop_assert!(std::ptr::eq(checked.rows(), snapshot.rows.as_slice()));
+            let totals = checked.totals();
+            prop_assert_eq!([u128::from(totals.introduction_bytes), u128::from(totals.transfer_bytes), u128::from(totals.trace_bytes)], reference);
+        }
+        let mut order: Vec<_> = (0..samples.len()).collect();
+        order.sort_by_key(|&i| samples[i].3);
+        let reordered = ByteObservationSnapshot {
+            rows: order.iter().map(|&i| Arc::clone(&snapshot.rows[i])).collect(),
+            metered_context: true,
+            history_lost: false,
+        };
+        prop_assert_eq!(result.map(|checked| checked.totals()), reordered.checked_measurements(maximum_entries).map(|checked| checked.totals()));
+        prop_assert_eq!(snapshot, before);
+    }
 
     #[test]
     fn arbitrary_event_order_preserves_raw_legacy_pairing_and_persistent_multiplicity(
