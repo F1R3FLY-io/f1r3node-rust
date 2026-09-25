@@ -522,6 +522,12 @@ pub fn new_guri_expr(value: String) -> Expr {
     }
 }
 
+pub fn new_guint64_expr(value: u64) -> Expr {
+    Expr {
+        expr_instance: Some(ExprInstance::GUint64(value)),
+    }
+}
+
 pub fn new_gdouble_expr(value: f64) -> Expr {
     Expr {
         expr_instance: Some(ExprInstance::GDouble(value.to_bits())),

@@ -1,7 +1,7 @@
 use models::rhoapi::Expr;
 use models::rust::utils::{
     new_gbigint_expr, new_gbigrat_expr, new_gbool_expr, new_gdouble_expr, new_gfixedpoint_expr,
-    new_gint_expr, new_gstring_expr, new_guri_expr,
+    new_gint_expr, new_gstring_expr, new_guint64_expr, new_guri_expr,
 };
 use rholang_parser::ast::Proc as NewProc;
 
@@ -15,10 +15,7 @@ pub fn normalize_ground<'ast>(proc: &NewProc<'ast>) -> Result<Expr, InterpreterE
 
         NewProc::SignedIntLiteral { value, bits } => {
             if *bits != 64 {
-                return Err(InterpreterError::NormalizerError(format!(
-                    "Integer width i{} is not supported: only i64 integers are supported, found {}i{}",
-                    bits, value, bits
-                )));
+                return Err(unsupported_int_width('i', value, *bits));
             }
             let parsed: i64 = value.parse().map_err(|_| {
                 InterpreterError::NormalizerError(format!(
@@ -30,10 +27,16 @@ pub fn normalize_ground<'ast>(proc: &NewProc<'ast>) -> Result<Expr, InterpreterE
         }
 
         NewProc::UnsignedIntLiteral { value, bits } => {
-            Err(InterpreterError::NormalizerError(format!(
-                "Integer width u{} is not supported: only i64 integers are supported, found {}u{}",
-                bits, value, bits
-            )))
+            if *bits != 64 {
+                return Err(unsupported_int_width('u', value, *bits));
+            }
+            let parsed: u64 = value.parse().map_err(|_| {
+                InterpreterError::NormalizerError(format!(
+                    "Invalid unsigned integer literal: {}",
+                    value
+                ))
+            })?;
+            Ok(new_guint64_expr(parsed))
         }
 
         NewProc::BigIntLiteral(value) => {
@@ -76,6 +79,12 @@ pub fn normalize_ground<'ast>(proc: &NewProc<'ast>) -> Result<Expr, InterpreterE
             "Expected a ground type in new AST, found unsupported variant".to_string(),
         )),
     }
+}
+
+fn unsupported_int_width(sign: char, value: &str, bits: u32) -> InterpreterError {
+    InterpreterError::NormalizerError(format!(
+        "Integer width {sign}{bits} is not supported by this interpreter: only i64 and u64 integers are supported, found {value}{sign}{bits}"
+    ))
 }
 
 fn decimal_str_to_twos_complement(s: &str) -> Result<Vec<u8>, InterpreterError> {
@@ -283,8 +292,30 @@ mod tests {
     }
 
     #[test]
-    fn unsigned_ints_of_every_width_are_rejected() {
-        for bits in [8u32, 16, 32, 64, 128] {
+    fn unsigned_int_with_u64_width_compiles_as_guint64() {
+        let value = u64::MAX.to_string();
+        let proc = Proc::UnsignedIntLiteral {
+            value: &value,
+            bits: 64,
+        };
+        let expr = normalize_ground(&proc).unwrap();
+        assert_eq!(expr.expr_instance, Some(ExprInstance::GUint64(u64::MAX)));
+    }
+
+    #[test]
+    fn invalid_unsigned_int_is_a_normalizer_error() {
+        for value in ["-1", "18446744073709551616"] {
+            let proc = Proc::UnsignedIntLiteral { value, bits: 64 };
+            assert!(matches!(
+                normalize_ground(&proc),
+                Err(InterpreterError::NormalizerError(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn unsigned_ints_with_non_u64_width_are_rejected() {
+        for bits in [8u32, 16, 32, 128] {
             match normalize_ground(&Proc::UnsignedIntLiteral { value: "5", bits }) {
                 Err(InterpreterError::NormalizerError(msg)) => {
                     assert!(msg.contains(&format!("u{bits}")), "bits {bits}: {msg}")

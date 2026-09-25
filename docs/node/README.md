@@ -238,6 +238,7 @@ API responses from `explore-deploy`, `data-at-name-by-block-hash`, `registry`, a
 | **Primitives** | | |
 | Boolean | `ExprBool` | `{"ExprBool": {"data": true}}` |
 | Integer | `ExprInt` | `{"ExprInt": {"data": 42}}` |
+| Unsigned 64-bit integer | `ExprUint64` | `{"ExprUint64": {"data": 42}}` |
 | String | `ExprString` | `{"ExprString": {"data": "hello"}}` |
 | URI | `ExprUri` | `{"ExprUri": {"data": "rho:io:stdout"}}` |
 | Bytes | `ExprBytes` | `{"ExprBytes": {"data": "0a1b2c"}}` |

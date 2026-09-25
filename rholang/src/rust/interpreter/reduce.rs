@@ -1499,6 +1499,13 @@ impl DebruijnInterpreter {
                     })
                 }
 
+                (ExprInstance::GUint64(u1), ExprInstance::GUint64(u2)) => {
+                    self.cost.charge(comparison_cost())?;
+                    Ok(Expr {
+                        expr_instance: Some(ExprInstance::GBool(relopi(u1.cmp(&u2) as i64, 0))),
+                    })
+                }
+
                 (ExprInstance::GString(s1), ExprInstance::GString(s2)) => {
                     self.cost.charge(comparison_cost())?;
                     Ok(Expr {
@@ -1572,6 +1579,10 @@ impl DebruijnInterpreter {
 
                 ExprInstance::GInt(x) => Ok(Expr {
                     expr_instance: Some(ExprInstance::GInt(*x)),
+                }),
+
+                ExprInstance::GUint64(x) => Ok(Expr {
+                    expr_instance: Some(ExprInstance::GUint64(*x)),
                 }),
 
                 ExprInstance::GString(x) => Ok(Expr {
@@ -1677,6 +1688,18 @@ impl DebruijnInterpreter {
                                 expr_instance: Some(ExprInstance::GInt(result)),
                             })
                         }
+                        (ExprInstance::GUint64(lhs), ExprInstance::GUint64(rhs)) => {
+                            self.cost.charge(multiplication_cost())?;
+                            let result = lhs.checked_mul(rhs).ok_or_else(|| {
+                                InterpreterError::ReduceError(format!(
+                                    "Arithmetic overflow in multiplication: {}u64 * {}u64",
+                                    lhs, rhs
+                                ))
+                            })?;
+                            Ok(Expr {
+                                expr_instance: Some(ExprInstance::GUint64(result)),
+                            })
+                        }
                         (ExprInstance::GDouble(d1), ExprInstance::GDouble(d2)) => {
                             self.cost.charge(multiplication_cost())?;
                             let result = f64::from_bits(d1) * f64::from_bits(d2);
@@ -1753,6 +1776,17 @@ impl DebruijnInterpreter {
                             }
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::GInt(lhs / rhs)),
+                            })
+                        }
+                        (ExprInstance::GUint64(lhs), ExprInstance::GUint64(rhs)) => {
+                            self.cost.charge(division_cost())?;
+                            if rhs == 0 {
+                                return Err(InterpreterError::ReduceError(
+                                    "Division by zero".to_string(),
+                                ));
+                            }
+                            Ok(Expr {
+                                expr_instance: Some(ExprInstance::GUint64(lhs / rhs)),
                             })
                         }
                         (ExprInstance::GDouble(d1), ExprInstance::GDouble(d2)) => {
@@ -1844,6 +1878,17 @@ impl DebruijnInterpreter {
                                 expr_instance: Some(ExprInstance::GInt(lhs % rhs)),
                             })
                         }
+                        (ExprInstance::GUint64(lhs), ExprInstance::GUint64(rhs)) => {
+                            self.cost.charge(modulo_cost())?;
+                            if rhs == 0 {
+                                return Err(InterpreterError::ReduceError(
+                                    "Modulo by zero".to_string(),
+                                ));
+                            }
+                            Ok(Expr {
+                                expr_instance: Some(ExprInstance::GUint64(lhs % rhs)),
+                            })
+                        }
                         (ExprInstance::GDouble(_), ExprInstance::GDouble(_)) => {
                             Err(InterpreterError::ReduceError(
                                 "Modulus not defined on floating point".to_string(),
@@ -1932,6 +1977,13 @@ impl DebruijnInterpreter {
                             })
                         }
 
+                        (ExprInstance::GUint64(lhs), ExprInstance::GUint64(rhs)) => {
+                            self.cost.charge(sum_cost())?;
+                            Ok(Expr {
+                                expr_instance: Some(ExprInstance::GUint64(lhs.wrapping_add(rhs))),
+                            })
+                        }
+
                         (ExprInstance::GDouble(d1), ExprInstance::GDouble(d2)) => {
                             self.cost.charge(sum_cost())?;
                             let result = f64::from_bits(d1) + f64::from_bits(d2);
@@ -1991,6 +2043,7 @@ impl DebruijnInterpreter {
                         }
 
                         (ExprInstance::GInt(_), other)
+                        | (ExprInstance::GUint64(_), other)
                         | (ExprInstance::GDouble(_), other)
                         | (ExprInstance::GBigInt(_), other)
                         | (ExprInstance::GBigRat(_), other)
@@ -2018,6 +2071,13 @@ impl DebruijnInterpreter {
                             self.cost.charge(subtraction_cost())?;
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::GInt(lhs.wrapping_sub(rhs))),
+                            })
+                        }
+
+                        (ExprInstance::GUint64(lhs), ExprInstance::GUint64(rhs)) => {
+                            self.cost.charge(subtraction_cost())?;
+                            Ok(Expr {
+                                expr_instance: Some(ExprInstance::GUint64(lhs.wrapping_sub(rhs))),
                             })
                         }
 
@@ -2102,6 +2162,7 @@ impl DebruijnInterpreter {
                         }
 
                         (ExprInstance::GInt(_), other)
+                        | (ExprInstance::GUint64(_), other)
                         | (ExprInstance::GDouble(_), other)
                         | (ExprInstance::GBigInt(_), other)
                         | (ExprInstance::GBigRat(_), other)
@@ -7148,6 +7209,7 @@ fn get_type(expr_instance: ExprInstance) -> String {
     match expr_instance {
         ExprInstance::GBool(_) => String::from("bool"),
         ExprInstance::GInt(_) => String::from("int"),
+        ExprInstance::GUint64(_) => String::from("uint64"),
         ExprInstance::GDouble(_) => String::from("float"),
         ExprInstance::GBigInt(_) => String::from("bigint"),
         ExprInstance::GBigRat(_) => String::from("bigrat"),

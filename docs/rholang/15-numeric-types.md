@@ -1,6 +1,6 @@
 # Numeric Types
 
-Rholang supports six numeric types. No implicit coercion between any of them.
+Rholang supports seven numeric types. No implicit coercion between any of them.
 
 ## Integer (GInt)
 
@@ -21,6 +21,25 @@ Arithmetic uses wrapping semantics -- overflow wraps around silently (no panic, 
 ```
 
 Division by zero returns an error. Special case: `i64::MIN / -1` also returns an error (would overflow).
+
+## UInt64 (GUint64)
+
+64-bit unsigned integer. Suffix: `u64`.
+
+```rho
+0u64
+42u64
+18446744073709551615u64    // u64::MAX
+```
+
+Addition and subtraction wrap modulo 2^64. Multiplication overflow returns an error, the same as for `Int`.
+
+```rho
+18446744073709551615u64 + 1u64    // wraps to 0u64
+0u64 - 1u64                       // wraps to 18446744073709551615u64
+```
+
+Comparisons use unsigned order. Division and modulo by zero return an error. Unary negation is not defined on `UInt64`. `UInt64` and `Int` do not mix: `1u64 + 1` is an error.
 
 ## Float (GDouble)
 
@@ -71,13 +90,13 @@ No size cap. Gas scales with operand byte length (see [Cost Model](13-cost-model
 
 ### Int Literals with Bit Width
 
-The only supported integer width suffix is `i64`, which is the same type as an unsuffixed `Int`. Rholang has no unsigned integer type and no other signed integer width. A literal with any other width suffix (`u8`, `u16`, `u32`, `u64`, `u128`, `i8`, `i16`, `i32`, `i128`, and so on) is rejected at compile time.
+Rholang syntax accepts signed (`i8`, `i16`, `i32`, `i64`, `i128`, ...) and unsigned (`u8`, `u16`, `u32`, `u64`, `u128`, ...) width suffixes. An interpreter can support a subset of these widths. This interpreter supports `i64` (the same type as an unsuffixed `Int`) and `u64` (`UInt64`). A literal with any other width suffix is rejected at compile time. Use `%` on `i64` or `u64` values to get the behavior of a smaller width.
 
 ```rho
 42i64              // Int(42), the same as 42
-1 + 1i64           // Int(2)
-42i32              // compile error: Integer width i32 is not supported
-1u32 + 1u64        // compile error: Integer width u32 is not supported
+42u64              // UInt64(42)
+42i32              // compile error: Integer width i32 is not supported by this interpreter
+1u32 + 1u64        // compile error: Integer width u32 is not supported by this interpreter
 1u128              // compile error (use 1n for an arbitrary-precision BigInt)
 ```
 
@@ -200,6 +219,7 @@ All binary operations require matching types. None of these work:
 ```rho
 42 + 3.14f64             // ERROR: Int + Float
 100n + 42                // ERROR: BigInt + Int
+1u64 + 1                 // ERROR: UInt64 + Int
 1r / 2r + 0.5f64         // ERROR: BigRat + Float
 1.5p1 + 1.50p2           // ERROR: scale mismatch (even within FixedPoint)
 ```
@@ -209,6 +229,7 @@ All binary operations require matching types. None of these work:
 | Type | Proto Field | Encoding |
 |------|-------------|----------|
 | Int | `g_int` (int64) | Direct |
+| UInt64 | `g_uint64` (uint64) | Direct |
 | Float | `g_double` (fixed64) | Raw IEEE 754 bits |
 | BigInt | `g_big_int` (bytes) | Big-endian two's complement |
 | BigRat | `g_big_rat` { numerator, denominator } | Both big-endian two's complement bytes |

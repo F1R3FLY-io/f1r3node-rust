@@ -270,6 +270,7 @@ message Expr {
     bytes g_big_int = 35;          // Arbitrary-precision signed integer (big-endian two's complement)
     GBigRational g_big_rat = 36;   // Exact rational number
     GFixedPoint g_fixed_point = 37; // Fixed-point decimal
+    uint64 g_uint64 = 38;          // Unsigned 64-bit integer (u64 suffix)
   }
 }
 

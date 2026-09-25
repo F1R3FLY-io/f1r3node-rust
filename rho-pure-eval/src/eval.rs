@@ -78,7 +78,8 @@ fn eval_expr_to_par(expr: &Expr, env: &Env<Par>) -> Result<Par, EvalError> {
         | ExprInstance::GDouble(_)
         | ExprInstance::GBigInt(_)
         | ExprInstance::GBigRat(_)
-        | ExprInstance::GFixedPoint(_) => Ok(par_with_expr(expr.clone())),
+        | ExprInstance::GFixedPoint(_)
+        | ExprInstance::GUint64(_) => Ok(par_with_expr(expr.clone())),
 
         // Collections - pass through unchanged. Their elements were
         // already values when the Par was constructed.
@@ -372,6 +373,7 @@ fn type_name(instance: &ExprInstance) -> &'static str {
     match instance {
         ExprInstance::GBool(_) => "Bool",
         ExprInstance::GInt(_) => "Int",
+        ExprInstance::GUint64(_) => "UInt64",
         ExprInstance::GBigInt(_) => "BigInt",
         ExprInstance::GBigRat(_) => "BigRat",
         ExprInstance::GFixedPoint(_) => "FixedPoint",
