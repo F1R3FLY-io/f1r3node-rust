@@ -46,6 +46,12 @@ Retained outside Git by the agent that ran the cycles. The digests bind that raw
 | `g0-hosted-d6aaba962-2026-09-08/manifest.json` | `618bd14f61760e12959e97636a6c7a46a4e8cd2c7f15381859058d305db634c8` |
 | `repin-962effd-2026-09-08/manifest.json` | `3858c683327fd88fff364fb1974adcadc748cea0464d1e26ea0989e406ca3e9e` |
 
+## Claim separation
+
+Node claims record their gate registration evidence in their own run packages. This record retains its primary claim and historical source identity.
+
+The harness claim keeps its separate record under `docs/casper/cbc-evidence/`. Node claim digests must not replace or extend that record.
+
 ## Open
 
 - Rulesets `devProtect` (15773875) and `masterProtect` (14299997) require `Lint` only. `TLA+ invariant check` is not required. The classic-protection endpoint returned 403.
@@ -56,10 +62,22 @@ Retained outside Git by the agent that ran the cycles. The digests bind that raw
 {
   "artifact": {
     "path": "scripts/ci/check-tla-invariants.sh",
-    "commit": "3d2aa7904",
+    "commit": "3b1d2465a39b020426b3caa02bf5313d2b9fac5b",
+    "commit_is_base": true,
+    "working_tree": true,
+    "sha256": "5ecaa38548460fb58bd5284838f586d53b8e632c6fe9f52e8b11727f91c5ab45",
     "id": "scripts-ci-check-tla-invariants-sh"
   },
   "claim": "CLAIM-SOAK-GATE-001",
+  "claim_ids": [
+    "CLAIM-SOAK-GATE-001"
+  ],
+  "previous_record": {
+    "commit": "3b1d2465a39b020426b3caa02bf5313d2b9fac5b",
+    "path": "docs/cbc-evidence/scripts-ci-check-tla-invariants-sh.md",
+    "sha256": "0aa564b1f65b136429ef9f3291021c31a121c9555180e9958c5432d7bc4e1d7b"
+  },
+  "verification_scope": "historical-gate-evidence-not-node-claim-renewal",
   "adapter": "embedded",
   "status": "pending",
   "evidence": {

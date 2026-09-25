@@ -1,0 +1,260 @@
+{
+  "schema_version": 1,
+  "claim_ids": [
+    "CLAIM-CASPER-NODE-OBSERVATION-003"
+  ],
+  "scope": "batch-b2-construction-01",
+  "status": "blocked",
+  "blocked_on": [
+    "named maintainer review of every B2 applicability decision",
+    "named maintainer acceptance of the claim",
+    "construction evidence for C2, C6, C10, C11, C14, C15 and the pending parts of C4, C9, and C12"
+  ],
+  "execution_base": "d69e12151082d111f18c9e8f818ed7f3ba4f9377",
+  "working_tree": true,
+  "previous_cycle": "docs/cbc-evidence/runs/casper-node-authority-b2-d11acabcb-01/report.json",
+  "source_inventory": [
+    {
+      "path": "formal/tlaplus/node_observation/README.md",
+      "sha256": "f81fd7715638d5a8c608927067ed051b6bec97fca77431a6b01e43e74c272c1e",
+      "mandatory": true
+    },
+    {
+      "path": "node/src/rust/runtime/node_runtime.rs",
+      "sha256": "c851cb7946daf7d3849a42d836e04604c5f38fc0e6d055f27b844968ef57de2b",
+      "mandatory": false
+    },
+    {
+      "path": "node/src/rust/runtime/setup.rs",
+      "sha256": "3d5e18ef7a46f3c6e138dab1f69d6e8d7d2da49c9d7aee4a0a678f5a9f91bb1a",
+      "mandatory": false
+    },
+    {
+      "path": "node/src/rust/soak_observer.rs",
+      "sha256": "59f40fd5632955d7fbaae0cd6221e942d3dc7505ad8a096a2d95bce10d2ed878",
+      "mandatory": true
+    },
+    {
+      "path": "node/tests/soak_observer.rs",
+      "sha256": "3b69fa3df590f5687fdb719578557a0eef0df05c4fe60072e30c95cc8e782e86",
+      "mandatory": true
+    },
+    {
+      "path": "casper/src/rust/mod.rs",
+      "sha256": "b20be673724fab33093fba6efeb0a043b0df42b05f5533b8045f3eed15e50929",
+      "mandatory": false
+    },
+    {
+      "path": "casper/src/rust/soak_observer.rs",
+      "sha256": "991d388492486a5fb65b8e0be0e2a9fe198b79112d42a2e859be75bb3e70b579",
+      "mandatory": true
+    },
+    {
+      "path": "casper/src/rust/soak_observer/evaluation.rs",
+      "sha256": "3834185fb6dbcebecf6a676af46bc49d6c7ca8abe1052a53ef10a5115cfdb56f",
+      "mandatory": true
+    },
+    {
+      "path": "casper/src/rust/soak_observer/reference.rs",
+      "sha256": "f8fa0ee78c6bb51d58b1804c077f3c3dcba97576f30b928f78ed426ab26e8349",
+      "mandatory": true
+    },
+    {
+      "path": "casper/src/rust/casper.rs",
+      "sha256": "c08b7385dbaf1581a59a363bee936135823462f43a3fcca1ac7c0d05039117e9",
+      "mandatory": false
+    },
+    {
+      "path": "casper/src/rust/engine/engine_cell.rs",
+      "sha256": "0eea25cb46a9a873a4840b7323581a15f3fe74c6096e7f36f87a091560c884e2",
+      "mandatory": false
+    },
+    {
+      "path": "casper/src/rust/engine/multi_parent_casper/types.rs",
+      "sha256": "e58c5c911b0f429e21d4164e3b18113ff23fba763184bfaa39a2c65a57959175",
+      "mandatory": false
+    },
+    {
+      "path": "casper/src/rust/engine/multi_parent_casper/dispatch.rs",
+      "sha256": "e917a68e49d130b99a16a7c446c3409cba9c49c5d6811bea7e7ed66ef422b68a",
+      "mandatory": false
+    },
+    {
+      "path": "casper/src/rust/engine/multi_parent_casper/finalization_runner.rs",
+      "sha256": "1826830a42aecf4850445c6f0f3e8e978d2dd089ede6b3ecdfd34bd71c46580f",
+      "mandatory": false
+    },
+    {
+      "path": "casper/src/rust/finality/floor.rs",
+      "sha256": "9dbc91696e1b8f834f59635979f0c89a8f0efe3046ce9799e411780ee9516ee0",
+      "mandatory": true
+    },
+    {
+      "path": "casper/src/rust/safety/clique_oracle.rs",
+      "sha256": "a42a10bbefe048652d3c588dc45336a685261c7f23b90dae54ab7e6de53a69bc",
+      "mandatory": true
+    },
+    {
+      "path": "casper/src/rust/util/clique.rs",
+      "sha256": "72de583499cfdaac3ea98c80e110ae48d6a88787af6a3d7782ce588e2af09c1f",
+      "mandatory": true
+    },
+    {
+      "path": "shared/src/rust/dag/mod.rs",
+      "sha256": "f6b23ae7797adcb8aed62a3532a9cc35014fa9d6188890724f328f526a0c83c8",
+      "mandatory": false
+    },
+    {
+      "path": "shared/src/rust/dag/observation_work.rs",
+      "sha256": "cbecfc9751e5b6254ae0f8843d8346428c7338c842de89c6b68b081f215df731",
+      "mandatory": true
+    },
+    {
+      "path": "block-storage/src/rust/dag/block_dag_key_value_storage.rs",
+      "sha256": "1736d6770bb72d2b4d768010920269da75901f89914080951e071cc78a6f0a06",
+      "mandatory": true
+    },
+    {
+      "path": "block-storage/tests/soak_snapshot.rs",
+      "sha256": "15840e51d9ba769d2053760972ad35d71a7a67419ff3c0e4d981852372c90b09",
+      "mandatory": true
+    },
+    {
+      "path": "casper/tests/soak_observer.rs",
+      "sha256": "5eb62fddb3517a435cb2597595343bf2d9ed32acf8308911543464387bd556a6",
+      "mandatory": true
+    },
+    {
+      "path": "casper/tests/helper/test_node.rs",
+      "sha256": "52b25b2b63dcb51e7d7dcb7dc0bf203cf6d9bfab6e0898e8710a82692bf32a11",
+      "mandatory": false
+    },
+    {
+      "path": "casper/tests/batch1/multi_parent_casper_bonding_spec.rs",
+      "sha256": "744490005f522711c54c9b011028451bb471af53a720de53799fc7dd8f15db8a",
+      "mandatory": false
+    },
+    {
+      "path": "casper/tests/api/pending_deploys_test.rs",
+      "sha256": "c414aa2540eb95addb3fa3ea2f145a58e40d15c3fce5e9ee648904e5f0196f28",
+      "mandatory": false
+    },
+    {
+      "path": "casper/tests/api/deploy_finalization_status_test.rs",
+      "sha256": "011acc4cde12034ca95b53db3747f7fd21317eb47006c7a2aa8d7fcb7f19f3c0",
+      "mandatory": false
+    },
+    {
+      "path": "casper/tests/api/last_finalized_api_test.rs",
+      "sha256": "35ccda019fd8837ac381bea385d69710f04f5d8ef146c933410baff2bb60cf41",
+      "mandatory": false
+    },
+    {
+      "path": "casper/tests/api/bonded_status_api_test.rs",
+      "sha256": "e39ba28d179796e4b330fa1e7e8ffa49d1ce499f6902290fc171f99db567e528",
+      "mandatory": false
+    },
+    {
+      "path": "formal/rocq/node_authority/_CoqProject",
+      "sha256": "7ac76c64251e36750b6bce5fd71e016c832a9a96c003188dadd0dec69b3a7f9d",
+      "mandatory": true
+    },
+    {
+      "path": "formal/rocq/node_authority/README.md",
+      "sha256": "113f060f4894864477f7708bdc409c45a53282b9431b5efc3b90671032debb72",
+      "mandatory": true
+    },
+    {
+      "path": "formal/rocq/node_authority/theories/AuthorityObserver.v",
+      "sha256": "d25560e4e257c132875d2028a0babdef0abf7addfaffac7b11c55ffd155d3dd2",
+      "mandatory": true
+    },
+    {
+      "path": "formal/rocq/node_authority/theories/AuthorityWork.v",
+      "sha256": "03214b6d6771e9a93618865520f446eeba411620219959428c7bf64e014dd6b9",
+      "mandatory": true
+    },
+    {
+      "path": "formal/rocq/node_authority/theories/MainTheorem.v",
+      "sha256": "6e60d2bb223c2949c0e9be4d44af20a8a950701a91a7b41f71576b9c27003b1a",
+      "mandatory": true
+    },
+    {
+      "path": "scripts/ci/check-formal-invariants.sh",
+      "sha256": "d69aa2f8f72db96be2703f7ab8deb37c24ee0a96ee599c0d175c8bf22d1dda66",
+      "mandatory": true
+    }
+  ],
+  "specifications": {
+    "docs/claims/casper-node-authority-evaluation.md": "5956cff23feb6e32e175976019d4e483dc7755bc7a9040b6f2d35a0bebf758fe"
+  },
+  "refutation": {
+    "tool": null,
+    "inherited_models_only": true,
+    "inherited_from": [
+      "MC_ObserverSession",
+      "MC_BoundedCapture"
+    ],
+    "note": "Batch B2 adds no bounded TLA+ model; the accepted models cover C7 and C8 by inheritance only"
+  },
+  "construction": {
+    "tool": "Rocq 8.16.1 in a resource-limited arm64 container (Debian bookworm), coqchk",
+    "project": "formal/rocq/node_authority",
+    "exported_theorems": 15,
+    "closed_assumption_sets": 15,
+    "coqchk": "Modules were successfully checked",
+    "forbidden_vocabulary_grep": "clean",
+    "container_limits": {
+      "memory": "2g",
+      "cpus": 2,
+      "pids": 256,
+      "network": "none"
+    },
+    "formal_gate_registration": "scripts/ci/check-formal-invariants.sh expects 15 closed sets for NodeAuthority",
+    "complete": [
+      "C3",
+      "C5"
+    ],
+    "partial": [
+      "C4",
+      "C9",
+      "C12"
+    ],
+    "inherited": [
+      "C7",
+      "C8"
+    ],
+    "pending": [
+      "C2",
+      "C6",
+      "C10",
+      "C11",
+      "C14",
+      "C15"
+    ],
+    "bounded_by_design_proposed": [
+      "C1",
+      "C13"
+    ]
+  },
+  "binding": {
+    "bindings_manifest": "formal/tlaplus/node_observation/bindings.json",
+    "properties_mapped": 15,
+    "native_tests": {
+      "casper_observer_integration": 14,
+      "node_observer_release": 20,
+      "block_storage_capture": 28
+    },
+    "source_bound_package": "docs/cbc-evidence/runs/casper-node-authority-b2-d11acabcb-01/report.json",
+    "clippy_exit": 0,
+    "fmt_exit": 0
+  },
+  "strict_audit": {
+    "tool": "cbc.sh discharge --strict --files <claim 003 inventory>",
+    "expected_exit_after_refresh": 4
+  },
+  "applicability_review": "formal/tlaplus/node_observation/README.md#batch-b2-applicability-review",
+  "proposed_reviewer": "jltatbeach",
+  "claim_acceptance": false,
+  "created_at": "2026-09-23T19:37:37+00:00"
+}
