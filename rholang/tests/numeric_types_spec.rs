@@ -11,6 +11,7 @@ use models::rust::utils::{
     new_gbigint_expr, new_gbigrat_expr, new_gbool_expr, new_gdouble_expr, new_gfixedpoint_expr,
     new_gint_expr,
 };
+use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::env::Env;
 use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::test_utils::persistent_store_tester::create_test_space;
@@ -702,4 +703,38 @@ async fn ground_passthrough() {
     assert_ok_expr!(r, e, bi(42), new_gbigint_expr(bigint_from_i64(42)));
     assert_ok_expr!(r, e, rat(3, 4), rat_expr(3, 4));
     assert_ok_expr!(r, e, fixed(150, 2), fixed_expr(150, 2));
+}
+
+#[test]
+fn integer_literals_other_than_i64_are_rejected_at_compile_time() {
+    for source in [
+        r#"new so(`rho:io:stdout`) in { so!(1u32 + 1u64) }"#,
+        r#"new so(`rho:io:stdout`) in { so!(1u32 + 1u128) }"#,
+        r#"new so(`rho:io:stdout`) in { so!(1u64) }"#,
+        r#"new so(`rho:io:stdout`) in { so!(255u8) }"#,
+        r#"new so(`rho:io:stdout`) in { so!(42i8) }"#,
+        r#"new so(`rho:io:stdout`) in { so!(42i32) }"#,
+        r#"new so(`rho:io:stdout`) in { so!(42i128) }"#,
+        r#"new so(`rho:io:stdout`) in { so!(1i32 + 1i64) }"#,
+    ] {
+        assert!(
+            matches!(
+                Compiler::source_to_adt(source),
+                Err(InterpreterError::NormalizerError(_))
+            ),
+            "expected NormalizerError for {source}"
+        );
+    }
+
+    for source in [
+        r#"new so(`rho:io:stdout`) in { so!(1i64) }"#,
+        r#"new so(`rho:io:stdout`) in { so!(-9223372036854775808i64) }"#,
+        r#"new so(`rho:io:stdout`) in { so!(1 + 1i64) }"#,
+        r#"new so(`rho:io:stdout`) in { so!(1 + 1n) }"#,
+    ] {
+        assert!(
+            Compiler::source_to_adt(source).is_ok(),
+            "expected {source} to compile"
+        );
+    }
 }

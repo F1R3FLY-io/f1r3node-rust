@@ -69,26 +69,17 @@ No size cap. Gas scales with operand byte length (see [Cost Model](13-cost-model
 - Add/sub: `O(max(a_len, b_len))`
 - Mul/div/mod: `O(a_len * b_len)` -- quadratic
 
-### Unsigned Int Literals
+### Int Literals with Bit Width
 
-Unsigned literals (`u8`, `u16`, `u32`, `u64`) compile down to `Int` (if they fit in i64) or `BigInt`. There is no separate unsigned runtime type.
-
-```rho
-255u8              // becomes Int(255)
-4294967295u32      // becomes Int(4294967295)
-18446744073709551615u64   // becomes BigInt (doesn't fit in i64)
-```
-
-### Signed Int Literals with Bit Width
+The only supported integer width suffix is `i64`, which is the same type as an unsuffixed `Int`. Rholang has no unsigned integer type and no other signed integer width. A literal with any other width suffix (`u8`, `u16`, `u32`, `u64`, `u128`, `i8`, `i16`, `i32`, `i128`, and so on) is rejected at compile time.
 
 ```rho
-42i8               // becomes Int(42)
-42i16              // becomes Int(42)
-42i32              // becomes Int(42)
-42i64              // becomes Int(42)
+42i64              // Int(42), the same as 42
+1 + 1i64           // Int(2)
+42i32              // compile error: Integer width i32 is not supported
+1u32 + 1u64        // compile error: Integer width u32 is not supported
+1u128              // compile error (use 1n for an arbitrary-precision BigInt)
 ```
-
-These are compile-time annotations. All compile to `Int` at runtime.
 
 ## BigRat (GBigRational)
 

@@ -13,34 +13,27 @@ pub fn normalize_ground<'ast>(proc: &NewProc<'ast>) -> Result<Expr, InterpreterE
 
         NewProc::LongLiteral(value) => Ok(new_gint_expr(*value)),
 
-        // Parser currently emits i8/i16/i32/i64 (all <= 64 bits).
-        // The BigInt fallback is defensive for future bit widths (e.g., i128).
         NewProc::SignedIntLiteral { value, bits } => {
+            if *bits != 64 {
+                return Err(InterpreterError::NormalizerError(format!(
+                    "Integer width i{} is not supported: only i64 integers are supported, found {}i{}",
+                    bits, value, bits
+                )));
+            }
             let parsed: i64 = value.parse().map_err(|_| {
                 InterpreterError::NormalizerError(format!(
                     "Invalid signed integer literal: {}",
                     value
                 ))
             })?;
-            if *bits <= 64 {
-                Ok(new_gint_expr(parsed))
-            } else {
-                Ok(new_gbigint_expr(i64_to_twos_complement(parsed)))
-            }
+            Ok(new_gint_expr(parsed))
         }
 
         NewProc::UnsignedIntLiteral { value, bits } => {
-            let parsed: u64 = value.parse().map_err(|_| {
-                InterpreterError::NormalizerError(format!(
-                    "Invalid unsigned integer literal: {}",
-                    value
-                ))
-            })?;
-            if *bits <= 64 && parsed <= i64::MAX as u64 {
-                Ok(new_gint_expr(parsed as i64))
-            } else {
-                Ok(new_gbigint_expr(u64_to_twos_complement(parsed)))
-            }
+            Err(InterpreterError::NormalizerError(format!(
+                "Integer width u{} is not supported: only i64 integers are supported, found {}u{}",
+                bits, value, bits
+            )))
         }
 
         NewProc::BigIntLiteral(value) => {
@@ -83,35 +76,6 @@ pub fn normalize_ground<'ast>(proc: &NewProc<'ast>) -> Result<Expr, InterpreterE
             "Expected a ground type in new AST, found unsupported variant".to_string(),
         )),
     }
-}
-
-fn i64_to_twos_complement(v: i64) -> Vec<u8> {
-    let bytes = v.to_be_bytes();
-    let is_neg = v < 0;
-    let trim = if is_neg { 0xFF } else { 0x00 };
-    let mut start = 0;
-    while start < bytes.len() - 1 {
-        if bytes[start] != trim {
-            break;
-        }
-        if (bytes[start + 1] & 0x80 != 0) != is_neg {
-            break;
-        }
-        start += 1;
-    }
-    bytes[start..].to_vec()
-}
-
-fn u64_to_twos_complement(v: u64) -> Vec<u8> {
-    let bytes = v.to_be_bytes();
-    let mut start = 0;
-    while start < bytes.len() - 1 && bytes[start] == 0 {
-        if bytes[start + 1] & 0x80 != 0 {
-            break;
-        }
-        start += 1;
-    }
-    bytes[start..].to_vec()
 }
 
 fn decimal_str_to_twos_complement(s: &str) -> Result<Vec<u8>, InterpreterError> {
@@ -285,23 +249,13 @@ mod tests {
     }
 
     #[test]
-    fn signed_int_within_64_bits_compiles_as_gint() {
+    fn signed_int_with_i64_width_compiles_as_gint() {
         let proc = Proc::SignedIntLiteral {
             value: "-42",
-            bits: 32,
+            bits: 64,
         };
         let expr = normalize_ground(&proc).unwrap();
         assert_eq!(expr.expr_instance, Some(ExprInstance::GInt(-42)));
-    }
-
-    #[test]
-    fn signed_int_beyond_64_bits_compiles_as_gbigint() {
-        let proc = Proc::SignedIntLiteral {
-            value: "5",
-            bits: 128,
-        };
-        let expr = normalize_ground(&proc).unwrap();
-        assert_eq!(expr.expr_instance, Some(ExprInstance::GBigInt(vec![5])));
     }
 
     #[test]
@@ -317,36 +271,27 @@ mod tests {
     }
 
     #[test]
-    fn unsigned_int_within_i64_compiles_as_gint() {
-        let proc = Proc::UnsignedIntLiteral {
-            value: "42",
-            bits: 32,
-        };
-        let expr = normalize_ground(&proc).unwrap();
-        assert_eq!(expr.expr_instance, Some(ExprInstance::GInt(42)));
+    fn signed_ints_with_non_i64_width_are_rejected() {
+        for bits in [8u32, 16, 32, 128] {
+            match normalize_ground(&Proc::SignedIntLiteral { value: "5", bits }) {
+                Err(InterpreterError::NormalizerError(msg)) => {
+                    assert!(msg.contains(&format!("i{bits}")), "bits {bits}: {msg}")
+                }
+                other => panic!("expected NormalizerError for i{bits}, got {other:?}"),
+            }
+        }
     }
 
     #[test]
-    fn unsigned_int_beyond_i64_compiles_as_gbigint() {
-        let value = u64::MAX.to_string();
-        let proc = Proc::UnsignedIntLiteral {
-            value: &value,
-            bits: 64,
-        };
-        let expr = normalize_ground(&proc).unwrap();
-        assert!(matches!(expr.expr_instance, Some(ExprInstance::GBigInt(_))));
-    }
-
-    #[test]
-    fn invalid_unsigned_int_is_a_normalizer_error() {
-        let proc = Proc::UnsignedIntLiteral {
-            value: "-1",
-            bits: 64,
-        };
-        assert!(matches!(
-            normalize_ground(&proc),
-            Err(InterpreterError::NormalizerError(_))
-        ));
+    fn unsigned_ints_of_every_width_are_rejected() {
+        for bits in [8u32, 16, 32, 64, 128] {
+            match normalize_ground(&Proc::UnsignedIntLiteral { value: "5", bits }) {
+                Err(InterpreterError::NormalizerError(msg)) => {
+                    assert!(msg.contains(&format!("u{bits}")), "bits {bits}: {msg}")
+                }
+                other => panic!("expected NormalizerError for u{bits}, got {other:?}"),
+            }
+        }
     }
 
     #[test]
