@@ -2024,6 +2024,68 @@ mod frontier_determinism_tests {
         assert!(state_contains(&dag, &store, &at(&t, 3), &at(&e, 0), &mut memo).unwrap());
     }
 
+    /// R-COMM: the certifying committee is `bonds_of(floor(B))`. The oracle
+    /// reads it from the target's MAIN PARENT, so a bonding deploy landing on
+    /// one side of a fork gives the branches different electorates and each
+    /// clears the threshold alone.
+    #[tokio::test]
+    #[ignore = "red on dev pending #459 (committee read from the main parent)"]
+    async fn sibling_branches_are_certified_under_one_committee() {
+        let v = val();
+        let joiner = Bytes::from(vec![0x07u8; 65]);
+        let (floor, pre, plain, bonded, above) = (h(0), h(1), h(2), h(3), h(4));
+
+        let weighted = |hash: &Bytes, parents: Vec<Bytes>, num: i64, bonds: &[(&Bytes, i64)]| {
+            let mut meta = md(hash.clone(), parents, num, &v);
+            meta.weight_map = bonds
+                .iter()
+                .map(|(validator, stake)| ((*validator).clone(), *stake))
+                .collect();
+            meta
+        };
+
+        let dag = build_dag(vec![
+            weighted(&floor, vec![], 0, &[(&v, 100)]),
+            weighted(&pre, vec![floor.clone()], 1, &[(&v, 100)]),
+            // Two siblings above `pre`; the bonding deploy lands on one of them.
+            weighted(&plain, vec![pre.clone()], 2, &[(&v, 100)]),
+            weighted(&bonded, vec![pre.clone()], 2, &[(&v, 100), (&joiner, 400)]),
+            weighted(&above, vec![bonded.clone()], 3, &[
+                (&v, 100),
+                (&joiner, 400),
+            ]),
+        ]);
+        dag.put_cached_floor(plain.clone(), floor.clone()).unwrap();
+        dag.put_cached_floor(above.clone(), floor.clone()).unwrap();
+
+        let committee_of = |target: &Bytes| {
+            let target = target.clone();
+            let dag = &dag;
+            async move {
+                CliqueOracle::get_corresponding_weight_map(&target, dag)
+                    .await
+                    .expect("committee")
+            }
+        };
+        let on_plain: i64 = committee_of(&plain).await.values().sum();
+        let on_above: i64 = committee_of(&above).await.values().sum();
+        let at_floor: i64 = dag
+            .lookup(&floor)
+            .unwrap()
+            .expect("floor metadata")
+            .weight_map
+            .values()
+            .sum();
+
+        assert_eq!(
+            (on_plain, on_above),
+            (at_floor, at_floor),
+            "two blocks sharing a floor must be certified under that floor's \
+             committee; judging each branch under its own bonds lets both sides \
+             of a fork finalize independently"
+        );
+    }
+
     /// A multi-parent block with no recorded base has an underivable state
     /// lineage — the meet walk refuses rather than guesses.
     #[test]
