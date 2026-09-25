@@ -111,6 +111,7 @@ pub async fn handle_protocol_handshake(
                 }
             }
         }
+        Err(CommError::DnsResolutionFailed(_, _)) => {}
         Err(e) => {
             tracing::warn!(
                 "Failed to send protocol handshake response to {}: {}",

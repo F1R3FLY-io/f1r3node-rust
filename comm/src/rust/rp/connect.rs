@@ -388,6 +388,7 @@ where
             Err(CommError::WrongNetwork(peer_addr, msg)) => {
                 warn!("Can't connect to peer {}. {}", peer_addr, msg);
             }
+            Err(CommError::DnsResolutionFailed(_, _)) => {}
             Err(_) => {
                 warn!(
                     "An error occurred while trying to connect to peer: {:?}",

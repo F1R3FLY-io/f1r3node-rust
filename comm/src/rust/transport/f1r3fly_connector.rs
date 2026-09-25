@@ -157,7 +157,11 @@ impl Service<Uri> for F1r3flyConnector {
             };
 
             let addr = connector.extract_address(&uri).await.map_err(|e| {
-                tracing::error!(uri = %uri, error = %e, "F1r3flyConnector address resolution failed");
+                if matches!(&e, F1r3flyConnectorError::DnsResolutionError(_)) {
+                    tracing::debug!(uri = %uri, error = %e, "F1r3flyConnector address resolution failed");
+                } else {
+                    tracing::error!(uri = %uri, error = %e, "F1r3flyConnector address resolution failed");
+                }
                 Box::new(e) as Box<dyn StdError + Send + Sync>
             })?;
 
