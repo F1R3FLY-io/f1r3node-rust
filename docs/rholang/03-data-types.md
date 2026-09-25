@@ -98,7 +98,7 @@ See [Numeric Types](15-numeric-types.md) for full details. Summary:
 
 | Type | Suffix | Example | Proto |
 |------|--------|---------|-------|
-| Float | f32/f64 | `3.14f64` | `GDouble(fixed64)` |
+| Float | f64 | `3.14f64` | `GDouble(fixed64)` |
 | BigInt | n | `100n` | `GBigInt(bytes)` |
 | BigRat | r | `1r / 3r` | `GBigRat { numerator, denominator }` |
 | FixedPoint | p + scale | `1.50p2` | `GFixedPoint { unscaled, scale }` |

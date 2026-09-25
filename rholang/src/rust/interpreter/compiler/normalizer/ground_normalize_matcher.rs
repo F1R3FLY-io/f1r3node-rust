@@ -55,7 +55,13 @@ pub fn normalize_ground<'ast>(proc: &NewProc<'ast>) -> Result<Expr, InterpreterE
             Ok(new_gbigrat_expr(num_bytes, den_bytes))
         }
 
-        NewProc::FloatLiteral { value, .. } => {
+        NewProc::FloatLiteral { value, bits } => {
+            if *bits != 64 {
+                return Err(InterpreterError::NormalizerError(format!(
+                    "Float width f{} is not supported: only f64 floats are supported, found {}f{}",
+                    bits, value, bits
+                )));
+            }
             let f: f64 = value.parse().map_err(|_| {
                 InterpreterError::NormalizerError(format!("Invalid float literal: {}", value))
             })?;
@@ -403,6 +409,19 @@ mod tests {
             }),
             Err(InterpreterError::NormalizerError(_))
         ));
+    }
+
+    #[test]
+    fn float_literals_with_non_f64_width_are_rejected() {
+        for bits in [32u16, 128] {
+            let result = normalize_ground(&Proc::FloatLiteral { value: "1.0", bits });
+            match result {
+                Err(InterpreterError::NormalizerError(msg)) => {
+                    assert!(msg.contains(&format!("f{bits}")), "bits {bits}: {msg}")
+                }
+                other => panic!("expected NormalizerError for f{bits}, got {other:?}"),
+            }
+        }
     }
 
     #[test]

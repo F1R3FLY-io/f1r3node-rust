@@ -11,6 +11,7 @@ use models::rust::utils::{
     new_gbigint_expr, new_gbigrat_expr, new_gbool_expr, new_gdouble_expr, new_gfixedpoint_expr,
     new_gint_expr,
 };
+use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::env::Env;
 use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::test_utils::persistent_store_tester::create_test_space;
@@ -394,6 +395,35 @@ async fn float_comparison() {
         binop_expr!(eq, gdouble_par(3.14), gdouble_par(3.14)),
         new_gbool_expr(true)
     );
+}
+
+#[test]
+fn float_literals_other_than_f64_are_rejected_at_compile_time() {
+    for source in [
+        r#"new so(`rho:io:stdout`) in { so!(1.0f32) }"#,
+        r#"new so(`rho:io:stdout`) in { so!(1.0f128) }"#,
+        r#"new so(`rho:io:stdout`) in { so!(1.0f32 + 1.0f128) }"#,
+        r#"new so(`rho:io:stdout`) in { so!(1.0f32 + 1.0f64) }"#,
+    ] {
+        assert!(
+            matches!(
+                Compiler::source_to_adt(source),
+                Err(InterpreterError::NormalizerError(_))
+            ),
+            "expected NormalizerError for {source}"
+        );
+    }
+
+    for source in [
+        r#"new so(`rho:io:stdout`) in { so!(1.0f64) }"#,
+        r#"new so(`rho:io:stdout`) in { so!(1.0) }"#,
+        r#"new so(`rho:io:stdout`) in { so!(1.0 + 2.5f64) }"#,
+    ] {
+        assert!(
+            Compiler::source_to_adt(source).is_ok(),
+            "expected {source} to compile"
+        );
+    }
 }
 
 // ============================================================================
