@@ -73,6 +73,35 @@ impl fmt::Display for SortedUniqueBagError {
 
 impl std::error::Error for SortedUniqueBagError {}
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UniqueBagError {
+    DuplicateKey,
+    DistinctCountOverflow,
+    CardinalityOverflow,
+}
+
+impl fmt::Display for UniqueBagError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::DuplicateKey => "Bag unique stream repeats an endpoint",
+            Self::DistinctCountOverflow => "Bag distinct endpoint count exceeds usize::MAX",
+            Self::CardinalityOverflow => "Bag exact cardinality exceeds u128::MAX",
+        })
+    }
+}
+
+impl std::error::Error for UniqueBagError {}
+
+pub struct UniqueBagWriter<'a, 'b> {
+    inner: &'a mut SortedUniqueBagWriter<'b>,
+}
+
+impl UniqueBagWriter<'_, '_> {
+    pub fn push(&mut self, path: &[u8], multiplicity: Multiplicity) -> Result<(), UniqueBagError> {
+        self.inner.push_unique(path, multiplicity)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BagCodecError {
     CompactTrie(CompactTrieError),
@@ -268,20 +297,34 @@ impl SortedUniqueBagWriter<'_> {
         if self.has_previous && self.cursor.path() >= path {
             return Err(SortedUniqueBagError::NonAscending);
         }
+        self.push_unique(path, multiplicity)
+            .map_err(|error| match error {
+                UniqueBagError::DuplicateKey => SortedUniqueBagError::NonAscending,
+                UniqueBagError::DistinctCountOverflow => {
+                    SortedUniqueBagError::DistinctCountOverflow
+                }
+                UniqueBagError::CardinalityOverflow => SortedUniqueBagError::CardinalityOverflow,
+            })
+    }
+
+    fn push_unique(
+        &mut self,
+        path: &[u8],
+        multiplicity: Multiplicity,
+    ) -> Result<(), UniqueBagError> {
         let distinct_len = self
             .distinct_len
             .checked_add(1)
-            .ok_or(SortedUniqueBagError::DistinctCountOverflow)?;
+            .ok_or(UniqueBagError::DistinctCountOverflow)?;
         let exact_cardinality = self
             .exact_cardinality
             .checked_add(u128::from(multiplicity.get()))
-            .ok_or(SortedUniqueBagError::CardinalityOverflow)?;
+            .ok_or(UniqueBagError::CardinalityOverflow)?;
 
         self.cursor.move_to_path(path);
-        debug_assert!(
-            self.cursor.val().is_none(),
-            "strictly ascending bulk input cannot revisit an endpoint"
-        );
+        if self.cursor.val().is_some() {
+            return Err(UniqueBagError::DuplicateKey);
+        }
         self.cursor.set_val(multiplicity);
         self.has_previous = true;
         self.distinct_len = distinct_len;
@@ -334,6 +377,12 @@ impl Bag {
     }
 
     pub fn new() -> Self { Self::default() }
+
+    pub fn try_from_unique<E>(
+        producer: impl FnOnce(&mut UniqueBagWriter<'_, '_>) -> Result<(), E>,
+    ) -> Result<Self, E> {
+        Self::try_from_sorted_unique(|inner| producer(&mut UniqueBagWriter { inner }))
+    }
 
     /// Construct directly from a producer of strictly ascending unique paths.
     ///

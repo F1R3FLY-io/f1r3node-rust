@@ -4217,10 +4217,6 @@ pub struct ParBag {
 }
 
 /// Metric and singleton-cache accumulator paired with a streamed Bag writer.
-///
-/// The authoritative keys are inserted by `Bag::try_from_sorted_unique` on
-/// one moving zipper. This sidecar records the O(1) family metrics during that
-/// same pass, avoiding both generic insertion lookups and a repair traversal.
 pub(crate) struct CanonicalParBagAccumulator {
     metrics: ParFamilyMetrics,
     singleton_stable: Option<bool>,
@@ -4530,7 +4526,7 @@ impl ParBag {
     /// Seed compact singleton facts that do not retain a second complete
     /// protobuf image. Protobuf projection is an explicit reuse decision;
     /// ordinary singleton construction remains a cold one-shot value.
-    fn seed_singleton_derived_caches(
+    pub(crate) fn seed_singleton_derived_caches(
         &mut self,
         tag: ParComponentTag,
         key: &[u8],

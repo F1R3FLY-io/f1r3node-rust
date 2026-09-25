@@ -8,7 +8,7 @@ use pathmap::ring::{AlgebraicResult, DistributiveLattice, Lattice, SELF_IDENT};
 use proptest::collection::vec;
 use proptest::prelude::*;
 use rspace_plus_plus::rspace::bag::{
-    Bag, BagCodecError, BagDelta, BagError, Multiplicity, SortedUniqueBagError,
+    Bag, BagCodecError, BagDelta, BagError, Multiplicity, SortedUniqueBagError, UniqueBagError,
 };
 
 fn bag(entries: &[(&[u8], u64)]) -> Bag {
@@ -45,6 +45,63 @@ fn multiplicity_rejects_zero_and_detects_overflow() {
             requested: 3,
         })
     );
+}
+
+#[test]
+fn unique_stream_preserves_arbitrary_order_prefixes_and_failure_is_private() {
+    let entries =
+        [(&b"z"[..], 7), (&b"a\0z"[..], 3), (&b""[..], 2), (&b"a"[..], 5), (&b"a\0"[..], 11)];
+    let expected = bag(&entries);
+    let actual = Bag::try_from_unique(|writer| {
+        let mut buffer = Vec::new();
+        for (path, count) in entries {
+            buffer.clear();
+            buffer.extend_from_slice(path);
+            writer.push(&buffer, Multiplicity::new(count).unwrap())?;
+        }
+        Ok::<(), UniqueBagError>(())
+    })
+    .unwrap();
+    assert_eq!(actual, expected);
+    assert_eq!(actual.compact_bytes(), expected.compact_bytes());
+    for repeat in [b"".as_slice(), b"z", b"a\0z"] {
+        let rejected = Bag::try_from_unique(|writer| {
+            for (path, count) in entries {
+                writer.push(path, Multiplicity::new(count).unwrap())?;
+            }
+            writer.push(repeat, Multiplicity::ONE)
+        });
+        assert_eq!(rejected.unwrap_err(), UniqueBagError::DuplicateKey);
+    }
+    let refused = Bag::try_from_unique(|writer| {
+        writer.push(b"private", Multiplicity::ONE).unwrap();
+        Err::<(), _>("producer failure")
+    });
+    assert_eq!(refused.unwrap_err(), "producer failure");
+    assert_eq!(actual, expected);
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 128, failure_persistence: None, ..ProptestConfig::default() })]
+    #[test]
+    fn unique_stream_matches_point_insertion_in_input_order(
+        entries in vec((vec(any::<u8>(), 0..40), 1u64..1000), 0..100),
+    ) {
+        let mut seen = std::collections::BTreeSet::new();
+        let mut expected = Bag::new();
+        let unique: Vec<_> = entries.into_iter().filter(|(key, _)| seen.insert(key.clone())).collect();
+        let actual = Bag::try_from_unique(|writer| {
+            for (key, count) in &unique {
+                let count = Multiplicity::new(*count).unwrap();
+                writer.push(key, count)?;
+                expected.insert_many(key, count).unwrap();
+            }
+            Ok::<(), UniqueBagError>(())
+        }).unwrap();
+        prop_assert_eq!(actual.cardinality(), expected.cardinality());
+        prop_assert_eq!(actual.distinct_len(), expected.distinct_len());
+        prop_assert_eq!(actual.compact_bytes(), expected.compact_bytes());
+    }
 }
 
 #[test]

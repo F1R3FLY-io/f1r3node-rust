@@ -17194,6 +17194,143 @@ Source identities: `par_construction.rs`
 | `heap-ground-wide-r1.zst` | `1e94afaae22e5be05a21d11b153f9f20af0950477263cb26e200200d72e8601e` |
 | `heap-ground-wide-r1-report.txt` | `354bb9e1a72e12d5087488e6ae646be2b32e7f5a93fe14ba0df6c805a7e71ff6` |
 
+## J-224 — Compact fragments and one-cursor root publication (2026-09-25)
+
+**Scope and hypothesis.** Continue task 8516 from committed ground encoder
+batch `56817d936`. J-223's profile identifies repeated root-key allocation and
+point insertion plus singleton program-array retention. Group their repairs
+into one formal-first implementation/qualification batch. Do not change the
+semantic occurrence comparator, protobuf order, PathMap crate or public language.
+
+**Rejected assumption.** The semantic comparator orders tag, prefix-free score,
+then protobuf body. The stored key appends an eight-byte score-length trailer.
+For equal scores and prefix-related bodies, that trailer can reverse complete
+key order. Prefix-free scores alone do not justify passing occurrence iteration
+to the existing sorted-unique writer. The synthetic score `[1]`, bodies `[]`
+and `[0]`, and common trailer `[0,0,0,0,0,0,0,1]` demonstrate the distinction.
+No artificial score-length limit, sorting of handles or change to semantic
+ordering is permitted to paper over this obligation.
+
+**Publication design.** Add a unique-but-not-necessarily-sorted Bag producer
+boundary using the existing guarded moving cursor. Keep the sorted writer's
+stricter contract. Reuse common insertion/count checks, reject an existing
+endpoint, and discard the private partial trie on any error. The cursor's
+`move_to_path` already ascends to the common prefix and descends without an
+ascending-input requirement. Reuse the canonical family-metric accumulator;
+preserve singleton score/stability caches only for a genuine multiplicity-one
+singleton. Root emission reuses one key buffer and directly copies borrowed
+literal score/protobuf fragments; composite programs retain their iterative
+cursors. No vector of keys or decoded components is retained.
+
+**Storage design.** Score programs are immutable: a literal fragment handle
+can replace a one-element program allocation; composite pieces remain an owned
+program. Protobuf programs are mutable during planning and EZipper tail transfer:
+represent empty/single/multiple programs with a common borrowed view, push and
+take operations. Construct singletons directly rather than allocating and then
+compacting a vector. Do not add byte slabs, checkpoint fields or decoder-frame
+state. Verify actual type sizes and deep/mixed costs before acceptance.
+
+**Formal boundary / native obligations.** `FragmentStoragePublication` models
+compact-program emission/aggregate equality, append/take ownership, key
+injectivity, reusable-buffer independence, unique insertion, ordered successful
+stream observations and failed publication. Its injectivity model represents
+the fixed-width injective score-length trailer as one natural-number token;
+the Rust binding must independently check the real eight-byte trailer and
+exact lengths. It does not prove the allocator, native cursor or cached metrics.
+Compile and kernel-check before production edits. Bind empty/single/multiple
+transitions, shared bytes, EZipper extraction, recursive duplicate rewind,
+all family metrics, multiplicities and singleton caches. Test descending and
+interleaved keys, prefix-related keys, duplicate rejection and producer failure
+cleanup, including the explicit trailer-order counterexample. Compare exact
+old/new key bytes, full witnesses, counts, retained bytes and small-stack gates.
+Measure wide/distinct/duplicate and mixed/deep cells as one consolidated batch;
+source simplification is not performance acceptance.
+
+**Formal prerequisite and implementation.** Compilation and kernel checking
+pass before implementation, including all twelve new
+`FragmentStoragePublication` statements. Compilation peaks at 400.9 MiB;
+kernel checking at 278.6 MiB; both use zero swap. Receipt SHA-256 values under
+`target/verification/protobuf-attach-8516/` are
+`fragment-storage-proof-r1.log`:
+`62423a53d2c5d38ff70ceec4bd59fce62c3893d7a27ae17448cac807e116b701`, and
+`fragment-storage-kernel-r1.log`:
+`8a7ac49495a8c23b089cfb315988267ce0c90a7fd7c710009b7b02ea22238f18`.
+The implementation now shares checked cursor insertion across unique and sorted
+writers, uses the existing family accumulator, preserves genuine singleton score
+caches, and keeps semantic occurrence ordering untouched. Score literals are
+inline fragment handles; protobuf programs inline one piece and own vectors
+only for multiple pieces. Singletons are constructed directly. Reusable root-key
+emission copies literals without starting cursors. Tests include the actual
+eight-byte trailer inversion, arbitrary-byte programs, producer refusal,
+randomized arbitrary-order unique streams, independent previous publication,
+all nine families and singleton cache allocation parity. Initial release test
+compilation passes (2.9 GiB service peak, zero swap).
+
+**VERIFIED native qualification.** The consolidated release run passes 687/687
+models tests (two skipped) in 59.558 seconds and 35/35 Bag tests (none skipped)
+in 0.543 seconds. The capped service peaks at 2.5 GiB with zero swap. The new
+properties bind compact-program append/take/emission, real eight-byte trailer
+ordering, arbitrary-order unique publication, every component family, singleton
+cache allocation parity, and allocation-free warmed literal-key emission.
+This is not full-workspace or final resource acceptance. Selected-file rustfmt
+and diff whitespace checks pass; the only post-build source edit removes an
+empty documentation line.
+
+**MEASURED paired pilots.** The release measurement binary has SHA-256
+`8c8c9ccc0147a10df6a78b1c54316a12c1942222d8097d8684bec85b252fac13`.
+The existing collector uses the same frozen/planned arms, fragmented Par entry,
+per-arm 4/6 GiB high/max limits, zero swap, 180-second limit and one-core affinity.
+CPU admission stops `pilot-publication-r1` after the distinct-width-one pair;
+`pilot-publication-distinct-r2` completes widths 16/256/4096, then admission
+refuses the first duplicate pair. No refused cell supplies a measurement.
+`pilot-publication-duplicate-r3` completes widths 1/16/256/4096 and
+`pilot-publication-deep-r3` completes ENot and mixed-metadata depths 64/256/1024.
+Every completed pair has matching protobuf, compact, bincode, metadata,
+multiplicity, error and remaining-input witnesses. These are single cold,
+instrumented pilot pairs, not statistically established latency improvements.
+
+| Cell | Frozen / planned decode ms | Frozen / planned allocation calls | Frozen / planned requested bytes | Frozen / planned scoped peak bytes |
+|---|---:|---:|---:|---:|
+| Distinct width 4,096 | 3.434 / 6.739 | 32,701 / 45,366 | 5,293,333 / 6,947,905 | 416,984 / 1,809,026 |
+| Duplicate width 4,096 | 2.105 / 2.050 | 16,441 / 32,849 | 4,203,810 / 415,893 | 5,978 / 5,066 |
+| ENot depth 1,024 | 10,814.724 / 14.500 | 46,264,189 / 62,695 | 4,296,266,060 / 16,056,914 | 3,643,832 / 3,095,922 |
+| Mixed metadata depth 1,024 | 13,815.867 / 43.289 | 56,523,641 / 162,918 | 5,045,142,098 / 44,662,739 | 13,280,643 / 14,268,531 |
+
+J-223 to J-224 distinct allocation calls fall from 90,129 to 45,366, requested
+bytes from 9,501,323 to 6,947,905, and scoped peak from 2,071,732 to 1,809,026.
+Duplicate peak is 5,066 bytes at all widths 16/256/4096. The one-element planned
+pilot remains slower (0.102 versus 0.060 ms), and distinct width remains slower
+and larger than frozen. Mixed-metadata peak remains about 7.4% higher at depth
+1,024; deep time savings do not waive it. Scoped peaks measure allocator net
+balance, not RSS or allocator-internal reallocation peaks.
+
+**MEASURED attribution / next hypothesis.** Headless `heaptrack --record-only`
+and `heaptrack_print --merge-backtraces=0` succeed with 73.5/52.5 MiB service
+peaks and zero swap. Ground score, protobuf and canonical-segment ownership
+still produce repeated leaf allocations. Source-correlated retained tables
+include occurrence nodes (393.22 KB), component nodes (360.45 KB), and protobuf
+nodes (196.61 KB). Optimizer-folded allocator symbols are not reliable element
+type labels; the report also includes a second witness decode and output Drop,
+so its whole-process allocation totals are not decode-only metrics. The next
+task-8516 batch must address shared fragment storage and retained metadata,
+preserving owned/shared imports, candidate rewind and addressable index range.
+An extra checkpoint word or geometric pool capacity is a cost to measure, not
+an assumed free optimization. No additional task is closed and no new feature
+or external dependency is introduced.
+
+**Receipts.** Paths below are relative to
+`target/verification/protobuf-attach-8516/`.
+
+| Receipt | SHA-256 |
+|---|---|
+| `publication-native-r1.log` | `685813e215f91e619868b67d94378f8c93d3e3b93e4df7e3203051cc44ba309c` |
+| `pilot-publication-r1/observations.jsonl` | `b40a00d58e0f8df4adfeac6643a4f8b5a90feea6b3c8cf6bdfaf718d06007d9e` |
+| `pilot-publication-distinct-r2/observations.jsonl` | `ce864a5da0bdb357cd0ce8a94e7ddf8a52ab620f550662e4296b9b46f86ed354` |
+| `pilot-publication-duplicate-r3/observations.jsonl` | `0dfd98e152fd892e7e097093b0330b74d7a739ffdab7a87a263fe3c7e3fee6ed` |
+| `pilot-publication-deep-r3/observations.jsonl` | `7296a89542ff296ed5f40a276d16a5ea5a45bf1f9f7723d57385dc14ffbfb51a` |
+| `heap-publication-wide-r1.zst` | `3f35b851ffbd79f18ecabad5f39d98d129b8d22823aa7673ab31d1a6b00b37ae` |
+| `heap-publication-wide-r1-report.txt` | `c074275f181103ba3c9071145cf8972105f2f3b0b6bd88f68c79bcf409e2b3c5` |
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

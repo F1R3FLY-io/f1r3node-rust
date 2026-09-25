@@ -32,13 +32,15 @@ pub mod substitution_cost;
 use pathmap::zipper::{ZipperIteration, ZipperMoving, ZipperReadOnlyIteration};
 use pathmap::PathMap;
 use prost::encoding::{encoded_len_varint, key_len};
+use rspace_plus_plus::rspace::bag::{Bag, UniqueBagError};
 use rspace_plus_plus::rspace::pathmap_mutation::BarrierProvider;
 
 use super::canonical_path::tag as path_tag;
 use super::epathmap_trie_codec::{self, EPathMapMode, EPathMapRepr, EpmReprOwner};
 use super::par_bag::{
-    canonical_ezipper_region_parts, CanonicalParBagKey, Multiplicity, OwnedCanonicalEzipper,
-    ParBag, ParBagComponent, ParComponentTag, PAR_BAG_KEY_DOMAIN,
+    canonical_ezipper_region_parts, CanonicalKeyMetadata, CanonicalParBagAccumulator,
+    CanonicalParBagKey, Multiplicity, OwnedCanonicalEzipper, ParBag, ParBagCodecError,
+    ParBagComponent, ParComponentTag, PAR_BAG_KEY_DOMAIN,
 };
 use super::rholang::canonical_par_identity::insert_semantic_par_identity;
 use super::rholang::canonical_semantics::{
@@ -151,6 +153,8 @@ pub enum ParConstructionError {
         supplied: usize,
     },
     Multiplicity(super::par_bag::BagError),
+    Publication(UniqueBagError),
+    FamilyMetrics(ParBagCodecError),
     InvalidCanonicalEzipperRegion,
 }
 
@@ -178,6 +182,8 @@ impl fmt::Display for ParConstructionError {
                 "{context} requires {expected} planned Par children but received {supplied}"
             ),
             Self::Multiplicity(error) => error.fmt(formatter),
+            Self::Publication(error) => error.fmt(formatter),
+            Self::FamilyMetrics(error) => error.fmt(formatter),
             Self::InvalidCanonicalEzipperRegion => {
                 formatter.write_str("invalid canonical EZipper protobuf region")
             }
@@ -189,6 +195,8 @@ impl std::error::Error for ParConstructionError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Multiplicity(error) => Some(error),
+            Self::Publication(error) => Some(error),
+            Self::FamilyMetrics(error) => Some(error),
             Self::LengthOverflow(_)
             | Self::MissingParSlot { .. }
             | Self::ExtraParSlots { .. }
@@ -252,7 +260,17 @@ impl Iterator for ScoreByteCursor<'_> {
         loop {
             match self.work.pop()? {
                 ScoreCursorOp::Score(score) => {
-                    for piece in self.arena.scores[score.0].pieces.iter().rev() {
+                    let pieces = match &self.arena.scores[score.0].pieces {
+                        ScoreProgram::Literal(fragment) => {
+                            self.work.push(ScoreCursorOp::Bytes {
+                                fragment: *fragment,
+                                offset: 0,
+                            });
+                            continue;
+                        }
+                        ScoreProgram::Composite(pieces) => pieces,
+                    };
+                    for piece in pieces.iter().rev() {
                         self.work.push(match *piece {
                             ScorePiece::Bytes(fragment) => ScoreCursorOp::Bytes {
                                 fragment,
@@ -361,8 +379,23 @@ impl Iterator for ScoreByteCursor<'_> {
 }
 
 struct ScoreNode {
-    pieces: Vec<ScorePiece>,
+    pieces: ScoreProgram,
     encoded_len: usize,
+}
+
+enum ScoreProgram {
+    Literal(usize),
+    Composite(Box<[ScorePiece]>),
+}
+
+impl From<Vec<ScorePiece>> for ScoreProgram {
+    fn from(pieces: Vec<ScorePiece>) -> Self {
+        if let [ScorePiece::Bytes(fragment)] = pieces.as_slice() {
+            Self::Literal(*fragment)
+        } else {
+            Self::Composite(pieces.into_boxed_slice())
+        }
+    }
 }
 
 #[cfg(test)]
@@ -397,6 +430,10 @@ mod protobuf_construction_resource_tests;
 #[path = "../../tests/support/planned_ground_leaves.rs"]
 mod planned_ground_leaf_tests;
 
+#[cfg(test)]
+#[path = "../../tests/support/planned_fragment_publication.rs"]
+mod planned_fragment_publication_tests;
+
 enum ProtoPiece {
     Bytes(Box<[u8]>),
     SharedBytes(Box<prost::bytes::Bytes>),
@@ -406,9 +443,62 @@ enum ProtoPiece {
 }
 
 struct ProtoNode {
-    pieces: Vec<ProtoPiece>,
+    pieces: ProtoProgram,
     encoded_len: usize,
     zero_count: usize,
+}
+
+enum ProtoProgram {
+    One(ProtoPiece),
+    Many(Vec<ProtoPiece>),
+}
+
+impl Default for ProtoProgram {
+    fn default() -> Self { Self::Many(Vec::new()) }
+}
+
+impl From<Vec<ProtoPiece>> for ProtoProgram {
+    fn from(mut pieces: Vec<ProtoPiece>) -> Self {
+        if pieces.len() == 1 {
+            Self::One(pieces.pop().unwrap())
+        } else {
+            Self::Many(pieces)
+        }
+    }
+}
+
+impl ProtoProgram {
+    fn as_slice(&self) -> &[ProtoPiece] {
+        match self {
+            Self::One(piece) => std::slice::from_ref(piece),
+            Self::Many(pieces) => pieces,
+        }
+    }
+    fn get(&self, index: usize) -> Option<&ProtoPiece> { self.as_slice().get(index) }
+    fn push(&mut self, piece: ProtoPiece) {
+        match self {
+            Self::Many(pieces) if !pieces.is_empty() => pieces.push(piece),
+            Self::Many(_) => *self = Self::One(piece),
+            Self::One(_) => {
+                let Self::One(previous) = std::mem::take(self) else {
+                    unreachable!()
+                };
+                *self = Self::Many(vec![previous, piece]);
+            }
+        }
+    }
+    fn into_vec(self) -> Vec<ProtoPiece> {
+        match self {
+            Self::One(piece) => vec![piece],
+            Self::Many(pieces) => pieces,
+        }
+    }
+}
+
+impl<'a> IntoIterator for &'a ProtoProgram {
+    type Item = &'a ProtoPiece;
+    type IntoIter = std::slice::Iter<'a, ProtoPiece>;
+    fn into_iter(self) -> Self::IntoIter { self.as_slice().iter() }
 }
 
 /// One operation in the generated-schema construction walk.
@@ -1206,7 +1296,7 @@ impl ParConstruction {
         }
         let id = PlannedScore(self.scores.len());
         self.scores.push(ScoreNode {
-            pieces,
+            pieces: pieces.into(),
             encoded_len,
         });
         Ok(id)
@@ -1221,10 +1311,15 @@ impl ParConstruction {
 
     fn score_from_owned(
         &mut self,
-        canonical_score: Vec<u8>,
+        canonical_score: impl Into<Box<[u8]>>,
     ) -> Result<PlannedScore, ParConstructionError> {
         let fragment = self.bytes(canonical_score);
-        self.score_from_pieces(vec![ScorePiece::Bytes(fragment)])
+        let id = PlannedScore(self.scores.len());
+        self.scores.push(ScoreNode {
+            pieces: ScoreProgram::Literal(fragment),
+            encoded_len: self.byte_fragments[fragment].len(),
+        });
+        Ok(id)
     }
 
     /// Import one already-computed canonical score tree into the fragment
@@ -1244,8 +1339,7 @@ impl ParConstruction {
         let mut bytes = Vec::with_capacity(10);
         bytes.extend_from_slice(&[1, 1]);
         bytes.extend_from_slice(&((value as u64) ^ (1u64 << 63)).to_be_bytes());
-        let bytes = self.bytes(bytes);
-        self.score_from_pieces(vec![ScorePiece::Bytes(bytes)])
+        self.score_from_owned(bytes)
     }
 
     /// One canonical string score leaf.
@@ -1278,8 +1372,7 @@ impl ParConstruction {
             }
         }
         bytes.extend_from_slice(&[0, 0]);
-        let bytes = self.bytes(bytes);
-        self.score_from_pieces(vec![ScorePiece::Bytes(bytes)])
+        self.score_from_owned(bytes)
     }
 
     /// A canonical byte-array score atom whose payload remains a streaming
@@ -1673,10 +1766,14 @@ impl ParConstruction {
         Ok(())
     }
 
-    fn push_proto_node(&mut self, pieces: Vec<ProtoPiece>) -> Result<usize, ParConstructionError> {
+    fn push_proto_node(
+        &mut self,
+        pieces: impl Into<ProtoProgram>,
+    ) -> Result<usize, ParConstructionError> {
+        let pieces = pieces.into();
         let mut encoded_len = 0usize;
         let mut zero_count = 0usize;
-        for piece in &pieces {
+        for piece in pieces.as_slice() {
             let opaque_bytes: Option<&[u8]> = match piece {
                 ProtoPiece::Bytes(bytes) => Some(bytes),
                 ProtoPiece::SharedBytes(bytes) => Some(bytes),
@@ -1738,7 +1835,7 @@ impl ParConstruction {
     }
 
     fn wrap_proto_node(&mut self, tag: u32, child: usize) -> Result<usize, ParConstructionError> {
-        self.push_proto_node(vec![ProtoPiece::Node { tag, node: child }])
+        self.push_proto_node(ProtoProgram::One(ProtoPiece::Node { tag, node: child }))
     }
 
     fn component_from_proto(
@@ -2007,7 +2104,7 @@ impl ParConstruction {
             tag: 1,
             node: map_protobuf,
         }];
-        pieces.append(&mut self.protobuf_nodes[tail].pieces);
+        pieces.extend(std::mem::take(&mut self.protobuf_nodes[tail].pieces).into_vec());
         let zipper_protobuf = self.push_proto_node(pieces)?;
         let expr_protobuf = self.wrap_proto_node(33, zipper_protobuf)?;
         Ok(self.component_from_proto(ParComponentTag::Expr, score, expr_protobuf, false, None))
@@ -2071,9 +2168,9 @@ impl ParConstruction {
         let (encoded_score, encoded_protobuf) = key.parts();
         let score = self.score_from_encoded(encoded_score)?;
         let protobuf = self.push_proto_node(if encoded_protobuf.is_empty() {
-            Vec::new()
+            ProtoProgram::default()
         } else {
-            vec![ProtoPiece::Bytes(encoded_protobuf.into())]
+            ProtoProgram::One(ProtoPiece::Bytes(encoded_protobuf.into()))
         })?;
         Ok(self.component_from_proto(T::TAG, score, protobuf, key.canonical_path_stable(), None))
     }
@@ -2087,12 +2184,11 @@ impl ParConstruction {
         canonical: OwnedCanonicalEzipper,
     ) -> Result<PlannedComponent, ParConstructionError> {
         let (encoded_score, encoded_protobuf) = canonical.into_parts();
-        let fragment = self.bytes(encoded_score);
-        let score = self.score_from_pieces(vec![ScorePiece::Bytes(fragment)])?;
+        let score = self.score_from_owned(encoded_score)?;
         let protobuf = self.push_proto_node(if encoded_protobuf.is_empty() {
-            Vec::new()
+            ProtoProgram::default()
         } else {
-            vec![ProtoPiece::Bytes(encoded_protobuf)]
+            ProtoProgram::One(ProtoPiece::Bytes(encoded_protobuf))
         })?;
         Ok(self.component_from_proto(ParComponentTag::Expr, score, protobuf, false, None))
     }
@@ -2119,9 +2215,9 @@ impl ParConstruction {
         let snapshot_score = self.score_bytes(parts.snapshot)?;
         let score = semantics::rpb3_pathmap_score(self, true, snapshot_score, connective_used)?;
         let protobuf = self.push_proto_node(if encoded_protobuf.is_empty() {
-            Vec::new()
+            ProtoProgram::default()
         } else {
-            vec![ProtoPiece::Bytes(encoded_protobuf.into())]
+            ProtoProgram::One(ProtoPiece::Bytes(encoded_protobuf.into()))
         })?;
         Ok((
             self.component_from_proto(ParComponentTag::Expr, score, protobuf, false, None),
@@ -2155,9 +2251,9 @@ impl ParConstruction {
         #[cfg(feature = "protobuf-projection-experiment")]
         substitution_cost::record(substitution_cost::Event::ImportShared);
         let protobuf = self.push_proto_node(if encoded_protobuf.is_empty() {
-            Vec::new()
+            ProtoProgram::default()
         } else {
-            vec![ProtoPiece::SharedBytes(Box::new(encoded_protobuf))]
+            ProtoProgram::One(ProtoPiece::SharedBytes(Box::new(encoded_protobuf)))
         })?;
         Ok(Some(self.component_from_proto(
             T::TAG,
@@ -2518,9 +2614,9 @@ impl ParConstruction {
         let (canonical_segment, stable) = self.expr_canonical_segment(shell, &[])?;
         let score = self.score_from_owned(encoded_score)?;
         let protobuf = self.push_proto_node(if encoded_protobuf.is_empty() {
-            Vec::new()
+            ProtoProgram::default()
         } else {
-            vec![ProtoPiece::Bytes(encoded_protobuf.into_boxed_slice())]
+            ProtoProgram::One(ProtoPiece::Bytes(encoded_protobuf.into_boxed_slice()))
         })?;
         let component = self.component_from_proto(
             ParComponentTag::Expr,
@@ -3847,9 +3943,9 @@ impl ParConstruction {
             let zero_count = protobuf.iter().filter(|&&byte| byte == 0).count();
             self.protobuf_nodes.push(ProtoNode {
                 pieces: if protobuf.is_empty() {
-                    Vec::new()
+                    ProtoProgram::default()
                 } else {
-                    vec![ProtoPiece::Bytes(protobuf)]
+                    ProtoProgram::One(ProtoPiece::Bytes(protobuf))
                 },
                 encoded_len,
                 zero_count,
@@ -3959,16 +4055,34 @@ impl ParConstruction {
         #[cfg(feature = "protobuf-projection-experiment")]
         substitution_cost::record(substitution_cost::Event::BeginFinish);
         let planned = &self.pars[root.0];
-        let mut components = ParBag::new();
-        for occurrence in OccurrenceIter::new(&self.occurrence_nodes, planned.occurrence_root) {
-            let component = &self.components[occurrence.component.0];
-            let key = self.component_key(occurrence.component)?;
-            components.insert_planned_key(
-                component.tag,
-                &key,
-                occurrence.multiplicity,
-                component.canonical_path_stable,
-            )?;
+        let mut accumulator = CanonicalParBagAccumulator::new();
+        let mut key = Vec::new();
+        let mut singleton_tag = None;
+        let components = Bag::try_from_unique(|writer| {
+            for occurrence in OccurrenceIter::new(&self.occurrence_nodes, planned.occurrence_root) {
+                let component = &self.components[occurrence.component.0];
+                self.component_key_into(occurrence.component, &mut key)?;
+                writer
+                    .push(&key, occurrence.multiplicity)
+                    .map_err(ParConstructionError::Publication)?;
+                accumulator
+                    .record_prevalidated(occurrence.multiplicity, &CanonicalKeyMetadata {
+                        tag: component.tag,
+                        body_len: self.protobuf_nodes[component.protobuf].encoded_len,
+                        canonical_path_stable: component.canonical_path_stable,
+                    })
+                    .map_err(ParConstructionError::FamilyMetrics)?;
+                if self.occurrence_distinct_len(planned.occurrence_root) == 1
+                    && occurrence.multiplicity == Multiplicity::ONE
+                {
+                    singleton_tag = Some(component.tag);
+                }
+            }
+            Ok::<(), ParConstructionError>(())
+        })?;
+        let mut components = accumulator.finish(components);
+        if let Some(tag) = singleton_tag {
+            components.seed_singleton_derived_caches(tag, &key, None);
         }
         let result = Par::from_parts(
             components,
@@ -3990,6 +4104,16 @@ impl ParConstruction {
     }
 
     fn component_key(&self, component: PlannedComponent) -> Result<Vec<u8>, ParConstructionError> {
+        let mut out = Vec::new();
+        self.component_key_into(component, &mut out)?;
+        Ok(out)
+    }
+
+    fn component_key_into(
+        &self,
+        component: PlannedComponent,
+        out: &mut Vec<u8>,
+    ) -> Result<(), ParConstructionError> {
         let component = &self.components[component.0];
         let score_len = self.scores[component.score.0].encoded_len;
         let body_len = self.protobuf_nodes[component.protobuf].encoded_len;
@@ -4000,23 +4124,21 @@ impl ParConstruction {
             .and_then(|n| n.checked_add(body_len))
             .and_then(|n| n.checked_add(std::mem::size_of::<u64>()))
             .ok_or(ParConstructionError::LengthOverflow("RPB3 component key"))?;
-        let mut out = Vec::with_capacity(capacity);
+        let trailer = u64::try_from(score_len)
+            .map_err(|_| ParConstructionError::LengthOverflow("RPB3 score trailer"))?;
+        out.clear();
+        out.reserve(capacity);
         out.extend_from_slice(&PAR_BAG_KEY_DOMAIN);
         out.push(component.tag.byte());
-        self.emit_score(component.score, &mut out);
-        self.emit_proto(component.protobuf, &mut out);
-        let score_len = u64::try_from(score_len)
-            .map_err(|_| ParConstructionError::LengthOverflow("RPB3 score trailer"))?;
-        out.extend_from_slice(&score_len.to_be_bytes());
+        self.emit_score(component.score, out);
+        self.emit_proto(component.protobuf, out);
+        out.extend_from_slice(&trailer.to_be_bytes());
         debug_assert_eq!(out.len(), capacity);
         #[cfg(feature = "protobuf-projection-experiment")]
         substitution_cost::record(substitution_cost::Event::EmitRootKey(out.len()));
-        Ok(out)
+        Ok(())
     }
 
-    /// Compare exact eventual RPB3 keys without constructing either key.
-    /// Both the prefix-free score and canonical protobuf tie-break are lazy
-    /// cursors over arena fragments.
     fn compare_components(&self, left: PlannedComponent, right: PlannedComponent) -> Ordering {
         let left = &self.components[left.0];
         let right = &self.components[right.0];
@@ -4045,9 +4167,9 @@ impl ParConstruction {
     }
 
     fn score_fragment(&self, root: PlannedScore) -> Option<&[u8]> {
-        match self.scores[root.0].pieces.as_slice() {
-            [] => Some(&[]),
-            [ScorePiece::Bytes(fragment)] => Some(&self.byte_fragments[*fragment]),
+        match &self.scores[root.0].pieces {
+            ScoreProgram::Literal(fragment) => Some(&self.byte_fragments[*fragment]),
+            ScoreProgram::Composite(pieces) if pieces.is_empty() => Some(&[]),
             _ => None,
         }
     }
@@ -4062,7 +4184,11 @@ impl ParConstruction {
     }
 
     fn emit_score(&self, root: PlannedScore, out: &mut Vec<u8>) {
-        out.extend(ScoreByteCursor::new(self, root));
+        if let Some(bytes) = self.score_fragment(root) {
+            out.extend_from_slice(bytes);
+        } else {
+            out.extend(ScoreByteCursor::new(self, root));
+        }
     }
 
     fn emit_par(&self, root: PlannedPar, out: &mut Vec<u8>) {
@@ -4070,7 +4196,11 @@ impl ParConstruction {
     }
 
     fn emit_proto(&self, root: usize, out: &mut Vec<u8>) {
-        self.emit_wire(WireRoot::Proto(root), out);
+        if let Some(bytes) = self.protobuf_fragment(root) {
+            out.extend_from_slice(bytes);
+        } else {
+            self.emit_wire(WireRoot::Proto(root), out);
+        }
     }
 
     /// The one wire-emission PDA shared by root `Par` serialization and by the
@@ -4089,7 +4219,7 @@ impl ParConstruction {
         let start = self.protobuf_nodes.len();
         let root = start;
         self.protobuf_nodes.push(ProtoNode {
-            pieces: Vec::new(),
+            pieces: ProtoProgram::default(),
             encoded_len: 0,
             zero_count: 0,
         });
@@ -4215,7 +4345,7 @@ impl ParConstruction {
                             pieces.push(ProtoPiece::Par { tag: 2, par });
                         }
                         self.protobuf_nodes.push(ProtoNode {
-                            pieces,
+                            pieces: pieces.into(),
                             encoded_len: 0,
                             zero_count: 0,
                         });
@@ -4240,7 +4370,7 @@ impl ParConstruction {
         for id in (start..self.protobuf_nodes.len()).rev() {
             let mut len = 0usize;
             let mut zero_count = 0usize;
-            for piece in &self.protobuf_nodes[id].pieces {
+            for piece in self.protobuf_nodes[id].pieces.as_slice() {
                 let (add, add_zeroes) = match piece {
                     ProtoPiece::Bytes(bytes) => {
                         (bytes.len(), bytes.iter().filter(|&&byte| byte == 0).count())
@@ -4332,9 +4462,9 @@ impl ParConstruction {
             self.protobuf_nodes.push(ProtoNode {
                 encoded_len: bytes.len(),
                 pieces: if bytes.is_empty() {
-                    Vec::new()
+                    ProtoProgram::default()
                 } else {
-                    vec![ProtoPiece::Bytes(bytes.into_boxed_slice())]
+                    ProtoProgram::One(ProtoPiece::Bytes(bytes.into_boxed_slice()))
                 },
                 zero_count,
             });
@@ -4345,7 +4475,7 @@ impl ParConstruction {
         }
         let node = self.protobuf_nodes.len();
         self.protobuf_nodes.push(ProtoNode {
-            pieces: Vec::new(),
+            pieces: ProtoProgram::default(),
             encoded_len: 0,
             zero_count: 0,
         });

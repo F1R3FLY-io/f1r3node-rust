@@ -573,3 +573,114 @@ Print Assumptions owned_fragment_has_exact_payload.
 Print Assumptions flattened_fixed_scale_mutant_is_detected.
 
 End GroundLeafConstruction.
+
+Module FragmentStoragePublication.
+
+Section Programs.
+Context {A : Type}.
+Inductive program := Empty | One (value : A) | Many (values : list A).
+Definition view value :=
+  match value with Empty => [] | One x => [x] | Many xs => xs end.
+Definition pack values :=
+  match values with [] => Empty | [x] => One x | _ => Many values end.
+Definition push value next :=
+  match value with
+  | Empty => One next
+  | One previous => Many [previous; next]
+  | Many values => Many (values ++ [next])
+  end.
+Definition take value := (Empty, view value).
+
+Theorem pack_refines values : view (pack values) = values.
+Proof. destruct values as [|x [|y rest]]; reflexivity. Qed.
+Theorem append_refines value next : view (push value next) = view value ++ [next].
+Proof. destruct value; reflexivity. Qed.
+Theorem take_preserves_order_and_clears_owner value :
+  view (fst (take value)) = [] /\ snd (take value) = view value.
+Proof. split; reflexivity. Qed.
+Theorem emission_refines {B : Type} (emit : A -> list B) values :
+  concat (map emit (view (pack values))) = concat (map emit values).
+Proof. now rewrite pack_refines. Qed.
+Theorem aggregate_refines (measure : A -> nat) values :
+  fold_right (fun x total => measure x + total) 0 (view (pack values)) =
+  fold_right (fun x total => measure x + total) 0 values.
+Proof. now rewrite pack_refines. Qed.
+End Programs.
+
+Definition bytes := list nat.
+Definition key tag score body := tag :: ((score ++ body) ++ [length score]).
+
+Theorem key_is_injective tag score body tag' score' body' :
+  key tag score body = key tag' score' body' ->
+  tag = tag' /\ score = score' /\ body = body'.
+Proof.
+  unfold key. intros H. injection H as Tags Tail.
+  apply app_inj_tail in Tail as [Payload Extent].
+  assert (Scores : score = score').
+  { pose proof (f_equal (firstn (length score)) Payload) as Prefix.
+    rewrite firstn_app, firstn_all, Nat.sub_diag in Prefix. cbn in Prefix.
+    rewrite app_nil_r in Prefix. rewrite Extent in Prefix.
+    rewrite firstn_app, firstn_all, Nat.sub_diag in Prefix. cbn in Prefix.
+    now rewrite app_nil_r in Prefix. }
+  subst score'. apply app_inv_head in Payload. auto.
+Qed.
+
+Definition rewrite_buffer (_ : bytes) tag score body := key tag score body.
+Theorem reusable_buffer_does_not_depend_on_prior prior tag score body :
+  rewrite_buffer prior tag score body = key tag score body.
+Proof. reflexivity. Qed.
+
+Section UniquePublication.
+Context {K V : Type}.
+Variable equal : forall x y : K, {x = y} + {x <> y}.
+Definition keys (entries : list (K * V)) := map fst entries.
+Definition insert entries (entry : K * V) :=
+  if in_dec equal (fst entry) (keys entries)
+  then None else Some (entries ++ [entry]).
+Fixpoint stream entries input :=
+  match input with
+  | [] => Some entries
+  | entry :: rest =>
+      match insert entries entry with
+      | None => None | Some next => stream next rest end
+  end.
+
+Theorem unique_insert_preserves_prior_and_payload entries entry :
+  ~ In (fst entry) (keys entries) ->
+  insert entries entry = Some (entries ++ [entry]).
+Proof. intros H. unfold insert. destruct (in_dec equal _ _); congruence. Qed.
+Theorem duplicate_rejects entries entry :
+  In (fst entry) (keys entries) -> insert entries entry = None.
+Proof. intros H. unfold insert. destruct (in_dec equal _ _); congruence. Qed.
+Theorem successful_stream_keeps_input_order entries input result :
+  stream entries input = Some result -> result = entries ++ input.
+Proof.
+  revert entries result. induction input as [|entry rest IH]; intros entries result H.
+  - cbn in H. inversion H; subst. now rewrite app_nil_r.
+  - cbn in H. unfold insert in H. destruct (in_dec equal _ _) as [Present|Absent]; try discriminate.
+    apply IH in H. rewrite H, <- app_assoc. reflexivity.
+Qed.
+Theorem failed_publication_has_no_partial_result entries input :
+  stream entries input = None -> forall result, stream entries input <> Some result.
+Proof. intros H result. rewrite H. discriminate. Qed.
+End UniquePublication.
+
+Theorem sorting_by_body_then_appending_a_trailer_can_reverse_order :
+  FragmentComparison.lex [] [0] = Lt /\
+  FragmentComparison.lex ([0;0;0;0;0;0;0;1]) ([0] ++ [0;0;0;0;0;0;0;1]) = Gt.
+Proof. split; reflexivity. Qed.
+
+Print Assumptions pack_refines.
+Print Assumptions append_refines.
+Print Assumptions take_preserves_order_and_clears_owner.
+Print Assumptions emission_refines.
+Print Assumptions aggregate_refines.
+Print Assumptions key_is_injective.
+Print Assumptions reusable_buffer_does_not_depend_on_prior.
+Print Assumptions unique_insert_preserves_prior_and_payload.
+Print Assumptions duplicate_rejects.
+Print Assumptions successful_stream_keeps_input_order.
+Print Assumptions failed_publication_has_no_partial_result.
+Print Assumptions sorting_by_body_then_appending_a_trailer_can_reverse_order.
+
+End FragmentStoragePublication.

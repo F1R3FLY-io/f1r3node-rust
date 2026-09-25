@@ -9209,6 +9209,29 @@ limit, stack enlargement, new schema or PathMap fork is introduced. Task 8516
 remains open while this allocation/time overhead and release qualification are
 resolved.
 
+J-224 compacts fragment programs and publishes through one moving Bag cursor
+with a reusable encoded-key buffer. A formal model is compiled and kernel-checked
+before implementation; release models tests pass **687/687** (two skipped), and
+Bag tests pass **35/35** (none skipped), at 2.5 GiB service peak and zero swap.
+The writer permits arbitrary unique key order: semantic occurrence order does
+not always imply byte-key order after the score-length trailer. Native properties
+cover that counterexample without sorting or changing the encoding.
+
+The paired cold instrumented distinct-width-4,096 pilot now uses 45,366 allocation
+calls, 6,947,905 requested bytes and 1,809,026 scoped peak bytes, down from
+J-223's 90,129 calls, 9,501,323 requested bytes and 2,071,732 peak bytes. Its
+6.739 ms decode still exceeds the frozen control's 3.434 ms. Duplicate-width
+4,096 uses 415,893 requested bytes versus frozen's 4,203,810; planned peak is
+5,066 bytes at widths 16/256/4096. ENot depth 1,024 peaks at 3,095,922 versus
+frozen's 3,643,832 bytes. However, mixed-metadata depth 1,024 peaks at
+**14,268,531 versus 13,280,643 bytes**, a remaining resource gap despite much
+lower decode time (43.289 versus 13,815.867 ms). Every completed pair has equal
+output witnesses. CPU-admission refusals are retained, not counted as samples.
+These are allocation-scope peaks, not RSS; single pilots are not statistical
+acceptance. Headless allocation attribution identifies remaining per-leaf byte
+ownership and retained arena metadata. Task 8516 remains open for these existing
+resource obligations and broader qualification; J-224 records exact receipts.
+
 ### 5.29 ParBag family and count-domain completeness [SS-A13, SS-A14, SS-Y9]
 
 #### 5.29.1 The defects
