@@ -304,7 +304,7 @@ epathmap_score_proofs() {
 canonical_key_protocol_proofs() {
   local TLC_MEMORY_HIGH=1536M TLC_RSS=2G TLC_CPU_QUOTA=100% TLC_TASKS_MAX=64
   rocq_reject_placeholders theories/RPB3Admission.v
-  rocq_compile_with_closed_count theories/RPB3Admission.v 357 \
+  rocq_compile_with_closed_count theories/RPB3Admission.v 365 \
     "RPB3 fold, canonical-key transport and storage contracts"
   rocq_check_modules "standalone canonical-key transport" StackSafePDA.RPB3Admission
   canonical_act_batch_publication_proofs
@@ -738,7 +738,7 @@ rocq_compile_with_closed_count theories/CollectionCollisionElision.v 20 \
   "empty and singleton collection collision-elision equivalence"
 rocq_check_modules "collection collision elision" StackSafePDA.CollectionCollisionElision
 rocq_reject_placeholders theories/DecodedComponentConstruction.v
-rocq_compile_with_closed_count theories/DecodedComponentConstruction.v 23 \
+rocq_compile_with_closed_count theories/DecodedComponentConstruction.v 63 \
   "decoded incomplete-component planned construction"
 rocq_check_modules "decoded incomplete-component construction" StackSafePDA.DecodedComponentConstruction
 rocq_reject_placeholders theories/DecoderOracleRouting.v
@@ -754,7 +754,7 @@ rocq_compile_with_closed_count theories/EpmPayloadRepresentation.v 49 \
   "EPM payload representation and scaffold erasure"
 rocq_check_modules "EPM payload representation and scaffold erasure" StackSafePDA.EpmPayloadRepresentation
 rocq_reject_placeholders theories/ProtobufOwnedSlots.v
-rocq_compile_with_closed_count theories/ProtobufOwnedSlots.v 44 \
+rocq_compile_with_closed_count theories/ProtobufOwnedSlots.v 51 \
   "protobuf owned slot projection and schema rank"
 rocq_check_modules "protobuf owned slot projection and schema rank" StackSafePDA.ProtobufOwnedSlots
 rocq_reject_placeholders theories/ProtobufDecoderComposition.v
@@ -1048,6 +1048,12 @@ rpb3_run_tests 13 --lib protobuf_decoder_oracle::
 rpb3_run_tests 2 --release -j4 --features protobuf-projection-experiment --lib protobuf_decoder_oracle::measurement::measurement_
 rpb3_run_tests 2 --lib oracle_body_guards::
 rpb3_run_tests 5 --lib decoder_control_tests::
+rpb3_run_tests 3 --lib snapshot_continuation_tests::
+rpb3_run_tests 6 --lib admission_retained_history::
+rpb3_run_tests 4 --lib planned_fragment_comparison_tests::
+rpb3_run_tests 4 --lib planned_ground_leaf_tests::
+rpb3_run_tests 5 --lib planned_fragment_publication_tests::
+rpb3_run_tests 5 --lib planned_pooled_storage_tests::
 rpb3_run_tests 1 --release -j4 --features protobuf-projection-experiment --lib deep_general_decoder_materializes_once_and_retires_failed_frames_on_small_stack
 rpb3_run_tests 6 --lib protobuf_par_accumulation_tests
 rpb3_run_tests 8 --lib payload_representation_tests

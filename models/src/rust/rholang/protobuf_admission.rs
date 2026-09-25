@@ -514,8 +514,6 @@ struct MessageFrame<'src> {
     cursor: IndexedCanonicalFieldCursor<'src>,
     last_slot: Option<usize>,
     seen: Vec<bool>,
-    previous_map_keys: Vec<Option<AdmissionRegion<'src>>>,
-    previous_par_components: Vec<Option<(CanonicalScoreHandle, AdmissionRegion<'src>)>>,
     semantic_slots: Vec<Vec<SemanticOccurrence<'src>>>,
     waiting: Option<MessageWait<'src>>,
     par_components: u64,
@@ -584,8 +582,6 @@ impl<'src> MessageFrame<'src> {
             cursor: IndexedCanonicalFieldCursor::in_prost_slot_order(region),
             last_slot: None,
             seen: vec![false; slots],
-            previous_map_keys: vec![None; slots],
-            previous_par_components: vec![None; slots],
             semantic_slots: (0..slots).map(|_| Vec::new()).collect(),
             waiting: None,
             par_components: 0,
@@ -646,11 +642,21 @@ impl<'src> MessageFrame<'src> {
                             "raw Par component child returned the wrong semantic summary",
                         ));
                     };
-                    if let Some((previous_score, previous_body)) =
-                        &self.previous_par_components[slot]
-                    {
+                    if let Some(previous) = self.semantic_slots[slot].last() {
+                        let (SemanticValue::Message(summary), Some(previous_body)) =
+                            (&previous.value, &previous.body)
+                        else {
+                            return Err(CanonicalProtobufAdmissionError::CutoverInvariant(
+                                "retained raw Par history is not a component with a body",
+                            ));
+                        };
+                        let SemanticSummary::Component(previous_component) = &summary.semantic else {
+                            return Err(CanonicalProtobufAdmissionError::CutoverInvariant(
+                                "retained raw Par history has no component score",
+                            ));
+                        };
                         let order = scores
-                            .compare(*previous_score, component.score)
+                            .compare(previous_component.score, component.score)
                             .then_with(|| previous_body.compare(&body));
                         if order.is_gt() {
                             return Err(self.schema_error_at(
@@ -662,7 +668,6 @@ impl<'src> MessageFrame<'src> {
                             ));
                         }
                     }
-                    self.previous_par_components[slot] = Some((component.score, body.clone()));
                 }
                 self.semantic_slots[slot].push(SemanticOccurrence {
                     variant,
@@ -679,8 +684,13 @@ impl<'src> MessageFrame<'src> {
                 }),
                 FrameSummary::Map(entry),
             ) => {
-                if let Some(previous) = &self.previous_map_keys[slot] {
-                    if !previous.compare(&entry.key).is_lt() {
+                if let Some(previous) = self.semantic_slots[slot].last() {
+                    let SemanticValue::Map(previous) = &previous.value else {
+                        return Err(CanonicalProtobufAdmissionError::CutoverInvariant(
+                            "retained map history is not a map entry",
+                        ));
+                    };
+                    if !previous.key.compare(&entry.key).is_lt() {
                         return Err(self.schema_error_at(
                             self.program.fields[slot].tag,
                             entry.key_position,
@@ -688,7 +698,6 @@ impl<'src> MessageFrame<'src> {
                         ));
                     }
                 }
-                self.previous_map_keys[slot] = Some(entry.key.clone());
                 self.semantic_slots[slot].push(SemanticOccurrence {
                     variant: None,
                     body: None,
@@ -3669,6 +3678,10 @@ pub(crate) fn validate_canonical_par_protobuf_indexed(
 #[cfg(test)]
 #[path = "../../../tests/support/standalone_path_admission.rs"]
 mod standalone_path_admission;
+
+#[cfg(test)]
+#[path = "../../../tests/support/admission_retained_history.rs"]
+mod admission_retained_history;
 
 #[cfg(test)]
 mod tests {

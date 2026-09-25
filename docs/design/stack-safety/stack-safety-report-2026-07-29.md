@@ -9254,6 +9254,38 @@ passes **16/16**, with five existing opt-in skips. The combined service peaks at
 do not discharge resource regressions or full-workspace acceptance, so task 8516
 is still open.
 
+J-226 removes two redundant per-field admission-history tables, deriving prior
+score/body and map-key comparisons from the last retained semantic occurrence.
+Eight new refinement statements compile and pass kernel checking before the
+implementation. The mixed-metadata depth-1,024 pilot reduces both the planned
+and frozen peaks by exactly **2,329,237 bytes**, to **11,887,398** and
+**10,951,406 bytes** respectively. Both arms share this admission helper, so
+their absolute gap remains **935,992 bytes**; this change does not close that
+regression. Planned decoding takes 42.996 ms versus the control's 14,333.897 ms
+in this cold instrumented pilot, not a repeated-sample throughput result.
+All three completed depth pairs have equal output witnesses. Headless profile
+attribution, formal/native scope, first-proof timeout, and hashes are preserved
+in J-226 and PgMCP experiment 348. Broader release qualification is running;
+task 8516 remains open and no consensus-visible encoding or validation order
+is intentionally changed.
+
+J-227 separates the large EPM snapshot payload from common generated decoder
+frames with one owned box per snapshot, reused for all its values. Its seven
+transport/identity statements pass compilation and kernel checking before
+implementation; the release library suite passes **701/701**, two skipped.
+Mixed-metadata pilots now show planned scoped peaks below the control at depths
+64/256/1,024: **630,223 / 2,521,135 / 10,085,782 bytes**, versus
+**686,439 / 2,738,471 / 10,951,406 bytes**. Output witnesses match. These are
+pilots, not final statistical acceptance: only depth 64 completes seven paired
+samples before CPU admission stops the repeated run during depth 256.
+The wider models run exposes four inventory/census assertions, repaired and
+covered by **63 passing follow-up tests**. Three long-running stack tests are
+stopped for the user's requested pause and remain unqualified. The earlier
+outer-timeout results and this explicit cancellation are preserved separately.
+Task 8516 still requires shallow/distinct-width resource closure, remaining
+repeated measurements and broader qualification. J-227 records receipts and
+the precise formal/native proof boundary.
+
 ### 5.29 ParBag family and count-domain completeness [SS-A13, SS-A14, SS-Y9]
 
 #### 5.29.1 The defects

@@ -1373,7 +1373,7 @@ the separate task-5834 decoder timeout or whole-gate watchdog qualification.
 
 ## Decoded incomplete-component construction (DCC, task 5834)
 
-`DecodedComponentConstruction.v` has 23 closed declarations, compiled and independently
+The original `DecodedComponentConstruction.v` kernel has 23 closed declarations, compiled and independently
 kernel-checked before native tests and implementation. It reuses `StackSafePDA`'s
 fold-machine equivalence and `EPM1`'s varint framing. It models ordered Par holes in
 a finite generated shell, planned handles and resident substitution, and final
@@ -1568,8 +1568,8 @@ decoder, rather than from another instantiation of the modified pending core.
 
 ## Protobuf owned slots (POS, task 5834)
 
-`formal/rocq/stack_safe_pda/theories/ProtobufOwnedSlots.v` proves 44 exported
-statements about payload-parametric container operations and ranked ownership.
+The original `formal/rocq/stack_safe_pda/theories/ProtobufOwnedSlots.v` kernel proves
+44 exported statements about payload-parametric container operations and ranked ownership.
 Kernel checking preceded the generated private-record implementation. The native
 bindings live in `models/tests/support/protobuf_owned_slots.rs`; they qualify the
 projection layer and pin existing decoder contracts before production routing.
@@ -1923,6 +1923,32 @@ The admission witness also exercises the raw-input wrapper with depth-8,192
 topology and a depth-8,192 Par payload. The algebra witness checks typed-empty Set
 selection from neutral Empty and exact consumed key/value association. Qualification
 and residual proof boundaries are recorded in J-214 of the engineering journal.
+
+## Decoder resource refinements (task 8516, J-222 through J-227)
+
+The affected executable proof inventories are now 63 statements in
+`DecodedComponentConstruction.v`, 51 in `ProtobufOwnedSlots.v`, and 365 in
+`RPB3Admission.v`. These totals include their older kernels; they are not counts
+of new proofs. Qualification checks both the runner counts and named native
+test groups. The following additions preserve the earlier semantic obligations.
+
+| Model module and exhaustive added statements | Native binding and proof boundary |
+|---|---|
+| `FragmentComparison`: `borrowed_is_exact`, `comparison_refines`, `component_order_refines`, `equal_score_keeps_protobuf_tiebreak`, `literal_comparison_has_no_cursor`, `graph_representation_retains_fallback`, `ignoring_tiebreak_mutant_is_detected`, `ignoring_fragment_suffix_mutant_is_detected` | Four tests in `planned_fragment_comparison.rs`: literal/graph differential, all ordering branches, allocation-free literal comparison, and retained arena state. Formal byte sequences abstract the allocator. |
+| `GroundLeafConstruction`: `direct_score_refines_tree`, `direct_wire_refines_generated_program`, `complete_component_refines`, `restricted_dispatch_refines`, `recursive_empty_children_still_require_general`, `ground_extra_children_rejected`, `owned_fragment_preserves_prefix`, `owned_fragment_has_exact_payload`, `flattened_fixed_scale_mutant_is_detected` | Four tests in `planned_ground_leaves.rs`: independent sorter/full encoder, scalar boundaries, arity errors and recursive fallback, allocation volume. Generated schema and scalar encoders remain native bindings. |
+| `FragmentStoragePublication`: `pack_refines`, `append_refines`, `take_preserves_order_and_clears_owner`, `emission_refines`, `aggregate_refines`, `key_is_injective`, `reusable_buffer_does_not_depend_on_prior`, `unique_insert_preserves_prior_and_payload`, `duplicate_rejects`, `successful_stream_keeps_input_order`, `failed_publication_has_no_partial_result`, `sorting_by_body_then_appending_a_trailer_can_reverse_order` | Five tests in `planned_fragment_publication.rs` plus Bag unique-writer tests: reusable key buffers, composite programs, prior-publication differential, family/cache coverage, and semantic-order versus key-order counterexample. No new sorting premise is introduced. |
+| `PooledConstructionStorage`: `appended_span_is_exact`, `append_preserves_admission`, `append_preserves_earlier_span`, `rewind_restores_prefix`, `nested_rewind_preserves_outer`, `pooled_owned_emission_refines`, `abandoned_offsets_must_not_escape`, `link_roundtrip`, `link_encoding_injective`, `addressable_link_fits`, `cold_indirection_preserves_view` | Five tests in `planned_pooled_storage.rs`: reallocations, owned/shared identity, nested rewind, stale-offset reuse, checked links/layout, canonical leaf independence, and warmed allocation counts. The formal start/extent span binds to native start/end via subtraction. |
+| `RetainedAdmissionHistory`: `latest_append`, `empty_consistent`, `cached_success_preserves_consistency`, `exact_step_error_and_history`, `exact_trace_first_error_and_accepted_history`, `rejected_candidate_preserves_retained_history`, `unrelated_slot_is_unchanged`, `retaining_first_instead_of_last_is_detected` | Six tests in `admission_retained_history.rs`: independent cached acceptance traces, strict maps versus duplicate components, body ties, consumed continuations, forged history and incoming-error precedence, and exactly two slot-table allocations. Formal equivalence assumes well-typed retained occurrences; rejection's actual unchanged history is a native snapshot observation. |
+| `IndirectSnapshotContinuation`: `relocated_transition_preserves_payload_or_exact_error`, `successful_resume_reuses_same_identity`, `arbitrary_suspend_resume_trace_is_exact`, `arbitrary_successful_trace_keeps_one_owner`, `boxed_worklist_observes_same_flat_payload_order`, `moving_to_continuation_and_back_needs_no_second_identity`, `completion_observes_original_retirement_payload` | Three tests in `protobuf_snapshot_continuation.rs`: common/rare frame layouts, allocation-free box transport, and actual multi-value decoder identity/input restoration. Existing decoder-control tests cover nested truncation, exact errors/remaining input, and small-stack pending-map teardown. The abstract cell model does not prove the allocator or Rust destructor. |
+
+The broader qualification also exposes a census assumption: an inferred
+`vec![0; length]` can construct an ordinal table, not just a byte bitset.
+`bit_vector_canonicity` retains every raw hit, separately requires the two byte
+producers, and attributes the third only when the initializer, enclosing
+`freeze_owned_segment` function, `PageFrozenData` struct and `Box<[usize]>`
+field agree. Mutating that field to bytes, changing its owner/constructor, or
+adding another zero-fill site must not silently inherit the attribution.
+This changes test classification, not bitset or ordinal production behavior.
 
 ## Original workspace-regression completion gates
 

@@ -17449,6 +17449,175 @@ still requires independent analysis; streaming siblings cannot solve its peak.
 | `pilot-pool-deep-r1/observations.jsonl` | `0a131d81d7ce49303d4004eb2db0fba70e7d3f85b2a186761a45c7ca9eb13c79` |
 | `pilot-pool-mixed-tail-r2/observations.jsonl` | `5ada6dcd4067fdc6271e50dbbdbd73166d4e958edae74285c5bd05185637663b` |
 
+## J-226 — Derive admission ordering history from retained semantics (2026-09-25)
+
+**MEASURED diagnosis.** The J-225 mixed-depth-1,024 capture completes with
+headless `heaptrack --record-only`; `heaptrack_print -m 0` attributes the global
+14.33 MB heap peak to the independent witness decode, not the timed decode.
+The admission frame vector contributes 6.39 MB and the decoder frame vector
+2.59 MB. Admission's per-field previous-component and previous-map-key tables
+contribute 1.23 MB and 1.10 MB respectively. These are live allocations at the
+process peak, not independent maxima to sum across phases. Capture service peak
+is 89.4 MiB and report service peak 52.3 MiB, both with zero swap. Neither
+profiler RSS nor the witness peak replaces the timed allocator observations.
+
+**DERIVED design.** Both previous-entry tables duplicate data already retained
+in the same field's final semantic occurrence. A component occurrence owns its
+body region and component score handle; a map occurrence owns its key region.
+Borrow these exact fields from `semantic_slots[slot].last()` before appending
+the next accepted occurrence. Remove the two tables and their region clones.
+This requires no monotonic-slot shortcut, new allocation, schema restriction,
+re-encoding, or change to the trie. Incoming component-kind validation remains
+before prior-entry comparison; comparison failures keep the old error and
+physical position. Rejection consumes the waiting continuation, as before,
+but does not append an occurrence. Invalid internal prior summaries must not
+silently become an absent predecessor.
+
+**Formal-first contract / native bindings.** `RetainedAdmissionHistory` models
+the old cached comparator state and the projection from the last accepted
+occurrence. Prove initial consistency, successful preservation, exact one-step
+errors/history, exact trace first-error/history, rejection, and isolation of
+other slots. The first-versus-last negative witness prevents an incorrect
+projection. This abstracts byte comparison and error values; native properties
+must exercise the real score/body comparator, strict map ordering, duplicate
+components, independent slots, wrong-summary precedence, consumed continuations,
+and error positions. All production changes wait for compile and kernel-check
+success. Allocation evidence and the frozen decoder matrix remain separate
+acceptance requirements.
+
+The total projection in the formal model applies to well-typed retained
+occurrences. Continuation consumption, invalid-current-before-invalid-prior
+precedence, and malformed internal history are native protocol bindings, not
+theorems about the Rust frame. The model's rejection theorem identifies the
+error result; native snapshots check unchanged retained history. Randomized
+two-slot tests exercise this acceptance layer independently of descriptor
+routing; the complete admission/decoder suites supply the routing coverage.
+
+**VERIFIED formal prerequisite.** The first full-file compile hits its
+180-second timeout at the 1 GiB soft limit without reaching verification.
+The second uses a 1.5 GiB soft limit, the same 2 GiB hard cap and zero swap;
+compilation and dependent kernel checking both pass in 59.321 seconds,
+peaking at 1.1 GiB. All eight new statements are closed and kernel-checked
+before production edits. The proof runner now expects 365 closed statements
+instead of 357. Native qualification and resource results remain pending.
+
+**MEASURED paired outcome.** The mixed-metadata pilot completes all sizes
+64/256/1,024 with matching output witnesses. Its binary SHA-256 is
+`986a7e1c8ed6af1505f81360683c972aeda9492fcba2794418ac72f26952cd4d`.
+
+| Depth | Frozen / planned decode ms | Frozen / planned scoped peak bytes |
+|---|---:|---:|
+| 64 | 56.192 / 2.173 | 686,439 / 742,239 |
+| 256 | 865.053 / 8.798 | 2,738,471 / 2,971,071 |
+| 1,024 | 14,333.897 / 42.996 | 10,951,406 / 11,887,398 |
+
+At depth 1,024 each arm saves exactly **2,329,237 peak bytes**, 5,452
+allocation calls and 2,331,680 cumulative requested bytes against J-225.
+The frozen decoder uses the same admission helper, so its footprint improves
+too. The absolute planned-minus-control peak gap stays **935,992 bytes**;
+the relative excess becomes about 8.5%. This is a useful shared optimization,
+not closure of the planned decoder's mixed-depth resource regression.
+Planned allocation calls are 153,721 and requested bytes 42,254,621, versus
+56,518,189 and 5,042,810,418 for the control. These remain cold instrumented
+pilots, not repeated-sample acceptance or application throughput claims.
+The wide-control attempt is retained as partial evidence after CPU admission
+refuses a subsequent pair; it is not treated as a completed matrix.
+
+**DECISION on root streaming.** The reviewed scalar-only root proposal is not
+equivalent yet. Compressed multiplicity can keep input and component score/body
+lengths addressable while their combined key length overflows; a later malformed
+field must still precede final key-emission failure. Reference AVL insertion
+history can also change which subtree aggregate overflows first. Eager key
+publication therefore requires deferred exceptional plans and preservation of
+the reference checking topology, unless stronger reachability proofs discharge
+those obligations. This batch does not implement that unproven replacement.
+
+**Profile receipts**, under `target/verification/protobuf-attach-8516/`:
+
+| Receipt | SHA-256 |
+|---|---|
+| `heap-pool-mixed-r1.zst` | `544ba35347750c7ed6135fe17d082b8b9d462755e632cbcf7c0fc9cfa9753791` |
+| `heap-pool-mixed-report-r1.log` | `4d580ec4aefdf847d7e7f318efdff6c9004f6bf49144fb457558c6f721e367b3` |
+| `history-proof-kernel-r2.log` | `dfd80cd5cec1aac2912a8e1a222642381924eed9fe95c9895bd178b37c60eb2e` |
+| `pilot-history-mixed-r1/observations.jsonl` | `e0a1a4151caf594ed8bd03567f02a8fd426e36dda8d26190d5719b1255229d8e` |
+
+## J-227 — Separate EPM snapshot payload from common decoder frames (2026-09-25)
+
+**Scope / hypothesis.** J-226 removes shared admission overhead but leaves the
+935,992-byte mixed-depth gap. The generated decoder stores a large EPM snapshot
+payload inline in both its work-frame and suspended-attachment enums. Every
+ordinary decoder frame therefore pays for that maximum variant. The reviewed
+repair is one owned `Box<EpmFrame>` per snapshot, moved unchanged through every
+suspend/resume and released at completion or salvage. There is no box per map
+value and no additional allocation for inputs without EPM snapshots. A separate
+typed arena would add index and retained-capacity obligations without being
+necessary for this ownership shape.
+
+**Formal-first boundary.** `IndirectSnapshotContinuation` models a shallow
+owned cell with an identity and payload. It proves exact transition and trace
+results/errors, identity preservation across successful resumes, flat worklist
+order, and unchanged completion payload. This does not prove the Rust allocator
+or generated type layout: native bindings must measure common/rare frame sizes,
+observe address identity over multiple values, cover nested failure and salvage,
+and rerun frozen-error, remaining-input and small-stack comparisons. Nested EPM
+continuations remain separate worklist entries, not a recursive chain of boxes.
+Guarded pending-map teardown remains in its existing order.
+
+**Decision rule.** Extra live snapshot allocations must be measured against
+the common-frame capacity saved. Do not infer a win from enum size alone.
+The wide regression is a separate lifetime problem and is not claimed solved
+by this representation change. No protobuf, bincode, trie or consensus format
+change is proposed.
+
+**VERIFIED implementation checkpoint.** The first proof attempt fails a
+reduction step; the corrected proof compiles and passes dependent kernel
+checking before implementation, with all seven new statements closed.
+Receipt `indirect-proof-kernel-r2.log` has SHA-256
+`ac565ec51dba8e5037dd37070e6b6a764f915ac9a067a9b10dcb9722bc6197d9`.
+The first native build exposes incorrect constructor arguments in the new
+test fixture; correcting those yields **701/701 release library tests passed**,
+two skipped, in 60.746 seconds. All three new continuation bindings and six
+retained-history bindings pass. Receipt `indirect-native-r2.log` has SHA-256
+`3f186c33e3b2841b53ac485774f05b0e71a47195fb7244e51b061ded5f916808`.
+No generated output file was edited: the representation change is in
+`models/codegen/schema.rs`.
+
+**MEASURED resource result.** Binary SHA-256 is
+`4789633c8f30ddd979e6e59c71312cd8dbb9cec013a10bb747945497e2f3ed3c`.
+The completed mixed-metadata pilot preserves all paired output witnesses:
+
+| Depth | Frozen / planned decode ms | Frozen / planned scoped peak bytes |
+|---|---:|---:|
+| 64 | 56.611 / 2.217 | 686,439 / 630,223 |
+| 256 | 875.527 / 8.572 | 2,738,471 / 2,521,135 |
+| 1,024 | 14,150.447 / 39.857 | 10,951,406 / 10,085,782 |
+
+Unlike J-226's shared savings, this change removes decoder-specific peak
+overhead: the planned arm is below the control in all three pilot cells.
+This is not statistical acceptance. The seven-pair run completes the depth-64
+cell and two measured depth-256 pairs, then refuses the next pair at CPU
+admission. Depth 1,024 has no repeated observations yet. Preserve completed
+cells and partial evidence; do not infer samples or pool incompatible runs.
+The distinct-width and shallow acceptance gaps remain open.
+
+**Broader qualification and requested pause.** The expanded models run reports
+1,312 passes, four assertion failures and three tests terminated by its
+20-minute outer limit. The assertions expose stale proof/native inventory
+counts and a zero-fill census that mistakes a typed ordinal table for a byte
+bitset. The affected runner, manifest, invariant catalog and census are repaired
+without changing production bitset behavior. The follow-up reports **63 passes**
+before the user's pause request stops its three running `trie_escape_arm_stack`
+tests. Those terminations are not correctness results and must be rerun.
+Full-workspace qualification and final resource acceptance are not complete.
+
+Receipts under `target/verification/protobuf-attach-8516/`:
+
+| Receipt | SHA-256 |
+|---|---|
+| `history-native-r1.log` | `2b497f41561e47c50759805e60555adaec0fbe4d0add78acc7ae3463a4474fb7` |
+| `pilot-indirect-mixed-r1/observations.jsonl` | `cef7180a3f62e4ae4cd828f11dade04eac5779a1479b630c8060bcded1890a81` |
+| `samples-indirect-mixed-r1/observations.jsonl` | `8c4f3f437c0310cade73af409627fb9ad7b42d35daeed50b4965bcebe90dff69` |
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

@@ -11892,3 +11892,121 @@ Print Assumptions positive_bounded_remember_constructively_accepts.
 Print Assumptions positive_valid_run_bounded_pop_constructively_accepts.
 
 End BulkCompressedUndo.
+
+Module RetainedAdmissionHistory.
+
+Section Projection.
+Context {Occurrence Key Error : Type}.
+Variable project : Occurrence -> Key.
+Variable decide : option Key -> Occurrence -> option Error.
+
+Definition latest (history : list Occurrence) : option Key :=
+  option_map project (hd_error (rev history)).
+
+Definition consistent (state : list Occurrence * option Key) : Prop :=
+  snd state = latest (fst state).
+
+Definition cached_step (state : list Occurrence * option Key) (candidate : Occurrence)
+    : Error + (list Occurrence * option Key) :=
+  match decide (snd state) candidate with
+  | Some error => inl error
+  | None => inr (fst state ++ [candidate], Some (project candidate))
+  end.
+
+Definition projected_step (history : list Occurrence) (candidate : Occurrence)
+    : Error + list Occurrence :=
+  match decide (latest history) candidate with
+  | Some error => inl error
+  | None => inr (history ++ [candidate])
+  end.
+
+Definition erase (result : Error + (list Occurrence * option Key))
+    : Error + list Occurrence :=
+  match result with inl error => inl error | inr state => inr (fst state) end.
+
+Lemma latest_append history candidate :
+  latest (history ++ [candidate]) = Some (project candidate).
+Proof. unfold latest. rewrite rev_app_distr. reflexivity. Qed.
+
+Lemma empty_consistent : consistent ([], None).
+Proof. reflexivity. Qed.
+
+Lemma cached_success_preserves_consistency state candidate next :
+  cached_step state candidate = inr next -> consistent next.
+Proof.
+  unfold cached_step, consistent.
+  destruct (decide (snd state) candidate); intro H; inversion H; subst.
+  cbn. symmetry. apply latest_append.
+Qed.
+
+Theorem exact_step_error_and_history state candidate :
+  consistent state -> erase (cached_step state candidate) =
+    projected_step (fst state) candidate.
+Proof.
+  unfold consistent, cached_step, projected_step. intro H. rewrite H.
+  destruct (decide (latest (fst state)) candidate); reflexivity.
+Qed.
+
+Fixpoint cached_run (input : list Occurrence) (state : list Occurrence * option Key)
+    : Error + list Occurrence :=
+  match input with
+  | [] => inr (fst state)
+  | candidate :: rest =>
+      match cached_step state candidate with
+      | inl error => inl error
+      | inr next => cached_run rest next
+      end
+  end.
+
+Fixpoint projected_run (input history : list Occurrence) : Error + list Occurrence :=
+  match input with
+  | [] => inr history
+  | candidate :: rest =>
+      match projected_step history candidate with
+      | inl error => inl error
+      | inr next => projected_run rest next
+      end
+  end.
+
+Theorem exact_trace_first_error_and_accepted_history input state :
+  consistent state -> cached_run input state = projected_run input (fst state).
+Proof.
+  revert state. induction input as [|candidate rest IH]; intros state valid; [reflexivity|].
+  cbn. pose proof (exact_step_error_and_history candidate valid) as step.
+  destruct (cached_step state candidate) as [error|next] eqn:old;
+    cbn [erase] in step; rewrite <- step; [reflexivity|].
+  apply IH. eapply cached_success_preserves_consistency; exact old.
+Qed.
+
+Theorem rejected_candidate_preserves_retained_history history candidate error :
+  decide (latest history) candidate = Some error ->
+  projected_step history candidate = inl error.
+Proof. unfold projected_step. intro H. rewrite H. reflexivity. Qed.
+
+Definition replace_slot (slots : nat -> list Occurrence) (slot : nat)
+    (history : list Occurrence) : nat -> list Occurrence :=
+  fun index => if Nat.eqb index slot then history else slots index.
+
+Theorem unrelated_slot_is_unchanged slots slot history other :
+  other <> slot -> latest (replace_slot slots slot history other) = latest (slots other).
+Proof.
+  intro H. unfold replace_slot. apply Nat.eqb_neq in H. rewrite H. reflexivity.
+Qed.
+
+End Projection.
+
+Example retaining_first_instead_of_last_is_detected :
+  @latest nat nat (fun value => value) [1; 2] <>
+    option_map (fun value : nat => value) (hd_error [1; 2]).
+Proof. discriminate. Qed.
+
+Print Assumptions latest_append.
+Print Assumptions empty_consistent.
+Print Assumptions cached_success_preserves_consistency.
+Print Assumptions exact_step_error_and_history.
+Print Assumptions exact_trace_first_error_and_accepted_history.
+Print Assumptions rejected_candidate_preserves_retained_history.
+Print Assumptions unrelated_slot_is_unchanged.
+Print Assumptions retaining_first_instead_of_last_is_detected.
+
+End RetainedAdmissionHistory.

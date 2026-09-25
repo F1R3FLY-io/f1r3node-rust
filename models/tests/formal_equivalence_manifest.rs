@@ -1158,7 +1158,13 @@ fn decoded_component_construction_has_proof_and_native_witnesses() {
     }
     let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
     assert!(has_runner_command(&runner, &["rocq_compile_with_closed_count",
-        "theories/DecodedComponentConstruction.v", "23"]));
+        "theories/DecodedComponentConstruction.v", "63"]));
+    assert_eq!(theory.matches("Print Assumptions ").count(), 63);
+    for (count, filter) in [("4", "planned_fragment_comparison_tests::"),
+        ("4", "planned_ground_leaf_tests::"), ("5", "planned_fragment_publication_tests::"),
+        ("5", "planned_pooled_storage_tests::")] {
+        assert!(has_runner_command(&runner, &["rpb3_run_tests", count, "--lib", filter]));
+    }
     assert!(has_runner_kernel_check(&runner, &["StackSafePDA.DecodedComponentConstruction"]));
     assert!(has_runner_command(&runner, &["rpb3_run_tests", "9", "--lib", "incomplete_preservation_tests"]));
     assert!(read_repository_file("formal/rocq/stack_safe_pda/_CoqProject").lines()
@@ -1306,7 +1312,7 @@ fn epm_payload_representation_has_proof_and_native_bindings() {
     assert!(has_runner_kernel_check(&runner, &["StackSafePDA.EpmPayloadRepresentation"]));
     assert!(has_runner_command(&runner, &["rpb3_run_tests", "8", "--lib", "payload_representation_tests"]));
     assert!(has_runner_command(&runner, &["rpb3_run_tests", "5", "--lib", "owned_cursor_tests"]));
-    assert!(has_runner_command(&runner, &["rpb3_run_tests", "5", "--lib", "payload_mapping_tests"]));
+    assert!(has_runner_command(&runner, &["rpb3_run_tests", "10", "--lib", "payload_mapping_tests"]));
     let mapping = read_repository_file("models/tests/support/epm_payload_mapping.rs");
     for witness in ["ordered_mapping_preserves_all_bindings_and_topology",
         "modes_root_prefix_dense_siblings_and_repeated_values_are_exact",
@@ -1361,8 +1367,15 @@ fn protobuf_owned_slots_have_proof_and_native_bindings() {
         "semantic_optional_absent_retains_absence", "semantic_optional_present_retains_presence",
         "component_frontier_selects_incomplete", "component_frontier_selects_complete",
         "component_frontier_commutes", "method_unrotated_mutant_changes_order",
+        "relocated_transition_preserves_payload_or_exact_error",
+        "successful_resume_reuses_same_identity",
+        "arbitrary_suspend_resume_trace_is_exact",
+        "arbitrary_successful_trace_keeps_one_owner",
+        "boxed_worklist_observes_same_flat_payload_order",
+        "moving_to_continuation_and_back_needs_no_second_identity",
+        "completion_observes_original_retirement_payload",
     ];
-    assert_eq!(names.len(), 44);
+    assert_eq!(names.len(), 51);
     assert_eq!(theory.matches("Print Assumptions ").count(), names.len());
     let catalog = read_repository_file("docs/design/pathmap/workspace-regression-formal-invariant-catalog-2026-08-28.md");
     for name in names {
@@ -1370,7 +1383,8 @@ fn protobuf_owned_slots_have_proof_and_native_bindings() {
         assert!(catalog.contains(&format!("`{name}`")));
     }
     let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
-    assert!(has_runner_command(&runner, &["rocq_compile_with_closed_count", "theories/ProtobufOwnedSlots.v", "44"]));
+    assert!(has_runner_command(&runner, &["rocq_compile_with_closed_count", "theories/ProtobufOwnedSlots.v", "51"]));
+    assert!(has_runner_command(&runner, &["rpb3_run_tests", "3", "--lib", "snapshot_continuation_tests::"]));
     assert!(has_runner_kernel_check(&runner, &["StackSafePDA.ProtobufOwnedSlots"]));
     assert!(has_runner_command(&runner, &["rpb3_run_tests", "8", "--lib", "protobuf_owned_slots_tests"]));
     assert!(has_runner_command(&runner, &["rpb3_run_tests", "7", "--lib", "protobuf_construction_tests"]));
@@ -3535,7 +3549,7 @@ fn rpb3_admission_formal_artifacts_are_manifested() {
     assert!(has_runner_command(&runner, &[
         "rocq_compile_with_closed_count",
         "theories/RPB3Admission.v",
-        "357"
+        "365"
     ],));
     assert!(
         runner

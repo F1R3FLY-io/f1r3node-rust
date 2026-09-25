@@ -11826,7 +11826,7 @@ enum Node {
     src.push_str(
         "    EPathMapPs { parent: EPathMap, limit: usize },\n\
              EPathMapRemainder { parent: EPathMap, limit: usize },\n\
-             EPathMapSnapshotValue { frame: EpmFrame },\n\
+             EPathMapSnapshotValue { frame: Box<EpmFrame> },\n\
              MapStringParValue { key: String, limit: usize },\n\
          }\n\n\
          struct EpmFrame {\n\
@@ -11837,7 +11837,7 @@ enum Node {
          enum Frame {\n\
              Node(Node),\n\
              Attach(Attach),\n\
-             Epm(EpmFrame),\n\
+             Epm(Box<EpmFrame>),\n\
          }\n\n",
     );
 
@@ -12735,11 +12735,11 @@ fn emit_protobuf_decoder_epathmap_step(src: &mut String) {
 	                            error
 	                        })?;
 	                        self.epm_depth += 1;
-	                        self.frames.push(Frame::Epm(EpmFrame {
+	                        self.frames.push(Frame::Epm(Box::new(EpmFrame {
 	                            parent: value,
 	                            limit,
 	                            pending,
-	                        }));
+	                        })));
                     }
                     _ => {
                         skip_unknown_field(protobuf_wire_type, tag, &mut self.buf)?;
@@ -12750,7 +12750,7 @@ fn emit_protobuf_decoder_epathmap_step(src: &mut String) {
             }
 
     #[inline(never)]
-    fn step_epm_snapshot(&mut self, mut frame: EpmFrame) -> Result<(), DecodeError> {
+    fn step_epm_snapshot(&mut self, mut frame: Box<EpmFrame>) -> Result<(), DecodeError> {
         let next = frame.pending.next_value_bytes().map_err(|error| {
             let mut error: DecodeError = error.into();
             error.push("EPathMap", "trie_snapshot");
@@ -12766,6 +12766,7 @@ fn emit_protobuf_decoder_epathmap_step(src: &mut String) {
             return Ok(());
         }
 
+	        let mut frame = *frame;
 	        let repr = frame
 	            .pending
 	            .finish()
@@ -13052,7 +13053,7 @@ fn emit_protobuf_decoder_attach_arms(
         r#"    #[inline(never)]
     fn attach_epath_map_snapshot_value(
         &mut self,
-        mut frame: EpmFrame,
+        mut frame: Box<EpmFrame>,
     ) -> Result<(), DecodeError> {
         let child = self.pop_attached_value();
         self.leave_input();
@@ -13536,6 +13537,11 @@ mod oracle_body_guards {
 #[cfg(test)]
 mod decoder_control_tests {
     include!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/support/protobuf_decoder_control.rs"));
+}
+
+#[cfg(test)]
+mod snapshot_continuation_tests {
+    include!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/support/protobuf_snapshot_continuation.rs"));
 }
 
 "#,

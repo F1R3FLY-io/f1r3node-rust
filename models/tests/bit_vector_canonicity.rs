@@ -418,19 +418,33 @@ fn canonicalising_union_would_move_consensus_bytes() {
 // §3 the producer set, DERIVED from the source text
 // ---------------------------------------------------------------------------
 
-/// ★★ The enumeration is a **scan**, not a memory.
-///
-/// Every byte-per-index bitset in this crate is materialised by a `vec![0; n]`
-/// of a computed length — that is the *only* way to make a vector with a
-/// possibly-clear last byte, because every other construction here either
-/// starts from `Vec::new()` or copies an existing bitset. So the set of
-/// producers is exactly the set of `vec![0; …]` sites in `models/src`, and this
-/// test reads them out of the source.
-///
-/// ⚠ A third site fails this test **naming itself**, which is the property a
-/// hand-maintained list does not have. `docs/design/audits/
-/// theta-depth-traversals-2026-07-26.md` §11.4 is the measured precedent: one
-/// list, four copies, every copy drifted.
+fn is_attributed_ordinal_page_site(text: &str, line: usize) -> bool {
+    let Some((_, fields)) = text.split_once("struct PageFrozenData {") else { return false };
+    let Some((fields, _)) = fields.split_once("\n}") else { return false };
+    if !fields.lines().any(|field| field.trim() == "logical_pages: Box<[usize]>,") {
+        return false;
+    }
+    let Some(start) = text.find("fn freeze_owned_segment(") else { return false };
+    let Some(end) = text[start..].find("\n    }") else { return false };
+    let body = &text[start..start + end];
+    if !body.contains("data: Arc::new(PageFrozenData {") { return false; }
+    let first_line = text[..start].bytes().filter(|&byte| byte == b'\n').count() + 1;
+    let Some(relative_line) = line.checked_sub(first_line) else { return false };
+    let mut lines = body.lines().skip(relative_line);
+    lines.next().is_some_and(|line| line.trim_start().starts_with("logical_pages: vec![0;"))
+        && lines.next().is_some_and(|line| line.trim() == ".into_boxed_slice(),")
+}
+
+#[test]
+fn non_byte_attribution_requires_the_exact_owner_field_type_and_initializer() {
+    let fixture = "struct PageFrozenData {\n    logical_pages: Box<[usize]>,\n}\nimpl Arena {\n    fn freeze_owned_segment(&self) {\n        data: Arc::new(PageFrozenData {\n            logical_pages: vec![0; used / BLOCK_BYTES]\n                .into_boxed_slice(),\n            other: vec![0; used]\n                .into_boxed_slice(),\n        })\n    }\n}";
+    assert!(is_attributed_ordinal_page_site(fixture, 7));
+    assert!(!is_attributed_ordinal_page_site(&fixture.replace("Box<[usize]>", "Box<[u8]>"), 7));
+    assert!(!is_attributed_ordinal_page_site(&fixture.replace("Arc::new(PageFrozenData", "Arc::new(Unrelated"), 7));
+    assert!(!is_attributed_ordinal_page_site(&fixture.replace("fn freeze_owned_segment", "fn unrelated"), 7));
+    assert!(!is_attributed_ordinal_page_site(fixture, 9));
+}
+
 #[test]
 fn the_bitset_construction_sites_are_enumerated_from_source() {
     /// (file, the function that owns the site, whether it can emit a trailing
@@ -498,15 +512,23 @@ fn the_bitset_construction_sites_are_enumerated_from_source() {
         }
     }
 
-    // NON-VACUITY: the scan must actually find the sites we know exist. A scan
-    // that matches nothing passes every "each hit is attributed" check.
+    let ordinal_source = std::fs::read_to_string(root.join("src/rust/rholang/canonical_bytes_arena.rs")).unwrap();
+    let is_ordinal = |site: &(String, usize, String)| {
+        site.0 == "src/rust/rholang/canonical_bytes_arena.rs"
+            && is_attributed_ordinal_page_site(&ordinal_source, site.1)
+    };
+    assert_eq!(found.iter().filter(|site| is_ordinal(site)).count(), 1,
+        "the non-byte ordinal-table attribution must identify exactly one typed construction");
+    assert_eq!(found.len(), ATTRIBUTED.len() + 1,
+        "every computed zero-fill site requires semantic attribution: {found:#?}");
+    found.retain(|site| !is_ordinal(site));
     assert_eq!(
         found.len(),
         ATTRIBUTED.len(),
         "the computed zero-filled-vector scan of models/src found {} site(s), but {} are attributed.\n\
          found: {found:#?}\n\
          attributed: {ATTRIBUTED:#?}\n\
-         A NEW site means a new bitset producer: give it a row here and prove it cannot emit a \
+         A NEW zero-fill site needs attribution; byte-bitset producers must prove they cannot emit a \
          trailing clear byte. A MISSING site means the scan broke — which would make every other \
          assertion in this test vacuous.",
         found.len(),

@@ -441,3 +441,94 @@ Print Assumptions component_frontier_commutes.
 Print Assumptions method_unrotated_mutant_changes_order.
 
 End ProtobufOwnedSlots.
+
+Module IndirectSnapshotContinuation.
+
+Section Transport.
+Context {Payload Error : Type}.
+
+Record owned_cell := Cell { identity : nat; payload : Payload }.
+
+Definition transition (step : Payload -> Error + Payload) (cell : owned_cell)
+    : Error + owned_cell :=
+  match step (payload cell) with
+  | inl error => inl error
+  | inr next => inr (Cell (identity cell) next)
+  end.
+
+Definition observe (result : Error + owned_cell) : Error + Payload :=
+  match result with inl error => inl error | inr cell => inr (payload cell) end.
+
+Theorem relocated_transition_preserves_payload_or_exact_error step cell :
+  observe (transition step cell) = step (payload cell).
+Proof. unfold observe, transition. destruct (step (payload cell)); reflexivity. Qed.
+
+Theorem successful_resume_reuses_same_identity step cell next :
+  transition step cell = inr next -> identity next = identity cell.
+Proof.
+  unfold transition. destruct (step (payload cell)); intro H; inversion H; reflexivity.
+Qed.
+
+Fixpoint drive (steps : list (Payload -> Error + Payload)) (cell : owned_cell)
+    : Error + owned_cell :=
+  match steps with
+  | [] => inr cell
+  | step :: rest =>
+      match transition step cell with
+      | inl error => inl error
+      | inr next => drive rest next
+      end
+  end.
+
+Fixpoint inline_drive (steps : list (Payload -> Error + Payload)) (value : Payload)
+    : Error + Payload :=
+  match steps with
+  | [] => inr value
+  | step :: rest =>
+      match step value with
+      | inl error => inl error
+      | inr next => inline_drive rest next
+      end
+  end.
+
+Theorem arbitrary_suspend_resume_trace_is_exact steps cell :
+  observe (drive steps cell) = inline_drive steps (payload cell).
+Proof.
+  revert cell. induction steps as [|step rest IH]; intro cell; [reflexivity|].
+  cbn [drive inline_drive]. unfold transition.
+  destruct (step (payload cell)); [reflexivity|apply IH].
+Qed.
+
+Theorem arbitrary_successful_trace_keeps_one_owner steps cell next :
+  drive steps cell = inr next -> identity next = identity cell.
+Proof.
+  revert cell next. induction steps as [|step rest IH]; intros cell next H.
+  - inversion H. reflexivity.
+  - cbn [drive] in H. destruct (transition step cell) as [error|updated] eqn:one;
+      [discriminate|].
+    rewrite (IH _ _ H). eapply successful_resume_reuses_same_identity; exact one.
+Qed.
+
+Theorem boxed_worklist_observes_same_flat_payload_order (values : list owned_cell) :
+  map payload (rev values) = rev (map payload values).
+Proof. apply map_rev. Qed.
+
+Theorem moving_to_continuation_and_back_needs_no_second_identity id value :
+  identity (Cell id (payload (Cell id value))) = id.
+Proof. reflexivity. Qed.
+
+Theorem completion_observes_original_retirement_payload id value (retire : Payload -> nat) :
+  retire (payload (Cell id value)) = retire value.
+Proof. reflexivity. Qed.
+
+End Transport.
+
+Print Assumptions relocated_transition_preserves_payload_or_exact_error.
+Print Assumptions successful_resume_reuses_same_identity.
+Print Assumptions arbitrary_suspend_resume_trace_is_exact.
+Print Assumptions arbitrary_successful_trace_keeps_one_owner.
+Print Assumptions boxed_worklist_observes_same_flat_payload_order.
+Print Assumptions moving_to_continuation_and_back_needs_no_second_identity.
+Print Assumptions completion_observes_original_retirement_payload.
+
+End IndirectSnapshotContinuation.
