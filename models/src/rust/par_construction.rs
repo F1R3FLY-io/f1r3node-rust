@@ -24,6 +24,7 @@
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::fmt;
+use std::num::NonZeroUsize;
 
 #[cfg(feature = "protobuf-projection-experiment")]
 #[path = "../../tests/support/substitution_cost.rs"]
@@ -226,7 +227,7 @@ enum ScorePiece {
 
 enum ScoreCursorOp<'a> {
     Score(PlannedScore),
-    Bytes { fragment: usize, offset: usize },
+    Bytes { bytes: &'a [u8], offset: usize },
     Repeat { child: PlannedScore, remaining: u64 },
     OccurrenceScores { root: Option<usize>, family: usize },
     OccurrenceFamilyNode { node: usize, family: usize },
@@ -263,7 +264,14 @@ impl Iterator for ScoreByteCursor<'_> {
                     let pieces = match &self.arena.scores[score.0].pieces {
                         ScoreProgram::Literal(fragment) => {
                             self.work.push(ScoreCursorOp::Bytes {
-                                fragment: *fragment,
+                                bytes: &self.arena.byte_fragments[*fragment],
+                                offset: 0,
+                            });
+                            continue;
+                        }
+                        ScoreProgram::Pooled(span) => {
+                            self.work.push(ScoreCursorOp::Bytes {
+                                bytes: span.view(&self.arena.byte_pool),
                                 offset: 0,
                             });
                             continue;
@@ -273,7 +281,7 @@ impl Iterator for ScoreByteCursor<'_> {
                     for piece in pieces.iter().rev() {
                         self.work.push(match *piece {
                             ScorePiece::Bytes(fragment) => ScoreCursorOp::Bytes {
-                                fragment,
+                                bytes: &self.arena.byte_fragments[fragment],
                                 offset: 0,
                             },
                             ScorePiece::Child(child) => ScoreCursorOp::Score(child),
@@ -286,14 +294,13 @@ impl Iterator for ScoreByteCursor<'_> {
                         });
                     }
                 }
-                ScoreCursorOp::Bytes { fragment, offset } => {
-                    let bytes = &self.arena.byte_fragments[fragment];
+                ScoreCursorOp::Bytes { bytes, offset } => {
                     let Some(&byte) = bytes.get(offset) else {
                         continue;
                     };
                     if offset + 1 < bytes.len() {
                         self.work.push(ScoreCursorOp::Bytes {
-                            fragment,
+                            bytes,
                             offset: offset + 1,
                         });
                     }
@@ -327,7 +334,7 @@ impl Iterator for ScoreByteCursor<'_> {
                     let component = &self.arena.components[occurrence_node.occurrence.component.0];
                     match component.tag.cmp(&PAR_SCORE_TAGS[family]) {
                         Ordering::Less => {
-                            if let Some(right) = occurrence_node.right {
+                            if let Some(right) = occurrence_node.right() {
                                 self.work.push(ScoreCursorOp::OccurrenceFamilyNode {
                                     node: right,
                                     family,
@@ -335,7 +342,7 @@ impl Iterator for ScoreByteCursor<'_> {
                             }
                         }
                         Ordering::Greater => {
-                            if let Some(left) = occurrence_node.left {
+                            if let Some(left) = occurrence_node.left() {
                                 self.work.push(ScoreCursorOp::OccurrenceFamilyNode {
                                     node: left,
                                     family,
@@ -343,7 +350,7 @@ impl Iterator for ScoreByteCursor<'_> {
                             }
                         }
                         Ordering::Equal => {
-                            if let Some(right) = occurrence_node.right {
+                            if let Some(right) = occurrence_node.right() {
                                 self.work.push(ScoreCursorOp::OccurrenceFamilyNode {
                                     node: right,
                                     family,
@@ -353,7 +360,7 @@ impl Iterator for ScoreByteCursor<'_> {
                                 child: component.score,
                                 remaining: occurrence_node.occurrence.multiplicity.get(),
                             });
-                            if let Some(left) = occurrence_node.left {
+                            if let Some(left) = occurrence_node.left() {
                                 self.work.push(ScoreCursorOp::OccurrenceFamilyNode {
                                     node: left,
                                     family,
@@ -385,7 +392,18 @@ struct ScoreNode {
 
 enum ScoreProgram {
     Literal(usize),
+    Pooled(ByteSpan),
     Composite(Box<[ScorePiece]>),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ByteSpan {
+    start: usize,
+    end: usize,
+}
+
+impl ByteSpan {
+    fn view(self, pool: &[u8]) -> &[u8] { &pool[self.start..self.end] }
 }
 
 impl From<Vec<ScorePiece>> for ScoreProgram {
@@ -434,8 +452,13 @@ mod planned_ground_leaf_tests;
 #[path = "../../tests/support/planned_fragment_publication.rs"]
 mod planned_fragment_publication_tests;
 
+#[cfg(test)]
+#[path = "../../tests/support/planned_pooled_storage.rs"]
+mod planned_pooled_storage_tests;
+
 enum ProtoPiece {
     Bytes(Box<[u8]>),
+    PooledBytes(ByteSpan),
     SharedBytes(Box<prost::bytes::Bytes>),
     Node { tag: u32, node: usize },
     Par { tag: u32, par: PlannedPar },
@@ -676,6 +699,10 @@ impl Iterator for WireByteCursor<'_> {
                         });
                         self.work.push(match piece {
                             ProtoPiece::Bytes(bytes) => WireCursorOp::Bytes { bytes, offset: 0 },
+                            ProtoPiece::PooledBytes(span) => WireCursorOp::Bytes {
+                                bytes: span.view(&self.arena.byte_pool),
+                                offset: 0,
+                            },
                             ProtoPiece::SharedBytes(bytes) => {
                                 WireCursorOp::Bytes { bytes, offset: 0 }
                             }
@@ -772,7 +799,7 @@ impl Iterator for WireByteCursor<'_> {
                         .cmp(&after_metadata)
                     {
                         Ordering::Less => {
-                            if let Some(right) = occurrence_node.right {
+                            if let Some(right) = occurrence_node.right() {
                                 self.work.push(WireCursorOp::OccurrenceNode {
                                     node: right,
                                     after_metadata,
@@ -780,7 +807,7 @@ impl Iterator for WireByteCursor<'_> {
                             }
                         }
                         Ordering::Greater => {
-                            if let Some(left) = occurrence_node.left {
+                            if let Some(left) = occurrence_node.left() {
                                 self.work.push(WireCursorOp::OccurrenceNode {
                                     node: left,
                                     after_metadata,
@@ -788,7 +815,7 @@ impl Iterator for WireByteCursor<'_> {
                             }
                         }
                         Ordering::Equal => {
-                            if let Some(right) = occurrence_node.right {
+                            if let Some(right) = occurrence_node.right() {
                                 self.work.push(WireCursorOp::OccurrenceNode {
                                     node: right,
                                     after_metadata,
@@ -798,7 +825,7 @@ impl Iterator for WireByteCursor<'_> {
                                 occurrence,
                                 remaining: occurrence.multiplicity.get(),
                             });
-                            if let Some(left) = occurrence_node.left {
+                            if let Some(left) = occurrence_node.left() {
                                 self.work.push(WireCursorOp::OccurrenceNode {
                                     node: left,
                                     after_metadata,
@@ -946,10 +973,12 @@ enum PlannedExprSemantic {
     Unary(PlannedPar),
     Binary(PlannedPar, PlannedPar),
     MatchesTarget(PlannedPar),
-    Unsupported {
-        kind: &'static str,
-        detail: Option<String>,
-    },
+    Unsupported(Box<UnsupportedExpr>),
+}
+
+struct UnsupportedExpr {
+    kind: &'static str,
+    detail: Option<String>,
 }
 
 /// Borrowed evaluator-relevant shape of one planned expression endpoint.
@@ -979,6 +1008,7 @@ pub enum PlannedConnective<'a> {
 
 enum CanonicalSegment {
     Bytes(Box<[u8]>),
+    PooledBytes(ByteSpan),
     List(Box<[PlannedPar]>),
     Tuple(Box<[PlannedPar]>),
     EPathMap(PlannedEPathMap),
@@ -994,8 +1024,8 @@ struct Occurrence {
 struct OccurrenceTreeNode {
     owner: usize,
     occurrence: Occurrence,
-    left: Option<usize>,
-    right: Option<usize>,
+    left: Option<NonZeroUsize>,
+    right: Option<NonZeroUsize>,
     height: usize,
     distinct_len: usize,
     score_len: usize,
@@ -1003,9 +1033,24 @@ struct OccurrenceTreeNode {
     protobuf_zero_count: usize,
 }
 
+impl OccurrenceTreeNode {
+    fn left(&self) -> Option<usize> { self.left.map(|index| index.get() - 1) }
+    fn right(&self) -> Option<usize> { self.right.map(|index| index.get() - 1) }
+    fn encode_link(index: Option<usize>) -> Result<Option<NonZeroUsize>, ParConstructionError> {
+        index
+            .map(|index| {
+                index.checked_add(1).and_then(NonZeroUsize::new).ok_or(
+                    ParConstructionError::LengthOverflow("occurrence child index"),
+                )
+            })
+            .transpose()
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct ConstructionCheckpoint {
     bytes: usize,
+    pool: usize,
     scores: usize,
     protobuf: usize,
     epathmaps: usize,
@@ -1081,21 +1126,26 @@ impl OccurrenceEdit<'_> {
         if lh > rh && lh - rh > 1 {
             let pivot_index = left.expect("left-heavy occurrence node");
             let pivot = self.arena.occurrence_nodes[pivot_index];
-            if self.arena.occurrence_height(pivot.left) >= self.arena.occurrence_height(pivot.right)
+            if self.arena.occurrence_height(pivot.left())
+                >= self.arena.occurrence_height(pivot.right())
             {
-                let demoted = self.store(Some(original), occurrence, pivot.right, right)?;
+                let demoted = self.store(Some(original), occurrence, pivot.right(), right)?;
                 return self.store(
                     Some(pivot_index),
                     pivot.occurrence,
-                    pivot.left,
+                    pivot.left(),
                     Some(demoted),
                 );
             }
-            let middle_index = pivot.right.expect("left-right occurrence rotation");
+            let middle_index = pivot.right().expect("left-right occurrence rotation");
             let middle = self.arena.occurrence_nodes[middle_index];
-            let new_left =
-                self.store(Some(pivot_index), pivot.occurrence, pivot.left, middle.left)?;
-            let new_right = self.store(Some(original), occurrence, middle.right, right)?;
+            let new_left = self.store(
+                Some(pivot_index),
+                pivot.occurrence,
+                pivot.left(),
+                middle.left(),
+            )?;
+            let new_right = self.store(Some(original), occurrence, middle.right(), right)?;
             return self.store(
                 Some(middle_index),
                 middle.occurrence,
@@ -1106,24 +1156,25 @@ impl OccurrenceEdit<'_> {
         if rh > lh && rh - lh > 1 {
             let pivot_index = right.expect("right-heavy occurrence node");
             let pivot = self.arena.occurrence_nodes[pivot_index];
-            if self.arena.occurrence_height(pivot.right) >= self.arena.occurrence_height(pivot.left)
+            if self.arena.occurrence_height(pivot.right())
+                >= self.arena.occurrence_height(pivot.left())
             {
-                let demoted = self.store(Some(original), occurrence, left, pivot.left)?;
+                let demoted = self.store(Some(original), occurrence, left, pivot.left())?;
                 return self.store(
                     Some(pivot_index),
                     pivot.occurrence,
                     Some(demoted),
-                    pivot.right,
+                    pivot.right(),
                 );
             }
-            let middle_index = pivot.left.expect("right-left occurrence rotation");
+            let middle_index = pivot.left().expect("right-left occurrence rotation");
             let middle = self.arena.occurrence_nodes[middle_index];
-            let new_left = self.store(Some(original), occurrence, left, middle.left)?;
+            let new_left = self.store(Some(original), occurrence, left, middle.left())?;
             let new_right = self.store(
                 Some(pivot_index),
                 pivot.occurrence,
-                middle.right,
-                pivot.right,
+                middle.right(),
+                pivot.right(),
             )?;
             return self.store(
                 Some(middle_index),
@@ -1172,10 +1223,10 @@ impl Iterator for OccurrenceIter<'_> {
     fn next(&mut self) -> Option<Self::Item> {
         while let Some(node) = self.cursor {
             self.stack.push(node);
-            self.cursor = self.nodes[node].left;
+            self.cursor = self.nodes[node].left();
         }
         let node = self.stack.pop()?;
-        self.cursor = self.nodes[node].right;
+        self.cursor = self.nodes[node].right();
         Some(self.nodes[node].occurrence)
     }
 }
@@ -1212,6 +1263,7 @@ struct PlannedEPathMapNode {
 /// planned term on the native stack.
 pub struct ParConstruction {
     byte_fragments: Vec<Box<[u8]>>,
+    byte_pool: Vec<u8>,
     scores: Vec<ScoreNode>,
     protobuf_nodes: Vec<ProtoNode>,
     epathmaps: Vec<PlannedEPathMapNode>,
@@ -1260,6 +1312,7 @@ impl ParConstruction {
         substitution_cost::record(substitution_cost::Event::CreateArena);
         Self {
             byte_fragments: Vec::new(),
+            byte_pool: Vec::new(),
             scores: Vec::new(),
             protobuf_nodes: Vec::new(),
             epathmaps: Vec::new(),
@@ -1322,6 +1375,15 @@ impl ParConstruction {
         Ok(id)
     }
 
+    fn pooled_score(&mut self, span: ByteSpan) -> PlannedScore {
+        let id = PlannedScore(self.scores.len());
+        self.scores.push(ScoreNode {
+            pieces: ScoreProgram::Pooled(span),
+            encoded_len: span.end - span.start,
+        });
+        id
+    }
+
     /// Import one already-computed canonical score tree into the fragment
     /// arena. This is used only for bounded non-`Par` leaves such as `Var` and
     /// unforgeables; recursive child scores remain arena edges.
@@ -1329,17 +1391,24 @@ impl ParConstruction {
         &mut self,
         canonical_score: &Tree<ScoreAtom>,
     ) -> Result<PlannedScore, ParConstructionError> {
-        let mut encoded = Vec::new();
-        encode_order_key(canonical_score, &mut encoded);
-        self.score_from_owned(encoded)
+        let start = self.byte_pool.len();
+        encode_order_key(canonical_score, &mut self.byte_pool);
+        Ok(self.pooled_score(ByteSpan {
+            start,
+            end: self.byte_pool.len(),
+        }))
     }
 
     /// One canonical integer score leaf.
     pub fn score_i64(&mut self, value: i64) -> Result<PlannedScore, ParConstructionError> {
-        let mut bytes = Vec::with_capacity(10);
-        bytes.extend_from_slice(&[1, 1]);
-        bytes.extend_from_slice(&((value as u64) ^ (1u64 << 63)).to_be_bytes());
-        self.score_from_owned(bytes)
+        let start = self.byte_pool.len();
+        self.byte_pool.extend_from_slice(&[1, 1]);
+        self.byte_pool
+            .extend_from_slice(&((value as u64) ^ (1u64 << 63)).to_be_bytes());
+        Ok(self.pooled_score(ByteSpan {
+            start,
+            end: self.byte_pool.len(),
+        }))
     }
 
     /// One canonical string score leaf.
@@ -1362,7 +1431,13 @@ impl ParConstruction {
             .checked_add(value.len())
             .and_then(|n| n.checked_add(zeroes))
             .ok_or(ParConstructionError::LengthOverflow("canonical score atom"))?;
-        let mut bytes = Vec::with_capacity(capacity);
+        self.byte_pool
+            .len()
+            .checked_add(capacity)
+            .ok_or(ParConstructionError::LengthOverflow("canonical score pool"))?;
+        let start = self.byte_pool.len();
+        let bytes = &mut self.byte_pool;
+        bytes.reserve(capacity);
         bytes.extend_from_slice(&[1, kind]);
         for &byte in value {
             if byte == 0 {
@@ -1372,7 +1447,10 @@ impl ParConstruction {
             }
         }
         bytes.extend_from_slice(&[0, 0]);
-        self.score_from_owned(bytes)
+        Ok(self.pooled_score(ByteSpan {
+            start,
+            end: self.byte_pool.len(),
+        }))
     }
 
     /// A canonical byte-array score atom whose payload remains a streaming
@@ -1535,10 +1613,10 @@ impl ParConstruction {
                 ComponentSemanticShape::Expr(PlannedExprSemantic::MatchesTarget(target)) => {
                     PlannedExprShape::MatchesTarget(*target)
                 }
-                ComponentSemanticShape::Expr(PlannedExprSemantic::Unsupported { kind, detail }) => {
+                ComponentSemanticShape::Expr(PlannedExprSemantic::Unsupported(value)) => {
                     PlannedExprShape::Unsupported {
-                        kind,
-                        detail: detail.as_deref(),
+                        kind: value.kind,
+                        detail: value.detail.as_deref(),
                     }
                 }
                 _ => PlannedExprShape::Opaque,
@@ -1710,6 +1788,9 @@ impl ParConstruction {
                         .expect("a newly planned stable component has a segment program")
                     {
                         CanonicalSegment::Bytes(bytes) => out.extend_from_slice(bytes),
+                        CanonicalSegment::PooledBytes(span) => {
+                            out.extend_from_slice(span.view(&self.byte_pool))
+                        }
                         CanonicalSegment::List(children) => {
                             out.push(path_tag::ELIST);
                             push_uv(out, children.len() as u64);
@@ -1776,6 +1857,7 @@ impl ParConstruction {
         for piece in pieces.as_slice() {
             let opaque_bytes: Option<&[u8]> = match piece {
                 ProtoPiece::Bytes(bytes) => Some(bytes),
+                ProtoPiece::PooledBytes(span) => Some(span.view(&self.byte_pool)),
                 ProtoPiece::SharedBytes(bytes) => Some(bytes),
                 _ => None,
             };
@@ -1791,7 +1873,9 @@ impl ParConstruction {
                 continue;
             }
             let (child_len, child_zeroes, prefix) = match piece {
-                ProtoPiece::Bytes(_) | ProtoPiece::SharedBytes(_) => unreachable!(),
+                ProtoPiece::Bytes(_) | ProtoPiece::PooledBytes(_) | ProtoPiece::SharedBytes(_) => {
+                    unreachable!()
+                }
                 ProtoPiece::Node { tag, node } => (
                     self.protobuf_nodes[*node].encoded_len,
                     self.protobuf_nodes[*node].zero_count,
@@ -2056,11 +2140,12 @@ impl ParConstruction {
             stable,
             stable.then_some(CanonicalSegment::EPathMap(planned_map)),
         );
-        self.components[component.0].semantic_shape =
-            ComponentSemanticShape::Expr(PlannedExprSemantic::Unsupported {
+        self.components[component.0].semantic_shape = ComponentSemanticShape::Expr(
+            PlannedExprSemantic::Unsupported(Box::new(UnsupportedExpr {
                 kind: "EPathmapBody",
                 detail: None,
-            });
+            })),
+        );
         Ok(component)
     }
 
@@ -2601,22 +2686,35 @@ impl ParConstruction {
         &mut self,
         shell: &Expr,
     ) -> Result<PlannedComponent, ParConstructionError> {
-        let mut encoded_score = Vec::new();
+        let score_start = self.byte_pool.len();
         assert!(super::par_bag::append_leaf_expr_score(
             shell,
-            &mut encoded_score
+            &mut self.byte_pool
         ));
-        let mut encoded_protobuf = Vec::new();
+        let score_span = ByteSpan {
+            start: score_start,
+            end: self.byte_pool.len(),
+        };
+        let protobuf_start = self.byte_pool.len();
         assert!(super::par_bag::append_shallow_protobuf(
             shell,
-            &mut encoded_protobuf
+            &mut self.byte_pool
         ));
-        let (canonical_segment, stable) = self.expr_canonical_segment(shell, &[])?;
-        let score = self.score_from_owned(encoded_score)?;
-        let protobuf = self.push_proto_node(if encoded_protobuf.is_empty() {
+        let protobuf_span = ByteSpan {
+            start: protobuf_start,
+            end: self.byte_pool.len(),
+        };
+        let segment_start = self.byte_pool.len();
+        let stable = Self::append_ground_segment(shell, &mut self.byte_pool);
+        let canonical_segment = stable.then_some(CanonicalSegment::PooledBytes(ByteSpan {
+            start: segment_start,
+            end: self.byte_pool.len(),
+        }));
+        let score = self.pooled_score(score_span);
+        let protobuf = self.push_proto_node(if protobuf_span.start == protobuf_span.end {
             ProtoProgram::default()
         } else {
-            ProtoProgram::One(ProtoPiece::Bytes(encoded_protobuf.into_boxed_slice()))
+            ProtoProgram::One(ProtoPiece::PooledBytes(protobuf_span))
         })?;
         let component = self.component_from_proto(
             ParComponentTag::Expr,
@@ -2662,30 +2760,42 @@ impl ParConstruction {
                 Some(ExprInstance::EMatchesBody(_)) => {
                     PlannedExprSemantic::MatchesTarget(par_children[0])
                 }
-                Some(ExprInstance::EMethodBody(method)) => PlannedExprSemantic::Unsupported {
-                    kind: "EMethodBody",
-                    detail: Some(format!("`{}`", method.method_name)),
-                },
-                Some(ExprInstance::EPercentPercentBody(_)) => PlannedExprSemantic::Unsupported {
-                    kind: "EPercentPercentBody",
-                    detail: None,
-                },
-                Some(ExprInstance::EPlusPlusBody(_)) => PlannedExprSemantic::Unsupported {
-                    kind: "EPlusPlusBody",
-                    detail: None,
-                },
-                Some(ExprInstance::EMinusMinusBody(_)) => PlannedExprSemantic::Unsupported {
-                    kind: "EMinusMinusBody",
-                    detail: None,
-                },
-                Some(ExprInstance::EPathmapBody(_)) => PlannedExprSemantic::Unsupported {
-                    kind: "EPathmapBody",
-                    detail: None,
-                },
-                Some(ExprInstance::EZipperBody(_)) => PlannedExprSemantic::Unsupported {
-                    kind: "EZipperBody",
-                    detail: None,
-                },
+                Some(ExprInstance::EMethodBody(method)) => {
+                    PlannedExprSemantic::Unsupported(Box::new(UnsupportedExpr {
+                        kind: "EMethodBody",
+                        detail: Some(format!("`{}`", method.method_name)),
+                    }))
+                }
+                Some(ExprInstance::EPercentPercentBody(_)) => {
+                    PlannedExprSemantic::Unsupported(Box::new(UnsupportedExpr {
+                        kind: "EPercentPercentBody",
+                        detail: None,
+                    }))
+                }
+                Some(ExprInstance::EPlusPlusBody(_)) => {
+                    PlannedExprSemantic::Unsupported(Box::new(UnsupportedExpr {
+                        kind: "EPlusPlusBody",
+                        detail: None,
+                    }))
+                }
+                Some(ExprInstance::EMinusMinusBody(_)) => {
+                    PlannedExprSemantic::Unsupported(Box::new(UnsupportedExpr {
+                        kind: "EMinusMinusBody",
+                        detail: None,
+                    }))
+                }
+                Some(ExprInstance::EPathmapBody(_)) => {
+                    PlannedExprSemantic::Unsupported(Box::new(UnsupportedExpr {
+                        kind: "EPathmapBody",
+                        detail: None,
+                    }))
+                }
+                Some(ExprInstance::EZipperBody(_)) => {
+                    PlannedExprSemantic::Unsupported(Box::new(UnsupportedExpr {
+                        kind: "EZipperBody",
+                        detail: None,
+                    }))
+                }
                 Some(ExprInstance::GBool(_))
                 | Some(ExprInstance::GInt(_))
                 | Some(ExprInstance::GString(_))
@@ -2705,11 +2815,7 @@ impl ParConstruction {
         Ok(component)
     }
 
-    fn expr_canonical_segment(
-        &self,
-        shell: &Expr,
-        par_children: &[PlannedPar],
-    ) -> Result<(Option<CanonicalSegment>, bool), ParConstructionError> {
+    fn append_ground_segment(shell: &Expr, bytes: &mut Vec<u8>) -> bool {
         fn push_uv(out: &mut Vec<u8>, mut value: u64) {
             loop {
                 let mut byte = (value & 0x7f) as u8;
@@ -2725,96 +2831,106 @@ impl ParConstruction {
         }
 
         let Some(instance) = shell.expr_instance.as_ref() else {
-            return Ok((None, false));
+            return false;
         };
-        let mut bytes = Vec::new();
-        let segment = match instance {
+        match instance {
             ExprInstance::GBool(value) => {
                 bytes.push(if *value {
                     path_tag::GBOOL_TRUE
                 } else {
                     path_tag::GBOOL_FALSE
                 });
-                CanonicalSegment::Bytes(bytes.into_boxed_slice())
             }
             ExprInstance::GInt(value) => {
                 bytes.push(path_tag::GINT);
-                push_uv(&mut bytes, ((*value << 1) ^ (*value >> 63)) as u64);
-                CanonicalSegment::Bytes(bytes.into_boxed_slice())
+                push_uv(bytes, ((*value << 1) ^ (*value >> 63)) as u64);
             }
             ExprInstance::GString(value) => {
                 bytes.push(path_tag::GSTRING);
-                push_uv(&mut bytes, value.len() as u64);
+                push_uv(bytes, value.len() as u64);
                 bytes.extend_from_slice(value.as_bytes());
-                CanonicalSegment::Bytes(bytes.into_boxed_slice())
             }
             ExprInstance::GUri(value) => {
                 bytes.push(path_tag::GURI);
-                push_uv(&mut bytes, value.len() as u64);
+                push_uv(bytes, value.len() as u64);
                 bytes.extend_from_slice(value.as_bytes());
-                CanonicalSegment::Bytes(bytes.into_boxed_slice())
             }
             ExprInstance::GByteArray(value) => {
                 bytes.push(path_tag::GBYTE_ARRAY);
-                push_uv(&mut bytes, value.len() as u64);
+                push_uv(bytes, value.len() as u64);
                 bytes.extend_from_slice(value);
-                CanonicalSegment::Bytes(bytes.into_boxed_slice())
             }
             ExprInstance::GDouble(bits) => {
                 bytes.push(path_tag::GDOUBLE);
                 bytes.extend_from_slice(&bits.to_be_bytes());
-                CanonicalSegment::Bytes(bytes.into_boxed_slice())
             }
             ExprInstance::GBigInt(value) => {
                 bytes.push(path_tag::GBIG_INT);
-                push_uv(&mut bytes, value.len() as u64);
+                push_uv(bytes, value.len() as u64);
                 bytes.extend_from_slice(value);
-                CanonicalSegment::Bytes(bytes.into_boxed_slice())
             }
             ExprInstance::GBigRat(value) => {
                 bytes.push(path_tag::GBIG_RAT);
-                push_uv(&mut bytes, value.numerator.len() as u64);
+                push_uv(bytes, value.numerator.len() as u64);
                 bytes.extend_from_slice(&value.numerator);
-                push_uv(&mut bytes, value.denominator.len() as u64);
+                push_uv(bytes, value.denominator.len() as u64);
                 bytes.extend_from_slice(&value.denominator);
-                CanonicalSegment::Bytes(bytes.into_boxed_slice())
             }
             ExprInstance::GFixedPoint(value) => {
                 bytes.push(path_tag::GFIXED_POINT);
-                push_uv(&mut bytes, value.unscaled.len() as u64);
+                push_uv(bytes, value.unscaled.len() as u64);
                 bytes.extend_from_slice(&value.unscaled);
-                push_uv(&mut bytes, u64::from(value.scale));
-                CanonicalSegment::Bytes(bytes.into_boxed_slice())
+                push_uv(bytes, u64::from(value.scale));
             }
+            _ => return false,
+        }
+        true
+    }
+
+    fn expr_canonical_segment(
+        &self,
+        shell: &Expr,
+        par_children: &[PlannedPar],
+    ) -> Result<(Option<CanonicalSegment>, bool), ParConstructionError> {
+        let mut bytes = Vec::new();
+        if Self::append_ground_segment(shell, &mut bytes) {
+            return Ok((
+                Some(CanonicalSegment::Bytes(bytes.into_boxed_slice())),
+                true,
+            ));
+        }
+        let Some(instance) = shell.expr_instance.as_ref() else {
+            return Ok((None, false));
+        };
+        match instance {
             ExprInstance::EListBody(list)
                 if list.remainder.is_none()
                     && list.locally_free.is_empty()
                     && !list.connective_used =>
             {
-                return Ok((
+                Ok((
                     Some(CanonicalSegment::List(
                         par_children.to_vec().into_boxed_slice(),
                     )),
                     par_children
                         .iter()
                         .all(|child| self.pars[child.0].canonical_path_stable),
-                ));
+                ))
             }
             ExprInstance::ETupleBody(tuple)
                 if tuple.locally_free.is_empty() && !tuple.connective_used =>
             {
-                return Ok((
+                Ok((
                     Some(CanonicalSegment::Tuple(
                         par_children.to_vec().into_boxed_slice(),
                     )),
                     par_children
                         .iter()
                         .all(|child| self.pars[child.0].canonical_path_stable),
-                ));
+                ))
             }
-            _ => return Ok((None, false)),
-        };
-        Ok((Some(segment), true))
+            _ => Ok((None, false)),
+        }
     }
 
     /// Plan an order-preserving `Expr` constructor directly from normalized
@@ -3261,8 +3377,8 @@ impl ParConstruction {
         Ok(OccurrenceTreeNode {
             owner: 0,
             occurrence,
-            left,
-            right,
+            left: OccurrenceTreeNode::encode_link(left)?,
+            right: OccurrenceTreeNode::encode_link(right)?,
             height,
             distinct_len,
             score_len,
@@ -3281,30 +3397,31 @@ impl ParConstruction {
         let right_height = self.occurrence_height(right);
         if left_height > right_height && left_height - right_height > 1 {
             let pivot = self.occurrence_nodes[left.expect("left-heavy AVL node has a left child")];
-            if self.occurrence_height(pivot.left) >= self.occurrence_height(pivot.right) {
-                let demoted = self.push_occurrence_node(occurrence, pivot.right, right)?;
-                return self.push_occurrence_node(pivot.occurrence, pivot.left, Some(demoted));
+            if self.occurrence_height(pivot.left()) >= self.occurrence_height(pivot.right()) {
+                let demoted = self.push_occurrence_node(occurrence, pivot.right(), right)?;
+                return self.push_occurrence_node(pivot.occurrence, pivot.left(), Some(demoted));
             }
             let middle = self.occurrence_nodes[pivot
-                .right
+                .right()
                 .expect("left-right AVL rotation has an inner child")];
-            let new_left = self.push_occurrence_node(pivot.occurrence, pivot.left, middle.left)?;
-            let new_right = self.push_occurrence_node(occurrence, middle.right, right)?;
+            let new_left =
+                self.push_occurrence_node(pivot.occurrence, pivot.left(), middle.left())?;
+            let new_right = self.push_occurrence_node(occurrence, middle.right(), right)?;
             return self.push_occurrence_node(middle.occurrence, Some(new_left), Some(new_right));
         }
         if right_height > left_height && right_height - left_height > 1 {
             let pivot =
                 self.occurrence_nodes[right.expect("right-heavy AVL node has a right child")];
-            if self.occurrence_height(pivot.right) >= self.occurrence_height(pivot.left) {
-                let demoted = self.push_occurrence_node(occurrence, left, pivot.left)?;
-                return self.push_occurrence_node(pivot.occurrence, Some(demoted), pivot.right);
+            if self.occurrence_height(pivot.right()) >= self.occurrence_height(pivot.left()) {
+                let demoted = self.push_occurrence_node(occurrence, left, pivot.left())?;
+                return self.push_occurrence_node(pivot.occurrence, Some(demoted), pivot.right());
             }
             let middle = self.occurrence_nodes[pivot
-                .left
+                .left()
                 .expect("right-left AVL rotation has an inner child")];
-            let new_left = self.push_occurrence_node(occurrence, left, middle.left)?;
+            let new_left = self.push_occurrence_node(occurrence, left, middle.left())?;
             let new_right =
-                self.push_occurrence_node(pivot.occurrence, middle.right, pivot.right)?;
+                self.push_occurrence_node(pivot.occurrence, middle.right(), pivot.right())?;
             return self.push_occurrence_node(middle.occurrence, Some(new_left), Some(new_right));
         }
         self.push_occurrence_node(occurrence, left, right)
@@ -3328,12 +3445,12 @@ impl ParConstruction {
             let current = self.occurrence_nodes[node];
             match self.compare_components(occurrence.component, current.occurrence.component) {
                 Ordering::Less => {
-                    path.push((current.occurrence, current.right, Direction::Left));
-                    cursor = current.left;
+                    path.push((current.occurrence, current.right(), Direction::Left));
+                    cursor = current.left();
                 }
                 Ordering::Greater => {
-                    path.push((current.occurrence, current.left, Direction::Right));
-                    cursor = current.right;
+                    path.push((current.occurrence, current.left(), Direction::Right));
+                    cursor = current.right();
                 }
                 Ordering::Equal => {
                     let merged = Occurrence {
@@ -3343,7 +3460,7 @@ impl ParConstruction {
                             .multiplicity
                             .checked_add(occurrence.multiplicity)?,
                     };
-                    break self.push_occurrence_node(merged, current.left, current.right)?;
+                    break self.push_occurrence_node(merged, current.left(), current.right())?;
                 }
             }
         };
@@ -3373,11 +3490,11 @@ impl ParConstruction {
         loop {
             while let Some(node) = cursor {
                 stack.push(node);
-                cursor = self.occurrence_nodes[node].left;
+                cursor = self.occurrence_nodes[node].left();
             }
             let Some(node) = stack.pop() else { break };
             let source = self.occurrence_nodes[node];
-            cursor = source.right;
+            cursor = source.right();
             root = self.insert_occurrence(root, source.occurrence)?;
         }
         Ok(root)
@@ -3426,11 +3543,11 @@ impl ParConstruction {
                 Ordering::Equal => break,
                 Ordering::Less => {
                     path.push((index, true));
-                    cursor = current.left;
+                    cursor = current.left();
                 }
                 Ordering::Greater => {
                     path.push((index, false));
-                    cursor = current.right;
+                    cursor = current.right();
                 }
             }
         }
@@ -3486,8 +3603,8 @@ impl ParConstruction {
                     component: current.occurrence.component,
                     multiplicity,
                 },
-                current.left,
-                current.right,
+                current.left(),
+                current.right(),
             )?
         } else {
             edit.store(
@@ -3503,9 +3620,9 @@ impl ParConstruction {
         while let Some((index, went_left)) = edit.path.pop() {
             let current = edit.arena.occurrence_nodes[index];
             let (left, right) = if went_left {
-                (Some(root), current.right)
+                (Some(root), current.right())
             } else {
-                (current.left, Some(root))
+                (current.left(), Some(root))
             };
             root = edit.rebuild(index, current.occurrence, left, right)?;
         }
@@ -3517,6 +3634,7 @@ impl ParConstruction {
     pub(crate) fn construction_checkpoint(&self) -> ConstructionCheckpoint {
         ConstructionCheckpoint {
             bytes: self.byte_fragments.len(),
+            pool: self.byte_pool.len(),
             scores: self.scores.len(),
             protobuf: self.protobuf_nodes.len(),
             epathmaps: self.epathmaps.len(),
@@ -3534,6 +3652,7 @@ impl ParConstruction {
         self.protobuf_nodes.truncate(checkpoint.protobuf);
         self.scores.truncate(checkpoint.scores);
         self.byte_fragments.truncate(checkpoint.bytes);
+        self.byte_pool.truncate(checkpoint.pool);
     }
 
     fn seal_occurrences(&mut self, root: Option<usize>) {
@@ -3541,7 +3660,8 @@ impl ParConstruction {
         if self.occurrence_nodes[root].owner == 0 {
             return;
         }
-        if self.occurrence_nodes[root].left.is_none() && self.occurrence_nodes[root].right.is_none()
+        if self.occurrence_nodes[root].left().is_none()
+            && self.occurrence_nodes[root].right().is_none()
         {
             self.occurrence_nodes[root].owner = 0;
             return;
@@ -3558,10 +3678,10 @@ impl ParConstruction {
                 continue;
             }
             work.push((index, true));
-            if let Some(right) = node.right {
+            if let Some(right) = node.right() {
                 work.push((right, false));
             }
-            if let Some(left) = node.left {
+            if let Some(left) = node.left() {
                 work.push((left, false));
             }
         }
@@ -3839,20 +3959,20 @@ impl ParConstruction {
                 ScaleFrame::Visit(index) => {
                     let node = self.occurrence_nodes[index];
                     work.push(ScaleFrame::Finish(node));
-                    if let Some(right) = node.right {
+                    if let Some(right) = node.right() {
                         work.push(ScaleFrame::Visit(right));
                     }
-                    if let Some(left) = node.left {
+                    if let Some(left) = node.left() {
                         work.push(ScaleFrame::Visit(left));
                     }
                 }
                 ScaleFrame::Finish(node) => {
-                    let right = node.right.map(|_| {
+                    let right = node.right().map(|_| {
                         rebuilt
                             .pop()
                             .expect("post-order scaling produced the right child")
                     });
-                    let left = node.left.map(|_| {
+                    let left = node.left().map(|_| {
                         rebuilt
                             .pop()
                             .expect("post-order scaling produced the left child")
@@ -4169,6 +4289,7 @@ impl ParConstruction {
     fn score_fragment(&self, root: PlannedScore) -> Option<&[u8]> {
         match &self.scores[root.0].pieces {
             ScoreProgram::Literal(fragment) => Some(&self.byte_fragments[*fragment]),
+            ScoreProgram::Pooled(span) => Some(span.view(&self.byte_pool)),
             ScoreProgram::Composite(pieces) if pieces.is_empty() => Some(&[]),
             _ => None,
         }
@@ -4178,6 +4299,7 @@ impl ParConstruction {
         match self.protobuf_nodes[root].pieces.as_slice() {
             [] => Some(&[]),
             [ProtoPiece::Bytes(bytes)] => Some(bytes),
+            [ProtoPiece::PooledBytes(span)] => Some(span.view(&self.byte_pool)),
             [ProtoPiece::SharedBytes(bytes)] => Some(bytes.as_ref().as_ref()),
             _ => None,
         }
@@ -4375,6 +4497,10 @@ impl ParConstruction {
                     ProtoPiece::Bytes(bytes) => {
                         (bytes.len(), bytes.iter().filter(|&&byte| byte == 0).count())
                     }
+                    ProtoPiece::PooledBytes(span) => {
+                        let bytes = span.view(&self.byte_pool);
+                        (bytes.len(), bytes.iter().filter(|&&byte| byte == 0).count())
+                    }
                     ProtoPiece::SharedBytes(bytes) => {
                         (bytes.len(), bytes.iter().filter(|&&byte| byte == 0).count())
                     }
@@ -4499,6 +4625,7 @@ impl Drop for ParConstruction {
         self.protobuf_nodes.clear();
         self.scores.clear();
         self.byte_fragments.clear();
+        self.byte_pool.clear();
     }
 }
 
@@ -5787,17 +5914,17 @@ mod tests {
         while let Some(index) = work.pop() {
             reachable += 1;
             let node = arena.occurrence_nodes[index];
-            let left_height = arena.occurrence_height(node.left);
-            let right_height = arena.occurrence_height(node.right);
+            let left_height = arena.occurrence_height(node.left());
+            let right_height = arena.occurrence_height(node.right());
             assert!(left_height.abs_diff(right_height) <= 1);
             assert_eq!(node.height, left_height.max(right_height) + 1);
             assert_eq!(
                 node.distinct_len,
-                arena.occurrence_distinct_len(node.left)
+                arena.occurrence_distinct_len(node.left())
                     + 1
-                    + arena.occurrence_distinct_len(node.right)
+                    + arena.occurrence_distinct_len(node.right())
             );
-            if let Some(left) = node.left {
+            if let Some(left) = node.left() {
                 assert_eq!(
                     arena.compare_components(
                         arena.occurrence_nodes[left].occurrence.component,
@@ -5807,7 +5934,7 @@ mod tests {
                 );
                 work.push(left);
             }
-            if let Some(right) = node.right {
+            if let Some(right) = node.right() {
                 assert_eq!(
                     arena.compare_components(
                         arena.occurrence_nodes[right].occurrence.component,

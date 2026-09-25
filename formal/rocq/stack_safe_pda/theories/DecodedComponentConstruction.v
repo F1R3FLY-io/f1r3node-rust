@@ -684,3 +684,81 @@ Print Assumptions failed_publication_has_no_partial_result.
 Print Assumptions sorting_by_body_then_appending_a_trailer_can_reverse_order.
 
 End FragmentStoragePublication.
+
+Module PooledConstructionStorage.
+
+Definition bytes := list nat.
+Record span := Span { start : nat; extent : nat }.
+Definition view (pool : bytes) s := firstn (extent s) (skipn (start s) pool).
+Definition admitted (pool : bytes) s := start s + extent s <= length pool.
+Definition append (pool body : bytes) := (pool ++ body, Span (length pool) (length body)).
+
+Theorem appended_span_is_exact pool body :
+  view (fst (append pool body)) (snd (append pool body)) = body.
+Proof.
+  unfold view, append; cbn. rewrite skipn_app, skipn_all, Nat.sub_diag.
+  cbn. apply firstn_all.
+Qed.
+
+Theorem append_preserves_admission pool body s :
+  admitted pool s -> admitted (pool ++ body) s.
+Proof. unfold admitted. rewrite app_length. lia. Qed.
+
+Theorem append_preserves_earlier_span pool body s :
+  admitted pool s -> view (pool ++ body) s = view pool s.
+Proof.
+  unfold admitted, view. intros H. rewrite skipn_app, firstn_app.
+  rewrite length_skipn.
+  replace (extent s - (length pool - start s)) with 0 by lia.
+  cbn. now rewrite app_nil_r.
+Qed.
+
+Theorem rewind_restores_prefix (pool rejected : bytes) :
+  firstn (length pool) (pool ++ rejected) = pool.
+Proof. rewrite firstn_app, firstn_all, Nat.sub_diag. cbn. now rewrite app_nil_r. Qed.
+
+Theorem nested_rewind_preserves_outer (pool outer rejected : bytes) :
+  firstn (length (pool ++ outer)) ((pool ++ outer) ++ rejected) = pool ++ outer.
+Proof. apply rewind_restores_prefix. Qed.
+
+Inductive fragment := Owned (body : bytes) | Pooled (s : span).
+Definition emit pool f := match f with Owned b => b | Pooled s => view pool s end.
+Theorem pooled_owned_emission_refines pool body :
+  emit (fst (append pool body)) (Pooled (snd (append pool body))) = emit pool (Owned body).
+Proof. apply appended_span_is_exact. Qed.
+
+Theorem abandoned_offsets_must_not_escape :
+  view [1;2] (Span 1 1) <> view [1;3] (Span 1 1).
+Proof. discriminate. Qed.
+
+Definition encode_link (index : option nat) := match index with None => 0 | Some n => S n end.
+Definition decode_link n := match n with 0 => None | S n => Some n end.
+Theorem link_roundtrip index : decode_link (encode_link index) = index.
+Proof. destruct index; reflexivity. Qed.
+Theorem link_encoding_injective x y : encode_link x = encode_link y -> x = y.
+Proof. intros H. apply (f_equal decode_link) in H. now rewrite !link_roundtrip in H. Qed.
+Theorem addressable_link_fits index length limit :
+  index < length -> length <= limit -> S index <= limit.
+Proof. lia. Qed.
+
+Section ColdPayload.
+Context {A : Type}.
+Inductive boxed := Box (value : A).
+Definition borrow box := match box with Box value => value end.
+Theorem cold_indirection_preserves_view value : borrow (Box value) = value.
+Proof. reflexivity. Qed.
+End ColdPayload.
+
+Print Assumptions appended_span_is_exact.
+Print Assumptions append_preserves_admission.
+Print Assumptions append_preserves_earlier_span.
+Print Assumptions rewind_restores_prefix.
+Print Assumptions nested_rewind_preserves_outer.
+Print Assumptions pooled_owned_emission_refines.
+Print Assumptions abandoned_offsets_must_not_escape.
+Print Assumptions link_roundtrip.
+Print Assumptions link_encoding_injective.
+Print Assumptions addressable_link_fits.
+Print Assumptions cold_indirection_preserves_view.
+
+End PooledConstructionStorage.

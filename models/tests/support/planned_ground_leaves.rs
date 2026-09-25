@@ -52,6 +52,9 @@ fn check(shell: &Expr) {
         (Some(CanonicalSegment::Bytes(actual)), Some(CanonicalSegment::Bytes(expected))) => {
             assert_eq!(actual, &expected)
         }
+        (Some(CanonicalSegment::PooledBytes(actual)), Some(CanonicalSegment::Bytes(expected))) => {
+            assert_eq!(actual.view(&arena.byte_pool), expected.as_ref())
+        }
         _ => panic!("ground segment representation differs"),
     }
     let mut reference = ParConstruction::new();
@@ -70,6 +73,17 @@ fn check(shell: &Expr) {
     let actual = arena.finish(root).unwrap();
     let expected = reference.finish(expected_root).unwrap();
     assert_eq!(actual.compact_snapshot(), expected.compact_snapshot());
+    if stable {
+        let mut encoded = Vec::new();
+        arena
+            .emit_canonical_segment_into(root, &mut encoded)
+            .unwrap();
+        let resident = Par::default().with_exprs(vec![shell.clone()]);
+        assert_eq!(
+            encoded,
+            crate::rust::canonical_path::encode_trie_segment(&resident)
+        );
+    }
 }
 
 proptest! {

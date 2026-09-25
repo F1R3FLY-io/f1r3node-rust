@@ -8,9 +8,10 @@ fn leaf(value: i64) -> Par {
     }])
 }
 
-fn arena_lengths(arena: &ParConstruction) -> [usize; 7] {
+fn arena_lengths(arena: &ParConstruction) -> [usize; 8] {
     [
         arena.byte_fragments.len(),
+        arena.byte_pool.len(),
         arena.scores.len(),
         arena.protobuf_nodes.len(),
         arena.epathmaps.len(),

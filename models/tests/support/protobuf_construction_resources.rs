@@ -7,9 +7,13 @@ use super::*;
 
 fn integer(arena: &mut ParConstruction, value: i64) -> PlannedComponent {
     arena
-        .import_component(&Expr {
-            expr_instance: Some(ExprInstance::GInt(value)),
-        })
+        .expr_component(
+            &Expr {
+                expr_instance: Some(ExprInstance::GInt(value)),
+            },
+            &[],
+            false,
+        )
         .unwrap()
 }
 
@@ -31,8 +35,8 @@ fn node_observation(
         node.owner,
         node.occurrence.component.0,
         node.occurrence.multiplicity.get(),
-        node.left,
-        node.right,
+        node.left(),
+        node.right(),
         node.height,
         node.distinct_len,
         node.score_len,
@@ -51,7 +55,7 @@ fn inspect(arena: &ParConstruction, root: Option<usize>) -> BTreeMap<Vec<u8>, u6
         );
         let node = arena.occurrence_nodes[index];
         let expected = arena
-            .make_occurrence_node(node.occurrence, node.left, node.right)
+            .make_occurrence_node(node.occurrence, node.left(), node.right())
             .unwrap();
         assert_eq!(
             (
@@ -71,11 +75,11 @@ fn inspect(arena: &ParConstruction, root: Option<usize>) -> BTreeMap<Vec<u8>, u6
         );
         assert!(
             arena
-                .occurrence_height(node.left)
-                .abs_diff(arena.occurrence_height(node.right))
+                .occurrence_height(node.left())
+                .abs_diff(arena.occurrence_height(node.right()))
                 <= 1
         );
-        for child in [node.left, node.right].into_iter().flatten() {
+        for child in [node.left(), node.right()].into_iter().flatten() {
             let owner = arena.occurrence_nodes[child].owner;
             assert!(owner == 0 || owner == node.owner);
             work.push(child);
@@ -212,7 +216,7 @@ fn checked_failure_and_unwinding_restore_actual_private_writes() {
                 component: original.occurrence.component,
                 multiplicity: Multiplicity::new(count).unwrap(),
             };
-            edit.store(Some(index), occurrence, original.left, original.right)
+            edit.store(Some(index), occurrence, original.left(), original.right())
                 .unwrap();
         }
         panic!("injected after repeated private writes");

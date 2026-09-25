@@ -9232,6 +9232,24 @@ acceptance. Headless allocation attribution identifies remaining per-leaf byte
 ownership and retained arena metadata. Task 8516 remains open for these existing
 resource obligations and broader qualification; J-224 records exact receipts.
 
+J-225 pools freshly encoded literal bytes without copying existing owned/shared
+imports, compacts occurrence child indices and moves cold expression details out
+of common records. Its formal span/rewind/link model passes before implementation;
+the final release model cohort passes **692/692** tests, two skipped, with 2.3 GiB
+service peak and zero swap. At duplicate widths 16/256/4096, planned decoding now
+makes **82 allocation calls**, requests **14,401 bytes** and peaks at **4,864 bytes**
+in every cell. Distinct width 4,096 improves to 12,600 calls and 1,628,718 peak
+bytes, but remains above frozen's 416,984-byte peak and slower (5.565 versus
+3.485 ms). ENot depth 1,024 peaks at 3,077,500 versus 3,643,832 bytes; mixed
+metadata still peaks at **14,216,635 versus 13,280,643 bytes**. This remaining
+gap is not resolved by duplicate-width savings. Requested bytes can rise slightly
+for ENot because pooled capacity and the extra candidate checkpoint word have
+costs. All completed paired witnesses match; these are cold instrumented pilots,
+not statistical acceptance or process RSS. J-225 and PgMCP experiment 348,
+artifact 695 preserve receipts, the corrected layout-test expectation, admission
+refusals and the remaining acceptance obligations. Default-feature qualification
+and gate 5917 remain separately tracked; task 8516 is still open.
+
 ### 5.29 ParBag family and count-domain completeness [SS-A13, SS-A14, SS-Y9]
 
 #### 5.29.1 The defects
