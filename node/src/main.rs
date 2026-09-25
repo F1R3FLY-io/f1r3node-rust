@@ -95,7 +95,7 @@ async fn start_node(options: Options) -> Result<()> {
         options.log_sink.clone(),
     );
     // Defaults are baked into the binary via include_str!; the optional
-    // <data-dir>/rnode.conf override and CLI flags layer on top.
+    // <data-dir>/f1r3fly.conf override and CLI flags layer on top.
     let (mut node_conf, profile, config_file, deferred_warnings) =
         node::rust::configuration::builder::build(options)?;
 
@@ -365,9 +365,9 @@ fn generate_key(
     let secp256k1 = Secp256k1;
     let (private_key, public_key) = <Secp256k1 as SignaturesAlg>::new_key_pair(&secp256k1);
 
-    let private_pem_key_path = path.join("rnode.key");
-    let public_pem_key_path = path.join("rnode.pub.pem");
-    let public_key_hex_file = path.join("rnode.pub.hex");
+    let private_pem_key_path = path.join("f1r3fly.key");
+    let public_pem_key_path = path.join("f1r3fly.pub.pem");
+    let public_key_hex_file = path.join("f1r3fly.pub.hex");
 
     KeyUtil::write_keys(
         &private_key,
@@ -436,6 +436,57 @@ async fn log_configuration(
     info!("Running on network: {}", conf.protocol_server.network_id);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod generate_key_tests {
+    use std::collections::HashSet;
+
+    use colored::ColoredString;
+    use node::rust::effects::console_io::ConsoleIO;
+
+    use super::*;
+
+    struct FixedPasswordConsole {
+        password: String,
+    }
+
+    impl ConsoleIO for FixedPasswordConsole {
+        fn read_line(&mut self) -> Result<String> { Ok(String::new()) }
+
+        fn read_password(&mut self, _prompt: &str) -> Result<String> { Ok(self.password.clone()) }
+
+        fn println_str(&mut self, _s: &str) -> Result<()> { Ok(()) }
+
+        fn println_colored(&mut self, _s: &ColoredString) -> Result<()> { Ok(()) }
+
+        fn update_completion(&mut self, _history: &HashSet<String>) -> Result<()> { Ok(()) }
+
+        fn close(&mut self) -> Result<()> { Ok(()) }
+    }
+
+    #[test]
+    fn generate_key_writes_f1r3fly_named_files_not_legacy_rnode_names() {
+        let dir = std::env::temp_dir()
+            .join("f1r3fly-generate-key-test")
+            .join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&dir).expect("create test dir");
+
+        let mut console = FixedPasswordConsole {
+            password: "correct horse battery staple".to_string(),
+        };
+
+        generate_key(&dir, &mut console).expect("generate_key should succeed");
+
+        assert!(dir.join("f1r3fly.key").exists());
+        assert!(dir.join("f1r3fly.pub.pem").exists());
+        assert!(dir.join("f1r3fly.pub.hex").exists());
+        assert!(!dir.join("rnode.key").exists());
+        assert!(!dir.join("rnode.pub.pem").exists());
+        assert!(!dir.join("rnode.pub.hex").exists());
+
+        std::fs::remove_dir_all(&dir).expect("clean up test dir");
+    }
 }
 
 #[cfg(test)]

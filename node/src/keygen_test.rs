@@ -38,7 +38,7 @@ fn keygen_succeeds_without_a_reachable_node() -> Result<()> {
     let rt = Builder::new_current_thread().enable_all().build()?;
 
     let result = run_cli(options, &rt, &mut TestConsole);
-    let keys_exist = ["rnode.key", "rnode.pub.pem", "rnode.pub.hex"]
+    let keys_exist = ["f1r3fly.key", "f1r3fly.pub.pem", "f1r3fly.pub.hex"]
         .iter()
         .all(|name| path.join(name).is_file());
     std::fs::remove_dir_all(&path)?;
