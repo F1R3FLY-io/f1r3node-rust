@@ -30,9 +30,11 @@ IEEE 754 double-precision (f64). Stored as raw bits (`fixed64` in protobuf) to p
 
 ```rho
 3.14f64
-2.5f32       // f32 suffix (stored as f64 internally)
+3.14         // unsuffixed float literal is f64
 -0.0f64
 ```
+
+Only the `f64` width is supported. The compiler rejects `f32` and `f128` literals (for example `2.5f32`) with a normalizer error. An f32 value stored as f64 does not give f32 arithmetic, so the compiler does not accept the `f32` suffix.
 
 ### IEEE 754 Semantics
 
