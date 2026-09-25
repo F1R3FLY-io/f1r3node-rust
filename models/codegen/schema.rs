@@ -11368,12 +11368,20 @@ fn unexpected_end_group_tag() -> DecodeError {
 
     emit_protobuf_owned_slots(&mut src, messages, resolved, oneofs, extern_set, graph);
     for field in par_fields {
-        let Shape::RepeatedMessage { leaf } = &field.shape else { continue };
+        let Shape::RepeatedMessage { leaf } = &field.shape else {
+            continue;
+        };
         let name = rust_type_name(leaf);
         let planner = match name.as_str() {
-            "Send" => "send", "Receive" => "receive", "New" => "new",
-            "Expr" => "expression", "Match" => "matching", "GUnforgeable" => "unforgeable",
-            "Bundle" => "bundle", "Connective" => "connective", "If" => "conditional",
+            "Send" => "send",
+            "Receive" => "receive",
+            "New" => "new",
+            "Expr" => "expression",
+            "Match" => "matching",
+            "GUnforgeable" => "unforgeable",
+            "Bundle" => "bundle",
+            "Connective" => "connective",
+            "If" => "conditional",
             _ => panic!("protobuf component planning: unhandled family {name}"),
         };
         writeln!(src, "impl owned_slots::{name} {{ pub(crate) fn plan(self, arena: &mut crate::rust::par_construction::ParConstruction) -> Result<crate::rust::par_construction::PlannedComponent, crate::rust::par_construction::ParConstructionError> {{ crate::rust::rholang::protobuf_construction::plan(arena, |projection| self.project(projection), crate::rust::rholang::protobuf_construction::{planner}) }} }}")
@@ -11467,17 +11475,32 @@ fn emit_protobuf_owned_slots(
         epm_bounds[index] = match graph.names[index].as_str() {
             "Par" => 0,
             "EPathMap" => 1,
-            _ => resolved.iter().find(|(row, _)| *row == index)
-                .expect("owned message has resolved fields").1.iter().fold(0usize, |total, field| {
+            _ => resolved
+                .iter()
+                .find(|(row, _)| *row == index)
+                .expect("owned message has resolved fields")
+                .1
+                .iter()
+                .fold(0usize, |total, field| {
                     let bound = match &field.shape {
                         Shape::Message { leaf } => epm_bounds[indices[leaf.as_str()]],
-                        Shape::RepeatedMessage { leaf } | Shape::Map { value_leaf: leaf, .. } => {
-                            if epm_bounds[indices[leaf.as_str()]] == 0 { 0 } else { 2 }
+                        Shape::RepeatedMessage { leaf }
+                        | Shape::Map {
+                            value_leaf: leaf, ..
+                        } => {
+                            if epm_bounds[indices[leaf.as_str()]] == 0 {
+                                0
+                            } else {
+                                2
+                            }
                         }
                         Shape::Oneof => certified_oneof_for_field(&messages[index], field, oneofs)
-                            .variants.iter().filter_map(|arm| arm.message_leaf.as_ref())
+                            .variants
+                            .iter()
+                            .filter_map(|arm| arm.message_leaf.as_ref())
                             .map(|leaf| epm_bounds[indices[leaf.as_str()]])
-                            .max().unwrap_or(0),
+                            .max()
+                            .unwrap_or(0),
                         _ => 0,
                     };
                     (total + bound).min(2)
@@ -11527,14 +11550,32 @@ fn emit_protobuf_owned_slots(
     }
     src.push_str("];\n");
     src.push_str("pub(crate) const COMPONENT_EPM_CUT_BOUNDS: &[(&str, usize)] = &[\n");
-    for family in ["Send", "Receive", "New", "Expr", "Match", "GUnforgeable", "Bundle", "Connective", "If"] {
+    for family in [
+        "Send",
+        "Receive",
+        "New",
+        "Expr",
+        "Match",
+        "GUnforgeable",
+        "Bundle",
+        "Connective",
+        "If",
+    ] {
         let bound = epm_bounds[indices[family]];
-        assert_eq!(bound, usize::from(family == "Expr"), "unsupported EPM cuts in {family}");
+        assert_eq!(
+            bound,
+            usize::from(family == "Expr"),
+            "unsupported EPM cuts in {family}"
+        );
         writeln!(src, "    ({family:?}, {bound}),").expect("write EPM cut bound");
     }
     src.push_str("];\n");
     let expr = &messages[indices["Expr"]];
-    let expr_fields = &resolved.iter().find(|(index, _)| *index == indices["Expr"]).unwrap().1;
+    let expr_fields = &resolved
+        .iter()
+        .find(|(index, _)| *index == indices["Expr"])
+        .unwrap()
+        .1;
     let mut routes = Vec::new();
     for field in expr_fields {
         if matches!(field.shape, Shape::Oneof) {
@@ -11547,13 +11588,24 @@ fn emit_protobuf_owned_slots(
             }
         }
     }
-    assert_eq!(routes, [("EPathmapBody", "EPathMap"), ("EZipperBody", "EZipper")]);
-    let zipper_fields = &resolved.iter().find(|(index, _)| *index == indices["EZipper"]).unwrap().1;
-    let routes: Vec<_> = zipper_fields.iter().filter_map(|field| match &field.shape {
-        Shape::Message { leaf } if epm_bounds[indices[leaf.as_str()]] != 0 =>
-            Some((field.rust_name.as_str(), leaf.as_str())),
-        _ => None,
-    }).collect();
+    assert_eq!(routes, [
+        ("EPathmapBody", "EPathMap"),
+        ("EZipperBody", "EZipper")
+    ]);
+    let zipper_fields = &resolved
+        .iter()
+        .find(|(index, _)| *index == indices["EZipper"])
+        .unwrap()
+        .1;
+    let routes: Vec<_> = zipper_fields
+        .iter()
+        .filter_map(|field| match &field.shape {
+            Shape::Message { leaf } if epm_bounds[indices[leaf.as_str()]] != 0 => {
+                Some((field.rust_name.as_str(), leaf.as_str()))
+            }
+            _ => None,
+        })
+        .collect();
     assert_eq!(routes, [("pathmap", "EPathMap")]);
     writeln!(
         src,
@@ -11675,7 +11727,7 @@ fn emit_protobuf_decoder_pda(
 
 use std::mem;
 use prost::encoding;
-use crate::rust::par_construction::{ParConstruction, PlannedPar, ProtobufParBuilder as Par};
+use crate::rust::par_construction::{retire_draining_capacity, ConstructionCheckpoint, ParConstruction, PlannedPar, ProtobufParBuilder as Par};
 use crate::rust::epathmap_trie_codec::OwnedPendingEpmDecode;
 use crate::rust::rholang::protobuf_construction::{construction_error, PublicProjection};
 use owned_slots::EPathMap;
@@ -11712,7 +11764,8 @@ enum Node {
             continue;
         }
         let variant = rust_type_name(msg.leaf_name());
-        writeln!(src, "    {variant}(owned_slots::{variant}),").expect("write protobuf decoder Value");
+        writeln!(src, "    {variant}(owned_slots::{variant}),")
+            .expect("write protobuf decoder Value");
     }
     src.push_str(
         "    Par(Par),\n\
@@ -11730,11 +11783,8 @@ enum Node {
             match &field.shape {
                 Shape::Message { .. } | Shape::RepeatedMessage { .. } | Shape::Map { .. } => {
                     let name = decoder_attach_name(&owner, &field.rust_name, None);
-                    writeln!(
-                        src,
-                        "    {name} {{ parent: {owner_ty}, limit: usize }},"
-                    )
-                    .expect("write protobuf decoder Attach");
+                    writeln!(src, "    {name} {{ parent: {owner_ty}, limit: usize }},")
+                        .expect("write protobuf decoder Attach");
                 }
                 Shape::Oneof => {
                     let oneof = decoder_oneof(messages, oneofs, msg.leaf_name(), &field.rust_name);
@@ -11748,11 +11798,8 @@ enum Node {
                             &field.rust_name,
                             Some(&variant.rust_ident),
                         );
-                        writeln!(
-                            src,
-                            "    {name} {{ parent: {owner_ty}, limit: usize }},"
-                        )
-                        .expect("write protobuf decoder oneof Attach");
+                        writeln!(src, "    {name} {{ parent: {owner_ty}, limit: usize }},")
+                            .expect("write protobuf decoder oneof Attach");
                     }
                 }
                 Shape::Scalar(_)
@@ -12080,6 +12127,7 @@ struct Machine<B> {
     frames: Vec<Frame>,
     values: Vec<Value>,
     garbage: Vec<Value>,
+    candidates: Vec<(ConstructionCheckpoint, usize)>,
     stats: DecodeStats,
     arena: ParConstruction,
 }
@@ -12094,6 +12142,7 @@ impl<B: Buf> Machine<B> {
             frames: vec![Frame::Node(root)],
             values: Vec::new(),
             garbage: Vec::new(),
+            candidates: Vec::new(),
             stats: DecodeStats {
                 max_frames: 1,
                 max_values: 0,
@@ -12153,6 +12202,8 @@ impl<B: Buf> Machine<B> {
     fn run(&mut self) -> Result<(), DecodeError> {
         #[cfg(test)]
         crate::protobuf_decoder_oracle::assert_successor_body();
+        let mut frame_retirement = None;
+        let mut candidate_retirement = None;
         while let Some(frame) = self.frames.pop() {
             let result = match frame {
                 Frame::Node(node) => self.step_node(node),
@@ -12164,9 +12215,14 @@ impl<B: Buf> Machine<B> {
             }
             self.stats.max_frames = self.stats.max_frames.max(self.frames.len());
             self.stats.max_values = self.stats.max_values.max(self.values.len());
+            if self.buf.remaining() == 0 && self.input_stack.is_empty() && self.epm_depth == 0 {
+                retire_draining_capacity(&mut self.frames, &mut frame_retirement);
+                retire_draining_capacity(&mut self.candidates, &mut candidate_retirement);
+            }
         }
         assert!(self.input_stack.is_empty(), "protobuf decoder: nested input outlived its EPM1 value");
         assert_eq!(self.epm_depth, 0, "protobuf decoder: EPM1 validation depth did not return to zero");
+        assert!(self.candidates.is_empty(), "protobuf decoder: unfinished component checkpoint");
         Ok(())
     }
 
@@ -12528,6 +12584,7 @@ fn emit_protobuf_decoder_par_step(src: &mut String, fields: &[Field]) {
                     "            {tag}u32 => {{\n\
                                  let child_limit = self.message_limit(protobuf_wire_type)\n\
                                      .map_err(|mut error| {{ error.push(\"Par\", {display_name:?}); error }})?;\n\
+                                 self.candidates.push((self.arena.construction_checkpoint(), self.garbage.len()));\n\
                                  self.frames.push(Frame::Attach(Attach::{attach} {{ parent: value, limit }}));\n\
                                  self.frames.push(Frame::Node(Node::{child} {{ value: Default::default(), limit: child_limit }}));\n\
                              }}"
@@ -12938,7 +12995,15 @@ fn emit_protobuf_decoder_attach_arms(
         let success = format!(
             "                let component = child.plan(&mut self.arena).map_err(construction_error)\n\
                      .map_err(|mut error| {{ error.push(\"Par\", {display_name:?}); error }})?;\n\
-                 self.arena.insert_protobuf_component(&mut parent, component).map_err(construction_error)\n\
+                 let search = self.arena.search_protobuf_component(&parent, component);\n\
+                 let (checkpoint, garbage_start) = self.candidates.pop().expect(\"component checkpoint\");\n\
+                 let mut discarded = self.garbage.split_off(garbage_start);\n\
+                 self.retire_values(&mut discarded);\n\
+                 let component = if let Some(existing) = self.arena.existing_protobuf_component(&search) {{\n\
+                     self.arena.rewind_construction(checkpoint);\n\
+                     existing\n\
+                 }} else {{ component }};\n\
+                 self.arena.apply_protobuf_component(&mut parent, component, search).map_err(construction_error)\n\
                      .map_err(|mut error| {{ error.push(\"Par\", {display_name:?}); error }})?;\n\
                  self.frames.push(Frame::Node(Node::Par {{ value: parent, limit }}));"
         );
@@ -13094,7 +13159,10 @@ fn emit_protobuf_decoder_salvage(
 ) {
     for oneof in oneofs {
         let function = decoder_oneof_salvage_fn(oneof);
-        let oneof_ty = format!("owned_slots::{}", protobuf_owned_oneof_name(messages, oneof));
+        let oneof_ty = format!(
+            "owned_slots::{}",
+            protobuf_owned_oneof_name(messages, oneof)
+        );
         writeln!(
             src,
             "fn {function}(value: Option<{oneof_ty}>, work: &mut Vec<Value>) {{\n\
@@ -13154,6 +13222,10 @@ impl<B> Machine<B> {
             }
         }
 
+        self.retire_values(&mut work);
+    }
+
+    fn retire_values(&mut self, work: &mut Vec<Value>) {
         while let Some(value) = work.pop() {
             match value {
 "#,
@@ -13217,7 +13289,7 @@ impl<B> Machine<B> {
                 Shape::Oneof => {
                     let oneof = decoder_oneof(messages, oneofs, msg.leaf_name(), &field.rust_name);
                     let function = decoder_oneof_salvage_fn(oneof);
-                    writeln!(src, "                    {function}({name}, &mut work);")
+                    writeln!(src, "                    {function}({name}, work);")
                         .expect("write salvage oneof");
                 }
                 Shape::Scalar(_)

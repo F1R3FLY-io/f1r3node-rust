@@ -139,6 +139,59 @@ fn nested_error_locations_have_an_independent_nearest_first_witness() {
         "failed to decode Protobuf message: ENot.p: Expr.expr_instance: Par.exprs: invalid tag value: 0");
 }
 
+#[test]
+fn recursive_duplicate_candidates_reclaim_descendants_and_drain_capacity() {
+    fn retained(bytes: &[u8]) -> crate::rust::par_construction::ConstructionCheckpoint {
+        let mut machine = super::Machine::new(
+            bytes[..1].chain(&bytes[1..]),
+            super::Node::Par {
+                value: Default::default(),
+                limit: 0,
+            },
+            true,
+        );
+        machine.run().unwrap();
+        assert!(machine.garbage.is_empty());
+        assert_eq!(machine.frames.capacity(), 0);
+        assert_eq!(machine.candidates.capacity(), 0);
+        machine.arena.construction_checkpoint()
+    }
+    let recursive = enot_bytes(16, &[]);
+    let key = rhoapi::Par::default().with_exprs(vec![rhoapi::Expr {
+        expr_instance: Some(ExprInstance::GInt(7)),
+    }]);
+    let value = super::decode_par(recursive.as_slice()).unwrap();
+    let map = rhoapi::EPathMap::new_map([(key, value)], vec![5], true, None);
+    let mapped = rhoapi::Par::default()
+        .with_exprs(vec![rhoapi::Expr {
+            expr_instance: Some(ExprInstance::EPathmapBody(map)),
+        }])
+        .encode_to_vec();
+    let mut discarded_not = Vec::new();
+    prost::encoding::bytes::encode(1, &recursive, &mut discarded_not);
+    let mut expr = Vec::new();
+    prost::encoding::bytes::encode(5, &discarded_not, &mut expr);
+    expr.extend_from_slice(&[0x10, 2]);
+    let mut discarded = Vec::new();
+    prost::encoding::bytes::encode(5, &expr, &mut discarded);
+    for original in [recursive, mapped, discarded] {
+        let baseline = retained(&original);
+        for count in [2, 16, 64] {
+            let repeated = original.repeat(count);
+            compare(&repeated);
+            assert_eq!(retained(&repeated), baseline);
+            let mut malformed = repeated;
+            malformed.push(0);
+            compare(&malformed);
+        }
+        for end in 0..original.len() {
+            let mut malformed = original.clone();
+            malformed.extend_from_slice(&original[..end]);
+            compare(&malformed);
+        }
+    }
+}
+
 fn pending_map_failure_bytes(depth: usize) -> Vec<u8> {
     use crate::rust::epathmap_trie_codec::{self, EPathMapRepr, OwnedResidentEPathMap};
     let mut owner = OwnedResidentEPathMap::default();

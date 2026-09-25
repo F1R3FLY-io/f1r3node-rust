@@ -67,7 +67,8 @@ pub(crate) struct PlannedEpmBarrier(Option<PlannedPar>);
 
 impl BarrierProvider<PlannedPar> for PlannedEpmBarrier {
     fn make_barrier(&self) -> PlannedPar {
-        self.0.expect("an owned planned map retains a valid arena barrier")
+        self.0
+            .expect("an owned planned map retains a valid arena barrier")
     }
 
     fn discard_barrier(&self, _: PlannedPar) {}
@@ -387,6 +388,10 @@ mod protobuf_construction_tests;
 #[cfg(test)]
 #[path = "../../tests/support/planned_fragment_comparison.rs"]
 mod planned_fragment_comparison_tests;
+
+#[cfg(test)]
+#[path = "../../tests/support/protobuf_construction_resources.rs"]
+mod protobuf_construction_resource_tests;
 
 enum ProtoPiece {
     Bytes(Box<[u8]>),
@@ -891,14 +896,9 @@ struct Occurrence {
     multiplicity: Multiplicity,
 }
 
-/// One immutable AVL node in the transient occurrence dictionary.
-///
-/// `ParNode` roots share these nodes persistently. Appending a component copies
-/// only the logarithmic search spine; it never recopies an accumulated prefix.
-/// Aggregates make Par score/wire planning constant-time once the new root is
-/// known. All edges are integer arena indices, so destruction remains flat.
 #[derive(Clone, Copy)]
 struct OccurrenceTreeNode {
+    owner: usize,
     occurrence: Occurrence,
     left: Option<usize>,
     right: Option<usize>,
@@ -907,6 +907,153 @@ struct OccurrenceTreeNode {
     score_len: usize,
     protobuf_len: usize,
     protobuf_zero_count: usize,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ConstructionCheckpoint {
+    bytes: usize,
+    scores: usize,
+    protobuf: usize,
+    epathmaps: usize,
+    components: usize,
+    occurrences: usize,
+    pars: usize,
+}
+
+pub(crate) fn retire_draining_capacity<T>(
+    values: &mut Vec<T>,
+    threshold: &mut Option<usize>,
+) -> bool {
+    let next = threshold.get_or_insert(values.capacity() / 2);
+    if values.is_empty() {
+        let released = values.capacity() != 0;
+        *values = Vec::new();
+        *next = 0;
+        released
+    } else if *next != 0 && values.len() <= *next {
+        values.shrink_to_fit();
+        *next = values.len() / 2;
+        true
+    } else {
+        false
+    }
+}
+
+pub(crate) struct OccurrenceSearch {
+    path: Vec<(usize, bool)>,
+    found: Option<usize>,
+}
+
+struct OccurrenceEdit<'a> {
+    arena: &'a mut ParConstruction,
+    owner: usize,
+    path: Vec<(usize, bool)>,
+    undo: Vec<(usize, OccurrenceTreeNode)>,
+    committed: bool,
+}
+
+impl OccurrenceEdit<'_> {
+    fn store(
+        &mut self,
+        preferred: Option<usize>,
+        occurrence: Occurrence,
+        left: Option<usize>,
+        right: Option<usize>,
+    ) -> Result<usize, ParConstructionError> {
+        let mut value = self.arena.make_occurrence_node(occurrence, left, right)?;
+        value.owner = self.owner;
+        if let Some(index) =
+            preferred.filter(|&i| self.arena.occurrence_nodes[i].owner == self.owner)
+        {
+            self.undo.push((index, self.arena.occurrence_nodes[index]));
+            self.arena.occurrence_nodes[index] = value;
+            Ok(index)
+        } else {
+            let index = self.arena.occurrence_nodes.len();
+            self.arena.occurrence_nodes.push(value);
+            Ok(index)
+        }
+    }
+
+    fn rebuild(
+        &mut self,
+        original: usize,
+        occurrence: Occurrence,
+        left: Option<usize>,
+        right: Option<usize>,
+    ) -> Result<usize, ParConstructionError> {
+        let lh = self.arena.occurrence_height(left);
+        let rh = self.arena.occurrence_height(right);
+        if lh > rh && lh - rh > 1 {
+            let pivot_index = left.expect("left-heavy occurrence node");
+            let pivot = self.arena.occurrence_nodes[pivot_index];
+            if self.arena.occurrence_height(pivot.left) >= self.arena.occurrence_height(pivot.right)
+            {
+                let demoted = self.store(Some(original), occurrence, pivot.right, right)?;
+                return self.store(
+                    Some(pivot_index),
+                    pivot.occurrence,
+                    pivot.left,
+                    Some(demoted),
+                );
+            }
+            let middle_index = pivot.right.expect("left-right occurrence rotation");
+            let middle = self.arena.occurrence_nodes[middle_index];
+            let new_left =
+                self.store(Some(pivot_index), pivot.occurrence, pivot.left, middle.left)?;
+            let new_right = self.store(Some(original), occurrence, middle.right, right)?;
+            return self.store(
+                Some(middle_index),
+                middle.occurrence,
+                Some(new_left),
+                Some(new_right),
+            );
+        }
+        if rh > lh && rh - lh > 1 {
+            let pivot_index = right.expect("right-heavy occurrence node");
+            let pivot = self.arena.occurrence_nodes[pivot_index];
+            if self.arena.occurrence_height(pivot.right) >= self.arena.occurrence_height(pivot.left)
+            {
+                let demoted = self.store(Some(original), occurrence, left, pivot.left)?;
+                return self.store(
+                    Some(pivot_index),
+                    pivot.occurrence,
+                    Some(demoted),
+                    pivot.right,
+                );
+            }
+            let middle_index = pivot.left.expect("right-left occurrence rotation");
+            let middle = self.arena.occurrence_nodes[middle_index];
+            let new_left = self.store(Some(original), occurrence, left, middle.left)?;
+            let new_right = self.store(
+                Some(pivot_index),
+                pivot.occurrence,
+                middle.right,
+                pivot.right,
+            )?;
+            return self.store(
+                Some(middle_index),
+                middle.occurrence,
+                Some(new_left),
+                Some(new_right),
+            );
+        }
+        self.store(Some(original), occurrence, left, right)
+    }
+}
+
+impl Drop for OccurrenceEdit<'_> {
+    fn drop(&mut self) {
+        if !self.committed {
+            for (index, old) in self.undo.drain(..).rev() {
+                self.arena.occurrence_nodes[index] = old;
+            }
+        }
+        self.undo.clear();
+        self.path.clear();
+        self.arena.occurrence_undo = std::mem::take(&mut self.undo);
+        self.arena.occurrence_path = std::mem::take(&mut self.path);
+    }
 }
 
 struct OccurrenceIter<'a> {
@@ -977,6 +1124,9 @@ pub struct ParConstruction {
     components: Vec<ComponentNode>,
     occurrence_nodes: Vec<OccurrenceTreeNode>,
     pars: Vec<ParNode>,
+    occurrence_path: Vec<(usize, bool)>,
+    occurrence_undo: Vec<(usize, OccurrenceTreeNode)>,
+    occurrence_seal: Vec<(usize, bool)>,
 }
 
 impl CanonicalScoreAlgebra for ParConstruction {
@@ -1022,6 +1172,9 @@ impl ParConstruction {
             components: Vec::new(),
             occurrence_nodes: Vec::new(),
             pars: Vec::new(),
+            occurrence_path: Vec::new(),
+            occurrence_undo: Vec::new(),
+            occurrence_seal: Vec::new(),
         }
     }
 
@@ -1828,7 +1981,8 @@ impl ParConstruction {
             map_node.snapshot_len,
             map_node.snapshot_zero_count,
         )?;
-        let score = semantics::rpb3_pathmap_score(self, true, snapshot_score, zipper.connective_used)?;
+        let score =
+            semantics::rpb3_pathmap_score(self, true, snapshot_score, zipper.connective_used)?;
         let tail = EZipper {
             pathmap: None,
             current_path: zipper.current_path.clone(),
@@ -1838,7 +1992,10 @@ impl ParConstruction {
             cursor_kind: zipper.cursor_kind,
         };
         let tail = self.plan_protobuf(&tail, &[])?;
-        let mut pieces = vec![ProtoPiece::Node { tag: 1, node: map_protobuf }];
+        let mut pieces = vec![ProtoPiece::Node {
+            tag: 1,
+            node: map_protobuf,
+        }];
         pieces.append(&mut self.protobuf_nodes[tail].pieces);
         let zipper_protobuf = self.push_proto_node(pieces)?;
         let expr_protobuf = self.wrap_proto_node(33, zipper_protobuf)?;
@@ -2733,7 +2890,10 @@ impl ParConstruction {
                 let mut pairs: Vec<Pair> = Vec::with_capacity(map.kvs.len());
                 if map.kvs.len() <= 1 {
                     if let [key, value] = par_children {
-                        pairs.push(Pair { key: *key, value: *value });
+                        pairs.push(Pair {
+                            key: *key,
+                            value: *value,
+                        });
                     }
                 } else {
                     let mut identities = PathMap::new();
@@ -2745,10 +2905,9 @@ impl ParConstruction {
                             WireByteCursor::new(self, WireRoot::ParSemanticIdentity(key)),
                             pairs.len(),
                         ) {
-                            if WireByteCursor::new(self, WireRoot::Par(value)).cmp(WireByteCursor::new(
-                                self,
-                                WireRoot::Par(pairs[resident].value),
-                            )) == Ordering::Greater
+                            if WireByteCursor::new(self, WireRoot::Par(value)).cmp(
+                                WireByteCursor::new(self, WireRoot::Par(pairs[resident].value)),
+                            ) == Ordering::Greater
                             {
                                 pairs[resident].value = value;
                             }
@@ -2760,11 +2919,14 @@ impl ParConstruction {
                         ScoreByteCursor::new(self, self.par_score(left.key))
                             .cmp(ScoreByteCursor::new(self, self.par_score(right.key)))
                             .then_with(|| {
-                                WireByteCursor::new(self, WireRoot::KeyValuePair(left.key, left.value))
-                                    .cmp(WireByteCursor::new(
-                                        self,
-                                        WireRoot::KeyValuePair(right.key, right.value),
-                                    ))
+                                WireByteCursor::new(
+                                    self,
+                                    WireRoot::KeyValuePair(left.key, left.value),
+                                )
+                                .cmp(WireByteCursor::new(
+                                    self,
+                                    WireRoot::KeyValuePair(right.key, right.value),
+                                ))
                             })
                     });
                 }
@@ -2874,6 +3036,18 @@ impl ParConstruction {
         left: Option<usize>,
         right: Option<usize>,
     ) -> Result<usize, ParConstructionError> {
+        let value = self.make_occurrence_node(occurrence, left, right)?;
+        let index = self.occurrence_nodes.len();
+        self.occurrence_nodes.push(value);
+        Ok(index)
+    }
+
+    fn make_occurrence_node(
+        &self,
+        occurrence: Occurrence,
+        left: Option<usize>,
+        right: Option<usize>,
+    ) -> Result<OccurrenceTreeNode, ParConstructionError> {
         let left_node = left.map(|node| &self.occurrence_nodes[node]);
         let right_node = right.map(|node| &self.occurrence_nodes[node]);
         let component = &self.components[occurrence.component.0];
@@ -2943,8 +3117,8 @@ impl ParConstruction {
             right_node.map_or(0, |node| node.protobuf_zero_count),
             "Par protobuf zero-byte count",
         )?;
-        let node = self.occurrence_nodes.len();
-        self.occurrence_nodes.push(OccurrenceTreeNode {
+        Ok(OccurrenceTreeNode {
+            owner: 0,
             occurrence,
             left,
             right,
@@ -2953,8 +3127,7 @@ impl ParConstruction {
             score_len,
             protobuf_len,
             protobuf_zero_count,
-        });
-        Ok(node)
+        })
     }
 
     fn rebuild_occurrence_node(
@@ -3095,12 +3268,163 @@ impl ParConstruction {
         parent: &mut ProtobufParBuilder,
         component: PlannedComponent,
     ) -> Result<(), ParConstructionError> {
-        let root = self.insert_occurrence(parent.occurrence_root, Occurrence {
-            component,
-            multiplicity: Multiplicity::ONE,
-        })?;
-        parent.occurrence_root = root;
+        let search = self.search_protobuf_component(parent, component);
+        self.apply_protobuf_component(parent, component, search)
+    }
+
+    pub(crate) fn search_protobuf_component(
+        &mut self,
+        parent: &ProtobufParBuilder,
+        component: PlannedComponent,
+    ) -> OccurrenceSearch {
+        let mut path = std::mem::take(&mut self.occurrence_path);
+        let mut cursor = parent.occurrence_root;
+        while let Some(index) = cursor {
+            let current = self.occurrence_nodes[index];
+            match self.compare_components(component, current.occurrence.component) {
+                Ordering::Equal => break,
+                Ordering::Less => {
+                    path.push((index, true));
+                    cursor = current.left;
+                }
+                Ordering::Greater => {
+                    path.push((index, false));
+                    cursor = current.right;
+                }
+            }
+        }
+        OccurrenceSearch {
+            path,
+            found: cursor,
+        }
+    }
+
+    pub(crate) fn existing_protobuf_component(
+        &self,
+        search: &OccurrenceSearch,
+    ) -> Option<PlannedComponent> {
+        search
+            .found
+            .map(|index| self.occurrence_nodes[index].occurrence.component)
+    }
+
+    pub(crate) fn apply_protobuf_component(
+        &mut self,
+        parent: &mut ProtobufParBuilder,
+        component: PlannedComponent,
+        search: OccurrenceSearch,
+    ) -> Result<(), ParConstructionError> {
+        let current_owner = parent
+            .occurrence_root
+            .map_or(0, |index| self.occurrence_nodes[index].owner);
+        let owner = if current_owner != 0 {
+            current_owner
+        } else {
+            self.occurrence_nodes
+                .len()
+                .checked_add(1)
+                .ok_or(ParConstructionError::LengthOverflow("occurrence owner"))?
+        };
+        let undo = std::mem::take(&mut self.occurrence_undo);
+        let mut edit = OccurrenceEdit {
+            arena: self,
+            owner,
+            path: search.path,
+            undo,
+            committed: false,
+        };
+        let mut root = if let Some(index) = search.found {
+            let current = edit.arena.occurrence_nodes[index];
+            let multiplicity = current
+                .occurrence
+                .multiplicity
+                .checked_add(Multiplicity::ONE)?;
+            edit.store(
+                Some(index),
+                Occurrence {
+                    component: current.occurrence.component,
+                    multiplicity,
+                },
+                current.left,
+                current.right,
+            )?
+        } else {
+            edit.store(
+                None,
+                Occurrence {
+                    component,
+                    multiplicity: Multiplicity::ONE,
+                },
+                None,
+                None,
+            )?
+        };
+        while let Some((index, went_left)) = edit.path.pop() {
+            let current = edit.arena.occurrence_nodes[index];
+            let (left, right) = if went_left {
+                (Some(root), current.right)
+            } else {
+                (current.left, Some(root))
+            };
+            root = edit.rebuild(index, current.occurrence, left, right)?;
+        }
+        parent.occurrence_root = Some(root);
+        edit.committed = true;
         Ok(())
+    }
+
+    pub(crate) fn construction_checkpoint(&self) -> ConstructionCheckpoint {
+        ConstructionCheckpoint {
+            bytes: self.byte_fragments.len(),
+            scores: self.scores.len(),
+            protobuf: self.protobuf_nodes.len(),
+            epathmaps: self.epathmaps.len(),
+            components: self.components.len(),
+            occurrences: self.occurrence_nodes.len(),
+            pars: self.pars.len(),
+        }
+    }
+
+    pub(crate) fn rewind_construction(&mut self, checkpoint: ConstructionCheckpoint) {
+        self.epathmaps.truncate(checkpoint.epathmaps);
+        self.components.truncate(checkpoint.components);
+        self.pars.truncate(checkpoint.pars);
+        self.occurrence_nodes.truncate(checkpoint.occurrences);
+        self.protobuf_nodes.truncate(checkpoint.protobuf);
+        self.scores.truncate(checkpoint.scores);
+        self.byte_fragments.truncate(checkpoint.bytes);
+    }
+
+    fn seal_occurrences(&mut self, root: Option<usize>) {
+        let Some(root) = root else { return };
+        if self.occurrence_nodes[root].owner == 0 {
+            return;
+        }
+        if self.occurrence_nodes[root].left.is_none() && self.occurrence_nodes[root].right.is_none()
+        {
+            self.occurrence_nodes[root].owner = 0;
+            return;
+        }
+        let mut work = std::mem::take(&mut self.occurrence_seal);
+        work.push((root, false));
+        while let Some((index, expanded)) = work.pop() {
+            let node = self.occurrence_nodes[index];
+            if node.owner == 0 {
+                continue;
+            }
+            if expanded {
+                self.occurrence_nodes[index].owner = 0;
+                continue;
+            }
+            work.push((index, true));
+            if let Some(right) = node.right {
+                work.push((right, false));
+            }
+            if let Some(left) = node.left {
+                work.push((left, false));
+            }
+        }
+        self.occurrence_seal = work;
     }
 
     pub(crate) fn freeze_protobuf_par(
@@ -3120,6 +3444,7 @@ impl ParConstruction {
         locally_free: Vec<u8>,
         connective_used: bool,
     ) -> Result<PlannedPar, ParConstructionError> {
+        self.seal_occurrences(occurrence_root);
         let distinct_len = self.occurrence_distinct_len(occurrence_root);
         let aggregate = occurrence_root.map(|root| self.occurrence_nodes[root]);
         let occurrence_scores = self.score_from_pieces(vec![ScorePiece::OccurrenceScores {
@@ -3200,7 +3525,8 @@ impl ParConstruction {
 
     pub(crate) fn epm_barrier(&mut self) -> PlannedPar {
         if self.pars.is_empty() {
-            self.empty_par().expect("neutral Par construction has bounded constant summaries")
+            self.empty_par()
+                .expect("neutral Par construction has bounded constant summaries")
         } else {
             PlannedPar(0)
         }
@@ -3652,14 +3978,20 @@ impl ParConstruction {
         left.tag
             .cmp(&right.tag)
             .then_with(|| {
-                match (self.score_fragment(left.score), self.score_fragment(right.score)) {
+                match (
+                    self.score_fragment(left.score),
+                    self.score_fragment(right.score),
+                ) {
                     (Some(left), Some(right)) => left.cmp(right),
                     _ => ScoreByteCursor::new(self, left.score)
                         .cmp(ScoreByteCursor::new(self, right.score)),
                 }
             })
             .then_with(|| {
-                match (self.protobuf_fragment(left.protobuf), self.protobuf_fragment(right.protobuf)) {
+                match (
+                    self.protobuf_fragment(left.protobuf),
+                    self.protobuf_fragment(right.protobuf),
+                ) {
                     (Some(left), Some(right)) => left.cmp(right),
                     _ => WireByteCursor::new(self, WireRoot::Proto(left.protobuf))
                         .cmp(WireByteCursor::new(self, WireRoot::Proto(right.protobuf))),

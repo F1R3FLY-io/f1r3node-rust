@@ -16936,6 +16936,146 @@ Receipts below are relative to `target/verification/protobuf-attach-8516/`:
 | `fragment-kernel-r1.log` | `385927bf5b0769628935f7a1cbb74dc09d07ac40f13a61e0c46253df9daae800` |
 | `fragment-tests-r1.log` | `8dd32c47fa53d9974770b9d3ebc34377287b96dc248648365412245cad120628` |
 
+## J-222 — Combined decoder ownership and resource batch (2026-09-25)
+
+**Scope.** Continue required task 8516. The user requests larger cohesive
+implementation batches, with formal verification first and consolidated native
+qualification. This entry groups the measured occurrence-history, duplicate-plan
+and deep-frame retention defects; it introduces no new campaign feature.
+
+**MEASURED diagnosis.** The J-221 binary's grouped headless profiles show a
+2.59 MB peak consumer in `Machine.frames` for fragmented ENot depth 1,024.
+The scoped net peak remains 4,579,108 bytes. At 4,096 duplicate integers, literal
+comparison reduces decode allocations from 102,526 to 77,956 and requested bytes
+from 56,411,245 to 54,838,765, but peak scoped net stays 1,914,805 bytes.
+These allocation counters are deterministic observations of the profiled
+process, not an accepted timing comparison. The ordinary paired pilot refused
+CPU admission and contributes no timing samples. Profiles and text reports are
+under `target/verification/protobuf-attach-8516/heap-{deep,duplicate}-fragment-r1*`;
+the combined recording/reporting process peaked at 83.4 MiB under 2 GiB, zero
+swap, without opening a GUI.
+
+**DECISION: private occurrence ownership.** Add an owner identifier to each
+occurrence node, not to every generated builder/frame. Zero denotes sealed
+immutable nodes. A nonempty private builder derives its owner from its root;
+an empty or sealed root obtains a fresh identifier from the first appended
+node index plus one. Rebuild private nodes in place, copy sealed nodes, preserve
+the existing persistent union path, and journal overwritten flat nodes for
+reverse-order rollback on checked failure or unwinding. Compute checked
+aggregates before each store and publish the new builder root only on success.
+Freeze seals only the top-level occurrence tree postorder, skipping already
+sealed subtrees; it does not revisit recursively nested Par payloads. This
+preserves copied-root snapshots without globally sealing unrelated active
+builders. A global freeze frontier was rejected because nested child freezes
+would preserve wide-parent copying overhead.
+
+**DECISION: confined candidate checkpoints.** At a repeated Par component field,
+after length admission but before its fresh body is decoded, save all seven
+arena lengths and the garbage length in a separate LIFO checkpoint vector.
+Decode and validate the entire candidate, then search the parent once. An exact
+duplicate retains the earlier representative: retire candidate-local discarded
+values and guarded EPM owners while their Par handles still exist, rewind the
+candidate arena suffix, then apply the prepared multiplicity update. Rewinding
+after parent publication would wrongly remove newly copied parent nodes.
+Nested distinct candidates commit into their enclosing candidate. Ordinary
+decode failures retain full machine teardown rather than reclaiming beneath
+still-live frames. No candidate may mutate a pre-checkpoint node or publish a
+suffix handle outside its confined owners; tests must check this premise.
+
+**DECISION: terminal-drain capacity retirement.** Only exhausted root input,
+an empty saved-input stack and zero EPM depth admit the terminal-drain phase.
+The generated transitions then have no pending snapshot descent: a Node
+completes/errors and an Attach resumes at most one Node. Preserve the same
+ordered frames while geometrically shrinking their backing capacity, and the
+checkpoint capacity, during this non-growing phase. Track decreasing request
+thresholds independently of allocator capacity so an allocator declining a
+shrink cannot cause repeated requests. Ordinary positive targets halve; zero
+has one terminal release. No stack-depth cap or per-frame box is introduced.
+
+**Formal boundary and native invariant bindings.** `ConstructionResources` in
+`ProtobufParAccumulation.v` models protected writes, reverse journals, sealed
+graph closure and other-builder isolation, confined suffix rewind and surviving
+handles, AVL rotation denotation, terminal control and geometric move/call
+bounds. These abstract proofs do not establish the Rust parser, index reuse,
+cached arithmetic or allocator behavior. Extracted implementation obligations:
+
+| Domain | Required native checks |
+|---|---|
+| Ownership | Sealed parent implies sealed descendants; disjoint live owners; snapshots/imported roots/interleaved builders remain unchanged through rotations |
+| Transaction | All rotations preserve order, counts, heights and byte aggregates; repeated-slot journal entries restore in reverse; checked failure and injected unwind restore earlier roots |
+| Candidate | No old-prefix mutation or escaping suffix handle; recursive duplicates include nested distinct commits; saved search paths survive rewind; EPM/garbage retirement precedes handle reuse |
+| Decode | Malformed duplicate bodies and suffixes retain first-error, remaining input, explicit metadata and the frozen oracle's complete observations |
+| Capacity | Exhausted outer bytes with pending EPM values do not enable drain; successful and failed deep unwinds preserve frame order and statistics; bounded shrink requests and measured capacities agree |
+| Resource | Flat/mixed-wide distinct and duplicate geometric cohorts; deep success/error; unchanged small-stack and release/workspace acceptance |
+
+The batch is not complete until production changes and this consolidated matrix
+pass. The model review explicitly rejected owner-number-only proofs and suffix
+identities without graph closure/confinement. Leaf planner scratch can still
+dominate allocation traffic after retention is repaired; its measured effect
+must be evaluated before accepting task 8516, not silently waived.
+
+**VERIFIED implementation and binding results.** The resource model compiled and
+passed `coqchk` before the production edits (`resources-proof-r7.log`, 402.3 MiB
+peak, zero swap). The combined implementation adds owner-aware occurrence edits,
+reverse undo, postorder snapshot sealing, confined candidate rewind, reusable
+work vectors and geometric terminal capacity retirement. Native release models
+qualification with `protobuf-projection-experiment` passes **678/678 run**, with
+two skipped tests, in 61.925 seconds; service peak is 195.3 MiB, zero swap.
+The source-review agent found no concrete correctness defect. Neither this
+review nor the abstract model establishes full parser equivalence.
+
+**MEASURED resource pilots.** The existing paired collector admitted physical
+core 11 and compared frozen/planned arms with identical fragmented inputs.
+Every completed pair matched protobuf, compact, bincode, metadata, cardinality,
+error and remaining-input witnesses. Counts below cover the decode allocation
+scope; they are not whole-process RSS. Each timing is one cold instrumented
+pilot, not a statistical acceptance claim.
+
+| Shape and size | Frozen decode time | Planned decode time | Frozen peak bytes | Planned peak bytes | Prior planned peak bytes (J-220) |
+|---|---:|---:|---:|---:|---:|
+| Distinct integers, 4,096 | 3.475 ms | 10.693 ms | 416,984 | 2,366,644 | 7,740,692 |
+| Duplicate integer, 4,096 | 2.097 ms | 3.462 ms | 5,978 | 17,466 | 1,914,805 |
+| ENot depth 1,024 | 11,455.675 ms | 14.715 ms | 3,643,832 | 3,202,322 | 4,579,108 |
+| ENot depth 2,048 | 46,503.181 ms | 29.366 ms | 7,272,888 | 6,403,132 | 9,160,416 |
+
+Duplicate planned peak stays **17,466 bytes** at 64, 1,024 and 4,096 elements:
+the candidate history is no longer retained with duplicate count. Distinct
+planned peaks are 43,724, 595,972 and 2,366,644 bytes at those same widths.
+The ownership batch removes historical path copies; required distinct payloads
+still consume space. Deep planned peaks are now below their paired frozen peaks.
+Releasing frame capacity increases cumulative requested bytes through geometric
+reallocations: depth 1,024 requests 16,450,258 bytes in 67,818 calls, versus the
+prior 13,649,578 bytes in 67,787 calls. This is a measured peak/traffic tradeoff,
+not a claim that every resource metric improves.
+
+**Remaining acceptance defect.** Wide planned decoding still trails frozen:
+4,096 distinct values make 126,993 allocation calls and request 61,143,691 bytes;
+duplicates make 77,911 calls and request 52,288,021 bytes. The reviewed leaf
+path starts `sort_drive` with two default 32-slot work/value buffers for each
+ground expression, then builds a score tree, copies its encoding and launches
+general protobuf planning. The next same-task change should reuse the existing
+ground score and shallow generated protobuf encoders, not change general sorter
+capacities or import components as opaque values. Ground-constructor admission
+must precede shallow encoding: an empty child list alone does not certify a
+nonrecursive expression. Formal/native equivalence must preserve arity errors,
+canonical segments, semantic shape, raw numeric bytes and all observation
+witnesses. Task 8516 remains open; the unchanged depth gate, expanded release
+qualification and full workspace acceptance are separate obligations.
+
+**Reproducibility.** Receipts are under
+`target/verification/protobuf-attach-8516/`; each pilot directory contains binary
+and source identities, CPU admission, per-arm cgroup receipts and raw observations.
+Pilot arms use 4 GiB high/6 GiB maximum memory, zero swap and 180-second limits.
+The measured binary SHA-256 is
+`70e6f6ea1a815bb90b882c00523e015bfc3ab63a419212331a502d90b375b93f`.
+
+| Receipt | SHA-256 |
+|---|---|
+| `resources-proof-r7.log` | `fc0d917524be861e684e28f6f835338ba59b668236bd58b092c82a61709a0cdc` |
+| `resource-batch-models-r1.log` | `a8a5da3f50185cf2f064cf925022623093eb6b80cea3bb080402fe7952f37331` |
+| `pilot-resource-batch-r1/observations.jsonl` | `202268429babf6f1381a4ab21a6c000e7ab94fec7cc68319d23f4b5b1020361a` |
+| `pilot-resource-deep-r1/observations.jsonl` | `af709b53c5346efea9519b78574d354226ee0549099658c43b02655b782a2b90` |
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

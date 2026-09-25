@@ -9177,6 +9177,23 @@ do not waive wide regressions or increased peak memory. These are cold
 instrumented pilots, not statistical acceptance or whole-application results;
 see J-220/J-221 in the PathMap engineering journal for receipts and limitations.
 
+The subsequent combined ownership/resource batch (J-222) repairs duplicate
+history retention and reduces distinct/deep peaks. At 4,096 duplicate integers,
+scoped net peak falls from 1,914,805 to **17,466 bytes**, the same peak observed
+at widths 64 and 1,024. Distinct width 4,096 falls from 7,740,692 to 2,366,644
+bytes. ENot depth 2,048 falls from 9,160,416 to **6,403,132 bytes**, now below
+the paired frozen decoder's 7,272,888 bytes. All paired observation witnesses
+match. These are cold instrumented pilots, not whole-process RSS measurements.
+Geometric frame-capacity retirement trades lower peak for additional allocation
+traffic: at depth 1,024 cumulative requested bytes rise from 13,649,578 to
+16,450,258. Wide decoding remains slower and allocation-heavier than frozen
+(4,096 distinct: 10.693 versus 3.475 ms; duplicates: 3.462 versus 2.097 ms).
+Ground-leaf general-sorter setup is the next identified overhead, not a waived
+regression. The resource model passed compilation and kernel checking before
+implementation; release models qualification passes 678/678 run, two skipped,
+195.3 MiB service peak and zero swap. Task 8516 and broader acceptance remain
+open; J-222 retains exact receipts and the formal/native proof boundary.
+
 ### 5.29 ParBag family and count-domain completeness [SS-A13, SS-A14, SS-Y9]
 
 #### 5.29.1 The defects
