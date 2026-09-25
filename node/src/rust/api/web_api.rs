@@ -1126,6 +1126,9 @@ pub enum RhoExpr {
     ExprInt {
         data: i64,
     },
+    ExprUint64 {
+        data: u64,
+    },
     ExprString {
         data: String,
     },
@@ -1765,6 +1768,7 @@ fn expr_from_expr_proto(expr: Expr) -> Option<RhoExpr> {
         // Primitives
         ExprInstance::GBool(v) => RhoExpr::ExprBool { data: v },
         ExprInstance::GInt(v) => RhoExpr::ExprInt { data: v },
+        ExprInstance::GUint64(v) => RhoExpr::ExprUint64 { data: v },
         ExprInstance::GString(v) => RhoExpr::ExprString { data: v },
         ExprInstance::GUri(v) => RhoExpr::ExprUri { data: v },
         ExprInstance::GByteArray(bytes) => RhoExpr::ExprBytes {
@@ -2020,6 +2024,7 @@ fn extract_key_from_expr(expr: &RhoExpr) -> String {
     match expr {
         RhoExpr::ExprString { data } => data.clone(),
         RhoExpr::ExprInt { data } => data.to_string(),
+        RhoExpr::ExprUint64 { data } => data.to_string(),
         RhoExpr::ExprBool { data } => data.to_string(),
         RhoExpr::ExprFloat { data } => data.to_string(),
         RhoExpr::ExprBigInt { data } => data.clone(),

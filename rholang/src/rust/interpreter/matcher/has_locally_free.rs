@@ -77,6 +77,7 @@ impl HasLocallyFree<Expr> for SpatialMatcherContext {
         match e.expr_instance {
             Some(GBool(_)) => false,
             Some(GInt(_)) => false,
+            Some(GUint64(_)) => false,
             Some(GDouble(_)) => false,
             Some(GBigInt(_)) => false,
             Some(GBigRat(_)) => false,
@@ -157,6 +158,7 @@ impl HasLocallyFree<Expr> for SpatialMatcherContext {
         match e.expr_instance {
             Some(GBool(_)) => Default::default(),
             Some(GInt(_)) => Default::default(),
+            Some(GUint64(_)) => Default::default(),
             Some(GDouble(_)) => Default::default(),
             Some(GBigInt(_)) => Default::default(),
             Some(GBigRat(_)) => Default::default(),
@@ -386,6 +388,7 @@ impl HasLocallyFree<Expr> for Expr {
         match e.expr_instance {
             Some(GBool(_)) => false,
             Some(GInt(_)) => false,
+            Some(GUint64(_)) => false,
             Some(GDouble(_)) => false,
             Some(GBigInt(_)) => false,
             Some(GBigRat(_)) => false,
@@ -466,6 +469,7 @@ impl HasLocallyFree<Expr> for Expr {
         match e.expr_instance {
             Some(GBool(_)) => Default::default(),
             Some(GInt(_)) => Default::default(),
+            Some(GUint64(_)) => Default::default(),
             Some(GDouble(_)) => Default::default(),
             Some(GBigInt(_)) => Default::default(),
             Some(GBigRat(_)) => Default::default(),
