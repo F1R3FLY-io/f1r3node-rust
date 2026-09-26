@@ -383,6 +383,7 @@ impl GrpcTransportClient {
                     let mut channels_map = self.channels_map.lock().await;
                     channels_map.remove(peer);
                 }
+                self.clear_dns_failure(peer).await;
 
                 // Retry by continuing the loop
                 continue;
