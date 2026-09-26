@@ -1309,17 +1309,6 @@ impl BlockDagKeyValueStorage {
 
         if block_exists {
             tracing::warn!("{}", log_already_stored);
-            // The finalized mark is the only thing an approved insert adds over an
-            // ordinary one, and nothing later revisits a root left unmarked.
-            if approved {
-                let mut block_metadata_guard = self.block_metadata_index.write();
-                block_metadata_guard.record_finalized(
-                    block.block_hash.clone(),
-                    HashSet::new(),
-                    1.0,
-                )?;
-            }
-            self.get_representation_internal()
         } else {
             let block_hash = block.block_hash.clone();
             let block_hash_is_invalid = !(block_hash.len() == block_hash::LENGTH);
@@ -1457,16 +1446,19 @@ impl BlockDagKeyValueStorage {
                         .collect(),
                 )?;
             }
-
-            if approved {
-                let mut block_metadata_guard = self.block_metadata_index.write();
-                // Genesis/approved block has FT=1.0 by construction: it is the DAG root,
-                // all validators start from it, so all stake agrees.
-                block_metadata_guard.record_finalized(block_hash, HashSet::new(), 1.0)?;
-            }
-
-            self.get_representation_internal()
         }
+
+        // Shared by both paths on purpose: the mark is the only thing an approved
+        // insert adds over an ordinary one, and it went missing precisely because
+        // it lived on one branch while the other returned early. Genesis or a
+        // restore anchor has FT=1.0 by construction — it is the root every
+        // validator starts from, so all stake agrees.
+        if approved {
+            let mut block_metadata_guard = self.block_metadata_index.write();
+            block_metadata_guard.record_finalized(block.block_hash.clone(), HashSet::new(), 1.0)?;
+        }
+
+        self.get_representation_internal()
     }
 
     pub fn access_equivocations_tracker<A>(
