@@ -1,6 +1,6 @@
 // See casper/src/test/scala/coop/rchain/casper/helper/RhoSpec.scala
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -15,16 +15,19 @@ use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signed::Signed;
 use models::rhoapi::{BindPattern, ListParWithRandom, TaggedContinuation};
 use models::rust::casper::protocol::casper_message::DeployData;
+use models::rust::utils::new_gbool_par;
 use rholang::rust::build::compile_rholang_source::CompiledRholangSource;
-use rholang::rust::interpreter::errors::InterpreterError;
+use rholang::rust::interpreter::errors::{illegal_argument_error, InterpreterError};
 use rholang::rust::interpreter::matcher::r#match::Matcher;
 use rholang::rust::interpreter::pretty_printer::PrettyPrinter;
 use rholang::rust::interpreter::rho_runtime::{create_runtime_from_kv_store, RhoRuntime};
+use rholang::rust::interpreter::rho_type::RhoString;
 use rholang::rust::interpreter::system_processes::{byte_name, Definition};
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::r#match::Match;
 
 use crate::genesis::contracts::test_util::TestUtil;
+use crate::helper::process_context_ext::ProcessContextExt;
 use crate::helper::{
     block_data_contract, casper_invalid_blocks_contract, deployer_id_contract, rho_logger_contract,
     secp256k1_sign_contract, sys_auth_token_contract,
@@ -42,6 +45,7 @@ pub struct RhoSpec {
     pub extra_non_genesis_deploys: Vec<Signed<DeployData>>,
     pub execution_timeout: Duration,
     pub genesis_parameters: GenesisParameters,
+    enabled_tests: Option<Arc<HashSet<String>>>,
 }
 
 impl RhoSpec {
@@ -55,6 +59,7 @@ impl RhoSpec {
             extra_non_genesis_deploys,
             execution_timeout,
             genesis_parameters: GenesisBuilder::build_genesis_parameters_with_defaults(None, None),
+            enabled_tests: None,
         }
     }
 
@@ -69,6 +74,23 @@ impl RhoSpec {
             extra_non_genesis_deploys,
             execution_timeout,
             genesis_parameters,
+            enabled_tests: None,
+        }
+    }
+
+    pub fn new_with_genesis_parameters_and_enabled_tests(
+        test_object: CompiledRholangSource,
+        extra_non_genesis_deploys: Vec<Signed<DeployData>>,
+        execution_timeout: Duration,
+        genesis_parameters: GenesisParameters,
+        enabled_tests: Vec<String>,
+    ) -> Self {
+        Self {
+            test_object,
+            extra_non_genesis_deploys,
+            execution_timeout,
+            genesis_parameters,
+            enabled_tests: Some(Arc::new(enabled_tests.into_iter().collect())),
         }
     }
 
@@ -147,12 +169,13 @@ impl RhoSpec {
     pub async fn run_tests(&self) -> Result<TestResult, InterpreterError> {
         let test_result_collector = Arc::new(TestResultCollector::new());
 
-        let result = get_results(
+        let result = get_results_with_test_filter(
             &self.test_object,
             &self.extra_non_genesis_deploys,
             self.execution_timeout,
             self.genesis_parameters.clone(),
             test_result_collector,
+            self.enabled_tests.clone(),
         )
         .await?;
 
@@ -181,6 +204,7 @@ impl RhoSpec {
 
 pub fn test_framework_contracts(
     test_result_collector: Arc<TestResultCollector>,
+    enabled_tests: Option<Arc<HashSet<String>>>,
 ) -> Vec<Definition> {
     vec![
         Definition {
@@ -303,6 +327,47 @@ pub fn test_framework_contracts(
             }),
             remainder: None,
         },
+        Definition {
+            urn: "rho:test:filter".to_string(),
+            fixed_channel: byte_name(109),
+            arity: 2,
+            body_ref: 109,
+            handler: {
+                let enabled_tests = enabled_tests.clone();
+                Box::new(move |ctx| {
+                    let enabled_tests = enabled_tests.clone();
+                    Box::new(move |args| {
+                        let ctx = ctx.clone();
+                        let enabled_tests = enabled_tests.clone();
+                        Box::pin(async move {
+                            let is_contract_call = ctx.contract_call();
+
+                            if let Some((produce, _, _, args)) = is_contract_call.unapply(args) {
+                                match args.as_slice() {
+                                    [test_name_par, ack_channel] => {
+                                        let Some(test_name) = RhoString::unapply(test_name_par)
+                                        else {
+                                            return Err(illegal_argument_error("test_filter"));
+                                        };
+                                        let include = enabled_tests
+                                            .as_ref()
+                                            .is_none_or(|tests| tests.contains(&test_name));
+                                        let output =
+                                            vec![new_gbool_par(include, Vec::new(), false)];
+                                        produce(&output, ack_channel).await?;
+                                        Ok(output)
+                                    }
+                                    _ => Err(illegal_argument_error("test_filter")),
+                                }
+                            } else {
+                                Err(illegal_argument_error("test_filter"))
+                            }
+                        })
+                    })
+                })
+            },
+            remainder: None,
+        },
     ]
 }
 
@@ -312,6 +377,25 @@ pub async fn get_results(
     execution_timeout: Duration,
     genesis_parameters: GenesisParameters,
     test_result_collector: Arc<TestResultCollector>,
+) -> Result<TestResult, InterpreterError> {
+    get_results_with_test_filter(
+        test_object,
+        other_libs,
+        execution_timeout,
+        genesis_parameters,
+        test_result_collector,
+        None,
+    )
+    .await
+}
+
+pub async fn get_results_with_test_filter(
+    test_object: &CompiledRholangSource,
+    other_libs: &[Signed<DeployData>],
+    execution_timeout: Duration,
+    genesis_parameters: GenesisParameters,
+    test_result_collector: Arc<TestResultCollector>,
+    enabled_tests: Option<Arc<HashSet<String>>>,
 ) -> Result<TestResult, InterpreterError> {
     // The WHOLE pipeline runs under the execution bound, with a live phase
     // label folded into the timeout error. The bound must cover genesis
@@ -357,7 +441,7 @@ pub async fn get_results(
                 as Box<dyn Match<BindPattern, ListParWithRandom, TaggedContinuation>>);
 
             let mut additional_system_processes =
-                test_framework_contracts(test_result_collector.clone());
+                test_framework_contracts(test_result_collector.clone(), enabled_tests.clone());
 
             set_phase("runtime-create");
             let mut runtime = create_runtime_from_kv_store(
