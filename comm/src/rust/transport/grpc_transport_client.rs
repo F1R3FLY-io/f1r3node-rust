@@ -13,7 +13,7 @@ use tonic::service::interceptor::InterceptedService;
 use tonic::transport::Channel;
 
 use crate::rust::errors::CommError;
-use crate::rust::peer_node::PeerNode;
+use crate::rust::peer_node::{NodeIdentifier, PeerNode};
 use crate::rust::transport::f1r3fly_connector::F1r3flyConnector;
 use crate::rust::transport::grpc_transport::GrpcTransport;
 use crate::rust::transport::packet_ops::PacketOps;
@@ -85,6 +85,7 @@ pub struct GrpcTransportClient {
     packet_chunk_size: i32,
     client_queue_size: i32,
     channels_map: Arc<Mutex<HashMap<PeerNode, Arc<OnceCell<Arc<BufferedGrpcStreamChannel>>>>>>,
+    dns_failures: Arc<Mutex<HashMap<NodeIdentifier, String>>>,
     default_send_timeout: Duration,
     cache: StreamCache,
 }
@@ -124,9 +125,25 @@ impl GrpcTransportClient {
             packet_chunk_size,
             client_queue_size,
             channels_map,
+            dns_failures: Arc::new(Mutex::new(HashMap::new())),
             default_send_timeout: effective_timeout,
             cache: Arc::new(dashmap::DashMap::new()),
         })
+    }
+
+    async fn mark_dns_failure(&self, peer: &PeerNode) -> bool {
+        let mut failures = self.dns_failures.lock().await;
+        let address = peer.to_address();
+        if failures.get(&peer.id) == Some(&address) {
+            false
+        } else {
+            failures.insert(peer.id.clone(), address);
+            true
+        }
+    }
+
+    async fn clear_dns_failure(&self, peer: &PeerNode) {
+        self.dns_failures.lock().await.remove(&peer.id);
     }
 
     async fn create_channel(
@@ -155,10 +172,25 @@ impl GrpcTransportClient {
         )
         .map_err(|e| CommError::ConfigError(format!("Failed to create F1r3flyConnector: {}", e)))?;
 
-        let uri_address = resolve_hostname_to_ip(&peer.endpoint.host, peer.endpoint.tcp_port)
-            .await?
-            .ip()
-            .to_string();
+        let resolved_addr =
+            match resolve_hostname_to_ip(&peer.endpoint.host, peer.endpoint.tcp_port).await {
+                Ok(addr) => {
+                    self.clear_dns_failure(peer).await;
+                    addr
+                }
+                Err(error @ CommError::DnsResolutionFailed(_, _)) => {
+                    if self.mark_dns_failure(peer).await {
+                        tracing::warn!(
+                            peer = %peer.to_address(),
+                            error = %error,
+                            "Peer hostname could not be resolved"
+                        );
+                    }
+                    return Err(error);
+                }
+                Err(error) => return Err(error),
+            };
+        let uri_address = resolved_addr.ip().to_string();
 
         // Step 2: Create tonic Endpoint with HTTP scheme (not HTTPS)
         // since F1r3flyConnector handles TLS internally
@@ -277,7 +309,7 @@ impl GrpcTransportClient {
         loop {
             // Create a new OnceCell for potential new channel
             let new_once_cell = Arc::new(OnceCell::new());
-            let mut evicted_peer_count = 0usize;
+            let mut evicted_peer_ids = Vec::new();
 
             // Atomic operation: check if peer exists, if not add new OnceCell
             let (once_cell, is_new_channel) = {
@@ -302,7 +334,7 @@ impl GrpcTransportClient {
                                 if let Some(victim_channel) = victim_channel_cell.get() {
                                     victim_channel.buffer_subscriber.abort();
                                 }
-                                evicted_peer_count += 1;
+                                evicted_peer_ids.push(victim.id);
                             }
                         }
                     }
@@ -310,10 +342,14 @@ impl GrpcTransportClient {
                 }
             };
 
-            if evicted_peer_count > 0 {
+            if !evicted_peer_ids.is_empty() {
+                let mut failures = self.dns_failures.lock().await;
+                for peer_id in &evicted_peer_ids {
+                    failures.remove(peer_id);
+                }
                 tracing::debug!(
                     "Evicted {} stale/overflow gRPC channel entries (hard max: {})",
-                    evicted_peer_count,
+                    evicted_peer_ids.len(),
                     MAX_CHANNEL_MAP_ENTRIES
                 );
             }
@@ -347,6 +383,7 @@ impl GrpcTransportClient {
                     let mut channels_map = self.channels_map.lock().await;
                     channels_map.remove(peer);
                 }
+                self.clear_dns_failure(peer).await;
 
                 // Retry by continuing the loop
                 continue;
@@ -391,7 +428,9 @@ impl GrpcTransportClient {
         match timed_operation.await {
             Ok(Ok(success)) => Ok(success),
             Ok(Err(comm_error)) => {
-                tracing::error!(peer = %peer.to_address(), error = %comm_error, "gRPC request failed");
+                if !matches!(&comm_error, CommError::DnsResolutionFailed(_, _)) {
+                    tracing::error!(peer = %peer.to_address(), error = %comm_error, "gRPC request failed");
+                }
                 Err(comm_error)
             }
             Err(_timeout_error) => {
@@ -569,6 +608,7 @@ impl TransportLayer for GrpcTransportClient {
 
     /// Disconnect from a peer, shutting down any gRPC channels
     async fn disconnect(&self, peer: &PeerNode) -> Result<(), CommError> {
+        self.clear_dns_failure(peer).await;
         let mut channels_map = self.channels_map.lock().await;
         if let Some(channel_cell) = channels_map.remove(peer) {
             tracing::info!("Shutting down gRPC channel to peer {}", peer.to_address());
@@ -622,6 +662,24 @@ mod tests {
     fn new_accepts_normal_and_too_low_timeouts() {
         client(Duration::from_secs(5));
         client(Duration::from_millis(1));
+    }
+
+    #[tokio::test]
+    async fn dns_warning_state_is_per_peer_and_resets_after_resolution() {
+        let client = client(Duration::from_secs(5));
+        let first = peer("first");
+        let second = peer("second");
+        let mut changed = first.clone();
+        changed.endpoint.host = "other-host".to_string();
+
+        assert!(client.mark_dns_failure(&first).await);
+        assert!(!client.mark_dns_failure(&first).await);
+        assert!(client.mark_dns_failure(&second).await);
+        assert!(client.mark_dns_failure(&changed).await);
+        assert!(!client.mark_dns_failure(&changed).await);
+
+        client.clear_dns_failure(&changed).await;
+        assert!(client.mark_dns_failure(&first).await);
     }
 
     #[tokio::test]

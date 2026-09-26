@@ -22,6 +22,7 @@ pub enum CommError {
     MalformedMessage(String),
     CouldNotConnectToBootstrap,
     InternalCommunicationError(String),
+    DnsResolutionFailed(String, String),
     TimeOut,
     UpstreamNotAvailable,
     UnexpectedMessage(String),
@@ -50,6 +51,9 @@ impl fmt::Display for CommError {
             CommError::TimeOut => write!(f, "Timeout"),
             CommError::InternalCommunicationError(msg) => {
                 write!(f, "Internal communication error. {}", msg)
+            }
+            CommError::DnsResolutionFailed(host, reason) => {
+                write!(f, "Failed to resolve hostname '{}': {}", host, reason)
             }
             CommError::UnknownProtocolError(msg) => write!(f, "Unknown protocol error. {}", msg),
             CommError::UnableToStorePacket(p, er) => {
