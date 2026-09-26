@@ -646,6 +646,33 @@ async fn check_lfb_and_propose(
         can_follow_frontier_without_pending_deploys,
         allow_frontier_follow_while_ahead_for_deploy_parent,
     } = decide_lanes(&lane_inputs);
+    tracing::debug!(
+        target: "f1r3fly.casper.heartbeat.lane",
+        lfb_is_stale = lane_inputs.lfb_is_stale,
+        lfb_lag_blocks = lane_inputs.lfb_lag_blocks,
+        has_pending_deploys = lane_inputs.has_pending_deploys,
+        has_new_parents = lane_inputs.has_new_parents,
+        has_new_parent_with_user_deploys = lane_inputs.has_new_parent_with_user_deploys,
+        deploy_grace_active = lane_inputs.deploy_grace_active,
+        self_recently_proposed = lane_inputs.self_recently_proposed,
+        self_proposed_too_recently = lane_inputs.self_proposed_too_recently,
+        self_idle_for_recovery_interval = lane_inputs.self_idle_for_recovery_interval,
+        stale_recovery_interval_elapsed = lane_inputs.stale_recovery_interval_elapsed,
+        cone_has_user_work = lane_inputs.cone_has_user_work,
+        idle_recovery_window_open = lane_inputs.idle_recovery_window_open,
+        lag_recovery_leader = lane_inputs.lag_recovery_leader,
+        empty_frontier_backpressure = lane_inputs.empty_frontier_backpressure,
+        pending_deploy_max_lag = lane_inputs.pending_deploy_max_lag,
+        deploy_recovery_max_lag = lane_inputs.deploy_recovery_max_lag,
+        effective_frontier_chase_cap = lane_inputs.effective_frontier_chase_cap,
+        pending_deploys_due,
+        pending_deploy_backstop_due,
+        frontier_follow_due,
+        stale_lfb_recovery_due,
+        convergence_recovery_selected,
+        should_propose,
+        "heartbeat lane row"
+    );
 
     if should_propose {
         let reason = if pending_deploy_backstop_due {
