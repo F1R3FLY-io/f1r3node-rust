@@ -31,6 +31,8 @@ jobs:
           components: clippy
       - name: Check observation mapping and process receipts
         run: bash scripts/casper-soak/check-authority-adapter.sh target/casper-authority-adapter-ci
+      - name: Check the live authority executor
+        run: bash scripts/casper-soak/check-authority-live.sh target/casper-authority-adapter-ci/live
       - name: Retain verification evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

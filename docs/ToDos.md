@@ -1307,7 +1307,11 @@ tasks:
     live_interface_gaps: "The source mapping is complete. The observer lacks paired fork-choice heads and captured equivocation inputs for display projection. These additions belong to EPIC-019. Existing providers support ordinary pause and restart. Their receipts belong to this task."
     executable_binding_evidence: docs/casper/cbc-evidence/runs/casper-authority-execution-20260928-01/report.json
     executable_binding_status: "All nine scenario kinds execute through the production generator, receipt binding, collector, and classifier with controlled providers. Claim002 requires renewed acceptance. Live qualification remains pending."
-    live_mapping_remaining: "Implement and qualify the live executor with mapped node observations, captured input exports, exact traversal measurements, and process receipts. The executable harness contract is implemented. Docker fault receipts remain unimplemented."
+    live_executor_claim: docs/claims/casper-authority-live-executor.md
+    live_executor_evidence: docs/casper/cbc-evidence/runs/casper-authority-live-20260928-01/report.json
+    live_executor_guide: docs/casper/design/authority-live-executor.md
+    live_executor_status: "The qualification executor invokes a pinned workload driver and captures the node before and after each step. Eight Linux tests pass. Campaign admission remains blocked."
+    live_mapping_remaining: "Supply the candidate workload driver and captured input exports. Connect owned process receipts, including restart incarnation binding. Add missing node observations and qualify the provider. Docker fault receipts remain unimplemented."
     candidate_inventory_evidence: docs/casper/cbc-evidence/runs/casper-campaign-inventory-20260928-01/report.json
     candidate_inventory_review: "All 225 model hashes and four configuration hashes match. The matrix and three suite pins select e3c4e14189f0c6ced2e9674487fcbdeffd93141b. Source-bound acceptance remains pending. No workload pin or qualification changed."
     stack_scope: "PR #436 temporarily targets the node branch. This dependency order does not include node implementation in the harness scope. Independent harness controls can proceed before node qualification."
@@ -1333,7 +1337,7 @@ tasks:
     compatibility_lookup_status: "The three campaign inventories have 37 unique pending artifact records and matching compatibility links. Claims001 and 002 now remain pending. Claim002 preserves its historical acceptance."
     execution_gate: "Four exact-candidate probes returned blocked before node launch. Their controlled inputs are not live qualification. The legacy workload is pinned but cannot replace required Casper profiles."
     drift_review: docs/work-logs/task-017-12-drift-review-2026-09-19.md
-    claims: [CLAIM-CASPER-SOAK-001, CLAIM-CASPER-SOAK-002, CLAIM-CASPER-SOAK-004, CLAIM-CASPER-CAMPAIGN-001, CLAIM-CASPER-CAMPAIGN-002, CLAIM-CASPER-CAMPAIGN-003, CLAIM-CASPER-AUTHORITY-CLIENT-001, CLAIM-CASPER-AUTHORITY-ADAPTER-001]
+    claims: [CLAIM-CASPER-SOAK-001, CLAIM-CASPER-SOAK-002, CLAIM-CASPER-SOAK-004, CLAIM-CASPER-CAMPAIGN-001, CLAIM-CASPER-CAMPAIGN-002, CLAIM-CASPER-CAMPAIGN-003, CLAIM-CASPER-AUTHORITY-CLIENT-001, CLAIM-CASPER-AUTHORITY-ADAPTER-001, CLAIM-CASPER-AUTHORITY-LIVE-001]
     claim_index: docs/claims/casper-soak-harness.md
     campaign_claim_index: docs/claims/casper-soak-campaign.md
     reservation_claim_index: docs/claims/casper-campaign-reservation.md

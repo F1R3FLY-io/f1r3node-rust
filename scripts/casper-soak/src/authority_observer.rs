@@ -8,7 +8,7 @@ use eyre::{ensure, Result};
 use serde_json::{json, Value};
 
 #[path = "authority_mapping.rs"]
-mod mapping;
+pub(super) mod mapping;
 
 #[derive(Clone, Debug)]
 pub struct Binding {

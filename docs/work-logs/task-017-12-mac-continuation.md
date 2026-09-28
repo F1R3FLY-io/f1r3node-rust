@@ -680,3 +680,33 @@ These fixtures launch no blockchain nodes and dispatch no cloud resources. Provi
 The live provider must supply mapped observations, captured input exports, traversal measurements, and process receipts. The other agent owns the node observation additions.
 
 Renewed acceptance and hosted verification remain pending. Candidate qualification, campaign services, preflight, and both full baselines still prevent TASK-017-12 completion.
+
+## Live qualification executor: 2026-09-28
+
+The [live executor report](../casper/cbc-evidence/runs/casper-authority-live-20260928-01/report.json) records the implementation and controlled Linux verification.
+
+The new `casper-authority-live` executable consumes the execution envelope. It verifies the observer identity before each workload operation and captures the node afterward.
+
+A pinned native driver supplies fixture operations and input exports. The executor checks the exported bytes and captured snapshot digest before emitting an applied receipt.
+
+The executor constructs observations from the node response. It preserves separate bounded and reference decisions, exact numeric values, and persisted finality.
+
+Missing heads, traversal measurements, and projection values remain missing. A null driver permits captures but produces unknown receipts and an incomplete execution.
+
+Atomic inventory updates preserve completed receipts after a later failure. The timeout test confirms that the driver process exits and leaves a valid partial inventory.
+
+Eight live executor tests pass on Linux. The native fixture helper executes through the production binary during those tests.
+
+All 27 existing client, mapping, and process receipt tests also pass on Linux. Native and Linux Clippy checks pass.
+
+The first full gate exposed a malformed PID test fixture. The corrected fixture and final gate pass, and the evidence retains the failed gate.
+
+The observer module now exposes its mapper to the live executor. This visibility change lets both paths use the same conversion logic.
+
+The existing adapter workflow now runs the live gate. The changed workflow and observer records remain pending with refreshed source digests.
+
+This implementation does not supply a candidate-specific fixture driver. The node observer currently lacks paired heads and the required exact input and traversal exports.
+
+Fault schedules remain blocked before driver launch. Connecting the process recorder requires an adapter that binds the predecessor and replacement incarnations.
+
+The [provider guide](../casper/design/authority-live-executor.md) defines the operation protocol and remaining integration work. Full live execution and TASK-017-12 remain incomplete.
