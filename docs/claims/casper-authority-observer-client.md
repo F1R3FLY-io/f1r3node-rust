@@ -37,6 +37,10 @@ The response must retain the requested authority inputs. Missing or failed evalu
 
 The client retains exact greeting, request, and response bytes as separate files. Failure reports retain captured evidence and never replace existing output.
 
+The client also retains a mapped observation file. A rejected mapping does not erase a successful transport capture or its raw evidence.
+
+The [adapter claim](casper-authority-adapter.md) covers observation mapping and process receipts. Mapping does not change the transport qualification status.
+
 A successful capture establishes transport correspondence only. Qualification, profile verdicts, and campaign acceptance remain pending.
 
 ## Verification boundary

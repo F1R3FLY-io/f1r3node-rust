@@ -7,6 +7,9 @@ use casper_soak::{encoded, exclusive, hash, manifest, number, parse, text};
 use eyre::{ensure, Result};
 use serde_json::{json, Value};
 
+#[path = "authority_mapping.rs"]
+mod mapping;
+
 #[derive(Clone, Debug)]
 pub struct Binding {
     pub socket: PathBuf,
@@ -196,12 +199,23 @@ pub fn collect(binding_bytes: &[u8], authority_bytes: &[u8], output: &Path) -> R
     #[cfg(not(target_os = "linux"))]
     let attempt: Result<Value> = Err(eyre::eyre!("The observer client requires Linux."));
     let mut report = match attempt {
-        Ok(response) => json!({
+        Ok(response) => {
+            let mapped = match mapping::map(&response) {
+                Ok(value) => value,
+                Err(error) => {
+                    json!({"schema_version":1,"status":"rejected","error":error.to_string(),
+                    "qualification":"pending","profile_verdict":"blocked","soak_verdict":"non_passing"})
+                }
+            };
+            retain(output, "mapping.json", &encoded(&mapped)?, &mut records)?;
+            json!({
             "schema_version":1,"status":"captured",
             "availability":response["result"]["availability"],
+            "mapping_status":mapped["status"],
             "qualification":"pending","profile_verdict":"pending","soak_verdict":"non_passing",
             "node_launch_count":0,"artifacts":records
-        }),
+            })
+        }
         Err(error) => json!({
             "schema_version":1,"status":"rejected","error":error.to_string(),
             "qualification":"pending","profile_verdict":"pending","soak_verdict":"non_passing",
@@ -213,6 +227,7 @@ pub fn collect(binding_bytes: &[u8], authority_bytes: &[u8], output: &Path) -> R
         "version":env!("CARGO_PKG_VERSION"),
         "source_digests":{
             "scripts/casper-soak/src/authority_observer.rs":hash(include_bytes!("authority_observer.rs")),
+            "scripts/casper-soak/src/authority_mapping.rs":hash(include_bytes!("authority_mapping.rs")),
             "scripts/casper-soak/src/bin/casper-authority-observe.rs":hash(include_bytes!("bin/casper-authority-observe.rs")),
             "scripts/casper-soak/src/lib.rs":hash(include_bytes!("lib.rs")),
             "scripts/casper-soak/src/manifest.rs":hash(include_bytes!("manifest.rs"))

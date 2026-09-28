@@ -145,3 +145,71 @@ The independent workflow runs on relevant pull requests and nightly. It does not
 The new workflow needs human ratification for its proposed `cbc=mandatory` tag. Existing broad tags already cover the new Rust, Bash, and formal files.
 
 Claim discharge remains pending until the bounded binding review is accepted. Linux execution and live adapter qualification remain separate from local fixture success.
+
+## Executable scenario bindings
+
+The `execute` command runs a pinned provider executable before collection and classification:
+
+```bash
+casper-authority-finality execute \
+  --manifest manifest.json \
+  --request request.json \
+  --artifacts inputs \
+  --output result
+```
+
+The existing admission checks run first. Missing capabilities, unqualified live requests, and unsupported phases return `blocked` without invoking the executor.
+
+The manifest adds `runtime.authority_executor` with these fields:
+
+| Field | Contract |
+| --- | --- |
+| `artifact` | Relative executable path, exact byte length, and SHA-256 digest. The executable limit is 128 MiB. |
+| `arguments` | At most 32 literal arguments. Each argument has a limit of 4,096 bytes. No shell expands them. |
+| `timeout_ms` | An integer from 1 through 300,000. |
+| `assets` | Bounded artifact references for additional provider inputs. |
+
+The harness retains the executable, fixture inputs, qualification records, and provider assets before launch. The manifest digest binds the execution configuration.
+
+The executor receives two environment variables. `CASPER_AUTHORITY_EXECUTION_REQUEST` names its request file, and `CASPER_AUTHORITY_EXECUTION_OUTPUT` names its result directory.
+
+The request contains the prepared profile request, generated workloads, ordered operations, input root, output root, and timeout. A fresh execution nonce prevents receipt reuse.
+
+Each operation contains its index, operation name, and complete member identity. The order comes from the existing profile generator.
+
+The executor writes `execution.json` with schema version 1, the exact execution request digest, and an ordered `receipts` array of artifact references.
+
+The executor should update that inventory atomically after each completed step. A valid partial inventory permits failure preservation after interruption.
+
+Each receipt contains:
+
+| Field | Contract |
+| --- | --- |
+| `schema_version` | Integer 1. |
+| `request_sha256` | Digest of the exact execution request bytes. |
+| `previous_receipt_sha256` | Null for the first receipt, then the preceding receipt digest. |
+| `step` | The exact generated operation, including its index and member. |
+| `elapsed_ns` | Nondecreasing unsigned elapsed nanoseconds within the executor timeout. |
+| `status` | `applied`, `not_applied`, or `unknown`. |
+| `observed_inputs` | Artifact references for retained DAG, electorate, and justification bytes. Each digest must match its pinned input. |
+| `observations` | Artifact references for authority snapshots or scheduled fault acknowledgments. |
+
+An unapplied step may have an empty observed-input inventory. It cannot produce a passing execution binding.
+
+Authority snapshots must belong to evaluation steps. Restart acknowledgments must belong to the matching restart barrier and scheduled member.
+
+The harness retains intermediate observations. It sends each member's final evaluation and scheduled fault acknowledgments to the existing collector and classifier.
+
+A missing final evaluation does not fall back to an earlier result. A missing step or unapplied receipt makes the execution incomplete.
+
+The harness rejects foreign request digests, broken receipt chains, reordered steps, changed input bytes, duplicate identities, and invalid artifact paths.
+
+A failing executor cannot convert a product failure into a pass. A valid partial receipt inventory retains product failures from completed observations.
+
+The harness kills the executor process group after exit or timeout. This control does not establish containment of processes that escape that group.
+
+The top-level report records the executor outcome separately from the profile verdict. It retains stdout, stderr, receipts, input artifacts, and observation references.
+
+Controlled tests execute all nine scenario kinds through this command. The fixture executable supplies synthetic provider records and does not launch blockchain nodes.
+
+Live execution still requires a qualified provider that supplies actual applied inputs and node observations. These bindings do not implement missing node interfaces.

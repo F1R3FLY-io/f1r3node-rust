@@ -505,3 +505,280 @@ fn corrupted_artifacts_and_fixture_expectations_cannot_pass() {
     f.seal();
     f.invoke(2, "invalid_input");
 }
+
+fn execute_fixture(f: &mut Fixture, mode: &str, expected_code: i32, verdict: &str) -> Value {
+    let executor = std::env::current_exe().unwrap();
+    let bytes = fs::read(executor).unwrap();
+    fs::write(f.root.join("fixture-executor"), &bytes).unwrap();
+    let mut observations = f.observations.clone();
+    for observation in &mut observations {
+        observation
+            .as_object_mut()
+            .unwrap()
+            .remove("manifest_digest");
+    }
+    let asset = reference(
+        &f.root,
+        "execution-fixture.json",
+        &json!({"mode":mode,"observations":observations}),
+        vec![],
+    );
+    f.manifest["runtime"] = json!({"authority_executor":{
+        "artifact":{"path":"fixture-executor","sha256":hash(&bytes),"bytes":bytes.len()},
+        "arguments":["--ignored","--exact","scenario_executor_fixture","--nocapture"],
+        "timeout_ms":if mode == "timeout" {200} else {10000},"assets":[asset]
+    }});
+    f.seal();
+    fs::write(f.root.join("manifest.json"), encoded(&f.manifest).unwrap()).unwrap();
+    fs::write(f.root.join("request.json"), encoded(&f.request).unwrap()).unwrap();
+    if mode == "bad_executor_pin" {
+        fs::write(f.root.join("fixture-executor"), b"changed").unwrap();
+    }
+    let args = [
+        "execute",
+        "--manifest",
+        "manifest.json",
+        "--request",
+        "request.json",
+        "--artifacts",
+        ".",
+        "--output",
+        "executed",
+    ];
+    let result = Command::new(binary())
+        .args(args)
+        .current_dir(&f.root)
+        .output()
+        .unwrap();
+    let report: Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(
+        result.status.code(),
+        Some(expected_code),
+        "{report}\n{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(report["scenario_verdict"], verdict, "{report}");
+    assert_eq!(report["soak_verdict"], "non_passing");
+    fs::write(f.root.join("execute-invocation.json"), encoded(&json!({"arguments":args,
+        "exit":result.status.code(),"stdout":report,"stderr":String::from_utf8_lossy(&result.stderr)})).unwrap()).unwrap();
+    report
+}
+
+#[test]
+#[ignore]
+fn scenario_executor_fixture() {
+    let request_path = PathBuf::from(std::env::var("CASPER_AUTHORITY_EXECUTION_REQUEST").unwrap());
+    let output = PathBuf::from(std::env::var("CASPER_AUTHORITY_EXECUTION_OUTPUT").unwrap());
+    let request_bytes = fs::read(request_path).unwrap();
+    let request: Value = serde_json::from_slice(&request_bytes).unwrap();
+    let input_root = Path::new(request["input_root"].as_str().unwrap());
+    let fixture = record(&input_root.join("execution-fixture.json")).unwrap();
+    let mode = fixture["mode"].as_str().unwrap();
+    if mode == "timeout" {
+        std::thread::sleep(std::time::Duration::from_secs(30));
+    }
+    let mut receipts = Vec::new();
+    let mut previous = Value::Null;
+    for step in request["operations"].as_array().unwrap() {
+        let index = step["index"].as_u64().unwrap();
+        let mut inputs = json!({});
+        for role in ["dag", "electorate", "justification"] {
+            let bytes =
+                casper_soak::artifact(input_root, &request["request"]["inputs"][role]).unwrap();
+            let path = format!("step-{index}/{role}.json");
+            fs::create_dir_all(output.join(format!("step-{index}"))).unwrap();
+            fs::write(output.join(&path), &bytes).unwrap();
+            inputs[role] = json!({"path":path,"bytes":bytes.len(),"sha256":hash(&bytes)});
+        }
+        let mut observations = Vec::new();
+        for observation in fixture["observations"].as_array().unwrap() {
+            if observation["member_id"] != step["member"]["member_id"] {
+                continue;
+            }
+            let include = if observation["event_kind"] == "authority_snapshot" {
+                step["operation"] == "evaluate"
+            } else {
+                step["operation"] == "await_restart_receipt"
+            };
+            if !include {
+                continue;
+            }
+            if mode == "missing_final_evaluation"
+                && index == request["operations"].as_array().unwrap().len() as u64 - 1
+            {
+                continue;
+            }
+            let mut observation = observation.clone();
+            observation["manifest_digest"] = request["request"]["manifest_digest"].clone();
+            observation["record_id"] = format!("execution-record-{index}").into();
+            observation["event_id"] = format!("execution-event-{index}").into();
+            observation["producer_sequence"] = (index + 1).to_string().into();
+            if [
+                "head_mismatch",
+                "head_mismatch_and_exit",
+                "partial_failure_and_exit",
+            ]
+            .contains(&mode)
+                && observation["event_kind"] == "authority_snapshot"
+            {
+                observation["payload"]["head"]["value"] = "f".repeat(64).into();
+            }
+            let id = observation["record_id"].as_str().unwrap().to_owned();
+            observations.push(reference(
+                &output,
+                &format!("step-{index}/observation.json"),
+                &observation,
+                vec![id],
+            ));
+        }
+        let mut receipt = json!({"schema_version":1,"request_sha256":hash(&request_bytes),
+            "previous_receipt_sha256":previous,"step":step,"elapsed_ns":index+1,
+            "status":if mode == "unknown_step" {"unknown"} else {"applied"},
+            "observed_inputs":inputs,"observations":observations});
+        if index == 1 {
+            match mode {
+                "reordered_step" => receipt["step"]["index"] = 0.into(),
+                "replayed_request" => receipt["request_sha256"] = "0".repeat(64).into(),
+                "broken_chain" => receipt["previous_receipt_sha256"] = "0".repeat(64).into(),
+                "late_receipt" => receipt["elapsed_ns"] = u64::MAX.into(),
+                "wrong_input" => {
+                    let changed = reference(
+                        &output,
+                        "wrong-input.json",
+                        &json!({"changed":true}),
+                        vec![],
+                    );
+                    receipt["observed_inputs"]["dag"] = changed;
+                }
+                _ => {}
+            }
+        }
+        let r = reference(
+            &output,
+            &format!("step-{index}/receipt.json"),
+            &receipt,
+            vec![],
+        );
+        previous = r["sha256"].clone();
+        receipts.push(r);
+        if mode == "partial_failure_and_exit" && index == 1 {
+            break;
+        }
+    }
+    if mode == "missing_step" {
+        receipts.pop();
+    }
+    fs::write(
+        output.join("execution.json"),
+        encoded(&json!({"schema_version":1,
+        "request_sha256":hash(&request_bytes),"receipts":receipts}))
+        .unwrap(),
+    )
+    .unwrap();
+    if ["head_mismatch_and_exit", "partial_failure_and_exit"].contains(&mode) {
+        std::process::exit(17);
+    }
+}
+
+#[test]
+fn executable_scenarios_bind_all_nine_kinds_to_the_actual_classifier() {
+    for kind in [
+        "threshold_boundary",
+        "strict_majority",
+        "committee_provenance",
+        "duplicate_justifications",
+        "signature_rejection",
+        "replay",
+        "restart",
+        "missing_dependencies",
+        "traversal_comparison",
+    ] {
+        let mut f = Fixture::new(&format!("execute-{kind}"));
+        if kind == "restart" {
+            f.request["members"][0]["predecessor_incarnation"] = "incarnation-1".into();
+            f.request["members"][0]["incarnation"] = "incarnation-2".into();
+            f.request["fault_schedule"] = json!([{"fault_id":"restart-1","member_id":"reference","node_id":"node-reference",
+                "incarnation":"incarnation-1","action":"restart","trigger_event":"fixture-ready","after":[],
+                "ack_deadline":{"clock_id":"fixture-clock","monotonic_ns":"90"}}]);
+        }
+        let decision = match kind {
+            "signature_rejection" => "rejected",
+            "missing_dependencies" => "hold",
+            _ => "finalized",
+        };
+        f.configure(kind, "8", "12", "1", decision, true);
+        if kind == "restart" {
+            let mut ack = f.observations[0].clone();
+            ack["event_kind"] = "fault_ack".into();
+            ack["payload"] = json!({"fault_id":"restart-1","action":"restart","incarnation":"incarnation-1",
+                "trigger_event":"fixture-ready","status":"applied","prior_exit":true,"ready":true,"new_incarnation":"incarnation-2"});
+            f.observations.push(ack);
+        }
+        let report = execute_fixture(&mut f, "complete", 0, "passed");
+        assert_eq!(report["execution"]["binding"]["status"], "bound");
+        assert_eq!(report["executor_launch_count"], 1);
+        assert_eq!(report["measurements"].as_array().unwrap().len(), 2);
+        assert!(f.root.join("executed/profile/collection.json").is_file());
+        assert_eq!(report["evidence_kind"], "synthetic_fixture");
+    }
+}
+
+#[test]
+fn executable_bindings_reject_missing_replayed_reordered_and_changed_evidence() {
+    for mode in [
+        "replayed_request",
+        "reordered_step",
+        "broken_chain",
+        "late_receipt",
+        "wrong_input",
+        "bad_executor_pin",
+    ] {
+        let mut f = Fixture::new(&format!("execute-{mode}"));
+        execute_fixture(&mut f, mode, 2, "invalid_input");
+    }
+    for mode in ["unknown_step", "missing_final_evaluation", "missing_step"] {
+        let mut f = Fixture::new(&format!("execute-{mode}"));
+        f.configure("replay", "8", "12", "1", "finalized", true);
+        execute_fixture(&mut f, mode, 1, "incomplete");
+    }
+}
+
+#[test]
+fn executable_bindings_preserve_product_failures_and_bound_process_lifetime() {
+    for mode in [
+        "head_mismatch",
+        "head_mismatch_and_exit",
+        "partial_failure_and_exit",
+    ] {
+        let mut f = Fixture::new(&format!("execute-{mode}"));
+        let report = execute_fixture(&mut f, mode, 1, "product_failure");
+        assert!(!report["product_failures"].as_array().unwrap().is_empty());
+    }
+    let mut f = Fixture::new("execute-timeout");
+    let start = std::time::Instant::now();
+    let report = execute_fixture(&mut f, "timeout", 1, "incomplete");
+    assert_eq!(report["execution"]["failure"], "executor_deadline");
+    assert!(start.elapsed() < std::time::Duration::from_secs(5));
+}
+
+#[test]
+fn executable_capability_blockers_prevent_executor_launch() {
+    let mut f = Fixture::new("execute-capability-missing");
+    f.manifest["capabilities"]["same-dag-evaluation"]["status"] = "unknown".into();
+    let report = execute_fixture(&mut f, "complete", 3, "blocked");
+    assert_eq!(report["executor_launch_count"], 0);
+    assert!(!f.root.join("executed/execution").exists());
+    let mut f = Fixture::new("execute-live-blocked");
+    f.manifest["evidence_kind"] = "node_observation".into();
+    f.request["evidence_kind"] = "node_observation".into();
+    for cap in f.manifest["capabilities"]
+        .as_object_mut()
+        .unwrap()
+        .values_mut()
+    {
+        cap["status"] = "unknown".into();
+    }
+    let report = execute_fixture(&mut f, "complete", 3, "blocked");
+    assert_eq!(report["executor_launch_count"], 0);
+    assert!(!f.root.join("executed/execution").exists());
+}

@@ -36,13 +36,20 @@ fn hello(b: &Binding) -> Value {
 
 fn response(h: &Value, request: &[u8]) -> Value {
     let r = parse(request).unwrap();
+    let work = json!({"traversal":0,"metadata":0,"oracle":0,"clique":0,"signature":0,
+        "allocation":0,"operations":0,"allocated_bytes":0,"clique_expansions":0,"maximum_depth":0});
     json!({
         "kind":"authority_snapshot","identity":h["identity"],"request_id":r["request_id"],
         "request_sha256":hash(request),"approved_request_sha256":r["approved_request_sha256"],
         "clock":"observer-monotonic","sequence":2,"monotonic_ns":11,"live_profile_qualified":false,
         "result":{"availability":"available","value":{
             "scope":"batch-b2-detached-authority-evaluation","live_profile_qualified":false,
-            "request":r["authority"],"snapshot_digest":"e".repeat(64),"authority_digest":"f".repeat(64)
+            "request":r["authority"],"snapshot_digest":"e".repeat(64),"authority_digest":"f".repeat(64),
+            "targets":[],"floor_result":{"availability":"not_requested"},
+            "floor_comparison":{"availability":"not_requested"},"events":[],"coverage":null,
+            "work":{"aggregate":work,"preparation":work,"measured":work,
+                "original":{"availability":"not_requested"},"reference":{"availability":"not_requested"},
+                "complete":true,"failure":null}
         }}
     })
 }
@@ -253,6 +260,9 @@ mod linux {
             if case == "replay" {
                 value["request_sha256"] = json!("0".repeat(64));
             }
+            if case == "mapping_defect" {
+                value["result"]["value"]["work"]["measured"]["traversal"] = Value::Null;
+            }
             let bytes = serde_json::to_vec(&value).unwrap();
             let _ = stream.write_all(&(bytes.len() as u32).to_be_bytes());
             let _ = stream.write_all(&bytes);
@@ -261,7 +271,7 @@ mod linux {
         let started = Instant::now();
         let report = observer::collect(
             &serde_json::to_vec(&b).unwrap(),
-            b"{\"reference\":true}",
+            b"{\"targets\":[],\"strict\":false,\"reference\":true}",
             &output,
         )
         .unwrap();
@@ -294,16 +304,28 @@ mod linux {
         let (report, paths) = exercise("valid");
         assert_eq!(report["status"], "captured", "{report}");
         assert_eq!(report["availability"], "available");
+        assert_eq!(report["mapping_status"], "mapped");
         assert_eq!(paths, [
             "binding.json",
             "authority.json",
             "hello.json",
             "request.json",
-            "response.json"
+            "response.json",
+            "mapping.json"
         ]);
         let (unavailable, _) = exercise("unavailable");
         assert_eq!(unavailable["status"], "captured");
         assert_eq!(unavailable["availability"], "unavailable");
+        assert_eq!(unavailable["mapping_status"], "mapped");
+    }
+
+    #[test]
+    fn mapping_failure_preserves_successful_transport_and_raw_evidence() {
+        let (report, paths) = exercise("mapping_defect");
+        assert_eq!(report["status"], "captured");
+        assert_eq!(report["mapping_status"], "rejected");
+        assert!(paths.contains(&"response.json".to_string()));
+        assert!(paths.contains(&"mapping.json".to_string()));
     }
 
     #[test]

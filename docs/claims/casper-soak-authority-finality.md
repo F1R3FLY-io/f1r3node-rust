@@ -2,14 +2,15 @@
 
 ```yaml
 claim_id: CLAIM-CASPER-SOAK-002
-status: discharged
+status: pending
 adapter: embedded
 scope: harness-profile
-profile_implementation: controlled-transcript-implemented
+profile_implementation: executable-scenario-binding
 decisions: [D-02, D-03, D-04]
-pre_merge_tasks: [TASK-017-5]
+pre_merge_tasks: [TASK-017-5, TASK-017-12]
 post_merge_tasks: [TASK-018-3, TASK-018-5]
 artifacts:
+  - scripts/casper-soak/src/authority_execution.rs
   - scripts/casper-soak/src/profiles/authority_finality.rs
   - scripts/casper-soak/src/bin/casper-authority-finality.rs
   - scripts/casper-soak/tests/authority_finality.rs
@@ -25,7 +26,7 @@ artifacts:
 refutation: bounded-safety-pass
 construction: not-applicable
 construction_assumptions: null
-binding: passed
+binding: pending
 soak: pending
 ```
 
@@ -123,6 +124,12 @@ The profile records compiled helper hashes. Shared helpers retain their separate
 
 The [work log](../work-logs/task-017-5-authority-finality.md) records executable fixtures, failure history, and retained verification evidence.
 
-The user accepted the bounded pre-merge binding and ratified the mandatory workflow tag. The [acceptance record](../work-logs/task-017-5-7-acceptance.md) binds that approval to the verified sources.
+The user accepted the earlier bounded pre-merge binding and ratified the mandatory workflow tag. The [acceptance record](../work-logs/task-017-5-7-acceptance.md) binds that approval to those historical sources.
 
-This discharge excludes node correctness, live qualification, and post-merge execution. Live adapters remain unqualified. CLAIM-001 retains its separate source-specific acceptance record.
+The executable scenario changes require renewed binding verification and acceptance. Current records remain pending and preserve the previous acceptance records.
+
+The new execution command verifies pinned executor bytes, ordered receipts, retained input identities, and observation references before calling the existing classifier.
+
+The binding checks cover all nine scenario kinds through controlled execution. They do not qualify node interfaces or permit live campaign dispatch.
+
+Node correctness, live qualification, and post-merge execution remain outside this bounded claim. CLAIM-001 retains its separate source-specific acceptance record.

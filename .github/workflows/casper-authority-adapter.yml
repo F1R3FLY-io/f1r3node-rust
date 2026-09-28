@@ -1,0 +1,41 @@
+name: Casper authority adapter
+on:
+  pull_request:
+    paths:
+      - scripts/casper-soak/**
+      - docs/claims/casper-authority-*.md
+      - .github/workflows/casper-authority-adapter.yml
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      - .cargo/config.toml
+  push:
+    branches: [dev]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: casper-authority-adapter-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  adapter:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: nightly-2026-02-09
+          components: clippy
+      - name: Check observation mapping and process receipts
+        run: bash scripts/casper-soak/check-authority-adapter.sh target/casper-authority-adapter-ci
+      - name: Retain verification evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: casper-authority-adapter
+          path: target/casper-authority-adapter-ci
+          if-no-files-found: error
+          retention-days: 30

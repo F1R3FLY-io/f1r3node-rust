@@ -606,3 +606,77 @@ The live adapter must then connect qualified observations to the profile. Its cu
 The [validation record](../casper/cbc-evidence/runs/casper-authority-mapping-20260928-01/validation.json) confirms source digests and external Python syntax. This source review executed no provider operations and establishes no live qualification.
 
 TASK-017-12 remains in progress. Candidate qualification, executable workload pins, campaign service qualification, required acceptance, preflight, and both full baselines remain outstanding.
+
+## Authority adapter implementation: 2026-09-28
+
+The [adapter report](../casper/cbc-evidence/runs/casper-authority-adapter-20260928-01/report.json) records the implemented observation mapper, process recorder, and verification results.
+
+The observer client now retains `mapping.json` with the raw transport artifacts. Mapping errors produce a separate rejected record without erasing the captured response.
+
+The mapper preserves binary32 bits and converts supported values to exact fractions. Nonfinite values and fractions outside the profile schema retain explicit absence reasons.
+
+The mapper checks exact oracle witnesses and preserves the selected threshold comparator. It separates persisted finality from oracle decisions and detached floor results.
+
+Work counters retain their original names and request scope. Missing vertex and edge measurements remain missing.
+
+The Python process recorder uses the existing owned subprocess controls. It verifies the predecessor capture and process identity before invoking the provider.
+
+Pause requires an observed stopped state and records resume cleanup separately. Restart requires observed exit, a replacement child, and a new observer incarnation.
+
+The replacement must preserve the source revision, executable digest, and configuration digest. A late receipt cannot report successful application.
+
+The recorder accepts only an owned subprocess handle. Docker and adopted-process execution remain outside this implementation.
+
+Readiness means an available authority endpoint capture. The recorder does not establish network convergence, provider timing bounds, or full candidate qualification.
+
+The new adapter workflow runs nine Linux client tests, eight mapping tests, and ten process receipt tests. All 27 tests pass locally in Linux.
+
+The numeric tests include 20,000 deterministic binary32 samples. Native client and mapping tests pass, and all seven existing authority profile tests pass.
+
+Linux and native Clippy checks pass. Workflow security checks, Rust formatting, shell syntax, and whitespace checks also pass.
+
+The local Linux gate verifies unchanged source digests. No hosted run of the new workflow has occurred.
+
+The client and adapter records remain pending. Controlled processes and fixture observer captures do not qualify a blockchain node.
+
+The current PR review confirms that preflight and both full baselines remain completion requirements. The later 60-hour phase remains a post-merge obligation.
+
+PR #447 remains open at `670037c2511abd5f576063b3153681a873244a18`. Its head does not supply the additional observation contract identified in the source mapping.
+
+Executable scenarios still need applied fixture identities, captured input bindings, and exact traversal measurements. The accepted live profile remains blocked until these bindings exist.
+
+The node branch owns paired fork-choice results and captured display-projection inputs. This continuation made no node changes.
+
+Campaign service deployment, selected candidate qualification, source-bound acceptance, preflight, and baseline execution remain outstanding. TASK-017-12 remains in progress.
+
+## Executable scenario bindings: 2026-09-28
+
+The [execution report](../casper/cbc-evidence/runs/casper-authority-execution-20260928-01/report.json) records the completed harness binding and current verification results.
+
+The production `execute` command runs a pinned provider executable with the generated scenario operations. It retains the inputs, request, output, and receipt chain.
+
+Each applied receipt must identify the exact operation and retained input bytes. Observation records must match the request and member identities.
+
+The binding sends final evaluations and fault acknowledgments to the existing collector and classifier. Missing steps, missing evaluations, and unapplied receipts cannot pass.
+
+Controlled execution covers all nine scenario kinds. Rejection tests cover replayed requests, reordered steps, broken chains, late receipts, changed inputs, and incorrect executable digests.
+
+A partial receipt inventory preserves an observed product failure after executor failure. Timeout and blocked-admission tests verify process cleanup and launch prevention.
+
+Native and Linux verification each pass 12 Rust tests. The ignored provider helper executes as a child process through the production command.
+
+The threshold test checks 2,000 cases. The clean model and three negative controls pass. Native Clippy denies warnings and passes.
+
+The final native wrapper uses ARM Java and test optimization level zero. The optimized native dependency build failed, and the evidence retains that failure.
+
+The sandbox blocked the TLC local listener. The approved external run passed with identical source inventories before and after verification.
+
+Claim002 now remains pending because its accepted implementation changed. All 13 current artifact records retain matching source, specification, and evidence digests.
+
+The 12 previously accepted records preserve their historical acceptance. The strict audit returns exit 4 for pending claims instead of exit 2 for refusal.
+
+These fixtures launch no blockchain nodes and dispatch no cloud resources. Provider receipts remain assertions until a live provider receives qualification.
+
+The live provider must supply mapped observations, captured input exports, traversal measurements, and process receipts. The other agent owns the node observation additions.
+
+Renewed acceptance and hosted verification remain pending. Candidate qualification, campaign services, preflight, and both full baselines still prevent TASK-017-12 completion.

@@ -1,5 +1,7 @@
 #[path = "../profiles/authority_finality.rs"]
 mod profile;
+#[path = "../authority_execution.rs"]
+mod execution;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -30,6 +32,16 @@ enum Action {
         #[arg(long)]
         output: PathBuf,
     },
+    Execute {
+        #[arg(long)]
+        manifest: PathBuf,
+        #[arg(long)]
+        request: PathBuf,
+        #[arg(long)]
+        artifacts: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+    },
     Models {
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -42,6 +54,77 @@ enum Action {
     },
 }
 const MODEL_DIR: &str = "formal/tlaplus/casper_soak/profiles/authority_finality";
+fn execute(m_path: &Path, r_path: &Path, inputs: &Path, output: &Path) -> Result<Value> {
+    ensure!(
+        !output.exists() && !output.is_symlink(),
+        "The output must be new."
+    );
+    let manifest_bytes = regular(m_path, MAX_BYTES)?;
+    let request_bytes = regular(r_path, MAX_BYTES)?;
+    let mut manifest = parse(&manifest_bytes)?;
+    let request = parse(&request_bytes)?;
+    ensure!(
+        request["manifest_digest"] == hash(&manifest_bytes),
+        "The exact manifest bytes differ."
+    );
+    manifest["manifest_digest"] = hash(&manifest_bytes).into();
+    let prepared = profile::prepare(&manifest, &request, inputs)?;
+    let generation = profile::generate(&prepared)?;
+    if generation["scenario_verdict"] == "blocked" {
+        let mut result = run(m_path, r_path, inputs, output)?;
+        result["executor_launch_count"] = 0.into();
+        return Ok(result);
+    }
+    fs::create_dir_all(output.parent().unwrap_or(Path::new(".")))?;
+    fs::create_dir(output)?;
+    exclusive(&output.join("manifest.json"), &manifest_bytes, true)?;
+    exclusive(&output.join("request.json"), &request_bytes, true)?;
+    exclusive(
+        &output.join("generation.json"),
+        &encoded(&generation)?,
+        true,
+    )?;
+    let execution_path = output.join("execution");
+    let execution = execution::launch(&manifest, &prepared, &generation, inputs, &execution_path)
+        .unwrap_or_else(|error| {
+            json!({"schema_version":1,"failure":"executor_setup_or_capture",
+            "binding":{"status":"invalid_input","error":error.to_string()},
+            "executor_launch_count":null,"qualification":"pending","soak_verdict":"non_passing"})
+        });
+    let binding = &execution["binding"];
+    let mut result = if binding["status"] == "invalid_input" {
+        json!({"profile_id":profile::PROFILE,"scenario_verdict":"invalid_input", "error":binding["error"],
+            "product_failures":[],"soak_verdict":"non_passing","node_launch_count":0})
+    } else {
+        let classifier_inputs = output.join("classifier-inputs");
+        execution::classifier_inputs(
+            &manifest,
+            &prepared,
+            &execution_path,
+            &classifier_inputs,
+            binding,
+        )?;
+        run(
+            &output.join("manifest.json"),
+            &output.join("request.json"),
+            &classifier_inputs,
+            &output.join("profile"),
+        )?
+    };
+    if (!execution["failure"].is_null() || binding["status"] != "bound")
+        && result["scenario_verdict"] == "passed"
+    {
+        result["scenario_verdict"] = "incomplete".into();
+    }
+    result["executor_launch_count"] = execution["executor_launch_count"].clone();
+    result["execution"] = execution;
+    result["manifest_sha256"] = hash(&manifest_bytes).into();
+    result["request_sha256"] = hash(&request_bytes).into();
+    result["profile_identity"] = profile::identity();
+    result["profile_binary_sha256"] = file_hash(&std::env::current_exe()?)?.into();
+    exclusive(&output.join("report.json"), &encoded(&result)?, true)?;
+    Ok(result)
+}
 fn run(m_path: &Path, r_path: &Path, inputs: &Path, output: &Path) -> Result<Value> {
     ensure!(
         !output.exists() && !output.is_symlink(),
@@ -100,6 +183,7 @@ fn run(m_path: &Path, r_path: &Path, inputs: &Path, output: &Path) -> Result<Val
         .cloned()
         .collect();
     let mut result = profile::classify(&prepared, &collection, &acknowledgments)?;
+    result["executor_launch_count"] = 0.into();
     result["manifest_sha256"] = hash(&m_bytes).into();
     result["request_sha256"] = hash(&r_bytes).into();
     result["profile_identity"] = profile::identity();
@@ -226,7 +310,9 @@ fn model_controls(root: &Path, output: &Path, java: &str, jar: &Path) -> Result<
     Ok(status)
 }
 fn main() {
-    let attempt = match Args::parse().action {
+    let args = Args::parse();
+    let execute_mode = matches!(&args.action, Action::Execute { .. });
+    let attempt = match args.action {
         Action::Identity => {
             let mut value = profile::identity();
             match std::env::current_exe()
@@ -246,7 +332,18 @@ fn main() {
             request,
             artifacts,
             output,
-        } => run(&manifest, &request, &artifacts, &output).map(|v| {
+        }
+        | Action::Execute {
+            manifest,
+            request,
+            artifacts,
+            output,
+        } => (if execute_mode {
+            execute(&manifest, &request, &artifacts, &output)
+        } else {
+            run(&manifest, &request, &artifacts, &output)
+        })
+        .map(|v| {
             println!("{v}");
             match v["scenario_verdict"].as_str() {
                 Some("passed") => 0,

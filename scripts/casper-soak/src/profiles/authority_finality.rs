@@ -27,6 +27,10 @@ pub const KINDS: &[&str] = &[
 pub fn identity() -> Value {
     let sources = [
         (
+            "scripts/casper-soak/src/authority_execution.rs",
+            include_bytes!("../authority_execution.rs").as_slice(),
+        ),
+        (
             "scripts/casper-soak/src/profiles/authority_finality.rs",
             include_bytes!("authority_finality.rs").as_slice(),
         ),

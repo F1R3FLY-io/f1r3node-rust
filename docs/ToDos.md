@@ -1298,11 +1298,16 @@ tasks:
     node_interface_status: "This checkout includes Batch B2 and its recorded claim acceptances through merge 211a4e73a. Selected candidate qualification remains pending. Occurrence-dependent publication qualification belongs to EPIC-018."
     observer_client_claim: docs/claims/casper-authority-observer-client.md
     observer_client_evidence: docs/casper/cbc-evidence/runs/casper-authority-client-20260928-01/report.json
-    observer_client_status: "The raw Linux observer client passes eight controlled tests. Native client and synthetic profile regressions pass. Live scenario mapping and candidate qualification remain pending."
+    observer_client_status: "The Linux observer client passes nine controlled tests. Eight mapping tests and ten process receipt tests also pass on Linux. Native client and synthetic profile regressions pass. Candidate qualification remains pending."
+    authority_adapter_claim: docs/claims/casper-authority-adapter.md
+    authority_adapter_evidence: docs/casper/cbc-evidence/runs/casper-authority-adapter-20260928-01/report.json
+    authority_adapter_status: "The client retains exact numeric mappings, separate oracle and persisted observations, and raw work counters. The owned subprocess recorder verifies pause and restart evidence. Controlled verification passes. The live profile remains blocked."
     live_mapping_evidence: docs/casper/cbc-evidence/runs/casper-authority-mapping-20260928-01/report.json
     live_mapping_review: docs/work-logs/task-017-12-mac-continuation.md#authority-interface-mapping-correction-2026-09-28
     live_interface_gaps: "The source mapping is complete. The observer lacks paired fork-choice heads and captured equivocation inputs for display projection. These additions belong to EPIC-019. Existing providers support ordinary pause and restart. Their receipts belong to this task."
-    live_mapping_remaining: "Define executable fixtures, captured input identities, numeric conversion, finality interpretation, and counter semantics. Implement the harness adapter and qualify the selected candidate. The accepted profile contract remains unchanged."
+    executable_binding_evidence: docs/casper/cbc-evidence/runs/casper-authority-execution-20260928-01/report.json
+    executable_binding_status: "All nine scenario kinds execute through the production generator, receipt binding, collector, and classifier with controlled providers. Claim002 requires renewed acceptance. Live qualification remains pending."
+    live_mapping_remaining: "Implement and qualify the live executor with mapped node observations, captured input exports, exact traversal measurements, and process receipts. The executable harness contract is implemented. Docker fault receipts remain unimplemented."
     candidate_inventory_evidence: docs/casper/cbc-evidence/runs/casper-campaign-inventory-20260928-01/report.json
     candidate_inventory_review: "All 225 model hashes and four configuration hashes match. The matrix and three suite pins select e3c4e14189f0c6ced2e9674487fcbdeffd93141b. Source-bound acceptance remains pending. No workload pin or qualification changed."
     stack_scope: "PR #436 temporarily targets the node branch. This dependency order does not include node implementation in the harness scope. Independent harness controls can proceed before node qualification."
@@ -1325,10 +1330,10 @@ tasks:
     execution_control_status: "Hosted run 35752941906 passes at 58e952c6f. The archive digest and all 51 source hashes match. It covers the stability and phase changes. Deployment, timing qualification, live execution, and acceptance remain pending."
     github_access_status: "Explicit GITHUB_PERSONAL_ACCESS_TOKEN selection verifies all six reviewer roles. Default GITHUB_TOKEN selection still returns HTTP 403 for role queries. The authorized campaign environment is configured and its branch restriction is verified."
     github_environment_evidence: docs/casper/cbc-evidence/runs/casper-campaign-environment-20260922-01/report.json
-    compatibility_lookup_status: "The three campaign inventories have 37 unique pending artifact records and matching compatibility links. The strict eight-claim audit returns exit 4 with Claim001 pending. No acceptance is inferred."
+    compatibility_lookup_status: "The three campaign inventories have 37 unique pending artifact records and matching compatibility links. Claims001 and 002 now remain pending. Claim002 preserves its historical acceptance."
     execution_gate: "Four exact-candidate probes returned blocked before node launch. Their controlled inputs are not live qualification. The legacy workload is pinned but cannot replace required Casper profiles."
     drift_review: docs/work-logs/task-017-12-drift-review-2026-09-19.md
-    claims: [CLAIM-CASPER-SOAK-001, CLAIM-CASPER-SOAK-004, CLAIM-CASPER-CAMPAIGN-001, CLAIM-CASPER-CAMPAIGN-002, CLAIM-CASPER-CAMPAIGN-003, CLAIM-CASPER-AUTHORITY-CLIENT-001]
+    claims: [CLAIM-CASPER-SOAK-001, CLAIM-CASPER-SOAK-002, CLAIM-CASPER-SOAK-004, CLAIM-CASPER-CAMPAIGN-001, CLAIM-CASPER-CAMPAIGN-002, CLAIM-CASPER-CAMPAIGN-003, CLAIM-CASPER-AUTHORITY-CLIENT-001, CLAIM-CASPER-AUTHORITY-ADAPTER-001]
     claim_index: docs/claims/casper-soak-harness.md
     campaign_claim_index: docs/claims/casper-soak-campaign.md
     reservation_claim_index: docs/claims/casper-campaign-reservation.md
@@ -1345,7 +1350,7 @@ tasks:
     blocked_by: [TASK-019-3, TASK-019-4]
     remaining_prerequisites:
       - "The changed workflow and campaign artifacts have current pending records. Historical evidence remains unchanged. Claim001 and the three campaign claims still require source-bound acceptance."
-      - "Implement the live scenario mapping from the recorded source review. Qualify the raw observer client against the selected node. The new client claim remains pending."
+      - "Qualify a live executor against the selected node with the implemented receipt binding. Client, adapter, and renewed Claim002 acceptance remain pending."
       - "Pin executable workloads and accept the refreshed campaign inventory. All 225 model hashes and four configuration hashes match after suite reconciliation."
       - "Qualify the required pre-merge adapters and node interfaces. The corrected admission requires authority/finality and retains pending occurrence profiles. Preserve the earlier blocked probe evidence."
       - "Hosted run 35752941906 covers the published stability and phase changes at 58e952c6f. The campaign workflow still requires qualification against deployed services."
