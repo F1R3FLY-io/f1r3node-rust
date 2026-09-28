@@ -1471,9 +1471,9 @@ fn insert_projects_lifecycle_events_and_carrier_entries() {
     });
 }
 
-/// The watermark is written once per database: 0 on an empty DAG
-/// (complete from the first insert), the next height above the current
-/// max on an existing DAG, and never overwritten on a later start.
+/// The watermark is written once per database: nothing on an empty DAG, where
+/// the history root is not yet known, the next height above the current max on
+/// an existing one, and never overwritten on a later start.
 #[test]
 fn carrier_watermark_initializes_once_per_database() {
     use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
@@ -1485,8 +1485,8 @@ fn carrier_watermark_initializes_once_per_database() {
         let dag_storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
         assert_eq!(
             dag_storage.ensure_carrier_watermark().unwrap(),
-            0,
-            "an empty database is complete from the first insert"
+            None,
+            "an empty database cannot yet know where its history is rooted"
         );
 
         let genesis = genesis_block();
@@ -1494,9 +1494,19 @@ fn carrier_watermark_initializes_once_per_database() {
         let block = chain_block(1, vec![genesis.block_hash.clone()]);
         dag_storage.insert(&block, InsertMode::Normal).unwrap();
         assert_eq!(
-            dag_storage.ensure_carrier_watermark().unwrap(),
+            dag_storage.record_carrier_coverage_from(0).unwrap(),
+            0,
+            "a genesis-rooted node is complete from 0"
+        );
+        assert_eq!(
+            dag_storage.record_carrier_coverage_from(140_343).unwrap(),
             0,
             "the watermark is write-once"
+        );
+        assert_eq!(
+            dag_storage.ensure_carrier_watermark().unwrap(),
+            Some(0),
+            "a later start does not overwrite it"
         );
 
         // A database that predates the index gets max height + 1: the
@@ -1512,7 +1522,7 @@ fn carrier_watermark_initializes_once_per_database() {
         pre_existing.insert(&b1, InsertMode::Normal).unwrap();
         let dag = pre_existing.get_representation().unwrap();
         assert_eq!(dag.carrier_index_watermark().unwrap(), None);
-        assert_eq!(pre_existing.ensure_carrier_watermark().unwrap(), 2);
+        assert_eq!(pre_existing.ensure_carrier_watermark().unwrap(), Some(2));
         let dag = pre_existing.get_representation().unwrap();
         assert_eq!(dag.carrier_index_watermark().unwrap(), Some(2));
     });

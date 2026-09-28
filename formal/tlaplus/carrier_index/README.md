@@ -18,6 +18,14 @@
 | `MC_CarrierIndex_dag_first_pre_fix.cfg` | `IndexCompleteForWindow` violation | DAG-first publication permits a visible block without its carrier entries. |
 | `MC_CarrierIndex_read_failure_pre_fix.cfg` | `AbsenceProofSound` violation | Treating a read failure as absence can accept a carried signature. |
 
-The gating configuration is registered in `scripts/ci/check-tla-invariants.sh`.
+The baseline and both negative controls are registered in `scripts/ci/check-tla-invariants.sh`.
 
-The pre-fix configurations are manual negative controls. A clean negative control is a verification failure.
+Each negative control must exit with TLC code 12 and report its expected invariant violation. A clean control, another invariant violation, or a tool failure fails the gate.
+
+`scripts/ci/test-check-tla-invariants.sh` tests result classification and workflow routing through the real gate with a verifier-process fixture. That fixture is not formal proof evidence.
+
+Pull requests and pushes run this baseline and both controls in the bounded tier, `check-tla-invariants.sh --soak-pr`, alongside the replay and soak-disk models.
+
+This tier uses two workers and a fixed two-minute limit per configuration. The workflow allows 15 minutes for the complete job.
+
+Scheduled and manual runs retain the existing full configuration list. Hosted confirmation of the new pull-request route remains pending.

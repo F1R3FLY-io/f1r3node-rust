@@ -82,6 +82,7 @@ cargo test --release                 # Release mode (faster rholang tests)
 ./scripts/run_rust_tests.sh          # Full test suite script
 
 # Run
+export STANDALONE_PRIVATE_KEY=<validator key>   # required by both run recipes
 just run-standalone                  # Build + run standalone node
 just run-standalone-debug            # Debug mode
 just clean-standalone                # Reset node data

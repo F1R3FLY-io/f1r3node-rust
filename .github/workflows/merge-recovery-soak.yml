@@ -138,6 +138,13 @@ env:
   # of normal-operation clearance; both the pytest floor (subprocess
   # iterations) and the orchestrator host guardian (every iteration) use it.
   SOAK_HOST_FREE_FLOOR_MB: "8192"
+  # 2026-09-13: the composed emergency response after a disk breach must
+  # publish its evidence before the runner disappears. The three incident
+  # runners vanished 18-23s after the guardian stamp, so the 60s driver
+  # default would be truncated and lose evidence. 10s fits inside the 18s
+  # minimum with margin for the final upload. See
+  # docs/plans/soak-reserve-argument-2026-09-12.md.
+  SOAK_EMERGENCY_DEADLINE_SECONDS: "10"
   # Third pin site; keep identical to the other two — bump via scripts/repin-system-integration.sh.
   #
   # What this literal binds: the trusted runner launcher (a job that holds OCI

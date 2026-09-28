@@ -339,6 +339,10 @@ jobs:
         shell: bash -euo pipefail {0}
         run: .github/scripts/test-release-workflows.sh
 
+      - name: Verify TLA+ gate classification and routing
+        shell: bash -euo pipefail {0}
+        run: bash scripts/ci/test-check-tla-invariants.sh
+
       - name: Verify coverage summary aggregation
         shell: bash -euo pipefail {0}
         run: .github/scripts/test-coverage-summary.sh
@@ -362,6 +366,10 @@ jobs:
       - name: Verify soak fail-closed driver
         shell: bash -euo pipefail {0}
         run: scripts/bench/test-run-merge-recovery-soak.sh
+
+      - name: Verify isolated disk admission and emergency scenarios
+        shell: bash -euo pipefail {0}
+        run: bash scripts/bench/test-soak-disk-admission.sh
 
       - name: Verify soak dashboard restoration
         shell: bash -euo pipefail {0}

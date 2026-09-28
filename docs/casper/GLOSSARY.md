@@ -602,6 +602,29 @@ height and permits normal packaging after three blocks.
 *Distinguish from* the [retry gate](#retry-gate), which controls block validity.
 *Avoid*: "retry timeout", because the lease uses block height, not time.
 
+### Fork-choice floor
+
+The fork-choice floor is the lower bound below which neither the
+[LCA](#lowest-common-ancestor-lca) walk nor fork-choice scoring descends.
+Above a fault-tolerance threshold of zero it is the highest per-block
+[finalized floor](#finalized-floor) among the latest messages. At or below
+zero it is the approved block. A latest message whose floor does not derive
+abstains, so the bound is node-relative: a node with less history derives a
+lower floor on the same spine, which widens the scored band without moving
+the head. Rule R-LCA in
+[fork-choice-specification.md](./theory/fork-choice/fork-choice-specification.md)
+states it. Ledger entry
+[D-03](./design/decision-ledger/03-fork-choice-certified-context.md) ratified
+it on 2026-09-16 as the repair for the unbounded LCA walk.
+
+**Preferred usage.** Use for the traversal and scoring bound of the
+estimator.
+*Distinguish from* the [finalized floor](#finalized-floor) of one block,
+which is a pure function of that block. The fork-choice floor is the highest
+such floor across the latest messages, and abstention can lower it.
+*Avoid*: "LCA bound" and "depth filter", which is the separate
+`LATEST_MESSAGE_MAX_DEPTH` rule.
+
 ### Main-parent base bias
 
 Main-parent base bias is the starvation facet in which a merge bases on a
@@ -642,3 +665,52 @@ legality rule; this packaging policy is node-local discretion on top of it.
 *Avoid*: "retry deferral" without qualification.
 
 [← Back to the Casper documentation map](./README.md)
+
+### Protocol 7
+
+Protocol 7 is the next Casper protocol version. It uses one version
+authority chain from the genesis ceremony through block reception, and it
+activates only through a fresh genesis after [FIP](#fip) approval. The
+positions that the [decision ledger](./design/decision-ledger/README.md)
+assigns to protocol 7 are the additive merge composition (D-08), the
+domain-separated deploy lookup identity (D-10), and exact accounting effect
+identity (D-04). The ledger entries name protocol 6, which was the PR #216
+value at comparison time. The
+[ratification meeting record](https://github.com/F1R3FLY-io/f1r3node-rust/pull/390#pullrequestreview-5227717933) of 2026-09-16 superseded it.
+
+**Preferred usage.** Use for the version boundary at which a ratified wire
+or semantics change activates.
+*Distinguish from* [accounting authority version 8](#accounting-authority-version-8),
+which versions the accounting module and not the consensus protocol.
+*Avoid*: "protocol 6" for any position ratified on 2026-09-16, and
+"v7" without the word protocol.
+
+### Accounting authority version 8
+
+Accounting authority version 8 is the version of the reusable node-level
+accounting module that the cost-accounting work introduces. It is
+independent of the Casper protocol version. Ledger entry
+[D-01](./design/decision-ledger/01-protocol-version-authority.md) records the
+separation.
+
+**Preferred usage.** Use for the accounting module version when a document
+must name it beside the protocol version.
+*Distinguish from* [protocol 7](#protocol-7): a Casper block carries the
+protocol version, and the accounting module carries its own.
+*Avoid*: "protocol 8", and any phrase that folds the two numbers into one
+version.
+
+### FIP
+
+A FIP is a F1R3FLY Improvement Proposal, filed and approved in the
+[FIPS repository](https://github.com/F1R3FLY-io/FIPS). FIP approval is the
+gate for a [protocol 7](#protocol-7) activation, for a token validity layer
+beside `phloLimit` and `phloPrice` (D-12), and for any rule that PR #216
+supplies to Casper without a demonstrated defect or a required accounting
+invariant. Ledger README section 2.2 states that rule.
+
+**Preferred usage.** Use for the approved proposal and its process.
+*Distinguish from* a ledger entry, which ratifies a Casper design decision
+and can require a FIP as a condition.
+*Avoid*: "FIPS approval" for one proposal, and "FIPS 204" or "FIPS 205",
+which are NIST signature standards and not this process.
