@@ -1,0 +1,12 @@
+scripts/casper-soak/src/profiles/slashing.rs
+scripts/casper-soak/src/bin/casper-slashing.rs
+scripts/casper-soak/tests/slashing.rs
+scripts/casper-soak/check-slashing.sh
+.github/workflows/casper-slashing.yml
+formal/tlaplus/casper_soak/profiles/slashing/Slashing.tla
+formal/tlaplus/casper_soak/profiles/slashing/MC_Slashing.cfg
+formal/tlaplus/casper_soak/profiles/slashing/MC_Slashing_order_unsafe.cfg
+formal/tlaplus/casper_soak/profiles/slashing/MC_Slashing_epoch_unsafe.cfg
+formal/tlaplus/casper_soak/profiles/slashing/MC_Slashing_authorization_unsafe.cfg
+formal/tlaplus/casper_soak/profiles/slashing/verification-plan.jsonc
+formal/tlaplus/casper_soak/profiles/slashing/README.md

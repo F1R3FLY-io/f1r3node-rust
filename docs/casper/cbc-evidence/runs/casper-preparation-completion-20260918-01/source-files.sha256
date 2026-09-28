@@ -1,0 +1,13 @@
+85690323213f46fcd613223d4845ac75810de2244fbe2b66ebb11032a0b9fa9f  docs/ToDos.md
+5e85d502eb55aa3cbc8790dd4b21ac5f8ef9ae5aff4c2c4614adf7d4d9b3f786  docs/plans/casper-ratified-soak-2026-09-16.md
+addd0a25f3d6eb044097533224d3d500dce97785886eeab33897a1e69af033e7  docs/casper/design/soak-interface-contract.md
+eb940026a7adb4919b5cf9d53a414d6ff77d7d884325a2e2377d64fbebaec19d  docs/casper/design/soak-candidate-matrix.jsonc
+3742e6bdd6ac75fe364921cbb48a3bb07a10f7fc42aac8a85efb92e99f8dbd6b  docs/work-logs/task-017-1-3-completion.md
+92c410c229a6186d6b896c0aa0e28de401fbd06072c960d53e8dfbf79e418617  docs/work-logs/casper-ratified-soak-2026-09-16.md
+083b54158c31ae24c787a83bdba4b4a7af07bad402dfa8054939f0d4b62ba9ec  docs/work-logs/task-017-2-interface-contract-2026-09-17.md
+ccc867cfdeb303cb98fa4cd424a410f013f071a0fe51550c1faf1d33a5424440  docs/work-logs/task-017-3-prerequisite-review-2026-09-17.md
+b5c91e24260b733b4696a65865e366021584942955775ddcdb981f3a04f01f7b  docs/work-logs/task-017-3-prerequisite-application-2026-09-17.md
+e99926eb159b53e4fcc847c1aac7c70780f57f83a11beb8afc3f0a81bf2218b5  formal/tlaplus/casper_soak/verification-plan.jsonc
+090326ea00c2c1aad9abf399a3482ab8bd8df1a148cb75b06107133d910da6fe  docs/casper/cbc-evidence/runs/casper-preparation-completion-20260918-01/verify.sh
+e7ab61cfb89ec1447a97b979cfe1b71270898651e7785a50fb94551db1937daa  docs/casper/cbc-evidence/runs/casper-preparation-completion-20260918-01/test-verifier.sh
+10d831311ee41cd6c03818e9ac69ae38055afae8c5e0037c4f91785521d118d9  docs/casper/cbc-evidence/runs/casper-preparation-completion-20260918-01/complete.sh

@@ -1,0 +1,17 @@
+{
+  "status": "hosted-slashing-evidence-verified",
+  "run_id": 35452747041,
+  "artifact_id": 10587177940,
+  "head_revision": "fcc2fb22270d403757785f6955915e40dec3625d",
+  "source_files": 21,
+  "tests": 7,
+  "cases": 66,
+  "invocations": 72,
+  "model_controls": 4,
+  "nested_references": 715,
+  "zip_sha256": "6ffd50a4b3c62abd59bfb326b5b4cd0fc90b701ca4f8f8d1ba1febdc845f622f",
+  "verifier_sha256": "147c71de9e9a239a921f774b63093a0a6b77b422ac28a40bb67acabd16aa0276",
+  "node_execution": false,
+  "claim_discharge": "pending",
+  "workflow_tag_ratified": false
+}

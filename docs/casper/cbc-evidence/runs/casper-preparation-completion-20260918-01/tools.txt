@@ -1,0 +1,5 @@
+GNU bash, version 5.3.9(1)-release (aarch64-apple-darwin25.1.0)
+jq-1.8.2
+git version 2.54.0
+6.04
+180fcb42994f8b65a8b123f88e2050b0cb0a186e2a2f5b669c4d018e3efa6bf8  target/debug/check-casper-claims

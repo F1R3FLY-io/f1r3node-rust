@@ -1,0 +1,42 @@
+{
+  "status": "accepted-task-017-8-verified",
+  "task": "TASK-017-8",
+  "task_status": "complete",
+  "integrity": {
+    "target": "TASK-017-8",
+    "kind": "task",
+    "grade": "full",
+    "gaps": [],
+    "details": []
+  },
+  "strict_claims_001_005": 0,
+  "strict_bundle": 4,
+  "pending_claims": [
+    "CLAIM-CASPER-SOAK-006",
+    "CLAIM-CASPER-SOAK-007",
+    "CLAIM-CASPER-SOAK-008"
+  ],
+  "accepted_artifacts": 12,
+  "reviewed_artifacts_unchanged": true,
+  "preacceptance_nested_references": 1476,
+  "accepted_state_native": {
+    "tests": 7,
+    "cases": 68,
+    "invocations": 73,
+    "models": 4
+  },
+  "shared_tests": 11,
+  "linux_evidence": "reviewed-source-identical-no-rerun",
+  "helper_sha256": "924a1cde6ae61d15a72dda276687b0d63d9df0dd75d7b7f1aba4e8300f502d2e",
+  "helper_mode": {
+    "strict": true,
+    "force": false
+  },
+  "unrelated_tasks_unchanged": true,
+  "backup_preserved": true,
+  "workflow_tag_ratified": true,
+  "node_execution": false,
+  "policy_activation": false,
+  "post_merge_execution": "blocked",
+  "soak": "pending"
+}

@@ -81,7 +81,55 @@ A scenario verdict is the classifier result for one profile scenario: `passed`, 
 
 Refutation is the claim evidence tier that seeks counterexamples with bounded model checking, [negative controls](#negative-control), and executable fixtures. A passing refutation slice shows bounded safety and never discharges an unbounded claim.
 
-**Preferred usage.** Use this term for the `refutation` field of a claim specification. *Distinguish from* construction, the proof tier, which the harness claims mark not applicable. *Distinguish from* [Verification tier](casper/GLOSSARY.md#verification-tier), which is a CI budget class. *Avoid*: verification without a tier qualifier.
+**Preferred usage.** Use this term for the `refutation` field of a [claim](#claim) specification. *Distinguish from* [Construction](#construction), the proof tier, which the harness claims mark not applicable. *Distinguish from* [Verification tier](casper/GLOSSARY.md#verification-tier), which is a CI budget class. *Avoid*: verification without a tier qualifier.
+
+### Claim
+
+A claim is a stated correctness property with its evidence tiers, artifact inventory, and phase. Its specification records the status, the tier results, and the accepted source digests.
+
+**Preferred usage.** Use this term for a specification under `docs/claims/`. *Distinguish from* [Scenario verdict](#scenario-verdict): a claim covers a property, and a verdict grades one scenario run. *Avoid*: requirement, because a claim carries evidence obligations and a status.
+
+### Construction
+
+Construction is the claim evidence tier that proves correctness from the structure of the implementation. The Casper soak harness claims record this tier as not applicable.
+
+**Preferred usage.** Use this term for the `construction` field of a [claim](#claim) specification. *Distinguish from* [Correct by Construction](#correct-by-construction), which names the whole process rather than one tier. *Avoid*: proof without a tier qualifier.
+
+### Binding
+
+Binding is the claim evidence tier that connects a formal property to the executable path that realizes it. A binding review maps each property to its fixture and states the bounds.
+
+**Preferred usage.** Use this term for the `binding` field of a [claim](#claim) specification. *Distinguish from* [Refutation](#refutation): refutation searches for counterexamples, and binding connects a checked property to code. *Avoid*: mapping without qualification.
+
+### Binding acceptance
+
+Binding acceptance is the recorded human decision that a binding review holds for named source bytes. A later change to an accepted artifact returns the claim to pending.
+
+**Preferred usage.** Use this term for the decision that an acceptance record names, with its date and scope. *Distinguish from* [Refutation](#refutation): a passing model result is evidence, not acceptance. *Avoid*: approval without the binding qualifier.
+
+### Discharge
+
+A discharge is the claim status that records accepted evidence for one stated scope and phase. A discharged claim names its bounds and does not extend past them.
+
+**Preferred usage.** Use this term for the `status` value of a [claim](#claim) and its [ledger records](#ledger-record). *Distinguish from* a passing test, which supplies evidence without changing claim status. *Avoid*: proved, because a bounded discharge is not an unbounded proof.
+
+### Ledger record
+
+A ledger record is the per-artifact CbC evidence entry that pins one file by SHA-256 to its claim and accepted evidence. Canonical Casper records live under `docs/casper/cbc-evidence/`.
+
+**Preferred usage.** Use this term for a record file and its embedded JSON block. *Distinguish from* the [decision ledger](casper/design/decision-ledger/README.md), which records ratified design decisions. *Avoid*: evidence file, because a record pins an artifact and carries a status.
+
+### Evidence package
+
+An evidence package is the retained run output that a [ledger record](#ledger-record) cites. It keeps the report, the validation result, and the digest lists in the repository.
+
+**Preferred usage.** Use this term for a directory under `docs/casper/cbc-evidence/runs/`. *Distinguish from* [Release evidence](#release-evidence): one binds a claim, and the other binds gate results to one source SHA. *Avoid*: run artifacts.
+
+### Controlled transcript
+
+A controlled transcript is a synthetic record set that a profile generates and classifies without a running node. It establishes harness behavior and never establishes node behavior.
+
+**Preferred usage.** Use this term for a profile in the `controlled-transcript-implemented` state. *Distinguish from* [Receipt](#receipt), which proves an observed event on an identified node incarnation. *Avoid*: simulation.
 
 ### Release candidate
 
@@ -216,7 +264,7 @@ state. *Distinguish from* finalization distance from the block graph tip.
 
 Correct by Construction (CbC) is the development process that connects a correctness claim to implementation behavior, formal verification, and retained evidence.
 
-**Preferred usage.** Use CbC for this verification process. Distinguish it from CBC Casper, which names the consensus protocol.
+**Preferred usage.** Use CbC for this verification process. *Distinguish from* CBC Casper, which names the consensus protocol. *Distinguish from* [Construction](#construction), which names one evidence tier inside this process.
 
 ### Work bound
 
@@ -577,6 +625,41 @@ A **creation fence** prevents further workload execution after closure, includin
 
 **Preferred usage:** Identify the mechanism that enforces the creation fence.
 A rejected client request, an empty process list, or a single kill operation does not establish a creation fence.
+
+### Launch reservation
+
+A **launch reservation** permanently consumes one campaign launch slot before the controller submits a launch request.
+
+**Preferred usage:** Name the budget and store that enforce the launch reservation. A launch reservation does not establish approval, a successful launch, or completed cleanup.
+
+### Reservation store
+
+A **reservation store** retains campaign bindings and consumed launch slots across controller invocations.
+
+**Preferred usage:** State whether the reservation store serves one local controller or all campaign controllers. Local filesystem records alone do not establish global launch accounting.
+
+### Publication tuple
+
+A **publication tuple** is the set of observed storage rows and runtime state references used to evaluate one publication sequence.
+The tuple records database coverage, capture completeness, and writer context.
+
+**Preferred usage:** Use this term for the Batch C observation contract.
+A complete tuple does not establish atomic publication.
+
+### Publication attempt
+
+A **publication attempt** is one execution of a specified production publication path within one node incarnation.
+An external request label does not establish a durable production identity for that attempt.
+
+**Preferred usage:** Identify the writer path and the available production identity when this term appears in fault evidence.
+
+### Reached receipt
+
+A **reached receipt** records that execution reached a specified source boundary during one armed publication attempt.
+The receipt identifies the request, node incarnation, source revision, boundary, and attempt.
+
+**Preferred usage:** Use this term for boundary evidence that the external controller retains before process termination.
+An arm acknowledgment is not a reached receipt.
 
 ## Maintenance
 

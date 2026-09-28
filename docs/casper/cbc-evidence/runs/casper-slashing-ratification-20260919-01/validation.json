@@ -1,0 +1,18 @@
+{
+  "status": "ratified-workflow-tag-claim-006-verified",
+  "report_sha256": "b47dc09e4d3f901503b88ae0ce346c94aecc4a0fc60d3b76079c8b19f54070ca",
+  "claim_sha256": "6954ff5fe9edb29909f88f94b328aced5229ac5c7387b67d02c185c4b717845b",
+  "artifacts": 12,
+  "acceptance_report_sha256": "3840449eb7f63f4b0fa7ec853c37a6fe9f91195d83e30d9b156898b4f9597871",
+  "acceptance_bytes_unchanged": true,
+  "previous_ledgers_archived": 12,
+  "gitattributes_entry": ".github/workflows/casper-slashing.yml cbc=mandatory cbc-weight=high",
+  "workflow_tag_ratified": true,
+  "task_status": "complete",
+  "task_closure_blocker": null,
+  "node_execution": false,
+  "policy_activation": false,
+  "post_merge_execution": "blocked",
+  "soak": "pending",
+  "external_evidence_publication": "pending"
+}

@@ -1,0 +1,15 @@
+path	action	reason
+bin/carrier-index-test	withhold	The native binary embeds workstation account paths. Its original hash remains recorded.
+bin/casper-carrier-index	withhold	The native binary embeds workstation account paths. Its original hash remains recorded.
+checks/clippy-final.log	replace-workstation-prefix	Remove workstation account paths.
+checks/clippy.log	replace-workstation-prefix	Remove workstation account paths.
+checks/format-before-commit.log	replace-workstation-prefix	Remove workstation account paths.
+checks/initial.log	replace-workstation-prefix	Remove workstation account paths.
+checks/isolated-01/identity.txt	replace-workstation-prefix	Remove workstation account paths. Preserve executable and image hashes.
+checks/manifest-tests.log	replace-workstation-prefix	Remove workstation account paths.
+checks/native-01/fixtures.txt	replace-workstation-prefix	Remove workstation account paths.
+checks/release-fixtures.log	replace-workstation-prefix	Remove workstation account paths.
+checks/review-green.log	replace-workstation-prefix	Remove workstation account paths.
+checks/review-red.log	replace-workstation-prefix	Remove workstation account paths.
+checks/shared-tests.log	replace-workstation-prefix	Remove workstation account paths.
+review-report.json#/isolated_linux/identity	replace-workstation-prefix	Remove workstation account paths. Preserve executable and image hashes.

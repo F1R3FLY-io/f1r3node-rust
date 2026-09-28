@@ -1,0 +1,4 @@
+evidence/initial-fixtures/symlink-raw/raw/2.json	../request.json
+evidence/linux-final/evidence/fixtures/symlink-raw/raw/2.json	../request.json
+evidence/native-final/fixtures/symlink-raw/raw/2.json	../request.json
+evidence/native-recorded/fixtures/symlink-raw/raw/2.json	../request.json

@@ -1,0 +1,52 @@
+{
+  "status": "bounded-package-verified-binding-pending",
+  "report_sha256": "8baf8000334926228ead092e369c969d5d6ae8397afcc59ec6b41ed14d7facb2",
+  "claim_sha256": "2a6167b965f804533e9ce45b1f665303d022b0af144126db103ff421be532c98",
+  "archive_sha256": "330e7609143ffe0eaf839ecf082a61ec02809acdd0bd357b66aac7ecee3616bb",
+  "validator_sha256": "3a03d8efce43f4296a9f00dfbefda0545e3c1df3e0a1e53c049380db6485bfc5",
+  "current_sources": 21,
+  "unchanged_tested_sources_excluding_claim": 20,
+  "unchanged_profile_artifacts": 12,
+  "pending_canonical_ledgers": 12,
+  "compatibility_links": 12,
+  "archive_manifest_files": 28556,
+  "archive_regular_files": 28557,
+  "redactions_verified": 9,
+  "execution_environments": 3,
+  "tests_per_environment": 15,
+  "cases_per_environment": 102,
+  "invocations_per_environment": 103,
+  "nested_references": 3750,
+  "model_controls_per_native_and_hosted": 4,
+  "shared_tests": 11,
+  "supplemental_verification": {
+    "local_archive": "target/task-017-11-final/casper-version-phlo-verification-20260919-01.external.tar.gz",
+    "sha256": "06f6b9f9d7a74ec726fbe9f61db056929cf07ac2a5d150a22f958034c4ce1cdc",
+    "bytes": 12434,
+    "status": "local-not-uploaded",
+    "contents": "Verifier scripts, strict audits, ledger hashes, retained check failures, STE baseline, and diagnostic coverage."
+  },
+  "ste": {
+    "new_prose": "passed-with-baseline",
+    "unchanged_legacy_findings": 1,
+    "legacy_finding": "The pre-existing SI-DEPLOY sentence contains a semicolon."
+  },
+  "lsp": {
+    "files_checked": 2,
+    "diagnostics": 0,
+    "confirmed_clean": 1,
+    "inconclusive": 1
+  },
+  "strict_claims_002_006_and008": 0,
+  "strict_claim007": 4,
+  "strict_claim001": 4,
+  "strict_bundle": 4,
+  "concurrent_shared_driver_change": "Separate owner changed bindings inventory and reopened Claim001. No renewal is claimed here.",
+  "unrelated_task_blocks_unchanged": true,
+  "backup_adapter_and_attributes_unchanged": true,
+  "workflow_tag_ratified": false,
+  "external_upload": false,
+  "node_execution": false,
+  "post_merge_execution": "blocked",
+  "soak": "pending"
+}

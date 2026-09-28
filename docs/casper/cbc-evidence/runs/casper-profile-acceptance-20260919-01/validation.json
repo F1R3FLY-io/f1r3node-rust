@@ -1,0 +1,19 @@
+{
+  "status": "accepted-profile-completion-verified",
+  "report_sha256": "614d13c3e52ed11afb84a9a0b5f6345db42bc3a684518f9ce7060b15fc08c4da",
+  "source_files": 54,
+  "evidence_files": 7233,
+  "canonical_ledgers": 36,
+  "strict_claims_001_004": 0,
+  "strict_bundle": 4,
+  "task_integrity": {
+    "TASK-017-5": "full",
+    "TASK-017-6": "full",
+    "TASK-017-7": "full"
+  },
+  "completion_gaps": [],
+  "scope": "bounded-pre-merge-profiles-only",
+  "node_execution": false,
+  "post_merge_execution": "blocked",
+  "d07_interpretation": "unresolved"
+}

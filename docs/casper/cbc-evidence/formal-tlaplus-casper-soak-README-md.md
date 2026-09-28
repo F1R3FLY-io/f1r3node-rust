@@ -1,48 +1,54 @@
 # CbC Evidence: formal/tlaplus/casper_soak/README.md
 
-**Status:** Pending. The bounded model result does not discharge the full harness/profile claim.
+The renewed documentation review passes after the hosted Claim001 renewal. Fresh model checks and eight refusal controls verify the updated metadata.
 
-- CLAIM-CASPER-SOAK-001 (`docs/claims/casper-soak-harness.md`)
+The independent governance claim remains pending. This documentation discharge does not establish required-check enforcement.
 
-The evidence package contains partial results only. No node correctness claim or construction proof belongs to this scope.
+The eight executable claim inventories remain unchanged. Soaks remain pending, and post-merge verification remains blocked.
+
+The previous pending record remains available at the exact Git revision and digest below.
 
 ```json
 {
   "artifact": {
     "path": "formal/tlaplus/casper_soak/README.md",
-    "commit": null,
     "id": "formal-tlaplus-casper-soak-README-md",
-    "sha256": "63d6a77f870d4c13edfac944ad7b74084f57497e00de3c500a0480540e4d64c0"
+    "commit": "191e184be556c1f190748143377ab369586c53b6",
+    "commit_is_base": true,
+    "working_tree": true,
+    "sha256": "ba430ad08847614f95d3ff965d671ec75cbe77ac88ae5330548923fe5198f9ab"
   },
-  "claim": "docs/claims/casper-soak-harness.md",
-  "claim_ids": [
-    "CLAIM-CASPER-SOAK-001"
-  ],
+  "claim": "formal/tlaplus/casper_soak/README.md",
+  "claim_anchor": "documentation-contract",
+  "claim_ids": ["CLAIM-CASPER-SOAK-FORMAL-AREA-DOCS"],
   "claim_digests": {
-    "docs/claims/casper-soak-harness.md": "636bdd0681096a3fb054a88f114641e4b23812001bff02d873dce5f6d52aa4c5"
+    "formal/tlaplus/casper_soak/README.md": "ba430ad08847614f95d3ff965d671ec75cbe77ac88ae5330548923fe5198f9ab"
   },
   "adapter": "embedded",
-  "status": "pending",
-  "scope": "harness-and-profiles-only",
+  "status": "discharged",
+  "scope": "formal-area-documentation-and-plan-consistency-only",
   "evidence": {
-    "kind": "partial-verification",
-    "ref": "docs/casper/cbc-evidence/runs/casper-harness-controls-20260916-01/report.json",
-    "sha256": "b192d4c2152081f3d47c26fa951a98d14d96aaeeed74d55818c14457134346c7",
-    "counterexample": null,
-    "detail": "Bounded lifecycle controls and runner unit tests pass. Driver/profile bindings, shared CI integration, and soaks remain pending."
+    "kind": "bounded-controls-and-documentation-consistency",
+    "ref": "docs/casper/cbc-evidence/runs/casper-formal-gate-documentation-20260919-01/report.json",
+    "sha256": "662fa837af9027b4ace38ae0b9338fa26472fe2f3d3180d6a24569e6b3329f06"
   },
   "tiers": {
-    "refutation": "pending",
+    "refutation": "bounded-safety-pass",
     "construction": "not-applicable",
-    "construction_assumptions": null,
-    "binding": "pending"
+    "binding": "passed"
   },
   "phase_status": {
-    "pre_pr216_merge": "pending",
+    "pre_pr216_merge": "discharged",
     "post_pr216_merge": "blocked"
   },
-  "scaffold_base_commit": "cc7e84b482887f0647277ccbacd6f65ae3cf749d",
+  "soak": "pending",
   "waiver": null,
-  "verified_at": null
+  "verified_at": "2026-09-19T22:49:08Z",
+  "previous_ledger": {
+    "path": "docs/casper/cbc-evidence/formal-tlaplus-casper-soak-README-md.md",
+    "commit": "191e184be556c1f190748143377ab369586c53b6",
+    "sha256": "0ed78cdb7e30d265397f028d84b129abecccc04a79d78b50294c246796d21380"
+  },
+  "inventory_scope": "Separate documentation contract. The eight executable claim inventories remain unchanged."
 }
 ```

@@ -1,0 +1,6 @@
+5dcb1028ff8cb44fc0533955509fe79fc349f8037d42d7a17712a9687e061416  docs/casper/cbc-evidence/runs/casper-slashing-hosted-20260919-01/report.json
+1d60068ac9b63ae4e35e61d084054889da8fc2dbd9e8deef149d9215dd85cc17  docs/casper/cbc-evidence/runs/casper-slashing-hosted-20260919-01/validation.json
+6ffd50a4b3c62abd59bfb326b5b4cd0fc90b701ca4f8f8d1ba1febdc845f622f  target/task-017-9-hosted-35452747041/artifact.zip
+147c71de9e9a239a921f774b63093a0a6b77b422ac28a40bb67acabd16aa0276  target/task-017-9-hosted-35452747041/verify.sh
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  target/task-017-9-hosted-35452747041/verify.txt
+9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa  target/task-017-9-hosted-35452747041/verify.exit

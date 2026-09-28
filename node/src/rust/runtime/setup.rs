@@ -66,6 +66,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
     event_publisher: F1r3flyEvents,
     node_discovery: Arc<dyn NodeDiscovery + Send + Sync>,
     last_approved_block: Arc<Mutex<Option<ApprovedBlock>>>,
+    observer: Option<Arc<casper::rust::soak_observer::ObserverController>>,
 ) -> Result<
     (
         Arc<dyn PacketHandler>,
@@ -146,14 +147,13 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         BlockDagKeyValueStorage::new(&mut rnode_store_manager).await?
     };
 
-    // First-boot repeat-deploy carrier-index watermark (same pattern as
-    // the LFB migration above): records the height since which every
-    // insert records carriers, which gates the fast path's absence
-    // proofs. No backfill walk exists — blocks below the watermark are
-    // never claimed.
+    // Repeat-deploy carrier-index watermark (same pattern as the LFB
+    // migration above): the height since which every insert records carriers,
+    // which gates the fast path's absence proofs. An empty database gets none
+    // here — the history root is not known until genesis or restore completes.
     let carrier_index_watermark = block_dag_storage.ensure_carrier_watermark()?;
     info!(
-        carrier_index_watermark,
+        carrier_index_watermark = ?carrier_index_watermark,
         "repeat-deploy carrier index checked"
     );
 
@@ -315,7 +315,10 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
     let engine_cell = {
         use casper::rust::engine::engine_cell::EngineCell;
 
-        EngineCell::init()
+        match observer {
+            Some(observer) => EngineCell::observed(observer),
+            None => EngineCell::init(),
+        }
     };
 
     // Block processor queue - mpsc channel connecting producers (CasperLaunch, Running)

@@ -2,7 +2,7 @@
 
 ```yaml
 claim_id: CLAIM-CASPER-SOAK-003
-status: pending
+status: discharged
 adapter: embedded
 scope: harness-profile
 profile_implementation: controlled-transcript-implemented
@@ -25,7 +25,7 @@ artifacts:
 refutation: bounded-safety-pass
 construction: not-applicable
 construction_assumptions: null
-binding: pending
+binding: passed
 soak: pending
 ```
 
@@ -83,7 +83,9 @@ The model bound is two scenarios and three observations per scenario. The clean 
 
 The [implementation contract](../../formal/tlaplus/casper_soak/profiles/publication/README.md) defines receipts, complete tuples, occurrence retention, and executable commands.
 
-The [work log](../work-logs/task-017-6-publication.md) records evidence and limitations. Binding acceptance remains pending.
+The [work log](../work-logs/task-017-6-publication.md) records evidence and limitations. The user accepted the bounded pre-merge binding and ratified the mandatory workflow tag.
+
+The [acceptance record](../work-logs/task-017-5-7-acceptance.md) binds approval to the repaired collector and its verified sources. This discharge excludes node correctness, live qualification, and post-merge execution.
 
 ## Interface qualification and phase obligations
 

@@ -2,7 +2,7 @@
 
 ```yaml
 claim_id: CLAIM-CASPER-SOAK-002
-status: pending
+status: discharged
 adapter: embedded
 scope: harness-profile
 profile_implementation: controlled-transcript-implemented
@@ -25,7 +25,7 @@ artifacts:
 refutation: bounded-safety-pass
 construction: not-applicable
 construction_assumptions: null
-binding: pending
+binding: passed
 soak: pending
 ```
 
@@ -123,4 +123,6 @@ The profile records compiled helper hashes. Shared helpers retain their separate
 
 The [work log](../work-logs/task-017-5-authority-finality.md) records executable fixtures, failure history, and retained verification evidence.
 
-Claim discharge remains pending. The bounded binding review and proposed mandatory workflow tag require human acceptance. Live adapters remain unqualified.
+The user accepted the bounded pre-merge binding and ratified the mandatory workflow tag. The [acceptance record](../work-logs/task-017-5-7-acceptance.md) binds that approval to the verified sources.
+
+This discharge excludes node correctness, live qualification, and post-merge execution. Live adapters remain unqualified. CLAIM-001 retains its separate source-specific acceptance record.

@@ -1,6 +1,8 @@
 # Casper Soak Harness and Profile Verification Plan
 
-**Status:** Shared Casper registration and restart-state validation pass their fixtures. Full driver/profile bindings, evidence publication, and soaks remain pending.
+**Status:** Planning, contracts, and prerequisite review are complete. The repaired lifecycle binding is accepted. Profile acceptance and baseline soaks remain pending.
+
+The [completion review](../work-logs/task-017-1-3-completion.md) records TASK-017-1 through TASK-017-3 criteria, checks, and retained limits.
 
 **Branch:** `formal/soak-casper-consensus`
 
@@ -8,7 +10,9 @@
 
 **Post-merge epic:** [EPIC-018](../ToDos.md#epic-018-post-merge-casper-soak-formal-verification)
 
-**Proposed follow-on branch:** `formal/soak-casper-post-cost-accounting`, after PR #216 merges.
+**Proposed follow-on branch:** `formal/soak-casper-post-cost-accounting`, stacked on PR #216.
+
+The maintainer amended the branch policy on 2026-09-19. The follow-on branch starts from the PR #216 head and targets that pull request. It retargets to `dev` after PR #216 merges. Discharge of a post-merge claim still requires the actual merge revision.
 
 ## Scope boundary
 
@@ -21,6 +25,20 @@ The scope excludes node implementation changes, consensus proofs, accounting pro
 Product defects found by a correct profile remain product failures. They belong to separate node work and must not become passing soak results.
 
 Missing node test interfaces block their scenarios. These epics do not acquire runtime implementation obligations to unblock those scenarios.
+
+### Separate node prerequisite
+
+The [node prerequisite plan](casper-node-interface-prerequisite.md) records separately approved node work. PR #447 targets `dev` and can merge independently after its own gates pass.
+
+PR #436 temporarily targets `feature/casper-node-observation`. After the prerequisite merges, PR #436 can return to `dev`.
+
+This dependency order does not include node implementation in either harness epic. Node claims, harness claims, diagnostic PR #441, and EPIC-018 remain separate.
+
+Independent harness execution controls can proceed before the node interfaces are ready. Live qualification, preflight, and baselines still require qualified interfaces and all campaign gates.
+
+A changed pull request target does not integrate source commits. Combined-source verification remains necessary before qualification.
+
+This clarification does not approve merges, image publication, candidate repinning, claim acceptance, or cloud launches. Resource limits and full baseline durations remain unchanged.
 
 ## Authority and method
 
@@ -55,13 +73,17 @@ These revisions were observed on 2026-09-16. They identify reference material, n
 
 Approved prerequisite integration must preserve `#430 -> #431 -> #432 -> #433`. Git integration still needs separate authorization.
 
-PR #431's B44 containment limitation remains explicit. The shared PR job has a 15-minute limit. Each Casper configuration has a two-minute cap and a 60-second kill grace.
+PR #431's B44 containment limitation remains explicit. The shared PR job has a 15-minute limit, not a two-minute whole-suite limit.
+
+The shared gate permits two minutes per Casper configuration and a 60-second termination grace. The standalone Rust runner uses a five-second grace.
 
 ## Planned stack integration
 
 The planned integration completed at merge `0f1ccdf38f9ab3b056e7601b93961cb56c0a51e9`. Its second parent is PR #433's revision `65f7f6daa832c0acb6fddf2b462db1b9d5461729`.
 
-[PR #436](https://github.com/F1R3FLY-io/f1r3node-rust/pull/436) targets `docs/consensus-neutral-execution`. The verified ancestry preserves `#430 -> #431 -> #432 -> #433 -> formal/soak-casper-consensus`.
+At that integration, [PR #436](https://github.com/F1R3FLY-io/f1r3node-rust/pull/436) targeted `docs/consensus-neutral-execution`. The verified ancestry preserved `#430 -> #431 -> #432 -> #433 -> formal/soak-casper-consensus`.
+
+The separate node prerequisite section records the current target relationship. The following measurements remain historical integration evidence.
 
 The merged tree equals its first parent's tree. All 228 recorded source hashes and 1,692 retained evidence records still match.
 
@@ -73,7 +95,9 @@ At this merge, the stack review diff contains 813 files, 94,281 insertions, and 
 
 TASK-017-14 still owns diff reduction. No evidence or upstream file was deleted during integration verification.
 
-Current `dev` is `bc23c8667ebef0f3fb7c3310caf85ce106df25fa`, while the blocked matrix retains `a2fe60c7255bf4ba035d41fb65b6d6f1c0f02632`. TASK-017-12 must review this difference during qualification before dispatch.
+At the stack review, `dev` was `bc23c8667ebef0f3fb7c3310caf85ce106df25fa`. The blocked matrix retains `a2fe60c7255bf4ba035d41fb65b6d6f1c0f02632`.
+
+The completion review records a later `dev` observation without changing the matrix. TASK-017-12 must review source drift during qualification before dispatch.
 
 This stack merge does not establish the PR #216 gate or accepted EPIC-018 handoff. No candidate repin, node dispatch, task closure, or claim discharge occurred.
 
@@ -112,11 +136,19 @@ The independent node claim [CLAIM-FINALITY-002](../claims/repeat-deploy-carrier-
 
 PR #216's merge is not a blocker for this phase. Optional candidate experiments remain separate from baseline evidence.
 
+The user confirmed the merge order on 2026-09-22: this branch merges first, then PR #216 integrates.
+
+Occurrence-dependent publication and recovery qualification belong to EPIC-018 after that integration. These obligations do not block this branch on PR #216.
+
+Campaign admission now requires authority/finality for the pre-merge phase. Publication and recovery qualification remain explicitly pending for EPIC-018.
+
+Deferred qualification remains pending. A deferred profile cannot contribute a passing verdict, and signature identities cannot replace occurrence identities.
+
 ## Approved implementation sequence
 
 On 2026-09-17, the user approved profile implementation alongside unfinished common-driver bindings. TASK-017-4 and TASK-017-5 through TASK-017-11 no longer wait for each other.
 
-Their implementation prerequisites are the completed TASK-017-2 contract and the applied TASK-017-3 prerequisites. Both milestones are recorded, although their parent tasks remain open.
+Their implementation prerequisites are the completed TASK-017-2 contract and the applied TASK-017-3 prerequisites. The completion review closes these preparation tasks separately from profile verification.
 
 TASK-017-3 owns prerequisite integration and initial candidate identities. TASK-017-12 owns final executable workload pinning and candidate qualification before dispatch.
 
@@ -133,7 +165,9 @@ flowchart LR
 
 The candidate matrix remains non-dispatchable while required pins, capabilities, verification, or approvals are missing. This sequencing change grants no node execution or external repin permission.
 
-The task-completion helper limitation remains separate. No task status, claim status, evidence requirement, or EPIC-018 start gate changes through this approval.
+The original sequencing approval did not close tasks or discharge claims. The completion review uses a bounded compatibility invocation of the unchanged shared helper.
+
+Profile evidence requirements and the EPIC-018 start gate remain unchanged.
 
 ## Post-merge phase: EPIC-018
 
@@ -175,9 +209,9 @@ New profile implementation files must enter the harness-only inventory when intr
 
 ## Scope and evidence storage
 
-Both epics list twenty-three artifacts, including the manifest identity helper and its real-driver fixtures. No runtime artifact was added.
+Each claim lists its current harness, profile, workflow, and formal artifacts. Artifact counts from earlier scaffolds are historical, not current scope inventories.
 
-Their ledger statuses remain pending. No Rust or protobuf artifact belongs to either epic's CbC scope.
+CLAIM-CASPER-SOAK-001 is discharged for its accepted pre-merge source. Claims 002 through 008 remain pending. No node-runtime or protobuf artifact enters these obligations.
 
 The [first implementation log](../work-logs/task-017-4-harness-model-2026-09-16.md) records the bounded safety result and the remaining integration barriers.
 
@@ -188,6 +222,22 @@ Canonical Casper-area records remain under `docs/casper/cbc-evidence/`, with com
 Shared harness records remain under `docs/cbc-evidence/`. Mixed epic checks use the default directory, not a Casper-only override.
 
 The generic artifact gate cannot establish coverage of every profile claim. Closure must also check claim IDs, digests, fixtures, and phase evidence.
+
+### Evidence retention rule (2026-09-19)
+
+This rule applies to every evidence package created after 2026-09-19. TASK-017-14 applies it to the packages that already exist.
+
+A package keeps four kinds of file in the tree: `report.json`, `validation.json`, the SHA-256 digest lists, and the redaction list. The strict claims audit reads the cited report from the tree, so the report must stay.
+
+All other package content leaves the tree. This includes archives, model-checker transcripts, fixture inputs, container logs, attempt records, upstream snapshots, and retained source copies.
+
+The external evidence store holds that content. A sibling file `external.json` in the package records the store, the asset, the asset digest, and each external member with its path, size, and SHA-256. The report stays byte-identical because the claims audit binds its digest.
+
+A ledger field that cites external content, including `previous_ledger`, records the store, the asset, the asset digest, the member path, and the member digest.
+
+Candidate ledgers are working copies. After acceptance promotes them to canonical records, they leave the tree with the rest of the package content.
+
+A verification result is not weaker because its bulk is external. The digest binds the external bytes, and the in-tree report binds the source and claim digests that the audit checks.
 
 ## Existing work and limits
 

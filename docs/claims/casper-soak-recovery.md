@@ -2,7 +2,7 @@
 
 ```yaml
 claim_id: CLAIM-CASPER-SOAK-004
-status: pending
+status: discharged
 adapter: embedded
 scope: harness-profile
 profile_implementation: controlled-transcript-implemented
@@ -25,7 +25,7 @@ artifacts:
 refutation: bounded-safety-pass
 construction: not-applicable
 construction_assumptions: null
-binding: pending
+binding: passed
 soak: pending
 ```
 
@@ -87,7 +87,9 @@ The model explores two scenarios and three occurrence sample slots. Its clean co
 
 The [implementation contract](../../formal/tlaplus/casper_soak/profiles/recovery/README.md) defines the controlled schema, measurement rules, and executable commands.
 
-The [work log](../work-logs/task-017-7-recovery.md) records evidence and remaining gates. Human binding acceptance remains pending.
+The [work log](../work-logs/task-017-7-recovery.md) records evidence and remaining gates. The user accepted the bounded pre-merge binding and ratified the mandatory workflow tag.
+
+The [acceptance record](../work-logs/task-017-5-7-acceptance.md) binds approval to the verified sources. This discharge does not resolve D-07 or establish node support for the synthetic schema.
 
 ## Interface qualification and phase obligations
 

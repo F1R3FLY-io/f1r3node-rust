@@ -1,32 +1,33 @@
 # CbC Evidence: scripts/casper-soak/src/host_control.rs
 
-The user accepted the repaired bounded H01–H10 binding review. This record discharges only CLAIM-CASPER-SOAK-001 in the pre-merge phase.
+The user authorized this bounded harness renewal after fresh hosted verification of the formal-gate workflow. Node execution and protection-rule activation remain outside this discharge.
 
-Profile claims, node soaks, post-merge work, and inherited containment limits remain separate. The linked archive preserves the previous acceptance records.
+The previous ledger remains in the archive below. Earlier reports retain their execution identities and limitations.
 
 ```json
 {
   "artifact": {
     "path": "scripts/casper-soak/src/host_control.rs",
     "id": "scripts-casper-soak-src-host-control-rs",
-    "commit": "f9273621c8887947b56d0093a71486338312138e",
+    "commit": "191e184be556c1f190748143377ab369586c53b6",
     "commit_is_base": true,
-    "sha256": "fb6dafc47a5df2073c4ca618ddf81c4a292229b20e5b08a1f0cfeae306e185bb"
+    "sha256": "933e9cd7d05e763fea581d53f255ddba08fe3737c2046d3bbe6e996a06859aa9",
+    "working_tree": true
   },
   "claim": "docs/claims/casper-soak-harness.md",
   "claim_ids": [
     "CLAIM-CASPER-SOAK-001"
   ],
   "claim_digests": {
-    "docs/claims/casper-soak-harness.md": "51a863feac95f73d06aab10b45ef05ff01b07d5ebb91d1a4fb4879f5776c0134"
+    "docs/claims/casper-soak-harness.md": "c1f6b7473f790a60ab964ce7fd7277841cd6cee5718e9853ad96cf4c671d5932"
   },
   "adapter": "embedded",
   "status": "discharged",
   "scope": "bounded-harness-only",
   "evidence": {
-    "kind": "accepted-bounded-refutation-and-binding",
-    "ref": "docs/casper/cbc-evidence/runs/casper-driver-rebind-acceptance-20260918-01/report.json",
-    "sha256": "d5cc58da34bb33dce627c3c40bf055e61fef817657698921359f06a4f8a301b1"
+    "kind": "hosted-source-bound-workflow-renewal",
+    "ref": "docs/casper/cbc-evidence/runs/casper-formal-gate-renewal-20260919-01/report.json",
+    "sha256": "a7397d9c2fa35436452872d3112bdaae755bc0de0f947955e847d1bf9e4b8831"
   },
   "tiers": {
     "refutation": "bounded-safety-pass",
@@ -39,8 +40,19 @@ Profile claims, node soaks, post-merge work, and inherited containment limits re
   },
   "soak": "pending",
   "waiver": null,
-  "verified_at": "2026-09-18T20:44:50Z",
-  "previous_ledger": null,
-  "review_candidate": "docs/casper/cbc-evidence/runs/casper-driver-rebind-20260918-01/candidate-ledgers/scripts-casper-soak-src-host-control-rs.md"
+  "verified_at": "2026-09-19T22:43:31Z",
+  "previous_ledger": {
+    "path": "docs/casper/cbc-evidence/runs/casper-formal-gate-renewal-20260919-01/previous-metadata.tar.gz",
+    "sha256": "855516a6685384190c8a4f427ff547fc2c8a0f2b6d894849d26dea9fde91b6d9",
+    "member": "prior/ledgers/scripts-casper-soak-src-host-control-rs.md",
+    "member_sha256": "972e86d5b951fa278a783a532d06997380cbf5f09783b057c75e7191dcd49158"
+  },
+  "review_candidate": "docs/casper/cbc-evidence/runs/casper-driver-rebind-20260918-01/candidate-ledgers/scripts-casper-soak-src-host-control-rs.md",
+  "refresh": {
+    "accepted_commit": "f9273621c8887947b56d0093a71486338312138e",
+    "accepted_sha256": "fb6dafc47a5df2073c4ca618ddf81c4a292229b20e5b08a1f0cfeae306e185bb",
+    "production_region_identical": true,
+    "reason": "The execute function moved above the test module to satisfy clippy. The production region is byte-identical."
+  }
 }
 ```

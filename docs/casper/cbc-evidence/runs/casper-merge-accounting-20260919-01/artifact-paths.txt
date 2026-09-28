@@ -1,0 +1,12 @@
+scripts/casper-soak/src/profiles/merge_accounting.rs
+scripts/casper-soak/src/bin/casper-merge-accounting.rs
+scripts/casper-soak/tests/merge_accounting.rs
+scripts/casper-soak/check-merge-accounting.sh
+.github/workflows/casper-merge-accounting.yml
+formal/tlaplus/casper_soak/profiles/merge_accounting/MergeAccounting.tla
+formal/tlaplus/casper_soak/profiles/merge_accounting/MC_MergeAccounting.cfg
+formal/tlaplus/casper_soak/profiles/merge_accounting/MC_MergeAccounting_multiplicity_unsafe.cfg
+formal/tlaplus/casper_soak/profiles/merge_accounting/MC_MergeAccounting_settlement_unsafe.cfg
+formal/tlaplus/casper_soak/profiles/merge_accounting/MC_MergeAccounting_epoch_unsafe.cfg
+formal/tlaplus/casper_soak/profiles/merge_accounting/verification-plan.jsonc
+formal/tlaplus/casper_soak/profiles/merge_accounting/README.md

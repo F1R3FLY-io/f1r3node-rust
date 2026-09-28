@@ -1,0 +1,2 @@
+path	action	reason
+report.json#/isolated_linux/identity	replace-workspace-prefix	Remove the workstation account path. Preserve the executable and image hashes.

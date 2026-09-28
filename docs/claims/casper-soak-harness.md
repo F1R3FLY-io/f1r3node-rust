@@ -2,7 +2,7 @@
 
 ```yaml
 claim_id: CLAIM-CASPER-SOAK-001
-status: discharged
+status: pending
 adapter: embedded
 pre_merge_tasks: [TASK-017-2, TASK-017-4, TASK-017-12, TASK-017-13]
 post_merge_tasks: [TASK-018-1, TASK-018-2, TASK-018-5, TASK-018-6]
@@ -50,7 +50,7 @@ mechanization_plan: formal/tlaplus/casper_soak/verification-plan.jsonc
 refutation: bounded-safety-pass
 construction: not-applicable
 construction_assumptions: null
-binding: passed
+binding: pending
 soak: pending
 ```
 
@@ -176,6 +176,14 @@ A failing product observation and an infrastructure termination remain separate 
 
 ## Current gaps
 
+The formal-gate implementation changed `.github/workflows/slashing-tests.yml` and reopened this claim. Hosted run `35473280388`, attempt 1, now verifies that workflow and the isolated driver fixtures.
+
+The user requested fresh hosted verification and Claim001/documentation renewal. The [hosted renewal record](../work-logs/soak-formal-gate-hosted-renewal.md) binds that request to the verified sources.
+
+The [renewed report](../casper/cbc-evidence/runs/casper-formal-gate-renewal-20260919-01/report.json) preserves the previous binding and records the new execution identities.
+
+This renewal restores only the bounded harness discharge. The independent governance claim remains pending until its protection and acceptance requirements pass.
+
 The local bounded model and control runner are implemented. One clean configuration and ten named negative controls pass their expected verdict checks.
 
 The model checks safety only, not eventual termination. Its bounds are two candidates, two segments, four total iterations, and one active child.
@@ -188,11 +196,27 @@ The [acceptance record](../work-logs/task-017-4-acceptance.md) binds that approv
 
 The user accepted the repaired driver's bounded binding review. Its [acceptance record](../work-logs/casper-driver-rebind-acceptance.md) identifies the approved source and preserves earlier evidence.
 
-CLAIM-CASPER-SOAK-001 is discharged for the repaired pre-merge harness. TASK-017-4 remains complete. The source-specific ledger records control this discharge.
+CLAIM-CASPER-SOAK-001 was discharged for the repaired pre-merge harness on 2026-09-18. TASK-017-4 remains complete. The source-specific ledger records control this discharge.
+
+Later on 2026-09-18, `scripts/casper-soak/src/host_control.rs` changed after that acceptance. The change moves one function above the test module to satisfy clippy and does not change behavior. The accepted binding covers the file at commit `f9273621c`, not the current file. The claim returned to pending until a new acceptance bound the current source. The [drift record](../work-logs/casper-driver-rebind-acceptance.md#drift-after-acceptance-2026-09-18) states the scope.
+
+On 2026-09-19 the user accepted the refreshed binding for the current source. The [refresh acceptance record](../work-logs/casper-driver-rebind-acceptance.md#refresh-acceptance-2026-09-19) identifies the approved source and the retained evidence.
+
+Later on 2026-09-19 the binding inventory in `scripts/ci/check-casper-soak-bindings.sh` changed again. The isolated container copied no profile workflow, so the claim audit inside the container could not read seven declared artifacts. The hosted binding job failed from 2026-09-19T05:46Z. The repair adds one glob line that copies every `casper-*` profile workflow.
+
+That repair invalidated the earlier source binding and returned this claim to pending. The [inventory repair record](../work-logs/casper-driver-rebind-acceptance.md#inventory-repair-drift-2026-09-19) preserves that historical state.
+
+The user subsequently requested: `it is commited. Complete Claim001 renewal`.
+
+The [renewal report](../casper/cbc-evidence/runs/casper-binding-inventory-renewal-20260919-01/report.json) binds the repaired inventory to the existing bounded H01–H10 contract.
+
+Only the workflow-copy line differs among the 39 accepted artifacts. Fresh isolated execution and exact omission controls verify the repair without changing runtime behavior or assertions.
+
+The renewal preserves the previous ledgers and unsuccessful inventory controls. It restores this bounded pre-merge discharge without authorizing node execution.
 
 B44, containment assumptions, and the stated model bounds remain unchanged. This acceptance does not discharge profile claims, node correctness, or post-merge work.
 
-Profile fixtures, candidate qualification, and node soaks remain pending. Construction is not applicable.
+The seven profile claims have separate bounded discharges. Candidate qualification and node soaks remain pending. Construction is not applicable.
 
 The claim auditor checks exact identities, digests, phases, and declared tiers. It does not execute a prover or promote pending claims.
 

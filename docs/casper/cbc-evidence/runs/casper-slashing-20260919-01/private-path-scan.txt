@@ -1,0 +1,1 @@
+target/task-017-9-retention/evidence/target/task-017-9/retain.sh:27:if grep -R -I -n -E '/Users/[^/[:space:]]+|/home/[^/[:space:]]+' "$STAGE/source" "$STAGE/evidence" > "$DEST/private-path-scan.txt"; then

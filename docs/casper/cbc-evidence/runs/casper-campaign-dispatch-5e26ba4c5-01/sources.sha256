@@ -1,0 +1,5 @@
+03b470653bbd8aa8b0311f97cde4bb38a390614157abd40509ff895511d51950  scripts/casper-soak/campaign.sh
+95534b4e8d9592995a23a7aae0055ab4b1fe2b6628315b5acde032ffe0ebe75e  scripts/casper-soak/test-campaign.sh
+46807d26da6011c3643f376cdd620b1085c1553a08cc37d173df649d12ec044a  .github/workflows/merge-recovery-soak.yml
+b5d3853a19c5bb4bf019f10d89297a5938c145c0597376c2a203c793b194bb92  docs/claims/casper-soak-campaign.md
+c1f6b7473f790a60ab964ce7fd7277841cd6cee5718e9853ad96cf4c671d5932  docs/claims/casper-soak-harness.md

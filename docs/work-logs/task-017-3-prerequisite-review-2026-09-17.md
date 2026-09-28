@@ -13,6 +13,8 @@ next_steps:
 
 # TASK-017-3 Prerequisite Review
 
+**Historical record:** TASK-017-3 is now complete for its selected prerequisites and initial identities. The [completion review](task-017-1-3-completion.md) identifies remaining dispatch and upstream integration work.
+
 ## Scope and branch state
 
 The user authorized continuation after TASK-017-2's contract work. This increment reviews prerequisites and prepares a non-dispatchable candidate matrix.

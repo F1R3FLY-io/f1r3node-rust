@@ -63,17 +63,12 @@ pub async fn resolve_hostname_to_ip(host: &str, port: u32) -> Result<SocketAddr,
         Ok(ip) => Ok(SocketAddr::new(ip, port as u16)),
         Err(_) => {
             let addr_str = format!("{}:{}", host, port);
-            let mut addrs = lookup_host(&addr_str).await.map_err(|e| {
-                tracing::error!(addr = %addr_str, error = %e, "DNS resolution failed");
-                CommError::InternalCommunicationError(format!(
-                    "Failed to resolve hostname '{}': {}",
-                    host, e
-                ))
-            })?;
+            let mut addrs = lookup_host(&addr_str)
+                .await
+                .map_err(|e| CommError::DnsResolutionFailed(host.to_string(), e.to_string()))?;
 
             let resolved_addr = addrs.next().ok_or_else(|| {
-                tracing::error!(addr = %addr_str, "DNS resolution returned no addresses");
-                CommError::InternalCommunicationError(format!("No address resolved for '{}'", host))
+                CommError::DnsResolutionFailed(host.to_string(), "No address resolved".to_string())
             })?;
 
             Ok(resolved_addr)
@@ -254,6 +249,12 @@ mod tests {
         if let Ok(socket_addr) = result {
             assert_eq!(socket_addr.port(), 8080);
         }
+    }
+
+    #[tokio::test]
+    async fn failed_hostname_resolution_returns_typed_error() {
+        let error = resolve_hostname_to_ip("", 40400).await.unwrap_err();
+        assert!(matches!(error, CommError::DnsResolutionFailed(_, _)));
     }
 
     #[test]

@@ -395,7 +395,7 @@ impl CertificateHelper {
             ));
         }
 
-        if public_key.first() == Some(&0) {
+        if public_key.len() > 64 && public_key.first() == Some(&0) {
             public_key.remove(0);
         }
 

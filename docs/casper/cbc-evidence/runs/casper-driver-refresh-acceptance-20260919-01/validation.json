@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "status": "refresh-acceptance-verification-passed",
+  "report_sha256": "95f1f8aff4bed6463b9520b9d70ae4827854b84d76a5cbf590be1f7742bfab07",
+  "base_commit": "ab682eea1760c50867dcf7416e37f155b63e5dbc",
+  "verified_at": "2026-09-19T02:47:12Z",
+  "source_files": 67,
+  "canonical_ledgers": 39,
+  "current_source_matches": true,
+  "production_region_identical": true,
+  "claim_audit_exit": 0,
+  "claim_001_status": "discharged",
+  "strict_audit_exit": 4,
+  "strict_audit_note": "Claims 002 through 008 remain pending, so the full strict audit returns 4.",
+  "binding_check": {
+    "driver_invocations": 91,
+    "registered_cases": 48,
+    "matched_exits": true,
+    "status": "passed"
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "status": "completion-evidence-integrity-passed",
+  "report_sha256": "7e5fec2d746cadd96b8396dc7f1412c068e9f9ef5f7ba401b388aa7b8762b8a4",
+  "source_archive_files": 13,
+  "evidence_archive_files": 104,
+  "source_archive_hashes": true,
+  "evidence_archive_hashes": true,
+  "current_source_hashes": true,
+  "document_links": true,
+  "strict_task_integrity": {
+    "TASK-017-1": "full",
+    "TASK-017-2": "full",
+    "TASK-017-3": "full"
+  },
+  "completion_gaps": [],
+  "strict_claim_001_exit": 0,
+  "strict_bundle_exit": 4,
+  "node_execution": false
+}

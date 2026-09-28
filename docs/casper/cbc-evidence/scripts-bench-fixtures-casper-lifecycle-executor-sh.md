@@ -1,32 +1,33 @@
 # CbC Evidence: scripts/bench/fixtures/casper-lifecycle-executor.sh
 
-The user accepted the repaired bounded H01–H10 binding review. This record discharges only CLAIM-CASPER-SOAK-001 in the pre-merge phase.
+The user authorized this bounded harness renewal after fresh hosted verification of the formal-gate workflow. Node execution and protection-rule activation remain outside this discharge.
 
-Profile claims, node soaks, post-merge work, and inherited containment limits remain separate. The linked archive preserves the previous acceptance records.
+The previous ledger remains in the archive below. Earlier reports retain their execution identities and limitations.
 
 ```json
 {
   "artifact": {
     "path": "scripts/bench/fixtures/casper-lifecycle-executor.sh",
     "id": "scripts-bench-fixtures-casper-lifecycle-executor-sh",
-    "commit": "f9273621c8887947b56d0093a71486338312138e",
-    "commit_is_base": false,
-    "sha256": "a2af2205b89c03b7ab503ca5c312e9b2300040540781ada37c33c849a3b94704"
+    "commit": "191e184be556c1f190748143377ab369586c53b6",
+    "commit_is_base": true,
+    "sha256": "a2af2205b89c03b7ab503ca5c312e9b2300040540781ada37c33c849a3b94704",
+    "working_tree": true
   },
   "claim": "docs/claims/casper-soak-harness.md",
   "claim_ids": [
     "CLAIM-CASPER-SOAK-001"
   ],
   "claim_digests": {
-    "docs/claims/casper-soak-harness.md": "51a863feac95f73d06aab10b45ef05ff01b07d5ebb91d1a4fb4879f5776c0134"
+    "docs/claims/casper-soak-harness.md": "c1f6b7473f790a60ab964ce7fd7277841cd6cee5718e9853ad96cf4c671d5932"
   },
   "adapter": "embedded",
   "status": "discharged",
   "scope": "bounded-harness-only",
   "evidence": {
-    "kind": "accepted-bounded-refutation-and-binding",
-    "ref": "docs/casper/cbc-evidence/runs/casper-driver-rebind-acceptance-20260918-01/report.json",
-    "sha256": "d5cc58da34bb33dce627c3c40bf055e61fef817657698921359f06a4f8a301b1"
+    "kind": "hosted-source-bound-workflow-renewal",
+    "ref": "docs/casper/cbc-evidence/runs/casper-formal-gate-renewal-20260919-01/report.json",
+    "sha256": "a7397d9c2fa35436452872d3112bdaae755bc0de0f947955e847d1bf9e4b8831"
   },
   "tiers": {
     "refutation": "bounded-safety-pass",
@@ -39,11 +40,12 @@ Profile claims, node soaks, post-merge work, and inherited containment limits re
   },
   "soak": "pending",
   "waiver": null,
-  "verified_at": "2026-09-18T20:44:50Z",
+  "verified_at": "2026-09-19T22:43:31Z",
   "previous_ledger": {
-    "ref": "docs/casper/cbc-evidence/runs/casper-driver-rebind-20260918-01/previous.tar.gz",
-    "sha256": "690412e55d4e43d92980f9ba069237e1136d89730375dde24ab5724c4eeb1084",
-    "member": "./docs/casper/cbc-evidence/scripts-bench-fixtures-casper-lifecycle-executor-sh.md"
+    "path": "docs/casper/cbc-evidence/runs/casper-formal-gate-renewal-20260919-01/previous-metadata.tar.gz",
+    "sha256": "855516a6685384190c8a4f427ff547fc2c8a0f2b6d894849d26dea9fde91b6d9",
+    "member": "prior/ledgers/scripts-bench-fixtures-casper-lifecycle-executor-sh.md",
+    "member_sha256": "c239584cd983e00adf6cd3a4a4a58894b36c3b3a04b845f995501eace0ddca53"
   },
   "review_candidate": "docs/casper/cbc-evidence/runs/casper-driver-rebind-20260918-01/candidate-ledgers/scripts-bench-fixtures-casper-lifecycle-executor-sh.md"
 }

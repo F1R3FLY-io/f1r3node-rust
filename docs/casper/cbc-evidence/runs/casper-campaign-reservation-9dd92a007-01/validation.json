@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "report_sha256": "d37b3c7cc0e97aae13bd9b088e0d93d2672bdb53ff7e76b3b592bd43c5f134e4",
+  "source_hashes": "passed",
+  "final_native_and_isolated_source_identity": "matched",
+  "failed_attempts_retained": true,
+  "historical_evidence_modified": false,
+  "formal_discharge": false,
+  "claim_status": "pending",
+  "task_complete": false
+}

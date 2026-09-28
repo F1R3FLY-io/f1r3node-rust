@@ -399,6 +399,22 @@ pub fn collect(m: &Value, artifacts: &Value) -> Result<Value> {
             let sequence = manifest::decimal(&v["producer_sequence"])?;
             let time = manifest::decimal(&v["time"]["monotonic_ns"])?;
             id(&v["time"]["utc"])?;
+            id(&v["time"]["clock_id"])?;
+            let producer =
+                serde_json::to_string(&json!([v["node_id"], v["incarnation"], v["producer"]]))?;
+            let context: Vec<_> = CONTEXT.iter().map(|key| v[*key].clone()).collect();
+            let event = serde_json::to_string(&json!([context, producer, v["event_id"]]))?;
+            let mut comparable = v.clone();
+            comparable
+                .as_object_mut()
+                .ok_or_else(|| eyre!("The observation is not an object."))?
+                .remove("record_id");
+            if let Some(old) = events.get(&event) {
+                ensure!(*old == comparable, "Copies of an event disagree.");
+                duplicates.push(reference.clone());
+                return Ok(None);
+            }
+            events.insert(event, comparable);
             let kind = text(&v["event_kind"])?;
             ensure!(
                 ["before_snapshot", "recovered_snapshot", "fault_ack"].contains(&kind),
@@ -431,23 +447,11 @@ pub fn collect(m: &Value, artifacts: &Value) -> Result<Value> {
                 rejected.push(json!({"source":reference,"reason":"correlation_or_deadline_mismatch","fatal":false}));
                 return Ok(None);
             }
-            let producer =
-                serde_json::to_string(&json!([v["node_id"], v["incarnation"], v["producer"]]))?;
-            let event = format!("{producer}:{}", text(&v["event_id"])?);
-            let mut comparable = v.clone();
-            comparable.as_object_mut().unwrap().remove("record_id");
-            comparable.as_object_mut().unwrap().remove("time");
-            if let Some(old) = events.get(&event) {
-                ensure!(*old == comparable, "Copies of an event disagree.");
-                duplicates.push(reference.clone());
-                return Ok(None);
-            }
             ensure!(
                 sequences.get(&producer).is_none_or(|s| *s < sequence),
                 "The producer sequence did not increase."
             );
             sequences.insert(producer, sequence);
-            events.insert(event, comparable);
             measurement(
                 &json!({"presence":v["presence"],"value":v["payload"],"reason":v["reason"]}),
             )?;

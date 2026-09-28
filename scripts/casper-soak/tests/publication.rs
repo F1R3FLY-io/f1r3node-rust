@@ -366,6 +366,61 @@ fn copies_corruption_and_policy_gates() {
     f.invoke(0, "passed");
     f.observations[3]["payload"]["tuple"]["value"]["block_hash"] = "a".repeat(64).into();
     f.invoke(2, "invalid_input");
+    for field in [
+        "cut_point",
+        "publication_id",
+        "generation",
+        "predecessor_incarnation",
+        "incarnation",
+        "clock_id",
+        "monotonic_ns",
+        "utc",
+        "snapshot_predecessor",
+    ] {
+        for copy_first in [false, true] {
+            let mut f = Fixture::new(&format!("conflicting-copy-{field}-{copy_first}"));
+            let index = if field == "snapshot_predecessor" {
+                2
+            } else {
+                1
+            };
+            let mut copy = f.observations[index].clone();
+            copy["record_id"] = "conflicting-copy".into();
+            match field {
+                "clock_id" => copy["time"][field] = "other-clock".into(),
+                "monotonic_ns" => copy["time"][field] = "999".into(),
+                "utc" => copy["time"][field] = "2026-01-02T00:00:00Z".into(),
+                "snapshot_predecessor" => copy["predecessor_incarnation"] = "unrelated".into(),
+                "generation" => copy["payload"][field] = "999".into(),
+                _ => copy["payload"][field] = "unrelated".into(),
+            }
+            f.observations
+                .insert(index + usize::from(!copy_first), copy);
+            let result = f.invoke(2, "invalid_input");
+            assert!(result["rejected_observations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| { v["fatal"] == true && v["reason"] == "Copies of an event disagree." }));
+        }
+    }
+    for field in ["candidate_id", "scenario_id", "member_id"] {
+        let mut f = Fixture::new(&format!("foreign-event-{field}"));
+        let mut copy = f.observations[1].clone();
+        copy["record_id"] = "foreign-copy".into();
+        copy[field] = "foreign".into();
+        copy["payload"]["generation"] = "999".into();
+        f.observations.insert(1, copy);
+        f.invoke(0, "passed");
+    }
+    let mut f = Fixture::new("conflict-retains-product-failure");
+    f.observations[2]["payload"]["tuple"]["value"]["block_hash"] = "a".repeat(64).into();
+    let mut copy = f.observations[1].clone();
+    copy["record_id"] = "conflicting-copy".into();
+    copy["payload"]["generation"] = "999".into();
+    f.observations.push(copy);
+    let result = f.invoke(2, "invalid_input");
+    assert!(!result["product_failures"].as_array().unwrap().is_empty());
     let mut f = Fixture::new("corrupt-raw");
     f.invoke_edited(2, "invalid_input", |root| {
         fs::write(root.join("raw/2.json"), b"{}").unwrap();
