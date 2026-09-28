@@ -858,6 +858,10 @@ impl DebruijnInterpreter {
 
         let result = head.and_then(|h| self.mergeable_tags.get(h).copied());
 
+        if !tracing::enabled!(target: "f1r3fly.merge.tag_check.validation", tracing::Level::TRACE) {
+            return result;
+        }
+
         // Diagnostic trace: every channel write/consume invokes this. Logs
         // distinguish (a) tuple channels that match a registered tag (mergeable),
         // (b) tuple channels with a head that ISN'T in the tag registry
@@ -1373,12 +1377,17 @@ impl DebruijnInterpreter {
                 } else {
                     match self.urn_map.get(&urn) {
                         Some(p) => {
-                            if urn == "rho:system:bitmaskMergeableTag" {
+                            if urn == "rho:system:bitmaskMergeableTag"
+                                && tracing::enabled!(
+                                    target: "f1r3fly.merge.tag_check.validation",
+                                    tracing::Level::DEBUG
+                                )
+                            {
                                 use prost::Message;
                                 let bytes = p.encode_to_vec();
                                 let hex: String =
                                     bytes.iter().map(|b| format!("{:02x}", b)).collect();
-                                tracing::info!(
+                                tracing::debug!(
                                     target: "f1r3fly.merge.tag_check.validation",
                                     "URI lookup at deploy: rho:system:bitmaskMergeableTag -> Par hex={}",
                                     hex,

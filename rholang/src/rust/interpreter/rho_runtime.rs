@@ -1259,7 +1259,7 @@ where
     // tag registry and the URN map so contracts can bind them via
     // `bootstrapName(`rho:system:...`)`.
     if let Some(tag_par) = bitmask_or_tag(&mergeable_tags) {
-        tracing::info!(
+        tracing::debug!(
             target: "f1r3fly.merge.tag_check.validation",
             "URI binding inserted: rho:system:bitmaskMergeableTag -> Par(unforgeables={}, exprs={}, bundles={})",
             tag_par.unforgeables.len(),
