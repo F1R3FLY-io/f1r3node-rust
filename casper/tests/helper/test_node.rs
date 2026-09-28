@@ -355,6 +355,26 @@ impl TestNode {
             .await
     }
 
+    /// Makes every node receive the blocks of every other node. `sync_with_one`
+    /// makes its caller the receiver, so each pair is synced in both directions.
+    pub async fn sync_all(nodes: &mut [TestNode]) -> Result<(), CasperError> {
+        for sender_idx in 0..nodes.len() {
+            for receiver_idx in 0..nodes.len() {
+                if sender_idx == receiver_idx {
+                    continue;
+                }
+                let (left, right) = nodes.split_at_mut(sender_idx.max(receiver_idx));
+                let (receiver, sender) = if receiver_idx < sender_idx {
+                    (&mut left[receiver_idx], &mut right[0])
+                } else {
+                    (&mut right[0], &mut left[sender_idx])
+                };
+                receiver.sync_with_one(sender).await?;
+            }
+        }
+        Ok(())
+    }
+
     /// Helper method to propagate a block from one node to another specific node.
     ///
     /// This method works around Rust's borrow checker limitation where we cannot do:
