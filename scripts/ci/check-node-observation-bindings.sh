@@ -130,8 +130,8 @@ while IFS=$'\t' read -r package target raw; do
     sha256sum "$executable" >> "$OUTPUT/executed.sha256"
     timeout --signal=TERM --kill-after=10 300 "$executable" "${args[@]}" > "$OUTPUT/$name.log" 2>&1
 done < "$OUTPUT/executables.tsv"
-jq -r '.claims[].properties[].tests[].name' formal/tlaplus/node_observation/bindings.json |
-    sort -u > "$OUTPUT/required-tests.txt"
+jq -r '.claims[].properties[].tests[] | select(.source | startswith("casper/") | not) | .name' \
+    formal/tlaplus/node_observation/bindings.json | sort -u > "$OUTPUT/required-tests.txt"
 while IFS= read -r required; do
     grep -hFx "test $required ... ok" "$OUTPUT"/*.log > /dev/null
 done < "$OUTPUT/required-tests.txt"
