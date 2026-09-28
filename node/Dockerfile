@@ -116,14 +116,14 @@ RUN git clone "${PETTA_REPO}" /build/PeTTa && \
 # The official `swipl` image ships a recent build (>= 9.3.x, currently 10.x) with
 # janus included; we copy its interpreter and library into the images that need
 # to actually execute MeTTa (the runtime image and the petta-test stage).
-FROM swipl:stable AS swipl-extract
+FROM swipl:stable@sha256:9d44cac3f4235e297db87217e59aa81cdf9847970bd27ddb447072d5466ea8ae AS swipl-extract
 
 # ============================================================================
 # Stage: sandbox-builder - Build Cloudflare libsandbox.so (seccomp)
 # ============================================================================
 # Defined before petta-test (and the runtime stages) so both can COPY the built
 # libsandbox.so: a COPY --from must reference an earlier stage.
-FROM --platform=$BUILDPLATFORM debian:bookworm-slim AS sandbox-builder
+FROM --platform=$BUILDPLATFORM debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171 AS sandbox-builder
 
 RUN apt-get update && apt-get install -y \
     gcc \

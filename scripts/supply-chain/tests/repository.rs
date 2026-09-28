@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -253,11 +254,19 @@ fn docker_build_remains_frozen_offline_and_contains_the_workspace_tool() {
     }
     assert!(!text.contains("type=cache"));
     assert!(!text.contains("|| true"));
-    for line in text
-        .lines()
-        .filter(|s| s.starts_with("FROM ") && s.contains(" AS "))
-    {
-        assert!(line.contains("@sha256:"));
+    let mut stages = BTreeSet::new();
+    for line in text.lines().filter(|s| s.starts_with("FROM ")) {
+        let image = line
+            .split_whitespace()
+            .skip(1)
+            .find(|t| !t.starts_with("--"))
+            .unwrap();
+        if !stages.contains(image) {
+            assert!(line.contains("@sha256:"), "{line}");
+        }
+        if let Some(alias) = line.split(" AS ").nth(1) {
+            stages.insert(alias.trim());
+        }
     }
 }
 
