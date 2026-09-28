@@ -1299,7 +1299,10 @@ tasks:
     observer_client_claim: docs/claims/casper-authority-observer-client.md
     observer_client_evidence: docs/casper/cbc-evidence/runs/casper-authority-client-20260928-01/report.json
     observer_client_status: "The raw Linux observer client passes eight controlled tests. Native client and synthetic profile regressions pass. Live scenario mapping and candidate qualification remain pending."
-    live_interface_gaps: "Batch B2 supplies no fixture-load receipt or selected-head observation. Its display projection is unavailable, and fault control is unsupported. The existing profile contract remains unchanged."
+    live_mapping_evidence: docs/casper/cbc-evidence/runs/casper-authority-mapping-20260928-01/report.json
+    live_mapping_review: docs/work-logs/task-017-12-mac-continuation.md#authority-interface-mapping-correction-2026-09-28
+    live_interface_gaps: "The source mapping is complete. The observer lacks paired fork-choice heads and captured equivocation inputs for display projection. These additions belong to EPIC-019. Existing providers support ordinary pause and restart. Their receipts belong to this task."
+    live_mapping_remaining: "Define executable fixtures, captured input identities, numeric conversion, finality interpretation, and counter semantics. Implement the harness adapter and qualify the selected candidate. The accepted profile contract remains unchanged."
     candidate_inventory_evidence: docs/casper/cbc-evidence/runs/casper-campaign-inventory-20260928-01/report.json
     candidate_inventory_review: "All 225 model hashes and four configuration hashes match. The matrix and three suite pins select e3c4e14189f0c6ced2e9674487fcbdeffd93141b. Source-bound acceptance remains pending. No workload pin or qualification changed."
     stack_scope: "PR #436 temporarily targets the node branch. This dependency order does not include node implementation in the harness scope. Independent harness controls can proceed before node qualification."
@@ -1308,6 +1311,8 @@ tasks:
     execution_control_plan: docs/plans/casper-campaign-execution-controls.md
     execution_control_evidence: docs/casper/cbc-evidence/runs/casper-campaign-control-20260921-01/report.json
     hosted_control_evidence: docs/casper/cbc-evidence/runs/casper-campaign-hosted-58e952c6f-01/report.json
+    control_renewal_evidence: docs/casper/cbc-evidence/runs/casper-campaign-renewal-20260928-01/report.json
+    control_renewal_status: "Current-source verification passes 133 planner checks, 32 controller tests, three model-runner tests, and 16 isolated Linux reservation tests. The model and five negative controls pass. The workflow evidence digest is refreshed. Acceptance and live qualification remain pending."
     source_coverage_evidence: docs/casper/cbc-evidence/runs/casper-campaign-source-coverage-20260921-01/report.json
     stability_control_evidence: docs/casper/cbc-evidence/runs/casper-campaign-stability-20260922-01/report.json
     publication_gate: "Deferred to EPIC-018 after this branch merges and PR #216 integrates. This is not a PR #216 dependency for this branch."
@@ -1340,7 +1345,7 @@ tasks:
     blocked_by: [TASK-019-3, TASK-019-4]
     remaining_prerequisites:
       - "The changed workflow and campaign artifacts have current pending records. Historical evidence remains unchanged. Claim001 and the three campaign claims still require source-bound acceptance."
-      - "Complete live scenario mapping and qualify the raw observer client against the selected node. The new client claim remains pending."
+      - "Implement the live scenario mapping from the recorded source review. Qualify the raw observer client against the selected node. The new client claim remains pending."
       - "Pin executable workloads and accept the refreshed campaign inventory. All 225 model hashes and four configuration hashes match after suite reconciliation."
       - "Qualify the required pre-merge adapters and node interfaces. The corrected admission requires authority/finality and retains pending occurrence profiles. Preserve the earlier blocked probe evidence."
       - "Hosted run 35752941906 covers the published stability and phase changes at 58e952c6f. The campaign workflow still requires qualification against deployed services."

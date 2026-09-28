@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "report_sha256": "0a108f9c9f36b443e08c1c37ec751d82b569e472f492ed0c97d014c20431dd2a",
+  "local_source_digests_match": true,
+  "retained_external_source_digests_match": true,
+  "external_python_syntax": "passed",
+  "live_qualification": "pending"
+}

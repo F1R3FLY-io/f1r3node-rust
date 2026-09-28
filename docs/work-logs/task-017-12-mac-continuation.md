@@ -504,3 +504,105 @@ Historical reports retain their original bytes. Their recorded suite revisions d
 Candidate image pins and null workload pins remain unchanged. The matrix remains non-dispatchable, and source-bound acceptance remains pending.
 
 The live adapter still requires the node interface additions listed above. This inventory correction does not supply those interfaces or qualify a candidate.
+
+## Campaign control renewal: 2026-09-28
+
+The [renewal report](../casper/cbc-evidence/runs/casper-campaign-renewal-20260928-01/report.json) binds the current 52-file inventory to renewed local verification.
+
+The campaign model and five negative controls pass with the pinned TLC verifier. All three model-runner regression tests pass.
+
+The controller and supervisor pass 32 tests. All 16 reservation tests pass in an isolated Linux container.
+
+The planner passes 133 admission and duration checks. Its controlled API fixtures launch no node or cloud runner.
+
+The first aggregate attempt failed because the native PATH selected incompatible utilities. A later retry omitted cargo, and sandbox restrictions blocked a fixture output write.
+
+The retained component reruns use GNU utilities and preserve the earlier failures. The first aggregate report remains failed.
+
+The source inventory stayed unchanged through verification. The current lockfile adds the node dependency `paste`, and the workflow contains the inherited integration-suite update.
+
+The workflow evidence record now has its current source digest and the renewal report digest. Its prior records and pending claim status remain intact.
+
+The strict eight-claim audit returns exit four. Claim001 remains pending, claims 002 through 008 remain discharged, and all eight soak fields remain pending.
+
+The GitHub review confirms `dev` at `0b9ae5bce`. PR #447 remains open at `670037c25`, with `fix/node-log-and-accept-backoff` as its base.
+
+This renewal supplies local verification evidence. It does not deploy OCI controls, qualify the node interface, or establish a passing campaign.
+
+## Authority interface mapping correction: 2026-09-28
+
+The [mapping report](../casper/cbc-evidence/runs/casper-authority-mapping-20260928-01/report.json) corrects the earlier four-gap assessment. That assessment assigned too much work to the node prerequisite.
+
+This review uses branch revision `2fb0686cf38752a0251af6d1d3e26afebb6d9eb9`. It binds 17 local source files and four external provider files by digest.
+
+The external files come from the selected integration suite revision `e3c4e14189f0c6ced2e9674487fcbdeffd93141b`. The review did not use the older sibling checkout.
+
+### Process controls and receipts
+
+Ordinary pause and restart operations belong to TASK-017-12 on `formal/soak-casper-consensus`. They do not require the observer's unsupported internal fault-control capability.
+
+The Docker provider supports pause, unpause, restart, process inspection, and exit observation. The owned subprocess provider supports signal-based pause, unpause, and process replacement.
+
+The adopted subprocess handle cannot restart its process. Its inferred exit value also cannot establish the actual exit status.
+
+The harness must bind each receipt to the scheduled fault, request, process, and deadline. It must retain observed process state and restart evidence.
+
+Restart evidence must include the previous process exit, readiness, and the new observer incarnation. Command success alone does not establish fault application.
+
+A fault at an internal node operation remains a separate capability. The ordinary process schedule does not establish that capability.
+
+### Paired fork-choice observations
+
+The public `showMainChain` API already invokes the live estimator and exposes its selected chain. The earlier statement about absent selected-head observations was too broad.
+
+However, this API does not bind its response to an observer snapshot or evaluation mode. Separate live calls cannot establish the required shared input.
+
+The observer compares oracle and floor results on one detached capture. It does not run paired fork-choice evaluations or return their selected heads.
+
+EPIC-019 on `feature/casper-node-observation` owns the required observation extension. The extension must bind both fork-choice modes, estimator configuration, results, and work to one capture.
+
+A finalized floor cannot substitute for a selected head. Existing oracle reference results cannot substitute for a fork-choice reference result.
+
+### Display projection and numeric values
+
+The public block API already reports display fault tolerance. Its calculation subtracts initial fault derived from the live equivocation tracker.
+
+The detached observer snapshot does not contain that tracker. Its display projection explicitly reports `equivocation_snapshot_unavailable`.
+
+EPIC-019 owns capture of the equivocation inputs and their use in the detached display calculation. A separate public block response lacks this capture binding.
+
+TASK-017-12 owns the numeric mapping. The observer preserves floating-point bits, while the accepted profile compares rational values.
+
+A rounded floating-point value must not become its ideal mathematical fraction. The mapping must preserve the original bits and handle values outside the rational schema.
+
+### Fixtures, finality, and work
+
+The accepted synthetic inputs contain opaque fixture JSON. They are not executable block fixtures with valid signatures and complete node state.
+
+Existing deploy and propose operations support ordinary workloads. Their success does not establish malformed signatures, duplicate justifications, or controlled missing dependencies.
+
+TASK-017-12 must define executable scenarios and retain evidence of their applied inputs. This requirement does not establish a need for a production fixture-loading endpoint.
+
+The observer returns capture digests and counts. It does not return the complete canonical DAG, electorate, and justification artifacts required by the current profile input binding.
+
+The harness needs a reviewed mapping between those input identities. A bounded node export or additional digests might be necessary after that contract is defined.
+
+Finality mapping must distinguish oracle decisions, floor outcomes, live events, and persisted state. An oracle threshold result alone does not establish finalization.
+
+The mapping must also preserve threshold precision and the difference between strict and inclusive comparisons. Holds and unavailable observations must remain explicit.
+
+Work counters require defined counting sites and evaluation scope. Metadata reads do not necessarily count distinct visited vertices, and traversal operations do not necessarily count edges.
+
+TASK-017-12 owns these mappings. EPIC-019 owns additional node instrumentation only where the agreed measurement requires it.
+
+### Remaining implementation and verification
+
+The next harness work defines executable fixtures, input bindings, numeric conversion, finality interpretation, and counter semantics. Process receipts can use the existing providers.
+
+The node dependency comprises paired fork-choice observations and captured display-projection inputs. Further input exports or counters require a specific contract before implementation.
+
+The live adapter must then connect qualified observations to the profile. Its current `live_adapter_unqualified` rejection remains necessary until that path has separate verification.
+
+The [validation record](../casper/cbc-evidence/runs/casper-authority-mapping-20260928-01/validation.json) confirms source digests and external Python syntax. This source review executed no provider operations and establishes no live qualification.
+
+TASK-017-12 remains in progress. Candidate qualification, executable workload pins, campaign service qualification, required acceptance, preflight, and both full baselines remain outstanding.
