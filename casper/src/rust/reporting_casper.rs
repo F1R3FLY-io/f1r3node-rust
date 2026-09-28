@@ -86,7 +86,7 @@ impl ReportingCasper for RhoReporterCasper {
         let reporting_rspace = ReportingRuntime::create_reporting_rspace(self.rspace_store.clone())
             .map_err(|e| format!("Failed to create reporting rspace: {}", e))?;
 
-        let mergeable_tags = std::sync::Arc::new(Genesis::default_mergeable_tags());
+        let mergeable_tags = Genesis::default_mergeable_tags_arc();
         let mut extra_system_processes = Vec::new();
         let mut reporting_runtime = ReportingRuntime::create_reporting_runtime(
             reporting_rspace,

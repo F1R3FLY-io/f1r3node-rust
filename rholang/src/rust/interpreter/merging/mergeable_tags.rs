@@ -30,10 +30,11 @@ pub const NON_NEGATIVE_NUMBER_PK: &str =
     "e33c9f1e925819d04733db4ec8539a84507c9e9abd32822059349449fe03997d";
 pub const NON_NEGATIVE_NUMBER_TIMESTAMP: i64 = 1559156251792;
 
-// Dedicated key for deriving the bitmask-OR mergeable tag's unforgeable
-// name. Not used to sign any deploy; only seeds the RNG so the tag has
+// Seed for the bitmask-OR mergeable tag's unforgeable name. It has the form
+// of a secp256k1 private key because the tag derivation goes through a public
+// key, but it signs nothing. Its only use is to seed the RNG, so the tag has
 // an identity independent of any specific genesis contract.
-pub const BITMASK_OR_TAG_PK: &str =
+pub const BITMASK_OR_TAG_SEED: &str =
     "4d76b8e3f29a51c8d05e7b4f9a23c6e1d8b5f0a7c4e91b6d3a8f5c2e9b6d4a1c";
 pub const BITMASK_OR_TAG_TIMESTAMP: i64 = 1762000000000;
 
@@ -73,7 +74,7 @@ pub fn non_negative_mergeable_tag_name() -> Par {
 }
 
 pub fn bitmask_or_mergeable_tag_name() -> Par {
-    tag_name(BITMASK_OR_TAG_PK, BITMASK_OR_TAG_TIMESTAMP)
+    tag_name(BITMASK_OR_TAG_SEED, BITMASK_OR_TAG_TIMESTAMP)
 }
 
 /// Standard mergeable-tag registry installed at runtime startup. Maps each

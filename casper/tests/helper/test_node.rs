@@ -1024,7 +1024,7 @@ impl TestNode {
         let (runtime_manager, _) = RuntimeManager::create_with_history(
             rspace_store,
             mergeable_store,
-            std::sync::Arc::new(Genesis::default_mergeable_tags()),
+            Genesis::default_mergeable_tags_arc(),
             rholang::rust::interpreter::external_services::ExternalServices::noop(),
         );
         let connections_cell = ConnectionsCell::new();

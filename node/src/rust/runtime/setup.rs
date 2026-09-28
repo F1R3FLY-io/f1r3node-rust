@@ -231,7 +231,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
 
         rho_runtime::create_runtime_from_kv_store(
             eval_stores,
-            Arc::new(casper::rust::genesis::genesis::Genesis::default_mergeable_tags()),
+            casper::rust::genesis::genesis::Genesis::default_mergeable_tags_arc(),
             false,
             &mut Vec::new(),
             Arc::new(Box::new(Matcher)),
@@ -258,7 +258,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         let result = RuntimeManager::create_with_history_config(
             rspace_stores,
             mergeable_store,
-            Arc::new(Genesis::default_mergeable_tags()),
+            Genesis::default_mergeable_tags_arc(),
             external_services.clone(),
             {
                 let exploratory = ExploratoryDeployConfig::resolve(

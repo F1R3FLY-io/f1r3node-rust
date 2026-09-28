@@ -223,7 +223,7 @@ pub struct RuntimeManager {
     pub replay_space: ReplayRSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
     pub history_repo: RhoHistoryRepository,
     pub mergeable_store: MergeableStore,
-    pub mergeable_tags: std::sync::Arc<
+    pub(crate) mergeable_tags: std::sync::Arc<
         std::collections::HashMap<Par, rspace_plus_plus::rspace::merger::merging_logic::MergeType>,
     >,
     // TODO: make proper storage for block indices - OLD

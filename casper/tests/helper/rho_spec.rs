@@ -362,7 +362,7 @@ pub async fn get_results(
             set_phase("runtime-create");
             let mut runtime = create_runtime_from_kv_store(
                 r_store,
-                std::sync::Arc::new(Genesis::default_mergeable_tags()),
+                Genesis::default_mergeable_tags_arc(),
                 true,
                 &mut additional_system_processes,
                 matcher,
