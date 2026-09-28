@@ -1,6 +1,6 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // Property-based test for T-14 (weak barbed equivalence:
@@ -8,7 +8,7 @@
 //
 // Theorem: T-14 (`weak_barbed_equiv_*`,
 // formal/rocq/slashing/theories/Bisimulation.v).
-// Reference: docs/theory/slashing/slashing-specification.md §10
+// Reference: docs/casper/theory/slashing/slashing-specification.md §10
 // (Theorem 10.3), design/10-bisimilarity.md §10.5.
 //
 // Property: weak barbed equivalence (≈ₓ) is an equivalence

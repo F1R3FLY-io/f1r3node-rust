@@ -1,6 +1,6 @@
 // Equivocation at seq=0 (genesis-adjacent) does NOT mint a record.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §14, boundary
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §14, boundary
 // case of T-4 / T-5 (record uniqueness + monotonicity).
 // Reference: see `casper/src/rust/slashing_authorization.rs::checked_base_seq`
 // (`seq <= 0 → None`) and commit db0b979.

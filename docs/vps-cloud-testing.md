@@ -79,7 +79,7 @@ First build can take 10-30 minutes depending on Rust cache warmth. Subsequent re
 ## Bring up the shard
 
 ```bash
-F1R3FLY_IMAGE=f1r3fly-rust:local docker compose -f docker/shard.yml up -d
+F1R3FLY_RUST_IMAGE=f1r3fly-rust:local docker compose -f docker/shard.yml up -d
 ```
 
 Starts: `rnode.bootstrap`, `rnode.validator1/2/3`, `rnode.readonly`. Genesis ceremony completes within ~60s.
@@ -108,10 +108,10 @@ These join the existing `f1r3fly-shard` network:
 # Observer — use instead of shard.yml's built-in readonly, not alongside
 docker compose -f docker/shard.yml stop readonly
 docker compose -f docker/shard.yml rm -f readonly
-F1R3FLY_IMAGE=f1r3fly-rust:local docker compose -f docker/observer.yml up -d
+F1R3FLY_RUST_IMAGE=f1r3fly-rust:local docker compose -f docker/observer.yml up -d
 
 # Validator4 (must be bonded after joining — see below)
-F1R3FLY_IMAGE=f1r3fly-rust:local docker compose -f docker/validator4.yml up -d
+F1R3FLY_RUST_IMAGE=f1r3fly-rust:local docker compose -f docker/validator4.yml up -d
 ```
 
 ## Test bonding (optional — PoS flow)
@@ -157,11 +157,6 @@ docker logs rnode.validator1 --since 10s | grep "VaultAddress for"
 
 ## Teardown
 
-```bash
-just shard-down
-```
-
-Or manually:
 ```bash
 docker compose -f docker/validator4.yml down -v
 docker compose -f docker/observer.yml down -v
@@ -505,7 +500,7 @@ Run `just vps-down` when done.
 |---|---|---|
 | Genesis hangs past 120s | TLS certs missing or wrong perms | Check `docker/certs/{bootstrap,validator1,validator2,validator3}/*.pem` exist and are readable |
 | `/api/status` returns `peers:0` | Bootstrap unreachable from validators | Check firewalld/security list; confirm BOOTSTRAP_HOST in `.env` matches reachable name/IP |
-| `system_deploy_error: "Deploy payment failed: Insufficient funds"` | Signer's REV address not in `wallets.txt` | Add the REV address (derive via `node eval` on `rholang/examples/vault_demo/1.know_ones_vaultaddress.rho`), restart with fresh volumes |
+| `system_deploy_error: "Deploy payment failed: Insufficient funds"` | The signer's vault cannot cover `phlo-limit × phlo-price` plus any amount the deploy moves (a bond also locks its stake). Or, on a fresh shard, the signer's REV address is not in `wallets.txt` at all | Fund the vault by transfer from a funded key, and budget the phlo limit as well as the stake. If the address was never funded at genesis, add it to `wallets.txt` (derive via `node eval` on `rholang/examples/vault_demo/1.know_ones_vaultaddress.rho`) and restart with fresh volumes |
 | `NoNewDeploys` on explicit `node propose` | Heartbeat already consumed the deploy | Not an error — the deploy was already included. Check `last-finalized-block` |
 | Validator bonded but not producing blocks | Quarantine period (10 blocks) hasn't elapsed | Wait ~50s past bond inclusion |
 

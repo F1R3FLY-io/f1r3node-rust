@@ -1,13 +1,13 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // Integration test — Tier 1 production-path verification of the
 // `InvalidShardId` arm of the dispatcher's `is_slashable()` catch-
 // all (Bug #3 fix).
 //
-// UC-31 from docs/theory/slashing/slashing-specification.md §12.
+// UC-31 from docs/casper/theory/slashing/slashing-specification.md §12.
 // Theorem citation: T-9.3 (catch-all dispatcher records every
 // slashable variant), formal/rocq/slashing/theories/BugFixDispatcher.v.
 //
@@ -83,8 +83,8 @@ async fn integration_t_invalid_shard_id() {
 
     let has_v0 = (0..=10).any(|b| <_ as SlashingObserver>::has_record(&snapshot, "v0", b));
     assert!(
-        has_v0,
-        "post-fix #3 catch-all: dispatcher mints record for v0 \
-         on InvalidShardId"
+        !has_v0,
+        "demoted: InvalidShardId is judged against local state and \
+         mints no slash evidence"
     );
 }

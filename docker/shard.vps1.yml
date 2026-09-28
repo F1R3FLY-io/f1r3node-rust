@@ -25,6 +25,13 @@ services:
       - MALLOC_ARENA_MAX=2
       - MALLOC_TRIM_THRESHOLD_=131072
       - MALLOC_MMAP_THRESHOLD_=131072
+      # Passed only when set, so logging.filter in the node config applies by default.
+      - RUST_LOG
+    logging:
+      driver: json-file
+      options:
+        max-size: 100m
+        max-file: "3"
     command:
       - run
       - --host=${BOOTSTRAP_HOST}

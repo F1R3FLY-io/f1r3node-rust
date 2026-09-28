@@ -79,6 +79,53 @@ impl Clone for Box<dyn KeyValueStore> {
     fn clone(&self) -> Box<dyn KeyValueStore> { self.clone_box() }
 }
 
+/// Which accessor asked for a block that is not held, plus — when captured at
+/// the storage boundary — the caller backtrace. `Display` owns the separator,
+/// so accessors are bare names. Equality compares the accessor only.
+#[derive(Debug, Clone)]
+pub struct MissingBlockContext {
+    accessor: &'static str,
+    backtrace: Option<std::sync::Arc<std::backtrace::Backtrace>>,
+}
+
+impl MissingBlockContext {
+    pub fn new(accessor: &'static str) -> Self {
+        Self {
+            accessor,
+            backtrace: None,
+        }
+    }
+
+    /// `force_capture` so the trace does not depend on RUST_BACKTRACE being
+    /// set in the shard's environment; error path only.
+    pub fn with_backtrace(accessor: &'static str) -> Self {
+        Self {
+            accessor,
+            backtrace: Some(std::sync::Arc::new(
+                std::backtrace::Backtrace::force_capture(),
+            )),
+        }
+    }
+
+    pub fn accessor(&self) -> &'static str { self.accessor }
+}
+
+impl PartialEq for MissingBlockContext {
+    fn eq(&self, other: &Self) -> bool { self.accessor == other.accessor }
+}
+
+impl std::fmt::Display for MissingBlockContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        if !self.accessor.is_empty() {
+            write!(f, " [{}]", self.accessor)?;
+        }
+        if let Some(backtrace) = &self.backtrace {
+            write!(f, "\n  caller backtrace:\n{}", backtrace)?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum KvStoreError {
     KeyNotFound(String),
@@ -96,7 +143,7 @@ pub enum KvStoreError {
     /// anchor. Callers that judge blocks must be able to tell the two apart.
     MissingBlock {
         hash: prost::bytes::Bytes,
-        context: String,
+        context: MissingBlockContext,
     },
 }
 
@@ -131,5 +178,60 @@ impl From<heed::Error> for KvStoreError {
 impl From<Box<bincode::ErrorKind>> for KvStoreError {
     fn from(error: Box<bincode::ErrorKind>) -> Self {
         KvStoreError::SerializationError(error.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_formats_each_variant() {
+        assert_eq!(
+            KvStoreError::KeyNotFound("k1".to_string()).to_string(),
+            "Key not found: k1"
+        );
+        assert_eq!(
+            KvStoreError::IoError("disk gone".to_string()).to_string(),
+            "I/O error: disk gone"
+        );
+        assert_eq!(
+            KvStoreError::SerializationError("bad bytes".to_string()).to_string(),
+            "SerializationError error: bad bytes"
+        );
+        assert_eq!(
+            KvStoreError::InvalidArgument("nope".to_string()).to_string(),
+            "Invalid argument: nope"
+        );
+        assert_eq!(
+            KvStoreError::LockError("poisoned".to_string()).to_string(),
+            "Lock error: poisoned"
+        );
+        assert_eq!(
+            KvStoreError::LastFinalizedBlockUninitialized.to_string(),
+            "DagState does not contain lastFinalizedBlock (bootstrap incomplete)"
+        );
+        assert_eq!(
+            KvStoreError::MissingBlock {
+                hash: prost::bytes::Bytes::from_static(&[0xab, 0xcd]),
+                context: MissingBlockContext::new("while merging"),
+            }
+            .to_string(),
+            "DAG storage is missing hash abcd [while merging]"
+        );
+    }
+
+    #[test]
+    fn bincode_errors_convert_to_serialization_errors() {
+        let bincode_err = bincode::deserialize::<String>(&[0xff]).unwrap_err();
+        let converted: KvStoreError = bincode_err.into();
+        assert!(matches!(converted, KvStoreError::SerializationError(_)));
+    }
+
+    #[test]
+    fn heed_errors_convert_to_io_errors() {
+        let heed_err = heed::Error::Io(std::io::Error::other("mmap failure"));
+        let converted: KvStoreError = heed_err.into();
+        assert_eq!(converted, KvStoreError::IoError("mmap failure".to_string()));
     }
 }

@@ -496,6 +496,51 @@ async fn recovery_cycle_rejected_deploy_retries_while_source_is_visible() {
         hex::encode(&surviving_sig)
     );
 
+    // Regression for issue #42: the re-inclusion window between the recovery
+    // proposal and its finalization is closed by the canonical-won selection
+    // filter, NOT by finalization. Before any `record_directly_finalized`
+    // call, validator 0 proposes an interim block on top of `recovery_block`.
+    // `recovery_block` is now in the parent cone and re-includes the recovered
+    // sig cleanly at a height above the rejection, so `prepare_user_deploys`
+    // suppresses it. The recovered sig must be absent from the interim block's
+    // body — a single sig must not appear in every block until the LFB advances.
+    let interim_marker = {
+        tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
+        construct_deploy::basic_deploy_data(7, None, Some(shard_id.clone()))
+            .expect("build interim_marker")
+    };
+    let interim_block = nodes[0]
+        .add_block_from_deploys(std::slice::from_ref(&interim_marker))
+        .await
+        .expect("validator 0 proposes interim block before finalization");
+    assert!(
+        !interim_block
+            .body
+            .deploys
+            .iter()
+            .any(|pd| pd.deploy.sig == conflict_sig),
+        "issue #42: the recovered sig {} must not be re-included once its clean \
+         recovery inclusion is canonically won over the proposer's parents, even \
+         before the recovery block finalizes; got body.deploys sigs = {:?}",
+        hex::encode(&conflict_sig),
+        interim_block
+            .body
+            .deploys
+            .iter()
+            .map(|pd| hex::encode(&pd.deploy.sig))
+            .collect::<Vec<_>>()
+    );
+    // The buffer entry is still retained (custody holds until finalized-won).
+    {
+        let buffer_guard = nodes[0].rejected_deploy_buffer.lock().expect("buffer lock");
+        assert!(
+            buffer_guard
+                .contains_sig(&conflict_sig)
+                .expect("buffer.contains_sig"),
+            "suppression from re-proposal must not evict the buffer entry"
+        );
+    }
+
     // Buffer custody after the replay wins: the purge keys on floor-state
     // membership of the deploy's effect, and the FLOOR has not covered
     // the replay here — the finality marker written below is not the

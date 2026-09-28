@@ -1,6 +1,6 @@
 // UC-112 — Detector passes retain pre-existing detected-hash entries.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-112.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-112.
 // Theorems: T-5 (record monotonicity / no-overwrite), T-9.1a (FV audit #6).
 //
 // Scenario: a record already carries a detected hash from an earlier run.

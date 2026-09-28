@@ -1,6 +1,6 @@
 // UC-49 — Genesis-time edge cases.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-49.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-49.
 // Reference: design/12-failure-modes.md §12.3.4.
 //
 // Scenario: equivocation at the very first sequence number (seq=0)

@@ -331,7 +331,6 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
         &snapshot,
         &rm,
         &latest_messages,
-        None,
         Some(&rejected_deploy_buffer),
         None,
         // The buffer populate is owner-scoped: this test models the node of

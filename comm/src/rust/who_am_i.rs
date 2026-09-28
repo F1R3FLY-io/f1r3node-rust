@@ -152,3 +152,42 @@ async fn who_am_i(external_address: Option<String>) -> Result<String, CommError>
 
     Ok(ip)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn check_next_keeps_previous_result_when_present() {
+        let prev = ("first".to_string(), Some("1.2.3.4".to_string()));
+        let result = check_next(prev.clone(), async {
+            panic!("next should not be evaluated")
+        })
+        .await;
+        assert_eq!(result, prev);
+    }
+
+    #[tokio::test]
+    async fn check_next_falls_through_when_previous_empty() {
+        let prev = ("first".to_string(), None);
+        let result = check_next(prev, async {
+            ("second".to_string(), Some("5.6.7.8".to_string()))
+        })
+        .await;
+        assert_eq!(result, ("second".to_string(), Some("5.6.7.8".to_string())));
+    }
+
+    #[tokio::test]
+    async fn upnp_ip_check_without_address_yields_none() {
+        let (source, ip) = upnp_ip_check(None).await;
+        assert_eq!(source, "UPnP");
+        assert_eq!(ip, None);
+    }
+
+    #[tokio::test]
+    async fn upnp_ip_check_resolves_socket_address() {
+        let (source, ip) = upnp_ip_check(Some("127.0.0.1:0".to_string())).await;
+        assert_eq!(source, "UPnP");
+        assert_eq!(ip, Some("127.0.0.1".to_string()));
+    }
+}

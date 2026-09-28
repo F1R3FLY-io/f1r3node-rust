@@ -2,7 +2,7 @@
 #
 # pre-push hook - Run tests before pushing
 #
-# Runs the full cargo test suite to prevent pushing code with regressions.
+# Runs the full cargo nextest suite to prevent pushing code with regressions.
 # To bypass (use sparingly): git push --no-verify
 #
 # Installation (run from repo root):
@@ -13,9 +13,11 @@
 #   SKIP_TESTS=1         - Skip all cargo tests
 #   SKIP_CLIPPY=1        - Skip clippy (already runs on commit, but double-checked here)
 #   SKIP_DENY=1          - Skip soak-charts dependency policy checks
+#   SKIP_CI_TESTS=1      - Skip CI workflow and release-train script tests
 #   QUICK=1              - Run only fast tests (skip --release tests)
 #   VERBOSE=1            - Show all test output (not just failures)
-#   TEST_TIMEOUT=600     - Overall test timeout in seconds (default: 600)
+#   TEST_TIMEOUT=600     - Per-command timeout in seconds (default: 600)
+#   CASPER_TEST_TIMEOUT=1800 - Casper test timeout in seconds (default: 1800)
 #   TEST_CRATES="casper rholang" - Run tests for specific crates only
 #
 # CI environment detection:
@@ -42,10 +44,13 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 SKIP_TESTS="${SKIP_TESTS:-0}"
 SKIP_CLIPPY="${SKIP_CLIPPY:-0}"
 SKIP_DENY="${SKIP_DENY:-0}"
+SKIP_CI_TESTS="${SKIP_CI_TESTS:-0}"
 VERBOSE="${VERBOSE:-0}"
 QUICK="${QUICK:-0}"
 TEST_TIMEOUT="${TEST_TIMEOUT:-600}"
+CASPER_TEST_TIMEOUT="${CASPER_TEST_TIMEOUT:-1800}"
 TEST_CRATES="${TEST_CRATES:-}"
+TEST_RUNNER="${TEST_RUNNER:-nextest}"
 SOAK_CHARTS_MANIFEST="scripts/soak-charts/Cargo.toml"
 
 # Skip in CI environments (tests run separately in pipeline)
@@ -107,9 +112,52 @@ ulimit -n 65536 2>/dev/null || true
 
 cd "$REPO_ROOT"
 
+if [[ "$TEST_RUNNER" != "nextest" && "$TEST_RUNNER" != "cargo" ]]; then
+    echo -e "${RED}Invalid TEST_RUNNER: ${TEST_RUNNER}. Use nextest or cargo.${NC}" >&2
+    exit 1
+fi
+
+if [[ "$SKIP_TESTS" != "1" && "$TEST_RUNNER" == "nextest" ]] && ! cargo nextest --version >/dev/null 2>&1; then
+    echo -e "${RED}cargo-nextest is required for pre-push tests.${NC}" >&2
+    echo "Install it with: cargo install cargo-nextest --locked" >&2
+    exit 1
+fi
+
 # Temp directory for test results
 RESULTS_DIR="$(mktemp -d)"
-trap 'rc=$?; rm -rf "$RESULTS_DIR"; echo "[pre-push hook: exit $rc after $(($(date +%s) - _hook_t0))s]" >&2' EXIT
+background_pids=()
+background_jobs_running=0
+
+terminate_process_tree() {
+    local pid="$1" child
+    kill -0 "$pid" 2>/dev/null || return 0
+    kill -STOP "$pid" 2>/dev/null || true
+    while IFS= read -r child; do
+        [[ -n "$child" ]] && terminate_process_tree "$child"
+    done < <(pgrep -P "$pid" 2>/dev/null || true)
+    kill -TERM "$pid" 2>/dev/null || true
+    kill -CONT "$pid" 2>/dev/null || true
+}
+
+cleanup() {
+    local rc="$1" pid
+    trap - EXIT INT TERM
+    if [[ "$background_jobs_running" -eq 1 ]]; then
+        for pid in "${background_pids[@]}"; do
+            terminate_process_tree "$pid"
+        done
+        for pid in "${background_pids[@]}"; do
+            wait "$pid" 2>/dev/null || true
+        done
+    fi
+    rm -rf "$RESULTS_DIR"
+    echo "[pre-push hook: exit $rc after $(($(date +%s) - _hook_t0))s]" >&2
+    exit "$rc"
+}
+
+trap 'cleanup $?' EXIT
+trap 'cleanup 130' INT
+trap 'cleanup 143' TERM
 
 # Save original stdout as fd 3 for progress from background jobs
 exec 3>&1
@@ -119,6 +167,7 @@ echo -e "${CYAN}Running pre-push checks...${NC}"
 echo "================================"
 
 # --- Clippy (background) ---
+background_jobs_running=1
 (
     total=0; passed=0; failed=0; skipped=0; has_failure=0
     if [[ "$SKIP_CLIPPY" == "1" ]]; then
@@ -151,6 +200,7 @@ echo "================================"
     echo "$total $passed $failed $skipped $has_failure" > "$RESULTS_DIR/clippy.counts"
 ) &
 pid_clippy=$!
+background_pids+=("$pid_clippy")
 
 # --- Dashboard renderer checks (background) ---
 (
@@ -208,9 +258,13 @@ pid_clippy=$!
         echo -e "  ${CYAN}[dashboard]${NC} test ${YELLOW}SKIP${NC} (SKIP_TESTS=1)" >&3
         skipped=$((skipped + 1))
     else
-        dashboard_test_cmd=(cargo test --locked --manifest-path "$SOAK_CHARTS_MANIFEST")
-        if [[ "$QUICK" != "1" ]]; then
-            dashboard_test_cmd+=(--release)
+        if [[ "$TEST_RUNNER" == "nextest" ]]; then
+            dashboard_test_cmd=(cargo nextest run --locked --manifest-path "$SOAK_CHARTS_MANIFEST")
+            if [[ "$QUICK" != "1" ]]; then dashboard_test_cmd+=(--release); fi
+            dashboard_test_cmd+=(--no-tests=pass)
+        else
+            dashboard_test_cmd=(cargo test --locked --manifest-path "$SOAK_CHARTS_MANIFEST")
+            if [[ "$QUICK" != "1" ]]; then dashboard_test_cmd+=(--release); fi
         fi
         run_dashboard_check test "${dashboard_test_cmd[@]}"
     fi
@@ -218,13 +272,72 @@ pid_clippy=$!
     echo "$total $passed $failed $skipped $has_failure" > "$RESULTS_DIR/dashboard.counts"
 ) &
 pid_dashboard=$!
+background_pids+=("$pid_dashboard")
 
-# --- Cargo test (background) ---
 (
     total=0; passed=0; failed=0; skipped=0; has_failure=0
+
+    run_ci_check() {
+        local label="$1"
+        shift
+        local check_out="$RESULTS_DIR/ci-${label}.out"
+        total=$((total + 1))
+        echo -e "  ${CYAN}[ci-unit]${NC} ${label}..." >&3
+        if timeout "$TEST_TIMEOUT" "$@" > "$check_out" 2>&1; then
+            echo -e "  ${CYAN}[ci-unit]${NC} ${label} ${GREEN}PASS${NC}" >&3
+            passed=$((passed + 1))
+        else
+            local rc=$?
+            if [[ $rc -eq 124 ]]; then
+                echo -e "  ${CYAN}[ci-unit]${NC} ${label} ${RED}TIMEOUT${NC} (${TEST_TIMEOUT}s)" >&3
+            else
+                echo -e "  ${CYAN}[ci-unit]${NC} ${label} ${RED}FAIL${NC}" >&3
+            fi
+            failed=$((failed + 1))
+            has_failure=1
+            {
+                echo ""
+                echo -e "${RED}FAIL${NC}: CI unit ${label}"
+                echo "--- Output (last 80 lines) ---"
+                tail -80 "$check_out"
+                echo "--------------"
+            } >> "$RESULTS_DIR/ci-failures.out"
+        fi
+        rm -f "$check_out"
+    }
+
+    if [[ "$SKIP_CI_TESTS" == "1" ]]; then
+        echo -e "  ${CYAN}[ci-unit]${NC} ${YELLOW}SKIP${NC} (SKIP_CI_TESTS=1)" >&3
+        skipped=5
+    elif ! command -v ruby >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
+        total=1
+        failed=1
+        has_failure=1
+        {
+            echo ""
+            echo -e "${RED}FAIL${NC}: CI unit dependencies"
+            echo "Ruby and jq are required for CI unit tests."
+        } >> "$RESULTS_DIR/ci-failures.out"
+    else
+        run_ci_check workflow-invariants bash .github/scripts/check-workflow-invariants.sh
+        run_ci_check pre-push-hook .github/scripts/test-pre-push-hook.sh
+        run_ci_check stack-gate bash .github/scripts/test-ci-stack-gate.sh
+        run_ci_check release-train .github/scripts/test-release-train.sh
+        run_ci_check release-workflows .github/scripts/test-release-workflows.sh
+    fi
+
+    echo "$total $passed $failed $skipped $has_failure" > "$RESULTS_DIR/ci.counts"
+) &
+pid_ci=$!
+background_pids+=("$pid_ci")
+
+# --- Workspace tests (background) ---
+(
+    total=0; passed=0; failed=0; skipped=0; has_failure=0
+    test_suite_started=$(date +%s)
     if [[ "$SKIP_TESTS" == "1" ]]; then
         echo -e "  ${CYAN}[test]${NC}    ${YELLOW}SKIP${NC} (SKIP_TESTS=1)" >&3
-        echo "$total $passed $failed $skipped $has_failure" > "$RESULTS_DIR/test.counts"
+        echo "$total $passed $failed $skipped $has_failure 0" > "$RESULTS_DIR/test.counts"
         exit 0
     fi
 
@@ -249,24 +362,38 @@ pid_dashboard=$!
     for crate in "${crates_to_test[@]}"; do
         total=$((total + 1))
         test_out="$RESULTS_DIR/test-${crate}.out"
+        crate_timeout="$TEST_TIMEOUT"
+        if [[ "$crate" == "casper" ]]; then crate_timeout="$CASPER_TEST_TIMEOUT"; fi
         mode_label=""
         if [[ -n "$release_flag" ]]; then mode_label=" (release)"; fi
+        if [[ "$TEST_RUNNER" == "nextest" ]]; then
+            test_cmd=(cargo nextest run)
+            if [[ -n "$release_flag" ]]; then test_cmd+=("$release_flag"); fi
+            test_cmd+=(-p "$crate" --no-tests=pass)
+        else
+            test_cmd=(cargo test)
+            if [[ -n "$release_flag" ]]; then test_cmd+=("$release_flag"); fi
+            test_cmd+=(-p "$crate")
+        fi
         echo -e "  ${CYAN}[test]${NC}    ${crate}${mode_label}..." >&3
-        if timeout "$TEST_TIMEOUT" cargo test $release_flag -p "$crate" > "$test_out" 2>&1; then
-            echo -e "  ${CYAN}[test]${NC}    ${crate} ${GREEN}PASS${NC}" >&3
+        crate_started=$(date +%s)
+        if timeout "$crate_timeout" "${test_cmd[@]}" > "$test_out" 2>&1; then
+            crate_elapsed=$(($(date +%s) - crate_started))
+            echo -e "  ${CYAN}[test]${NC}    ${crate} ${GREEN}PASS${NC} (${crate_elapsed}s)" >&3
             passed=$((passed + 1))
         else
             rc=$?
+            crate_elapsed=$(($(date +%s) - crate_started))
             if [[ $rc -eq 124 ]]; then
-                echo -e "  ${CYAN}[test]${NC}    ${crate} ${RED}TIMEOUT${NC} (${TEST_TIMEOUT}s)" >&3
+                echo -e "  ${CYAN}[test]${NC}    ${crate} ${RED}TIMEOUT${NC} (${crate_timeout}s, elapsed ${crate_elapsed}s)" >&3
             else
-                echo -e "  ${CYAN}[test]${NC}    ${crate} ${RED}FAIL${NC}" >&3
+                echo -e "  ${CYAN}[test]${NC}    ${crate} ${RED}FAIL${NC} (${crate_elapsed}s)" >&3
             fi
             failed=$((failed + 1))
             has_failure=1
             {
                 echo ""
-                echo -e "${RED}FAIL${NC}: cargo test $release_flag -p ${crate}"
+                echo -e "${RED}FAIL${NC}: ${test_cmd[*]}"
                 echo "--- Output (last 80 lines) ---"
                 tail -80 "$test_out"
                 echo "--------------"
@@ -275,26 +402,31 @@ pid_dashboard=$!
         rm -f "$test_out"
     done
 
-    echo "$total $passed $failed $skipped $has_failure" > "$RESULTS_DIR/test.counts"
+    test_suite_elapsed=$(($(date +%s) - test_suite_started))
+    echo -e "  ${CYAN}[test]${NC}    ${TEST_RUNNER} suite ${test_suite_elapsed}s" >&3
+    echo "$total $passed $failed $skipped $has_failure $test_suite_elapsed" > "$RESULTS_DIR/test.counts"
 ) &
 pid_test=$!
+background_pids+=("$pid_test")
 
 # Wait for all suites
-wait "$pid_clippy" "$pid_dashboard" "$pid_test" 2>/dev/null || true
+wait "$pid_clippy" "$pid_dashboard" "$pid_ci" "$pid_test" 2>/dev/null || true
+background_jobs_running=0
 
 # Close saved fd
 exec 3>&-
 
 # Show failure details and aggregate results
-TESTS_TOTAL=0; TESTS_PASSED=0; TESTS_FAILED=0; TESTS_SKIPPED=0; FAILED=0
-for suite in clippy dashboard test; do
+TESTS_TOTAL=0; TESTS_PASSED=0; TESTS_FAILED=0; TESTS_SKIPPED=0; FAILED=0; TEST_SUITE_ELAPSED=0
+for suite in clippy dashboard ci test; do
     if [[ -f "$RESULTS_DIR/${suite}-failures.out" ]]; then
         echo ""
         echo -e "${CYAN}${suite^} Failure Details:${NC}"
         cat "$RESULTS_DIR/${suite}-failures.out"
     fi
     if [[ -f "$RESULTS_DIR/$suite.counts" ]]; then
-        read -r t p f s fail < "$RESULTS_DIR/$suite.counts"
+        read -r t p f s fail elapsed < "$RESULTS_DIR/$suite.counts"
+        if [[ "$suite" == "test" ]]; then TEST_SUITE_ELAPSED="${elapsed:-0}"; fi
         TESTS_TOTAL=$((TESTS_TOTAL + t))
         TESTS_PASSED=$((TESTS_PASSED + p))
         TESTS_FAILED=$((TESTS_FAILED + f))
@@ -318,6 +450,9 @@ fi
 if [[ $TESTS_SKIPPED -gt 0 ]]; then
     echo -e "Skipped: ${YELLOW}$TESTS_SKIPPED${NC}"
 fi
+if [[ "$SKIP_TESTS" != "1" ]]; then
+    echo "${TEST_RUNNER^} test time: ${TEST_SUITE_ELAPSED}s"
+fi
 echo ""
 
 if [[ $FAILED -eq 0 ]]; then
@@ -338,11 +473,14 @@ else
     echo ""
     echo "Options:"
     echo "  QUICK=1 git push             - Debug-mode tests (faster compile)"
-    echo "  SKIP_TESTS=1 git push        - Skip test suite"
+    echo "  SKIP_TESTS=1 git push        - Skip test suites"
     echo "  SKIP_CLIPPY=1 git push       - Skip clippy"
     echo "  SKIP_DENY=1 git push         - Skip soak-charts dependency checks"
+    echo "  SKIP_CI_TESTS=1 git push     - Skip CI workflow unit tests"
     echo "  VERBOSE=1 git push           - Show detailed output"
     echo "  TEST_CRATES=\"casper rholang\" git push  - Test specific crates"
-    echo "  TEST_TIMEOUT=300 git push    - Adjust timeout (default: 600s)"
+    echo "  TEST_RUNNER=cargo git push   - Use cargo test for A/B comparison"
+    echo "  TEST_TIMEOUT=300 git push    - Adjust the general timeout (default: 600s)"
+    echo "  CASPER_TEST_TIMEOUT=2400 git push - Adjust the Casper timeout (default: 1800s)"
     exit 1
 fi

@@ -1,6 +1,6 @@
 // UC-41 — Pre-fix Ignorable DOS regression (audit-tier alias).
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-41.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-41.
 // Theorem: T-9.1 (negative).
 //
 // §14.3.2 audit-blocker alias for `pre_fix_bug_1.rs`. The two tests

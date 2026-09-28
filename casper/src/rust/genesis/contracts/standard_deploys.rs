@@ -269,6 +269,9 @@ pub fn pos_generator(pos: &ProofOfStake, shard_id: &str) -> Signed<DeployData> {
                 "faultToleranceThresholdPpm",
                 &pos.fault_tolerance_threshold_ppm.to_string(),
             ),
+            ("maxParentDepth", &pos.max_parent_depth.to_string()),
+            ("deployLifespan", &pos.deploy_lifespan.to_string()),
+            ("minPhloPrice", &pos.min_phlo_price.to_string()),
             (
                 "posMultiSigPublicKeys",
                 &ProofOfStake::public_keys(&pos.pos_multi_sig_public_keys),

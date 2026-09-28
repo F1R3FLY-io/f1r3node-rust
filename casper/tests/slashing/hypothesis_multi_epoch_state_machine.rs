@@ -1,11 +1,11 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // UC-76 — Rule-based multi-epoch state-machine frontier.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-76.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-76.
 // Theorems: T-12EID (epoch eligibility), T-12HYP (hypothesis bound).
 // Reference: formal/sage/slashing/FINDINGS.md row 12 (multi-epoch
 // state machine), formal/tlaplus/slashing/TwoLevelSlashing.tla

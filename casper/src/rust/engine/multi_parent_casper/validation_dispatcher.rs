@@ -29,6 +29,7 @@ use crate::rust::casper::CasperSnapshot;
 use crate::rust::equivocation_detector::EquivocationDetector;
 use crate::rust::errors::CasperError;
 use crate::rust::metrics_constants::{
+    BLOCK_ARRIVAL_DEPTH_METRIC, BLOCK_ARRIVED_UNCITABLE_METRIC,
     BLOCK_VALIDATION_STEP_BLOCK_SUMMARY_TIME_METRIC, BLOCK_VALIDATION_STEP_BONDS_CACHE_TIME_METRIC,
     BLOCK_VALIDATION_STEP_CHECKPOINT_TIME_METRIC,
     BLOCK_VALIDATION_STEP_NEGLECTED_EQUIVOCATION_TIME_METRIC,
@@ -160,7 +161,7 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
         // landing site with the BlockException arm at block_processor.rs:358 —
         // both flow through dispatch_handle_invalid_block's is_slashable()
         // catch-all, which mints an EquivocationRecord per T-9.3. See
-        // docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.4.
+        // docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.4.
         if let Either::Right(None) = validate_block_checkpoint_result {
             return Ok(Either::Left(BlockError::Invalid(
                 InvalidBlock::InvalidTransaction,
@@ -235,11 +236,15 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
     )
     .await?;
     tracing::debug!(target: "f1r3fly.casper", "phlogiston-price-validated");
-    if let Either::Left(_) = phlo_price_result {
+    // Enforced, not warned: the floor is a chain-adopted consensus value, so
+    // every validator reaches this verdict identically (LowDeployCost is
+    // deliberately non-slashable — admission-only).
+    if let Either::Left(block_error) = phlo_price_result {
         tracing::warn!(
             "One or more deploys has phloPrice lower than {}",
             this.casper_shard_conf.min_phlo_price
         );
+        return Ok(Either::Left(block_error));
     }
 
     let requested_as_dependency = this
@@ -351,10 +356,46 @@ pub(crate) async fn dispatch_validate<T: TransportLayer + Send + Sync>(
             status,
             elapsed
         );
+        record_arrival_depth(this, block);
         update_mergeable_cache_after_validation(this, block, "block").await;
     }
 
     Ok(val_result)
+}
+
+/// Measured against the live frontier after replay, not the pre-replay
+/// snapshot: a slow replay is what carries a block past the parent-depth limit.
+fn record_arrival_depth<T: TransportLayer + Send + Sync>(
+    this: &MultiParentCasperImpl<T>,
+    block: &BlockMessage,
+) {
+    let frontier = match this.block_dag_storage.get_representation() {
+        Ok(dag) => dag.latest_block_number(),
+        Err(error) => {
+            tracing::warn!(
+                target: "f1r3fly.casper.recovery",
+                %error,
+                "arrival depth not recorded: DAG representation unavailable"
+            );
+            return;
+        }
+    };
+    let depth = frontier - block.body.state.block_number;
+    metrics::histogram!(BLOCK_ARRIVAL_DEPTH_METRIC, "source" => CASPER_METRICS_SOURCE)
+        .record(depth as f64);
+    let max_parent_depth = this.casper_shard_conf.max_parent_depth;
+    if depth > i64::from(max_parent_depth) {
+        metrics::counter!(BLOCK_ARRIVED_UNCITABLE_METRIC, "source" => CASPER_METRICS_SOURCE)
+            .increment(1);
+        tracing::warn!(
+            target: "f1r3fly.casper.recovery",
+            block = %PrettyPrinter::build_string_bytes(&block.block_hash),
+            block_number = block.body.state.block_number,
+            depth,
+            max_parent_depth,
+            "block validated beyond the parent-depth horizon: this node can no longer cite it"
+        );
+    }
 }
 
 pub(crate) async fn dispatch_validate_self_created<T: TransportLayer + Send + Sync>(
@@ -463,7 +504,7 @@ pub(crate) fn dispatch_handle_invalid_block<T: TransportLayer + Send + Sync>(
         // documents the lock-order contract (DAG global_lock A,
         // buffer state_lock B) and the on-resume reconciliation
         // closes any crash-window drift. See
-        // docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.20.
+        // docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.20.
         let block_hash_serde = BlockHashSerde(block.block_hash.clone());
         let updated_dag =
             block_storage::rust::dag::buffer_dag_transition::atomic_insert_then_buffer(
@@ -480,7 +521,7 @@ pub(crate) fn dispatch_handle_invalid_block<T: TransportLayer + Send + Sync>(
     };
 
     // Atomic read-modify-write on the equivocation tracker. See
-    // docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.2.
+    // docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.2.
     let record_evidence = |block_dag_storage: &BlockDagKeyValueStorage,
                            block: &BlockMessage|
      -> Result<(), CasperError> {
@@ -528,7 +569,7 @@ pub(crate) fn dispatch_handle_invalid_block<T: TransportLayer + Send + Sync>(
         InvalidBlock::IgnorableEquivocation => {
             // Record evidence and apply the standard invalid-block effect,
             // mirroring AdmissibleEquivocation. See
-            // docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.1.
+            // docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.1.
             record_evidence(&this.block_dag_storage, block)?;
             handle_invalid_block_effect(
                 &this.block_dag_storage,
@@ -540,7 +581,7 @@ pub(crate) fn dispatch_handle_invalid_block<T: TransportLayer + Send + Sync>(
 
         status if status.is_slashable() => {
             // Every slashable status mints an EquivocationRecord. See
-            // docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.3.
+            // docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.3.
             record_evidence(&this.block_dag_storage, block)?;
             handle_invalid_block_effect(
                 &this.block_dag_storage,

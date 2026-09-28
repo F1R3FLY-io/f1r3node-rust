@@ -281,6 +281,7 @@ async fn a_co_witnessed_sibling_fork_must_adjudicate_and_advance() {
             if let Some(advanced) = floor_of_view(&dag, &node.block_store, &floors[i], thr)
                 .await
                 .expect("floor_of_view must never error on an adjudicated view")
+                .advanced()
             {
                 floors[i] = advanced;
             }

@@ -45,7 +45,6 @@ use crate::rust::engine::engine::{
 use crate::rust::engine::engine_cell::EngineCell;
 use crate::rust::engine::lfs_block_requester::{self, BlockRequesterOps};
 use crate::rust::engine::lfs_tuple_space_requester::{self, StatePartPath, TupleSpaceRequesterOps};
-use crate::rust::engine::running::RunningRecoveryContext;
 use crate::rust::errors::CasperError;
 use crate::rust::estimator::Estimator;
 use crate::rust::metrics_constants::{
@@ -135,8 +134,11 @@ pub struct Initializing<T: TransportLayer + Send + Sync + Clone + 'static> {
 /// Write shipped floor-cache entries into the DAG's floor and frontier
 /// indices. Only entries that were SOLICITED and whose block this node holds
 /// are written — a peer cannot seed floors for blocks we did not ask about.
-/// The floor value itself may sit below the held window; a later walk that
-/// needs it defers and names it, which is one bounded fetch, not a crawl.
+///
+/// An entry's VALUES must be held too: one naming history below the restore
+/// horizon turns every walk that reads it into a demand for a block nothing
+/// fetches. The anchor's verified seed is solicited like any other restored
+/// block, so an entry never replaces a floor this node already has.
 fn apply_floor_cache_entries(
     dag: &block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation,
     solicited: &HashSet<BlockHash>,
@@ -147,11 +149,104 @@ fn apply_floor_cache_entries(
         if !solicited.contains(&entry.block_hash) || !dag.contains(&entry.block_hash) {
             continue;
         }
+        if !dag.contains(&entry.floor_hash) || !dag.contains(&entry.frontier_hash) {
+            tracing::debug!(
+                block = %PrettyPrinter::build_string_bytes(&entry.block_hash),
+                floor = %PrettyPrinter::build_string_bytes(&entry.floor_hash),
+                frontier = %PrettyPrinter::build_string_bytes(&entry.frontier_hash),
+                "discarding a shipped floor entry naming history this node did not download"
+            );
+            continue;
+        }
+        if dag.get_cached_floor(&entry.block_hash)?.is_some() {
+            continue;
+        }
         dag.put_cached_floor(entry.block_hash.clone(), entry.floor_hash)?;
         dag.put_cached_frontier(entry.block_hash, entry.frontier_hash)?;
         written += 1;
     }
     Ok(written)
+}
+
+/// The lowest height above which the restore holds EVERY block it will ever
+/// need — the only claim the carrier index may make. Walks down from the top
+/// while heights are contiguous, so a shipped genesis sitting at 0 behind the
+/// restore gap is not mistaken for the bottom of held history.
+///
+/// Never below `accept_bound - 1`. A block's number exceeds its parents', so
+/// every in-cone block one row under the bound has all its children at or above
+/// it; those are accepted, and an accepted block requests all of its parents.
+/// One row lower that breaks: a block whose only children were saved but never
+/// accepted is never requested, so a deep secondary parent can fill the row
+/// without the rest of it being reachable.
+fn contiguous_coverage_start(
+    height_map: &BTreeMap<i64, HashSet<BlockHash>>,
+    accept_bound: i64,
+) -> Option<i64> {
+    let mut heights = height_map.keys().rev();
+    let mut lowest = *heights.next()?;
+    for height in heights {
+        if *height != lowest - 1 {
+            break;
+        }
+        lowest = *height;
+    }
+    Some(lowest.max(accept_bound - 1))
+}
+
+/// Land the shipped genesis block on a truncated node: verified against the
+/// learned register (claimed hash equals the register AND the content
+/// re-hashes to it), then stored and inserted finalized. Holding genesis
+/// makes this node's latest-message structures identical to a ceremony
+/// node's — the newly-bonded sentinel points at it and the propose snapshot
+/// dereferences every slot. Refusal is not an error: the restore proceeds on
+/// the hash-only register (slot seeding stays network-uniform); only this
+/// node's ability to propose as a fresh validator degrades, loudly, until a
+/// peer ships a verifiable copy.
+fn receive_shipped_genesis(
+    block_dag_storage: &BlockDagKeyValueStorage,
+    block_store: &KeyValueBlockStore,
+    learned_genesis_hash: &BlockHash,
+    genesis_block: BlockMessage,
+) -> Result<bool, CasperError> {
+    let refuse = || {
+        metrics::counter!(
+            crate::rust::metrics_constants::RESTORE_GENESIS_REFUSED_METRIC,
+            "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
+        )
+        .increment(1);
+    };
+    if genesis_block.block_hash != *learned_genesis_hash {
+        tracing::warn!(
+            claimed = %PrettyPrinter::build_string_bytes(&genesis_block.block_hash),
+            learned = %PrettyPrinter::build_string_bytes(learned_genesis_hash),
+            "shipped genesis claims a different hash than the learned register; refusing"
+        );
+        refuse();
+        return Ok(false);
+    }
+    let computed = proto_util::hash_block(&genesis_block);
+    if computed != *learned_genesis_hash {
+        tracing::warn!(
+            computed = %PrettyPrinter::build_string_bytes(&computed),
+            learned = %PrettyPrinter::build_string_bytes(learned_genesis_hash),
+            "shipped genesis content does not re-hash to the learned register; refusing"
+        );
+        refuse();
+        return Ok(false);
+    }
+    if block_dag_storage
+        .get_representation()?
+        .contains(&genesis_block.block_hash)
+    {
+        return Ok(true);
+    }
+    block_store.put_block_message(&genesis_block)?;
+    block_dag_storage.insert(
+        &genesis_block,
+        block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+    )?;
+    Ok(true)
 }
 
 impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
@@ -325,7 +420,8 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Initializing<
                     retry_count = retry_count,
                     "Retrying approved block request after NoApprovedBlockAvailable"
                 );
-                sleep(Duration::from_secs(10)).await;
+                const APPROVED_BLOCK_RETRY_DELAY: Duration = Duration::from_secs(10);
+                sleep(APPROVED_BLOCK_RETRY_DELAY).await;
                 self.transport_layer
                     .request_approved_block(&self.rp_conf_ask, Some(self.trim_state))
                     .await
@@ -769,10 +865,9 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         let tuple_space_requester =
             TupleSpaceRequester::new(&self.transport_layer, &self.rp_conf_ask);
 
-        // Keep LFS retry cadence configurable instead of hard-coding a long startup delay.
-        // Falls back to 5s when env var is absent or invalid.
-        let lfs_request_timeout = Duration::from_secs(5);
+        const LFS_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
         const LFS_SYNC_DEADLINE: Duration = Duration::from_secs(600);
+        let lfs_request_timeout = LFS_REQUEST_TIMEOUT;
 
         // **Scala equivalent**: Create both streams (blockRequestStream and tupleSpaceStream)
         let (block_request_stream_result, tuple_space_stream_result) = tokio::join!(
@@ -884,7 +979,8 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                     *sender_slot = Some(horizon_tx);
                 }
 
-                let request_timeout = Duration::from_secs(30);
+                const HORIZON_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+                let request_timeout = HORIZON_REQUEST_TIMEOUT;
                 tracing::info!(
                     "LFS forward-horizon: requesting {} ancestor rspace roots below LFB",
                     horizon_roots.len()
@@ -1039,11 +1135,35 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                     .await?;
                 match tokio::time::timeout(RESPONSE_TIMEOUT, rx.recv()).await {
                     Ok(Some(response)) => {
+                        // The genesis hash rides the same trusted exchange:
+                        // a truncated node holds no height-0 block, and the
+                        // newly-bonded latest-message placeholder must be
+                        // this network-uniform value on every node. The block
+                        // body lands too (verified against the hash) so this
+                        // node's latest-message structures stay identical to
+                        // a ceremony node's.
+                        if !response.genesis_hash.is_empty() {
+                            self.block_dag_storage
+                                .record_genesis_hash(response.genesis_hash.clone())?;
+                        }
+                        let genesis_landed = match response.genesis_block {
+                            Some(block) if !response.genesis_hash.is_empty() => {
+                                receive_shipped_genesis(
+                                    &self.block_dag_storage,
+                                    &self.block_store,
+                                    &response.genesis_hash,
+                                    block,
+                                )?
+                            }
+                            _ => false,
+                        };
                         let written =
                             apply_floor_cache_entries(&dag, &solicited, response.entries)?;
                         tracing::info!(
                             written,
                             requested = hashes.len(),
+                            genesis_learned = !response.genesis_hash.is_empty(),
+                            genesis_landed,
                             "Floor cache received: restored blocks carry their finality"
                         );
                         return Ok(());
@@ -1192,10 +1312,18 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         // count is not this number — it counts downloads, and anything the
         // height map dropped never reaches the DAG. `min_height` is the
         // requester's bound, reported because the DAG now reaches below it.
+        let lowest_height = height_map.keys().next().copied();
+        let coverage_from = contiguous_coverage_start(&height_map, min_height);
+        if let Some(lowest_held) = coverage_from {
+            self.block_dag_storage
+                .record_carrier_coverage_from(lowest_held)?;
+        }
+
         tracing::info!(
             inserted,
             min_height,
-            lowest_height = height_map.keys().next(),
+            lowest_height,
+            coverage_from,
             "Blocks for approved state added to DAG."
         );
         Ok(())
@@ -1462,7 +1590,6 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             .unwrap()
             .take()
             .ok_or_else(|| CasperError::RuntimeError("Estimator not available".to_string()))?;
-        let recovery_estimator = estimator.clone();
 
         // The on-chain fault-tolerance threshold is read and adopted by
         // `hash_set_casper` (the single adoption point shared by all three
@@ -1512,22 +1639,6 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             Arc::new(self.transport_layer.clone()),
             self.rp_conf_ask.clone(),
             self.block_retriever.clone(),
-            Some(RunningRecoveryContext {
-                connections_cell: self.connections_cell.clone(),
-                last_approved_block: self.last_approved_block.clone(),
-                block_store: self.block_store.clone(),
-                block_dag_storage: self.block_dag_storage.clone(),
-                deploy_storage: self.deploy_storage.clone(),
-                rejected_deploy_buffer: self.rejected_deploy_buffer.clone(),
-                casper_buffer_storage: self.casper_buffer_storage.clone(),
-                rspace_state_manager: self.rspace_state_manager.clone(),
-                event_publisher: self.event_publisher.clone(),
-                engine_cell: self.engine_cell.clone(),
-                runtime_manager: self.runtime_manager.clone(),
-                estimator: recovery_estimator,
-                casper_shard_conf: self.casper_shard_conf.clone(),
-                heartbeat_signal_ref: self.heartbeat_signal_ref.clone(),
-            }),
             &self.engine_cell,
             &self.event_publisher,
             self.state_items_tx.clone(),
@@ -1820,6 +1931,7 @@ mod tests {
 
         let mut dag_set = imbl::HashSet::new();
         dag_set.insert(held.clone());
+        dag_set.insert(floor.clone());
         let dag = KeyValueDagRepresentation {
             dag_set,
             latest_messages_map: imbl::HashMap::new(),
@@ -1839,6 +1951,9 @@ mod tests {
             lifecycle: Arc::new(parking_lot::RwLock::new(
                 block_storage::rust::dag::deploy_lifecycle_types::DeployLifecycleTables::in_memory(
                 ),
+            )),
+            carrier_index: Arc::new(parking_lot::RwLock::new(
+                block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
             )),
         };
 
@@ -1870,6 +1985,87 @@ mod tests {
             dag.get_cached_floor(&unheld).expect("read"),
             None,
             "a peer cannot seed finality for a block this node does not hold"
+        );
+    }
+
+    /// The anchor's seed is written moments earlier and verified against this
+    /// same rule, then solicited like every other restored block.
+    #[test]
+    fn a_shipped_entry_naming_unheld_history_is_refused_and_never_replaces_a_seed() {
+        use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
+        use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
+        use models::rust::casper::protocol::casper_message::FloorCacheEntry;
+        use parking_lot::RwLock as PlRwLock;
+        use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
+        use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
+
+        let anchor = BlockHash::from(vec![0x11; 32]);
+        let band = BlockHash::from(vec![0x12; 32]);
+        let seeded_floor = BlockHash::from(vec![0x13; 32]);
+        let below_horizon = BlockHash::from(vec![0x99; 32]);
+
+        let mut dag_set = imbl::HashSet::new();
+        dag_set.insert(anchor.clone());
+        dag_set.insert(band.clone());
+        dag_set.insert(seeded_floor.clone());
+        let dag = KeyValueDagRepresentation {
+            dag_set,
+            latest_messages_map: imbl::HashMap::new(),
+            child_map: imbl::HashMap::new(),
+            height_map: imbl::OrdMap::new(),
+            block_number_map: imbl::HashMap::new(),
+            main_parent_map: imbl::HashMap::new(),
+            self_justification_map: imbl::HashMap::new(),
+            invalid_blocks_set: imbl::HashSet::new(),
+            last_finalized_block_hash: prost::bytes::Bytes::new(),
+            finalized_blocks_set: imbl::HashSet::new(),
+            block_metadata_index: Arc::new(PlRwLock::new(BlockMetadataStore::new(
+                KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+            ))),
+            floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+            frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+            lifecycle: Arc::new(parking_lot::RwLock::new(
+                block_storage::rust::dag::deploy_lifecycle_types::DeployLifecycleTables::in_memory(
+                ),
+            )),
+            carrier_index: Arc::new(parking_lot::RwLock::new(
+                block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
+            )),
+        };
+
+        dag.put_cached_floor(anchor.clone(), seeded_floor.clone())
+            .expect("seed the anchor");
+        dag.put_cached_frontier(anchor.clone(), seeded_floor.clone())
+            .expect("seed the anchor");
+
+        let solicited = HashSet::from([anchor.clone(), band.clone()]);
+        let written = apply_floor_cache_entries(&dag, &solicited, vec![
+            FloorCacheEntry {
+                block_hash: band.clone(),
+                floor_hash: below_horizon.clone(),
+                frontier_hash: below_horizon.clone(),
+            },
+            FloorCacheEntry {
+                block_hash: anchor.clone(),
+                floor_hash: below_horizon.clone(),
+                frontier_hash: below_horizon.clone(),
+            },
+        ])
+        .expect("apply");
+
+        assert_eq!(
+            written, 0,
+            "an entry pointing at history the node never downloaded is refused"
+        );
+        assert_eq!(
+            dag.get_cached_floor(&band).expect("read"),
+            None,
+            "no entry is better than one whose walk cannot terminate"
+        );
+        assert_eq!(
+            dag.get_cached_floor(&anchor).expect("read"),
+            Some(seeded_floor),
+            "the verified seed survives the peer's answer for the same block"
         );
     }
 
@@ -1909,5 +2105,158 @@ mod tests {
             "highest height first: inserting descending keeps each sender's latest \
              message at its highest sequence number"
         );
+    }
+
+    /// The shipped genesis must land only when it verifies against the
+    /// learned register: claimed hash equals the register AND the content
+    /// re-hashes to it. A verified copy is stored and inserted finalized
+    /// without moving the LFB off the anchor; anything else is refused and
+    /// leaves no trace.
+    #[test]
+    fn shipped_genesis_lands_verified_and_finalized_without_moving_the_lfb() {
+        use block_storage::rust::dag::block_dag_key_value_storage::{
+            BlockDagKeyValueStorage, InsertMode,
+        };
+        use models::rust::block_implicits::get_random_block;
+        use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let mut kvm = InMemoryStoreManager::new();
+            let dag_storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+            let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm).await.unwrap();
+
+            let anchor = get_random_block(
+                Some(5),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(vec![BlockHash::from(vec![0xaa; 32])]),
+                None,
+                None,
+                None,
+                Some(vec![]),
+                None,
+                None,
+            );
+            dag_storage.insert(&anchor, InsertMode::Approved).unwrap();
+
+            let mut genesis = get_random_block(
+                Some(0),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(vec![]),
+                Some(vec![]),
+                None,
+                None,
+                Some(vec![]),
+                None,
+                None,
+            );
+            genesis.block_hash = crate::rust::util::proto_util::hash_block(&genesis);
+            dag_storage
+                .record_genesis_hash(genesis.block_hash.clone())
+                .unwrap();
+
+            let landed = receive_shipped_genesis(
+                &dag_storage,
+                &block_store,
+                &genesis.block_hash.clone(),
+                genesis.clone(),
+            )
+            .expect("receive_shipped_genesis");
+            assert!(landed, "a verified genesis copy must land");
+
+            let dag = dag_storage.get_representation().unwrap();
+            assert!(dag.contains(&genesis.block_hash), "genesis enters the DAG");
+            assert!(
+                dag.is_finalized(&genesis.block_hash),
+                "genesis is finalized by definition"
+            );
+            assert_eq!(
+                dag.last_finalized_block(),
+                anchor.block_hash,
+                "landing genesis must not move the LFB off the anchor"
+            );
+            assert!(
+                block_store.get(&genesis.block_hash).unwrap().is_some(),
+                "the block body is stored"
+            );
+
+            // A copy whose CONTENT does not re-hash to the register is refused
+            // even though its claimed hash matches: the claimed field is what
+            // a lying peer controls.
+            let mut kvm2 = InMemoryStoreManager::new();
+            let dag_storage2 = BlockDagKeyValueStorage::new(&mut kvm2).await.unwrap();
+            let block_store2 = KeyValueBlockStore::create_from_kvm(&mut kvm2)
+                .await
+                .unwrap();
+            dag_storage2.insert(&anchor, InsertMode::Approved).unwrap();
+            dag_storage2
+                .record_genesis_hash(genesis.block_hash.clone())
+                .unwrap();
+            let mut forged = genesis.clone();
+            forged.shard_id = "forged".to_string();
+            forged.block_hash = genesis.block_hash.clone();
+            let landed = receive_shipped_genesis(
+                &dag_storage2,
+                &block_store2,
+                &genesis.block_hash.clone(),
+                forged,
+            )
+            .expect("refusal is not an error");
+            assert!(!landed, "a forged copy must be refused");
+            let dag2 = dag_storage2.get_representation().unwrap();
+            assert!(
+                !dag2.contains(&genesis.block_hash),
+                "a refused copy leaves no trace in the DAG"
+            );
+            assert!(
+                block_store2.get(&genesis.block_hash).unwrap().is_none(),
+                "a refused copy leaves no trace in the block store"
+            );
+        });
+    }
+
+    /// A restore holding 156165-156241 also holds the shipped genesis at 0, so
+    /// the DAG minimum is 0; claiming coverage from there asserts completeness
+    /// over 156,000 heights the node never downloaded.
+    #[test]
+    fn coverage_starts_above_a_shipped_genesis_not_at_the_dag_minimum() {
+        use super::contiguous_coverage_start;
+
+        let band = |lo: i64, hi: i64| -> BTreeMap<i64, HashSet<BlockHash>> {
+            (lo..=hi)
+                .map(|h| (h, HashSet::from([BlockHash::from(vec![h as u8; 32])])))
+                .collect()
+        };
+
+        let mut restored = band(156_165, 156_241);
+        restored.insert(0, HashSet::from([BlockHash::from(vec![0xba; 32])]));
+        assert_eq!(
+            contiguous_coverage_start(&restored, 156_165),
+            Some(156_165),
+            "the shipped genesis is not the bottom of held history"
+        );
+
+        assert_eq!(
+            contiguous_coverage_start(&band(5, 12), 8),
+            Some(7),
+            "the row under the bound is complete; the rows under that are not"
+        );
+
+        assert_eq!(
+            contiguous_coverage_start(&band(0, 12), 0),
+            Some(0),
+            "a genesis-rooted node holds every height and claims from 0"
+        );
+        assert_eq!(contiguous_coverage_start(&BTreeMap::new(), 0), None);
     }
 }

@@ -9,12 +9,13 @@ use block_storage::rust::test::indexed_block_dag_storage::IndexedBlockDagStorage
 use casper::rust::api::block_api::BlockAPI;
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::engine::engine_with_casper::EngineWithCasper;
+use casper::rust::estimator::Estimator;
 use models::rust::block_hash::BlockHash;
+use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::protocol::casper_message::{BlockMessage, Bond};
 use models::rust::validator::Validator;
 
 use crate::helper::no_ops_casper_effect::NoOpsCasperEffect;
-use crate::helper::unlimited_parents_estimator_fixture::UnlimitedParentsEstimatorFixture;
 use crate::helper::{block_generator, block_util};
 use crate::util::rholang::resources::{
     generate_scope_id, mk_runtime_manager_at, mk_test_rnode_store_manager_shared,
@@ -281,8 +282,15 @@ async fn show_main_chain_should_return_only_blocks_in_the_main_chain() {
         .get_representation()
         .expect("dag representation");
 
-    let tips = UnlimitedParentsEstimatorFixture::create_estimator()
-        .tips(&mut dag, &genesis)
+    let latest_messages = dag.latest_message_hashes().into_iter().collect();
+    let tips = Estimator::apply()
+        .tips_with_latest_messages(
+            &mut dag,
+            &BlockMetadata::from_block(&genesis, false, None, None),
+            latest_messages,
+            Estimator::UNLIMITED_PARENTS,
+            None,
+        )
         .await
         .unwrap();
 
@@ -330,8 +338,15 @@ async fn get_blocks_should_return_all_blocks() {
         .get_representation()
         .expect("dag representation");
 
-    let tips = UnlimitedParentsEstimatorFixture::create_estimator()
-        .tips(&mut dag, &genesis)
+    let latest_messages = dag.latest_message_hashes().into_iter().collect();
+    let tips = Estimator::apply()
+        .tips_with_latest_messages(
+            &mut dag,
+            &BlockMetadata::from_block(&genesis, false, None, None),
+            latest_messages,
+            Estimator::UNLIMITED_PARENTS,
+            None,
+        )
         .await
         .unwrap();
 
@@ -377,8 +392,15 @@ async fn get_blocks_should_return_until_depth() {
         .get_representation()
         .expect("dag representation");
 
-    let tips = UnlimitedParentsEstimatorFixture::create_estimator()
-        .tips(&mut dag, &genesis)
+    let latest_messages = dag.latest_message_hashes().into_iter().collect();
+    let tips = Estimator::apply()
+        .tips_with_latest_messages(
+            &mut dag,
+            &BlockMetadata::from_block(&genesis, false, None, None),
+            latest_messages,
+            Estimator::UNLIMITED_PARENTS,
+            None,
+        )
         .await
         .unwrap();
 
@@ -429,8 +451,15 @@ async fn get_blocks_by_heights_should_return_blocks_between_start_and_end() {
         .get_representation()
         .expect("dag representation");
 
-    let tips = UnlimitedParentsEstimatorFixture::create_estimator()
-        .tips(&mut dag, &genesis)
+    let latest_messages = dag.latest_message_hashes().into_iter().collect();
+    let tips = Estimator::apply()
+        .tips_with_latest_messages(
+            &mut dag,
+            &BlockMetadata::from_block(&genesis, false, None, None),
+            latest_messages,
+            Estimator::UNLIMITED_PARENTS,
+            None,
+        )
         .await
         .unwrap();
 
@@ -466,4 +495,100 @@ async fn get_blocks_by_heights_should_return_blocks_between_start_and_end() {
         5,
         "Last block should be at height 5"
     );
+}
+
+#[tokio::test]
+async fn every_api_entry_point_reports_a_missing_casper_instance() {
+    use models::rhoapi::Par;
+
+    let engine_cell = EngineCell::init();
+
+    assert!(BlockAPI::get_blocks(&engine_cell, 10, MAX_BLOCK_LIMIT)
+        .await
+        .is_err());
+    assert!(BlockAPI::get_blocks_full(&engine_cell, 10, MAX_BLOCK_LIMIT)
+        .await
+        .is_err());
+    assert!(
+        BlockAPI::get_blocks_by_heights(&engine_cell, 0, 5, MAX_BLOCK_LIMIT)
+            .await
+            .is_err()
+    );
+    assert!(
+        BlockAPI::get_blocks_by_heights_full(&engine_cell, 0, 5, MAX_BLOCK_LIMIT)
+            .await
+            .is_err()
+    );
+    assert!(
+        BlockAPI::machine_verifiable_dag(&engine_cell, 10, MAX_BLOCK_LIMIT)
+            .await
+            .is_err()
+    );
+    assert!(BlockAPI::find_deploy(&engine_cell, &vec![1u8; 10])
+        .await
+        .is_err());
+    assert!(BlockAPI::get_block(&engine_cell, "abcdef01").await.is_err());
+    assert!(BlockAPI::last_finalized_block(&engine_cell).await.is_err());
+    assert!(BlockAPI::is_finalized(&engine_cell, "abcdef01")
+        .await
+        .is_err());
+    assert!(
+        BlockAPI::deploy_finalization_status(&engine_cell, &[1u8; 8])
+            .await
+            .is_err()
+    );
+    assert!(BlockAPI::list_pending_deploys(&engine_cell, None)
+        .await
+        .is_err());
+    assert!(BlockAPI::bond_status(&engine_cell, &vec![1u8; 33])
+        .await
+        .is_err());
+    assert!(BlockAPI::get_latest_message(&engine_cell).await.is_err());
+    assert!(BlockAPI::get_listening_name_data_response(
+        &engine_cell,
+        1,
+        Par::default(),
+        MAX_BLOCK_LIMIT
+    )
+    .await
+    .is_err());
+    assert!(BlockAPI::get_listening_name_continuation_response(
+        &engine_cell,
+        1,
+        &[Par::default()],
+        MAX_BLOCK_LIMIT
+    )
+    .await
+    .is_err());
+    assert!(
+        BlockAPI::get_data_at_par(&engine_cell, &Par::default(), "aabbcc".to_string(), false)
+            .await
+            .is_err()
+    );
+
+    let main_chain = BlockAPI::show_main_chain(&engine_cell, 10, MAX_BLOCK_LIMIT).await;
+    assert!(
+        main_chain.is_empty(),
+        "show_main_chain degrades to an empty listing without casper"
+    );
+}
+
+#[test]
+fn preview_private_names_is_deterministic_and_clamped() {
+    let deployer: Vec<u8> = vec![7u8; 33];
+
+    let first = BlockAPI::preview_private_names(&deployer, 42, 3).unwrap();
+    let second = BlockAPI::preview_private_names(&deployer, 42, 3).unwrap();
+    assert_eq!(first.len(), 3);
+    assert_eq!(
+        first, second,
+        "the same deployer and timestamp must yield the same names"
+    );
+
+    let different_time = BlockAPI::preview_private_names(&deployer, 43, 3).unwrap();
+    assert_ne!(first, different_time);
+
+    assert!(BlockAPI::preview_private_names(&deployer, 42, -5)
+        .unwrap()
+        .is_empty());
 }

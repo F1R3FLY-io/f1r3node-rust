@@ -16,6 +16,7 @@ heed = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 dashmap = { workspace = true }
+arc-swap = { workspace = true }
 imbl = { workspace = true }
 prost = { workspace = true }
 bit-set = "0.5.3"

@@ -103,8 +103,6 @@ fn mk_casper_snapshot(dag: KeyValueDagRepresentation) -> CasperSnapshot {
     CasperSnapshot {
         dag,
         last_finalized_block: Bytes::new(),
-        lca: Bytes::new(),
-        tips: Vec::new(),
         parents: Vec::new(),
         justifications: Default::default(),
         invalid_blocks: HashMap::new(),
@@ -237,6 +235,9 @@ async fn from_input_files(
             quarantine_length: params.quarantine_length,
             number_of_active_validators: params.number_of_active_validators,
             fault_tolerance_threshold_ppm: 0,
+            max_parent_depth: 15,
+            deploy_lifespan: 50,
+            min_phlo_price: 0,
             validators,
             pos_multi_sig_public_keys: DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS.to_vec(),
             pos_multi_sig_quorum: DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS.len() as u32 - 1,

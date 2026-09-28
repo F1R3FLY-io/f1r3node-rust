@@ -20,14 +20,14 @@
    onchain        | ppm baked into genesis PoS state | read_on_chain_fault_
                   |   (range-checked to [-1e6,1e6])   |   tolerance_threshold_ppm
                   |                                  |   (token_metadata_check.rs:101,105)
-   reconcile      | value the node FINALIZES with    | casper.rs:242
+   reconcile      | value the node FINALIZES with    | casper.rs:266
                   |   (= onchain, UNCONDITIONALLY)    |   casper_shard_conf.ftt_ppm
                   |                                  |     = on_chain_ppm
    ---------------+----------------------------------+--------------------------
 
-   At casper.rs:230-242 the node reads the on-chain ppm (:230), logs at :236 if the
-   local config disagrees, and then at :242 OVERWRITES the in-memory config's ppm
-   with the on-chain value, UNCONDITIONALLY (the `if` at :235 only gates the log,
+   At casper.rs:236-270 the node reads the on-chain ppm (:253), logs at :259 if the
+   local config disagrees, and then at :266 OVERWRITES the in-memory config's ppm
+   with the on-chain value, UNCONDITIONALLY (the `if` at :259 only gates the log,
    not the assignment). Every finalization thereafter
    uses `casper_shard_conf.fault_tolerance_threshold_ppm`, which now equals the
    on-chain value. Hence `reconcile local onchain = onchain` — local config is NOT
@@ -56,7 +56,7 @@ From FinalizedFloor Require Import FtExact.
 
 Open Scope Z_scope.
 
-(* The reconcile/override the node performs at casper.rs:242: the
+(* The reconcile/override the node performs at casper.rs:266: the
    in-memory `local` ppm is UNCONDITIONALLY replaced by the on-chain `onchain` ppm.
    Modelled faithfully as the second projection — the result ignores `local`. *)
 Definition reconcile (local onchain : Z) : Z := onchain.

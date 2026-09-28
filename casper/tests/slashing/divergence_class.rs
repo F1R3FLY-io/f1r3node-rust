@@ -1,12 +1,12 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // DivergenceClass — Rust mirror of the Rocq classification at
 // `formal/rocq/slashing/theories/Bisimulation.v:520`.
 //
-// Reference: docs/theory/slashing/design/14-test-plan.md §14.3.4
+// Reference: docs/casper/theory/slashing/design/14-test-plan.md §14.3.4
 // (UC-76..UC-86 use this enum to classify Sage/Hypothesis frontier
 // witnesses into documented buckets).
 //

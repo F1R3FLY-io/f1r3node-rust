@@ -1,7 +1,7 @@
 // UC-12 — Concurrent insert: post-fix preserves both witnesses;
 // pre-fix loses one. Sequential proxy for T-9.2.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-12.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-12.
 // Theorem: T-9.2 (atomic record insert).
 // Reference: design/09-bug-fixes-and-rationale.md §9.2.
 //

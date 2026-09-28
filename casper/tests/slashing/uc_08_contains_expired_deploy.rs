@@ -1,6 +1,6 @@
 // UC-08 — ContainsExpiredDeploy dispatch.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-08.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-08.
 // Theorems: T-3, T-9.3.
 //
 // Scenario: a block contains a deploy past its valid-after window

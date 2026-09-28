@@ -91,6 +91,9 @@ pub struct GrpcTransportClient {
 
 const MIN_PEER_REQUEST_TIMEOUT: Duration = Duration::from_secs(1);
 const MAX_CHANNEL_MAP_ENTRIES: usize = 1024;
+/// Assumes a ~200 KB/s transfer floor when sizing per-packet send timeouts.
+const STREAM_TIMEOUT_MICROS_PER_BYTE: u64 = 5;
+const CHANNEL_LIVENESS_CHECK_TIMEOUT: Duration = Duration::from_millis(50);
 
 impl GrpcTransportClient {
     /// Create a new GrpcTransportClient
@@ -421,9 +424,9 @@ impl GrpcTransportClient {
             >,
         >,
     ) -> Result<(), CommError> {
-        // Timeout calculation
         let calculate_timeout = |packet: &models::routing::Packet| -> Duration {
-            let packet_based_timeout = Duration::from_micros(packet.content.len() as u64 * 5);
+            let packet_based_timeout =
+                Duration::from_micros(packet.content.len() as u64 * STREAM_TIMEOUT_MICROS_PER_BYTE);
             std::cmp::max(packet_based_timeout, default_send_timeout)
         };
 
@@ -489,15 +492,12 @@ impl GrpcTransportClient {
         }
 
         // 2. Second check: Test if the channel can create a client
-        let test_result = tokio::time::timeout(
-            Duration::from_millis(50), // Very short timeout for quick check
-            async {
-                // Try to create a transport client - this will fail if channel is terminated
-                let _client = channel.get_transport_client();
-                // If we got here, the channel is still functional
-                false
-            },
-        )
+        let test_result = tokio::time::timeout(CHANNEL_LIVENESS_CHECK_TIMEOUT, async {
+            // Try to create a transport client - this will fail if channel is terminated
+            let _client = channel.get_transport_client();
+            // If we got here, the channel is still functional
+            false
+        })
         .await;
 
         match test_result {
@@ -585,5 +585,60 @@ impl TransportLayer for GrpcTransportClient {
     async fn get_channeled_peers(&self) -> Result<std::collections::HashSet<PeerNode>, CommError> {
         let channels_map = self.channels_map.lock().await;
         Ok(channels_map.keys().cloned().collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use prost::bytes::Bytes;
+
+    use super::*;
+    use crate::rust::peer_node::{Endpoint, NodeIdentifier};
+
+    fn peer(name: &str) -> PeerNode {
+        PeerNode {
+            id: NodeIdentifier {
+                key: Bytes::from(name.as_bytes().to_vec()),
+            },
+            endpoint: Endpoint::new("host".to_string(), 40400, 40404),
+        }
+    }
+
+    fn client(network_timeout: Duration) -> GrpcTransportClient {
+        GrpcTransportClient::new(
+            "test".to_string(),
+            "cert".to_string(),
+            "key".to_string(),
+            1024,
+            256,
+            16,
+            Arc::new(Mutex::new(HashMap::new())),
+            network_timeout,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn new_accepts_normal_and_too_low_timeouts() {
+        client(Duration::from_secs(5));
+        client(Duration::from_millis(1));
+    }
+
+    #[tokio::test]
+    async fn disconnect_unknown_peer_is_a_noop() {
+        let c = client(Duration::from_secs(5));
+        assert!(c.disconnect(&peer("unknown")).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn broadcast_and_stream_mult_with_no_peers_succeed() {
+        let c = client(Duration::from_secs(5));
+        let msg = Protocol::default();
+        assert!(c.broadcast(&[], &msg).await.is_ok());
+
+        let blob = crate::rust::rp::protocol_helper::blob(&peer("s"), "T", b"x");
+        assert!(c.stream_mult(&[], &blob).await.is_ok());
+
+        assert!(c.get_channeled_peers().await.unwrap().is_empty());
     }
 }

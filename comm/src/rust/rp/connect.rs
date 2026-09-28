@@ -416,3 +416,126 @@ pub async fn connect<T: TransportLayer>(
 
     result
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rust::peer_node::{Endpoint, NodeIdentifier};
+    use crate::rust::test_instances::NodeDiscoveryStub;
+
+    fn peer(name: &str) -> PeerNode {
+        PeerNode {
+            id: NodeIdentifier {
+                key: Bytes::from(name.as_bytes().to_vec()),
+            },
+            endpoint: Endpoint::new("host".to_string(), 80, 80),
+        }
+    }
+
+    fn cell_with(peers: &[PeerNode]) -> ConnectionsCell {
+        let cell = ConnectionsCell::new();
+        cell.flat_modify(|_| Ok(Connections::from_vec(peers.to_vec())))
+            .unwrap();
+        cell
+    }
+
+    #[test]
+    fn liveness_tracker_exposes_threshold() {
+        let tracker = PeerLivenessTracker::new(3).unwrap();
+        assert_eq!(tracker.threshold(), 3);
+    }
+
+    #[test]
+    fn connections_is_empty_reflects_content() {
+        assert!(Connections::empty().is_empty());
+        assert!(!Connections::from_vec(vec![peer("A")]).is_empty());
+    }
+
+    #[test]
+    fn add_conn_and_report_appends_connection() {
+        let connections = Connections::empty()
+            .add_conn_and_report(peer("A"))
+            .unwrap()
+            .add_conn_and_report(peer("B"))
+            .unwrap();
+        assert_eq!(connections.into_vec(), vec![peer("A"), peer("B")]);
+    }
+
+    #[test]
+    fn remove_conn_and_report_drops_connection() {
+        let connections = Connections::from_vec(vec![peer("A"), peer("B")])
+            .remove_conn_and_report(peer("A"))
+            .unwrap();
+        assert_eq!(connections.into_vec(), vec![peer("B")]);
+    }
+
+    #[test]
+    fn refresh_conn_moves_existing_connection_to_end() {
+        let connections = Connections::from_vec(vec![peer("A"), peer("B"), peer("C")])
+            .refresh_conn(peer("A"))
+            .unwrap();
+        assert_eq!(connections.into_vec(), vec![
+            peer("B"),
+            peer("C"),
+            peer("A")
+        ]);
+    }
+
+    #[test]
+    fn refresh_conn_ignores_unknown_connection() {
+        let connections = Connections::from_vec(vec![peer("A"), peer("B")])
+            .refresh_conn(peer("X"))
+            .unwrap();
+        assert_eq!(connections.into_vec(), vec![peer("A"), peer("B")]);
+    }
+
+    #[test]
+    fn random_returns_at_most_max_known_peers() {
+        let all = vec![peer("A"), peer("B"), peer("C"), peer("D")];
+        let cell = cell_with(&all);
+
+        let two = cell.random(2).unwrap();
+        assert_eq!(two.len(), 2);
+        for p in two.iter() {
+            assert!(all.contains(p));
+        }
+
+        let many = cell.random(10).unwrap();
+        assert_eq!(many.to_set(), Connections::from_vec(all).to_set());
+    }
+
+    #[test]
+    fn reset_connections_empties_the_cell() {
+        let cell = cell_with(&[peer("A"), peer("B")]);
+        reset_connections(&cell).unwrap();
+        assert!(cell.read().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn find_and_connect_skips_wrong_network_peers() {
+        let cell = cell_with(&[]);
+        let mut discovery = NodeDiscoveryStub::new();
+        discovery.nodes = vec![peer("good"), peer("wrong-net"), peer("broken")];
+
+        let connect_fn = |p: &PeerNode| {
+            let p = p.clone();
+            async move {
+                if p == peer("wrong-net") {
+                    Err(CommError::WrongNetwork(
+                        "wrong-net".to_string(),
+                        "network mismatch".to_string(),
+                    ))
+                } else if p == peer("broken") {
+                    Err(CommError::TimeOut)
+                } else {
+                    Ok(())
+                }
+            }
+        };
+
+        let connected = find_and_connect(&cell, &discovery, connect_fn)
+            .await
+            .unwrap();
+        assert_eq!(connected, vec![peer("good")]);
+    }
+}

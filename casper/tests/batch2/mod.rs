@@ -1,4 +1,5 @@
 pub mod carrier_record_spec;
+pub mod clique_edge_stall_spec;
 pub mod clique_oracle_test;
 pub mod dedup_orphan_recovery_spec;
 pub mod estimator_test;
@@ -10,6 +11,7 @@ pub mod floor_fork_reproduction_spec;
 pub mod floor_of_view_test;
 pub mod floor_stall_reproduction_spec;
 pub mod limited_parent_depth_spec;
+pub mod loss_priority_spec;
 pub mod lmdb_key_value_store_spec;
 pub mod map_cell_convergence_spec;
 pub mod merge_window_spec;

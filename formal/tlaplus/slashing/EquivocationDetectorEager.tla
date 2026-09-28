@@ -2,18 +2,19 @@
 (****************************************************************************)
 (* Memory-efficient rewrite of EquivocationDetector.tla.                    *)
 (*                                                                          *)
-(* Equivalence-preserving optimizations versus the original:                *)
+(* Property-preserving abstractions of the production detector:             *)
 (*                                                                          *)
 (* 1. EAGER DETECTION                                                       *)
 (*    SignBlock + DetectArrival are combined into one atomic action         *)
 (*    (SignAndDetect). This eliminates the spurious intermediate states     *)
 (*    where a block is in the DAG but not yet classified. The rewrite is    *)
-(*    a stutter-equivalent quotient: every observable trace of the          *)
-(*    original is realized by exactly one trace here, and vice-versa.       *)
+(*    an invariant-preserving quotient for the detector safety and          *)
+(*    completion properties checked below. Pending-classification timing    *)
+(*    and exact admissible/ignorable histories are intentionally hidden.    *)
 (*                                                                          *)
-(*    Justification: no observable barb depends on the detector NOT having  *)
-(*    fired yet. The Rust/Scala implementations always classify a block     *)
-(*    in the same atomic step that adds it to the DAG.                      *)
+(*    Justification: the Rust implementation classifies an arrival before   *)
+(*    publishing it as admitted detector state. The original local model    *)
+(*    remains the authority for scheduler-visible pending interleavings.     *)
 (*                                                                          *)
 (* 2. SAFETY-FIED LIVENESS                                                  *)
 (*    The temporal property [](real-equivocation ~> non-valid) has 8        *)
@@ -31,15 +32,16 @@
 (* 3. DEPENDENCY-AS-PARAMETER                                               *)
 (*    Instead of MarkAsDependency as an independent action, the dependency  *)
 (*    flag is chosen non-deterministically as a parameter to SignAndDetect. *)
-(*    This is sound because nothing in the original spec constrains WHEN    *)
-(*    a block becomes a dependency relative to its own classification.      *)
+(*    This preserves the checked detector properties because both outcomes  *)
+(*    denote a real, slashable equivocation; the exact dependency-timing     *)
+(*    taxonomy remains covered by the local original-state model.            *)
 (*                                                                          *)
 (* 4. SYMMETRY                                                              *)
 (*    TLC SYMMETRY over Validators is exposed (declared in the .cfg).       *)
 (*    With 2 validators this halves the explored state space; with 3 it    *)
 (*    is a 6× reduction.                                                    *)
 (*                                                                          *)
-(* Reference: docs/theory/slashing/slashing-verification.md §10.            *)
+(* Reference: docs/casper/theory/slashing/slashing-verification.md §10.            *)
 (****************************************************************************)
 
 EXTENDS Integers, Sequences, FiniteSets, TLC
@@ -373,10 +375,6 @@ Inv_LivenessAsSafety ==
     \A v \in Validators, s \in 1..MaxSeqNum, b \in 1..MaxBlocksPerSeq :
         (b \in blocks[v][s] /\ IsRealEquivocation(v, s))
         => detectedStatus[<<v, s, b>>] \in {"admissible", "ignorable", "neglected"}
-
-\* The above invariant holds trivially if at least one of the equivocating
-\* siblings has been classified. ReclassifySibling fairness ensures
-\* eventually all siblings are classified.
 
 (****************************************************************************)
 (* FV audit #6 invariants (unbonded-window record pollution fork).          *)

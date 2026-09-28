@@ -90,9 +90,65 @@ mod tests {
     use crypto::rust::private_key::PrivateKey;
     use crypto::rust::signatures::secp256k1::Secp256k1;
     use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
     use shared::rust::store::key_value_store::KeyValueStore;
 
     use super::*;
+
+    fn deploy(time_stamp: i64) -> Signed<DeployData> {
+        Signed::create(
+            DeployData {
+                term: "Nil".to_string(),
+                time_stamp,
+                phlo_price: 1,
+                phlo_limit: 100_000,
+                valid_after_block_number: 0,
+                shard_id: "root".to_string(),
+                expiration_timestamp: None,
+            },
+            Box::new(Secp256k1),
+            PrivateKey::from_bytes(&[1; 32]),
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn storage_round_trips_add_contains_read_and_remove() {
+        let mut kvm = InMemoryStoreManager::new();
+        let mut storage = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
+        assert!(!storage.non_empty().unwrap());
+
+        let (d1, d2) = (deploy(1), deploy(2));
+        storage.add(vec![d1.clone(), d2.clone()]).unwrap();
+
+        assert!(storage.non_empty().unwrap());
+        assert!(storage.contains_sig(&d1.sig).unwrap());
+        assert!(!storage.contains_sig(&[0u8; 64]).unwrap());
+        assert_eq!(
+            storage.read_all().unwrap(),
+            HashSet::from([d1.clone(), d2.clone()])
+        );
+
+        assert!(storage.any(|d| Ok(d.data.time_stamp == 2)).unwrap());
+        assert!(!storage.any(|d| Ok(d.data.time_stamp == 99)).unwrap());
+
+        storage.remove(vec![d2]).unwrap();
+        assert_eq!(storage.read_all().unwrap(), HashSet::from([d1.clone()]));
+
+        assert!(storage.remove_by_sig(&d1.sig).unwrap());
+        assert!(!storage.remove_by_sig(&d1.sig).unwrap());
+        assert!(!storage.non_empty().unwrap());
+    }
+
+    #[tokio::test]
+    async fn add_if_absent_reports_the_duplicate() {
+        let mut kvm = InMemoryStoreManager::new();
+        let mut storage = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
+        let d1 = deploy(1);
+        assert!(storage.add_if_absent(d1.clone()).unwrap());
+        assert!(!storage.add_if_absent(d1).unwrap());
+        assert_eq!(storage.read_all().unwrap().len(), 1);
+    }
 
     #[test]
     fn add_if_absent_is_atomic_across_storage_handles() {

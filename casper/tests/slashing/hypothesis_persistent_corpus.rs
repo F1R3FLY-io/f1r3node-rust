@@ -1,11 +1,11 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // UC-87 — Persistent corpus accumulates classifications across runs.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-87.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-87.
 // Reference: formal/sage/slashing/FINDINGS.md (corpus retention rows),
 // formal/sage/slashing/hypothesis_search/.
 //

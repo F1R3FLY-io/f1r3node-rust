@@ -32,14 +32,16 @@
 //     ordering of the latest-message map, and the snapshot.rs parent-ordering
 //     comparator places it first.
 //
-//     SCOPE CAVEAT — this covers STAGE 1 ONLY. The GHOST head is NOT necessarily the
-//     block's MAIN PARENT: snapshot.rs:332 then runs `prefer_deploy_support_main_parent`
-//     (:124-185), which can PROMOTE a deploy-carrying branch to index 0 and override it
-//     (GuardBridge.v `pipeline_head_may_differ_from_ghost` refutes the old
-//     "main parent = ghost head" bridge by computation). Stage 2 is a private fn, so its
-//     proptests live in-module in snapshot.rs's `mod tests` (`deploy_support_*`). The
-//     ESTIMATOR results asserted here are unaffected — see
-//     docs/theory/fork-choice/fork-choice-verification.md §6.2.
+//     SCOPE NOTE — the GHOST head IS the block's main parent: snapshot.rs sorts
+//     it first and the former stage-2 promotions (deploy-support, then
+//     certification-following at score ties) are deleted — under
+//     heaviest-subtree descent a certified branch holds a strict weight
+//     majority, so no tie-break stage has anything left to decide. The only
+//     post-ordering transform is the deploy-free DAG-covering collapse, which
+//     keeps ancestry only. These fixtures are DEPTH-1, where the tip ranking
+//     and the subtree descent coincide by construction; the depth-2 case where
+//     they separate is heaviest_subtree_descent.rs. See
+//     docs/casper/theory/fork-choice/fork-choice-verification.md §6.2.
 //
 // LOCAL-ONLY verification (not consensus code). Run under `cargo test -p casper` and
 // gated by scripts/check-fork-choice-ALL.sh via the `fork_choice::` filter.
@@ -48,6 +50,7 @@ use std::collections::HashMap;
 
 use casper::rust::estimator::Estimator;
 use models::rust::block_hash::BlockHash;
+use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::protocol::casper_message::{BlockMessage, Bond};
 use models::rust::validator::Validator;
 use proptest::prelude::*;
@@ -229,10 +232,10 @@ proptest! {
             let mut dag = block_dag_storage
                 .get_representation()
                 .expect("dag representation");
-            let estimator = Estimator::apply(i32::MAX, None);
+            let estimator = Estimator::apply();
 
             let tips = estimator
-                .tips_with_latest_messages(&mut dag, &genesis, latest)
+                .tips_with_latest_messages(&mut dag, &BlockMetadata::from_block(&genesis, false, None, None), latest, i32::MAX, None)
                 .await
                 .expect("tips")
                 .tips;
@@ -263,10 +266,9 @@ proptest! {
 /// sorts it first. A fixed distinct-stake fork (30 / 20 / 10) makes the heaviest branch
 /// unambiguous.
 ///
-/// STAGE 2 (`prefer_deploy_support_main_parent`, :332 -> :124-185) can still PROMOTE a
-/// deploy-carrying branch over this ghost head, so the value asserted here is the GHOST
-/// HEAD, not necessarily the block's final main parent. Stage 2 is covered by the
-/// `deploy_support_*` proptests in snapshot.rs's in-module `mod tests`.
+/// With the stage-2 promotions deleted, the ghost head asserted here IS the
+/// block's main parent (modulo the deploy-free DAG-covering collapse, which
+/// keeps ancestry only).
 #[tokio::test]
 async fn main_parent_is_ghost_head_deterministic() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
@@ -280,7 +282,7 @@ async fn main_parent_is_ghost_head_deterministic() {
         let mut dag = block_dag_storage
             .get_representation()
             .expect("dag representation");
-        let estimator = Estimator::apply(i32::MAX, None);
+        let estimator = Estimator::apply();
 
         // The heaviest branch is validator 0's (stake 30) — the expected main parent.
         let expected_main = branch_blocks[0].block_hash.clone();
@@ -295,7 +297,13 @@ async fn main_parent_is_ghost_head_deterministic() {
             let permuted: HashMap<Validator, BlockHash> =
                 order.iter().map(|&i| entries[i].clone()).collect();
             let ghost_main_parent = estimator
-                .tips_with_latest_messages(&mut dag, &genesis, permuted)
+                .tips_with_latest_messages(
+                    &mut dag,
+                    &BlockMetadata::from_block(&genesis, false, None, None),
+                    permuted,
+                    i32::MAX,
+                    None,
+                )
                 .await
                 .expect("tips")
                 .tips
@@ -308,10 +316,9 @@ async fn main_parent_is_ghost_head_deterministic() {
             );
         }
 
-        // snapshot.rs:325-331 STAGE-1 parent ordering: place the ghost head first, then
-        // by hash — asserted on a deliberately shuffled parent list. (Stage 2, :332 ->
-        // :124-185, can still promote a deploy-carrying branch over this head; see the
-        // `deploy_support_*` proptests in snapshot.rs's in-module `mod tests`.)
+        // snapshot.rs parent ordering: place the ghost head first, then by
+        // hash — asserted on a deliberately shuffled parent list. No later
+        // stage reorders it.
         let ghost_main_parent = Some(expected_main.clone());
         let mut parents: Vec<BlockMessage> = vec![
             branch_blocks[2].clone(),

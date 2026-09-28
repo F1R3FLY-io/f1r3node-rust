@@ -162,7 +162,7 @@ async fn validator_vaults_should_have_zero_balance_at_genesis() {
 
 /// InvalidBlocks map should contain invalid block after processing
 #[tokio::test]
-async fn invalid_blocks_map_should_contain_invalid_block_after_processing() {
+async fn invalid_blocks_map_stays_empty_for_a_demoted_verdict() {
     let genesis = GenesisBuilder::new()
         .build_genesis_with_parameters(None)
         .await
@@ -217,20 +217,19 @@ async fn invalid_blocks_map_should_contain_invalid_block_after_processing() {
         }
     }
 
-    // Check what's in node 1's dag.invalidBlocks
+    // InvalidBlockHash is judged against local state (demoted since the
+    // is_slashable narrowing): the block is dropped without entering
+    // dag.invalidBlocks.
     let dag = nodes[1].casper.block_dag().await.expect("Should get DAG");
     let invalid_blocks = dag.invalid_blocks();
 
-    tracing::info!("dag.invalidBlocks count: {}", invalid_blocks.len());
-
-    // The invalid block should be in dag.invalidBlocks
     let is_in_invalid_blocks = invalid_blocks
         .iter()
         .any(|block_meta| block_meta.block_hash == invalid_block.block_hash);
 
     assert!(
-        is_in_invalid_blocks,
-        "The invalid block should be in dag.invalidBlocks"
+        !is_in_invalid_blocks,
+        "a demoted verdict's block must be dropped, not recorded as evidence"
     );
 }
 

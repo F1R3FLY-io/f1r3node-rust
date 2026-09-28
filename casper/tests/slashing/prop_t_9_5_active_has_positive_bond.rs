@@ -1,13 +1,13 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // Property-based test for T-9.5 corollary: active_implies_bonded.
 //
 // Theorem: T-9.5 corollary (`t_9_5_active_has_positive_bond`,
 // formal/rocq/slashing/theories/BugFixStakeZero.v:58).
-// Reference: docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.6.
+// Reference: docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.6.
 //
 // Property: every validator in the active set has a strictly
 // positive bond, AND this invariant is preserved by the slash

@@ -31,6 +31,14 @@ build-debug:
     cargo build -p node
 
 # =================================================================
+# TEST COVERAGE
+# =================================================================
+
+# Enforce 80% unit-test line coverage (requires cargo-llvm-cov + llvm-tools-preview)
+coverage *crates:
+    scripts/coverage.sh {{crates}}
+
+# =================================================================
 # STANDALONE NODE
 # =================================================================
 
@@ -88,7 +96,7 @@ vps-status target="both":
     scripts/remote/status.sh {{target}}
 
 # Ship a Docker image from local daemon to both VPSes (parallel)
-vps-image-push image="sjc.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest":
+vps-image-push image="us-sanjose-1.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest":
     scripts/remote/image-transfer.sh --apply {{image}}
 
 # Stop containers on both VPSes, then terminate the OCI VPSes themselves

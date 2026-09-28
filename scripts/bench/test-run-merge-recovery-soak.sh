@@ -14,10 +14,9 @@ cat >"$TMP/bin/poetry" <<'SH'
 #!/usr/bin/env bash
 trap 'exit 143' TERM INT
 printf '%s\n' "$$" >"$FAKE_POETRY_PID_FILE"
-# Docker sessions write monitor artifacts under log-archive/ (the provider's
-# host-visible per-session dir); subprocess sessions write under data/. The
-# monitor CSV goes to the archive root and the metrics CSV to the data root
-# so a driver that searches only one of them fails this test.
+# Docker sessions write monitor artifacts under log-archive/. Subprocess
+# sessions write them under .subprocess-data/. The first scenario splits
+# telemetry across the archive and legacy data roots.
 mkdir -p "$FAKE_ARCHIVE_DIR/session" "$FAKE_DATA_DIR/session"
 # Every harness CSV below is written CRLF (sed 's/$/\r/'): the real harness
 # writes them with Python csv.writer, whose default line terminator is \r\n,
@@ -57,9 +56,12 @@ CSV
 # that also lives under data/): counting metrics must see it once.
 cat >"$FAKE_DATA_DIR/session/validator1.log" <<'LOG'
 proposal rejected: too far ahead of the last finalized block
+Propose timing: total_ms=3525
 LOG
 cp "$FAKE_DATA_DIR/session/validator1.log" "$FAKE_ARCHIVE_DIR/session/validator1.log"
 printf 'fake pytest started\n'
+printf 'low      |      30 |    1.0 |    1.9    5.9    5.9 |   90.0  100.0  101.0 |   45.4\r\n'
+printf 'sustained |    1200 |    4.0 |   18.3   87.6  106.6 |   85.1  120.6  133.3 |  -20.2\r\n'
 printf 'All-node LFBs at drain: {validator1: 12, validator2: 9} (spread 3 blocks)\n'
 if [ "${FAKE_EMIT_SOAK_METRIC:-false}" = "true" ]; then
 	printf 'SOAK_METRIC name=lfb_spread value=4 phase=drain\n'
@@ -120,13 +122,11 @@ jq -e '
   and .failures == 0
 ' "$TMP/output/.soak-checkpoint-state.json" >/dev/null
 for _ in $(seq 1 20); do
-	[ -s "$TMP/output/iteration-00001-docker/node-metrics-timeseries.csv" ] &&
+	[ -s "$TMP/output/iteration-00001-docker/resource-timeseries.csv" ] &&
+		[ -s "$TMP/output/iteration-00001-docker/resource-percore-timeseries.csv" ] &&
+		[ -s "$TMP/output/iteration-00001-docker/node-metrics-timeseries.csv" ] &&
 		grep -q 'test.validator1.*12.*1048576.*2.*2.*7' \
 			"$TMP/output/iteration-00001-docker/node-memory-timeseries.tsv" 2>/dev/null && break
-	sleep 0.25
-done
-for _ in $(seq 1 20); do
-	[ -s "$TMP/output/iteration-00001-docker/resource-percore-timeseries.csv" ] && break
 	sleep 0.25
 done
 test -s "$TMP/output/iteration-00001-docker/resource-timeseries.csv"
@@ -164,6 +164,10 @@ jq -e '
   and .cpu_peak_core_grid_pct == {"validator1": {"0": 7.5, "1": 42}, "validator2": {"all": 20}}
   and .iteration_metrics[0].exit_code == 1
   and .iteration_metrics[0].rss_peak_mb == 768
+  and .iteration_metrics[0].finalization_latency == {p50_ms: 85100, p95_ms: 120600, p99_ms: 133300, samples: 2}
+  and .finalization_p50_ms == 85100
+  and .finalization_p95_ms == 120600
+  and .finalization_p99_ms == 133300
   and .iteration_metrics[0].cpu_peak_per_node_pct == {"validator1": 10, "validator2": 20}
   and .iteration_metrics[0].cpu_peak_per_node_core_pct == {"validator1": {"0": 7.5, "1": 42}}
   and .iteration_metrics[0].too_far_ahead_errors == 1
@@ -179,17 +183,12 @@ test -s "$TMP/fake-poetry.pid"
 # Scenario 2: the soak window ends mid-iteration. timeout(1) kills pytest and
 # reports 124; the driver must write the deadline marker, NOT count the
 # iteration as a failure (exit 0, no exit-code.txt, no early-exit), and still
-# publish the telemetry the snapshot loop harvested before the kill — the
-# emit call runs BEFORE the deadline break, and nothing else pins that
-# ordering. Canary 31554271086 iteration 2 (all-null metrics, exit 124) is
-# what the summary degrades to when the harness wrote no CSVs; here the fake
-# harness writes them immediately, so nulls would mean the driver dropped
-# metrics it had.
+# publish telemetry from the subprocess monitor root before the kill.
 mkdir -p "$TMP/si2"
 PATH="$TMP/bin:$PATH" \
 	FAKE_POETRY_PID_FILE="$TMP/fake-poetry-2.pid" \
 	FAKE_DATA_DIR="$TMP/si2/integration-tests/data" \
-	FAKE_ARCHIVE_DIR="$TMP/si2/integration-tests/log-archive" \
+	FAKE_ARCHIVE_DIR="$TMP/si2/integration-tests/.subprocess-data" \
 	FAKE_EMIT_SOAK_METRIC=true \
 	SOAK_DURATION_SECONDS=6 \
 	SYSTEM_INTEGRATION_DIR="$TMP/si2" \
@@ -233,6 +232,10 @@ jq -e '
   and .cpu_peak_core_grid_pct == {"validator1": {"0": 7.5, "1": 42}, "validator2": {"all": 20}}
   and .iteration_metrics[0].exit_code == 124
   and .iteration_metrics[0].rss_peak_mb == 768
+  and .iteration_metrics[0].finalization_latency == {p50_ms: 85100, p95_ms: 120600, p99_ms: 133300, samples: 2}
+  and .finalization_p50_ms == 85100
+  and .finalization_p95_ms == 120600
+  and .finalization_p99_ms == 133300
   and .iteration_metrics[0].cpu_peak_per_node_pct == {"validator1": 10, "validator2": 20}
   and .iteration_metrics[0].cpu_peak_per_node_core_pct == {"validator1": {"0": 7.5, "1": 42}}
   and .iteration_metrics[0].metrics.lfb_spread == {p50: 4, p95: 4, max: 4, min: 4, samples: 1}
@@ -241,4 +244,69 @@ jq -e '
 test -s "$TMP/fake-poetry-2.pid"
 ! kill -0 "$(cat "$TMP/fake-poetry-2.pid")" 2>/dev/null
 
-printf 'soak driver tests passed (fail-closed + deadline paths)\n'
+mkdir -p "$TMP/bin3" "$TMP/si3" "$TMP/tmp3/test-stale" "$TMP/tmp3/test-live" "$TMP/runner3/_diag"
+perl -e 'utime $^T - 7200, $^T - 7200, @ARGV' "$TMP/tmp3/test-stale"
+printf '7000\n' >"$TMP/fake-df-avail"
+cat >"$TMP/bin3/df" <<'SH'
+#!/usr/bin/env bash
+printf 'Filesystem 1M-blocks Used Available Capacity Mounted on\n'
+printf '/dev/fake 47000 40000 %s 85%% /\n' "$(cat "$FAKE_DF_AVAIL_FILE")"
+SH
+cat >"$TMP/bin3/docker" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+chmod +x "$TMP/bin3/df" "$TMP/bin3/docker"
+PATH="$TMP/bin3:$TMP/bin:$PATH" \
+	FAKE_DF_AVAIL_FILE="$TMP/fake-df-avail" \
+	FAKE_POETRY_PID_FILE="$TMP/fake-poetry-3.pid" \
+	FAKE_DATA_DIR="$TMP/si3/integration-tests/data" \
+	FAKE_ARCHIVE_DIR="$TMP/si3/integration-tests/log-archive" \
+	SOAK_DURATION_SECONDS=120 \
+	SYSTEM_INTEGRATION_DIR="$TMP/si3" \
+	SOAK_OUTPUT_DIR="$TMP/output3" \
+	SOAK_RSS_CEILING_MB=0 \
+	SOAK_HOST_FREE_FLOOR_MB=0 \
+	SOAK_TMP_ROOT="$TMP/tmp3" \
+	SOAK_RUNNER_ROOT="$TMP/runner3" \
+	SOAK_GUARDIAN_POLL_SECONDS=1 \
+	SOAK_MONITOR_SNAPSHOT_SECONDS=0.1 \
+	"$ROOT/scripts/run-merge-recovery-soak.sh" >"$TMP/driver3.log" 2>&1 &
+DRIVER_PID=$!
+
+for _ in $(seq 1 60); do
+	kill -0 "$DRIVER_PID" 2>/dev/null || break
+	sleep 0.5
+done
+if kill -0 "$DRIVER_PID" 2>/dev/null; then
+	cat "$TMP/driver3.log" >&2
+	echo 'soak driver did not stop when hygiene left free space inside the band' >&2
+	exit 1
+fi
+set +e
+wait "$DRIVER_PID"
+status=$?
+set -e
+DRIVER_PID=""
+if [ "$status" -ne 1 ]; then
+	cat "$TMP/driver3.log" >&2
+	echo "a no-op hygiene pass inside the band must fail the soak closed (driver exited $status)" >&2
+	exit 1
+fi
+
+test -d "$TMP/tmp3/test-stale"
+test -d "$TMP/tmp3/test-live"
+grep -q 'free disk 7000MB inside hygiene band (floor 4096MB + band 4096MB); reclaiming' "$TMP/driver3.log"
+grep -q '^disk hygiene: 7000MB free -> 7000MB free$' "$TMP/driver3.log"
+! grep -q '^disk usage: ' "$TMP/driver3.log"
+grep -q '^host_protection_breach: disk floor: free 7000MB still inside hygiene band (floor 4096MB + band 4096MB) after hygiene$' \
+	"$TMP/output3/early-exit.txt"
+grep -q 'still inside hygiene band' "$TMP/output3/protection-breach.txt"
+grep -q '^early_exit_reason=host_protection_breach$' "$TMP/output3/summary.txt"
+grep -q "$TMP/output3" "$TMP/output3/disk-floor-breach.txt"
+grep -q "$TMP/runner3/_diag" "$TMP/output3/disk-floor-breach.txt"
+grep -q "$TMP/tmp3/test-live" "$TMP/output3/disk-floor-breach.txt"
+test "$(find "$TMP/output3" -maxdepth 1 -type d -name 'iteration-*' | wc -l | tr -d ' ')" = 0
+test ! -e "$TMP/fake-poetry-3.pid"
+
+printf 'soak driver tests passed (fail-closed + deadline + disk-band paths)\n'

@@ -171,3 +171,146 @@ impl BlockMetadata {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+
+    use super::*;
+    use crate::rust::block_implicits::get_random_block_default;
+
+    fn sample() -> BlockMetadata {
+        BlockMetadata {
+            block_hash: Bytes::from_static(b"hash-a"),
+            parents: vec![
+                Bytes::from_static(b"parent-1"),
+                Bytes::from_static(b"parent-2"),
+            ],
+            sender: Bytes::from_static(b"sender"),
+            justifications: vec![Justification {
+                validator: Bytes::from_static(b"validator"),
+                latest_block_hash: Bytes::from_static(b"latest"),
+            }],
+            weight_map: BTreeMap::from([
+                (Bytes::from_static(b"v1"), 10),
+                (Bytes::from_static(b"v2"), 20),
+            ]),
+            block_number: 7,
+            sequence_number: 3,
+            invalid: false,
+            directly_finalized: true,
+            finalized: true,
+            fault_tolerance_value: 0.5,
+            merge_base: Bytes::from_static(b"base"),
+        }
+    }
+
+    fn hash_of(m: &BlockMetadata) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        m.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    #[test]
+    fn proto_round_trip_preserves_every_field() {
+        let metadata = sample();
+        let round_tripped = BlockMetadata::from_proto(metadata.to_proto());
+        assert_eq!(round_tripped, metadata);
+        assert_eq!(
+            round_tripped.fault_tolerance_value,
+            metadata.fault_tolerance_value
+        );
+    }
+
+    #[test]
+    fn bytes_round_trip_preserves_every_field() {
+        let metadata = sample();
+        let round_tripped = BlockMetadata::from_bytes(&metadata.to_bytes());
+        assert_eq!(round_tripped, metadata);
+        assert_eq!(
+            round_tripped.fault_tolerance_value,
+            metadata.fault_tolerance_value
+        );
+    }
+
+    #[test]
+    fn to_proto_maps_weight_map_to_bonds() {
+        let proto = sample().to_proto();
+        let validators: Vec<&[u8]> = proto.bonds.iter().map(|b| b.validator.as_ref()).collect();
+        let stakes: Vec<i64> = proto.bonds.iter().map(|b| b.stake).collect();
+        assert_eq!(validators, vec![b"v1".as_ref(), b"v2".as_ref()]);
+        assert_eq!(stakes, vec![10, 20]);
+    }
+
+    #[test]
+    fn ordering_by_num_orders_by_block_number_first() {
+        let mut low = sample();
+        low.block_number = 1;
+        let mut high = sample();
+        high.block_number = 2;
+        assert_eq!(BlockMetadata::ordering_by_num(&low, &high), Ordering::Less);
+        assert_eq!(
+            BlockMetadata::ordering_by_num(&high, &low),
+            Ordering::Greater
+        );
+    }
+
+    #[test]
+    fn ordering_by_num_breaks_ties_by_block_hash() {
+        let mut a = sample();
+        a.block_hash = Bytes::from_static(b"aaa");
+        let mut b = sample();
+        b.block_hash = Bytes::from_static(b"bbb");
+        assert_eq!(BlockMetadata::ordering_by_num(&a, &b), Ordering::Less);
+        assert_eq!(BlockMetadata::ordering_by_num(&a, &a), Ordering::Equal);
+    }
+
+    #[test]
+    fn from_block_copies_block_fields_and_defaults_flags() {
+        let block = get_random_block_default();
+        let metadata = BlockMetadata::from_block(&block, true, None, None);
+
+        assert_eq!(metadata.block_hash, block.block_hash);
+        assert_eq!(metadata.parents, block.header.parents_hash_list);
+        assert_eq!(metadata.sender, block.sender);
+        assert_eq!(metadata.justifications, block.justifications);
+        assert_eq!(metadata.block_number, block.body.state.block_number);
+        assert_eq!(metadata.sequence_number, block.seq_num);
+        assert_eq!(metadata.merge_base, block.body.merge_base);
+        assert!(metadata.invalid);
+        assert!(!metadata.directly_finalized);
+        assert!(!metadata.finalized);
+        assert_eq!(metadata.fault_tolerance_value, 0.0);
+
+        for bond in &block.body.state.bonds {
+            assert_eq!(metadata.weight_map.get(&bond.validator), Some(&bond.stake));
+        }
+        assert_eq!(metadata.weight_map.len(), block.body.state.bonds.len());
+    }
+
+    #[test]
+    fn from_block_honors_explicit_finalization_flags() {
+        let block = get_random_block_default();
+        let metadata = BlockMetadata::from_block(&block, false, Some(true), Some(true));
+        assert!(metadata.directly_finalized);
+        assert!(metadata.finalized);
+    }
+
+    #[test]
+    fn equality_and_hash_ignore_fault_tolerance_value() {
+        let a = sample();
+        let mut b = sample();
+        b.fault_tolerance_value = -1.0;
+        assert_eq!(a, b);
+        assert_eq!(hash_of(&a), hash_of(&b));
+    }
+
+    #[test]
+    fn equality_distinguishes_block_hash() {
+        let a = sample();
+        let mut b = sample();
+        b.block_hash = Bytes::from_static(b"other");
+        assert_ne!(a, b);
+        assert_ne!(hash_of(&a), hash_of(&b));
+    }
+}

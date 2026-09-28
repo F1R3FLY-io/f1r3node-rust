@@ -1,6 +1,6 @@
 // Pre-fix regression backstop for bug #6 (self-regression filter).
 //
-// Reference: docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.7.
+// Reference: docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.7.
 // Out-of-band approach: this asserts the post-fix invariant that
 // would FAIL on the parent of the bug-#6 fix commit (where
 // validate.rs:895-899 had a `.filter(|(v, _)| v != &b.sender)` step

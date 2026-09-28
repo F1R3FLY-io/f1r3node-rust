@@ -1,6 +1,7 @@
 // See casper/src/main/scala/coop/rchain/casper/merging/ConflictSetMerger.scala
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use models::rhoapi::ListParWithRandom;
@@ -10,13 +11,13 @@ use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hot_store_trie_action::HotStoreTrieAction;
 use rspace_plus_plus::rspace::internal::Datum;
 use rspace_plus_plus::rspace::merger::merging_logic::{
-    combine_mergeable_value, MergeType, NumberChannelsDiff,
+    combine_mergeable_value, compute_rejection_options, MergeType, NumberChannelsDiff,
 };
 use rspace_plus_plus::rspace::merger::state_change::StateChange;
 use shared::rust::hashable_set::HashableSet;
 use tracing::{debug, info};
 
-type Branch<R> = HashableSet<R>;
+pub type Branch<R> = Arc<HashableSet<R>>;
 
 // Utility for timing operations
 fn measure_time<T, F: FnOnce() -> T>(f: F) -> (T, Duration) {
@@ -36,7 +37,7 @@ fn measure_result_time<T, E, F: FnOnce() -> Result<T, E>>(f: F) -> Result<(T, Du
 
 /// Compare two branches for deterministic ordering.
 /// Ordering for branches to ensure deterministic comparison.
-fn compare_branches<R: Ord>(a: &Branch<R>, b: &Branch<R>) -> std::cmp::Ordering {
+fn compare_branches<R: Ord>(a: &HashableSet<R>, b: &HashableSet<R>) -> std::cmp::Ordering {
     // Compare by sorted elements
     let mut a_sorted: Vec<_> = a.0.iter().collect();
     let mut b_sorted: Vec<_> = b.0.iter().collect();
@@ -111,21 +112,25 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
     late_seq: Vec<R>,
     depends: &impl Fn(&R, &R) -> bool,
     cost: &impl Fn(&R) -> u64,
+    // Prior on-DAG rejections per item (issue #294). Rejection-option
+    // selection minimizes this BEFORE cost: a chain that already lost
+    // merges must not keep losing on the same content-deterministic
+    // criteria, or it starves to expiry. Zero everywhere reproduces the
+    // pure cost-optimal selection.
+    prior_losses: &impl Fn(&R) -> u64,
     mergeable_channels: &impl Fn(&R) -> NumberChannelsDiff,
     get_data: &impl Fn(Blake2b256Hash) -> Result<Vec<Datum<ListParWithRandom>>, HistoryError>,
     // Splits a set of items into branches whose elements are mutually
     // dependent. Returned branches must partition the input — every item
     // appears in exactly one branch.
-    compute_branches: &impl Fn(&HashableSet<R>) -> HashableSet<HashableSet<R>>,
+    compute_branches: &impl Fn(&HashableSet<R>) -> HashableSet<Branch<R>>,
     // Builds the conflict map between branches. Must include every branch
     // as a key — branches with no conflicts get an empty value set — so
     // `compute_rejection_options` downstream sees the full key space.
     compute_conflict_map: &impl Fn(
-        &HashableSet<HashableSet<R>>,
-    ) -> Result<
-        HashMap<HashableSet<R>, HashableSet<HashableSet<R>>>,
-        HistoryError,
-    >,
+        &HashableSet<Branch<R>>,
+    )
+        -> Result<HashMap<Branch<R>, HashableSet<Branch<R>>>, HistoryError>,
     // Chains whose effects are ALREADY in the state of the block being built
     // on — its main parent's committed state. A merge may never adjudicate
     // them away: dropping content the main parent already holds makes the
@@ -168,6 +173,16 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
         "source" => crate::rust::metrics_constants::MERGING_METRICS_SOURCE
     )
     .record(branches_time.as_secs_f64());
+    metrics::histogram!(
+        crate::rust::metrics_constants::DAG_MERGE_RELATION_ITEMS_METRIC,
+        "source" => crate::rust::metrics_constants::MERGING_METRICS_SOURCE
+    )
+    .record(merge_set.0.len() as f64);
+    metrics::histogram!(
+        crate::rust::metrics_constants::DAG_MERGE_RELATION_BRANCHES_METRIC,
+        "source" => crate::rust::metrics_constants::MERGING_METRICS_SOURCE
+    )
+    .record(branches.0.len() as f64);
 
     tracing::debug!(target: "f1r3fly.merge.step", step = "resolve_conflicts.branches",
         n_branches = branches.0.len(),
@@ -177,26 +192,19 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
     let branches_set = HashableSet(branches.0.iter().cloned().collect());
     let (conflict_map, conflicts_map_time) =
         measure_result_time(|| compute_conflict_map(&branches_set))?;
-    {
-        let total_edges: usize = conflict_map.values().map(|s| s.0.len()).sum();
-        tracing::debug!(target: "f1r3fly.merge.step", step = "resolve_conflicts.conflict_map",
-            n_keys = conflict_map.len(), total_edges = total_edges);
-    }
+    let total_edges: usize = conflict_map.values().map(|s| s.0.len()).sum();
+    tracing::debug!(target: "f1r3fly.merge.step", step = "resolve_conflicts.conflict_map",
+        n_keys = conflict_map.len(), total_edges = total_edges);
     metrics::histogram!(
         crate::rust::metrics_constants::DAG_MERGE_CONFLICTS_MAP_TIME_METRIC,
         "source" => crate::rust::metrics_constants::MERGING_METRICS_SOURCE
     )
     .record(conflicts_map_time.as_secs_f64());
-
-    // Compute rejection options that leave only non-conflicting branches with timing
-    use rspace_plus_plus::rspace::merger::merging_logic::compute_rejection_options;
-    let (rejection_options, rejection_options_time) =
-        measure_time(|| compute_rejection_options(&conflict_map));
     metrics::histogram!(
-        crate::rust::metrics_constants::DAG_MERGE_REJECTION_OPTIONS_TIME_METRIC,
+        crate::rust::metrics_constants::DAG_MERGE_CONFLICT_EDGES_METRIC,
         "source" => crate::rust::metrics_constants::MERGING_METRICS_SOURCE
     )
-    .record(rejection_options_time.as_secs_f64());
+    .record(total_edges as f64);
 
     // Get base mergeable channel results
     let channel_reads_start = Instant::now();
@@ -204,7 +212,7 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
     let mut all_channel_keys_set: std::collections::HashSet<Blake2b256Hash> =
         std::collections::HashSet::new();
     for branch in &branches {
-        for item in branch {
+        for item in &branch.0 {
             let item_channels = mergeable_channels(item);
             for (channel_hash, _) in item_channels.iter() {
                 all_channel_keys_set.insert(channel_hash.clone());
@@ -251,88 +259,31 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
             channels = ?channel_reads);
     }
 
-    // Get merged result rejection options
-    let rejection_options_with_overflow = get_merged_result_rejection(
+    let rejection_selection_start = Instant::now();
+    let (optimal_rejection, rejection_options_count, rejection_options_time) = select_rejection(
         &branches_set,
-        &rejection_options,
-        base_mergeable_ch_res.clone(),
+        &conflict_map,
+        &base_mergeable_ch_res,
         mergeable_channels,
+        cost,
+        prior_losses,
+        pinned,
     );
-
-    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
-        let option_branch_counts: Vec<usize> = rejection_options_with_overflow
-            .0
-            .iter()
-            .map(|o| o.0.len())
-            .collect();
-        tracing::debug!(target: "f1r3fly.merge.step", step = "resolve_conflicts.merged_result_rejection",
-            n_options = rejection_options_with_overflow.0.len(),
-            option_branch_counts = ?option_branch_counts);
-    }
-
-    // Drop any option that would adjudicate away pinned content BEFORE cost
-    // selection: cost is a phlo sum with no notion of provenance, so a main
-    // parent's chain is rejected whenever it happens to be the cheaper side of
-    // a conflict — which is how a block ends up with a state that omits
-    // content its own spine ancestor holds.
-    //
-    // This is a PREFERENCE, not a veto. Where a pinned-disjoint option exists
-    // it is taken; where none does, the merge still completes on the
-    // unconstrained selection (see below). Guaranteeing the invariant instead
-    // would mean refusing to build the block, and a certain propose wedge is
-    // the worse failure of the two.
-    //
-    // UNREACHABLE in production, including its error path: `pinned` is empty
-    // on both production call sites because the merge now bases on the main
-    // parent, which puts its chains in the base instead of the conflict set.
-    // A zero count of the `merge.incoherence` line THIS block emits is
-    // therefore vacuous. (The same target also carries `explain_merge_failure`,
-    // which IS live — read the message, not just the target.) The block is
-    // retained pending the decision to remove it; the tests below are its only
-    // remaining exercise.
-    let rejection_options_with_overflow = if pinned.is_empty() {
-        rejection_options_with_overflow
-    } else {
-        let admissible: HashSet<HashableSet<HashableSet<R>>> = rejection_options_with_overflow
-            .0
-            .iter()
-            .filter(|option| {
-                !option
-                    .0
-                    .iter()
-                    .any(|branch| branch.0.iter().any(|item| pinned.contains(item)))
-            })
-            .cloned()
-            .collect();
-        if admissible.is_empty() && !rejection_options_with_overflow.0.is_empty() {
-            // Two chains the main parent applied SEQUENTIALLY can read as
-            // conflicting when this merge re-applies them side by side from the
-            // floor — `conflicts` check #2 pairs a surviving produce with a
-            // surviving consume on the same channel without examining patterns,
-            // so a pair that never COMM'd in the main parent's own history
-            // still registers. Refusing the merge here would turn that into a
-            // propose wedge, which is a worse failure than the one pinning
-            // prevents. Fall back to the unconstrained selection and say so:
-            // the residual is a merge whose state may omit main-parent content,
-            // which the floor's containment guard still catches loudly.
-            tracing::error!(
-                target: "f1r3fly.merge.incoherence",
-                n_pinned = pinned.len(),
-                n_options = rejection_options_with_overflow.0.len(),
-                "no rejection option preserves every main-parent chain; falling back \
-                 to cost-optimal selection. Re-applying the main parent's chains from \
-                 the floor made them conflict with each other"
-            );
-            rejection_options_with_overflow
-        } else {
-            HashableSet(admissible)
-        }
-    };
-
-    // Compute optimal rejection using cost function
-    let optimal_rejection = get_optimal_rejection(rejection_options_with_overflow, |branch| {
-        branch.0.iter().map(|item| cost(item)).sum()
-    });
+    metrics::histogram!(
+        crate::rust::metrics_constants::DAG_MERGE_REJECTION_OPTIONS_TIME_METRIC,
+        "source" => crate::rust::metrics_constants::MERGING_METRICS_SOURCE
+    )
+    .record(rejection_options_time.as_secs_f64());
+    metrics::histogram!(
+        crate::rust::metrics_constants::DAG_MERGE_REJECTION_OPTIONS_METRIC,
+        "source" => crate::rust::metrics_constants::MERGING_METRICS_SOURCE
+    )
+    .record(rejection_options_count as f64);
+    metrics::histogram!(
+        crate::rust::metrics_constants::DAG_MERGE_REJECTION_SELECTION_TIME_METRIC,
+        "source" => crate::rust::metrics_constants::MERGING_METRICS_SOURCE
+    )
+    .record(rejection_selection_start.elapsed().as_secs_f64());
 
     if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
         tracing::debug!(target: "f1r3fly.merge.step", step = "resolve_conflicts.optimal_rejection",
@@ -352,6 +303,7 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
                 branch.0.iter().all(|item| reject_branch.0.contains(item))
             })
         })
+        .map(|branch| (*branch).clone())
         .collect();
 
     if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
@@ -363,7 +315,7 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
     // Flatten the optimal rejection set
     let mut optimal_rejection_flattened = HashableSet(HashSet::new());
     for branch in &optimal_rejection {
-        for item in branch {
+        for item in &branch.0 {
             optimal_rejection_flattened.0.insert(item.clone());
         }
     }
@@ -399,7 +351,7 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
         branches_set.0.len(),
         to_merge.len(),
         conflict_map_conflicts_count,
-        rejection_options.0.len(),
+        rejection_options_count,
         1  // rejectionOptionsWithOverflow.size - approximation
     );
 
@@ -417,14 +369,14 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
         rejected_as_dependents_count: rejected_as_dependents.0.len(),
         optimal_rejection_count: optimal_rejection.0.len(),
         conflict_map_conflicts_count,
-        rejection_options_count: rejection_options.0.len(),
+        rejection_options_count,
         branches_time,
         conflicts_map_time,
         rejection_options_time,
     })
 }
 
-/// Finding-A runtime guard (docs/theory/merge-algebra/merge-algebra-verification.md §6).
+/// Finding-A runtime guard (docs/casper/theory/merge-algebra/merge-algebra-verification.md §6).
 /// The shipped merge operator `ChannelChange::combine` (max-union) is
 /// non-associative, yet the merged root is node-identical because survivors are
 /// folded in canonical sorted order AND no order-dependent survivor pair reaches
@@ -645,13 +597,6 @@ where
     // + `combine_max_eq_combine_sum_under_no_dup`).
     let mergeable_keys: HashSet<Blake2b256Hash> = all_mergeable_channels.keys().cloned().collect();
     if let Some(channel) = order_guard.first_offender(&mergeable_keys) {
-        debug_assert!(
-            false,
-            "order-dependent survivor pair reached apply on channel {} — the \
-             max-union merge fold is not order-independent here (Finding A; \
-             docs/theory/merge-algebra/merge-algebra-verification.md §6)",
-            hex::encode(channel.bytes())
-        );
         tracing::error!(target: "f1r3fly.merge.step",
             step = "apply.order_dependent_survivor_pair",
             channel = %hex::encode(channel.bytes()),
@@ -673,6 +618,16 @@ where
     // Compute and apply trie actions with timing
     let (trie_actions, compute_actions_time) =
         measure_result_time(|| compute_trie_actions(all_changes, all_mergeable_channels.clone()))?;
+    metrics::histogram!(
+        crate::rust::metrics_constants::DAG_MERGE_COMPUTE_TRIE_ACTIONS_TIME_METRIC,
+        "source" => crate::rust::metrics_constants::MERGING_METRICS_SOURCE
+    )
+    .record(compute_actions_time.as_secs_f64());
+    metrics::histogram!(
+        crate::rust::metrics_constants::DAG_MERGE_STATE_APPLICATION_ACTIONS_METRIC,
+        "source" => crate::rust::metrics_constants::MERGING_METRICS_SOURCE
+    )
+    .record(trie_actions.len() as f64);
 
     tracing::debug!(target: "f1r3fly.merge.step", step = "compute_merged_state.compute_trie_actions.EXIT",
         n_trie_actions = trie_actions.len(),
@@ -680,6 +635,11 @@ where
 
     let (new_state, apply_actions_time) =
         measure_result_time(|| apply_trie_actions(trie_actions.clone()))?;
+    metrics::histogram!(
+        crate::rust::metrics_constants::DAG_MERGE_APPLY_TRIE_ACTIONS_TIME_METRIC,
+        "source" => crate::rust::metrics_constants::MERGING_METRICS_SOURCE
+    )
+    .record(apply_actions_time.as_secs_f64());
 
     tracing::debug!(target: "f1r3fly.merge.step", step = "compute_merged_state.apply_trie_actions.EXIT",
         new_state = %hex::encode(new_state.clone().bytes()),
@@ -746,13 +706,11 @@ pub fn merge<
         Vec<HotStoreTrieAction<C, P, A, K>>,
     ) -> Result<Blake2b256Hash, HistoryError>,
     get_data: impl Fn(Blake2b256Hash) -> Result<Vec<Datum<ListParWithRandom>>, HistoryError>,
-    compute_branches: impl Fn(&HashableSet<R>) -> HashableSet<HashableSet<R>>,
+    compute_branches: impl Fn(&HashableSet<R>) -> HashableSet<Branch<R>>,
     compute_conflict_map: impl Fn(
-        &HashableSet<HashableSet<R>>,
-    ) -> Result<
-        HashMap<HashableSet<R>, HashableSet<HashableSet<R>>>,
-        HistoryError,
-    >,
+        &HashableSet<Branch<R>>,
+    )
+        -> Result<HashMap<Branch<R>, HashableSet<Branch<R>>>, HistoryError>,
 ) -> Result<(Blake2b256Hash, HashableSet<R>), HistoryError> {
     tracing::debug!(target: "f1r3fly.merge.step", step = "merge.ENTER",
         n_actual = actual_seq.len(),
@@ -763,6 +721,9 @@ pub fn merge<
         late_seq,
         &depends,
         &cost,
+        // This wrapper merges a bare chain set with no block context, so no
+        // prior-loss records exist to consult.
+        &|_| 0,
         &mergeable_channels,
         &get_data,
         &compute_branches,
@@ -789,11 +750,234 @@ pub fn merge<
     Ok((new_state, resolved.rejected))
 }
 
+/// Prior-loss profile of a set of rejected items: `(max, sum)`. The max is
+/// the chain-level rule ratified for phase 1 (a dependency chain carries its
+/// highest member count) lifted to the branch; the sum breaks max ties.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct LossProfile {
+    pub max: u64,
+    pub sum: u64,
+}
+
+impl LossProfile {
+    fn fold(self, other: LossProfile) -> LossProfile {
+        LossProfile {
+            max: self.max.max(other.max),
+            sum: self.sum.saturating_add(other.sum),
+        }
+    }
+}
+
+fn branch_losses<R>(branch: &Branch<R>, prior_losses: &impl Fn(&R) -> u64) -> LossProfile {
+    branch.0.iter().fold(LossProfile::default(), |acc, item| {
+        let losses = prior_losses(item);
+        acc.fold(LossProfile {
+            max: losses,
+            sum: losses,
+        })
+    })
+}
+
+fn prefer_pinned_disjoint<R: Clone + Eq + std::hash::Hash + Ord>(
+    rejection_options_with_overflow: HashableSet<HashableSet<Branch<R>>>,
+    pinned: &HashSet<R>,
+) -> HashableSet<HashableSet<Branch<R>>> {
+    let rejection_options_with_overflow = if pinned.is_empty() {
+        rejection_options_with_overflow
+    } else {
+        let admissible: HashSet<HashableSet<Branch<R>>> = rejection_options_with_overflow
+            .0
+            .iter()
+            .filter(|option| {
+                !option
+                    .0
+                    .iter()
+                    .any(|branch| branch.0.iter().any(|item| pinned.contains(item)))
+            })
+            .cloned()
+            .collect();
+        if admissible.is_empty() && !rejection_options_with_overflow.0.is_empty() {
+            tracing::error!(
+                target: "f1r3fly.merge.incoherence",
+                n_pinned = pinned.len(),
+                n_options = rejection_options_with_overflow.0.len(),
+                "no rejection option preserves every main-parent chain; falling back \
+                 to cost-optimal selection. Re-applying the main parent's chains from \
+                 the floor made them conflict with each other"
+            );
+            rejection_options_with_overflow
+        } else {
+            HashableSet(admissible)
+        }
+    };
+    rejection_options_with_overflow
+}
+
+fn rejection_candidates<R: Clone + Eq + std::hash::Hash + Ord>(
+    branches: &HashableSet<Branch<R>>,
+    conflict_map: &HashMap<Branch<R>, HashableSet<Branch<R>>>,
+    base: &HashMap<Blake2b256Hash, i64>,
+    mergeable_channels: &impl Fn(&R) -> NumberChannelsDiff,
+) -> (HashableSet<HashableSet<Branch<R>>>, usize, Duration) {
+    let (options, time) = measure_time(|| compute_rejection_options(conflict_map));
+    let n_options = options.0.len();
+    let with_overflow =
+        get_merged_result_rejection(branches, &options, base.clone(), mergeable_channels);
+    (with_overflow, n_options, time)
+}
+
+fn select_rejection_exhaustive<R: Clone + Eq + std::hash::Hash + Ord>(
+    branches: &HashableSet<Branch<R>>,
+    conflict_map: &HashMap<Branch<R>, HashableSet<Branch<R>>>,
+    base: &HashMap<Blake2b256Hash, i64>,
+    mergeable_channels: &impl Fn(&R) -> NumberChannelsDiff,
+    cost: &impl Fn(&R) -> u64,
+    prior_losses: &impl Fn(&R) -> u64,
+    pinned: &HashSet<R>,
+) -> (HashableSet<Branch<R>>, usize, Duration) {
+    let (options, n_options, time) =
+        rejection_candidates(branches, conflict_map, base, mergeable_channels);
+    let optimal = get_optimal_rejection(
+        prefer_pinned_disjoint(options, pinned),
+        |branch| branch.0.iter().map(|item| cost(item)).sum(),
+        |branch| branch_losses(branch, prior_losses),
+    );
+    (optimal, n_options, time)
+}
+
+fn find_root(parent: &mut [usize], mut i: usize) -> usize {
+    while parent[i] != i {
+        parent[i] = parent[parent[i]];
+        i = parent[i];
+    }
+    i
+}
+
+fn union_roots(parent: &mut [usize], a: usize, b: usize) {
+    let (ra, rb) = (find_root(parent, a), find_root(parent, b));
+    if ra != rb {
+        parent[ra] = rb;
+    }
+}
+
+fn select_rejection<R: Clone + Eq + std::hash::Hash + Ord>(
+    branches: &HashableSet<Branch<R>>,
+    conflict_map: &HashMap<Branch<R>, HashableSet<Branch<R>>>,
+    base: &HashMap<Blake2b256Hash, i64>,
+    mergeable_channels: &impl Fn(&R) -> NumberChannelsDiff,
+    cost: &impl Fn(&R) -> u64,
+    prior_losses: &impl Fn(&R) -> u64,
+    pinned: &HashSet<R>,
+) -> (HashableSet<Branch<R>>, usize, Duration) {
+    if !pinned.is_empty() {
+        return select_rejection_exhaustive(
+            branches,
+            conflict_map,
+            base,
+            mergeable_channels,
+            cost,
+            prior_losses,
+            pinned,
+        );
+    }
+
+    let nodes: Vec<&Branch<R>> = branches.0.iter().collect();
+    let index: HashMap<&Branch<R>, usize> = nodes
+        .iter()
+        .enumerate()
+        .map(|(i, branch)| (*branch, i))
+        .collect();
+    let mut parent: Vec<usize> = (0..nodes.len()).collect();
+
+    for (key, conflicts) in conflict_map {
+        for other in &conflicts.0 {
+            if let (Some(&a), Some(&b)) = (index.get(key), index.get(other)) {
+                union_roots(&mut parent, a, b);
+            }
+        }
+    }
+    let mut channel_owner: HashMap<Blake2b256Hash, usize> = HashMap::new();
+    for (i, branch) in nodes.iter().enumerate() {
+        for item in &branch.0 {
+            for channel in mergeable_channels(item).into_keys() {
+                match channel_owner.get(&channel) {
+                    Some(&j) => union_roots(&mut parent, i, j),
+                    None => {
+                        channel_owner.insert(channel, i);
+                    }
+                }
+            }
+        }
+    }
+
+    let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
+    for i in 0..nodes.len() {
+        let root = find_root(&mut parent, i);
+        groups.entry(root).or_default().push(i);
+    }
+
+    let mut n_options = 0;
+    let mut enumeration_time = Duration::ZERO;
+    let mut group_options = Vec::with_capacity(groups.len());
+    for members in groups.values() {
+        let group_branches = HashableSet(members.iter().map(|&i| nodes[i].clone()).collect());
+        let group_map: HashMap<Branch<R>, HashableSet<Branch<R>>> = members
+            .iter()
+            .filter_map(|&i| {
+                conflict_map
+                    .get(nodes[i])
+                    .map(|c| (nodes[i].clone(), c.clone()))
+            })
+            .collect();
+        let (options, n, time) =
+            rejection_candidates(&group_branches, &group_map, base, mergeable_channels);
+        n_options += n;
+        enumeration_time += time;
+        group_options.push(options);
+    }
+
+    let option_max_losses = |option: &HashableSet<Branch<R>>| {
+        option
+            .0
+            .iter()
+            .map(|branch| branch_losses(branch, prior_losses).max)
+            .max()
+            .unwrap_or(0)
+    };
+    let max_losses = group_options
+        .iter()
+        .map(|options| options.0.iter().map(option_max_losses).min().unwrap_or(0))
+        .max()
+        .unwrap_or(0);
+
+    let mut optimal = HashSet::new();
+    for options in group_options {
+        let within_max = HashableSet(
+            options
+                .0
+                .into_iter()
+                .filter(|option| option_max_losses(option) <= max_losses)
+                .collect(),
+        );
+        let best = get_optimal_rejection(
+            within_max,
+            |branch| branch.0.iter().map(|item| cost(item)).sum(),
+            |branch| LossProfile {
+                max: 0,
+                sum: branch_losses(branch, prior_losses).sum,
+            },
+        );
+        optimal.extend(best.0);
+    }
+    (HashableSet(optimal), n_options, enumeration_time)
+}
+
 /// Compute optimal rejection configuration.
 /// Find the optimal rejection set from conflicting branches.
 fn get_optimal_rejection<R: Eq + std::hash::Hash + Clone + Ord>(
     options: HashableSet<HashableSet<Branch<R>>>,
     target_f: impl Fn(&Branch<R>) -> u64,
+    losses_f: impl Fn(&Branch<R>) -> LossProfile,
 ) -> HashableSet<Branch<R>> {
     assert!(
         options
@@ -818,55 +1002,64 @@ fn get_optimal_rejection<R: Eq + std::hash::Hash + Clone + Ord>(
     tracing::debug!(target: "f1r3fly.merge.step", step = "get_optimal_rejection.ENTER",
         n_options = options.0.len());
 
-    // Convert to sorted list for deterministic processing
-    let mut options_vec: Vec<_> = options.0.into_iter().collect();
-    options_vec.sort_by(|a, b| {
-        // First criterion: sum of target function values
-        let a_sum: u64 = a.0.iter().map(|branch| target_f(branch)).sum();
-        let b_sum: u64 = b.0.iter().map(|branch| target_f(branch)).sum();
-
-        if a_sum != b_sum {
-            return a_sum.cmp(&b_sum);
-        }
-
-        // Second criterion: total size of branches
-        let a_size: usize = a.0.iter().map(|branch| branch.0.len()).sum();
-        let b_size: usize = b.0.iter().map(|branch| branch.0.len()).sum();
-
-        if a_size != b_size {
-            return a_size.cmp(&b_size);
-        }
-
-        let mut a_branches: Vec<_> = a.0.iter().collect();
-        let mut b_branches: Vec<_> = b.0.iter().collect();
-        a_branches.sort_by(|x, y| compare_branches(x, y));
-        b_branches.sort_by(|x, y| compare_branches(x, y));
-
-        for (a_branch, b_branch) in a_branches.iter().zip(b_branches.iter()) {
-            let ord = compare_branches(a_branch, b_branch);
-            if ord != std::cmp::Ordering::Equal {
-                return ord;
+    // Convert to sorted list for deterministic processing. The numeric keys
+    // are computed once per option, not once per comparison.
+    let mut keyed: Vec<(LossProfile, u64, usize, HashableSet<Branch<R>>)> = options
+        .0
+        .into_iter()
+        .map(|option| {
+            // Zeroth criterion (issue #294): prior losses of the rejected set,
+            // ascending — reject the set whose HIGHEST-loss member is lowest,
+            // then the set with the smaller loss total. A chain that already
+            // lost gains priority with every loss, and a coalition of
+            // low-loss chains can never outweigh one chain that has lost more
+            // than any of them. All-zero counts fall through to the cost
+            // criterion unchanged.
+            let losses = option.0.iter().fold(LossProfile::default(), |acc, branch| {
+                acc.fold(losses_f(branch))
+            });
+            // First criterion: sum of target function values
+            let cost: u64 = option.0.iter().map(|branch| target_f(branch)).sum();
+            // Second criterion: total size of branches
+            let size: usize = option.0.iter().map(|branch| branch.0.len()).sum();
+            (losses, cost, size, option)
+        })
+        .collect();
+    keyed.sort_by(
+        |(a_losses, a_cost, a_size, a), (b_losses, b_cost, b_size, b)| {
+            let by_keys = (a_losses, a_cost, a_size).cmp(&(b_losses, b_cost, b_size));
+            if by_keys != std::cmp::Ordering::Equal {
+                return by_keys;
             }
-        }
-        a_branches.len().cmp(&b_branches.len())
-    });
+
+            let mut a_branches: Vec<_> = a.0.iter().collect();
+            let mut b_branches: Vec<_> = b.0.iter().collect();
+            a_branches.sort_by(|x, y| compare_branches(x, y));
+            b_branches.sort_by(|x, y| compare_branches(x, y));
+
+            for (a_branch, b_branch) in a_branches.iter().zip(b_branches.iter()) {
+                let ord = compare_branches(a_branch, b_branch);
+                if ord != std::cmp::Ordering::Equal {
+                    return ord;
+                }
+            }
+            a_branches.len().cmp(&b_branches.len())
+        },
+    );
 
     if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
-        let candidates: Vec<(usize, u64, usize)> = options_vec
+        let candidates: Vec<(usize, LossProfile, u64, usize)> = keyed
             .iter()
-            .map(|o| {
-                let cost: u64 = o.0.iter().map(|branch| target_f(branch)).sum();
-                let size: usize = o.0.iter().map(|branch| branch.0.len()).sum();
-                (o.0.len(), cost, size)
-            })
+            .map(|(losses, cost, size, o)| (o.0.len(), *losses, *cost, *size))
             .collect();
         tracing::debug!(target: "f1r3fly.merge.step", step = "get_optimal_rejection.candidates",
-            candidates_n_branches_cost_size = ?candidates);
+            candidates_n_branches_losses_cost_size = ?candidates);
     }
 
-    let chosen = options_vec
+    let chosen = keyed
         .into_iter()
         .next()
+        .map(|(_, _, _, option)| option)
         .unwrap_or_else(|| HashableSet(HashSet::new()));
 
     if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
@@ -1109,14 +1302,43 @@ fn get_merged_result_rejection<R: Clone + Eq + std::hash::Hash + Ord>(
 mod tests {
     use std::collections::{BTreeMap, HashSet};
 
+    use metrics_util::debugging::{DebugValue, DebuggingRecorder, Snapshotter};
+
     use super::*;
+    use crate::rust::metrics_constants::{
+        DAG_MERGE_APPLY_TRIE_ACTIONS_TIME_METRIC, DAG_MERGE_COMPUTE_TRIE_ACTIONS_TIME_METRIC,
+        DAG_MERGE_CONFLICT_EDGES_METRIC, DAG_MERGE_REJECTION_OPTIONS_METRIC,
+        DAG_MERGE_REJECTION_SELECTION_TIME_METRIC, DAG_MERGE_RELATION_BRANCHES_METRIC,
+        DAG_MERGE_RELATION_ITEMS_METRIC, DAG_MERGE_STATE_APPLICATION_ACTIONS_METRIC,
+    };
+
+    #[allow(clippy::mutable_key_type)]
+    fn histogram_values(snapshotter: &Snapshotter) -> HashMap<String, Vec<f64>> {
+        let mut result: HashMap<String, Vec<f64>> = HashMap::new();
+        for (key, (_, _, value)) in snapshotter.snapshot().into_hashmap() {
+            if let DebugValue::Histogram(values) = value {
+                result
+                    .entry(key.key().name().to_string())
+                    .or_default()
+                    .extend(values.into_iter().map(|value| value.into_inner()));
+            }
+        }
+        result
+    }
 
     fn branch(items: &[i32]) -> Branch<i32> {
-        HashableSet(items.iter().copied().collect::<HashSet<i32>>())
+        Arc::new(HashableSet(items.iter().copied().collect::<HashSet<i32>>()))
     }
 
     fn rejection_option(branches: &[Branch<i32>]) -> HashableSet<Branch<i32>> {
         HashableSet(branches.iter().cloned().collect::<HashSet<Branch<i32>>>())
+    }
+
+    fn losses(count: u64) -> LossProfile {
+        LossProfile {
+            max: count,
+            sum: count,
+        }
     }
 
     #[test]
@@ -1141,9 +1363,11 @@ mod tests {
         let option_b = rejection_option(&[branch(&[2]), branch(&[3])]);
         let options = HashableSet(HashSet::from([option_b.clone(), option_a.clone()]));
 
-        let chosen = get_optimal_rejection(options, |branch| {
-            branch.0.iter().map(|value| *value as u64).sum()
-        });
+        let chosen = get_optimal_rejection(
+            options,
+            |branch| branch.0.iter().map(|value| *value as u64).sum(),
+            |_branch| losses(0),
+        );
 
         assert_eq!(chosen, option_a);
     }
@@ -1158,9 +1382,93 @@ mod tests {
             HashableSet(HashSet::from([option_a.clone(), option_b.clone()])),
             HashableSet(HashSet::from([option_b.clone(), option_a.clone()])),
         ] {
-            let chosen = get_optimal_rejection(options, |_branch| 0u64);
+            let chosen = get_optimal_rejection(options, |_branch| 0u64, |_branch| losses(0));
             assert_eq!(chosen, option_a);
         }
+    }
+
+    #[test]
+    fn optimal_rejection_keeps_higher_loss_branch_despite_cost() {
+        let high_loss = branch(&[1]);
+        let low_loss = branch(&[2]);
+        let reject_high_loss = rejection_option(std::slice::from_ref(&high_loss));
+        let reject_low_loss = rejection_option(std::slice::from_ref(&low_loss));
+        let options = HashableSet(HashSet::from([reject_high_loss, reject_low_loss.clone()]));
+
+        let chosen = get_optimal_rejection(
+            options,
+            |branch| if branch == &high_loss { 1 } else { 100 },
+            |branch| losses(if branch == &high_loss { 3 } else { 0 }),
+        );
+
+        assert_eq!(chosen, reject_low_loss);
+    }
+
+    #[test]
+    fn optimal_rejection_equal_nonzero_losses_fall_back_to_cost_and_order() {
+        let lower = branch(&[1]);
+        let higher = branch(&[2]);
+        let reject_lower = rejection_option(std::slice::from_ref(&lower));
+        let reject_higher = rejection_option(std::slice::from_ref(&higher));
+
+        let cost_choice = get_optimal_rejection(
+            HashableSet(HashSet::from([reject_lower.clone(), reject_higher.clone()])),
+            |branch| if branch == &lower { 10 } else { 1 },
+            |_branch| losses(4),
+        );
+        assert_eq!(cost_choice, reject_higher);
+
+        let order_choice = get_optimal_rejection(
+            HashableSet(HashSet::from([reject_lower.clone(), reject_higher])),
+            |_branch| 1,
+            |_branch| losses(4),
+        );
+        assert_eq!(order_choice, reject_lower);
+    }
+
+    #[test]
+    fn optimal_rejection_keeps_highest_loss_chain_over_low_loss_coalition() {
+        // Rejecting {first, second} sums to 4 losses; rejecting {third} sums
+        // to 3. A sum-only rule would reject third, the chain that has lost
+        // more than either rival. Max-first keeps it.
+        let first = branch(&[1]);
+        let second = branch(&[2]);
+        let third = branch(&[3]);
+        let reject_pair = rejection_option(&[first.clone(), second.clone()]);
+        let reject_single = rejection_option(std::slice::from_ref(&third));
+        let options = HashableSet(HashSet::from([reject_pair.clone(), reject_single]));
+
+        let chosen = get_optimal_rejection(
+            options,
+            |branch| if branch == &third { 100 } else { 1 },
+            |branch| losses(if branch == &third { 3 } else { 2 }),
+        );
+
+        assert_eq!(chosen, reject_pair);
+    }
+
+    #[test]
+    fn optimal_rejection_equal_max_losses_fall_back_to_loss_sum() {
+        let first = branch(&[1]);
+        let second = branch(&[2]);
+        let third = branch(&[3]);
+        let reject_pair = rejection_option(&[first.clone(), second.clone()]);
+        let reject_single = rejection_option(std::slice::from_ref(&third));
+        let options = HashableSet(HashSet::from([reject_pair, reject_single.clone()]));
+
+        let chosen = get_optimal_rejection(
+            options,
+            |branch| if branch == &third { 100 } else { 1 },
+            |_branch| losses(2),
+        );
+
+        assert_eq!(chosen, reject_single);
+    }
+
+    #[test]
+    fn branch_losses_takes_max_and_sum_over_members() {
+        let profile = branch_losses(&branch(&[1, 2, 3]), &|item: &i32| *item as u64);
+        assert_eq!(profile, LossProfile { max: 3, sum: 6 });
     }
 
     #[test]
@@ -1169,6 +1477,9 @@ mod tests {
         let late_seq = Vec::<i32>::new();
         let base_channel = Blake2b256Hash::from_bytes(vec![7u8; 32]);
 
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let guard = metrics::set_default_local_recorder(&recorder);
         let result = merge(
             actual_seq,
             late_seq,
@@ -1196,7 +1507,7 @@ mod tests {
                         .map(|i| {
                             let mut s = HashSet::new();
                             s.insert(*i);
-                            HashableSet(s)
+                            Arc::new(HashableSet(s))
                         })
                         .collect(),
                 )
@@ -1204,7 +1515,7 @@ mod tests {
             // Empty conflict map — every branch as a key with no conflicts.
             // This test exercises only the rejection-via-mergeable-overflow
             // path; the conflict-detection path is covered elsewhere.
-            |branches: &HashableSet<HashableSet<i32>>| {
+            |branches: &HashableSet<Arc<HashableSet<i32>>>| {
                 Ok(branches
                     .0
                     .iter()
@@ -1212,10 +1523,36 @@ mod tests {
                     .collect())
             },
         );
+        drop(guard);
 
         assert!(result.is_ok());
         let (_new_state, rejected) = result.unwrap();
         assert!(!rejected.0.is_empty());
+        let samples = histogram_values(&snapshotter);
+        assert_eq!(
+            samples.get(DAG_MERGE_RELATION_ITEMS_METRIC),
+            Some(&vec![2.0])
+        );
+        assert_eq!(
+            samples.get(DAG_MERGE_RELATION_BRANCHES_METRIC),
+            Some(&vec![2.0])
+        );
+        assert_eq!(
+            samples.get(DAG_MERGE_CONFLICT_EDGES_METRIC),
+            Some(&vec![0.0])
+        );
+        assert_eq!(
+            samples.get(DAG_MERGE_STATE_APPLICATION_ACTIONS_METRIC),
+            Some(&vec![0.0])
+        );
+        for metric_name in [
+            DAG_MERGE_REJECTION_OPTIONS_METRIC,
+            DAG_MERGE_REJECTION_SELECTION_TIME_METRIC,
+            DAG_MERGE_COMPUTE_TRIE_ACTIONS_TIME_METRIC,
+            DAG_MERGE_APPLY_TRIE_ACTIONS_TIME_METRIC,
+        ] {
+            assert_eq!(samples.get(metric_name).map(Vec::len), Some(1));
+        }
     }
 
     // ---- IntegerAdd overflow-launder regression (Phase 6 W3/W4) --------------
@@ -1381,5 +1718,158 @@ mod tests {
             forward.first_offender(&HashSet::new()),
             Some(Blake2b256Hash(b"chan".to_vec()))
         );
+    }
+}
+
+#[cfg(test)]
+mod component_selection_tests {
+    use std::collections::{HashMap, HashSet};
+    use std::sync::Arc;
+
+    use proptest::prelude::*;
+
+    use super::*;
+
+    fn channel(k: u8) -> Blake2b256Hash { Blake2b256Hash::from_bytes(vec![k; 32]) }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(3000))]
+        #[test]
+        fn component_selection_matches_exhaustive(
+            n in 1usize..9,
+            wide in prop::collection::vec(any::<bool>(), 8),
+            edges in prop::collection::vec((0usize..8, 0usize..8), 0..12),
+            touches in prop::collection::vec((0usize..8, 0u8..3, -3i64..4), 0..12),
+            base_values in prop::collection::vec(0i64..4, 3),
+            costs in prop::collection::vec(0u64..3, 8),
+            losses in prop::collection::vec(0u64..3, 8),
+        ) {
+            let branches: Vec<Branch<i32>> = (0..n)
+                .map(|i| {
+                    let first = (i * 10) as i32;
+                    let mut items = HashSet::from([first]);
+                    if wide[i] {
+                        items.insert(first + 1);
+                    }
+                    Arc::new(HashableSet(items))
+                })
+                .collect();
+            let mut conflict_map: HashMap<Branch<i32>, HashableSet<Branch<i32>>> = branches
+                .iter()
+                .map(|b| (b.clone(), HashableSet(HashSet::new())))
+                .collect();
+            for (a, b) in edges {
+                if a < n && b < n && a != b {
+                    conflict_map.get_mut(&branches[a]).unwrap().0.insert(branches[b].clone());
+                }
+            }
+            let mut diffs: HashMap<i32, NumberChannelsDiff> = HashMap::new();
+            for (b, ch, delta) in touches {
+                if b < n {
+                    diffs
+                        .entry((b * 10) as i32)
+                        .or_default()
+                        .insert(channel(ch), (delta, MergeType::IntegerAdd));
+                }
+            }
+            let base: HashMap<Blake2b256Hash, i64> =
+                (0..3u8).map(|k| (channel(k), base_values[k as usize])).collect();
+            let mergeable_channels = |item: &i32| diffs.get(item).cloned().unwrap_or_default();
+            let cost = |item: &i32| costs[(*item / 10) as usize];
+            let prior_losses = |item: &i32| losses[(*item / 10) as usize];
+            let pinned = HashSet::new();
+            let all = HashableSet(branches.iter().cloned().collect());
+
+            let expected = select_rejection_exhaustive(
+                &all, &conflict_map, &base, &mergeable_channels, &cost, &prior_losses, &pinned,
+            )
+            .0;
+            let actual = select_rejection(
+                &all, &conflict_map, &base, &mergeable_channels, &cost, &prior_losses, &pinned,
+            )
+            .0;
+            prop_assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
+    fn independent_pairs_are_resolved_per_group() {
+        let branches: Vec<Branch<i32>> = (0..42)
+            .map(|i| Arc::new(HashableSet(HashSet::from([i]))))
+            .collect();
+        let mut conflict_map: HashMap<Branch<i32>, HashableSet<Branch<i32>>> = branches
+            .iter()
+            .map(|b| (b.clone(), HashableSet(HashSet::new())))
+            .collect();
+        for pair in 0..21 {
+            let (a, b) = (&branches[2 * pair], &branches[2 * pair + 1]);
+            conflict_map.get_mut(a).unwrap().0.insert(b.clone());
+            conflict_map.get_mut(b).unwrap().0.insert(a.clone());
+        }
+        let all = HashableSet(branches.iter().cloned().collect());
+
+        let (rejected, n_options, _) = select_rejection(
+            &all,
+            &conflict_map,
+            &HashMap::new(),
+            &|_: &i32| NumberChannelsDiff::new(),
+            &|_: &i32| 1,
+            &|_: &i32| 0,
+            &HashSet::new(),
+        );
+
+        assert_eq!(rejected.0.len(), 21);
+        assert_eq!(n_options, 42);
+    }
+
+    #[test]
+    fn max_losses_are_fixed_across_groups() {
+        let branch = |i: i32| -> Branch<i32> { Arc::new(HashableSet(HashSet::from([i]))) };
+        let (k, a1, a2, a3, b1, b2) = (
+            branch(0),
+            branch(1),
+            branch(2),
+            branch(3),
+            branch(4),
+            branch(5),
+        );
+        let mut conflict_map: HashMap<Branch<i32>, HashableSet<Branch<i32>>> =
+            [&k, &a1, &a2, &a3, &b1, &b2]
+                .iter()
+                .map(|b| ((*b).clone(), HashableSet(HashSet::new())))
+                .collect();
+        for (x, y) in [(&k, &a1), (&k, &a2), (&k, &a3), (&b1, &b2)] {
+            conflict_map.get_mut(x).unwrap().0.insert(y.clone());
+            conflict_map.get_mut(y).unwrap().0.insert(x.clone());
+        }
+        let losses = |item: &i32| if matches!(*item, 1..=3) { 1 } else { 2 };
+        let no_channels = |_: &i32| NumberChannelsDiff::new();
+        let no_cost = |_: &i32| 0;
+        let pinned = HashSet::new();
+        let all = HashableSet(conflict_map.keys().cloned().collect());
+
+        let expected = select_rejection_exhaustive(
+            &all,
+            &conflict_map,
+            &HashMap::new(),
+            &no_channels,
+            &no_cost,
+            &losses,
+            &pinned,
+        )
+        .0;
+        let actual = select_rejection(
+            &all,
+            &conflict_map,
+            &HashMap::new(),
+            &no_channels,
+            &no_cost,
+            &losses,
+            &pinned,
+        )
+        .0;
+
+        assert!(expected.0.contains(&k));
+        assert_eq!(actual, expected);
     }
 }

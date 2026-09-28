@@ -660,3 +660,72 @@ Proof.
   - apply hard_gate_iff_Finalized. apply hard_gate_iff_Finalized in Hhg.
     exact (L_SNAP d c J J' b Hext Hhg).
 Qed.
+
+Section StatePreservingSupport.
+
+Variable d : DAG.
+Variable state_ancestor : BlockHash -> BlockHash -> Prop.
+
+Definition state_agrees
+  (J : Snapshot) (v : Validator) (b : BlockHash) : Prop :=
+  exists h, snap_get J v = Some h /\ state_ancestor b h.
+
+Definition StateFinalized_ft
+  (c : Committee) (J : Snapshot) (b : BlockHash) (num den : Z) : Prop :=
+  exists Q,
+    is_quorum_ft c Q num den /\
+    (forall v w, In (v, w) Q -> state_agrees J v b).
+
+Definition state_hard_gate
+  (c : Committee) (J : Snapshot) (b : BlockHash) : Prop :=
+  exists A,
+    incl A c /\
+    NoDup (map fst A) /\
+    2 * cweight A > cweight c /\
+    (forall v w, In (v, w) A -> state_agrees J v b).
+
+Definition StateFinalized_ft_hg
+  (c : Committee) (J : Snapshot) (b : BlockHash) (num den : Z) : Prop :=
+  StateFinalized_ft c J b num den /\ state_hard_gate c J b.
+
+Theorem state_agreement_refines_causal_agreement :
+  (forall ancestor descendant,
+    state_ancestor ancestor descendant -> anc_of d ancestor descendant) ->
+  forall J v b,
+    state_agrees J v b -> agrees d J v b.
+Proof.
+  intros Hrefines J v b [h [Hlatest Hstate]].
+  exists h. split.
+  - exact Hlatest.
+  - apply Hrefines. exact Hstate.
+Qed.
+
+Theorem state_finalization_refines_causal_finalization :
+  (forall ancestor descendant,
+    state_ancestor ancestor descendant -> anc_of d ancestor descendant) ->
+  forall c J b num den,
+    StateFinalized_ft_hg c J b num den ->
+    Finalized_ft_hg d c J b num den.
+Proof.
+  intros Hrefines c J b num den [[Q [Hquorum Hagrees]]
+    [A [Hin [Hnodup [Hmajority Hstate_agrees]]]]].
+  split.
+  - exists Q. split.
+    + exact Hquorum.
+    + intros v w Hmember.
+      apply state_agreement_refines_causal_agreement.
+      * exact Hrefines.
+      * exact (Hagrees v w Hmember).
+  - exists A. split.
+    + exact Hin.
+    + split.
+      * exact Hnodup.
+      * split.
+        -- exact Hmajority.
+        -- intros v w Hmember.
+           apply state_agreement_refines_causal_agreement.
+           ++ exact Hrefines.
+           ++ exact (Hstate_agrees v w Hmember).
+Qed.
+
+End StatePreservingSupport.

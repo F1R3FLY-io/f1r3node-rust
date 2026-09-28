@@ -402,7 +402,7 @@ async fn create_allow_empty(node: &mut TestNode) -> BlockCreatorResult {
         node.rejected_deploy_buffer.clone(),
         &node.runtime_manager,
         &mut node.block_store,
-        true,
+        casper::rust::blocks::proposer::proposer::DeploySelection::StandardAllowEmpty,
     )
     .await
     .expect("block creation")

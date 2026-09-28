@@ -1,12 +1,12 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // UC-90 — Partition / gossip state machine: divergent evidence views merge
 // monotonically, never losing active-unreported entries.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-90.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-90.
 // Reference: formal/sage/evidence_propagation_model.sage,
 // formal/sage/slashing/FINDINGS.md.
 //

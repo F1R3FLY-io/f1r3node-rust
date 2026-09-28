@@ -55,9 +55,11 @@ impl GrpcReplClient {
         port: u16,
         max_message_size: usize,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+        const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
         let endpoint = Endpoint::from_shared(format!("http://{host}:{port}"))?
-            .connect_timeout(Duration::from_secs(5)) // TODO adjust the connect_timeout if necessary
-            .timeout(Duration::from_secs(30)); // TODO adjust the timeout if necessary
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(REQUEST_TIMEOUT);
 
         let channel = endpoint.connect().await?;
 

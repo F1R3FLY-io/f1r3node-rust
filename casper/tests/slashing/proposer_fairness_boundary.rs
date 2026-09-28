@@ -1,6 +1,6 @@
 // UC-74 — Fair proposer reports a visible equivocation (does not neglect it).
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-74.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-74.
 // Theorems: T-9.8.
 //
 // Scenario: v0 equivocates; the dispatcher mints a record. Honest

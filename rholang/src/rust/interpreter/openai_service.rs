@@ -27,6 +27,9 @@ use super::errors::InterpreterError;
 ///   validation-timeout-sec = 15
 /// }
 /// ```
+const DEFAULT_VALIDATE_API_KEY: bool = true;
+const DEFAULT_VALIDATION_TIMEOUT_SEC: u64 = 15;
+
 #[derive(Clone, Debug)]
 pub struct OpenAIConfig {
     /// Whether OpenAI service is enabled
@@ -49,7 +52,12 @@ impl OpenAIConfig {
     /// Use this when no HOCON config is available
     pub fn from_env() -> Self {
         // Use empty config values as base, let env vars take priority
-        Self::from_config_values(false, String::new(), true, 15)
+        Self::from_config_values(
+            false,
+            String::new(),
+            DEFAULT_VALIDATE_API_KEY,
+            DEFAULT_VALIDATION_TIMEOUT_SEC,
+        )
     }
 
     /// Load configuration merging HOCON config values with environment variables
@@ -114,8 +122,8 @@ impl OpenAIConfig {
         Self {
             enabled: false,
             api_key: None,
-            validate_api_key: true,
-            validation_timeout_sec: 15,
+            validate_api_key: DEFAULT_VALIDATE_API_KEY,
+            validation_timeout_sec: DEFAULT_VALIDATION_TIMEOUT_SEC,
         }
     }
 
@@ -469,5 +477,109 @@ mod tests {
             .is_ok());
         assert_eq!(service.dalle3_create_image("test").await.unwrap(), "");
         assert_eq!(service.gpt4_chat_completion("test").await.unwrap(), "");
+    }
+
+    #[tokio::test]
+    async fn mock_single_completion_answers_gpt4_only() {
+        let service = OpenAIService::Mock(OpenAIMockConfig::single_completion("answer"));
+        assert!(!service.is_enabled());
+        assert_eq!(service.gpt4_chat_completion("q").await.unwrap(), "answer");
+        assert_eq!(service.dalle3_create_image("q").await.unwrap(), "");
+        assert_eq!(
+            service.create_audio_speech("q", "out.mp3").await.unwrap(),
+            Vec::<u8>::new()
+        );
+    }
+
+    #[tokio::test]
+    async fn mock_single_dalle3_answers_image_only() {
+        let service = OpenAIService::Mock(OpenAIMockConfig::single_dalle3("http://image"));
+        assert_eq!(
+            service.dalle3_create_image("q").await.unwrap(),
+            "http://image"
+        );
+        assert_eq!(service.gpt4_chat_completion("q").await.unwrap(), "");
+    }
+
+    #[tokio::test]
+    async fn mock_single_tts_answers_audio_only() {
+        let service = OpenAIService::Mock(OpenAIMockConfig::single_tts_audio(vec![1, 2, 3]));
+        assert_eq!(
+            service.create_audio_speech("q", "out.mp3").await.unwrap(),
+            vec![1, 2, 3]
+        );
+        assert_eq!(service.dalle3_create_image("q").await.unwrap(), "");
+    }
+
+    #[tokio::test]
+    async fn mock_error_config_fails_every_endpoint() {
+        let service = OpenAIService::Mock(OpenAIMockConfig::error_on_first_call());
+        assert!(matches!(
+            service.gpt4_chat_completion("q").await,
+            Err(InterpreterError::OpenAIError(_))
+        ));
+        assert!(matches!(
+            service.dalle3_create_image("q").await,
+            Err(InterpreterError::OpenAIError(_))
+        ));
+        assert!(matches!(
+            service.create_audio_speech("q", "out.mp3").await,
+            Err(InterpreterError::OpenAIError(_))
+        ));
+    }
+
+    #[test]
+    fn from_config_returns_noop_when_disabled_or_keyless() {
+        let disabled = OpenAIService::from_config(&OpenAIConfig::disabled());
+        assert!(!disabled.is_enabled());
+
+        let keyless_enabled = OpenAIService::from_config(&OpenAIConfig::for_test(true, None));
+        assert!(!keyless_enabled.is_enabled());
+    }
+
+    #[tokio::test]
+    async fn shared_service_constructors_wrap_the_expected_variants() {
+        let noop = create_noop_openai_service();
+        assert!(!noop.lock().await.is_enabled());
+
+        let from_config = create_openai_service(&OpenAIConfig::disabled());
+        assert!(!from_config.lock().await.is_enabled());
+
+        let mock = create_mock_openai_service(OpenAIMockConfig::single_completion("m"));
+        assert_eq!(
+            mock.lock().await.gpt4_chat_completion("q").await.unwrap(),
+            "m"
+        );
+    }
+
+    #[test]
+    fn parse_bool_env_accepts_scala_compatible_values() {
+        let var = "RHOLANG_TEST_OPENAI_PARSE_BOOL";
+        assert_eq!(parse_bool_env(var), None);
+
+        for (value, expected) in [
+            ("true", Some(true)),
+            ("TRUE", Some(true)),
+            ("1", Some(true)),
+            ("yes", Some(true)),
+            ("on", Some(true)),
+            ("false", Some(false)),
+            ("0", Some(false)),
+            ("no", Some(false)),
+            ("OFF", Some(false)),
+            ("maybe", None),
+        ] {
+            env::set_var(var, value);
+            assert_eq!(parse_bool_env(var), expected, "value {value}");
+        }
+        env::remove_var(var);
+    }
+
+    #[test]
+    fn for_test_config_skips_validation() {
+        let config = OpenAIConfig::for_test(true, Some("key".to_string()));
+        assert!(config.enabled);
+        assert_eq!(config.api_key, Some("key".to_string()));
+        assert!(!config.validate_api_key);
     }
 }

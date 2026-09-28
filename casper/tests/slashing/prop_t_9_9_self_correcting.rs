@@ -1,13 +1,13 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // Property-based test for T-9.9 (self-correcting block admitted).
 //
 // Theorem: T-9.9 (`t_9_9_self_correcting_admitted`,
 // formal/rocq/slashing/theories/MainTheorem.v).
-// Reference: docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.10.
+// Reference: docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.10.
 //
 // Property: a block that cites an invalid block AND issues a
 // SlashDeploy targeting that block's sender is admitted as Valid

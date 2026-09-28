@@ -6,6 +6,9 @@
 // quarantineLength - the length of the quarantine time in blocks
 // numberOfActiveValidators - max number of active validator in a shard
 // faultToleranceThresholdPpm - protocol fault-tolerance threshold in parts-per-million
+// maxParentDepth - the parent-spread validity bound (citability horizon), in blocks
+// deployLifespan - the deploy validity window, in blocks
+// minPhloPrice - the minimum accepted deploy phlo price
 // posMultiSigPublicKeys - public keys
 // posMultiSigQuorum - how many confirmations are necessary to use multi-sig vault
 /*
@@ -305,6 +308,14 @@ in {
               // base is node-identical regardless of local configuration.
               contract PoS(@"getFaultToleranceThresholdPpm", returnCh) = {
                 returnCh!($$faultToleranceThresholdPpm$$)
+              } |
+              // Exposes the consensus-critical shard parameters as one tuple:
+              // (maxParentDepth, deployLifespan, minPhloPrice). Validity rules
+              // fork on divergence, so every node reads these back at startup
+              // and runs them regardless of local configuration. Immutable
+              // until an on-chain parameter-upgrade mechanism exists.
+              contract PoS(@"getConsensusParameters", returnCh) = {
+                returnCh!(($$maxParentDepth$$, $$deployLifespan$$, $$minPhloPrice$$))
               } |
               contract PoS(@"posVaultTransfer", @targetAddress, @amount, @deployerID, @transferRet) = {
                 // human transfer would just use this method

@@ -40,9 +40,7 @@
        (e) main_parent_pipeline_deterministic - the FULL two-stage proposer
                                         pipeline (stage 1's ghost sort, then
                                         stage 2's deploy-support promotion at
-                                        `snapshot.rs:332`) is deterministic;
-       (f) promotion_gate_requires_novel - deploy promotion requires a signature
-                                        absent from the current main ancestry.
+                                        `snapshot.rs:332`) is deterministic.
 
      Why (c) and (e) are BOTH needed, and why (c) alone is no longer the bridge:
      dev's `prefer_deploy_support_main_parent` runs AFTER the ghost sort and may
@@ -212,18 +210,10 @@ Theorem fork_choice_bridge_correct :
          false (GuardBridge.pipeline_head_may_differ_from_ghost witnesses it). *)
   (forall branch_score main (l l' : list BlockHash),
      NoDup l -> Permutation l l' ->
-     main_parent_pipeline branch_score main l = main_parent_pipeline branch_score main l')
-  /\
-  (* (f) a sibling can enter promotion only with a signature not covered by the
-         current main ancestry. *)
-  (forall main_sigs candidate_sigs,
-     has_novel_signature main_sigs candidate_sigs = true ->
-     exists sig, In sig candidate_sigs /\ ~ In sig main_sigs).
+     main_parent_pipeline branch_score main l = main_parent_pipeline branch_score main l').
 Proof.
   exact (conj validation_implies_wf_dag
           (conj honest_forkchoice_parents_validate
             (conj ghost_sort_first_deterministic
-              (conj rank_terminates
-                (conj (@main_parent_pipeline_deterministic)
-                      promotion_gate_requires_novel))))).
+              (conj rank_terminates (@main_parent_pipeline_deterministic))))).
 Qed.

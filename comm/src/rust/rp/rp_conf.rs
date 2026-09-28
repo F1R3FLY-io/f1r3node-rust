@@ -97,3 +97,88 @@ impl RPConfCell {
         Ok(new_conf)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use prost::bytes::Bytes;
+
+    use super::*;
+    use crate::rust::peer_node::{Endpoint, NodeIdentifier, PeerNode};
+
+    fn peer(name: &str, host: &str) -> PeerNode {
+        PeerNode {
+            id: NodeIdentifier {
+                key: Bytes::from(name.as_bytes().to_vec()),
+            },
+            endpoint: Endpoint::new(host.to_string(), 40400, 40404),
+        }
+    }
+
+    fn conf() -> RPConf {
+        RPConf::new(
+            peer("local", "localhost"),
+            "testnet".to_string(),
+            Some(peer("bootstrap", "bootstrap-host")),
+            Duration::from_secs(3),
+            25,
+            7,
+        )
+    }
+
+    #[test]
+    fn new_populates_all_fields() {
+        let c = conf();
+        assert_eq!(c.local, peer("local", "localhost"));
+        assert_eq!(c.network_id, "testnet");
+        assert_eq!(c.bootstrap, Some(peer("bootstrap", "bootstrap-host")));
+        assert_eq!(c.default_timeout, Duration::from_secs(3));
+        assert_eq!(c.max_num_of_connections, 25);
+        assert_eq!(c.clear_connections.num_of_connections_pinged, 7);
+    }
+
+    #[test]
+    fn cell_read_returns_stored_conf() {
+        let cell = RPConfCell::new(conf());
+        let read = cell.read().unwrap();
+        assert_eq!(read.network_id, "testnet");
+        assert_eq!(read.local, peer("local", "localhost"));
+    }
+
+    #[test]
+    fn cell_update_local_replaces_only_local() {
+        let cell = RPConfCell::new(conf());
+        cell.update_local(peer("local", "changed-host")).unwrap();
+
+        let read = cell.read().unwrap();
+        assert_eq!(read.local, peer("local", "changed-host"));
+        assert_eq!(read.network_id, "testnet");
+        assert_eq!(read.bootstrap, Some(peer("bootstrap", "bootstrap-host")));
+    }
+
+    #[test]
+    fn cell_modify_applies_transformation_and_persists() {
+        let cell = RPConfCell::new(conf());
+        let returned = cell
+            .modify(|mut c| {
+                c.network_id = "othernet".to_string();
+                c.max_num_of_connections = 1;
+                Ok(c)
+            })
+            .unwrap();
+
+        assert_eq!(returned.network_id, "othernet");
+        assert_eq!(returned.max_num_of_connections, 1);
+
+        let read = cell.read().unwrap();
+        assert_eq!(read.network_id, "othernet");
+        assert_eq!(read.max_num_of_connections, 1);
+    }
+
+    #[test]
+    fn cell_modify_error_leaves_conf_unchanged() {
+        let cell = RPConfCell::new(conf());
+        let result = cell.modify(|_| Err(CommError::TimeOut));
+        assert_eq!(result.unwrap_err(), CommError::TimeOut);
+        assert_eq!(cell.read().unwrap().network_id, "testnet");
+    }
+}

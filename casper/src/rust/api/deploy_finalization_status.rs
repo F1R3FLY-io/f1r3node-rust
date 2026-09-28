@@ -58,8 +58,8 @@ pub enum DeployFinalizationState {
     Finalized,
     /// The validity window closed on the floor clock without a winning
     /// inclusion, and a floor-covered inclusion executed with
-    /// `is_failed=true` (e.g., insufficient phlo, contract error).
-    /// Effects will never apply. Terminal.
+    /// `is_failed=true` (e.g., insufficient phlo, failed payment,
+    /// contract error). Effects will never apply. Terminal.
     Failed,
     /// Not yet settled: no terminal record has been determined. Covers
     /// unincluded deploys, wins still climbing toward floor coverage or

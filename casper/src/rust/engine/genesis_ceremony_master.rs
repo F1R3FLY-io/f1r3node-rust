@@ -126,6 +126,8 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisCeremonyMaster<T>
                     &ab,
                     approved_block.clone(),
                 )?;
+                // History rooted at genesis: coverage is complete from 0.
+                block_dag_storage.record_carrier_coverage_from(0)?;
 
                 let casper = Self::create_casper_from_storage(
                     event_publisher,
@@ -163,7 +165,6 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisCeremonyMaster<T>
                     transport_layer.clone(),
                     rp_conf_ask.clone(),
                     block_retriever.clone(),
-                    None,
                     &engine_cell,
                     event_publisher,
                     // The ceremony master transitions genesis-rooted: its

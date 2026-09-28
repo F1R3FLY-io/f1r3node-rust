@@ -18,7 +18,7 @@ use models::rust::casper::protocol::casper_message::{
 };
 use models::rust::validator::Validator;
 use rholang::rust::interpreter::deploy_parameters::DeployParameters;
-use shared::rust::store::key_value_store::KvStoreError;
+use shared::rust::store::key_value_store::{KvStoreError, MissingBlockContext};
 use shared::rust::ByteString;
 
 use crate::rust::errors::CasperError;
@@ -164,28 +164,34 @@ pub fn weight_from_validator_by_dag(
     block_hash: &BlockHash,
     validator: &Validator,
 ) -> Result<i64, KvStoreError> {
-    // Get block metadata. B1: on the fork-choice BFS hot path a traversed block or
-    // its main parent may be momentarily absent from the metadata index (a sync /
-    // prune window). Surface a typed KvStoreError::KeyNotFound (as `snapshot.rs`
-    // already does for the sibling case) instead of panicking via `.expect`.
-    let block_metadata = dag.lookup(block_hash)?.ok_or_else(|| {
-        KvStoreError::KeyNotFound(format!(
-            "weight_from_validator_by_dag: block metadata missing from index: {}",
-            PrettyPrinter::build_string_no_limit(block_hash)
-        ))
-    })?;
+    // On the fork-choice BFS a traversed block — or its main parent, read for
+    // the weight map — can be absent from the metadata index: a sync/prune
+    // window, or, on an LFS-restored node, a parent below the restore horizon
+    // (held as a hash only, never indexed). Absence is a statement about THIS
+    // node's history, never about the block being judged: `MissingBlock`
+    // collapses to `BlockNotHeld` and the pipeline defers the block for
+    // fetch-and-retry, where a `KeyNotFound` hard-failed admission (the #306
+    // storm on restored joiners and observers). No backtrace in the context —
+    // this is a hot path with exactly one caller (`estimator::build_scores_map`).
+    let block_metadata = dag
+        .lookup(block_hash)?
+        .ok_or_else(|| KvStoreError::MissingBlock {
+            hash: block_hash.clone(),
+            context: MissingBlockContext::new("weight_from_validator_by_dag: traversed block"),
+        })?;
 
     // Try to get parent's weight for this validator
     match block_metadata.parents.first() {
         Some(parent_hash) => {
             // Look up parent
-            let parent_metadata = dag.lookup(parent_hash)?.ok_or_else(|| {
-                KvStoreError::KeyNotFound(format!(
-                    "weight_from_validator_by_dag: main-parent metadata missing from index \
-                     (sync/prune window): {}",
-                    PrettyPrinter::build_string_no_limit(parent_hash)
-                ))
-            })?;
+            let parent_metadata =
+                dag.lookup(parent_hash)?
+                    .ok_or_else(|| KvStoreError::MissingBlock {
+                        hash: parent_hash.clone(),
+                        context: MissingBlockContext::new(
+                            "weight_from_validator_by_dag: main parent",
+                        ),
+                    })?;
             // Return validator's weight from parent or 0 if not found
             Ok(parent_metadata
                 .weight_map
@@ -259,22 +265,63 @@ pub fn get_parents_metadata(
         .map(|parent| {
             dag.lookup(parent)
                 .map_err(CasperError::from)?
-                .ok_or_else(|| CasperError::BlockNotHeld(parent.clone()))
+                .ok_or_else(|| {
+                    CasperError::BlockNotHeld(
+                        parent.clone(),
+                        MissingBlockContext::new("get_parents_metadata"),
+                    )
+                })
         })
         .collect()
 }
 
-pub fn get_parent_metadatas_above_block_number(
+/// How a walk treats a parent this node does not hold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnheldParent {
+    /// Verdict walks: surfaced as `BlockNotHeld` — a swallowed gap admits a
+    /// repeated deploy.
+    Surface,
+    /// Live-decision walks: settled ancestry below the restore horizon,
+    /// skipped with a warn. Under an undersized block floor the skip
+    /// under-fills the proposer's dedup window — self-harm, not a safety
+    /// hole.
+    SkipSettled,
+}
+
+pub fn parent_metadatas_above_block_number(
     block: &BlockMetadata,
     block_number: i64,
     dag: &KeyValueDagRepresentation,
+    on_unheld: UnheldParent,
 ) -> Result<Vec<BlockMetadata>, CasperError> {
-    get_parents_metadata(dag, block).map(|parents| {
-        parents
-            .into_iter()
-            .filter(|p| p.block_number >= block_number)
-            .collect()
-    })
+    let mut result = Vec::with_capacity(block.parents.len());
+    for parent in &block.parents {
+        match dag.lookup(parent).map_err(CasperError::from)? {
+            Some(meta) => {
+                if meta.block_number >= block_number {
+                    result.push(meta);
+                }
+            }
+            None => match on_unheld {
+                UnheldParent::Surface => {
+                    return Err(CasperError::BlockNotHeld(
+                        parent.clone(),
+                        MissingBlockContext::new("parent_metadatas_above_block_number"),
+                    ))
+                }
+                UnheldParent::SkipSettled => {
+                    tracing::warn!(
+                        parent = %PrettyPrinter::build_string_bytes(parent),
+                        child = %PrettyPrinter::build_string_bytes(&block.block_hash),
+                        earliest_wanted = block_number,
+                        "in-scope walk skipped an unheld parent: settled ancestry below \
+                         a restore horizon, or an undersized block floor"
+                    );
+                }
+            },
+        }
+    }
+    Ok(result)
 }
 
 pub fn deploys(block: &BlockMessage) -> Vec<ProcessedDeploy> { block.body.deploys.clone() }
@@ -618,15 +665,18 @@ pub fn justification_to_justification_info(justification: &Justification) -> Jus
 }
 
 // ---------------------------------------------------------------------------
-// Fork-choice FV — Phase-0 reproduction of B1.
+// Fork-choice FV — B1, refined by the restore-horizon walk (#306).
 //
 // `weight_from_validator_by_dag` (above) reads the traversed block's MAIN
 // PARENT weight map on the fork-choice BFS hot path (`estimator::build_scores_map`).
 // B1 (FIXED): a traversed block whose main parent is momentarily absent from the
 // metadata index — a sync / prune window — previously panicked via
-// `.expect("Parent metadata should exist")`; it now surfaces a typed
-// `KvStoreError::KeyNotFound`. This test asserts that typed error.
-// See docs/theory/fork-choice/fork-choice-verification.md (B1).
+// `.expect("Parent metadata should exist")`. The typed error is now
+// `KvStoreError::MissingBlock`, which collapses to `CasperError::BlockNotHeld`
+// so admission DEFERS the block (fetch-and-retry) instead of hard-failing —
+// on an LFS-restored node a main parent below the restore horizon is the
+// normal condition, not a fault.
+// See docs/casper/theory/fork-choice/fork-choice-verification.md (B1).
 // ---------------------------------------------------------------------------
 #[cfg(test)]
 mod fork_choice_b1_repro_tests {
@@ -677,7 +727,7 @@ mod fork_choice_b1_repro_tests {
             }
         }
         for b in blocks {
-            bms.add(b).unwrap();
+            assert!(bms.add(b).is_ok(), "test DAG metadata insert failed");
         }
         KeyValueDagRepresentation {
             dag_set,
@@ -697,21 +747,101 @@ mod fork_choice_b1_repro_tests {
                 block_storage::rust::dag::deploy_lifecycle_types::DeployLifecycleTables::in_memory(
                 ),
             )),
+            carrier_index: Arc::new(parking_lot::RwLock::new(
+                block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
+            )),
         }
     }
 
+    /// The sixth restore-horizon walk (#306). On an LFS-restored node a held
+    /// block's main parent can sit below the horizon — hash-only, never
+    /// indexed. That absence is a statement about THIS node's sync, so it
+    /// must surface as `MissingBlock` (which collapses to `BlockNotHeld` and
+    /// defers the block for fetch-and-retry), never as a `KeyNotFound`
+    /// processing failure that hard-fails admission.
     #[test]
-    fn weight_from_validator_missing_parent_is_typed_err() {
+    fn a_main_parent_below_the_restore_horizon_is_a_missing_block() {
         let v = h(9);
         let child = h(1);
-        let missing = h(2); // deliberately NOT added to the index (sync/prune window)
-        let mut dag = dag_with(vec![md(child.clone(), vec![missing], 1, &v)]);
-        // `child` resolves; its declared main parent is absent. After the B1 fix this
-        // surfaces a typed KvStoreError::KeyNotFound instead of panicking.
+        let missing = h(2); // below the horizon: referenced, never indexed
+        let mut dag = dag_with(vec![md(child.clone(), vec![missing.clone()], 1, &v)]);
         let result = weight_from_validator_by_dag(&mut dag, &child, &v);
+        let Err(err) = result else {
+            panic!("unheld main parent must error, got {result:?}");
+        };
         assert!(
-            matches!(result, Err(KvStoreError::KeyNotFound(_))),
-            "missing main-parent metadata must be a typed KeyNotFound, got {result:?}"
+            matches!(&err, KvStoreError::MissingBlock { hash, .. } if *hash == missing),
+            "unheld main parent must be MissingBlock naming the parent, got {err:?}"
+        );
+        // The deferral collapse the block pipeline routes on: the typed
+        // absence becomes BlockNotHeld with the accessor tag riding along.
+        match crate::rust::errors::CasperError::from(err) {
+            crate::rust::errors::CasperError::BlockNotHeld(hash, site) => {
+                assert_eq!(hash, missing);
+                assert!(
+                    !site.accessor().is_empty(),
+                    "the accessor tag must survive the collapse, got {site:?}"
+                );
+            }
+            other => panic!("MissingBlock must collapse to BlockNotHeld, got {other:?}"),
+        }
+    }
+
+    /// The live-decision policy skips a sub-horizon parent instead of
+    /// erroring; the held sibling and the number filter are unaffected.
+    #[test]
+    fn in_scope_walk_skips_an_unheld_parent_and_keeps_the_held_window() {
+        let v = h(9);
+        let held_parent = h(4);
+        let missing_parent = h(2); // below the horizon: referenced, never indexed
+        let child = h(1);
+        let held_meta = md(held_parent.clone(), vec![], 5, &v);
+        let child_meta = md(
+            child.clone(),
+            vec![held_parent.clone(), missing_parent.clone()],
+            6,
+            &v,
+        );
+        let dag = dag_with(vec![held_meta, child_meta.clone()]);
+
+        let in_window =
+            parent_metadatas_above_block_number(&child_meta, 3, &dag, UnheldParent::SkipSettled)
+                .expect("unheld parent must be skipped, not an error");
+        assert_eq!(
+            in_window.iter().map(|m| &m.block_hash).collect::<Vec<_>>(),
+            vec![&held_parent],
+            "the held parent survives; the unheld one is silently settled"
+        );
+
+        let above_window =
+            parent_metadatas_above_block_number(&child_meta, 6, &dag, UnheldParent::SkipSettled)
+                .expect("unheld parent must be skipped, not an error");
+        assert!(
+            above_window.is_empty(),
+            "the number filter still bounds the held parent"
+        );
+
+        // The verdict policy refuses the same DAG.
+        assert!(
+            matches!(
+                parent_metadatas_above_block_number(&child_meta, 3, &dag, UnheldParent::Surface),
+                Err(crate::rust::errors::CasperError::BlockNotHeld(ref h, _)) if *h == missing_parent
+            ),
+            "the verdict walk must surface the unheld parent"
+        );
+    }
+
+    /// The BFS twin of the case above: the traversed block itself is unheld
+    /// (its hash was queued from a held child's parent list). Same contract.
+    #[test]
+    fn an_unheld_traversed_block_is_a_missing_block() {
+        let v = h(9);
+        let missing = h(3); // never added to the index
+        let mut dag = dag_with(vec![]);
+        let result = weight_from_validator_by_dag(&mut dag, &missing, &v);
+        assert!(
+            matches!(&result, Err(KvStoreError::MissingBlock { hash, .. }) if *hash == missing),
+            "unheld traversed block must be MissingBlock naming it, got {result:?}"
         );
     }
 

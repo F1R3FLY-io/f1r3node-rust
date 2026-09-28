@@ -129,16 +129,14 @@ async fn estimator_should_obey_absent_parent_depth_limitation() {
         .await
         .unwrap();
 
-    // With multi-parent merging, all validators' latest blocks are included as parents.
-    // Genesis has 4 validators, only 2 nodes create blocks, so validators 2 and 3 still
-    // have genesis as their latest message. This results in 3 unique parents:
-    // - b1 (from validator 0)
-    // - b5 (from validator 1)
-    // - genesis (from validators 2 and 3 who haven't created blocks)
+    // With multi-parent merging, every validator's latest block is a parent.
+    // Genesis has 4 validators but only 2 nodes create blocks; validators 2
+    // and 3 hold the genesis placeholder, which is abstained, so the parents
+    // are b1 and b5.
     assert_eq!(
         b6.header.parents_hash_list.len(),
-        3,
-        "Expected b6 to have exactly 3 parents (b1, b5, genesis)"
+        2,
+        "Expected b6 to have exactly 2 parents (b1, b5)"
     );
     assert!(
         b6.header.parents_hash_list.contains(&b1.block_hash),

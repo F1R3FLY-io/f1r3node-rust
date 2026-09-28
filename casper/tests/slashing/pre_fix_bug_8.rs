@@ -1,7 +1,7 @@
 // Pre-fix regression backstop for bug #8 (`prepare_slashing_deploys`
 // doesn't check the proposer's own bond).
 //
-// Reference: docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.9.
+// Reference: docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.9.
 // Out-of-band approach: this asserts the post-fix invariant — an
 // unbonded proposer emits an empty slash list. The pre-fix path
 // returned the equivocator anyway (filtered only by *target* bond,

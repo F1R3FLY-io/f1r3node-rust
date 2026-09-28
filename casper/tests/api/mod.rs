@@ -1,4 +1,5 @@
 pub mod block_query_response_api_test;
+pub mod block_report_api_test;
 pub mod blocks_response_api_test;
 pub mod bonded_status_api_test;
 pub mod deploy_finalization_status_test;
@@ -7,4 +8,5 @@ pub mod graph_generator_tests;
 pub mod last_finalized_api_test;
 pub mod listening_name_api_test;
 pub mod machine_verifiable_dag_tests;
+pub mod pending_deploys_test;
 pub mod preview_private_name_test;

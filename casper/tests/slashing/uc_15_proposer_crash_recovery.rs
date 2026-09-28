@@ -1,6 +1,6 @@
 // UC-15 — Slash survives proposer crash via on-chain record.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-15.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-15.
 // Theorems: T-3, T-9.8.
 //
 // Scenario: validator v0 equivocates, but the proposer that observed it

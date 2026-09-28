@@ -109,6 +109,7 @@ pub struct TransportLayerService {
     recent_hash_filter: RecentHashFilter,
 }
 
+const GRPC_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 /// Default capacity for the recent hash filter
 const RECENT_HASH_FILTER_CAPACITY: usize = 8192;
 /// Inbound per-peer queue sizing tuned for catch-up bursts.
@@ -603,6 +604,11 @@ impl GrpcTransportReceiver {
         // Create SSL session server interceptor
         let ssl_interceptor = SslSessionServerInterceptor::new(network_id.clone());
 
+        // A stalled handshake should not outlive the timeout the peer that
+        // opened it is actually using — captured before `rp_config` moves
+        // into `TransportLayerService::new` below.
+        let handshake_timeout = rp_config.default_timeout;
+
         // Create the transport layer service implementation
         let transport_service = TransportLayerService::new(
             network_id.clone(),
@@ -617,11 +623,11 @@ impl GrpcTransportReceiver {
         // Create F1r3fly server with custom TLS configuration
         let f1r3fly_server = F1r3flyServer::builder(network_id.clone(), &cert_pem, &key_pem, addr)
             .map_err(|e| CommError::ConfigError(format!("F1r3fly server creation failed: {}", e)))?
-            // Configure TCP settings to match the previous tonic configuration
-            .tcp_keepalive(Some(std::time::Duration::from_secs(600))) // 10 minutes
+            .handshake_timeout(handshake_timeout)
+            .tcp_keepalive(Some(super::f1r3fly_server::TCP_KEEPALIVE))
             .tcp_nodelay(true)
-            .http2_keepalive_interval(Some(std::time::Duration::from_secs(30)))
-            .http2_keepalive_timeout(Some(std::time::Duration::from_secs(5)));
+            .http2_keepalive_interval(Some(super::f1r3fly_server::HTTP2_KEEPALIVE_INTERVAL))
+            .http2_keepalive_timeout(Some(super::f1r3fly_server::HTTP2_KEEPALIVE_TIMEOUT));
 
         // Create incoming connection stream with F1r3fly TLS
         let incoming = f1r3fly_server.incoming().await.map_err(|e| {
@@ -636,11 +642,9 @@ impl GrpcTransportReceiver {
             );
 
             let server_result = Server::builder()
-                // Request timeout (30s): Maximum time for a single gRPC request to complete.
-                // Prevents hanging requests from consuming resources indefinitely.
-                // Essential for blockchain P2P networks where nodes can be slow or unresponsive.
-                // 30 seconds allows time for large block transfers but prevents infinite waits.
-                .timeout(std::time::Duration::from_secs(30))
+                // Long enough for large block transfers, bounded so a slow
+                // peer cannot hold a request open indefinitely.
+                .timeout(GRPC_REQUEST_TIMEOUT)
                 // TCP keepalive - handled by F1r3flyServer configuration above
                 // TCP nodelay - handled by F1r3flyServer configuration above
                 // HTTP/2 keepalive interval - handled by F1r3flyServer configuration above
@@ -694,5 +698,137 @@ impl GrpcTransportReceiver {
                 tracing::error!(error = %e, "F1r3fly gRPC server task panicked");
             }
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use prost::bytes::Bytes;
+
+    use super::*;
+    use crate::rust::peer_node::{Endpoint, NodeIdentifier};
+    use crate::rust::test_instances::create_rp_conf_ask;
+
+    fn peer(name: &str) -> PeerNode {
+        PeerNode {
+            id: NodeIdentifier {
+                key: Bytes::from(name.as_bytes().to_vec()),
+            },
+            endpoint: Endpoint::new("host".to_string(), 40400, 40404),
+        }
+    }
+
+    fn noop_handlers() -> MessageHandlers {
+        (
+            Arc::new(
+                |_send: CommSend| -> Pin<Box<dyn Future<Output = Result<(), CommError>> + Send>> {
+                    Box::pin(async { Ok(()) })
+                },
+            ),
+            Arc::new(
+                |_stream: StreamMessage| -> Pin<
+                    Box<dyn Future<Output = Result<(), CommError>> + Send>,
+                > { Box::pin(async { Ok(()) }) },
+            ),
+        )
+    }
+
+    fn service(
+        buffers_map: Arc<Mutex<HashMap<PeerNode, PeerBufferSlot>>>,
+    ) -> TransportLayerService {
+        TransportLayerService::new(
+            "test".to_string(),
+            create_rp_conf_ask(peer("local"), None, None),
+            1024,
+            buffers_map,
+            noop_handlers(),
+            Arc::new(dashmap::DashMap::new()),
+            1,
+        )
+    }
+
+    #[test]
+    fn calculate_hash_is_deterministic_and_input_sensitive() {
+        assert_eq!(calculate_hash(b"abc"), calculate_hash(b"abc"));
+        assert_ne!(calculate_hash(b"abc"), calculate_hash(b"abd"));
+    }
+
+    #[test]
+    fn internal_server_error_response_carries_message() {
+        let buffers_map = Arc::new(Mutex::new(HashMap::new()));
+        let service = service(buffers_map);
+        let response = service.create_internal_server_error_response("boom".to_string());
+        match response.payload {
+            Some(models::routing::tl_response::Payload::InternalServerError(err)) => {
+                assert_eq!(err.error, prost::bytes::Bytes::from("boom"));
+            }
+            other => panic!("unexpected payload: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn circuit_breaker_opens_on_wrong_network_and_oversize() {
+        use super::super::stream_handler::{Header as StreamHeader, Streamed};
+
+        fn stream_header(network_id: &str) -> StreamHeader {
+            StreamHeader::new(
+                PeerNode {
+                    id: NodeIdentifier {
+                        key: Bytes::from(b"sender".to_vec()),
+                    },
+                    endpoint: Endpoint::new("host".to_string(), 40400, 40404),
+                },
+                "BlockMessage".to_string(),
+                10,
+                network_id.to_string(),
+                false,
+            )
+        }
+
+        CIRCUIT_BREAKER_PARAMS.with(|params| {
+            *params.borrow_mut() = Some(("expected-net".to_string(), 100));
+        });
+
+        let mut streamed = Streamed::new("key".to_string());
+        streamed.header = Some(stream_header("other-net"));
+        assert_eq!(
+            circuit_breaker_with_params(&streamed),
+            Circuit::opened(StreamError::wrong_network_id())
+        );
+
+        streamed.header = Some(stream_header("expected-net"));
+        streamed.read_so_far = 101;
+        assert_eq!(
+            circuit_breaker_with_params(&streamed),
+            Circuit::opened(StreamError::circuit_opened())
+        );
+
+        streamed.read_so_far = 50;
+        assert_eq!(circuit_breaker_with_params(&streamed), Circuit::closed());
+
+        CIRCUIT_BREAKER_PARAMS.with(|params| {
+            *params.borrow_mut() = None;
+        });
+        assert_eq!(circuit_breaker_with_params(&streamed), Circuit::closed());
+    }
+
+    #[tokio::test]
+    async fn stale_peer_buffers_are_evicted() {
+        let buffers_map = Arc::new(Mutex::new(HashMap::new()));
+        let service = service(buffers_map.clone());
+
+        {
+            let mut map = buffers_map.lock().await;
+            map.insert(peer("stale"), PeerBufferSlot {
+                once_cell: Arc::new(OnceCell::new()),
+                last_seen_ms: 0,
+            });
+        }
+
+        for _ in 0..(PEER_BUFFER_CLEANUP_EVERY_REQUESTS + 1) {
+            service.maybe_cleanup_stale_peer_buffers().await;
+        }
+
+        assert!(buffers_map.lock().await.is_empty());
     }
 }

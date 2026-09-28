@@ -101,28 +101,67 @@ tasks:
   - id: TASK-013-3
     title: "Phase 2: canary publication (canary-publish.yml)"
     status: in_progress
-    branch: feature/release-process-implementation
+    branch: feature/release-phase2-canary-publication
+    blocked_by: []
     notes:
       - "Implemented as canary-publish.yml: workflow_run on CI completion publishes the immutable canary tag, prerelease, and Docker Hub images by digest from the run's own artifacts; ineligible runs skip cleanly. Evidence upgrades to publication_mode: canary via release-evidence.sh record-images. OCIR canary deferred to Phase 3 (registry location is secret material). Remains in_progress until the first live master run proves it."
     acceptance:
       - "canary-publish.yml publishes immutable canary tags, prereleases, and images from tested artifacts on release-eligible master runs"
   - id: TASK-013-4
     title: "Phase 3: artifact-based validation (candidate digest modes)"
-    status: pending
+    status: in_progress
+    branch: feature/release-phase3-candidate-digest-validation
+    blocked_by: [TASK-013-5]
+    notes:
+      - "2026-08-22: stacked on Phase 4 (feature/release-phase4-promotion-controller). Registry decision ratified by the maintainer: OCIR is canonical for candidate gates, Docker Hub stays as the dual-published public mirror, no sync service."
+      - "canary-publish.yml pushes the same index to OCIR; evidence records images.ocir_index_digest, which the validator requires to equal the Docker Hub index digest. The OCIR repository path never enters evidence."
+      - "oci-validation.yml gains candidate_tag (exact-candidate mode); reusable-oci-validation.yml pulls each architecture image from OCIR by digest instead of building. merge-recovery-soak.yml gains candidate_tag, pulls the amd64 image by digest, and carries the tag through an in-window restart."
+      - "Both gate workflows publish Section 8.1 documents with release-gate-evidence.sh from a publish_candidate_evidence job under release-credentials, plus the release-candidate marker that resumes release.yml. test-release-gate-evidence.sh proves the writer against release-gates.sh."
+      - "promote-release.sh and release.yml copy the stable tag and latest into OCIR as well as Docker Hub."
+      - "The regress alert reuses the soak's existing ONS verdict email; promotion holds until maintainer-review.json is uploaded."
+      - "2026-08-22 multi-agent review of PR #325: gate documents carry candidate_evidence_sha256 and are written from the evidence file the run kept as a same-run artifact, never a re-downloaded release asset; release-gates.sh requires that digest to equal the evidence under evaluation. A candidate soak restart must name restart_of_run_id and match the original run's soak-window artifact (candidate, attempt 0, weekend, end epoch); coverage_preserved is true only for a verified restart."
     acceptance:
       - "merge-recovery-soak.yml and oci-validation.yml consume the candidate image digest without rebuilding"
+      - "The canary publisher publishes the same index digest to OCIR and Docker Hub, and evidence records the OCIR digest"
+      - "One exact-candidate OCI validation run and one candidate weekend soak publish Section 8.1 documents that release-gates.sh evaluates as pass"
+      - "Optional hardening: a read-only OCIR pull token replaces OCIR_AUTH_TOKEN in the soak and OCI validation pull steps (the OCIR_* secrets are repository-scoped and already readable there, verified 2026-08-22)"
   - id: TASK-013-5
     title: "Phase 4: stable promotion controller"
-    status: pending
+    status: in_progress
+    branch: feature/release-phase4-promotion-controller
+    blocked_by: [TASK-013-3]
+    notes:
+      - "2026-08-22: release-gates.sh evaluates the eight Section 8 gates from JSON documents only (pass, hold, or fail; exit 0, 10, or 20) and promote-release.sh plans Section 11 steps 4 to 14 from observed stable state, verifies binaries, emits stable-release-evidence.json, and bumps the next version. release.yml replaces the held stub: a read-only gates job, then a promote job under release-credentials that copies the image by digest with imagetools create, creates the verified stable tag and release, moves latest, and opens the next-version pull request. test-release-gates.sh, test-promote-release.sh, and the updated test-release-workflows.sh contract guard run in CI."
+      - "Section 8.1 defines the gate-evidence contract that Phase 3 must publish as candidate prerelease assets. Until Phase 3 lands, the OCI, soak, and verdict gates hold, so no candidate is promotable end to end."
+      - "The regress-verdict OCI Notifications alert belongs to the soak workflow (Phase 3); the controller holds on regress until maintainer-review.json accepts it."
+      - "2026-08-22 multi-agent review of PR #323: fail-closed gate evaluation (a malformed document fails its gate, the report always holds all eight gates), API-verified run identity for the OCI and soak documents, API-verified reviewer permission for maintainer-review.json, resume verifies existing release assets and refuses when a newer stable exists, latest is verified after the move, the next-version step is idempotent and keeps the token out of the remote URL, and the workflow_run resume is bound to a default-branch dispatch of a gate workflow whose marker names the evidence source. Concurrency was already serialized by the concurrency group; documented in Section 11.1."
     acceptance:
       - "release.yml performs exact-candidate promotion via release-gates.sh and promote-release.sh"
       - "A regress verdict publishes an OCI Notifications alert to the soak-report list and holds promotion for documented maintainer review"
+      - "The release-credentials environment exists with DOCKERHUB_USERNAME and DOCKERHUB_TOKEN and required reviewers"
+      - "One live promotion of a Phase 3 candidate publishes a stable tag, release, and image whose digest equals the candidate index"
   - id: TASK-013-6
     title: "Phase 5: Deployment Trains"
-    status: pending
+    status: in_progress
+    branch: feature/release-phase5-deployment-trains
+    blocked_by: [TASK-013-4]
+    notes:
+      - "2026-08-22: release-train.sh validates schema 1 and 2 manifests, the member chain (bottom member targets integration_branch, each later member targets the preceding member), head ancestry from compare documents, merged-member merge-commit topology, the source version and publishing-only reservation, and picks or dispatches the ci.yml run for head_sha. deployment-train.yml runs Section 13.2 steps 1 to 9 from the default branch with actions:write only for the ci.yml dispatch and uploads the train-record artifact. test-release-train.sh covers 18 rejections; test-release-workflows.sh guards the workflow; ci.yml validates every manifest under .github/deployment-trains/."
+      - ".github/deployment-trains/key-contention.yml is the non-publishing rehearsal for #299 -> #312 -> #319 -> #311 at the heads observed 2026-08-22. The live stack currently fails the ancestry check: #311's head 6c70d818a predates #319's last two commits (325bbb28b, 80f0a3b6a). The rehearsal will reject until #311 is re-based on #319 and the manifest head_sha is updated."
+      - "Remaining for this task: train canary creation through canary-publish.yml (Section 4.2 tag format, train_id in evidence), train_gates evaluation in release-gates.sh from manifest required_gates, recorded-member-head reachability in promote-release.sh, and the Section 13.3 re-validation trigger after a member merge."
+      - "2026-08-22: release-process.md Section 13.1.1 adds schema_version 2 stack manifests. A stack train binds the top-of-stack head as its one candidate; members merge bottom-up with true merge commits. Setup steps 4 to 6 (member chain, head ancestry, merged-member topology) and the validator depend on no earlier phase; canary, digest-bound gates, and promotion depend on Phases 2 to 4."
+      - "2026-08-22 multi-agent review of PR #321: Section 13.2 is one numbered sequence; the member base rule points to the preceding member; merge method is re-validated after each member merge and every recorded member head is verified at promotion, which closes the force-push window; the CI filter text matches ci.yml."
+      - "blocked_by encodes the stack merge order PR #322 -> #323 (Phase 4) -> #325 (Phase 3) -> #321 (Phase 5), which is also the code-dependency order: Phase 3 implements the Section 8.1 contract Phase 4 defines. Phase 4 becomes operational end to end only after Phase 3 publishes gate documents; that is a runtime dependency, not a merge dependency."
+      - "ci.yml runs pull-request CI for bases dev, master, staging, trying, and feature/**. A member whose base is outside that set (fix/**, formal/**) gets no pull-request run; train setup requires one successful ci.yml run for head_sha from any event and dispatches one when none exists (Section 13.2 step 9)."
+      - "Rehearsal candidate for the stack-train step: the key-contention stack PR #299 -> #312 -> #319 -> #311 (EPIC-016), non-publishing, no version reservation."
+      - "2026-08-23 multi-agent review of PR #328: plan-ci also requires head_repository.full_name to match (the run list reports the base repository for every run); a merged member proves merge-commit reachability from integration_branch through a reach-<N>.json compare document; a member whose predecessor has merged may target integration_branch, because GitHub retargets the pull request when the merged branch is deleted; setup fails fast on a member head outside this repository. 23 rejection cases plus merged and retargeted acceptance paths."
     acceptance:
       - "deployment-train.yml validates manifests under .github/deployment-trains/ and starts trains"
-      - "One non-publishing rehearsal completes, then the cost-accounting train (PR #216) publishes first"
+      - "The validator accepts schema_version 1 and 2, and rejects a stack member with a foreign base, broken head ancestry, or a squash or rebase merge"
+      - "Setup dispatches ci.yml on head_sha when no successful run exists for that SHA and records the run identifier as CI evidence"
+      - "One non-publishing single-train rehearsal completes"
+      - "One non-publishing stack-train rehearsal completes on a stacked pull-request set"
+      - "The cost-accounting train (PR #216) publishes first"
   - id: TASK-013-7
     title: "Phase 6: Shard soak-in scheduling"
     status: in_progress
@@ -595,6 +634,22 @@ tasks:
       - "Nodes parse both legacy rnode:// and new f1r3fly:// addresses during a documented transition window"
       - "Nodes emit the new scheme only when compatibility permits"
       - "Mixed-version discovery, bootstrap configuration, CLI parsing, and eventual legacy-removal criteria are tested and documented"
+  - id: TASK-012-30
+    title: "Bind ephemeral CI runners to the run that launched them"
+    status: pending
+    issues: []
+    base_branch: dev
+    branch: fix/ci-ephemeral-runner-run-binding
+    proposed_pr_title: "fix(ci): bind ephemeral runners to their launching run"
+    claimed_by: null
+    blocked_by: []
+    notes:
+      - "2026-08-23: three Heavy Pipelines overlapped (#316 re-run, #328, #329). Launch Ephemeral Runners starts exactly two amd64 and two arm64 VMs per run, but GitHub assigns queued jobs to runners by label only, so the pool is shared. PR #328's amd64-docker job took PR #329's second amd64 VM (ci-eph-...-042856-6d1807) five minutes before #329's integration jobs queued; #329's amd64-subprocess then waited with no runner until the run was cancelled and re-run in full. Same symptom as the re-run-failed-jobs trap, different cause."
+      - "The per-run label is the minimal fix: launch-runner.sh registers each VM with an extra label run-<GITHUB_RUN_ID>, and the ephemeral jobs add that label to runs-on. Idle VMs from another run then never match."
+    acceptance:
+      - "Each ephemeral runner registers with a label that names the run that launched it, and every ephemeral job in _integration-pipeline.yml requires that label"
+      - "Two Heavy Pipelines started within one minute of each other both complete without a job waiting on a runner that another run consumed"
+      - "An idle ephemeral VM that its run no longer needs still self-terminates on the idle timeout"
 ---
 ```
 
@@ -1224,11 +1279,166 @@ tasks:
 
 ---
 
+### EPIC-016: Key-Contention Starvation Close-Out
+
+```yaml
+---
+epic_id: EPIC-016
+title: "Key-Contention Starvation Close-Out"
+status: pending
+priority: p1
+user_story: null
+issues: [294, 317, 104]
+blocked_by: []
+created_at: 2026-08-22
+updated_at: 2026-08-22
+claimed_by: null
+claimed_at: null
+execution_contract:
+  base_branch: feat/key-contention-phase2
+  branch: fix/key-contention-base-bias
+  stack: "PR #299 (phase 1) -> PR #312 (phase 2) -> this branch -> PR #311 (formal, merges last). PR #311 merges this branch's production changes without history rewriting and discharges the dag_merger.rs claim against the final head."
+  issue_policy: "Put Refs #294, #317, and #104 in the PR body. Close #294 only after every valid proposer schedule has deterministic termination and the fix is promoted to master."
+  ratified_2026_08_22:
+    - "The protected-cell cardinality invariant is enforced at block validation (REPLAY). This is a validation-rule change."
+    - "A protected single-value cell is authenticated by mergeable tag metadata only. Untagged integer datums are ordinary Rholang."
+    - "Typed rejection reasons travel on the wire in RejectedDeploy. Node-local deferral (BlockNotHeld) is never a wire reason."
+    - "The 2026-08-22 CI failure is not C1 soak evidence. It had no frontier-lease escape and no rival contention."
+tasks:
+  - id: TASK-016-1
+    title: "Authenticated single-value-cell classification"
+    status: pending
+    priority: p1
+    issues: [104]
+    discovered_in: docs/work-logs/shared-shard-single-number-cell-starvation-2026-08-22.md
+    claimed_by: null
+    blocked_by: []
+    notes:
+      - "Two classifiers exist today: binary_data_is_single_number in dag_merger.rs and check_single_value_cell_not_overfilled in rholang_merging_logic.rs. Both classify by datum shape, which is guessable from content."
+      - "The Rocq section Overfill in formal/rocq/merge_algebra/theories/ConflictSoundness.v proves guard detection at merge time only. Its header must state that boundary. That edit belongs to PR #311."
+    acceptance:
+      - "One classifier in rholang/src/rust/interpreter/merging/rholang_merging_logic.rs decides protection from authenticated mergeable tag metadata, never from datum shape"
+      - "rholang_merging_logic.rs carries cbc=mandatory in .gitattributes"
+      - "A unit test shows two integer datums on an untagged channel merge without rejection, and a second produce onto a tagged number cell is rejected"
+      - "The shared-shard reproduction recipe in the discovered_in work log no longer rejects"
+
+  - id: TASK-016-2
+    title: "Use a fresh channel per shared-shard deploy in system-integration"
+    status: pending
+    priority: p1
+    issues: [294]
+    discovered_in: docs/work-logs/shared-shard-single-number-cell-starvation-2026-08-22.md
+    claimed_by: null
+    blocked_by: []
+    repo: system-integration
+    notes:
+      - "_deploy_and_wait in test_web_api.py deploys @{2000+i}!(i) from one key in 16 tests. Only the second write to each channel is hazardous, so the failing test moves with xdist ordering."
+      - "Cross-repo change. Commit in a system-integration session, then bump SYSTEM_INTEGRATION_REF at all three sites here."
+      - "Handed off 2026-08-22 as SI-TASK-016-2 in system-integration docs/ToDos.md: branch fix/shared-shard-fresh-deploy-channels off dev, PR title fix(shared): deploy onto a fresh channel per _deploy_and_wait call. The system-integration agent owns branch, commit, and PR; it posts the merged SHA back in that entry."
+      - "2026-08-22: system-integration PR #127 merged to dev (5e6dbfbb) and promoted to main via PR #128. SYSTEM_INTEGRATION_REF repinned at all three sites (.github/oci-validation.env, _integration-pipeline.yml, merge-recovery-soak.yml) from 56884ab to main 3e5b5eb89, which also carries the PR #129 shard-port reservation fixes. Three-run gate not yet run."
+      - "This fixture fix hides the trigger. It does not repair the lineage-dependent semantics; TASK-016-1 and TASK-016-3 do."
+    acceptance:
+      - "Each _deploy_and_wait call produces onto a channel no other test in the shared shard writes"
+      - "Three consecutive green runs of the four integration matrices on dev after the repin"
+
+  - id: TASK-016-3
+    title: "Enforce protected-cell cardinality at block validation"
+    status: pending
+    priority: p1
+    issues: [104, 294]
+    claimed_by: null
+    blocked_by: [TASK-016-1]
+    notes:
+      - "Composed invariant (PR #311): for every accepted block and every authenticated protected number cell, the block post-state holds at most one datum, regardless of block partition, parent order, main-parent identity, carrier lineage, retry count, proposer identity, or PLAY versus REPLAY."
+      - "A produce-only write that lands through the main-parent lineage never reaches the merge guard. Validation of the block's own deploy effects against its pre-state closes that path."
+      - "This is a consensus-visible validation-rule change. It needs upgrade coordination and a decision-record row. It supersedes the C1 acceptance line that forbids validation changes for this one rule."
+    acceptance:
+      - "A block whose own deploys push a protected cell past one datum is invalid at REPLAY on every validator"
+      - "The same admissibility decision results for two produces in one carrier block and for each produce in a separate block"
+      - "The negative control from PR #311 (merge-only guard, main-parent admission off, second produce through lineage) fails validation on the repaired head"
+      - "The enforcement file carries cbc=mandatory"
+      - "Decision-record row in docs/casper/CONSENSUS_PHILOSOPHY.md names the validation change and its coordination cost"
+
+  - id: TASK-016-4
+    title: "Typed rejection reasons and retry eligibility"
+    status: pending
+    priority: p1
+    issues: [294, 317]
+    claimed_by: null
+    blocked_by: [TASK-016-1]
+    notes:
+      - "RejectedDeploy carries only sig, duplicate, and carrier. Recovery and loss priority cannot tell a retryable loss from a terminal one, so a permanently unsafe deploy gains unbounded priority."
+      - "Reason table (PR #311): CollateralChainDrop retryable; MergeConflict retryable; DuplicateOccurrence not retryable; SafetyInvariantViolation terminal. Missing consensus history is deferral, never a rejection reason."
+      - "The reason field changes block-body encoding. Every validator must derive the same reason from authenticated inputs or InvalidRejectedDeploy disagrees."
+    acceptance:
+      - "RejectedDeploy in CasperMessage.proto carries a reason enum with the four wire reasons"
+      - "Each merge rejection site assigns one deterministic reason, and block validation recomputes the same reason"
+      - "prior_rejections counts retryable losses only"
+      - "Recovery does not re-package a deploy whose latest rejection is terminal, and the deploy lifecycle reports the terminal state"
+      - "The encoding change is named as a hard fork in the PR body"
+
+  - id: TASK-016-5
+    title: "Implement the C1 base-bias remedy over the admissible parent set"
+    status: pending
+    priority: p1
+    issues: [294, 317]
+    claimed_by: null
+    blocked_by: [TASK-016-3, TASK-016-4]
+    notes:
+      - "Option C1 from the remedy ladder: a proposer whose parent set holds a sibling carrying a chain with strictly more retryable prior rejections declares that sibling as parents[0]."
+      - "GuardBridge.v proves promotion is deterministic but not that the promoted parent is state-safe. A parent is promotable only when its post-state passes the TASK-016-3 validation."
+      - "PR #312 Limits: no proof of termination under fixed-proposer main-parent base bias. The ignored fixed-proposer test in casper/tests/batch2/loss_priority_spec.rs is the expected-RED sentinel."
+    acceptance:
+      - "C1 selects from the admissible parent set only and considers retryable rejections only"
+      - "The fixed-proposer sentinel test is no longer ignored and passes"
+      - "Fork choice stays deploy-content-blind (Principle P4); parent promotion is proposer policy computed from authenticated data"
+      - "Decision-record row in docs/casper/CONSENSUS_PHILOSOPHY.md marks C1 ratified"
+
+  - id: TASK-016-6
+    title: "Enable User Contract Concurrency and fail on contention expiry"
+    status: pending
+    priority: p2
+    issues: [294]
+    claimed_by: null
+    blocked_by: [TASK-016-5]
+    notes:
+      - "User Contract Concurrency was waived as a merge gate for PR #299 and PR #312. The waiver requires this follow-up."
+    acceptance:
+      - "The ucc integration matrix runs by default instead of skipping"
+      - "A contention expiry fails the run"
+      - "Three consecutive green runs"
+
+  - id: TASK-016-7
+    title: "Run three consecutive 60-minute contention soaks"
+    status: pending
+    priority: p2
+    issues: [294, 317]
+    claimed_by: null
+    blocked_by: [TASK-016-5, TASK-016-6]
+    notes:
+      - "Ratified in PR #312: each soak uses both supported providers. Start C2 only if one soak expires a valid deploy after retry_frontier_escape."
+      - "The 2026-08-22 shared-shard CI failure is not soak evidence for or against C1."
+    acceptance:
+      - "Three consecutive soaks on the final phase-2 head with no expired valid deploy"
+      - "Soak run IDs and head SHA recorded in this task"
+---
+```
+
+**Context:** PR #299 removed content-deterministic adjudication and PR #312 added merged-frontier retry packaging with a three-block lease. Neither proves termination under fixed-proposer main-parent base bias. The 2026-08-22 CI analysis found a third facet: the single-value-cell guard is a local merge lemma whose production bridge is incomplete. A produce-only second write lands through the main-parent lineage without reaching the guard, the cell then holds two datums, and loss priority cannot reorder a chain that has no rival. The repair is an authenticated classifier, validation-time enforcement, and typed rejection reasons so that C1 promotes only state-safe carriers of retryable losses.
+
+**Scope:**
+
+- Included: the authenticated classifier, REPLAY enforcement, wire rejection reasons with retry eligibility, C1 over the admissible parent set, the sentinel flip, UCC enablement, the soak evidence, and the system-integration fixture handoff
+- Excluded: C2 and C3 (C3 stays rejected: fork choice must remain deploy-content-blind), the formal composition proofs and cardinality-aware state models (PR #311), and the Rocq section Overfill header edit (PR #311)
+
+---
+
 ## Epic Dependency Graph
 
 ```text
 EPIC-011 (TLA exhaustive baseline, complete) ─> EPIC-012 / TASK-012-22
 EPIC-012 (open-issue PR queue)              (all other lanes start independently)
+PR #299 ─> PR #312 ─> EPIC-016 (key-contention close-out) ─> PR #311 (formal, merges last)
 
 EPIC-001 (system-integration alignment)    EPIC-003 (f1r3node: merge critical PRs)
 EPIC-002 (monitoring separation)               |

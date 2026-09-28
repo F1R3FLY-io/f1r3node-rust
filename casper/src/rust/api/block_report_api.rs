@@ -20,7 +20,7 @@ use crate::rust::api::block_api::BlockAPI;
 use crate::rust::engine::engine_cell::EngineCell;
 use crate::rust::report_store::ReportStore;
 use crate::rust::reporting_casper::ReportingCasper;
-use crate::rust::reporting_proto_transformer::ReportingProtoTransformer;
+use crate::rust::reporting_proto_transformer::{to_proto_phase, ReportingProtoTransformer};
 use crate::rust::safety_oracle::CliqueOracleImpl;
 use crate::rust::util::proto_util;
 
@@ -290,8 +290,9 @@ impl BlockReportAPI {
                 let report: Vec<SingleReport> = sd
                     .events
                     .iter()
-                    .map(|event_batch| {
-                        let events: Vec<ReportProto> = event_batch
+                    .map(|batch| {
+                        let events: Vec<ReportProto> = batch
+                            .events
                             .iter()
                             .map(|event| {
                                 ReportingTransformer::transform_event(
@@ -301,7 +302,10 @@ impl BlockReportAPI {
                             })
                             .collect();
 
-                        SingleReport { events }
+                        SingleReport {
+                            events,
+                            phase: to_proto_phase(batch.phase),
+                        }
                     })
                     .collect();
 
@@ -326,8 +330,9 @@ impl BlockReportAPI {
                 let report: Vec<SingleReport> = p
                     .events
                     .iter()
-                    .map(|event_batch| {
-                        let events: Vec<ReportProto> = event_batch
+                    .map(|batch| {
+                        let events: Vec<ReportProto> = batch
+                            .events
                             .iter()
                             .map(|event| {
                                 ReportingTransformer::transform_event(
@@ -337,7 +342,10 @@ impl BlockReportAPI {
                             })
                             .collect();
 
-                        SingleReport { events }
+                        SingleReport {
+                            events,
+                            phase: to_proto_phase(batch.phase),
+                        }
                     })
                     .collect();
 

@@ -1,6 +1,6 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // See casper/src/main/scala/coop/rchain/casper/blocks/proposer/BlockCreator.scala
@@ -148,10 +148,10 @@ struct FinalityLagStats {
 /// for per-shard control — when that happens the rename target is
 /// already in place.
 const DEPLOY_SELECTION_RESERVE_TAIL_ENABLED: bool = true;
-const ORDINARY_DEPLOY_PROPOSAL_CAP: usize = 128;
 const USER_DEPLOY_BYTE_PROPOSAL_BUDGET: usize = 2 * 1024 * 1024;
 const USER_DEPLOY_BACKPRESSURE_BYTE_PROPOSAL_BUDGET: usize = 512 * 1024;
 const RETRY_DEPLOY_REPROPOSAL_CAP: usize = 32;
+const RETRY_FRONTIER_DEFERRAL_LEASE_BLOCKS: i64 = 3;
 const NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP: usize = 8;
 const NON_LEADER_FALLBACK_MIN_ORDINARY_DEPLOY_CAP: usize = 4;
 const NON_LEADER_FALLBACK_MEDIUM_ORDINARY_DEPLOY_CAP: usize = 16;
@@ -161,14 +161,21 @@ const DEPLOY_INCLUSION_LEASE_MILLIS: i64 = 30_000;
 const FRESH_DEPLOY_MAX_ADMISSION_DELAY_MILLIS: i64 = 60_000;
 const FRESH_DEPLOY_ESCALATED_ADMISSION_DELAY_MILLIS: i64 = 120_000;
 const FRESH_DEPLOY_MAX_ESCALATED_ADMISSION_DELAY_MILLIS: i64 = 300_000;
-const FINALITY_LAG_SOFT_BACKPRESSURE_BLOCKS: i64 = 4;
-const FINALITY_LAG_HARD_BACKPRESSURE_BLOCKS: i64 = 8;
+/// Public so startup validation can order the width cap against the hard tier.
+pub const FINALITY_LAG_SOFT_BACKPRESSURE_BLOCKS: i64 = 4;
+pub const FINALITY_LAG_HARD_BACKPRESSURE_BLOCKS: i64 = 8;
+const _: () =
+    assert!(FINALITY_LAG_SOFT_BACKPRESSURE_BLOCKS < FINALITY_LAG_HARD_BACKPRESSURE_BLOCKS);
 
 /// C15 / Smell-4: extract the deploy-signature pretty-print prefix
 /// used in operator-facing log messages. Previously inlined as
 /// `deploy_sig_prefix(&d.sig)` at four
 /// sites in `log_deploy_pool_filtering`.
 fn deploy_sig_prefix(sig: &Bytes) -> String { hex::encode(&sig[..std::cmp::min(8, sig.len())]) }
+
+fn retry_frontier_deferral_lease_expired(next_block: i64, rejection_height: i64) -> bool {
+    next_block.saturating_sub(rejection_height) > RETRY_FRONTIER_DEFERRAL_LEASE_BLOCKS
+}
 
 /// One line per deferred retry with the gate's basis — a recurring deferral
 /// for one sig is the starvation tripwire, and the basis says which of the
@@ -295,11 +302,10 @@ fn user_deploy_byte_budget(admission_policy: DeployAdmissionPolicy) -> usize {
 }
 
 fn normal_ordinary_deploy_cap(casper_snapshot: &CasperSnapshot) -> usize {
-    (casper_snapshot
+    casper_snapshot
         .on_chain_state
         .shard_conf
-        .max_user_deploys_per_block as usize)
-        .min(ORDINARY_DEPLOY_PROPOSAL_CAP)
+        .max_user_deploys_per_block as usize
 }
 
 fn is_retryable_single_value_batch_error(err: &CasperError) -> bool {
@@ -469,9 +475,7 @@ async fn prepare_user_deploys_with_policy(
 
     let mut buffered_deploys: HashSet<Signed<DeployData>> =
         if allow_ordinary_deploys || allow_in_scope_recovery || allow_recovered_deploys {
-            let buffer_guard = rejected_deploy_buffer
-                .lock()
-                .map_err(|e| CasperError::LockError(e.to_string()))?;
+            let buffer_guard = rejected_deploy_buffer.lock()?;
             buffer_guard.read_all()?
         } else {
             HashSet::new()
@@ -525,8 +529,7 @@ async fn prepare_user_deploys_with_policy(
         );
         deploy_storage_guard.remove(expired_buffered.clone())?;
         rejected_deploy_buffer
-            .lock()
-            .map_err(|e| CasperError::LockError(e.to_string()))?
+            .lock()?
             .remove(expired_buffered.clone())?;
         let expired_sigs: HashSet<Bytes> = expired_buffered
             .into_iter()
@@ -588,8 +591,7 @@ async fn prepare_user_deploys_with_policy(
     };
     if !settled_buffered.is_empty() {
         rejected_deploy_buffer
-            .lock()
-            .map_err(|e| CasperError::LockError(e.to_string()))?
+            .lock()?
             .remove(settled_buffered.clone())?;
         tracing::info!(
             target: "f1r3fly.casper.recovery",
@@ -921,18 +923,106 @@ async fn prepare_user_deploys_with_policy(
             gated_pool_retries
         );
     }
+    if !retry_candidates.is_empty() {
+        let mut retry_frontier_merged = false;
+        'parents: for parent in &casper_snapshot.parents {
+            for justification in &casper_snapshot.justifications {
+                if !casper_snapshot
+                    .invalid_blocks
+                    .contains_key(&justification.latest_block_hash)
+                    && !casper_snapshot
+                        .dag
+                        .is_dag_ancestor(&justification.latest_block_hash, &parent.block_hash)?
+                {
+                    continue 'parents;
+                }
+            }
+            retry_frontier_merged = true;
+            break;
+        }
+        if !retry_frontier_merged {
+            let latest_message_count = casper_snapshot
+                .justifications
+                .iter()
+                .filter(|justification| {
+                    !casper_snapshot
+                        .invalid_blocks
+                        .contains_key(&justification.latest_block_hash)
+                })
+                .count();
+            let rejection_heights = match floor_ctx {
+                Some(ctx) => ctx.latest_kept_rejection_heights(
+                    block_store,
+                    earliest_block_number,
+                    retry_candidates.iter().map(|deploy| &deploy.sig),
+                )?,
+                None => HashMap::new(),
+            };
+            let mut deferred_sigs = HashSet::new();
+            for deploy in &retry_candidates {
+                let rejection_height = rejection_heights.get(&deploy.sig).copied().flatten();
+                // Deferral is bounded ONLY by the lease. A candidate whose
+                // rejection height cannot be resolved has no lease clock, so
+                // it escapes now: the gate (proposer and validators alike)
+                // still bounds validity, and an unbounded packaging deferral
+                // is the starvation the lease exists to stop.
+                let escape_reason = match rejection_height {
+                    None => Some("rejection_height_unknown"),
+                    Some(height) if retry_frontier_deferral_lease_expired(block_number, height) => {
+                        Some("deferral_lease_expired")
+                    }
+                    Some(_) => None,
+                };
+                if let Some(reason) = escape_reason {
+                    tracing::info!(
+                        target: "f1r3fly.casper.deploy_lifecycle",
+                        event = "retry_frontier_escape",
+                        deploy_sig = %hex::encode(&deploy.sig),
+                        reason,
+                        next_block = block_number,
+                        rejection_height,
+                        deferral_lease_blocks = RETRY_FRONTIER_DEFERRAL_LEASE_BLOCKS,
+                        selected_parent_count = casper_snapshot.parents.len(),
+                        latest_message_count,
+                        "deploy lifecycle"
+                    );
+                } else {
+                    tracing::info!(
+                        target: "f1r3fly.casper.deploy_lifecycle",
+                        event = "retry_frontier_deferred",
+                        deploy_sig = %hex::encode(&deploy.sig),
+                        reason = "no_covering_parent",
+                        next_block = block_number,
+                        rejection_height,
+                        deferral_lease_blocks = RETRY_FRONTIER_DEFERRAL_LEASE_BLOCKS,
+                        selected_parent_count = casper_snapshot.parents.len(),
+                        latest_message_count,
+                        "deploy lifecycle"
+                    );
+                    deferred_sigs.insert(deploy.sig.clone());
+                }
+            }
+            retry_candidates.retain(|deploy| !deferred_sigs.contains(&deploy.sig));
+        }
+    }
     let ordinary_candidates: HashSet<Signed<DeployData>> = valid_unique
         .iter()
         .filter(|deploy| !is_retry_candidate(deploy))
         .cloned()
         .collect();
+    // #194: deliberately does NOT exclude `rejected_in_scope` deploys here.
+    // `retry_scope_exempt` (above) only exempts a rejected-in-scope deploy from
+    // `blocked_by_scope` when THIS validator also holds it in its own local
+    // `recovered_sigs` buffer. A validator that only learned of the deploy via
+    // gossip/another block's inclusion never populates that buffer, so without
+    // this candidate route such a deploy is excluded from both recovery paths
+    // and gets filtered "already in scope" forever.
     let in_scope_recovery_candidates: HashSet<Signed<DeployData>> = if allow_in_scope_recovery {
         already_in_scope
             .iter()
             .filter(|deploy| {
                 !canonical_won.contains(&deploy.sig)
                     && casper_snapshot.deploys_in_scope.contains(&deploy.sig)
-                    && !casper_snapshot.rejected_in_scope.contains(&deploy.sig)
             })
             .cloned()
             .collect()
@@ -1229,9 +1319,7 @@ async fn prepare_user_deploys_with_policy(
         // unless explicitly removed. Without this, a sustained-load
         // adversary that keeps generating conflicts can grow the buffer
         // unbounded.
-        let mut buffer_guard = rejected_deploy_buffer
-            .lock()
-            .map_err(|e| CasperError::LockError(e.to_string()))?;
+        let mut buffer_guard = rejected_deploy_buffer.lock()?;
         buffer_guard.remove(expired_list)?;
     }
 
@@ -1594,7 +1682,7 @@ async fn prepare_slashing_deploys(
     // An unbonded proposer cannot effect a slash (the PoS contract rejects
     // the deploy at replay time). Skip emission to avoid wasted work and to
     // satisfy the proven-correct theorem T-9.8 — see
-    // docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.8.
+    // docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.8.
     //
     // Symmetry note: the receive-side predicate
     // `validate_received_slash_deploys` does NOT require the block sender to
@@ -1624,20 +1712,21 @@ async fn prepare_slashing_deploys(
     let slash_candidates = authorized_slash_candidates(casper_snapshot)?;
 
     // `authorized_slash_candidates` documents an at-most-one-per-offender
-    // invariant via its `BTreeMap<Validator, …>` accumulator
-    // (slashing_authorization.rs:253-317). Pin the contract at the boundary
-    // so a future refactor of that helper can't silently produce duplicates.
-    debug_assert!(
-        {
-            let mut offenders: Vec<&prost::bytes::Bytes> =
-                slash_candidates.iter().map(|c| &c.offender).collect();
-            offenders.sort();
-            let original_len = offenders.len();
-            offenders.dedup();
-            offenders.len() == original_len
-        },
-        "authorized_slash_candidates must produce unique offenders; got duplicates"
-    );
+    // invariant via its `BTreeMap<Validator, …>` accumulator. Enforce the
+    // contract at the boundary — a duplicate would ship an invalid block, so
+    // it must fail this propose in every build, not only under debug.
+    {
+        let mut offenders: Vec<&prost::bytes::Bytes> =
+            slash_candidates.iter().map(|c| &c.offender).collect();
+        offenders.sort();
+        let original_len = offenders.len();
+        offenders.dedup();
+        if offenders.len() != original_len {
+            return Err(CasperError::RuntimeError(
+                "authorized slash candidates contain a duplicate offender".to_string(),
+            ));
+        }
+    }
 
     // Slash deploys are NOT persisted in `KeyValueDeployStorage` and
     // this is correct by design (not a TODO).
@@ -1672,7 +1761,7 @@ async fn prepare_slashing_deploys(
     //     deploys are crash-recovery state; system deploys are
     //     deterministically replayable from the persisted DAG.
     //
-    // See docs/theory/slashing/design/06-proposing-and-effect.md for
+    // See docs/casper/theory/slashing/design/06-proposing-and-effect.md for
     // the full rationale.
 
     // Create SlashDeploy objects
@@ -1744,8 +1833,7 @@ fn quarantine_refund_failure_deploy(
         .remove_by_sig(&sig)
         .map_err(CasperError::from)?;
     let removed_from_rejected_buffer = rejected_deploy_buffer
-        .lock()
-        .map_err(|e| CasperError::LockError(e.to_string()))?
+        .lock()?
         .remove_by_sig(&sig)
         .map_err(CasperError::from)?;
 
@@ -1757,9 +1845,7 @@ fn drain_selected_deploys_from_rejected_buffer(
     rejected_deploy_buffer: &Arc<Mutex<KeyValueRejectedDeployBuffer>>,
     deploys: &[Signed<DeployData>],
 ) -> Result<usize, CasperError> {
-    let mut guard = rejected_deploy_buffer
-        .lock()
-        .map_err(|e| CasperError::LockError(e.to_string()))?;
+    let mut guard = rejected_deploy_buffer.lock()?;
     let mut removed = 0usize;
     for deploy in deploys {
         if guard
@@ -1785,9 +1871,7 @@ fn drain_selected_recovered_deploys_from_deploy_storage(
     deploys: &[Signed<DeployData>],
 ) -> Result<usize, CasperError> {
     let selected_recovered: Vec<Signed<DeployData>> = {
-        let guard = rejected_deploy_buffer
-            .lock()
-            .map_err(|e| CasperError::LockError(e.to_string()))?;
+        let guard = rejected_deploy_buffer.lock()?;
         let mut out = Vec::new();
         for deploy in deploys {
             if guard.contains_sig(&deploy.sig).map_err(CasperError::from)? {
@@ -1964,8 +2048,7 @@ fn fresh_local_deploy_stats(
         return Ok(FreshLocalDeployStats::default());
     }
     let buffered_sigs: HashSet<Bytes> = rejected_deploy_buffer
-        .lock()
-        .map_err(|e| CasperError::LockError(e.to_string()))?
+        .lock()?
         .read_all()?
         .into_iter()
         .map(|deploy| deploy.sig)
@@ -2034,8 +2117,7 @@ fn in_scope_local_deploy_stats(
         return Ok(InScopeLocalDeployStats::default());
     }
     let buffered_sigs: HashSet<Bytes> = rejected_deploy_buffer
-        .lock()
-        .map_err(|e| CasperError::LockError(e.to_string()))?
+        .lock()?
         .read_all()?
         .into_iter()
         .map(|deploy| deploy.sig)
@@ -2112,9 +2194,7 @@ fn rejected_buffer_has_recoverable_deploys(
     floor_ctx: Option<&FloorContext>,
 ) -> Result<bool, CasperError> {
     let buffered_deploys = {
-        let buffer_guard = rejected_deploy_buffer
-            .lock()
-            .map_err(|e| CasperError::LockError(e.to_string()))?;
+        let buffer_guard = rejected_deploy_buffer.lock()?;
         if !buffer_guard.non_empty()? {
             return Ok(false);
         }
@@ -2515,8 +2595,9 @@ pub async fn create(
     rejected_deploy_buffer: Arc<Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>>,
     runtime_manager: &RuntimeManager,
     block_store: &mut KeyValueBlockStore,
-    allow_empty_blocks: bool,
+    selection: super::proposer::DeploySelection,
 ) -> Result<BlockCreatorResult, CasperError> {
+    let allow_empty_blocks = selection.allows_empty();
     use crate::rust::metrics_constants::{
         BLOCK_CREATOR_COMPUTE_DEPLOYS_CHECKPOINT_TIME_METRIC,
         BLOCK_CREATOR_COMPUTE_PARENTS_POST_STATE_TIME_METRIC,
@@ -2592,7 +2673,9 @@ pub async fn create(
     let floor_ctx = derive_floor_context(casper_snapshot, block_store).await?;
 
     // Prepare deploys
-    let (user_deploys, _, _) = {
+    let (user_deploys, _, _) = if selection == super::proposer::DeploySelection::RecoveryEmpty {
+        (HashSet::new(), 0usize, false)
+    } else {
         let t = std::time::Instant::now();
         let user_deploys_in_scope =
             scope_has_unfinalized_user_deploys(casper_snapshot, block_store)?;
@@ -2820,7 +2903,6 @@ pub async fn create(
         casper_snapshot,
         runtime_manager,
         &latest_messages,
-        None,
         Some(&rejected_deploy_buffer),
         floor_ctx.as_ref(),
         Some(&local_validator),
@@ -3007,7 +3089,7 @@ pub async fn create(
                 next_seq_num,
             );
             tracing::info!(
-                "Recovering merge-rejected slash: invalid_block={}, original_issuer={}, target_activation_epoch={}",
+                "Recovering merge-rejected slash: invalid_block={}, one_of_original_issuers={}, target_activation_epoch={}",
                 pretty_printer::PrettyPrinter::build_string_bytes(&rs.invalid_block_hash),
                 hex::encode(&rs.issuer_public_key.bytes),
                 recovered_target_activation_epoch
@@ -4862,7 +4944,7 @@ mod tests {
             false,
             DeployAdmissionPolicy {
                 allow_ordinary: true,
-                ordinary_cap: ORDINARY_DEPLOY_PROPOSAL_CAP,
+                ordinary_cap: normal_ordinary_deploy_cap(&snapshot),
                 allow_in_scope_recovery: false,
                 in_scope_recovery_cap: 0,
                 reserve_tail: false,
@@ -4875,7 +4957,7 @@ mod tests {
         .expect("prepare deploys");
 
         assert!(!prepared.deploys.is_empty());
-        assert!(prepared.deploys.len() < ORDINARY_DEPLOY_PROPOSAL_CAP);
+        assert!(prepared.deploys.len() < normal_ordinary_deploy_cap(&snapshot));
         assert!(prepared.byte_cap_hit);
         assert!(prepared.cap_hit);
         assert!(prepared.selected_user_deploy_bytes <= USER_DEPLOY_BYTE_PROPOSAL_BUDGET);
@@ -5055,6 +5137,90 @@ mod tests {
             .deploys
             .iter()
             .all(|deploy| fresh_sigs.contains(&deploy.sig)));
+    }
+
+    // Regression for #194: a deploy the DAG-wide scan marks `rejected_in_scope`
+    // (a descendant merge rejected it) is only exempt from the scope block when
+    // THIS validator also holds it in its own local recovery buffer
+    // (`retry_scope_exempt`, line ~845). A validator that only saw the deploy
+    // via gossip/another block's inclusion never populates that local buffer,
+    // so before this fix the deploy fell into a gap between both recovery
+    // routes: excluded from `in_scope_recovery_candidates` because it IS
+    // `rejected_in_scope`, and excluded from the local-recovery retry path
+    // because it is NOT locally recovered. It was filtered "already in scope"
+    // every round with no route back in, matching the testbed audit's
+    // asymmetric per-validator stall (some validators stuck, others fine).
+    #[tokio::test]
+    async fn rejected_in_scope_deploy_without_local_recovery_is_still_selected_for_recovery() {
+        let mut kvm = InMemoryStoreManager::new();
+        let deploy_storage = Arc::new(parking_lot::Mutex::new(
+            KeyValueDeployStorage::new(&mut kvm)
+                .await
+                .expect("deploy storage"),
+        ));
+        let rejected_deploy_buffer = Arc::new(Mutex::new(
+            KeyValueRejectedDeployBuffer::new(&mut kvm)
+                .await
+                .expect("rejected deploy buffer"),
+        ));
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot
+            .on_chain_state
+            .shard_conf
+            .max_user_deploys_per_block = 32;
+        snapshot.on_chain_state.shard_conf.deploy_lifespan = 500;
+        let deploy = construct_deploy::source_deploy(
+            "@stranded_no_local_buffer!(0)".to_string(),
+            1_000,
+            None,
+            None,
+            None,
+            Some(1),
+            Some("test".to_string()),
+        )
+        .expect("deploy");
+        // In scope (some block in the DAG carries it) AND rejected_in_scope
+        // (a descendant merge already rejected it) — but the rejected-deploy
+        // buffer (below) stays empty, so this validator never locally
+        // "recovered" it. No parents are set, so `canonical_won` is empty:
+        // the deploy did not land via any canonical parent either.
+        snapshot.deploys_in_scope.insert(deploy.sig.clone());
+        snapshot.rejected_in_scope.insert(deploy.sig.clone());
+        deploy_storage
+            .lock()
+            .add(vec![deploy.clone()])
+            .expect("seed deploy storage");
+
+        let prepared = prepare_user_deploys_with_policy(
+            &snapshot,
+            300,
+            10_000,
+            deploy_storage,
+            rejected_deploy_buffer,
+            &block_store,
+            false,
+            DeployAdmissionPolicy {
+                allow_ordinary: false,
+                ordinary_cap: 0,
+                allow_in_scope_recovery: true,
+                in_scope_recovery_cap: NON_LEADER_FALLBACK_MIN_ORDINARY_DEPLOY_CAP,
+                reserve_tail: false,
+                fallback: true,
+                backpressure: true,
+            },
+            None,
+        )
+        .await
+        .expect("prepare deploys");
+
+        assert_eq!(prepared.already_in_scope_count, 1);
+        assert_eq!(prepared.selected_in_scope_recovery_count, 1);
+        assert_eq!(prepared.deploys.len(), 1);
+        assert_eq!(prepared.deploys.iter().next().unwrap().sig, deploy.sig);
     }
 
     #[tokio::test]
@@ -5592,7 +5758,7 @@ mod tests {
         let deploys = HashSet::from([deploy]);
         let selected = select_deploys_for_block(
             &deploys,
-            ORDINARY_DEPLOY_PROPOSAL_CAP,
+            128, // count cap irrelevant; the test exercises the byte budget
             false,
             USER_DEPLOY_BYTE_PROPOSAL_BUDGET,
         );
@@ -6106,6 +6272,232 @@ mod tests {
             prepared.deploys.iter().any(|d| d.sig == retry.sig),
             "retry admission is floor-clock: a tip-expired floor-live \
              rejected deploy stays selectable"
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_frontier_defers_then_accepts_covering_parent_or_lease_escape() {
+        use block_storage::rust::dag::block_dag_key_value_storage::{
+            BlockDagKeyValueStorage, InsertMode,
+        };
+
+        let mut kvm = InMemoryStoreManager::new();
+        let deploy_storage = Arc::new(parking_lot::Mutex::new(
+            KeyValueDeployStorage::new(&mut kvm)
+                .await
+                .expect("deploy storage"),
+        ));
+        let rejected_deploy_buffer = Arc::new(Mutex::new(
+            KeyValueRejectedDeployBuffer::new(&mut kvm)
+                .await
+                .expect("rejected deploy buffer"),
+        ));
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
+            .await
+            .expect("dag storage");
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot
+            .on_chain_state
+            .shard_conf
+            .max_user_deploys_per_block = 10;
+        snapshot.on_chain_state.shard_conf.deploy_lifespan = 50;
+
+        let retry = construct_deploy::source_deploy(
+            "@71!(71)".to_string(),
+            1_000,
+            None,
+            None,
+            None,
+            Some(20),
+            Some("test".to_string()),
+        )
+        .expect("retry deploy");
+        let mut floor = test_block(
+            invalid_block_hash(0xB0),
+            validator(1),
+            Vec::new(),
+            59,
+            Vec::new(),
+        );
+        floor.body.rejected_deploys = vec![
+            models::rust::casper::protocol::casper_message::RejectedDeploy {
+                sig: retry.sig.clone(),
+                duplicate: false,
+                carrier: floor.block_hash.clone(),
+            },
+        ];
+        let left = test_block(
+            invalid_block_hash(0xB1),
+            validator(1),
+            vec![floor.block_hash.clone()],
+            60,
+            Vec::new(),
+        );
+        let right = test_block(
+            invalid_block_hash(0xB2),
+            validator(2),
+            vec![floor.block_hash.clone()],
+            60,
+            Vec::new(),
+        );
+        for block in [&floor, &left, &right] {
+            block_store.put_block_message(block).expect("store block");
+        }
+        dag_storage
+            .insert(&floor, InsertMode::Approved)
+            .expect("insert floor");
+        dag_storage
+            .insert(&left, InsertMode::Normal)
+            .expect("insert left parent");
+        dag_storage
+            .insert(&right, InsertMode::Normal)
+            .expect("insert right parent");
+        snapshot.dag = dag_storage.get_representation().expect("dag");
+        snapshot.justifications = [
+            Justification {
+                validator: validator(1),
+                latest_block_hash: left.block_hash.clone(),
+            },
+            Justification {
+                validator: validator(2),
+                latest_block_hash: right.block_hash.clone(),
+            },
+        ]
+        .into_iter()
+        .collect();
+        snapshot.parents = vec![left.clone(), right.clone()];
+
+        deploy_storage
+            .lock()
+            .add(vec![retry.clone()])
+            .expect("seed deploy storage");
+        rejected_deploy_buffer
+            .lock()
+            .expect("rejected buffer lock")
+            .add(vec![retry.clone()])
+            .expect("seed rejected buffer");
+
+        let prepared = prepare_user_deploys(
+            &snapshot,
+            61,
+            10_000,
+            deploy_storage.clone(),
+            rejected_deploy_buffer.clone(),
+            &block_store,
+            true,
+            true,
+        )
+        .await
+        .expect("prepare deploys without covering parent");
+
+        assert!(
+            prepared.deploys.is_empty(),
+            "merged-frontier retry packaging must defer a retry over visible sibling parents"
+        );
+
+        let covering = test_block(
+            invalid_block_hash(0xB3),
+            validator(1),
+            vec![left.block_hash.clone(), right.block_hash.clone()],
+            61,
+            Vec::new(),
+        );
+        block_store
+            .put_block_message(&covering)
+            .expect("store covering parent");
+        dag_storage
+            .insert(&covering, InsertMode::Normal)
+            .expect("insert covering parent");
+        snapshot.dag = dag_storage.get_representation().expect("updated dag");
+        snapshot.parents = vec![covering, left.clone()];
+
+        let prepared = prepare_user_deploys(
+            &snapshot,
+            62,
+            10_000,
+            deploy_storage.clone(),
+            rejected_deploy_buffer.clone(),
+            &block_store,
+            true,
+            true,
+        )
+        .await
+        .expect("prepare deploys with covering parent");
+
+        assert!(
+            prepared
+                .deploys
+                .iter()
+                .any(|deploy| deploy.sig == retry.sig),
+            "a covering parent must admit the retry when another selected parent is redundant"
+        );
+
+        // Reflexive cover: a selected parent that IS the sole valid latest
+        // message covers the frontier by itself, inside the lease.
+        snapshot.justifications = [Justification {
+            validator: validator(1),
+            latest_block_hash: left.block_hash.clone(),
+        }]
+        .into_iter()
+        .collect();
+        snapshot.parents = vec![left.clone()];
+        let prepared = prepare_user_deploys(
+            &snapshot,
+            61,
+            10_000,
+            deploy_storage.clone(),
+            rejected_deploy_buffer.clone(),
+            &block_store,
+            true,
+            true,
+        )
+        .await
+        .expect("prepare deploys with a parent that is a latest message");
+
+        assert!(
+            prepared
+                .deploys
+                .iter()
+                .any(|deploy| deploy.sig == retry.sig),
+            "a parent that is itself the latest message must count as covering it"
+        );
+
+        snapshot.justifications = [
+            Justification {
+                validator: validator(1),
+                latest_block_hash: left.block_hash.clone(),
+            },
+            Justification {
+                validator: validator(2),
+                latest_block_hash: right.block_hash.clone(),
+            },
+        ]
+        .into_iter()
+        .collect();
+        snapshot.parents = vec![left, right];
+        let prepared = prepare_user_deploys(
+            &snapshot,
+            63,
+            10_000,
+            deploy_storage,
+            rejected_deploy_buffer,
+            &block_store,
+            true,
+            true,
+        )
+        .await
+        .expect("prepare deploys after frontier deferral lease");
+
+        assert!(
+            prepared
+                .deploys
+                .iter()
+                .any(|deploy| deploy.sig == retry.sig),
+            "the bounded lease must prevent frontier deferral from consuming the validity window"
         );
     }
 }

@@ -5,13 +5,11 @@ pub const RUNNING_METRICS_SOURCE: &str = "f1r3fly.casper.running";
 pub const BLOCK_RETRIEVER_METRICS_SOURCE: &str = "f1r3fly.casper.block-retriever";
 pub const APPROVE_BLOCK_METRICS_SOURCE: &str = "f1r3fly.casper.approve-block";
 pub const REPORT_REPLAY_METRICS_SOURCE: &str = "f1r3fly.casper.report-replay";
-pub const ESTIMATOR_METRICS_SOURCE: &str = "f1r3fly.casper.estimator";
-pub const TIPS0_METRICS_SOURCE: &str = "f1r3fly.casper.estimator.tips0";
-pub const TIPS1_METRICS_SOURCE: &str = "f1r3fly.casper.estimator.tips1";
 pub const VALIDATOR_METRICS_SOURCE: &str = "f1r3fly.casper.validator";
 pub const RHO_RUNTIME_METRICS_SOURCE: &str = "f1r3fly.casper.rho-runtime";
 pub const REPLAY_RHO_RUNTIME_METRICS_SOURCE: &str = "f1r3fly.casper.replay-rho-runtime";
 pub const BLOCK_PROCESSOR_METRICS_SOURCE: &str = "f1r3fly.casper.block-processor";
+pub const MERGEABLE_CHANNELS_GC_METRICS_SOURCE: &str = "f1r3fly.casper.mergeable-channels-gc";
 pub const CREATE_BLOCK_METRICS_SOURCE: &str = "f1r3fly.create-block";
 pub const BLOCK_API_METRICS_SOURCE: &str = "f1r3fly.block-api";
 pub const DEPLOY_API_METRICS_SOURCE: &str = "f1r3fly.block-api.deploy";
@@ -20,6 +18,7 @@ pub const REPORTING_RUNTIME_METRICS_SOURCE: &str = "f1r3fly.rholang.reportingRun
 
 // Casper counter metrics
 pub const BLOCK_HASH_RECEIVED_METRIC: &str = "block.hash.received";
+pub const BLOCK_INFLIGHT_CAP_DROP_METRIC: &str = "block.inflight-cap.drops";
 pub const BLOCK_REQUEST_RECEIVED_METRIC: &str = "block.request.received";
 pub const BLOCK_REQUESTS_TOTAL_METRIC: &str = "block.requests.total";
 pub const BLOCK_REQUESTS_RETRIES_METRIC: &str = "block.requests.retries";
@@ -81,6 +80,12 @@ pub const DAG_MERGE_SCOPE_METRIC: &str = "dag.merge.scope";
 pub const DAG_MERGE_BRANCHES_TIME_METRIC: &str = "dag.merge.branches.time";
 pub const DAG_MERGE_CONFLICTS_MAP_TIME_METRIC: &str = "dag.merge.conflicts-map.time";
 pub const DAG_MERGE_REJECTION_OPTIONS_TIME_METRIC: &str = "dag.merge.rejection-options.time";
+pub const DAG_MERGE_REJECTION_SELECTION_TIME_METRIC: &str = "dag.merge.rejection-selection.time";
+pub const DAG_MERGE_RELATION_ITEMS_METRIC: &str = "dag.merge.relation.items";
+pub const DAG_MERGE_RELATION_BRANCHES_METRIC: &str = "dag.merge.relation.branches";
+pub const DAG_MERGE_CONFLICT_EDGES_METRIC: &str = "dag.merge.conflict.edges";
+pub const DAG_MERGE_REJECTION_OPTIONS_METRIC: &str = "dag.merge.rejection.options";
+pub const DAG_MERGE_STATE_APPLICATION_ACTIONS_METRIC: &str = "dag.merge.state-application.actions";
 pub const BLOCK_REPLAY_SYSDEPLOY_EVAL_TIME_METRIC: &str = "block.replay.sysdeploy.eval.time";
 pub const BLOCK_REPLAY_SYSDEPLOY_CHECK_TIME_METRIC: &str = "block.replay.sysdeploy.check.time";
 pub const CASPER_INIT_TIME_TO_APPROVED_BLOCK_METRIC: &str = "casper.init.time-to-approved-block";
@@ -88,6 +93,8 @@ pub const CASPER_INIT_TIME_TO_RUNNING_METRIC: &str = "casper.init.time-to-runnin
 
 // Casper record/histogram metrics
 pub const BLOCK_SIZE_METRIC: &str = "block.size";
+pub const BLOCK_ARRIVAL_DEPTH_METRIC: &str = "block.arrival.depth";
+pub const BLOCK_ARRIVED_UNCITABLE_METRIC: &str = "block.arrived-uncitable";
 pub const BLOCK_DOWNLOAD_END_TO_END_TIME_METRIC: &str = "block.download.end-to-end-time";
 pub const BLOCK_REPLAY_PHASE_RESET_TIME_METRIC: &str = "block.replay.phase.reset.time";
 pub const BLOCK_REPLAY_PHASE_USER_DEPLOYS_TIME_METRIC: &str =
@@ -96,6 +103,13 @@ pub const BLOCK_REPLAY_PHASE_SYSTEM_DEPLOYS_TIME_METRIC: &str =
     "block.replay.phase.system-deploys.time";
 pub const BLOCK_REPLAY_PHASE_CREATE_CHECKPOINT_TIME_METRIC: &str =
     "block.replay.phase.create-checkpoint.time";
+pub const BLOCK_REPLAY_PHASE_RESET_CALLS_METRIC: &str = "block.replay.phase.reset.calls";
+pub const BLOCK_REPLAY_PHASE_USER_DEPLOYS_WORK_METRIC: &str =
+    "block.replay.phase.user-deploys.work";
+pub const BLOCK_REPLAY_PHASE_SYSTEM_DEPLOYS_WORK_METRIC: &str =
+    "block.replay.phase.system-deploys.work";
+pub const BLOCK_REPLAY_PHASE_CREATE_CHECKPOINT_CALLS_METRIC: &str =
+    "block.replay.phase.create-checkpoint.calls";
 pub const BLOCK_REPLAY_SYSDEPLOY_CHECKPOINT_MERGEABLE_TIME_METRIC: &str =
     "block.replay.sysdeploy.checkpoint-mergeable.time";
 pub const BLOCK_REPLAY_SYSDEPLOY_RIG_TIME_METRIC: &str = "block.replay.sysdeploy.rig.time";
@@ -103,6 +117,50 @@ pub const BLOCK_REPLAY_SYSDEPLOY_EVAL_EVALUATE_SOURCE_TIME_METRIC: &str =
     "block.replay.sysdeploy.eval.evaluate-source.time";
 pub const BLOCK_REPLAY_SYSDEPLOY_EVAL_CONSUME_RESULT_TIME_METRIC: &str =
     "block.replay.sysdeploy.eval.consume-result.time";
+
+// Per-step breakdown of `compute_parents_post_state`'s full-merge path. The
+// outer stage histogram (`…parents-post-state.time`) dominates block cost in
+// sustained-load soaks while the `dag.merge.*` buckets stay small (issue #24);
+// these attribute the gap. `merge-call` times the `dag_merger::merge` call
+// alone — the prior-rejection-counts walk is timed separately, and the
+// settled-sig probe closures invoked from inside the merge are surfaced by
+// the wrapper counters below.
+pub const PARENTS_POST_STATE_CACHE_LOOKUP_TIME_METRIC: &str =
+    "block.processing.stage.parents-post-state.cache-lookup.time";
+pub const PARENTS_POST_STATE_FLOOR_DERIVE_TIME_METRIC: &str =
+    "block.processing.stage.parents-post-state.floor-derive.time";
+pub const PARENTS_POST_STATE_BASE_HOLDS_FLOOR_TIME_METRIC: &str =
+    "block.processing.stage.parents-post-state.base-holds-floor.time";
+pub const PARENTS_POST_STATE_BASE_LINEAGE_WALK_TIME_METRIC: &str =
+    "block.processing.stage.parents-post-state.base-lineage-walk.time";
+pub const PARENTS_POST_STATE_COLLECT_ANCESTORS_TIME_METRIC: &str =
+    "block.processing.stage.parents-post-state.collect-ancestors.time";
+pub const PARENTS_POST_STATE_ENSURE_MERGEABLE_TIME_METRIC: &str =
+    "block.processing.stage.parents-post-state.ensure-mergeable.time";
+pub const PARENTS_POST_STATE_PRIOR_REJECTION_COUNTS_TIME_METRIC: &str =
+    "block.processing.stage.parents-post-state.prior-rejection-counts.time";
+pub const PARENTS_POST_STATE_MERGE_CALL_TIME_METRIC: &str =
+    "block.processing.stage.parents-post-state.merge-call.time";
+pub const PARENTS_POST_STATE_POST_MERGE_TIME_METRIC: &str =
+    "block.processing.stage.parents-post-state.post-merge.time";
+pub const PARENTS_POST_STATE_SETTLED_PROBE_CALLS_METRIC: &str =
+    "block.processing.stage.parents-post-state.settled-probe.wrapper.calls";
+pub const PARENTS_POST_STATE_SETTLED_PROBE_TIME_NS_METRIC: &str =
+    "block.processing.stage.parents-post-state.settled-probe.wrapper.time-ns";
+// The batched settled-sig index (CLAIM-FINALITY-001): one lineage walk per
+// merge replaces the per-sig probe walks; these time that build and record
+// its depth. The wrapper counters above keep running — after the batching
+// they measure set-membership lookups, which is the before/after evidence.
+pub const PARENTS_POST_STATE_SETTLED_INDEX_BUILD_TIME_METRIC: &str =
+    "block.processing.stage.parents-post-state.settled-index.build.time";
+pub const PARENTS_POST_STATE_SETTLED_INDEX_BLOCKS_METRIC: &str =
+    "block.processing.stage.parents-post-state.settled-index.blocks";
+// The floor probe's per-floor lazy builds, kept separate from the base
+// index above so the two walks stay individually attributable.
+pub const PARENTS_POST_STATE_SETTLED_FLOOR_INDEX_BUILD_TIME_METRIC: &str =
+    "block.processing.stage.parents-post-state.settled-floor-index.build.time";
+pub const PARENTS_POST_STATE_SETTLED_FLOOR_INDEX_BLOCKS_METRIC: &str =
+    "block.processing.stage.parents-post-state.settled-floor-index.blocks";
 
 // Wrapper counters surfacing the unaccounted overhead inside
 // `evaluate_system_source` (env build + rand clone + post-evaluate fixup) and
@@ -136,6 +194,7 @@ pub const BLOCK_PLAY_DEPLOY_REFUND_TIME_METRIC: &str = "block.play.deploy.refund
 // Runtime spawn timing metrics
 pub const RUNTIME_SPAWN_TIME_METRIC: &str = "runtime.spawn.time";
 pub const RUNTIME_SPAWN_REPLAY_TIME_METRIC: &str = "runtime.spawn-replay.time";
+pub const RUNTIME_SPAWN_REPLAY_CALLS_METRIC: &str = "runtime.spawn-replay.calls";
 
 // Block validation step time metrics (7 variants)
 pub const BLOCK_VALIDATION_STEP_BLOCK_SUMMARY_TIME_METRIC: &str =
@@ -169,7 +228,6 @@ pub const DAG_MERGE_REJECTION_EXPANSION_FIRED_METRIC: &str = "dag.merge.rejectio
 // `compute_parents_post_state` internal breakdown.
 pub const COMPUTE_PARENTS_POST_STATE_FETCH_TIME_METRIC: &str =
     "compute-parents-post-state.fetch.time";
-pub const COMPUTE_PARENTS_POST_STATE_LCA_TIME_METRIC: &str = "compute-parents-post-state.lca.time";
 pub const COMPUTE_PARENTS_POST_STATE_BUFFER_ADMITS_TIME_METRIC: &str =
     "compute-parents-post-state.buffer-admits.time";
 
@@ -181,6 +239,24 @@ pub const BLOCK_VALIDATION_SHARD_IDENTIFIER_TIME_METRIC: &str =
 pub const BLOCK_VALIDATION_DEPLOYS_SHARD_IDENTIFIER_TIME_METRIC: &str =
     "block.validation.deploys-shard-identifier.time";
 pub const BLOCK_VALIDATION_REPEAT_DEPLOY_TIME_METRIC: &str = "block.validation.repeat-deploy.time";
+pub const REPEAT_DEPLOY_CARRIER_WATERMARK_ENGAGED_METRIC: &str =
+    "block.validation.repeat-deploy.carrier.watermark-engaged";
+pub const REPEAT_DEPLOY_CARRIER_WATERMARK_NOT_READY_METRIC: &str =
+    "block.validation.repeat-deploy.carrier.watermark-not-ready";
+pub const REPEAT_DEPLOY_CARRIER_INDEX_ABSENCE_METRIC: &str =
+    "block.validation.repeat-deploy.carrier.index-absence";
+pub const REPEAT_DEPLOY_CARRIER_INDEX_HIT_METRIC: &str =
+    "block.validation.repeat-deploy.carrier.index-hit";
+pub const REPEAT_DEPLOY_CARRIER_INDEX_READ_FAILURE_METRIC: &str =
+    "block.validation.repeat-deploy.carrier.index-read-failure";
+pub const REPEAT_DEPLOY_CARRIER_FALLBACK_SCAN_METRIC: &str =
+    "block.validation.repeat-deploy.carrier.fallback-scan";
+pub const REPEAT_DEPLOY_CARRIER_ROW_READS_METRIC: &str =
+    "block.validation.repeat-deploy.carrier.row-reads";
+pub const REPEAT_DEPLOY_ANCESTOR_METADATA_VISITS_METRIC: &str =
+    "block.validation.repeat-deploy.ancestor.metadata-visits";
+pub const REPEAT_DEPLOY_ANCESTOR_BODY_READS_METRIC: &str =
+    "block.validation.repeat-deploy.ancestor.body-reads";
 pub const BLOCK_VALIDATION_BLOCK_NUMBER_TIME_METRIC: &str = "block.validation.block-number.time";
 pub const BLOCK_VALIDATION_FUTURE_TRANSACTION_TIME_METRIC: &str =
     "block.validation.future-transaction.time";
@@ -305,6 +381,16 @@ pub const FLOOR_FRONTIER_CACHE_MISS_METRIC: &str = "finality.floor.frontier.cach
 pub const FLOOR_INCREMENTAL_GUARD_FALLBACK_METRIC: &str =
     "finality.floor.frontier.incremental-guard-fallback";
 
+// Counter: the containment gate refused a streak of strictly rising derived
+// floors against one pinned LFB — the shard is finalizing state this node
+// settled differently: a finality DIVERGENCE. The most severe event the
+// finalizer can observe; alert on any nonzero value.
+pub const FINALITY_DIVERGENCE_DETECTED_METRIC: &str = "finality.divergence.detected";
+/// A shipped genesis refused during LFS restore (claimed hash or content
+/// re-hash failed against the learned register) — peer equivocation on the
+/// restore channel, visible on dashboards.
+pub const RESTORE_GENESIS_REFUSED_METRIC: &str = "restore.genesis.refused";
+
 // `BlockDagKeyValueStorage::insert`.
 pub const DAG_INSERT_TIME_METRIC: &str = "dag.insert.time";
 
@@ -321,8 +407,6 @@ pub const BLOCK_RECEIVE_BUFFER_TIME_METRIC: &str = "block.receive-buffer.time";
 pub const MERGEABLE_CHANNELS_GC_TIME_METRIC: &str = "mergeable-channels.gc.time";
 
 // Casper tracing span names
-pub const TIPS0_SPAN: &str = "tips0";
-pub const TIPS1_SPAN: &str = "tips1";
 pub const DEPLOY_SPAN: &str = "deploy";
 pub const GET_BLOCK_SPAN: &str = "get-block";
 pub const CREATE_BLOCK_SPAN: &str = "create-block";

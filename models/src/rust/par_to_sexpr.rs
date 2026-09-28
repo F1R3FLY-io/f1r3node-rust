@@ -270,4 +270,252 @@ mod tests {
         };
         assert_eq!(ParToSExpr::par_to_sexpr(&par), "[\"a\" \"b\"]");
     }
+
+    use crate::rhoapi::{EMethod, KeyValuePair, ReceiveBind};
+    use crate::rust::utils::{
+        new_boundvar_par, new_bundle_par, new_ediv_expr_gint, new_eminus_expr_gint,
+        new_emult_expr_gint, new_eplus_expr_gint, new_freevar_par, new_gbool_par, new_gint_par,
+        new_gstring_par, new_guri_par, new_wildcard_par,
+    };
+
+    fn gint(value: i64) -> Par { new_gint_par(value, Vec::new(), false) }
+
+    fn expr_par(instance: ExprInstance) -> Par {
+        Par {
+            exprs: vec![Expr {
+                expr_instance: Some(instance),
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn empty_par_renders_as_nil() {
+        assert_eq!(ParToSExpr::par_to_sexpr(&Par::default()), "Nil");
+    }
+
+    #[test]
+    fn ground_values_render_literally() {
+        assert_eq!(
+            ParToSExpr::par_to_sexpr(&new_gbool_par(true, Vec::new(), false)),
+            "true"
+        );
+        assert_eq!(
+            ParToSExpr::par_to_sexpr(&new_guri_par(
+                "rho:io:stdout".to_string(),
+                Vec::new(),
+                false
+            )),
+            "`rho:io:stdout`"
+        );
+        assert_eq!(
+            ParToSExpr::par_to_sexpr(&expr_par(ExprInstance::GByteArray(vec![0xab, 0xcd]))),
+            "0xabcd"
+        );
+    }
+
+    #[test]
+    fn vars_render_with_kind_specific_sigils() {
+        assert_eq!(
+            ParToSExpr::par_to_sexpr(&new_boundvar_par(3, Vec::new(), false)),
+            "_3"
+        );
+        assert_eq!(
+            ParToSExpr::par_to_sexpr(&new_freevar_par(2, Vec::new())),
+            "$2"
+        );
+        assert_eq!(
+            ParToSExpr::par_to_sexpr(&new_wildcard_par(Vec::new(), false)),
+            "_"
+        );
+    }
+
+    #[test]
+    fn tuple_set_and_map_render_with_tags() {
+        assert_eq!(
+            ParToSExpr::par_to_sexpr(&expr_par(ExprInstance::ETupleBody(crate::rhoapi::ETuple {
+                ps: vec![gint(1), gint(2)],
+                locally_free: vec![],
+                connective_used: false,
+            }))),
+            "(tuple 1 2)"
+        );
+        assert_eq!(
+            ParToSExpr::par_to_sexpr(&expr_par(ExprInstance::ESetBody(crate::rhoapi::ESet {
+                ps: vec![gint(1)],
+                locally_free: vec![],
+                connective_used: false,
+                remainder: None,
+            }))),
+            "(set 1)"
+        );
+        assert_eq!(
+            ParToSExpr::par_to_sexpr(&expr_par(ExprInstance::EMapBody(crate::rhoapi::EMap {
+                kvs: vec![KeyValuePair {
+                    key: Some(gint(1)),
+                    value: Some(gint(10)),
+                }],
+                locally_free: vec![],
+                connective_used: false,
+                remainder: None,
+            }))),
+            "(map (1 : 10))"
+        );
+    }
+
+    #[test]
+    fn unary_and_binary_operators_render_prefix() {
+        assert_eq!(
+            ParToSExpr::par_to_sexpr(&expr_par(ExprInstance::ENegBody(crate::rhoapi::ENeg {
+                p: Some(gint(4)),
+            }))),
+            "(- 4)"
+        );
+        assert_eq!(
+            ParToSExpr::par_to_sexpr(&expr_par(ExprInstance::ENotBody(crate::rhoapi::ENot {
+                p: Some(new_gbool_par(false, Vec::new(), false)),
+            }))),
+            "(not false)"
+        );
+        assert_eq!(
+            ParToSExpr::par_to_sexpr(&Par::default().with_exprs(vec![new_eplus_expr_gint(
+                1,
+                2,
+                Vec::new(),
+                false
+            )])),
+            "(+ 1 2)"
+        );
+        assert_eq!(
+            ParToSExpr::par_to_sexpr(&Par::default().with_exprs(vec![new_eminus_expr_gint(
+                3,
+                1,
+                Vec::new(),
+                false
+            )])),
+            "(- 3 1)"
+        );
+        assert_eq!(
+            ParToSExpr::par_to_sexpr(&Par::default().with_exprs(vec![new_emult_expr_gint(
+                2,
+                3,
+                Vec::new(),
+                false
+            )])),
+            "(* 2 3)"
+        );
+        assert_eq!(
+            ParToSExpr::par_to_sexpr(&Par::default().with_exprs(vec![new_ediv_expr_gint(
+                6,
+                2,
+                Vec::new(),
+                false
+            )])),
+            "(/ 6 2)"
+        );
+    }
+
+    #[test]
+    fn method_call_renders_target_name_and_args() {
+        assert_eq!(
+            ParToSExpr::par_to_sexpr(&expr_par(ExprInstance::EMethodBody(EMethod {
+                method_name: "nth".to_string(),
+                target: Some(gint(9)),
+                arguments: vec![gint(0)],
+                locally_free: vec![],
+                connective_used: false,
+            }))),
+            "(9.nth 0)"
+        );
+    }
+
+    #[test]
+    fn send_renders_channel_and_data() {
+        let par = Par {
+            sends: vec![Send {
+                chan: Some(new_gstring_par("chan".to_string(), Vec::new(), false)),
+                data: vec![gint(1), gint(2)],
+                persistent: false,
+                locally_free: vec![],
+                connective_used: false,
+            }],
+            ..Default::default()
+        };
+        assert_eq!(ParToSExpr::par_to_sexpr(&par), "(! \"chan\" 1 2)");
+    }
+
+    #[test]
+    fn receive_renders_binds_and_body() {
+        let par = Par {
+            receives: vec![Receive {
+                binds: vec![ReceiveBind {
+                    patterns: vec![],
+                    source: Some(new_gstring_par("src".to_string(), Vec::new(), false)),
+                    remainder: None,
+                    free_count: 0,
+                }],
+                body: Some(gint(1)),
+                persistent: false,
+                peek: false,
+                bind_count: 1,
+                locally_free: vec![],
+                connective_used: false,
+                condition: None,
+            }],
+            ..Default::default()
+        };
+        assert_eq!(
+            ParToSExpr::par_to_sexpr(&par),
+            "(for ((bind <- \"src\")) 1)"
+        );
+    }
+
+    #[test]
+    fn new_renders_generated_variables_and_body() {
+        let par = Par {
+            news: vec![New {
+                bind_count: 2,
+                p: Some(gint(7)),
+                uri: vec![],
+                injections: Default::default(),
+                locally_free: vec![],
+            }],
+            ..Default::default()
+        };
+        assert_eq!(ParToSExpr::par_to_sexpr(&par), "(new x0 x1 7)");
+    }
+
+    #[test]
+    fn bundle_renders_wrapped_body() {
+        let par = new_bundle_par(gint(5), true, false);
+        assert_eq!(ParToSExpr::par_to_sexpr(&par), "(bundle 5)");
+    }
+
+    #[test]
+    fn multiple_processes_render_as_par_sequence() {
+        let par = new_bundle_par(gint(5), true, false).with_exprs(gint(1).exprs);
+        assert_eq!(ParToSExpr::par_to_sexpr(&par), "(par 1 (bundle 5))");
+    }
+
+    #[test]
+    fn unknown_expr_and_missing_instance_have_fallbacks() {
+        assert_eq!(
+            ParToSExpr::par_to_sexpr(&expr_par(ExprInstance::EPathmapBody(
+                crate::rhoapi::EPathMap {
+                    ps: vec![],
+                    locally_free: vec![],
+                    connective_used: false,
+                    remainder: None,
+                }
+            ))),
+            "(expr)"
+        );
+        let none_expr = Par {
+            exprs: vec![Expr {
+                expr_instance: None,
+            }],
+            ..Default::default()
+        };
+        assert_eq!(ParToSExpr::par_to_sexpr(&none_expr), "Nil");
+    }
 }

@@ -1,6 +1,6 @@
 // T-13b generalized — Triple bisimilarity on the records component.
 //
-// Reference: docs/theory/slashing/design/14-test-plan.md §14.5,
+// Reference: docs/casper/theory/slashing/design/14-test-plan.md §14.5,
 // design/14a-tier-architecture.md §3.
 //
 // Property: each equivocation event produces a record at every

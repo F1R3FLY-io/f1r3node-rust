@@ -18,7 +18,7 @@
    bm_sum                    │ Σ_{v ∈ dom(B)} B(v)        │ Σ over .values()
    ─────────────────────────────────────────────────────────────────────────
 
-   Companion doc: docs/theory/slashing/slashing-verification.md §3.1
+   Companion doc: docs/casper/theory/slashing/slashing-verification.md §3.1
    Dependencies:  Rocq 9.1+ stdlib.
    ═══════════════════════════════════════════════════════════════════════════ *)
 

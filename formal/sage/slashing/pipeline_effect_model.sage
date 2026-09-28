@@ -82,7 +82,7 @@ def run_analysis(max_validators, max_bond, max_failures):
     return {"summaries": summaries, "failures": failures}
 
 
-def rejected_slash_reissue_case():
+def contract_idempotence_case():
     bonds = vector(ZZ, [Integer(5), Integer(7), Integer(0)])
     after_bonds, after_vault, after_slashed, first_transferred = apply_slash(
         bonds, 0, set(), {0}
@@ -104,7 +104,7 @@ def rejected_slash_reissue_case():
         and zero_transferred == 0
     )
     return {
-        "model": "sage_rejected_slash_reissue_idempotence",
+        "model": "sage_slash_contract_idempotence",
         "first_transferred": int(first_transferred),
         "second_transferred": int(second_transferred),
         "zero_bond_transferred": int(zero_transferred),
@@ -140,13 +140,13 @@ def self_test():
     result = run_analysis(5, 3, 4)
     if result["failures"]:
         raise AssertionError("slash effect invariant failed")
-    reissue = rejected_slash_reissue_case()
-    if not reissue["holds"]:
-        raise AssertionError("reissued slash was not idempotent")
+    idempotence = contract_idempotence_case()
+    if not idempotence["holds"]:
+        raise AssertionError("slash contract was not idempotent")
     overflow = overflow_boundary(64)
     if overflow["failures"][0]["exact_sum"] != 2 ** 63:
         raise AssertionError("overflow boundary changed")
-    result["rejected_slash_reissue"] = reissue
+    result["contract_idempotence"] = idempotence
     return result
 
 
@@ -169,11 +169,11 @@ def print_summary(result):
                 **first
             )
         )
-    if "rejected_slash_reissue" in result:
-        reissue = result["rejected_slash_reissue"]
+    if "contract_idempotence" in result:
+        idempotence = result["contract_idempotence"]
         print(
-            "rejected_slash_reissue holds={holds} first_transferred={first_transferred} second_transferred={second_transferred} zero_bond_transferred={zero_bond_transferred}".format(
-                **reissue
+            "contract_idempotence holds={holds} first_transferred={first_transferred} second_transferred={second_transferred} zero_bond_transferred={zero_bond_transferred}".format(
+                **idempotence
             )
         )
 

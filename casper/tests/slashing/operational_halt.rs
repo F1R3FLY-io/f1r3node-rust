@@ -1,7 +1,7 @@
 // Operational-halt boundary: slashing past the BFT bound shrinks the
 // active set below quorum.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §14
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §14
 // (operational liveness).
 // Reference: design/12-failure-modes.md.
 //

@@ -2,7 +2,6 @@
 doc_type: work_log
 task_id: TASK-015-1
 epic_id: EPIC-015
-created_by: claude-session-b0c4ed4f
 created_at: 2026-08-19
 handoff_status: ready
 next_steps:

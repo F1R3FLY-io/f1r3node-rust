@@ -40,7 +40,7 @@
 #
 # POLICY: this script is for LOCAL use only. Do NOT wire it (or any Rocq/TLA+/Apalache/
 # Wolfram step) into .github/workflows/* — an earlier formal-CI workflow was deliberately
-# removed. See docs/theory/fork-choice/fork-choice-verification.md.
+# removed. See docs/casper/theory/fork-choice/fork-choice-verification.md.
 #
 # Env knobs:
 #   ROCQ_MEMMAX=16G   systemd MemoryMax for the Rocq build (default 16G)
@@ -54,7 +54,7 @@ TLA_DIR="$REPO_ROOT/formal/tlaplus/fork_choice"
 Z3_DIR="$REPO_ROOT/formal/z3/fork_choice"
 SAGE_DIR="$REPO_ROOT/formal/sage/fork_choice"
 WL_DIR="$REPO_ROOT/formal/wolfram/fork_choice"
-DIAG_DIR="$REPO_ROOT/docs/theory/fork-choice/diagrams"
+DIAG_DIR="$REPO_ROOT/docs/casper/theory/fork-choice/diagrams"
 ROCQ_MEMMAX="${ROCQ_MEMMAX:-16G}"
 
 rc=0
@@ -272,7 +272,7 @@ if command -v plantuml >/dev/null 2>&1; then
     done
     [[ "$diag_ok" == "1" ]] && pass "all $n_puml PlantUML diagrams render clean (populated SVG, no stderr)"
   else
-    skip "no .puml sources in docs/theory/fork-choice/diagrams"
+    skip "no .puml sources in docs/casper/theory/fork-choice/diagrams"
   fi
 else
   skip "no plantuml on PATH"

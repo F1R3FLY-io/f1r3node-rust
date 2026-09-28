@@ -24,6 +24,14 @@ x-rnode-env: &rnode-env
   MALLOC_ARENA_MAX: "2"
   MALLOC_TRIM_THRESHOLD_: "131072"
   MALLOC_MMAP_THRESHOLD_: "131072"
+  # Passed only when set, so logging.filter in the node config applies by default.
+  RUST_LOG:
+
+x-rnode-logging: &rnode-logging
+  driver: json-file
+  options:
+    max-size: 100m
+    max-file: "3"
 
 services:
   validator1:
@@ -32,6 +40,7 @@ services:
     restart: always
     container_name: rnode.validator1
     environment: *rnode-env
+    logging: *rnode-logging
     command:
       - run
       - --host=${VPS2_PUBLIC_HOST}
@@ -62,6 +71,7 @@ services:
     restart: always
     container_name: rnode.validator2
     environment: *rnode-env
+    logging: *rnode-logging
     command:
       - run
       - --host=${VPS2_PUBLIC_HOST}
@@ -92,6 +102,7 @@ services:
     restart: always
     container_name: rnode.readonly
     environment: *rnode-env
+    logging: *rnode-logging
     command:
       - run
       - --host=${VPS2_PUBLIC_HOST}

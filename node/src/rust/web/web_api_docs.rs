@@ -1,4 +1,4 @@
-//! OpenAPI documentation generation for F1re3fly Web API
+//! OpenAPI documentation generation for F1r3fly Web API
 
 use utoipa::OpenApi;
 
@@ -11,6 +11,7 @@ use crate::rust::web::{
 #[openapi(
     paths(
         status_info::status_info_handler,
+        web_api_routes::ready_handler,
         shared_handlers::deploy_handler,
         shared_handlers::explore_deploy_handler,
         shared_handlers::explore_deploy_by_block_hash_handler,
@@ -25,6 +26,7 @@ use crate::rust::web::{
         web_api_routes::find_deploy_handler,
         web_api_routes::is_finalized_handler,
         web_api_routes::deploy_finalization_status_handler,
+        web_api_routes::pending_deploys_handler,
         web_api_routes::balance_handler,
         web_api_routes::registry_handler,
         web_api_routes::validators_handler,
@@ -62,6 +64,7 @@ pub struct PublicApi;
         web_api_routes::find_deploy_handler,
         web_api_routes::is_finalized_handler,
         web_api_routes::deploy_finalization_status_handler,
+        web_api_routes::pending_deploys_handler,
         web_api_routes::balance_handler,
         web_api_routes::registry_handler,
         web_api_routes::validators_handler,

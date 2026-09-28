@@ -148,6 +148,102 @@ async fn comput_state_should_charge_for_deploys() {
     .unwrap()
 }
 
+/// Builds three distinct, individually-cheap deploys for the play-budget tests.
+fn three_budget_probe_deploys() -> Vec<Signed<DeployData>> {
+    [
+        "@\"budget-a\"!(1)",
+        "@\"budget-b\"!(2)",
+        "@\"budget-c\"!(3)",
+    ]
+    .iter()
+    .map(|source| {
+        construct_deploy::source_deploy_now_full(
+            source.to_string(),
+            Some(100000),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap()
+    })
+    .collect()
+}
+
+#[tokio::test]
+async fn an_exhausted_play_budget_still_carries_exactly_one_deploy() {
+    with_runtime_manager(
+        |runtime_manager, genesis_context, genesis_block| async move {
+            let gen_post_state = genesis_block.body.state.post_state_hash;
+            let deploys = three_budget_probe_deploys();
+            let time_stamp = deploys[0].data.time_stamp;
+
+            let (_state, processed, _sys, _bonds) = runtime_manager
+                .compute_state_with_bonds(
+                    &gen_post_state,
+                    deploys,
+                    Vec::new(),
+                    BlockData {
+                        time_stamp,
+                        block_number: 0,
+                        sender: genesis_context.validator_pks()[0].clone(),
+                        seq_num: 0,
+                    },
+                    None,
+                    Some(std::time::Duration::ZERO),
+                )
+                .await
+                .unwrap();
+
+            // The floor: a spent budget defers the remainder but must never
+            // produce an empty carrier — that would be starvation by budget.
+            assert_eq!(
+                processed.len(),
+                1,
+                "a zero budget must carry exactly the first deploy and defer the rest"
+            );
+        },
+    )
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn an_ample_play_budget_carries_the_whole_pool() {
+    with_runtime_manager(
+        |runtime_manager, genesis_context, genesis_block| async move {
+            let gen_post_state = genesis_block.body.state.post_state_hash;
+            let deploys = three_budget_probe_deploys();
+            let time_stamp = deploys[0].data.time_stamp;
+
+            let (_state, processed, _sys, _bonds) = runtime_manager
+                .compute_state_with_bonds(
+                    &gen_post_state,
+                    deploys,
+                    Vec::new(),
+                    BlockData {
+                        time_stamp,
+                        block_number: 0,
+                        sender: genesis_context.validator_pks()[0].clone(),
+                        seq_num: 0,
+                    },
+                    None,
+                    Some(std::time::Duration::from_secs(120)),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(
+                processed.len(),
+                3,
+                "an unspent budget must not defer anything"
+            );
+        },
+    )
+    .await
+    .unwrap()
+}
+
 async fn compare_successful_system_deploys<S: SystemDeployTrait, F>(
     runtime_manager: &mut RuntimeManager,
     genesis_context: &GenesisContext,
@@ -2057,7 +2153,6 @@ async fn bridge_query_survives_multi_parent_merge() {
         None,
         None,
         None,
-        None,
     )
     .await
     .expect("merge parents");
@@ -2582,7 +2677,6 @@ async fn concurrent_registry_inserts_should_not_conflict() {
         &snapshot_merge,
         &rm,
         &latest_messages,
-        None,
         None,
         None,
         None,
@@ -3306,7 +3400,6 @@ new deployId(`rho:system:deployId`) in {
         None,
         None,
         None,
-        None,
     )
     .await
     .expect("merge [C, D]");
@@ -3457,6 +3550,194 @@ async fn fault_tolerance_threshold_ppm_round_trips_through_genesis() {
     assert_eq!(
         first, second,
         "every node must read the identical protocol threshold from chain state"
+    );
+}
+
+/// Consensus-parameters round-trip: genesis bakes (max-parent-depth,
+/// deploy-lifespan, min-phlo-price) into the PoS contract and any node can
+/// read them back from any post-state — the same shard-uniformity mechanism
+/// as the protocol FTT, extended to the parameters the validity rules
+/// (parent spread, expiry, repeat-deploy, phlo floor) fork on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn consensus_parameters_round_trip_through_genesis() {
+    use crate::util::genesis_builder::GenesisBuilder;
+    use crate::util::rholang::resources::{
+        mk_runtime_manager_with_history_at, mk_test_rnode_store_manager_from_genesis,
+    };
+
+    // Values the test-genesis defaults (15, 50, 0) can never produce by accident.
+    let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(4));
+    parameters.2.proof_of_stake.max_parent_depth = 21;
+    parameters.2.proof_of_stake.deploy_lifespan = 70;
+    parameters.2.proof_of_stake.min_phlo_price = 3;
+
+    let genesis_context = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(parameters))
+        .await
+        .expect("genesis with consensus parameters");
+    let post_state = genesis_context
+        .genesis_block
+        .body
+        .state
+        .post_state_hash
+        .clone();
+
+    let mut kvm = mk_test_rnode_store_manager_from_genesis(&genesis_context);
+    let (runtime_manager, _history) = mk_runtime_manager_with_history_at(&mut *kvm).await;
+
+    let read = runtime_manager
+        .get_consensus_parameters(&post_state)
+        .await
+        .expect("on-chain consensus-parameters query");
+
+    assert_eq!(
+        read,
+        Some((21, 70, 3)),
+        "genesis must bake the consensus parameters into the PoS contract and \
+         expose them via getConsensusParameters"
+    );
+}
+
+/// The read choke point's range gates: a chain carrying values the validity
+/// rules are undefined under must fail the read (and with it, startup) —
+/// never be adopted, never fall back to local configuration.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn consensus_parameters_read_rejects_out_of_range_values() {
+    use crate::util::genesis_builder::GenesisBuilder;
+    use crate::util::rholang::resources::{
+        mk_runtime_manager_with_history_at, mk_test_rnode_store_manager_from_genesis,
+    };
+
+    // Casper tests bypass node-side startup validation, so genesis can bake
+    // a zero parent depth — exactly the hostile-chain shape the gate guards.
+    let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(4));
+    parameters.2.proof_of_stake.max_parent_depth = 0;
+
+    let genesis_context = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(parameters))
+        .await
+        .expect("genesis with out-of-range parameters");
+    let post_state = genesis_context
+        .genesis_block
+        .body
+        .state
+        .post_state_hash
+        .clone();
+
+    let mut kvm = mk_test_rnode_store_manager_from_genesis(&genesis_context);
+    let (runtime_manager, _history) = mk_runtime_manager_with_history_at(&mut *kvm).await;
+
+    let read = runtime_manager.get_consensus_parameters(&post_state).await;
+    let err = read.expect_err("a zero maxParentDepth must fail the strict read");
+    assert!(
+        err.to_string().contains("maxParentDepth out of range"),
+        "the error must name the offending parameter, got: {err}"
+    );
+}
+
+/// The adoption gap this pins: a node whose LOCAL configuration diverges from
+/// the chain must still RUN the on-chain consensus parameters — local config
+/// is not a fork input. `hash_set_casper` is the single adoption point (the
+/// protocol-FTT precedent); before adoption, a divergent node would accept
+/// blocks its peers reject (parent spread, expiry, repeat window, phlo floor).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn consensus_parameters_are_adopted_from_chain_over_local_config() {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+
+    use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
+    use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+    use casper::rust::casper::{hash_set_casper, CasperShardConf, MultiParentCasper};
+    use casper::rust::engine::block_retriever::BlockRetriever;
+    use casper::rust::estimator::Estimator;
+    use comm::rust::rp::connect::{Connections, ConnectionsCell};
+    use comm::rust::test_instances::{create_rp_conf_ask, TransportLayerStub};
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+    use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
+
+    use crate::engine::setup;
+    use crate::util::genesis_builder::GenesisBuilder;
+    use crate::util::rholang::resources::{
+        block_dag_storage_from_dyn, casper_buffer_storage_from_dyn,
+        key_value_deploy_storage_from_dyn, mk_runtime_manager_with_history_at,
+        mk_test_rnode_store_manager_from_genesis,
+    };
+
+    let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(4));
+    parameters.2.proof_of_stake.max_parent_depth = 21;
+    parameters.2.proof_of_stake.deploy_lifespan = 70;
+    parameters.2.proof_of_stake.min_phlo_price = 3;
+
+    let genesis_context = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(parameters))
+        .await
+        .expect("genesis with consensus parameters");
+
+    let mut kvm = mk_test_rnode_store_manager_from_genesis(&genesis_context);
+    let (runtime_manager, _history) = mk_runtime_manager_with_history_at(&mut *kvm).await;
+    let block_store = KeyValueBlockStore::create_from_kvm(&mut *kvm)
+        .await
+        .expect("block store");
+    let block_dag_storage = block_dag_storage_from_dyn(&mut *kvm)
+        .await
+        .expect("dag storage");
+    let deploy_storage = key_value_deploy_storage_from_dyn(&mut *kvm)
+        .await
+        .expect("deploy storage");
+    let casper_buffer = casper_buffer_storage_from_dyn(&mut *kvm)
+        .await
+        .expect("casper buffer");
+    let mut buffer_kvm = InMemoryStoreManager::new();
+    let rejected_deploy_buffer = Arc::new(Mutex::new(
+        KeyValueRejectedDeployBuffer::new(&mut buffer_kvm)
+            .await
+            .expect("rejected buffer"),
+    ));
+
+    let local_peer = setup::peer_node("adoption-local", 40400);
+    let rp_conf = create_rp_conf_ask(local_peer.clone(), None, None);
+    let block_retriever = BlockRetriever::new(
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(TransportLayerStub::new()),
+        ConnectionsCell {
+            peers: Arc::new(Mutex::new(Connections::from_vec(vec![local_peer]))),
+        },
+        rp_conf,
+    );
+
+    // Local conf diverges from the chain on all three values.
+    let mut local_conf = CasperShardConf::new();
+    local_conf.max_parent_depth = 15;
+    local_conf.deploy_lifespan = 50;
+    local_conf.min_phlo_price = 1;
+
+    let casper = hash_set_casper(
+        block_retriever,
+        F1r3flyEvents::new(),
+        Arc::new(runtime_manager),
+        Estimator::apply(),
+        block_store,
+        block_dag_storage,
+        deploy_storage,
+        rejected_deploy_buffer,
+        casper_buffer,
+        None,
+        local_conf,
+        genesis_context.genesis_block.clone(),
+        casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
+    )
+    .await
+    .expect("hash_set_casper");
+
+    let adopted = casper.casper_shard_conf();
+    assert_eq!(
+        (
+            adopted.max_parent_depth,
+            adopted.deploy_lifespan,
+            adopted.min_phlo_price
+        ),
+        (21, 70, 3),
+        "the on-chain consensus parameters must be adopted over local configuration"
     );
 }
 
@@ -3845,6 +4126,9 @@ async fn gc_collects_mergeable_data_that_the_recompute_cannot_rebuild() {
         lifecycle: Arc::new(PlRwLock::new(
             block_storage::rust::dag::deploy_lifecycle_types::DeployLifecycleTables::in_memory(),
         )),
+        carrier_index: Arc::new(PlRwLock::new(
+            block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
+        )),
     };
 
     // The node's live floor is the chain tip. Seeding the persisted floor cache
@@ -3859,9 +4143,11 @@ async fn gc_collects_mergeable_data_that_the_recompute_cannot_rebuild() {
 
     // Production GC: the block sits 15 below the live floor, past the 4-block
     // allowance, so its data is released.
-    let deleted = mergeable_channels_gc::collect_garbage(&dag, &block_store, &rm, &conf)
-        .await
-        .expect("collect_garbage");
+    let mut gc_sweep = mergeable_channels_gc::GcSweep::new();
+    let deleted =
+        mergeable_channels_gc::collect_garbage(&mut gc_sweep, &dag, &block_store, &rm, &conf)
+            .await
+            .expect("collect_garbage");
     assert_eq!(
         deleted,
         1,

@@ -2,44 +2,27 @@
 
 ## Status
 
-This claim is mandatory and pending a complete transition-system bridge to Rust.
+Retired. The deploy-promotion mechanism this claim bounded no longer exists.
 
-## Claim
+Deploy-support promotion was deleted because its input evolved over time: the spine
+could legally flip between two sound certificates and fork the finalized read surface
+(the ucc `ca7197d8` freeze). Deploys need no spine position to finalize
+(`verdict_convergence_spec::a_deploy_finalizes_from_a_carrier_the_spine_never_holds`).
+Its successor, certified-tie promotion (`prefer_certified_main_parent`), was deleted
+with the heaviest-subtree descent rewrite: a certified branch holds a strict weight
+majority, so no rival child can tie it and there is nothing left to promote.
 
-Deploy promotion can override the GHOST head only while the promoted branch contains a novel deploy signature.
+## Current selection rule
 
-Main-ancestry coverage must disable promotion for that signature.
-
-For finite deploy pressure, fair coverage must eventually restore stable GHOST selection.
-
-## Formal statement
-
-For main signature set `M` and candidate signature set `C`:
-
-```text
-promote(C, M) => exists sig: sig in C and sig not in M
-C subset M => not promote(C, M)
-finite pending signatures and fair merge => eventually always GHOST
-```
-
-## Assumptions
-
-The deploy signature set is finite during one recovery interval.
-
-The merge action is weakly fair.
-
-No accepted transition removes a covered signature from the main ancestry.
+The proposer's main parent is the GHOST head from the heaviest-subtree descent
+(`estimator.rs::rank_forkchoices`), except when the parent set collapses to a single
+deploy-free parent that DAG-covers every other parent (content-preserving). Stable
+GHOST selection is therefore structural, not eventual.
 
 ## Evidence
 
-- `formal/rocq/fork_choice/theories/GuardBridge.v::promotion_gate_requires_novel`
-- `formal/rocq/fork_choice/theories/GuardBridge.v::covered_branch_cannot_promote`
-- `formal/tlaplus/fork_choice/PromotionConvergence.tla`
-- `formal/tlaplus/fork_choice/MC_PromotionConvergence.cfg`
-- `formal/tlaplus/fork_choice/MC_PromotionConvergence_covered_pre_fix.cfg`
+- `casper/tests/fork_choice/heaviest_subtree_descent.rs`
+- `casper/tests/fork_choice/prop_ghost_argmax.rs`
 
-## Gate rule
-
-A counterexample to eventual GHOST restoration refutes this claim and blocks completion.
-
-Documenting the counterexample as an allowed exception does not discharge the claim.
+The retired Rocq/TLA promotion artifacts (`GuardBridge.v` promotion theorems,
+`PromotionConvergence.tla`) model deleted code and are historical.

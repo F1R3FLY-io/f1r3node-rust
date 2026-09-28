@@ -317,15 +317,20 @@ generate_evidence() {
 			images: {
 				publication_state: "not_published",
 				docker_hub: null,
-				ocir: null
+				ocir_index_digest: null
 			},
 			created_at: $created_at
 		}' >"$output"
 	validate_evidence "$output"
 }
 
+# The OCIR index digest is recorded, never the OCIR repository path: the
+# path is repository-secret material and evidence is public. The same image
+# blobs and the same manifest list produce the same content-addressed digest
+# in both registries, so the two digests must be equal. A difference means
+# the registries hold different candidates, and publication must stop.
 record_images() {
-	local evidence="$1" index_ref="$2" amd64_digest="$3" arm64_digest="$4"
+	local evidence="$1" index_ref="$2" amd64_digest="$3" arm64_digest="$4" ocir_digest="$5"
 	require_file "$evidence"
 	validate_evidence "$evidence"
 	[ "$(jq -r '.publication_mode' "$evidence")" = evidence_only ] ||
@@ -334,16 +339,20 @@ record_images() {
 		fail "image index reference must be repository@sha256:digest"
 	require_artifact_digest "$amd64_digest" "linux amd64 image digest"
 	require_artifact_digest "$arm64_digest" "linux arm64 image digest"
+	require_artifact_digest "$ocir_digest" "OCIR image index digest"
+	[ "$ocir_digest" = "${index_ref#*@}" ] ||
+		fail "OCIR index digest $ocir_digest differs from the Docker Hub index digest ${index_ref#*@}"
 	local updated
 	updated="$(jq \
 		--arg docker_hub "$index_ref" \
 		--arg amd64 "$amd64_digest" \
 		--arg arm64 "$arm64_digest" \
+		--arg ocir_digest "$ocir_digest" \
 		'.publication_mode = "canary"
 		| .images = {
 			publication_state: "published",
 			docker_hub: $docker_hub,
-			ocir: null,
+			ocir_index_digest: $ocir_digest,
 			linux_amd64_digest: $amd64,
 			linux_arm64_digest: $arm64
 		}' "$evidence")"
@@ -386,12 +395,13 @@ validate_evidence() {
 			(.publication_mode == "evidence_only"
 				and .images.publication_state == "not_published"
 				and .images.docker_hub == null
-				and .images.ocir == null)
+				and .images.ocir_index_digest == null)
 			or
 			(.publication_mode == "canary"
 				and .images.publication_state == "published"
 				and (.images.docker_hub | type == "string" and test("^[a-z0-9./_-]+@sha256:[0-9a-f]{64}$"))
-				and .images.ocir == null
+				and (.images.ocir_index_digest | type == "string" and test("^sha256:[0-9a-f]{64}$"))
+				and .images.ocir_index_digest == (.images.docker_hub | split("@")[1])
 				and (.images.linux_amd64_digest | type == "string" and test("^sha256:[0-9a-f]{64}$"))
 				and (.images.linux_arm64_digest | type == "string" and test("^sha256:[0-9a-f]{64}$")))
 		)
@@ -408,7 +418,7 @@ usage() {
 		"usage: $0 inspect-source SOURCE_DIR" \
 		"       $0 required-jobs" \
 		"       $0 generate SOURCE_DIR REPOSITORY RUN_JSON JOBS_JSON ARTIFACTS_JSON ARTIFACTS_DIR OUTPUT" \
-		"       $0 record-images EVIDENCE_JSON INDEX_REF AMD64_DIGEST ARM64_DIGEST" \
+		"       $0 record-images EVIDENCE_JSON INDEX_REF AMD64_DIGEST ARM64_DIGEST OCIR_INDEX_DIGEST" \
 		"       $0 validate EVIDENCE_JSON" >&2
 	exit 2
 }
@@ -428,8 +438,8 @@ generate)
 	generate_evidence "$2" "$3" "$4" "$5" "$6" "$7" "$8"
 	;;
 record-images)
-	[ "$#" -eq 5 ] || usage
-	record_images "$2" "$3" "$4" "$5"
+	[ "$#" -eq 6 ] || usage
+	record_images "$2" "$3" "$4" "$5" "$6"
 	;;
 validate)
 	[ "$#" -eq 2 ] || usage

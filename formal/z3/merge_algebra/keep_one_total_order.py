@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-# Z3 cross-witness for the P3 / no-fork determinism linchpin: the 5-key
+# Z3 cross-witness for the P3 / no-fork determinism linchpin: four priority
+# tiers followed by an injective composite identity key.
 # DeployChainIndex comparator (casper/src/rust/merging/deploy_chain_index.rs
 # :151-230) is a STRICT TOTAL ORDER, so the merge's `min_by`/`sort` winner is
 # UNIQUE and independent of the (reseeded) HashSet iteration order upstream --
-# i.e. NO cross-node fork. The 5-key tower is:
+# i.e. NO cross-node fork. The abstract tower is:
 #     1. Sigma-cost         DESCENDING
 #     2. max single cost    DESCENDING
 #     3. min deploy_id       ASCENDING
 #     4. post_state_hash     ASCENDING
-#     5. deploys_with_cost   ASCENDING   (the INJECTIVE Eq/Hash key)
+#     5. composite identity  ASCENDING   (the INJECTIVE Eq/Hash key)
 # Because keys 1-4 are FUNCTIONS of the deploy set, and key 5 IS the set (the Eq
 # key), `cmp a b == Equal` iff a == b -- no two DISTINCT chains ever tie. This
 # confirms Rocq KeepOneOrder.keep_one_total_order / keep_one_equal_impl_eq /
@@ -84,7 +85,7 @@ s.add(a[4] != b[4],                                  # genuinely distinct chains
       Not(prec4(a, b)), Not(prec4(b, a)))            # ...tie under the 4-key order
 expect("WITHOUT key 5, distinct chains tie (fork)", s, "sat")
 
-print("== Z3 keep-one 5-key total-order cross-witness: ALL PASS =="
+print("== Z3 keep-one total-order cross-witness: ALL PASS =="
       if ok else "== FAILURES ==")
 import sys
 sys.exit(0 if ok else 1)

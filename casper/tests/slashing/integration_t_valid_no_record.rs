@@ -1,7 +1,7 @@
 // Integration test — Tier 1 production-path verification of the
 // `_` non-slashable arm of `MultiParentCasperImpl::handle_invalid_block`.
 //
-// Reference: docs/theory/slashing/design/14-test-plan.md §14.3.5
+// Reference: docs/casper/theory/slashing/design/14-test-plan.md §14.3.5
 // (production-path integration). Plan-agent designed; the
 // "valid arm" recipe is the simplest of the five Track 2 tests
 // and serves as the smoke test confirming the

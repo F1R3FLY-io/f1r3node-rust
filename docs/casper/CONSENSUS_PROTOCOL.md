@@ -101,7 +101,7 @@ Proposals are triggered by the [heartbeat proposer](#8-liveness-heartbeat-propos
 3. **Select parents** via [fork choice](#5-fork-choice-lmd-ghost) (LMD GHOST)
    - One parent per validator, deduplicated
    - Limited by `max_number_of_parents` and `max_parent_depth`
-4. **Compute LCA** (Lowest Common Ancestor) of selected parents — bounds the [merge scope](#6-state-merging-multi-parent)
+4. **Compute LCA** (Lowest Common Ancestor) of selected parents — an input to [fork-choice scoring](#5-fork-choice-lmd-ghost); the [merge scope](#6-state-merging-multi-parent) is bounded by the finalized floor, not the LCA
 5. **Build justifications**: Each bonded validator's latest message hash
 6. **Compute deploy scope**: BFS traversal within `deploy_lifespan` window to find all deploys already included in ancestor blocks
 
@@ -223,6 +223,9 @@ The block retriever (`block_retriever.rs`) handles missing dependencies:
 
 ### Step 8: Deploy & State Validation
 - Deploys are within scope, not duplicated
+  - The duplicate check scans parent-scope ancestors inside the `deploy_lifespan` window, without a validity qualifier: a signature carried only by an invalid ancestor is still a repeat
+  - A rejected-in-scope signature is exempt when its retry gate is open (see the glossary); a closed gate returns `PrematureDeployRetry`
+  - The repeat-deploy signature index (see the glossary) may skip the scan for a signature with no in-window carrier; an index hit or read failure falls back to scope-verified scanning, so index-served and scan-served verdicts are equal
 - Phlogiston price meets minimum
 - Invalid block tracking applied
 
@@ -265,7 +268,7 @@ In a multi-parent DAG, different validators may have included different deploys 
 
 ### Algorithm (`dag_merger.rs` + `conflict_set_merger.rs`)
 
-1. **Identify visible blocks**: All blocks between the LCA and the parents (exclusive of LCA, inclusive of parents)
+1. **Identify visible blocks**: `closure(parents) \ closure(floor)` — every block above the finalized floor that a parent can reach (exclusive of the floor closure, inclusive of parents). See [finalized-floor-specification.md](./theory/finalized-floor/finalized-floor-specification.md) R-SCOPE.
 2. **Collect deploys**: Extract user deploys from all visible blocks
 3. **Detect conflicts**: Branches conflict if they contain the **same user deploy ID** (not content — just the deploy signature)
 4. **Resolve**: `ConflictSetMerger` selects the highest-value subset
@@ -278,13 +281,32 @@ In a multi-parent DAG, different validators may have included different deploys 
 
 ### Determinism Constraint
 
-The merge scope is derived entirely from DAG structure (parent pointers and block heights), not from local finalization state. Two validators with different finalization views must compute the same merge result for identical parent sets. This is why the LCA (not the LFB) bounds the scope.
+The merge scope is bounded by the finalized floor of the block. The floor is a pure function of the block's frozen justifications, so every node derives the same floor for the same block. Two validators with different local finalization views therefore compute the same merge result for identical parent sets. The node-local last finalized block (LFB) never bounds the scope — only the block-derived floor does.
 
 ### Performance Bounds
 
 - Merge cost: O(visible_blocks^2 x deploys^2) for conflict resolution
-- LCA scoping keeps visible_blocks bounded
-- **Fallback**: If visible_blocks > 512 or LCA distance > 256, falls back to latest parent's post-state (discards non-selected parent deploys — they land in the rejected-deploy buffer and a subsequent proposer re-includes them via `prepare_user_deploys`)
+- Floor scoping keeps visible_blocks bounded
+- **Δ-backstop**: When the floor distance `Δ = num(maxParent) − num(floor)` exceeds the cap (`MAX_FLOOR_DISTANCE_BLOCKS` = 256), `compute_parents_post_state` refuses the merge with a deterministic error keyed on Δ alone. On propose the round parks and retries after finality advances. On validate an over-Δ block is deterministically invalid. The merge never substitutes a lossy single-parent post-state (R-BACKSTOP — the former fallback dropped co-parent writes, the ~400-block bug).
+- The visible-scope size (`MAX_PARENT_MERGE_SCOPE_BLOCKS` = 512) is an advisory metric only. Branch width is not node-deterministic, so scope size never gates admission.
+
+### Validation progress evidence
+
+Validation work can delay finality because a remote validator cannot support a block before replay and validation finish.
+
+Each optimization must state an operation bound and compare its output with the unchanged reference path.
+
+Carrier-index telemetry must distinguish gate engagement, absence, hit, read failure, fallback, and ancestor reads.
+
+Merge telemetry must separate scope, relation, conflict, rejection, and state-application work.
+
+Replay telemetry must separate runtime creation, user deploys, system deploys, checkpoint, and reset work.
+
+These measurements are node-local evidence. They never control a consensus decision.
+
+Issue #24 acceptance uses identical generated fixtures with the carrier path forced on and forced off. Both modes must return identical verdicts.
+
+The soak gate uses the repository workload and finalization limit. A runner failure is separate from each earlier product-test failure.
 
 ### System Deploys
 
@@ -300,15 +322,19 @@ Finalization determines when a block is **mathematically irreversible**. Once fi
 
 Finalization runs asynchronously after each valid block is added to the DAG. A single-flight guard (`finalizer_task_in_progress`) prevents concurrent runs. A `finalization_in_progress` flag prevents snapshot creation during finalization (avoids stale proposals).
 
-### Algorithm (`finalizer.rs`)
+### Algorithm (`floor.rs::floor_of_view` + `finalization_runner.rs`)
 
-1. **Scope**: BFS from latest messages down the main-parent chain to the current LFB (Last Finalized Block)
+There is ONE finality clock: the LFB is the floor of the live view — the same
+derivation, candidate soundness, and exact `≥ θ` decision every block
+operation uses.
+
+1. **Scope**: derive the floor of the current latest-message frontier
 2. **Candidate filtering**: Only blocks with >50% stake agreement (quick filter before expensive clique computation)
 3. **Clique Oracle** for each candidate:
    - Build an agreement graph: edge between validators A and B if they "never eventually see disagreement" about the target block
    - Find the maximum weighted clique (largest fully-connected subgraph by stake)
-   - Compute fault tolerance: `FT = (2 * clique_weight - total_stake) / total_stake`
-4. **Finalization**: If `FT > fault_tolerance_threshold`, block is finalized
+   - Decide finalization with exact integer arithmetic (`2·q·den ⋛ S·(den+num)` — the integer form of `FT = (2·clique_weight − total_stake) / total_stake ≥ θ`)
+4. **Containment gate**: the derived floor advances the LFB only when its state CONTAINS the current LFB's settled effects — the read surface can never designate a state missing settled content
 5. **LFB advancement**: Update last finalized block, clean up deploy storage, emit `BlockFinalised` event
 
 ### "Never Eventually See Disagreement"
@@ -316,9 +342,28 @@ Finalization runs asynchronously after each valid block is added to the DAG. A s
 Two validators A and B agree on block T if:
 - A's latest message is in T's main-parent chain
 - B's latest message is in T's main-parent chain
-- Walking B's self-justification chain from B's latest back to A's view of B reveals no messages that disagree with T
+- Walking B's self-justification chain from B's latest back to A's view of B reveals no messages that disagree with T. Disagreement is two-sided by height: at or above T's height, a message whose spine excludes T disagrees (a rival estimate); below T's height, only a message off T's OWN spine disagrees (a rival prefix) — a block on T's own ancestry is history, not disagreement.
 
 This is a **permanent** agreement — once two validators are in a clique for block T, no future messages can break it.
+
+### Hold states (operator-visible)
+
+A finalizer cycle that derives a higher floor but does not adopt it ends in
+one of two holds:
+
+- **ContainmentHold** — the derived floor's state is missing effects settled
+  under the current LFB. One refusal is routine (a rejected-then-recovered
+  deploy legitimately fails containment until its re-homed carrier
+  finalizes); a streak of refusals with RISING derived floors means the
+  shard is finalizing without this node. The `DivergenceMonitor` detects
+  exactly that pattern and escalates once: an ERROR log ("FINALITY
+  DIVERGENCE") plus the `finality.divergence.detected` counter, cleared
+  with an INFO if a containing floor is later adopted. Proposing is
+  deliberately not halted.
+- **AbsenceHold** — the floor walk needed a block this node does not hold
+  (a restored node's descent crossed its retention edge). The cycle holds
+  quietly at DEBUG; catch-up delivers the missing block and the next run
+  derives cleanly.
 
 ### Work Budgets
 
@@ -386,10 +431,10 @@ The heartbeat runs a loop that races between:
 
 On each heartbeat tick:
 
-1. **Frontier chase**: Is my latest block behind the DAG tip? → Propose (catch up)
-2. **Pending deploys**: Are there unfinalized deploys AND LFB lag exceeds threshold? → Propose
-3. **Stale LFB recovery**: Is LFB older than `max_lfb_age` AND regular recovery is throttled? → Leader-only proposal (deterministic leader selection prevents N competing recovery blocks)
-4. **Self-propose cooldown**: Don't propose more often than the configured cooldown
+1. **Pending deploys**: Unfinalized user deploys → propose (with a lag throttle and an interval-paced backstop so deploys never starve)
+2. **Frontier follow**: New parents observed → propose to keep the frontier moving (lag-capped while ahead)
+3. **Stale LFB recovery**: LFB older than `max_lfb_age` → EVERY bonded validator proposes, at most once per `stale-recovery-min-interval` (its own silence must also exceed the interval). Recovery is never leader-gated: certification needs mutual witnessing, and one proposer cannot rebuild it alone. A deterministic leader survives only for the one-shot multi-parent convergence proposal.
+4. **Self-propose cooldown**: Gates every routine lane (1–2); never the stale-recovery lane, which paces on its own interval
 
 ### Why Heartbeat Matters
 
@@ -414,7 +459,7 @@ When the synchrony constraint blocks proposals:
 | Simple | Validator created two blocks at same sequence number | Creator justification != latest message | Block rejected |
 | Admissible | Equivocating block needed as dependency by another block | Same as simple, but block is in dependency chain | Stored as invalid in DAG for tracking |
 | Ignorable | Equivocating block arrived unsolicited | Same as simple, not needed as dependency | Dropped entirely |
-| Neglected | Validator had evidence of equivocation but didn't slash | Justifications reference known equivocator | Block rejected, validator penalized |
+| Neglected | Validator had evidence of equivocation but didn't slash | Justifications reference known equivocator | Block rejected (no stake penalty: the neglect verdict is view-relative and is demoted from evidence minting pending re-promotion — see the slashing-specification amendment) |
 
 ### Slashing Flow
 
@@ -448,10 +493,13 @@ Heartbeat-disabled proposers (`allow_empty_blocks = false`, the production defau
 
 ### Two-Level Slashing
 
-- **Level 1**: Direct equivocator — loses entire stake
-- **Level 2**: Validator that neglected to report equivocation — also loses stake
-
-This makes collusion economically irrational: both parties get slashed.
+- **Level 1**: Direct equivocator — loses entire stake (live)
+- **Level 2**: Validator that neglected to report equivocation — block
+  rejected; the stake penalty is currently inactive. Neglect verdicts are
+  judged against the receiver's own tracker (view-relative), so they are
+  demoted from evidence minting until shown admission-order-free — see the
+  slashing-specification amendment. Level-2 stake loss resumes on
+  re-promotion; the collusion-irrationality argument holds fully only then.
 
 ---
 
@@ -467,6 +515,7 @@ Operator config files are minimal overrides — HOCON's fallback semantics merge
 
 **Genesis-locked parameters** (cannot change after network creation):
 - `fault-tolerance-threshold` and `synchrony-constraint-threshold` — written into the genesis block's on-chain state
+- `max-parent-depth`, `deploy-lifespan`, `min-phlo-price` — baked into the PoS contract and exposed via its `getConsensusParameters` getter. Validity rules (parent spread, expiry, repeat-deploy, phlo floor) fork on these, so every node reads them back at casper construction and adopts the on-chain values unconditionally over local configuration; a chain whose values are absent or out of range fails startup rather than falling back. Immutable until an on-chain parameter-upgrade mechanism exists.
 - `native-token-name`, `native-token-symbol`, `native-token-decimals` — baked into the `TokenMetadata` Rholang contract at `rho:system:tokenMetadata` with nonce `i64::MAX`, making them immutable via the registry's `insertSigned` protocol
 
 Changing any of these requires a new genesis (new network).

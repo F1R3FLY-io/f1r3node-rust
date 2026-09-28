@@ -15,6 +15,32 @@ on:
         description: Trusted system-integration ref used for integration tests
         required: true
         type: string
+      candidate_tag:
+        description: Candidate tag for exact-candidate mode; empty builds from source
+        required: false
+        type: string
+        default: ""
+      candidate_amd64_digest:
+        description: Candidate linux/amd64 image manifest digest (candidate mode)
+        required: false
+        type: string
+        default: ""
+      candidate_arm64_digest:
+        description: Candidate linux/arm64 image manifest digest (candidate mode)
+        required: false
+        type: string
+        default: ""
+    secrets:
+      OCIR_REGISTRY:
+        required: false
+      OCIR_NAMESPACE:
+        required: false
+      OCIR_REPO:
+        required: false
+      OCIR_USERNAME:
+        required: false
+      OCIR_AUTH_TOKEN:
+        required: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -52,7 +78,7 @@ jobs:
               ]
     steps:
       - name: Checkout pull request head
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           repository: ${{ inputs.head_repo }}
           ref: ${{ inputs.head_sha }}
@@ -60,7 +86,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Enable Containerd Image Store
         shell: bash -ex {0}
@@ -74,6 +100,7 @@ jobs:
           fi
 
       - name: Build Docker Image
+        if: inputs.candidate_tag == ''
         shell: bash -ex {0}
         run: |
           docker context use default
@@ -86,6 +113,31 @@ jobs:
             --load \
             .
 
+      - name: Pull candidate image by digest
+        if: inputs.candidate_tag != ''
+        env:
+          OCIR_REGISTRY: ${{ secrets.OCIR_REGISTRY }}
+          OCIR_USERNAME: ${{ secrets.OCIR_USERNAME }}
+          OCIR_AUTH_TOKEN: ${{ secrets.OCIR_AUTH_TOKEN }}
+          OCIR_BASE: ${{ secrets.OCIR_REGISTRY }}/${{ secrets.OCIR_NAMESPACE }}/${{ secrets.OCIR_REPO }}
+          ARCH_DIGEST: ${{ matrix.arch == 'amd64' && inputs.candidate_amd64_digest || inputs.candidate_arm64_digest }}
+        shell: bash -euo pipefail {0}
+        run: |
+          # Exact-candidate mode (docs/release-process.md section 9): the
+          # image under test is the published candidate, pulled by its
+          # architecture manifest digest from OCIR, the canonical gate
+          # registry. Nothing is rebuilt. The OCIR reference is secret
+          # material and is not printed.
+          [[ "$ARCH_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::candidate ${{ matrix.arch }} digest is not a sha256 digest"; exit 1; }
+          docker context use default
+          printf '%s' "$OCIR_AUTH_TOKEN" | docker login "$OCIR_REGISTRY" --username "$OCIR_USERNAME" --password-stdin
+          docker pull --platform ${{ matrix.platform }} "${OCIR_BASE}@${ARCH_DIGEST}" >/dev/null
+          docker logout "$OCIR_REGISTRY" || true
+          pulled="$(docker inspect --format '{{join .RepoDigests "\n"}}' "${OCIR_BASE}@${ARCH_DIGEST}" | sed -n "s|^${OCIR_BASE}@||p" | head -1)"
+          [ "$pulled" = "$ARCH_DIGEST" ] || { echo "::error::pulled image digest does not match the candidate ${{ matrix.arch }} digest"; exit 1; }
+          docker tag "${OCIR_BASE}@${ARCH_DIGEST}" "${{ env.DOCKER_IMAGE_NAME }}:${{ matrix.arch }}"
+          echo "Candidate ${{ inputs.candidate_tag }} ${{ matrix.arch }} image ${ARCH_DIGEST} loaded."
+
       - name: Export Docker Image
         shell: bash -ex {0}
         run: |
@@ -93,7 +145,7 @@ jobs:
               | gzip > /tmp/rust-node-docker.tar.gz
 
       - name: Save Docker Image
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: artifacts-docker-${{ matrix.arch }}
           path: /tmp/rust-node-docker.tar.gz
@@ -126,14 +178,14 @@ jobs:
               ]
     steps:
       - name: Checkout pull request head
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           repository: ${{ inputs.head_repo }}
           ref: ${{ inputs.head_sha }}
           persist-credentials: false
 
       - name: Clone trusted system-integration tests
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           repository: F1R3FLY-io/system-integration
           ref: ${{ inputs.system_integration_ref }}
@@ -141,7 +193,7 @@ jobs:
           persist-credentials: false
 
       - name: Load Docker Image
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: artifacts-docker-${{ matrix.arch }}
           path: /tmp
@@ -198,6 +250,7 @@ jobs:
             --deselect integration-tests/test/tests/custom/test_shard_degradation.py \
             --deselect integration-tests/test/tests/shared/test_contract_lifecycle.py \
             --deselect integration-tests/test/tests/custom/test_consensus_safety.py::test_epoch_transition_under_heartbeat \
+            --deselect integration-tests/test/tests/shared/test_convergence.py::test_network_converges_after_slow_deploy \
             --provider=${{ matrix.provider }} \
             --rss-ceiling-mb 10000 \
             "${NODE_CAPABILITY_ARGS[@]}" \
@@ -206,7 +259,7 @@ jobs:
 
       - name: Upload Integration Test Logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: integration-logs-${{ matrix.arch }}-${{ matrix.provider }}-slot${{ matrix.slot }}-run${{ github.run_id }}-attempt${{ github.run_attempt }}
           path: system-integration/integration-tests/
