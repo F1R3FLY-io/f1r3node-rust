@@ -24,7 +24,7 @@ This document tracks implementation work through **epics** (logical groupings of
 
 ## Active Coordination
 
-- **Casper ratification follow-up (2026-09-16).** EPIC-017 owns the pre-#216 models, baseline conformance, and harness preparation on `formal/soak-casper-consensus`. EPIC-018 owns a separate formal-methods harness PR after PR #216 merges. The [meeting record](https://github.com/F1R3FLY-io/f1r3node-rust/pull/390#pullrequestreview-5227717933) controls both phases. PRs #430 through #433 remain prerequisites in stack order. The [branch plan](./plans/casper-ratified-soak-2026-09-16.md) defines the handoff, separate completion gates, and deferred-policy restrictions.
+- **Casper ratification follow-up (2026-09-16).** EPIC-017 owns the pre-#216 models, baseline conformance, and harness preparation on `formal/soak-casper-consensus`. EPIC-018 owns a separate formal-methods harness PR after PR #216 merges. The [meeting record](https://github.com/F1R3FLY-io/f1r3node-rust/pull/390#pullrequestreview-5227717933) controls both phases. PRs #430 through #433 remain prerequisites in stack order. The [branch plan](https://github.com/F1R3FLY-io/f1r3node-rust/blob/ba9758507194d6e34bc1494d416b87405facd550/docs/plans/casper-ratified-soak-2026-09-16.md) (local Git: `ba9758507194d6e34bc1494d416b87405facd550:docs/plans/casper-ratified-soak-2026-09-16.md`) defines the handoff, separate completion gates, and deferred-policy restrictions.
 
 <!-- Compact, current-state-only. This section replaces the free-form status
      entries that previously accumulated at the top of this file; the full
@@ -347,6 +347,11 @@ tasks:
     acceptance_revision: 4c0c0dbe7c8958debefdb02f2b21795786c45900
     acceptance_reviewed_at: 2026-09-23T16:55:28Z
     acceptance_package: docs/cbc-evidence/runs/casper-node-claim-gate-78d696ea6-01
+    previous_verification_cycle: handoff-cycle-02
+    handoff_cycle_02_tiers_reached:
+      refutation: "15 clean configurations and 78 expected violations through the TLA gate at the pinned jar; the two node models and 17 controls pass on this revision."
+      construction: "14 kernel-checked theorems with closed assumption sets in formal/rocq/node_observation; construction pending for A3, A4, A9, B9, B11, B12 and the deadline parts of A7 and B2."
+      binding: "Capture oracle over 14 scenarios, session oracle, retained pre-fix regressions, seven Kani harnesses, and the deterministic generation-rejection test that closes the B8 binding gap."
     notes:
       - "The user placed this gate before B2 planning. B2 is not a prerequisite for verification of Batch A and B1."
       - "The implementation input is available at the execution revision. TASK-019-2 remains open for this acceptance review, not as a circular prerequisite."
@@ -1464,9 +1469,9 @@ tasks:
 
 **Tracker compatibility:** The shared CLI still rejects TASK-* identifiers. The completion review invokes its unchanged task function for the three reviewed preparation tasks. The TASK-017-4 adapter remains unchanged.
 
-The [interface contract](./casper/design/soak-interface-contract.md) records exact payloads, source boundaries, fixture expectations, and missing capabilities. The local model alone cannot discharge a harness claim. The accepted lifecycle records include executable bindings and source-specific review.
+The [interface contract](https://github.com/F1R3FLY-io/f1r3node-rust/blob/ba9758507194d6e34bc1494d416b87405facd550/docs/casper/design/soak-interface-contract.md) (local Git: `ba9758507194d6e34bc1494d416b87405facd550:docs/casper/design/soak-interface-contract.md`) records exact payloads, source boundaries, fixture expectations, and missing capabilities. The local model alone cannot discharge a harness claim. The accepted lifecycle records include executable bindings and source-specific review.
 
-**Scope:** This epic covers the pre-#216 PR only. The [branch plan](./plans/casper-ratified-soak-2026-09-16.md) records both phases and their evidence boundary.
+**Scope:** This epic covers the pre-#216 PR only. The [branch plan](https://github.com/F1R3FLY-io/f1r3node-rust/blob/ba9758507194d6e34bc1494d416b87405facd550/docs/plans/casper-ratified-soak-2026-09-16.md) (local Git: `ba9758507194d6e34bc1494d416b87405facd550:docs/plans/casper-ratified-soak-2026-09-16.md`) records both phases and their evidence boundary.
 
 **Final task:** TASK-017-15 closes the branch and PR #436. Evidence consumers address the draft release by its ID until then. Release publication is the last action, and it follows the reduction commit.
 
