@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "status": "local-checks-passed-hosted-and-enforcement-pending",
+  "report_sha256": "d3fd1568f8031fd606f27102e5eaa3081bbf215815bbef6fd00b51aaf8fbc480",
+  "refusal_controls": 47,
+  "refusal_test_output_sha256": "e489dde9f80e88f153220525cd914980dc8dd445dd187cd02ee269a15cf49573",
+  "shared_controls": 71,
+  "shared_test_output_sha256": "d900a0d67d9edbb2a7bffcf0fed1839c9671bbcf595f30885a0de5492150eca9",
+  "shared_initial_attempt": "tool-timeout-at-120-seconds-no-independent-exit",
+  "shell_syntax": "passed",
+  "ste_check": "passed",
+  "human_ste_review": "not-performed",
+  "diagnostics": {
+    "files_checked": 11,
+    "false_positive": 2,
+    "unconfirmed": 0
+  },
+  "unchanged_claim001_artifacts": 38,
+  "changed_claim001_artifacts": [
+    ".github/workflows/slashing-tests.yml"
+  ],
+  "unrelated_task_blocks_unchanged": true,
+  "claim001_strict_exit": 4,
+  "profile_claims_still_discharged": 7,
+  "protection_rules_changed": false,
+  "hosted_verification": "pending",
+  "git_actions": "No stage, commit, or push by this session. Concurrent staging observed."
+}

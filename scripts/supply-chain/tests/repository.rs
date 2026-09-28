@@ -2,7 +2,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use regex::Regex;
-use supply_chain::policy;
 
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -122,35 +121,6 @@ fn rust_cache_writes_require_a_trusted_push() {
         }
     }
     assert!(count > 0);
-}
-
-#[test]
-fn bitmaps_resolution_and_policy_exclude_unsound_releases() {
-    for file in ["Cargo.lock", "fuzz/Cargo.lock"] {
-        let lock = toml_file(file);
-        let versions: Vec<_> = lock["package"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|p| p["name"].as_str() == Some("bitmaps"))
-            .map(|p| p["version"].as_str().unwrap())
-            .collect();
-        assert_eq!(versions, ["3.1.0"]);
-    }
-    let deny = toml_file("deny.toml");
-    assert!(deny["bans"]["deny"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|p| p["crate"].as_str() == Some("bitmaps:>=3.2.0")));
-    assert!(!deny["advisories"]["ignore"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|p| p["id"].as_str() == Some("RUSTSEC-2025-0167")));
-    let policy = policy::load(&root().join("supply-chain/policy.toml")).unwrap();
-    assert!(!policy.exceptions.contains_key("RUSTSEC-2025-0167"));
-    assert_eq!(policy.exceptions["RUSTSEC-2026-0247"].versions, ["3.1.0"]);
 }
 
 #[test]

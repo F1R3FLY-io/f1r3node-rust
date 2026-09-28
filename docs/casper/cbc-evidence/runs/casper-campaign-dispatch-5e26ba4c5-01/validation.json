@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "scope": "metadata-consistency-not-formal-discharge",
+  "status": "passed",
+  "report_sha256": "853909cfd9f9b16380585b5e8c852f1468103826d44274605d4ecaaaeef23452",
+  "source_entries": 5,
+  "ledger_lookups_checked": 4,
+  "canonical_ledger_records": 3,
+  "compatibility_symlinks": 1,
+  "retained_validation_failure": {
+    "exit_code": 1,
+    "cause": "compatibility_symlink_compared_as_regular_file"
+  },
+  "previous_ledger_bytes_preserved": true,
+  "canonical_artifact_gate": {
+    "exit_code": 4,
+    "pending": 3
+  },
+  "default_artifact_gate": {
+    "exit_code": 4,
+    "pending": 1,
+    "missing_lookup": 2
+  },
+  "strict_claim_audit_exit": 2,
+  "native_checks": 115,
+  "isolated_checks": 115,
+  "unchanged_schedules": true,
+  "unchanged_legacy_jobs": true,
+  "unrelated_tasks_unchanged": true,
+  "claim_discharge": "pending",
+  "task_complete": false
+}

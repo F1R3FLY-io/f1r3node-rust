@@ -1,0 +1,120 @@
+{
+  "schema_version": 1,
+  "scope": "bounded-node-observation-controls",
+  "models": [
+    {
+      "module": "MC_ObserverSession",
+      "configuration": "MC_ObserverSession.cfg",
+      "expected_exit": 0,
+      "invariant": null
+    },
+    {
+      "module": "MC_ObserverSession_challenge_unsafe",
+      "configuration": "MC_ObserverSession_challenge_unsafe.cfg",
+      "expected_exit": 12,
+      "invariant": "FreshChallenge"
+    },
+    {
+      "module": "MC_ObserverSession_identity_unsafe",
+      "configuration": "MC_ObserverSession_identity_unsafe.cfg",
+      "expected_exit": 12,
+      "invariant": "BoundIdentity"
+    },
+    {
+      "module": "MC_ObserverSession_frame_unsafe",
+      "configuration": "MC_ObserverSession_frame_unsafe.cfg",
+      "expected_exit": 12,
+      "invariant": "BoundFrame"
+    },
+    {
+      "module": "MC_ObserverSession_deadline_unsafe",
+      "configuration": "MC_ObserverSession_deadline_unsafe.cfg",
+      "expected_exit": 12,
+      "invariant": "BoundDeadline"
+    },
+    {
+      "module": "MC_ObserverSession_repeat_unsafe",
+      "configuration": "MC_ObserverSession_repeat_unsafe.cfg",
+      "expected_exit": 12,
+      "invariant": "OneRequest"
+    },
+    {
+      "module": "MC_ObserverSession_budget_unsafe",
+      "configuration": "MC_ObserverSession_budget_unsafe.cfg",
+      "expected_exit": 12,
+      "invariant": "SessionBudget"
+    },
+    {
+      "module": "MC_BoundedCapture",
+      "configuration": "MC_BoundedCapture.cfg",
+      "expected_exit": 0,
+      "invariant": null
+    },
+    {
+      "module": "MC_BoundedCapture_admission_unsafe",
+      "configuration": "MC_BoundedCapture_admission_unsafe.cfg",
+      "expected_exit": 12,
+      "invariant": "ValidAdmission"
+    },
+    {
+      "module": "MC_BoundedCapture_deadline_unsafe",
+      "configuration": "MC_BoundedCapture_deadline_unsafe.cfg",
+      "expected_exit": 12,
+      "invariant": "BoundLockWait"
+    },
+    {
+      "module": "MC_BoundedCapture_order_unsafe",
+      "configuration": "MC_BoundedCapture_order_unsafe.cfg",
+      "expected_exit": 12,
+      "invariant": "GuardOrder"
+    },
+    {
+      "module": "MC_BoundedCapture_open_unsafe",
+      "configuration": "MC_BoundedCapture_open_unsafe.cfg",
+      "expected_exit": 12,
+      "invariant": "OpenIdentity"
+    },
+    {
+      "module": "MC_BoundedCapture_validation_unsafe",
+      "configuration": "MC_BoundedCapture_validation_unsafe.cfg",
+      "expected_exit": 12,
+      "invariant": "ValidatedIdentity"
+    },
+    {
+      "module": "MC_BoundedCapture_generation_unsafe",
+      "configuration": "MC_BoundedCapture_generation_unsafe.cfg",
+      "expected_exit": 12,
+      "invariant": "GenerationStable"
+    },
+    {
+      "module": "MC_BoundedCapture_incomplete_unsafe",
+      "configuration": "MC_BoundedCapture_incomplete_unsafe.cfg",
+      "expected_exit": 12,
+      "invariant": "CompleteRows"
+    },
+    {
+      "module": "MC_BoundedCapture_bytes_unsafe",
+      "configuration": "MC_BoundedCapture_bytes_unsafe.cfg",
+      "expected_exit": 12,
+      "invariant": "BoundBytes"
+    },
+    {
+      "module": "MC_BoundedCapture_release_unsafe",
+      "configuration": "MC_BoundedCapture_release_unsafe.cfg",
+      "expected_exit": 12,
+      "invariant": "Detached"
+    },
+    {
+      "module": "MC_BoundedCapture_write_unsafe",
+      "configuration": "MC_BoundedCapture_write_unsafe.cfg",
+      "expected_exit": 12,
+      "invariant": "ReadOnly"
+    },
+    {
+      "module": "MC_ObserverSession_freshness_pre_fix",
+      "configuration": "MC_ObserverSession_freshness_pre_fix.cfg",
+      "expected_exit": 12,
+      "invariant": "FreshChallenges"
+    }
+  ]
+}

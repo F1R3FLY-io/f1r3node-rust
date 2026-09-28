@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "status": "uploaded-and-download-verified",
+  "recorded_at": "2026-09-19T19:11:52Z",
+  "approval": "I authorize upload of the two sanitized evidence archives to the existing draft evidence release.",
+  "release_id": 391939637,
+  "tag": "cbc-evidence-epic-017",
+  "draft": true,
+  "release_published": false,
+  "existing_assets_unchanged": true,
+  "existing_asset_count": 25,
+  "uploaded_assets": [
+    {
+      "digest": "sha256:330e7609143ffe0eaf839ecf082a61ec02809acdd0bd357b66aac7ecee3616bb",
+      "id": 575328309,
+      "name": "casper-version-phlo-20260919-01.external.tar.gz",
+      "size": 5187772
+    },
+    {
+      "digest": "sha256:06f6b9f9d7a74ec726fbe9f61db056929cf07ac2a5d150a22f958034c4ce1cdc",
+      "id": 575328308,
+      "name": "casper-version-phlo-verification-20260919-01.external.tar.gz",
+      "size": 12434
+    }
+  ],
+  "verification": "Both downloads are byte-identical to the reviewed local archives.",
+  "private_originals_uploaded": false,
+  "credentials_transferred": false
+}

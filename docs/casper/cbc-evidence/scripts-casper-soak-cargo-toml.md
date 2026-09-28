@@ -1,50 +1,48 @@
 # CbC Evidence: scripts/casper-soak/Cargo.toml
 
-The user accepted the refreshed bounded H01–H10 binding review on 2026-09-19. This record discharges only CLAIM-CASPER-SOAK-001 in the pre-merge phase.
-
-Profile claims, node soaks, post-merge work, and inherited containment limits remain separate. The previous acceptance package preserves the earlier records.
+Local checks supply review evidence. Source-bound acceptance, hosted verification, and live qualification remain pending.
 
 ```json
 {
   "artifact": {
     "path": "scripts/casper-soak/Cargo.toml",
     "id": "scripts-casper-soak-cargo-toml",
-    "commit": "ab682eea1760c50867dcf7416e37f155b63e5dbc",
+    "commit": "ee468f5db3fa007ecde9b104eda545a544f1354a",
     "commit_is_base": true,
-    "sha256": "f6082e839d8bb20e5b2988a9ed92ffe5d1cd79a0e578e10d68582593ea3d13cb"
+    "sha256": "0389290c18cb725d108ce3709018f92d9f04fdf84a62eb97d905c53874f43139",
+    "working_tree": true
   },
   "claim": "docs/claims/casper-soak-harness.md",
   "claim_ids": [
     "CLAIM-CASPER-SOAK-001"
   ],
   "claim_digests": {
-    "docs/claims/casper-soak-harness.md": "053fd6236464828a7315c5cb4015491c9b1fc798f09375eaefb25ea22da2e061"
+    "docs/claims/casper-soak-harness.md": "b6d4f83f958af79037c9b938edd52f0a91ef6f4e8858d6a85a2e4aa8b6346faf"
   },
-  "adapter": "embedded",
-  "status": "discharged",
-  "scope": "bounded-harness-only",
+  "adapter": null,
+  "status": "pending",
+  "scope": "campaign-verification-awaiting-source-bound-acceptance",
   "evidence": {
-    "kind": "accepted-bounded-refutation-and-binding-refresh",
-    "ref": "docs/casper/cbc-evidence/runs/casper-driver-refresh-acceptance-20260919-01/report.json",
-    "sha256": "95f1f8aff4bed6463b9520b9d70ae4827854b84d76a5cbf590be1f7742bfab07"
+    "kind": "local-verification-not-acceptance",
+    "ref": "docs/casper/cbc-evidence/runs/casper-campaign-control-20260921-01/report.json",
+    "sha256": "27e1a2980f81360199826944dd413284a36669c2646b78237632309de1d0fb6f"
   },
   "tiers": {
-    "refutation": "bounded-safety-pass",
+    "refutation": "pending",
     "construction": "not-applicable",
-    "binding": "passed"
+    "binding": "pending"
   },
   "phase_status": {
-    "pre_pr216_merge": "discharged",
+    "pre_pr216_merge": "pending",
     "post_pr216_merge": "blocked"
   },
   "soak": "pending",
   "waiver": null,
-  "verified_at": "2026-09-19T02:47:12Z",
+  "verified_at": null,
   "previous_ledger": {
-    "ref": "docs/casper/cbc-evidence/runs/casper-driver-rebind-acceptance-20260918-01/ledgers.tar.gz",
-    "sha256": "74614d00fa9643d6df096b8e774598b34e1040b4f80559987468f00fde685e5d",
-    "member": "./docs/casper/cbc-evidence/scripts-casper-soak-cargo-toml.md"
-  },
-  "review_candidate": "docs/casper/cbc-evidence/runs/casper-driver-rebind-20260918-01/candidate-ledgers/scripts-casper-soak-cargo-toml.md"
+    "commit": "ee468f5db3fa007ecde9b104eda545a544f1354a",
+    "path": "docs/casper/cbc-evidence/scripts-casper-soak-cargo-toml.md",
+    "sha256": "786ee3422cc5308640e30f5dc7fc420abbfa13cf1c7fa61dd2150af1b6d0eae5"
+  }
 }
 ```

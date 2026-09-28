@@ -20,7 +20,7 @@ Claim contract: `docs/claims/casper-soak-harness.md`.
     "docs/claims/casper-soak-harness.md": "5ff2320c054ad8922ceaa6d654ec4e90e82c5c09892803e04ddd5f49d5db7932"
   },
   "adapter": "embedded",
-  "status": "pending",
+  "status": "superseded",
   "scope": "harness-only",
   "evidence": {
     "kind": "partial-verification",
@@ -39,6 +39,9 @@ Claim contract: `docs/claims/casper-soak-harness.md`.
     "post_pr216_merge": "blocked"
   },
   "waiver": null,
-  "verified_at": null
+  "verified_at": null,
+  "superseded_by": "scripts/casper-soak/src/manifest.rs",
+  "superseded_reason": "The Rust migration removed this Python source. The named Rust file carries the behavior. No claim lists this path as an artifact.",
+  "superseded_at": "2026-09-19"
 }
 ```

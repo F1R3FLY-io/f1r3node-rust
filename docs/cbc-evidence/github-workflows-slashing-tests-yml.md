@@ -1,5 +1,19 @@
 # CbC Evidence: Bounded Pull-Request Formal Checks
 
+## Current implementation checkpoint
+
+The [restored claim](../claims/soak-formal-gate.md) records the approved workflow implementation and local-only finalized-floor obligation revision.
+
+The [implementation log](../work-logs/soak-formal-gate-implementation.md) records local checks. The [hosted renewal log](../work-logs/soak-formal-gate-hosted-renewal.md) records successful run `35473280388` and renewed bounded bindings.
+
+The independent governance claim remains pending. The user approved conditional protection changes, enforcement tests, and final acceptance after verification.
+
+The [authorization record](../work-logs/soak-formal-gate-authorization.md) preserves that approval. Baseline availability, actual rule activation, enforcement results, and evidence-backed acceptance remain open.
+
+The historical results below retain their original source identities. They do not discharge the new workflow.
+
+## Historical evidence
+
 **Claim:** [CLAIM-SOAK-GATE-001](https://github.com/F1R3FLY-io/f1r3node-rust/blob/2388a8eedf33d07018f0630bced51a6e054ba439/docs/claims/soak-formal-gate.md)
 
 **Status:** Pending. Cycle G0/B2 passes local verification. Hosted execution and required-check enforcement remain open.
@@ -72,16 +86,28 @@ The complete nightly suite and Rocq suite were not rerun with real verifiers. No
 
 ## Ledger record
 
+Node claims record their binding-job evidence in their own run packages. This record retains its primary claim and historical source identity.
+
 ```json
 {
   "artifact": {
     "path": ".github/workflows/slashing-tests.yml",
-    "commit": null,
-    "base_commit": "7034e21683044fb1525d213d5a1ae2e16bbb57c0",
-    "sha256": "460be11512b1f01f79387d7a3dad6c60d3c45627b5790436f9db6e165eac69fb",
+    "commit": "3b1d2465a39b020426b3caa02bf5313d2b9fac5b",
+    "commit_is_base": true,
+    "working_tree": true,
+    "sha256": "991507a49e77745dd8a6a9ecfbd4be8d2cc9cb3645d9e1b1862b8430cd01267b",
     "id": "github-workflows-slashing-tests-yml"
   },
   "claim": "CLAIM-SOAK-GATE-001",
+  "claim_ids": [
+    "CLAIM-SOAK-GATE-001"
+  ],
+  "previous_record": {
+    "commit": "3b1d2465a39b020426b3caa02bf5313d2b9fac5b",
+    "path": "docs/cbc-evidence/github-workflows-slashing-tests-yml.md",
+    "sha256": "59da572253becdc8277ddf878fa6dc2365fe567cc52fe746ba04a2ba532cf100"
+  },
+  "verification_scope": "historical-gate-evidence-not-node-claim-renewal",
   "adapter": "embedded",
   "status": "pending",
   "evidence": {

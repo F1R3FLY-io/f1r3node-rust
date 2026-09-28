@@ -1,0 +1,5 @@
+1821ac5e6d95226e323423806efb1de9ceda8f423b5fa19bdc7572bf2209cc3b  .github/workflows/slashing-tests.yml
+1be169897412d716deb26601eefba500e62d0c5a7e272e098b972ae15d81200b  scripts/ci/check-formal-gate.sh
+34ac0bfd62e8b9d310e4b2b143302a240118090ca9e9c9178e4222569afb68af  scripts/ci/test-check-formal-gate.sh
+8157cb6ed9f8fb497776821f868aa09b92df4b5a9bcd7343af32c32e57421ba4  docs/claims/soak-formal-gate.md
+0ed5732c15eb02caa8d16d52d83cd156a371710b2a8c2a6281f1f921fe4cdef1  docs/claims/casper-soak-harness.md

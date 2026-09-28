@@ -488,6 +488,12 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
                         PrettyPrinter::build_string_bytes(&missing),
                         site.accessor()
                     );
+                    tracing::debug!(
+                        target: "f1r3.trace.absence",
+                        missing = %PrettyPrinter::build_string_bytes(&missing),
+                        site = %site,
+                        "snapshot: absence origin"
+                    );
                     let deps = HashSet::from([missing.clone()]);
                     self.dependencies
                         .record_settled_solicitations(&casper, block, &deps);

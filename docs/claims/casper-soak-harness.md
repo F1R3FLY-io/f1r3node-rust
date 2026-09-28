@@ -176,6 +176,14 @@ A failing product observation and an infrastructure termination remain separate 
 
 ## Current gaps
 
+The formal-gate implementation changed `.github/workflows/slashing-tests.yml` and reopened this claim. Hosted run `35473280388`, attempt 1, now verifies that workflow and the isolated driver fixtures.
+
+The user requested fresh hosted verification and Claim001/documentation renewal. The [hosted renewal record](../work-logs/soak-formal-gate-hosted-renewal.md) binds that request to the verified sources.
+
+The [renewed report](../casper/cbc-evidence/runs/casper-formal-gate-renewal-20260919-01/report.json) preserves the previous binding and records the new execution identities.
+
+This renewal restores only the bounded harness discharge. The independent governance claim remains pending until its protection and acceptance requirements pass.
+
 The local bounded model and control runner are implemented. One clean configuration and ten named negative controls pass their expected verdict checks.
 
 The model checks safety only, not eventual termination. Its bounds are two candidates, two segments, four total iterations, and one active child.
@@ -196,11 +204,19 @@ On 2026-09-19 the user accepted the refreshed binding for the current source. Th
 
 Later on 2026-09-19 the binding inventory in `scripts/ci/check-casper-soak-bindings.sh` changed again. The isolated container copied no profile workflow, so the claim audit inside the container could not read seven declared artifacts. The hosted binding job failed from 2026-09-19T05:46Z. The repair adds one glob line that copies every `casper-*` profile workflow.
 
-The accepted binding covers the file before that line. The claim is pending until a new acceptance binds the current source. The [inventory repair record](../work-logs/casper-driver-rebind-acceptance.md#inventory-repair-drift-2026-09-19) states the scope.
+That repair invalidated the earlier source binding and returned this claim to pending. The [inventory repair record](../work-logs/casper-driver-rebind-acceptance.md#inventory-repair-drift-2026-09-19) preserves that historical state.
+
+The user subsequently requested: `it is commited. Complete Claim001 renewal`.
+
+The [renewal report](../casper/cbc-evidence/runs/casper-binding-inventory-renewal-20260919-01/report.json) binds the repaired inventory to the existing bounded H01–H10 contract.
+
+Only the workflow-copy line differs among the 39 accepted artifacts. Fresh isolated execution and exact omission controls verify the repair without changing runtime behavior or assertions.
+
+The renewal preserves the previous ledgers and unsuccessful inventory controls. It restores this bounded pre-merge discharge without authorizing node execution.
 
 B44, containment assumptions, and the stated model bounds remain unchanged. This acceptance does not discharge profile claims, node correctness, or post-merge work.
 
-Profile fixtures, candidate qualification, and node soaks remain pending. Construction is not applicable.
+The seven profile claims have separate bounded discharges. Candidate qualification and node soaks remain pending. Construction is not applicable.
 
 The claim auditor checks exact identities, digests, phases, and declared tiers. It does not execute a prover or promote pending claims.
 

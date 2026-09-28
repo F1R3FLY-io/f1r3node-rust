@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "status": "preparation-verified-closure-blocked",
+  "task": "TASK-017-13",
+  "verified_checkout": "ec226588a41de73b90349af142cb77b6dc8ecdb3",
+  "report_sha256": "929fe6853d210860265c4f212ea9d90a46f2273a86507c22106a6813e83b55c4",
+  "source_hashes_checked": 125,
+  "evidence_hashes_checked": 142,
+  "accepted_report_hashes_checked": 6,
+  "strict_claim_audit": {
+    "exit_code": 0,
+    "claims": 8,
+    "unchanged_result": true,
+    "all_soaks_pending": true
+  },
+  "artifact_gates": {
+    "default": {
+      "exit_code": 4,
+      "pending": 7
+    },
+    "canonical": {
+      "exit_code": 4,
+      "pending": 2
+    }
+  },
+  "relative_links_checked": 16,
+  "unrelated_tracker_blocks_unchanged": true,
+  "ste": {
+    "initial_combined_check": "refused-unbaselined-new-documents",
+    "tracker_baseline_check": "passed",
+    "new_documents_without_baseline": "passed",
+    "human_review": "not-performed"
+  },
+  "diagnostics": {
+    "files_checked": 4,
+    "findings": 1,
+    "false_positives": 1,
+    "reason": "Unchanged historical commit hash spelling."
+  },
+  "handoff": {
+    "path": "docs/handoffs/casper-pre-merge-to-post-merge-20260919.md",
+    "sha256": "5d998a445925ffd0974469d15998cec9cf4c9e80e763a753deeeb086fd98bcf8",
+    "status": "draft-not-accepted"
+  },
+  "work_log": {
+    "path": "docs/work-logs/task-017-13-preparation.md",
+    "sha256": "4603e87bc8bba0c3ae949eb3b8e316a4a374e1afdc2ff25a2c4df8738255c2df"
+  },
+  "concurrent_commit": "ec226588a",
+  "node_execution": false,
+  "claim_discharge_changed": false,
+  "waiver_created": false,
+  "task_closed": false,
+  "post_merge_authorized": false
+}

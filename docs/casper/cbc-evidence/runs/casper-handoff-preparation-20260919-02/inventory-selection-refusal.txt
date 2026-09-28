@@ -1,0 +1,1 @@
+Initial selection used report source_digests and found 129 paths, not the 123 declared artifacts. The check refused before report creation. Accepted reports include six additional dependencies. Read claim artifact inventories explicitly.
