@@ -43,7 +43,7 @@ pub fn pub_key_from_hex(priv_key_hex: &str) -> PublicKey {
     Secp256k1.to_public(&private_key)
 }
 
-fn unforgeable_name_rng(deployer: &PublicKey, timestamp: i64) -> Blake2b512Random {
+pub fn unforgeable_name_rng(deployer: &PublicKey, timestamp: i64) -> Blake2b512Random {
     let seed = DeployDataProto {
         deployer: deployer.bytes.clone(),
         timestamp,
@@ -55,6 +55,10 @@ fn unforgeable_name_rng(deployer: &PublicKey, timestamp: i64) -> Blake2b512Rando
 fn tag_name(deployer_pk_hex: &str, timestamp: i64) -> Par {
     let pubkey = pub_key_from_hex(deployer_pk_hex);
     let mut rng = unforgeable_name_rng(&pubkey, timestamp);
+    // The tag must equal `MergeableTag` from NonNegativeNumber.rho, the second
+    // name its `new` draws from this seed (the first is `NonNegativeNumber`).
+    // The BitmaskOr tag uses the same derivation; changing it changes the tag
+    // bytes pinned in the tests below.
     rng.next();
     let unforgeable_byte = rng.next();
     Par::default().with_unforgeables(vec![GUnforgeable {
@@ -81,4 +85,19 @@ pub fn default_mergeable_tags() -> HashMap<Par, MergeType> {
     tags.insert(non_negative_mergeable_tag_name(), MergeType::IntegerAdd);
     tags.insert(bitmask_or_mergeable_tag_name(), MergeType::BitmaskOr);
     tags
+}
+
+/// The tag bound to `rho:system:bitmaskMergeableTag`. Registry.rho reads that single
+/// URI, so a second BitmaskOr tag is refused rather than left to map iteration order.
+pub fn bitmask_or_tag(tags: &HashMap<Par, MergeType>) -> Option<&Par> {
+    let mut found = tags
+        .iter()
+        .filter(|(_, merge_type)| **merge_type == MergeType::BitmaskOr)
+        .map(|(tag, _)| tag);
+    let tag = found.next();
+    assert!(
+        found.next().is_none(),
+        "at most one BitmaskOr mergeable tag is supported: rho:system:bitmaskMergeableTag binds a single tag"
+    );
+    tag
 }

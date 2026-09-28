@@ -34,6 +34,7 @@ use super::dispatch::{RhoDispatch, RholangAndScalaDispatcher};
 use super::env::Env;
 use super::errors::InterpreterError;
 use super::interpreter::{EvaluateResult, Interpreter, InterpreterImpl};
+use super::merging::mergeable_tags::bitmask_or_tag;
 use super::reduce::DebruijnInterpreter;
 use super::registry::registry_bootstrap::ast;
 use super::storage::charging_rspace::ChargingRSpace;
@@ -1257,20 +1258,18 @@ where
     // be created at runtime startup and threaded into both the merge engine's
     // tag registry and the URN map so contracts can bind them via
     // `bootstrapName(`rho:system:...`)`.
-    for (tag_par, merge_type) in mergeable_tags.iter() {
-        if let MergeType::BitmaskOr = merge_type {
-            tracing::info!(
-                target: "f1r3fly.merge.tag_check.validation",
-                "URI binding inserted: rho:system:bitmaskMergeableTag -> Par(unforgeables={}, exprs={}, bundles={})",
-                tag_par.unforgeables.len(),
-                tag_par.exprs.len(),
-                tag_par.bundles.len(),
-            );
-            urn_map.insert(
-                "rho:system:bitmaskMergeableTag".to_string(),
-                tag_par.clone(),
-            );
-        }
+    if let Some(tag_par) = bitmask_or_tag(&mergeable_tags) {
+        tracing::info!(
+            target: "f1r3fly.merge.tag_check.validation",
+            "URI binding inserted: rho:system:bitmaskMergeableTag -> Par(unforgeables={}, exprs={}, bundles={})",
+            tag_par.unforgeables.len(),
+            tag_par.exprs.len(),
+            tag_par.bundles.len(),
+        );
+        urn_map.insert(
+            "rho:system:bitmaskMergeableTag".to_string(),
+            tag_par.clone(),
+        );
     }
 
     let res = introduce_system_process(vec![&mut rspace], proc_defs).await;
