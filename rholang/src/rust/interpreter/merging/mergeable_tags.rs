@@ -102,3 +102,60 @@ pub fn bitmask_or_tag(tags: &HashMap<Par, MergeType>) -> Option<&Par> {
     );
     tag
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn private_id_hex(tag: &Par) -> String {
+        match tag.unforgeables.as_slice() {
+            [GUnforgeable {
+                unf_instance: Some(UnfInstance::GPrivateBody(GPrivate { id, .. })),
+                ..
+            }] => hex::encode(id),
+            other => panic!("a merge tag must be exactly one GPrivate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn merge_tag_identities_are_pinned() {
+        assert_eq!(
+            private_id_hex(&non_negative_mergeable_tag_name()),
+            "78a2588671230884044c801f5f9675defb420460d6895b809ee8cd6f6cfff5d3"
+        );
+        assert_eq!(
+            private_id_hex(&bitmask_or_mergeable_tag_name()),
+            "9902f19c7886266265b763d2d9c648e62aa6c31fc25c685be3c8416c8b86e52a"
+        );
+    }
+
+    #[test]
+    fn default_registry_maps_each_tag_to_its_strategy() {
+        let tags = default_mergeable_tags();
+        assert_eq!(tags.len(), 2);
+        assert_eq!(
+            tags.get(&non_negative_mergeable_tag_name()),
+            Some(&MergeType::IntegerAdd)
+        );
+        assert_eq!(
+            tags.get(&bitmask_or_mergeable_tag_name()),
+            Some(&MergeType::BitmaskOr)
+        );
+    }
+
+    #[test]
+    fn the_default_registry_binds_its_bitmask_tag() {
+        assert_eq!(
+            bitmask_or_tag(&default_mergeable_tags()),
+            Some(&bitmask_or_mergeable_tag_name())
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "at most one BitmaskOr mergeable tag")]
+    fn a_second_bitmask_tag_is_refused() {
+        let mut tags = default_mergeable_tags();
+        tags.insert(Par::default(), MergeType::BitmaskOr);
+        bitmask_or_tag(&tags);
+    }
+}
