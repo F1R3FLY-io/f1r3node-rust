@@ -116,7 +116,7 @@ RUN git clone "${PETTA_REPO}" /build/PeTTa && \
 # The official `swipl` image ships a recent build (>= 9.3.x, currently 10.x) with
 # janus included; we copy its interpreter and library into the images that need
 # to actually execute MeTTa (the runtime image and the petta-test stage).
-FROM swipl:stable AS swipl-extract
+FROM swipl:stable@sha256:9d44cac3f4235e297db87217e59aa81cdf9847970bd27ddb447072d5466ea8ae AS swipl-extract
 
 # ============================================================================
 # Optional stage: petta-test - Run the PeTTa/MeTTa test suite in-container
