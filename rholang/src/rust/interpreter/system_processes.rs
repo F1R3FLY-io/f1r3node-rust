@@ -328,7 +328,6 @@ pub fn non_deterministic_ops() -> HashSet<i64> {
         BodyRefs::OLLAMA_MODELS,
         BodyRefs::GRPC_TELL,
         BodyRefs::CHROMA_QUERY,
-        BodyRefs::SWIPL_EXECUTE_PETTA,
     ])
 }
 
@@ -2025,9 +2024,8 @@ impl SystemProcesses {
 
     /// System process handler for `rho:petta:execute` URN.
     ///
-    /// Executes MeTTa code through the PeTTa (SWI-Prolog) interpreter and returns results
-    /// to the calling Rholang contract. This is a non-deterministic operation - results are
-    /// cached during play execution and replayed from cache during replay for consensus safety.
+    /// Executes MeTTa code through the PeTTa (SWI-Prolog) interpreter and returns
+    /// the result to the calling Rholang contract.
     ///
     /// # URN Specification
     ///
@@ -2044,76 +2042,37 @@ impl SystemProcesses {
     /// Sends a single `Par` on the acknowledgment channel containing the execution result.
     /// The structure matches PeTTa's JSON output converted to Rholang types.
     ///
-    /// # Non-Deterministic Operation Flow
+    /// # Determinism and consensus
     ///
-    /// This operation is registered as non-deterministic (see [`non_deterministic_ops`]) and
-    /// follows the standard non-det pattern for replay safety:
+    /// This is a **deterministic** system process. It is NOT registered in
+    /// [`non_deterministic_ops`], so the output is not cached in the event log.
+    /// Every node runs the interpreter: the proposer during play, and each
+    /// validator again during replay. Determinism is enforced by ordinary replay
+    /// validation — the recomputed post-state hash, the COMM matching in the
+    /// replay rspace (including the forwarded frames), and the deploy cost must
+    /// all match the proposer's block.
     ///
-    /// **Play Mode (`is_replay = false`):**
-    /// 1. Execute `petta_execute()` to invoke SWI-Prolog with MeTTa code
-    /// 2. On success: produce output to ack channel, return `Ok(output)`, output is logged
-    /// 3. On PeTTa failure: return `NonDeterministicProcessFailure` (no produce, no output logged)
-    ///    The reducer marks the produce event `failed=true` in the event log (via `with_error()`).
-    ///    The original cause is NOT stored — only the boolean failed flag is recorded.
-    /// 4. On produce failure: return `ProduceFailureWithOutput` (output captured but not stored)
+    /// The interpreter is expected to be deterministic for a valid program:
+    /// network is unshared, `git-import!` is stripped, Python is excluded, and
+    /// the RNG/rounding builtins are bit-exact with CPython so seeded values are
+    /// reproducible. A program that instead depends on a nondeterminism source —
+    /// unseeded RNG through `getrandom`, `time-time`/`time-sleep`, or the
+    /// wall-clock timeout in [`petta_execute_framed`] — can diverge on replay.
+    /// A divergence yields a different post-state hash, so the block is rejected
+    /// as an invalid transaction (this verdict is non-slashable in this node).
     ///
-    /// **Replay Mode (`is_replay = true`):**
+    /// # Error handling
     ///
-    /// **For a successful play:** The event log contains the cached output (is_deterministic=false,
-    /// output_value=previous_output, failed=false). The handler is dispatched with is_replay=true,
-    /// reads previous_output, produces it to ack, and returns Ok(previous_output) without re-invoking
-    /// petta_execute().
-    ///
-    /// **For a failed play:** The event log contains a produce with failed=true and empty output_value.
-    /// The reducer's `continue_produce_process` (`reduce.rs:454-456`) checks `is_replay && trace_failed`
-    /// and short-circuits with `InterpreterError::CanNotReplayFailedNonDeterministicProcess` **before**
-    /// dispatching to this handler. Therefore swipl/PeTTa is NEVER re-invoked for failed executions
-    /// during replay. All replaying validators deterministically produce the same error, preventing
-    /// consensus divergence.
-    ///
-    /// # Error Handling and Replay Safety
-    ///
-    /// **Execution Errors (during play):**
-    /// - Wrapped in `NonDeterministicProcessFailure` to signal the dispatcher
-    /// - The dispatcher wraps it as `DispatchType::FailedNonDeterministicCall`
-    /// - The reducer marks the produce event `failed=true` via `produce_event.with_error()` and
-    ///   persists it to the event log. No output_value or cause is stored.
-    /// - No output is produced (ack channel remains empty, contract may deadlock or timeout)
-    ///
-    /// **During Replay (for a previously failed produce):**
-    /// - The event log returns a produce event with `failed=true` and `output_value=vec![]`
-    /// - `continue_produce_process` is called with `is_replay=true`, `trace_failed=true`
-    /// - It returns `Err(InterpreterError::CanNotReplayFailedNonDeterministicProcess)` **before**
-    ///   dispatching — this handler is never reached, swipl/PeTTa is never re-invoked
-    /// - `evaluate()` returns `Ok(EvaluateResult { errors: [CanNotReplayFailedNonDeterministicProcess] })`
-    /// - All validators deterministically produce the same error → consensus is preserved
-    ///
-    /// # Error Conditions
-    ///
-    /// Returns `InterpreterError` for:
-    /// - **Illegal argument error**: Wrong number of arguments or incorrect types
-    /// - **NonDeterministicProcessFailure**: PeTTa execution failed (timeout, syntax error, etc.)
-    ///   - Cause: `SwiplError` with details (PeTTa not found, timeout, parse error, etc.)
-    ///   - `output_not_produced`: Empty (no output was generated)
-    /// - **ProduceFailureWithOutput**: PeTTa succeeded but produce failed
-    ///   - Cause: RSpace produce error
-    ///   - `output_not_produced`: The PeTTa result that couldn't be stored
-    ///
-    /// During replay of a failed execution, the error `CanNotReplayFailedNonDeterministicProcess`
-    /// is surfaced in `EvaluateResult.errors` instead (dispatch and this handler are skipped).
-    ///
-    /// All errors are propagated to the Rholang contract and captured in the evaluation result's
-    /// error list.
+    /// An interpreter error, a frame-forwarding error, or an ack produce error
+    /// returns an `InterpreterError` that fails the deploy. Because the process
+    /// is deterministic, a validator re-running the same failing program observes
+    /// the same error.
     ///
     /// # See Also
     ///
     /// - [`petta_execute`] - Low-level PeTTa execution (in `swi_prolog_service`)
-    /// - [`non_deterministic_ops`] - Registry of non-deterministic body refs
-    /// - [`InterpreterError::NonDeterministicProcessFailure`] - Error type for failed non-det ops
-    /// - [`InterpreterError::CanNotReplayFailedNonDeterministicProcess`] - Error raised during replay
-    /// - [`DispatchType::FailedNonDeterministicCall`] - Dispatcher handling for failed ops
-    /// - `DebruijnInterpreter::continue_produce_process` — short-circuit for failed non-det replays
-    /// - Tests: `swipl_petta_replay_spec.rs::test_petta_replay_error_consistency`
+    /// - [`non_deterministic_ops`] - Registry of non-deterministic body refs (PeTTa is absent)
+    /// - Tests: `swipl_petta_replay_spec.rs`
     pub async fn petta_execute(
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
@@ -2124,7 +2083,7 @@ impl SystemProcesses {
             .map(|lpwr| lpwr.random_state.clone())
             .unwrap_or_default();
 
-        let Some((produce, is_replay, previous_output, args)) =
+        let Some((produce, _is_replay, _previous_output, args)) =
             self.is_contract_call().unapply(contract_args)
         else {
             return Err(illegal_argument_error("petta_execute"));
@@ -2137,35 +2096,27 @@ impl SystemProcesses {
             return Err(illegal_argument_error("petta_execute"));
         };
 
+        // PeTTa is a deterministic system process: every node (proposer and
+        // replaying validators) runs the interpreter and derives the same
+        // output and frames. Determinism is enforced by ordinary replay
+        // validation (post-state hash, COMM matching, cost). A program that
+        // relies on a nondeterminism source (unseeded RNG via `getrandom`,
+        // `time-time`/`time-sleep`, or the wall-clock timeout in
+        // `petta_execute_framed`) diverges on replay and its block is rejected
+        // as an invalid transaction.
         let (frames, output_par) = match petta_execute_framed(&metta_code).await {
             Ok((frames, par)) => (frames, par),
-            Err(e) => {
-                return Err(InterpreterError::NonDeterministicProcessFailure {
-                    cause: Box::new(e),
-                    output_not_produced: vec![],
-                });
-            }
+            Err(e) => return Err(InterpreterError::SwiplError(e.to_string().into())),
         };
 
         // Forward emission frames to their Rholang channels.
-        if let Err(e) = self.forward_frames(&frames, rand.clone()).await {
-            return Err(InterpreterError::NonDeterministicProcessFailure {
-                cause: Box::new(e),
-                output_not_produced: vec![],
-            });
-        }
+        self.forward_frames(&frames, rand.clone()).await?;
 
-        let output = if is_replay {
-            previous_output
-        } else {
-            vec![output_par]
-        };
-
+        let output = vec![output_par];
         if let Err(e) = produce(&output, ack).await {
-            return Err(InterpreterError::ProduceFailureWithOutput {
-                cause: Box::new(e),
-                output_not_produced: output.iter().map(|p| p.encode_to_vec()).collect(),
-            });
+            return Err(InterpreterError::SwiplError(
+                format!("Failed to produce PeTTa output on ack channel: {e}").into(),
+            ));
         }
         Ok(output)
     }

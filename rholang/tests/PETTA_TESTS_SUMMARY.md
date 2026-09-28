@@ -32,7 +32,7 @@ The test suite consists of:
 1. Unit tests for `value_to_par` function
 2. Unit tests for `petta_execute` function  
 3. Integration tests with Rholang runtime
-4. Replay tests to verify non-deterministic operation handling
+4. Replay tests to verify deterministic re-execution during consensus replay
 
 ## Test Files
 
@@ -73,17 +73,20 @@ Same tests as above, but using the Rholang runtime.
 
 **Run:** `PETTA_PATH=/path/to/PeTTa cargo test --package rholang --test swipl_petta_integration_spec`
 
-### 4. Replay Tests (Non-Deterministic Operation Verification)
+### 4. Replay Tests (Deterministic Re-Execution Verification)
 **Location:** `rholang/tests/swipl_petta_replay_spec.rs`
 
-**Coverage:** 5 tests
+**Coverage:** 6 tests
 
-Critical tests for consensus safety:
-- `test_petta_is_registered_as_non_deterministic` - Verifies `PETTA_EXECUTE` in `non_deterministic_ops()`
-- `test_petta_replay_consistency` - Basic replay with cached output
+PeTTa is a deterministic system process: every node runs the interpreter,
+including validators during replay. It is NOT cached in the event log. These
+tests verify that replay re-executes PeTTa and matches the recorded log:
+- `test_petta_is_registered_as_deterministic` - Verifies `PETTA_EXECUTE` is absent from `non_deterministic_ops()`
+- `test_petta_replay_consistency` - Replay re-executes and succeeds
 - `test_petta_replay_with_multiple_calls` - Multiple PeTTa calls in one contract
-- `test_petta_replay_error_consistency` - Error cases are replayed correctly
-- `test_petta_replay_uses_cached_output` - Verifies replay doesn't re-execute PeTTa
+- `test_petta_replay_error_consistency` - A failing program reproduces the same `SwiplError` on replay
+- `test_petta_replay_timeout_error` - A timeout reproduces on replay by re-running PeTTa
+- `test_petta_replay_re_executes` - Confirms replay re-runs the interpreter rather than reading a cache
 
 **Run:** `PETTA_PATH=/path/to/PeTTa cargo test --package rholang --test swipl_petta_replay_spec`
 
