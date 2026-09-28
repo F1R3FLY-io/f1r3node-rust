@@ -1,14 +1,63 @@
 {
   "schema_version": 1,
   "task": "TASK-017-12",
-  "matrix_status": "not-dispatchable",
-  "phase": "pre_pr216_merge",
-  "authority": "current-dev",
-  "harness_revision": "1f749aa831f54f2c5b3a7c79be27581c89e55f46",
-  "source_manifest": "docs/casper/cbc-evidence/runs/casper-candidate-repin-20260919-01/report.json",
-  "source_manifest_sha256": "0aa3063c7947210b98bae8f1ea0aba1184f0cc76883d1d0bed25559b764cd911",
+  "status": "inventory-reconciled-acceptance-pending",
+  "source_head_revision": "211a4e73a6c1c8c4e4d3de35f2debdf1869ab74b",
+  "source_working_tree": true,
+  "previous_external_harness_revision": "b3d14b27e3c6276b1eb4ab9ccef04e02b0c4e283",
   "external_harness_revision": "e3c4e14189f0c6ced2e9674487fcbdeffd93141b",
-  "model_sources": {
+  "integration_pr": {
+    "files": [
+      {
+        "path": ".github/oci-validation.env",
+        "additions": 1,
+        "deletions": 1,
+        "changeType": "MODIFIED"
+      },
+      {
+        "path": ".github/workflows/_integration-pipeline.yml",
+        "additions": 1,
+        "deletions": 1,
+        "changeType": "MODIFIED"
+      },
+      {
+        "path": ".github/workflows/merge-recovery-soak.yml",
+        "additions": 1,
+        "deletions": 1,
+        "changeType": "MODIFIED"
+      }
+    ],
+    "mergeCommit": {
+      "oid": "0b9ae5bcec94a2df8f6112bbbc6c950ad2e603b2"
+    },
+    "state": "MERGED",
+    "url": "https://github.com/F1R3FLY-io/f1r3node-rust/pull/450"
+  },
+  "external_comparison": {
+    "url": "https://github.com/F1R3FLY-io/system-integration/compare/b3d14b27e3c6276b1eb4ab9ccef04e02b0c4e283...e3c4e14189f0c6ced2e9674487fcbdeffd93141b",
+    "commit_count": 6,
+    "changed_paths": [
+      "COMPOSE_STRUCTURE.md",
+      "README.md",
+      "compose/f1r3node-rust-validator4.yml",
+      "docs/ToDos.md",
+      "docs/adding-a-validator.md",
+      "docs/attaching-an-external-node.md",
+      "docs/cli-reference.md",
+      "docs/configuration.md",
+      "docs/consensus-configuration.md",
+      "docs/development.md",
+      "docs/f1r3drive-guide.md",
+      "docs/troubleshooting.md",
+      "integration-tests/test/tests/custom/test_validator_lifecycle.py",
+      "unit-tests/fixtures/validator-lifecycle-settlement.json",
+      "unit-tests/test_validator_lifecycle_settlement.py"
+    ],
+    "runtime_change": "The validator lifecycle resolver includes deploy inclusion in its settlement budget.",
+    "launcher_changed": false,
+    "load_entrypoint_changed": false
+  },
+  "source_digests": {
     "formal/tlaplus/carrier_index/CarrierIndex.tla": "5aae4327a4aca056d571d56d778dfe82684165fb4faa7123f480b8afd4d67575",
     "formal/tlaplus/carrier_index/MC_CarrierIndex.cfg": "4c5dc2805bb8ca65e1e4ff2fa9059efb30aef0b9caf71d7317d837d9c4249cd2",
     "formal/tlaplus/carrier_index/MC_CarrierIndex.tla": "2018d282687b9489c801c5f279be34fe680e896fb2a60b0c42936fa2f47db0cb",
@@ -233,124 +282,32 @@
     "formal/tlaplus/soak_disk/RetentionReserve.tla": "f23636f7ebdcb30247573486fd458e38f733b1e71a564aeb49317b40b15af00c",
     "formal/tlaplus/soak_disk/SoakDiskAdmission.tla": "ee3baaabd660cdf5b1af4c33253ba87d8723c428b780873ff14c3d2a5070eb9a",
     "formal/tlaplus/soak_disk/SoakDiskGuardian.tla": "2ee3321172ce7d4430d3c61873ede45f8c7f7148f8a1aef43aa9f0ff91b1fc8b",
-    "formal/tlaplus/soak_disk/SoakStorageBudget.tla": "500988d95e331a6aea1ee3bd180d826e928567fe7f0f58f9250109bedf384ef8"
-  },
-  "configuration_sources": {
+    "formal/tlaplus/soak_disk/SoakStorageBudget.tla": "500988d95e331a6aea1ee3bd180d826e928567fe7f0f58f9250109bedf384ef8",
     ".github/oci-validation.env": "e3aa05e5d9dbe5582f9445ab4291193c59d2c735029eab454003cce0ef782995",
     "docs/casper/design/soak-interface-contract.md": "addd0a25f3d6eb044097533224d3d500dce97785886eeab33897a1e69af033e7",
     "scripts/bench/soak-gate-thresholds.json": "ce0183b9373d951bb7d1b15091b1f6a7829d3bcfb7458bc9a507ebd9f7159072",
-    "scripts/bench/soak-metrics.json": "d4a71e7996dc0b0a74fcfc339f5164121c246db7c2f4e27114b7ea80c2edfef7"
+    "scripts/bench/soak-metrics.json": "d4a71e7996dc0b0a74fcfc339f5164121c246db7c2f4e27114b7ea80c2edfef7",
+    ".github/workflows/_integration-pipeline.yml": "a43431f8203eaab1aa582513f1dfaf580cfc78362f108563458acbbca84f1717",
+    ".github/workflows/merge-recovery-soak.yml": "931b0f44db5b3d7d4b3e12fb5071d5e98a381fd021b7a1cea79308d6905bdbaa"
   },
-  "candidates": [
-    {
-      "candidate_id": "dev-amd64",
-      "node_revision": "6940a5beb4aa806d3d75f6df3be9f238512fcc2f",
-      "platform": "linux/amd64",
-      "harness_revision": "1f749aa831f54f2c5b3a7c79be27581c89e55f46",
-      "image_tag": "f1r3flyindustries/f1r3fly-rust:dev-v0.4.46-canary.1758-183-g6940a5be",
-      "image_digest": "sha256:607751b4db7ecf3e1e3354b2163bf84b5cfb918ad1a780539b374f3ada368663",
-      "image_digest_kind": "registry-platform-manifest",
-      "image_media_type": "application/vnd.docker.distribution.manifest.v2+json",
-      "ci_image_manifest_digest": "sha256:13516397af00566f6fb2d0c7da97cfb684cb9086e7f5af32a7c7c2070842cfa9",
-      "image_config_digest": "sha256:bd1d291e690f256a022bb7c684cd7cb5fbdc17056ec1fe4cce60bdb606b18cc2",
-      "node_binary_digest": "sha256:5e3c3b3181fb24e04ee1e1da183c4bf03069bbca31e7ad9e4bbda7e3215863af",
-      "node_binary_bytes": 76260512,
-      "node_binary_path": "opt/docker/bin/node",
-      "artifact_id": 10578996716,
-      "artifact_archive_digest": "sha256:751dd27097d3b4c3fe360eac2070138221b874bf4fb708f383048d39c6c39662",
-      "artifact_identity_record": "docs/casper/cbc-evidence/runs/casper-candidate-repin-20260919-01/report.json",
-      "artifact_identity_candidate": "dev-amd64",
-      "workload_configuration_digest": null,
-      "workload_configuration_status": "blocked-unimplemented-profile-request",
-      "admission": "blocked"
-    },
-    {
-      "candidate_id": "dev-arm64",
-      "node_revision": "6940a5beb4aa806d3d75f6df3be9f238512fcc2f",
-      "platform": "linux/arm64",
-      "harness_revision": "1f749aa831f54f2c5b3a7c79be27581c89e55f46",
-      "image_tag": "f1r3flyindustries/f1r3fly-rust:dev-v0.4.46-canary.1758-183-g6940a5be",
-      "image_digest": "sha256:4f944006f0f5288bc10fe0a2ee1bea7b60728982c2a2ca4278d5aa43d12f743c",
-      "image_digest_kind": "registry-platform-manifest",
-      "image_media_type": "application/vnd.docker.distribution.manifest.v2+json",
-      "ci_image_manifest_digest": "sha256:044b2102b7209bb543d1954e4e2aa2cb7f61b9732a6b96ff004133c1f61ffaef",
-      "image_config_digest": "sha256:6af530f8c3b0291dce60003f4dae04cf67295aca8036f113f6668fdb5ea6ed73",
-      "node_binary_digest": "sha256:b078605600cbfda69922cbf32adb60512d93c9917c07fa56669b7ba03d4936f3",
-      "node_binary_bytes": 74792168,
-      "node_binary_path": "opt/docker/bin/node",
-      "artifact_id": 10578617001,
-      "artifact_archive_digest": "sha256:5a9744afad805deb3ed0bc94b1dbf458f5592704253f759b607876e2d0657a2c",
-      "artifact_identity_record": "docs/casper/cbc-evidence/runs/casper-candidate-repin-20260919-01/report.json",
-      "artifact_identity_candidate": "dev-arm64",
-      "workload_configuration_digest": null,
-      "workload_configuration_status": "blocked-unimplemented-profile-request",
-      "admission": "blocked"
-    }
-  ],
-  "optional_references": [
-    {
-      "id": "pr216-open-head",
-      "node_revision": "619beb4a4a7ad3f8967d4586daf0f5c552bd150e",
-      "selected": false,
-      "image_digest": null,
-      "node_binary_digest": null,
-      "reason": "This reference remains optional. No image or binary was qualified for this revision."
-    }
-  ],
-  "dispatch_blockers": [
-    "Current dev has no matching published candidate tag. Its CI image release was skipped after an integration test failure.",
-    "Executable profile workload configurations remain unpinned.",
-    "Profile adapters and required node interfaces remain unqualified.",
-    "The refreshed campaign model and configuration inventory requires source-bound acceptance.",
-    "The campaign execution path requires hosted and deployed qualification.",
-    "The authoritative object and lifetime supervisor remain unconfigured.",
-    "B44 containment remains open."
-  ],
-  "post_merge_gate": {
-    "actual_pr216_merge_revision": null,
-    "selected_dev_revision": null,
-    "accepted_handoff": false,
-    "qualification_scope": [
-      "publication",
-      "recovery"
-    ],
-    "merge_order": "This branch merges before PR #216 integrates."
-  },
-  "latest_identity_review": {
-    "report": "docs/casper/cbc-evidence/runs/casper-campaign-control-20260921-01/report.json",
-    "sha256": "27e1a2980f81360199826944dd413284a36669c2646b78237632309de1d0fb6f",
-    "date": "2026-09-21",
-    "harness_working_tree": true,
-    "executable_workload_pins_complete": false,
-    "dispatch_authorized": false
-  },
-  "required_profiles": [
-    "authority_finality"
-  ],
-  "deferred_profiles": {
-    "publication": "post_pr216_merge",
-    "recovery": "post_pr216_merge"
-  },
-  "model_inventory_review": {
-    "report": "docs/casper/cbc-evidence/runs/casper-campaign-hosted-58e952c6f-01/report.json",
-    "sha256": "c04d4b7c8bce2bd31b670f7e6494886a80b401fbe78ad977f30bb72cf3ae85c7",
-    "source_head_revision": "58e952c6fc780d10ee9a28f19ae563245de4a39e",
+  "verification": {
     "model_count": 225,
     "configuration_count": 4,
+    "all_inventory_digests_match": true,
+    "all_suite_pins_match": true,
+    "integration_merge_is_ancestor": true,
+    "workflow_security_invariants": "passed",
+    "models_rerun": false,
+    "live_qualification": "pending",
     "acceptance": "pending"
   },
-  "latest_dispatch_review": {
-    "report": "docs/casper/cbc-evidence/runs/casper-campaign-readiness-20260922-01/report.json",
-    "sha256": "a93fb0a097e5c3e106f53a290cf639c815c0701128accb3e997dea8656e78f57",
-    "node_revision_reviewed": "b465313a2d490d24b6f2e55447bd81efc0912e10",
-    "candidate_refresh_status": "blocked-no-published-tag",
-    "workload_pinning_status": "blocked-live-adapter-unimplemented",
-    "baseline_status": "not-run"
+  "retained_inputs": {
+    "target/task-017-12-inventory-20260928/suite-compare.json": "07af4dad74f8a4e2bb46b27beffaacd6f645687fa5862f21c20e745a7b5e7a83",
+    "target/task-017-12-inventory-20260928/pr450.json": "c48b35231fb2a15ce933f27d4e97a38f624f7a5a26a9a52fa897a50b5d107b2b"
   },
-  "configuration_reconciliation": {
-    "report": "docs/casper/cbc-evidence/runs/casper-campaign-inventory-20260928-01/report.json",
-    "sha256": "c9c146fe0436fd048a0a70d53b3346b53b9c635a1c2a3e9e7e26378966a84cad",
-    "external_harness_revision": "e3c4e14189f0c6ced2e9674487fcbdeffd93141b",
-    "acceptance": "pending"
-  }
+  "node_candidate_pins_changed": false,
+  "workload_pins_changed": false,
+  "dispatch_authorized": false,
+  "node_launches": 0,
+  "cloud_launches": 0
 }

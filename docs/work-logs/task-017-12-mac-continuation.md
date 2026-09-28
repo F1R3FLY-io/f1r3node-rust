@@ -397,3 +397,110 @@ The checks retain failures for unresolved deploys, terminal failures, and confli
 The fix and regression files are applied in the sibling `system-integration` repository. The destination files match the verified files from the isolated checkout.
 
 The full integration test has not rerun. The fix requires publication before this repository can select its immutable suite revision. No commit or push occurred.
+
+## Authority client scope: 2026-09-28
+
+The user requested TASK-017-12 continuation on `formal/soak-casper-consensus`. The starting revision is `211a4e73a6c1c8c4e4d3de35f2debdf1869ab74b`.
+
+The node observer exposes detached authority evaluation. The harness has no client for that protocol. Its existing profile rejects live requests.
+
+The first implementation adds three files under `scripts/casper-soak`: `src/authority_observer.rs`, `src/bin/casper-authority-observe.rs`, and `tests/authority_observer.rs`.
+
+The client checks process identity, request correlation, frame limits, and deadlines. It retains raw evidence for later qualification.
+
+The [client claim](../claims/casper-authority-observer-client.md) remains pending. The existing mandatory attributes cover all three files.
+
+The synthetic profile requires fixture loading and observations that detached evaluation does not provide directly. Raw capture cannot satisfy those requirements or enable campaign admission.
+
+TASK-017-13 preparation proceeds separately. Final claim review and handoff depend on TASK-017-12 evidence.
+
+### Client behavior and use
+
+The client connects to an existing Linux observer socket. The client and node must share a process namespace and effective user identity.
+
+The node configuration must permit the client process and its start time. A different client process cannot reuse that permission.
+
+The binding contains nine fields: `socket`, `node_pid`, `process_start_ticks`, `source_revision`, `executable_sha256`, `configuration_sha256`, `approved_request_sha256`, `request_id`, and `timeout_ms`.
+
+Use trusted launch records for the expected node identity. Do not derive the expected executable or configuration digest from an unverified greeting.
+
+Supply the existing `AuthorityRequest` object as the authority file. The client forwards that object and checks the response copy without interpreting its evaluation results.
+
+```bash
+cargo build --locked -p casper-soak --bin casper-authority-observe
+target/debug/casper-authority-observe \
+  --binding binding.json \
+  --authority authority-request.json \
+  --output capture-001
+```
+
+The output directory must not exist. The client creates a private directory and retains input, greeting, request, response, and report files.
+
+Exit zero means that the client captured a correlated response. An unavailable evaluation can still produce that exit. The report always keeps qualification pending.
+
+Exit two means that input validation or capture failed. The client retains completed captures when a later protocol check fails.
+
+The report identifies the client executable and compiled helper sources. Socket framing uses the production protocol's length prefix and frame limit.
+
+### Verification and remaining work
+
+Eight tests pass in an isolated Linux container with networking disabled. Four portable tests pass on the native host. All seven existing authority profile tests pass.
+
+The Linux tests reject wrong process identities, changed executables, oversized frames, duplicate keys, truncated frames, replayed responses, and expired deadlines.
+
+The timeout test also sends small fragments repeatedly. The common deadline expires even when individual reads receive data.
+
+Native and Linux Clippy checks pass with warnings denied. The verification package records source digests, command outcomes, and retained log digests.
+
+The first compile failed because this crate does not enable Serde derive macros. The binding parser now uses the existing checked JSON helpers.
+
+The first Linux run exposed an incorrect binding field count. A later timeout assertion included evidence-file hashing and exceeded its one-second test allowance.
+
+The final test separates the 500-millisecond socket deadline from a five-second allowance for evidence output. The client deadline remains unchanged.
+
+These controlled sockets do not execute a blockchain node. No real candidate has been qualified, and no baseline or stability campaign has started.
+
+The selected candidate still needs an observer-capable immutable image. Live scenario mapping must account for fixture loading, expected heads, finality, and unavailable fault controls.
+
+All 225 model hashes match their matrix entries. The `.github/oci-validation.env` entry differs after the inherited suite update and needs source-bound reconciliation.
+
+The authoritative reservation object, independent supervisor, deployment qualification, and campaign claim acceptance remain prerequisites. TASK-017-12 stays in progress.
+
+### Live profile interface gaps
+
+The source review found four gaps between the accepted profile and the available node interface.
+
+| Profile requirement | Available node interface | Consequence |
+| --- | --- | --- |
+| Applied fixture identity and step receipt | `AuthorityRequest` selects an existing captured DAG. It has no fixture-loading operation. | A capture digest cannot establish that the requested fixture was loaded. |
+| Selected head observation | `AuthorityResponse` provides target evaluations and a floor result. | A floor hash cannot substitute for a selected head. |
+| Original fault tolerance and display projection | `TargetResult` exposes the original value as floating-point bits. The projection always reports `equivocation_snapshot_unavailable`. | Conversion needs an explicit contract. The client cannot invent the missing projection. |
+| Fault application receipts | The observer advertises `fault_control` as unsupported. | Fault scenarios remain blocked. |
+
+The measured and reference results share a captured input. That property alone does not satisfy the profile's fixture, head, projection, and fault requirements.
+
+Node interface changes belong to the separate prerequisite. Live qualification requires those interfaces or a separately reviewed profile contract. This continuation changes neither contract.
+
+The three new client artifact records resolve through the shared checker. Its strict check returns exit four with three pending records and no missing records.
+
+## Campaign inventory reconciliation: 2026-09-28
+
+The candidate matrix now records the inherited integration suite at `e3c4e14189f0c6ced2e9674487fcbdeffd93141b`.
+
+PR #450 supplied this update through merge `0b9ae5bcec94a2df8f6112bbbc6c950ad2e603b2`. That merge is an ancestor of the current branch.
+
+The GitHub comparison identifies six commits after the previously recorded suite revision. The validator lifecycle resolver now includes deploy inclusion in its settlement budget.
+
+The comparison shows no change to the launcher or load-test entrypoint. The compose change updates a documentation reference.
+
+The matrix configuration digest now matches `.github/oci-validation.env`. All three workflow pin sites select the same suite revision.
+
+All 225 model hashes and four configuration hashes match their current files. The repository workflow security checks pass.
+
+The [reconciliation report](../casper/cbc-evidence/runs/casper-campaign-inventory-20260928-01/report.json) records the source hashes, comparison, and remaining limits.
+
+Historical reports retain their original bytes. Their recorded suite revisions describe earlier verification and do not qualify the updated campaign.
+
+Candidate image pins and null workload pins remain unchanged. The matrix remains non-dispatchable, and source-bound acceptance remains pending.
+
+The live adapter still requires the node interface additions listed above. This inventory correction does not supply those interfaces or qualify a candidate.

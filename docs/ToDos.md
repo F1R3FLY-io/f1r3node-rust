@@ -1288,14 +1288,20 @@ tasks:
     candidate_review_note: "Current dev b465313a2 has no matching published candidate tag. CI run 35677113121 failed the amd64 subprocess validator lifecycle test and skipped image release. Verified candidate pins still cover 6940a5beb."
     readiness_evidence: docs/casper/cbc-evidence/runs/casper-campaign-readiness-20260922-01/report.json
     integration_fix_evidence: docs/casper/cbc-evidence/runs/casper-integration-timeout-fix-20260922-01/report.json
-    integration_fix_status: "The validator lifecycle timeout fix is applied locally in system-integration. All 39 targeted tests pass. Publication, suite pin updates, and hosted verification remain pending."
+    integration_fix_status: "PR #450 merged to dev at 0b9ae5bcec94a2df8f6112bbbc6c950ad2e603b2. This checkout inherits the three suite pins. The candidate matrix now records the inherited suite revision and configuration digest."
     candidate_identity_evidence: docs/casper/cbc-evidence/runs/casper-candidate-repin-20260919-01/report.json
     live_admission_evidence: docs/casper/cbc-evidence/runs/casper-linux-admission-7509c831c-01/report.json
     manual_dispatch_evidence: docs/casper/cbc-evidence/runs/casper-campaign-dispatch-5e26ba4c5-01/report.json
     completion_review: docs/work-logs/task-017-12-preparation.md#completion-review-at-859cbc36c
     claim001_reconciliation: docs/work-logs/task-017-12-preparation.md#claim001-specification-digest-reconciliation
     node_interface_prerequisite: docs/plans/casper-node-interface-prerequisite.md
-    node_interface_status: "PR #447 remains open at 4561e064a. TASK-019-4 reports missing formal evidence and a new B1 lock-wait finding. Batch B2 planning waits for source-bound verification and named maintainer acceptance. Occurrence-dependent publication qualification belongs to EPIC-018 after this branch merges."
+    node_interface_status: "This checkout includes Batch B2 and its recorded claim acceptances through merge 211a4e73a. Selected candidate qualification remains pending. Occurrence-dependent publication qualification belongs to EPIC-018."
+    observer_client_claim: docs/claims/casper-authority-observer-client.md
+    observer_client_evidence: docs/casper/cbc-evidence/runs/casper-authority-client-20260928-01/report.json
+    observer_client_status: "The raw Linux observer client passes eight controlled tests. Native client and synthetic profile regressions pass. Live scenario mapping and candidate qualification remain pending."
+    live_interface_gaps: "Batch B2 supplies no fixture-load receipt or selected-head observation. Its display projection is unavailable, and fault control is unsupported. The existing profile contract remains unchanged."
+    candidate_inventory_evidence: docs/casper/cbc-evidence/runs/casper-campaign-inventory-20260928-01/report.json
+    candidate_inventory_review: "All 225 model hashes and four configuration hashes match. The matrix and three suite pins select e3c4e14189f0c6ced2e9674487fcbdeffd93141b. Source-bound acceptance remains pending. No workload pin or qualification changed."
     stack_scope: "PR #436 temporarily targets the node branch. This dependency order does not include node implementation in the harness scope. Independent harness controls can proceed before node qualification."
     reservation_work_log: docs/work-logs/task-017-12-reservations.md
     reservation_status: "All sixteen reservation tests pass in an isolated Linux container on this Mac. The authoritative OCI protocol has controlled-provider tests. Its real object and access policy remain unprovisioned."
@@ -1317,15 +1323,15 @@ tasks:
     compatibility_lookup_status: "The three campaign inventories have 37 unique pending artifact records and matching compatibility links. The strict eight-claim audit returns exit 4 with Claim001 pending. No acceptance is inferred."
     execution_gate: "Four exact-candidate probes returned blocked before node launch. Their controlled inputs are not live qualification. The legacy workload is pinned but cannot replace required Casper profiles."
     drift_review: docs/work-logs/task-017-12-drift-review-2026-09-19.md
-    claims: [CLAIM-CASPER-SOAK-001, CLAIM-CASPER-SOAK-004, CLAIM-CASPER-CAMPAIGN-001, CLAIM-CASPER-CAMPAIGN-002, CLAIM-CASPER-CAMPAIGN-003]
+    claims: [CLAIM-CASPER-SOAK-001, CLAIM-CASPER-SOAK-004, CLAIM-CASPER-CAMPAIGN-001, CLAIM-CASPER-CAMPAIGN-002, CLAIM-CASPER-CAMPAIGN-003, CLAIM-CASPER-AUTHORITY-CLIENT-001]
     claim_index: docs/claims/casper-soak-harness.md
     campaign_claim_index: docs/claims/casper-soak-campaign.md
     reservation_claim_index: docs/claims/casper-campaign-reservation.md
     status: in_progress
-    claimed_by: pi-soak-carrier-index-linux
-    claimed_at: 2026-09-19T19:20:00Z
-    previous_claimed_by: claude-session-9f19b46c
-    previous_claimed_at: 2026-09-19T06:35:51Z
+    claimed_by: codex-task-017-12-20260928
+    claimed_at: 2026-09-28
+    previous_claimed_by: pi-soak-carrier-index-linux
+    previous_claimed_at: 2026-09-19T19:20:00Z
     handoff_note: docs/handoffs/claude-session-9f19b46c--pi-soak-carrier-index-linux--20260919T192000Z.md
     execution_scope: "Qualify the pre-merge candidate capabilities under the corrected campaign phase boundary. This branch merges before PR #216 integrates. Occurrence-dependent publication and recovery qualification belong to EPIC-018. A passing preflight must precede both full baselines."
     repin_tool: scripts/ci/resolve-dev-candidate.sh
@@ -1334,7 +1340,8 @@ tasks:
     blocked_by: [TASK-019-3, TASK-019-4]
     remaining_prerequisites:
       - "The changed workflow and campaign artifacts have current pending records. Historical evidence remains unchanged. Claim001 and the three campaign claims still require source-bound acceptance."
-      - "Pin executable workloads and accept the refreshed campaign model inventory. All 225 model hashes and four configuration hashes match. Recheck candidate identities before dispatch."
+      - "Complete live scenario mapping and qualify the raw observer client against the selected node. The new client claim remains pending."
+      - "Pin executable workloads and accept the refreshed campaign inventory. All 225 model hashes and four configuration hashes match after suite reconciliation."
       - "Qualify the required pre-merge adapters and node interfaces. The corrected admission requires authority/finality and retains pending occurrence profiles. Preserve the earlier blocked probe evidence."
       - "Hosted run 35752941906 covers the published stability and phase changes at 58e952c6f. The campaign workflow still requires qualification against deployed services."
       - "The campaign-baseline-24h input requests 86400 workload seconds. Execution must preserve that full duration without preflight subtraction. Existing scheduled behavior remains unchanged."
@@ -1365,9 +1372,18 @@ tasks:
     title: "Close pre-merge CbC scope and hand off post-merge obligations"
     claim_index: docs/claims/casper-soak-harness.md
     status: in_progress
-    claimed_by: pi-session-01a0afde-d35c-70a2-b8c9-39aa11cbdfca
-    claimed_at: 2026-09-21T14:31:52Z
+    claimed_by: claude-session-f3cbc961
+    claimed_at: 2026-09-28T20:30:00Z
+    previous_claimed_by: pi-session-01a0afde-d35c-70a2-b8c9-39aa11cbdfca
+    previous_claimed_at: 2026-09-21T14:31:52Z
+    claim_transfer_note: "The maintainer assigned this task to claude-session-f3cbc961 on 2026-09-28 for work in parallel with TASK-017-12. The two tasks commit together."
     execution_scope: "Deliver the independent formal gate on dev and verify the approved protection change. Review TASK-017-12 evidence before final handoff acceptance."
+    current_review: docs/casper/cbc-evidence/runs/casper-pre-merge-review-20260928-01/report.json
+    current_review_status: "The review at 211a4e73a covers 181 changed mandatory artifacts. The default gate reports 50 gaps and the Casper-directory diagnostic reports 61. Both gates exit 4. Claim001 is pending and seven profile claims are discharged."
+    gap_owners: "TASK-017-12 owns 38 gaps in campaign artifacts. EPIC-019 owns 10 node observation gaps, which need named maintainer acceptance of the cycle 03 package. This task owns 2 formal-gate gaps."
+    handoff_acceptance_maintainer: "@jltatbeach"
+    gate_candidate_status: "A gate-only candidate against dev at 0b9ae5bce passes its fixture suites in scratch files. The maintainer decided on 2026-09-28 that the gate branch starts from the top of the stack. The formal gate thus reaches dev with the stack merge, and the candidate stays a record."
+    campaign_60h_scope: "The maintainer decided on 2026-09-28 that the 60-hour phase is not a closure requirement for this branch or for PR #436. The phase cannot run before the branch is merged. TASK-018-7 owns the run and its record after the changes are in master."
     work_log: docs/work-logs/task-017-13-gate-handoff-2026-09-21.md
     preparation_log: docs/work-logs/task-017-13-preparation.md
     handoff_note: docs/handoffs/casper-pre-merge-to-post-merge-20260919.md
@@ -1386,7 +1402,7 @@ tasks:
       - "Make the verified formal gate available on dev. Then apply the approved protection change, verify enforcement, and record evidence-backed acceptance."
       - "Complete CLAIM-SOAK-GATE-001 under docs/claims/soak-formal-gate.md. The approved finalized-floor scope remains local-only."
       - "Review current-source registration and discharge for all campaign controls owned by TASK-017-12, including CLAIM-CASPER-CAMPAIGN-001, CLAIM-CASPER-CAMPAIGN-002, and CLAIM-CASPER-CAMPAIGN-003."
-      - "Review baseline results, scan benchmark evidence, and concurrency-gate evidence. Record the required scope of the approved 60-hour phase."
+      - "Review baseline results, scan benchmark evidence, and concurrency-gate evidence. The 60-hour phase is a post-merge obligation under TASK-018-7, per campaign_60h_scope."
       - "TASK-018 owners are confirmed as of 2026-09-22: @jeffrey-l-turner or @jltatbeach for each task. Obtain acceptance of the completed handoff. Stacked branch preparation does not satisfy post-merge discharge requirements."
     decisions: [D-11]
     acceptance:
@@ -1497,6 +1513,28 @@ formal_plan: formal/tlaplus/casper_soak/verification-plan.jsonc
 proposed_branch: formal/soak-casper-post-cost-accounting
 plan: docs/plans/casper-ratified-soak-2026-09-16.md
 related_epics: [EPIC-010, EPIC-013, EPIC-017]
+post_merge_obligations:
+  record: https://github.com/F1R3FLY-io/f1r3node-rust/issues/473
+  label: post-merge-obligation
+  decided_on: 2026-09-28
+  rule: "One issue records all obligations that stay open when the stack merges into master. The issue closes only when each obligation has passing evidence or a recorded waiver."
+  automation_plan:
+    branch: ci/soak-obligation-gate
+    base_branch: feature/randomized-exercise-soak
+    status: planned
+    instructions:
+      - "Create ci/soak-obligation-gate from feature/randomized-exercise-soak."
+      - "Open its PR against feature/randomized-exercise-soak and place it at the top of the PR stack."
+      - "Use this branch to implement automatic result recording for all stack obligations in issue 473."
+  obligations:
+    O1: TASK-018-7
+    O2: TASK-018-1
+    O3: TASK-018-2
+    O4: [TASK-018-3, TASK-018-4]
+    O5: TASK-018-5
+    O6: TASK-018-6
+    O7: CLAIM-SOAK-GATE-001
+    O8: TASK-017-15
 external_dependencies:
   - repo: F1R3FLY-io/f1r3node-rust
     pr: 216
@@ -1649,6 +1687,32 @@ tasks:
       - "No required pending or refuted claim is hidden by epic completion."
       - "The follow-on PR links the meeting, pre-merge handoff, actual #216 merge revision, and new evidence."
       - "Deferred-policy activation requires a separate team decision even when experimental evidence passes."
+
+  - id: TASK-018-7
+    title: "Run and record the 60-hour stability soak after the EPIC-017 changes are in master"
+    claims: [CLAIM-CASPER-SOAK-001]
+    status: blocked
+    claimed_by: null
+    assigned_to: ["@jeffrey-l-turner", "@jltatbeach"]
+    assigned_on: 2026-09-28
+    created_at: 2026-09-28
+    origin: "The maintainer decided on 2026-09-28 that the approved 60-hour phase is a post-merge obligation. It is not a closure requirement for TASK-017-13 or for PR #436."
+    blocked_by: [TASK-017-12, TASK-017-13]
+    external_gate: "The merge commit of the EPIC-017 changes is an ancestor of origin/master."
+    resource_approval: "The approval of 2026-09-22 applies: one 64 GB stability runner for each architecture, with a maximum lifetime of 64 hours. Both full 24-hour baselines must pass first. More repetitions are not approved."
+    workflow_stage: campaign-stability-60h
+    github_record: 473
+    github_record_url: https://github.com/F1R3FLY-io/f1r3node-rust/issues/473
+    github_record_label: post-merge-obligation
+    github_record_obligation: O1
+    github_record_note: "The maintainer requested issue 473 on 2026-09-28. It is the single record of all post-merge obligations of the stack, and this task is obligation O1. The automatic update is planned for the branch ci/soak-obligation-gate, which the maintainer creates on top of the stack from feature/randomized-exercise-soak."
+    stage_decision: "The maintainer confirmed the stage campaign-stability-60h on 2026-09-28."
+    acceptance:
+      - "The soaked revision is on master and contains the merge commit of the EPIC-017 changes."
+      - "Each architecture completes the full 216,000-second workload window. A shortened window does not satisfy this task."
+      - "The record names the run IDs, the revision, the seeds, the image digests, the terminal verdict, and the evidence digests."
+      - "A failure, a timeout, or an infrastructure stop stays in the record. A later passing run does not remove it."
+      - "The obligation record closes only on passing evidence for the two architectures."
 ---
 ```
 

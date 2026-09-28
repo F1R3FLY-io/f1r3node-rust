@@ -154,3 +154,194 @@ Raw read-only responses, source comparisons, fixture logs, and the candidate pat
 The retained classic protection failure remains part of the evidence. Earlier accepted packages and failed attempts remain unchanged.
 
 TASK-017-13 remains in progress. `CLAIM-SOAK-GATE-001` remains pending. This review supplies no campaign or post-merge result.
+
+## Parallel review on 2026-09-28
+
+The user requested TASK-017-13 work in parallel with TASK-017-12. This review updates the existing handoff and preserves all historical evidence.
+
+The checkout remains `formal/soak-casper-consensus` at `211a4e73a6c1c8c4e4d3de35f2debdf1869ab74b`. PR #436 remains open against `feature/casper-node-observation` at `670037c2511abd5f576063b3153681a873244a18`.
+
+### Current checks
+
+| Check | Result |
+| --- | --- |
+| Committed comparison | 1,917 changed paths and 181 mandatory artifacts. |
+| Eight-claim audit | Exit 4. Claim001 remains pending. Claims 002 through 008 remain discharged. All eight soak fields remain pending. |
+| Default artifact gate | Exit 4, with 50 pending records. |
+| Casper-directory diagnostic | Exit 4, with 39 pending records and 22 missing records. |
+| Audited artifact identities | All 181 source hashes match the reviewed commit. |
+| Protected baseline | `dev` is `0b9ae5bcec94a2df8f6112bbbc6c950ad2e603b2`. Its slashing workflow lacks `Formal verification gate`. |
+| Effective rulesets | No required check names `Formal verification gate`. |
+| Classic protection visibility | HTTP 403, `Resource not accessible by personal access token`. |
+
+The claim auditor was rebuilt from the reviewed source. The auditor checks ledger consistency and source bindings without executing proofs or accepting claims.
+
+The artifact gates check the same committed comparison. Concurrent TASK-017-12 additions require a new scope calculation and audit before acceptance.
+
+The default gaps include campaign artifacts, shared verification scripts, and node observation records. This review does not assign another agent's node work to TASK-017-13.
+
+The Casper-directory diagnostic cannot replace the default lookup. Twenty-two artifacts lack records in that directory because the comparison includes other evidence domains.
+
+The dev workflow snapshot has SHA-256 `be6741fcad7ac67437bb43ccc247d433e1f32f5ad73109d615564843f4f45207`. Gate availability and complete protection visibility remain prerequisites for the approved enforcement change.
+
+The September 21 gate-only patch is unavailable at its recorded local path. That historical result does not establish a current, reviewable candidate.
+
+### Handoff corrections
+
+The handoff now records the September 22 stability budget. One 64 GB runner per architecture may operate for at most 64 hours.
+
+Both full 24-hour baselines must pass before either 60-hour workload. The record still requires a closure decision for the 60-hour phase.
+
+Publication and recovery qualification belong to EPIC-018 after PR #216 integration. The pre-merge baseline requires authority/finality qualification and preserves pending verdicts for deferred profiles.
+
+The handoff separates confirmed TASK-018 implementers from acceptance of the completed handoff. Either `@jeffrey-l-turner` or `@jltatbeach` may own each follow-on task.
+
+The handoff also labels accepted source inventories and previous gate results as historical. Current verification must bind the final delivered revision.
+
+### Remaining work
+
+1. Prepare the independent gate against current `dev` and preserve existing verification coverage.
+2. Obtain specific Git publication authorization after the candidate and its checks are ready for review.
+3. Verify hosted execution and gate availability on `dev`.
+4. Resolve protection visibility before the approved rule change.
+5. Retain positive and negative enforcement results before governance claim acceptance.
+6. Review current campaign claims, qualification records, preflight results, and both full baselines from TASK-017-12.
+7. Review scan benchmark and User Contract Concurrency baseline evidence.
+8. Record the 60-hour closure scope and obtain handoff acceptance.
+9. Repeat final source, claim, changed-artifact, and task-completion checks.
+
+### Retention and limits
+
+Local review outputs remain under `target/task-017-13-parallel-20260928/`. These outputs include the audit results, source snapshot, workflow snapshot, and effective rules.
+
+The review changed only this log and the handoff. It made no branch, Git index, workflow, claim, protection, or deployment change.
+
+TASK-017-13 remains in progress. TASK-017-14 reduction and TASK-017-15 publication retain their recorded prerequisites.
+
+The STE Check passes against the pre-edit baseline. Local Markdown targets and `git diff --check` pass. No human STE Review is claimed.
+
+## Ownership and scope decisions on 2026-09-28
+
+<!-- claude-session-f3cbc961 -->
+
+The maintainer assigned TASK-017-13 to `claude-session-f3cbc961` on 2026-09-28. The previous owner was `pi-session-01a0afde-d35c-70a2-b8c9-39aa11cbdfca`.
+
+TASK-017-12 continues in a different session in the same checkout. The two tasks commit together after the two sessions complete their work.
+
+### Independent confirmation
+
+This session ran the same checks at `211a4e73a6c1c8c4e4d3de35f2debdf1869ab74b` before it read the parallel review above. The two sets of counts are equal.
+
+The [review report](../casper/cbc-evidence/runs/casper-pre-merge-review-20260928-01/report.json) records the results. All 181 source digests match the bytes at the reviewed commit.
+
+### Gap owners
+
+| Group | Default gaps | Owner | Necessary action |
+| --- | --- | --- | --- |
+| Campaign scripts, supervisor, models, and the soak workflow | 25 | TASK-017-12 | Current claim evidence and acceptance. |
+| Campaign control code in the soak crate | 13 | TASK-017-12 | Current claim evidence and acceptance. |
+| Node observation files | 10 | EPIC-019 | Named maintainer acceptance of the cycle 03 package. |
+| Formal gate workflow and TLA runner | 2 | TASK-017-13 | Gate on `dev`, the protection change, and enforcement results. |
+
+The 10 node observation records have current digests. Their claim is `CLAIM-CASPER-NODE-OBSERVATION-002`, and their evidence is the package `casper-node-claim-gate-38e576041-01`.
+
+The named maintainer accepted cycle 02. No person accepted cycle 03, which added the B11 files. More verification does not close these gaps.
+
+The record for `.github/workflows/merge-recovery-soak.yml` has an old digest. The system-integration pin changed after the record, through the node branch merge of 2026-09-23.
+
+### The 60-hour phase
+
+The maintainer decided the scope on 2026-09-28. The 60-hour phase is not a closure requirement for this branch or for PR #436.
+
+The phase cannot run before the branch is merged. TASK-018-7 owns the run and its record after the changes are in `master`.
+
+This decision replaces item 8 of the remaining work above. Handoff acceptance stays a requirement.
+
+The maintainer then requested a record on GitHub. This session created [issue 473](https://github.com/F1R3FLY-io/f1r3node-rust/issues/473) and the label `post-merge-obligation`.
+
+The maintainer then decided that one issue records all post-merge obligations of the stack. Issue 473 now lists eight obligations, and the 60-hour phase is obligation O1.
+
+The maintainer confirmed the stage `campaign-stability-60h` for obligation O1. The issue closes only when each obligation has passing evidence or a recorded waiver.
+
+The tracker maps each obligation to its task in the `post_merge_obligations` field of EPIC-018.
+
+The automatic update of the issue is planned work. The maintainer decided that its branch, `ci/soak-obligation-gate`, goes on top of the stack, from `feature/randomized-exercise-soak`. This session created no workflow and no branch.
+
+The maintainer stated the purpose of that branch. It accumulates all obligations that must be recorded and discharged after the stack merges into `master`. The 60-hour phase is the first recorded obligation.
+
+### Gate-only candidate against the current `dev`
+
+The candidate of 2026-09-21 is not available, and `dev` moved. This session built a new candidate against `dev` at `0b9ae5bcec94a2df8f6112bbbc6c950ad2e603b2`.
+
+The candidate is under `target/task-017-13-gate-candidate-20260928-01/`. Its patch has the SHA-256 prefix `ca9ac2cb3539b4a1`. It is not a branch, a commit, or a pull request.
+
+| File | Added | Removed |
+| --- | --- | --- |
+| `.github/workflows/slashing-tests.yml` | 55 | 0 |
+| `scripts/ci/check-formal-gate.sh` | 63 | 0 |
+| `scripts/ci/test-check-formal-gate.sh` | 115 | 0 |
+| `scripts/ci/check-tla-invariants.sh` | 18 | 5 |
+| `scripts/ci/test-check-tla-invariants.sh` | 47 | 3 |
+
+| Check | Result |
+| --- | --- |
+| Patch application to the `dev` bytes | Passed. The result is equal to each candidate file. A second, independent application gave the same result. |
+| Gate fixture suite | Passed, with 47 refusal controls. |
+| TLA runner fixture suite | Passed, with 61 negative controls. |
+| Control run with the `dev` runner | Failed as expected. The `dev` runner accepts a result with no trace. |
+| Model registry and negative control lists | Byte-identical to `dev`. |
+| Action pins and cache guards | No unpinned action and no invalid guard. |
+| Bash syntax | Passed for the four scripts. |
+| Actionlint and ShellCheck | Not run. The tools are not installed on this machine. |
+| Repository supply-chain test | Not run on the candidate. Its two workflow rules were applied with a separate check. |
+| TLC and Rocq execution | Not run. The fixtures replace TLC. |
+| Hosted execution and enforcement | Not run. Both remain required. |
+
+The gate inventory names only paths that `dev` has. Four paths of the branch inventory are absent: the Casper model check, the Casper soak script, the soak crate, and the node observation proofs.
+
+The candidate carries the `pipefail` corrections and the TLC output checks. It carries no Casper or node observation registration, and `check-formal-invariants.sh` stays at the `dev` bytes.
+
+#### Decisions for the maintainer
+
+1. The TLC output checks change the verdict rule for all `dev` models. A smaller candidate with only the `pipefail` corrections is possible.
+2. The `dev` gate does not cover node observation proofs, Casper models, driver bindings, or wire correspondence. The branch gate covers them.
+3. The TLA test script has an inline `python3` block that `dev` already has. The candidate changes that file and keeps the block.
+4. The two new scripts need the file mode `100755`. The patch has no mode data.
+5. The soak branch changes the same five files. The stack merge can conflict after the gate is on `dev`.
+
+Publication of the candidate needs a branch and a specific Git authorization. This session requested neither.
+
+#### Maintainer decisions on 2026-09-28
+
+| Decision | Result |
+| --- | --- |
+| TLC output checks | The candidate keeps all checks. |
+| Coverage of the `dev` gate | Accepted for a candidate against `dev`, with a record of the difference. |
+| Inline `python3` block | The candidate keeps the block. Its rewrite in bash is a separate follow-up task. |
+| Publication | The maintainer creates the branch `ci/formal-verification-gate` from `feature/randomized-exercise-soak`, on top of the stack. |
+
+The publication decision changes the use of this candidate. The top of the stack already has the gate job, the gate script, and the full gate inventory.
+
+The patch for `dev` does not apply to the top of the stack. Its hunks fail or are already present in all five files.
+
+The formal gate thus reaches `dev` when the stack merges, with the full coverage of the branch gate. No gate-only change goes to `dev` before that merge.
+
+The candidate stays a record of the difference between `dev` and the branch gate. The first three decisions apply only if a later decision sends a gate-only change to `dev`.
+
+The ruleset change and the enforcement tests of `CLAIM-SOAK-GATE-001` follow the stack merge. They are obligation O7 in issue 473.
+
+The named maintainer for the handoff acceptance is `@jltatbeach`.
+
+### Concurrent changes
+
+TASK-017-12 added files under `scripts/casper-soak` after this review. The mandatory tag applies to that directory.
+
+The counts in this review describe `211a4e73a` only. The final review must use the delivery revision.
+
+### Retention and limits
+
+Local outputs of this session are under `target/task-017-13-verification-20260928-01/`. The package keeps the report, the validation record, and the digest lists.
+
+The bulk outputs are not in the external evidence store. TASK-017-14 owns their retention.
+
+This session changed the tracker, this log, the handoff, and the new review package. It made no branch, Git index, workflow, claim, protection, or deployment change.
