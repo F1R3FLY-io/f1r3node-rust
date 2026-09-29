@@ -710,3 +710,33 @@ This implementation does not supply a candidate-specific fixture driver. The nod
 Fault schedules remain blocked before driver launch. Connecting the process recorder requires an adapter that binds the predecessor and replacement incarnations.
 
 The [provider guide](../casper/design/authority-live-executor.md) defines the operation protocol and remaining integration work. Full live execution and TASK-017-12 remain incomplete.
+
+## Provider transport and process adaptation: 2026-09-28
+
+The live driver now submits pinned block bytes through the current Rust peer transport. The older integration client supplied the operation pattern.
+
+The process owner starts a pinned native child. Its private socket supports pause, restart, and observer capture requests.
+
+The node authorizes the persistent owner PID and start ticks. The executor receives captures through that owner and retains their verified artifact bytes.
+
+Restart handling verifies the predecessor socket identity, observes child exit, removes that same socket, and starts the replacement. The executor verifies successor readiness.
+
+Explicit `observed_restart` enrollment supports the random incarnation that the node generates. Receipt validation and classification bind subsequent observations to that successor.
+
+The Linux gate passes 27 tests and Clippy. The profile gate passes 13 Rust tests, 2,000 threshold cases, and four model controls.
+
+The profile gate needed an approved rerun because the sandbox denied the TLC listener. The failed attempt remains in the local evidence directory.
+
+The [provider report](../casper/cbc-evidence/runs/casper-authority-provider-20260928-01/report.json) records the sources and verification scope. It preserves the preceding records.
+
+The source and claim records remain pending. The strict claim audit returns exit 4, with claims 001 and 002 pending and claims 003 through 008 discharged.
+
+The shared artifact audit reports 26 pending mandatory artifacts. It reports no stale discharge refusal.
+
+The [provider guide](../casper/design/authority-provider-adaptation.md) documents configuration and use. The adapter workflow includes the transport, process, live executor, and classifier checks.
+
+Candidate qualification remains outstanding. It needs prepared block histories, captured input exports, and the missing node observations.
+
+The driver reports unknown application status after transport delivery. A transport acknowledgment cannot prove block validation or DAG admission.
+
+This work does not start a blockchain candidate or dispatch cloud resources. Docker process controls remain outside this implementation.

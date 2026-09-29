@@ -5,6 +5,8 @@ use casper_soak::{array, artifact, file_hash, hash, manifest, object, parse, tex
 use eyre::{ensure, eyre, Result};
 use serde_json::{json, Value};
 
+use crate::incarnation;
+
 pub const PROFILE: &str = "authority-finality";
 pub const CAPABILITIES: &[&str] = &[
     "same-dag-evaluation",
@@ -29,6 +31,10 @@ pub fn identity() -> Value {
         (
             "scripts/casper-soak/src/authority_execution.rs",
             include_bytes!("../authority_execution.rs").as_slice(),
+        ),
+        (
+            "scripts/casper-soak/src/authority_incarnation.rs",
+            include_bytes!("../authority_incarnation.rs").as_slice(),
         ),
         (
             "scripts/casper-soak/src/profiles/authority_finality.rs",
@@ -234,6 +240,9 @@ fn request(r: &Value) -> Result<()> {
         "The paired modes must be bounded and reference."
     );
     let faults = array(&r["fault_schedule"])?;
+    for member in members {
+        incarnation::validate(member, faults)?;
+    }
     ensure!(
         faults.len() <= 1,
         "The initial profile supports one scheduled fault."
@@ -469,7 +478,28 @@ pub fn classify(r: &Value, collection: &Value, acknowledgments: &[Value]) -> Res
     let mut heads = Vec::new();
     let mut required = Vec::new();
     let mut observed = Vec::new();
-    let members = array(&r["members"])?;
+    let mut resolved_members = array(&r["members"])?.clone();
+    for member in &mut resolved_members {
+        if incarnation::deferred(member) {
+            let acks: Vec<_> = acknowledgments
+                .iter()
+                .filter(|ack| ack["member_id"] == member["member_id"])
+                .collect();
+            if acks.len() == 1 {
+                match incarnation::enroll(member, array(&r["fault_schedule"])?, acks[0]) {
+                    Ok(resolved) => *member = resolved,
+                    Err(error) => invalid
+                        .push(json!({"member_id":member["member_id"],"reason":error.to_string()})),
+                }
+            } else {
+                missing.push(format!(
+                    "{}:successor_enrollment",
+                    text(&member["member_id"])?
+                ));
+            }
+        }
+    }
+    let members = &resolved_members;
     let observations = array(&collection["observations"])?;
     for v in observations {
         if !members
@@ -528,6 +558,17 @@ pub fn classify(r: &Value, collection: &Value, acknowledgments: &[Value]) -> Res
                 "justification_digest",
             ])?;
             equal(&v["time"], &r["observation_deadline"], &["clock_id"])?;
+            if incarnation::deferred(member) {
+                let ack = acknowledgments
+                    .iter()
+                    .find(|ack| ack["member_id"] == member["member_id"])
+                    .ok_or_else(|| eyre!("The successor acknowledgment is missing."))?;
+                ensure!(
+                    manifest::decimal(&v["time"]["monotonic_ns"])?
+                        >= manifest::decimal(&ack["time"]["monotonic_ns"])?,
+                    "The observation precedes successor readiness."
+                );
+            }
             ensure!(
                 manifest::decimal(&v["time"]["monotonic_ns"])?
                     <= manifest::decimal(&r["observation_deadline"]["monotonic_ns"])?,

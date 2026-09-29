@@ -1311,7 +1311,10 @@ tasks:
     live_executor_evidence: docs/casper/cbc-evidence/runs/casper-authority-live-20260928-01/report.json
     live_executor_guide: docs/casper/design/authority-live-executor.md
     live_executor_status: "The qualification executor invokes a pinned workload driver and captures the node before and after each step. Eight Linux tests pass. Campaign admission remains blocked."
-    live_mapping_remaining: "Supply the candidate workload driver and captured input exports. Connect owned process receipts, including restart incarnation binding. Add missing node observations and qualify the provider. Docker fault receipts remain unimplemented."
+    live_provider_evidence: docs/casper/cbc-evidence/runs/casper-authority-provider-20260928-01/report.json
+    live_provider_guide: docs/casper/design/authority-provider-adaptation.md
+    live_provider_status: "The Rust driver submits pinned blocks through the production TLS transport. Owned process receipts connect pause and restart to captures. Explicit successor enrollment supports random node incarnations. Candidate qualification remains pending."
+    live_mapping_remaining: "Prepare candidate block histories and captured input exports. Add missing node observations and qualify the provider. Docker fault receipts remain unimplemented."
     candidate_inventory_evidence: docs/casper/cbc-evidence/runs/casper-campaign-inventory-20260928-01/report.json
     candidate_inventory_review: "All 225 model hashes and four configuration hashes match. The matrix and three suite pins select e3c4e14189f0c6ced2e9674487fcbdeffd93141b. Source-bound acceptance remains pending. No workload pin or qualification changed."
     stack_scope: "PR #436 temporarily targets the node branch. This dependency order does not include node implementation in the harness scope. Independent harness controls can proceed before node qualification."

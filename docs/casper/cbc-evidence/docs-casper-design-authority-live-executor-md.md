@@ -7,25 +7,25 @@ Controlled verification does not qualify a node candidate. Source-bound acceptan
   "artifact": {
     "path": "docs/casper/design/authority-live-executor.md",
     "id": "docs-casper-design-authority-live-executor-md",
-    "commit": "b1e33bbaccd289326321ff62759d079f9cbaa177",
+    "commit": "63b9ace2b2c300b9dc605903d12bbb767566ae4b",
     "commit_is_base": true,
     "working_tree": true,
-    "sha256": "5de103ccd513f09c4a02efaa46fe80ced90e0a2a5cd2891958599afece4e0b66"
+    "sha256": "f0b63f4f26a0c07eff271e8fbd05761b1f4cd225e8be20acac767951075a4557"
   },
   "claim": "docs/claims/casper-authority-live-executor.md",
   "claim_ids": [
     "CLAIM-CASPER-AUTHORITY-LIVE-001"
   ],
   "claim_digests": {
-    "docs/claims/casper-authority-live-executor.md": "4bae2bef46c423f32bd14395ae2482beab4df9d25adf4fbe1072a47e67bdacd2"
+    "docs/claims/casper-authority-live-executor.md": "925c1cbb2b99215d17a0223ab7c8bdb3554fe6549309021e0f99b5526ca84d33"
   },
   "adapter": null,
   "status": "pending",
   "scope": "harness-live-authority-executor",
   "evidence": {
-    "kind": "controlled-live-executor-not-acceptance",
-    "ref": "docs/casper/cbc-evidence/runs/casper-authority-live-20260928-01/report.json",
-    "sha256": "206d7935f5837645e62165ef51702ad59ceddceb799ff8cf1ef0ccfd90548f4a"
+    "kind": "controlled-provider-verification-not-acceptance",
+    "ref": "docs/casper/cbc-evidence/runs/casper-authority-provider-20260928-01/report.json",
+    "sha256": "d85f9d4ce21cc13205e44f0ef94ab6ead8ca2a192a094febb128198135810470"
   },
   "tiers": {
     "refutation": "pending",
@@ -38,6 +38,11 @@ Controlled verification does not qualify a node candidate. Source-bound acceptan
   },
   "soak": "pending",
   "waiver": null,
-  "verified_at": null
+  "verified_at": null,
+  "previous_ledger": {
+    "path": "docs/casper/cbc-evidence/runs/casper-authority-provider-20260928-01/previous-records/docs-casper-design-authority-live-executor-md.md",
+    "sha256": "3805bf2b7dbd03a75c026b643871df536cbd5a9f83a505a1c5d12922facd605a",
+    "commit": "63b9ace2b2c300b9dc605903d12bbb767566ae4b"
+  }
 }
 ```

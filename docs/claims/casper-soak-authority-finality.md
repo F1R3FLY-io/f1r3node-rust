@@ -11,6 +11,7 @@ pre_merge_tasks: [TASK-017-5, TASK-017-12]
 post_merge_tasks: [TASK-018-3, TASK-018-5]
 artifacts:
   - scripts/casper-soak/src/authority_execution.rs
+  - scripts/casper-soak/src/authority_incarnation.rs
   - scripts/casper-soak/src/profiles/authority_finality.rs
   - scripts/casper-soak/src/bin/casper-authority-finality.rs
   - scripts/casper-soak/tests/authority_finality.rs

@@ -4,6 +4,10 @@ use std::path::Path;
 use casper_soak::{artifact, encoded, hash, parse};
 use serde_json::{json, Value};
 
+#[path = "../src/authority_incarnation.rs"]
+#[cfg(target_os = "linux")]
+mod incarnation;
+
 fn save(root: &Path, name: &str, bytes: &[u8]) -> Value {
     fs::write(root.join(name), bytes).unwrap();
     json!({"path":name,"bytes":bytes.len(),"sha256":hash(bytes)})
@@ -94,6 +98,239 @@ mod linux {
 
     fn available(value: Value, digest: char) -> Value {
         json!({"availability":"available","input_digest":digest.to_string().repeat(64),"value":value})
+    }
+
+    #[test]
+    #[ignore]
+    fn owned_observer_fixture() {
+        let mut binding = parse(std::env::var("SOAK_OWNED_BINDING").unwrap().as_bytes()).unwrap();
+        let socket = binding["socket"].as_str().unwrap().to_owned();
+        let marker = format!("{socket}.started");
+        let restarted = Path::new(&marker).exists();
+        fs::write(marker, b"started").unwrap();
+        let stat = fs::read_to_string("/proc/self/stat").unwrap();
+        binding["node_pid"] = std::process::id().into();
+        binding["process_start_ticks"] = stat
+            .rsplit_once(')')
+            .unwrap()
+            .1
+            .split_whitespace()
+            .nth(19)
+            .unwrap()
+            .parse::<u64>()
+            .unwrap()
+            .into();
+        let listener = UnixListener::bind(socket).unwrap();
+        for stream in listener.incoming() {
+            use std::os::fd::AsRawFd;
+            let stream = stream.unwrap();
+            let mut peer: libc::ucred = unsafe { std::mem::zeroed() };
+            let mut length = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+            assert_eq!(
+                unsafe {
+                    libc::getsockopt(
+                        stream.as_raw_fd(),
+                        libc::SOL_SOCKET,
+                        libc::SO_PEERCRED,
+                        &mut peer as *mut _ as *mut _,
+                        &mut length,
+                    )
+                },
+                0
+            );
+            if peer.pid != unsafe { libc::getppid() } {
+                continue;
+            }
+            let _ = serve(
+                stream,
+                &binding,
+                if restarted { "incarnation" } else { "valid" },
+            );
+        }
+    }
+
+    struct Owner(std::process::Child);
+    impl Drop for Owner {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    fn connect_owner(fixture: &mut Fixture, restart: bool) -> Owner {
+        let root = fixture.root.path();
+        let mut binding = fixture.envelope["manifest"]["runtime"]["authority_live"]["members"]
+            ["bounded"]["binding"]
+            .clone();
+        binding["socket"] = json!(root.join("owned.sock"));
+        let config = json!({"path":std::env::current_exe().unwrap(),"sha256":binding["executable_sha256"],"observer_socket":binding["socket"],
+            "arguments":["--ignored","--exact","linux::owned_observer_fixture","--nocapture"],"working_directory":root});
+        fs::write(root.join("process.json"), encoded(&config).unwrap()).unwrap();
+        let child = Command::new(env!("CARGO_BIN_EXE_casper-authority-process"))
+            .arg("--config")
+            .arg(root.join("process.json"))
+            .arg("--output")
+            .arg(root.join("owner"))
+            .arg("--lifetime-ms")
+            .arg("60000")
+            .env(
+                "SOAK_OWNED_BINDING",
+                String::from_utf8(encoded(&binding).unwrap()).unwrap(),
+            )
+            .spawn()
+            .unwrap();
+        let guard = Owner(child);
+        let until = Instant::now() + Duration::from_secs(5);
+        let owner = loop {
+            if root.join("owned.sock").exists() {
+                if let Ok(owner) = record(&root.join("owner/owner.json")) {
+                    break owner;
+                }
+            }
+            assert!(Instant::now() < until);
+            thread::sleep(Duration::from_millis(5));
+        };
+        binding["node_pid"] = owner["child"]["pid"].clone();
+        binding["process_start_ticks"] = owner["child"]["process_start_ticks"].clone();
+        let spec =
+            &mut fixture.envelope["manifest"]["runtime"]["authority_live"]["members"]["bounded"];
+        spec["binding"] = binding;
+        spec["process_owner"] = owner;
+        fixture.envelope["request"]["fault_schedule"] = json!([{"fault_id":"fault-1","member_id":"bounded","node_id":"bounded",
+            "incarnation":"12345678-1234-1234-1234-123456789abc","action":if restart {"restart"} else {"pause"},
+            "trigger_event":if restart {"await_restart_receipt"} else {"evaluate"},"after":[],
+            "ack_deadline":fixture.envelope["request"]["observation_deadline"]}]);
+        if restart {
+            fixture.envelope["request"]["scenario_kind"] = "restart".into();
+            let member = &mut fixture.envelope["request"]["members"][0];
+            member["predecessor_incarnation"] = member["incarnation"].clone();
+            member["incarnation"] = "23456789-1234-1234-1234-123456789abc".into();
+            let mut operations = Vec::new();
+            for member in fixture.envelope["request"]["members"].as_array().unwrap() {
+                for operation in [
+                    "load_fixture",
+                    "evaluate",
+                    "await_restart_receipt",
+                    "evaluate",
+                ] {
+                    operations.push(
+                        json!({"index":operations.len(),"operation":operation,"member":member}),
+                    );
+                }
+            }
+            fixture.envelope["operations"] = json!(operations);
+        }
+        guard
+    }
+
+    #[test]
+    fn live_pause_receipt_comes_from_an_owned_observed_process() {
+        let mut fixture = Fixture::new("valid");
+        let _owner = connect_owner(&mut fixture, false);
+        fixture.run(0);
+        let receipt = &fixture.receipts()[1];
+        let ack = parse(
+            &artifact(
+                &fixture.root.path().join("output"),
+                &receipt["observations"][0],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(ack["event_kind"], "fault_ack");
+        assert_eq!(ack["payload"]["observed_state"], "stopped");
+        assert_eq!(ack["payload"]["resumed"], true);
+        let snapshot = parse(
+            &artifact(
+                &fixture.root.path().join("output"),
+                &receipt["observations"][1],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_ne!(ack["producer_sequence"], snapshot["producer_sequence"]);
+    }
+
+    #[test]
+    fn live_restart_requires_exit_and_the_pinned_successor_capture() {
+        let mut fixture = Fixture::new("valid");
+        let _owner = connect_owner(&mut fixture, true);
+        fixture.run(0);
+        let receipts = fixture.receipts();
+        assert_eq!(receipts.len(), 8);
+        assert_eq!(receipts[1]["observations"], json!([]));
+        let ack = parse(
+            &artifact(
+                &fixture.root.path().join("output"),
+                &receipts[2]["observations"][0],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(ack["event_kind"], "fault_ack");
+        assert_eq!(ack["payload"]["prior_exit"], true);
+        assert_eq!(ack["payload"]["ready"], true);
+        assert_eq!(
+            ack["payload"]["new_incarnation"],
+            "23456789-1234-1234-1234-123456789abc"
+        );
+    }
+
+    #[test]
+    fn live_restart_enrolls_a_successor_from_the_verified_capture() {
+        let mut fixture = Fixture::new("valid");
+        let _owner = connect_owner(&mut fixture, true);
+        fixture.envelope["request"]["members"][0]["incarnation"] = "pending-restart".into();
+        fixture.envelope["request"]["members"][0]["incarnation_binding"] =
+            "observed_restart".into();
+        let member = fixture.envelope["request"]["members"][0].clone();
+        for step in fixture.envelope["operations"].as_array_mut().unwrap() {
+            if step["member"]["member_id"] == "bounded" {
+                step["member"] = member.clone();
+            }
+        }
+        fixture.run(0);
+        let receipts = fixture.receipts();
+        let root = fixture.root.path().join("output");
+        let ack = parse(&artifact(&root, &receipts[2]["observations"][0]).unwrap()).unwrap();
+        let evaluation = parse(&artifact(&root, &receipts[3]["observations"][0]).unwrap()).unwrap();
+        assert_eq!(ack["incarnation"], ack["payload"]["new_incarnation"]);
+        assert_ne!(ack["incarnation"], "pending-restart");
+        assert_eq!(evaluation["incarnation"], ack["incarnation"]);
+        for mode in [
+            "candidate",
+            "prior_exit",
+            "ready",
+            "predecessor",
+            "clock",
+            "late",
+        ] {
+            let mut invalid = ack.clone();
+            match mode {
+                "candidate" => invalid["candidate_id"] = "foreign".into(),
+                "prior_exit" => invalid["payload"]["prior_exit"] = false.into(),
+                "ready" => invalid["payload"]["ready"] = false.into(),
+                "predecessor" => {
+                    invalid["incarnation"] = member["predecessor_incarnation"].clone();
+                    invalid["payload"]["new_incarnation"] =
+                        member["predecessor_incarnation"].clone();
+                }
+                "clock" => invalid["time"]["clock_id"] = "foreign".into(),
+                "late" => invalid["time"]["monotonic_ns"] = u64::MAX.to_string().into(),
+                _ => unreachable!(),
+            }
+            assert!(
+                incarnation::enroll(
+                    &member,
+                    fixture.envelope["request"]["fault_schedule"]
+                        .as_array()
+                        .unwrap(),
+                    &invalid
+                )
+                .is_err(),
+                "{mode}"
+            );
+        }
     }
 
     fn absent(reason: &str, digest: char) -> Value {

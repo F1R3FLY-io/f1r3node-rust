@@ -3,6 +3,14 @@ on:
   pull_request:
     paths:
       - scripts/casper-soak/**
+      - comm/**
+      - models/**
+      - crypto/**
+      - shared/**
+      - rspace++/**
+      - graphz/**
+      - docs/casper/design/authority-*.md
+      - formal/tlaplus/casper_soak/profiles/authority_finality/**
       - docs/claims/casper-authority-*.md
       - .github/workflows/casper-authority-adapter.yml
       - Cargo.toml
@@ -20,7 +28,7 @@ concurrency:
 jobs:
   adapter:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
@@ -29,6 +37,10 @@ jobs:
         with:
           toolchain: nightly-2026-02-09
           components: clippy
+      - name: Install transport build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes protobuf-compiler libssl-dev pkg-config
       - name: Check observation mapping and process receipts
         run: bash scripts/casper-soak/check-authority-adapter.sh target/casper-authority-adapter-ci
       - name: Check the live authority executor

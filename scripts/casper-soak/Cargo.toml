@@ -5,6 +5,14 @@ edition = "2021"
 publish = false
 license = "Apache-2.0"
 
+[features]
+p2p = ["dep:comm", "dep:models", "dep:prost", "dep:tokio", "dep:crypto"]
+
+[[bin]]
+name = "casper-authority-p2p"
+path = "src/bin/casper-authority-p2p.rs"
+required-features = ["p2p"]
+
 [dependencies]
 clap = { workspace = true }
 eyre = { workspace = true }
@@ -15,3 +23,8 @@ serde_json = { workspace = true }
 sha2 = "0.10"
 tempfile = { workspace = true }
 zip = { version = "=3.0.0", default-features = false, features = ["deflate"] }
+comm = { path = "../../comm", optional = true }
+models = { path = "../../models", optional = true }
+prost = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+crypto = { path = "../../crypto", optional = true }

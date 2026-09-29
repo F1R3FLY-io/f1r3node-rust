@@ -96,6 +96,14 @@ Evaluation receipts identify the fixture digest, applied status, and ordered ste
 
 Restart receipts additionally require Boolean prior-exit and readiness fields. The predecessor and new incarnation must match the request.
 
+A member can instead set `incarnation_binding` to `observed_restart` and `incarnation` to `pending-restart`. This mode requires one scheduled restart with a pinned predecessor.
+
+The applied restart acknowledgment enrolls the observed successor UUID. Its candidate, fault identity, prior exit, readiness, clock, and deadline must match the request.
+
+The successor must differ from the predecessor. Subsequent observations must use that successor and occur at or after readiness.
+
+The executable receipt validator also requires enrollment before it accepts a successor observation. The bounded model assumes these concrete identity checks.
+
 Receipts record provider assertions. They do not independently prove node execution, process ownership, or containment.
 
 The collector reads `observations.json`, which lists raw artifact references. It validates digests, capture status, producer identities, event identities, and producer sequence order.

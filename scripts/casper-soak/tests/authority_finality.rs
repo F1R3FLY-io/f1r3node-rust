@@ -603,6 +603,13 @@ fn scenario_executor_fixture() {
             if !include {
                 continue;
             }
+            if mode == "deferred_restart"
+                && step["member"]["incarnation_binding"] == "observed_restart"
+                && step["operation"] == "evaluate"
+                && index % 4 == 1
+            {
+                continue;
+            }
             if mode == "missing_final_evaluation"
                 && index == request["operations"].as_array().unwrap().len() as u64 - 1
             {
@@ -721,6 +728,31 @@ fn executable_scenarios_bind_all_nine_kinds_to_the_actual_classifier() {
         assert!(f.root.join("executed/profile/collection.json").is_file());
         assert_eq!(report["evidence_kind"], "synthetic_fixture");
     }
+}
+
+#[test]
+fn deferred_restart_binds_the_observed_successor_through_the_classifier() {
+    let mut f = Fixture::new("execute-deferred-restart");
+    f.request["members"][0]["predecessor_incarnation"] = "incarnation-1".into();
+    f.request["members"][0]["incarnation"] = "pending-restart".into();
+    f.request["members"][0]["incarnation_binding"] = "observed_restart".into();
+    f.request["fault_schedule"] = json!([{"fault_id":"restart-1","member_id":"reference","node_id":"node-reference",
+        "incarnation":"incarnation-1","action":"restart","trigger_event":"fixture-ready","after":[],
+        "ack_deadline":{"clock_id":"fixture-clock","monotonic_ns":"90"}}]);
+    f.configure("restart", "8", "12", "1", "finalized", true);
+    f.observations[0]["incarnation"] = "23456789-1234-1234-1234-123456789abc".into();
+    let mut ack = f.observations[0].clone();
+    ack["record_id"] = "restart-ack".into();
+    ack["event_id"] = "restart-event".into();
+    ack["event_kind"] = "fault_ack".into();
+    ack["producer_sequence"] = "2".into();
+    ack["payload"] = json!({"fault_id":"restart-1","action":"restart","incarnation":"incarnation-1",
+        "trigger_event":"fixture-ready","status":"applied","prior_exit":true,"ready":true,"new_incarnation":f.observations[0]["incarnation"]});
+    f.observations.push(ack);
+    let report = execute_fixture(&mut f, "deferred_restart", 0, "passed");
+    assert_eq!(report["execution"]["binding"]["status"], "bound");
+    f.observations[2]["payload"]["new_incarnation"] = "34567890-1234-1234-1234-123456789abc".into();
+    f.invoke(2, "invalid_input");
 }
 
 #[test]

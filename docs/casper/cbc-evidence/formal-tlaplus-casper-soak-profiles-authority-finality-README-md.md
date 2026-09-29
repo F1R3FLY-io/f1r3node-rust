@@ -1,31 +1,31 @@
 # CbC Evidence: formal/tlaplus/casper_soak/profiles/authority_finality/README.md
 
-Executable binding changes require renewed verification and acceptance. Previous acceptance remains bound to its historical sources.
+Controlled verification does not qualify a node candidate. Source-bound acceptance remains pending.
 
 ```json
 {
   "artifact": {
     "path": "formal/tlaplus/casper_soak/profiles/authority_finality/README.md",
     "id": "formal-tlaplus-casper-soak-profiles-authority-finality-README-md",
-    "commit": "66c21f26eeceac6027ad618cd96df07482a864c2",
+    "commit": "63b9ace2b2c300b9dc605903d12bbb767566ae4b",
     "commit_is_base": true,
     "working_tree": true,
-    "sha256": "bc579f07c72c2c3e5f4a02f7017125344ab8d2a778578ec23638c9d2762d35fa"
+    "sha256": "8fc95ea6c73b59c4f81a35f194fbdc8c66a769d598428333db1a747995672e0f"
   },
   "claim": "docs/claims/casper-soak-authority-finality.md",
   "claim_ids": [
     "CLAIM-CASPER-SOAK-002"
   ],
   "claim_digests": {
-    "docs/claims/casper-soak-authority-finality.md": "3838b950f0def2bcd4ff777017781a7d3e49faede57a1c71e679c613b57c5547"
+    "docs/claims/casper-soak-authority-finality.md": "11570876df0aa9c642f28e602d3c120d0954337f59c174eae98bce5e9a6cfb8a"
   },
   "adapter": "embedded",
   "status": "pending",
   "scope": "bounded-authority-finality-profile",
   "evidence": {
-    "kind": "executable-binding-renewal-not-acceptance",
-    "ref": "docs/casper/cbc-evidence/runs/casper-authority-execution-20260928-01/report.json",
-    "sha256": "6260b444191cfffa1d733c435870c13f4b99686d877e253bd9017b35ba15b06c"
+    "kind": "controlled-provider-verification-not-acceptance",
+    "ref": "docs/casper/cbc-evidence/runs/casper-authority-provider-20260928-01/report.json",
+    "sha256": "d85f9d4ce21cc13205e44f0ef94ab6ead8ca2a192a094febb128198135810470"
   },
   "tiers": {
     "refutation": "bounded-safety-pass",
@@ -40,9 +40,9 @@ Executable binding changes require renewed verification and acceptance. Previous
   "waiver": null,
   "verified_at": null,
   "previous_ledger": {
-    "archive": "docs/casper/cbc-evidence/runs/casper-profile-binding-review-20260919-01/ledgers.tar.gz",
-    "sha256": "52d9f45f0cff756cc13da2b5770023fd57072c4c5ba984d3822bb75a26acd5db",
-    "member": "docs/casper/cbc-evidence/formal-tlaplus-casper-soak-profiles-authority-finality-README-md.md"
+    "path": "docs/casper/cbc-evidence/runs/casper-authority-provider-20260928-01/previous-records/formal-tlaplus-casper-soak-profiles-authority-finality-README-md.md",
+    "sha256": "2fe976a9ae8314eecc9b70062bf329b3df67978898121947135f33a26e2b67a7",
+    "commit": "63b9ace2b2c300b9dc605903d12bbb767566ae4b"
   },
   "previous_records": [
     {

@@ -14,6 +14,8 @@ use casper_soak::{
 use eyre::{ensure, Result};
 use serde_json::{json, Value};
 
+use crate::incarnation;
+
 fn retain(root: &Path, reference: &Value, source: &Path) -> Result<()> {
     let bytes = artifact(source, reference)?;
     let target = relative(root, text(&reference["path"])?)?;
@@ -87,6 +89,7 @@ fn bind_receipts(root: &Path, envelope: &Value, request_digest: &str) -> Result<
     let mut sources = Vec::new();
     let mut record_ids = BTreeSet::new();
     let mut complete = receipts.len() == expected.len();
+    let mut successors = BTreeMap::new();
     for (reference, operation) in receipts.iter().zip(expected) {
         let bytes = artifact(root, reference)?;
         let receipt = parse(&bytes)?;
@@ -146,7 +149,33 @@ fn bind_receipts(root: &Path, envelope: &Value, request_digest: &str) -> Result<
                     "An execution observation identity differs: {field}."
                 );
             }
-            for field in ["member_id", "node_id", "incarnation", "evaluation_mode"] {
+            let member = &operation["member"];
+            let name = text(&member["member_id"])?;
+            if incarnation::deferred(member) && observation["event_kind"] == "fault_ack" {
+                let successor = incarnation::enroll(
+                    member,
+                    array(&envelope["request"]["fault_schedule"])?,
+                    &observation,
+                )?;
+                ensure!(
+                    successors
+                        .insert(name.to_owned(), successor["incarnation"].clone())
+                        .is_none(),
+                    "The successor enrollment repeats."
+                );
+            }
+            let expected_incarnation = if incarnation::deferred(member) {
+                successors
+                    .get(name)
+                    .ok_or_else(|| eyre::eyre!("An observation precedes successor enrollment."))?
+            } else {
+                &member["incarnation"]
+            };
+            ensure!(
+                &observation["incarnation"] == expected_incarnation,
+                "The execution incarnation differs."
+            );
+            for field in ["member_id", "node_id", "evaluation_mode"] {
                 ensure!(
                     observation[field] == operation["member"][field],
                     "An execution member differs: {field}."

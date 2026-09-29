@@ -8,10 +8,18 @@ pre_merge_tasks: [TASK-017-12]
 artifacts:
   - scripts/casper-soak/src/authority_live.rs
   - scripts/casper-soak/src/bin/casper-authority-live.rs
+  - scripts/casper-soak/src/authority_p2p.rs
+  - scripts/casper-soak/src/authority_process.rs
+  - scripts/casper-soak/src/authority_incarnation.rs
+  - scripts/casper-soak/src/bin/casper-authority-p2p.rs
+  - scripts/casper-soak/src/bin/casper-authority-process.rs
   - scripts/casper-soak/tests/authority_live.rs
+  - scripts/casper-soak/tests/authority_p2p.rs
+  - scripts/casper-soak/tests/authority_process.rs
   - scripts/casper-soak/check-authority-live.sh
   - .github/workflows/casper-authority-adapter.yml
   - docs/casper/design/authority-live-executor.md
+  - docs/casper/design/authority-provider-adaptation.md
 refutation: pending
 construction: pending
 binding: pending
@@ -30,9 +38,11 @@ Each receipt binds the execution request, preceding receipt, step, and retained 
 
 The qualification command does not enable campaign admission. The authority profile retains its live qualification barrier.
 
-The workload driver owns fixture application and process controls. Its implementation and candidate qualification require separate evidence.
+The block driver submits pinned protobuf bytes through the production peer transport. Transport delivery does not establish block validation or input export identity.
 
-The executor rejects fault schedules before driver launch. Connecting the owned process receipt adapter remains outstanding.
+The process owner controls only its native child. The executor connects pause and restart receipts to captures from that child.
+
+Restart readiness requires a verified successor capture. Requests can pin the successor or explicitly enroll its observed incarnation through the bound restart receipt.
 
 Controlled Linux tests verify executable invocation, transport capture, receipt binding, unavailable capabilities, and rejection of changed identities.
 

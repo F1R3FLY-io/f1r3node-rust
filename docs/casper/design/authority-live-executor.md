@@ -92,9 +92,9 @@ The executor checks exported bytes against the pinned inputs. It then captures t
 
 These checks bind driver assertions to the observed snapshot. They do not prove that a driver applied a fixture correctly.
 
-A candidate-specific driver must implement fixture loading, replay, justification injection, and dependency controls through supported interfaces. This change does not supply those node interfaces.
+A candidate-specific driver must implement fixture loading, replay, justification injection, and dependency controls through supported interfaces. The [provider adapter](authority-provider-adaptation.md) submits prepared block fixtures through the existing peer transport.
 
-Fault schedules remain blocked before driver launch. Connecting the owned process receipt recorder requires a separate adapter, including restart incarnation binding.
+Fault schedules require a pinned process owner. The executor connects process receipts to observer captures, including restart incarnation checks.
 
 ## Observation handling
 
@@ -124,6 +124,6 @@ The Linux tests run a real Unix socket observer fixture and a pinned native work
 
 The adapter workflow runs the live executor tests and Clippy. The gate retains source inventories and controlled JSON captures.
 
-Live completion still requires the candidate-specific workload driver, missing node observations, process receipt integration, and qualification against the selected candidate.
+Live completion still requires candidate fixture preparation, captured input exports, missing node observations, and qualification against the selected candidate.
 
 The [live executor claim](../../claims/casper-authority-live-executor.md) remains pending. These changes do not authorize claim discharge or campaign dispatch.

@@ -18,6 +18,13 @@ use serde_json::{json, Value};
 mod observer;
 use observer::mapping;
 
+#[path = "authority_process.rs"]
+#[allow(dead_code)]
+mod process;
+
+#[path = "authority_incarnation.rs"]
+mod incarnation;
+
 fn missing(reason: &str) -> Value { json!({"presence":"missing","value":null,"reason":reason}) }
 
 fn observed(value: Value) -> Value { json!({"presence":"observed","value":value,"reason":null}) }
@@ -179,9 +186,58 @@ fn validate(envelope: &Value, output: &Path) -> Result<Vec<Value>> {
         envelope["operations"] == json!(operations),
         "The generated operation inventory differs."
     );
+    let faults = array(&request["fault_schedule"])?;
+    for member in &members {
+        incarnation::validate(member, faults)?;
+    }
+    ensure!(faults.len() <= 1, "Only one process fault is supported.");
+    for fault in faults {
+        let member = members
+            .iter()
+            .find(|member| member["member_id"] == fault["member_id"])
+            .ok_or_else(|| eyre::eyre!("The fault member is unknown."))?;
+        ensure!(
+            fault["node_id"] == member["node_id"] && array(&fault["after"])?.is_empty(),
+            "The fault node or ordering differs."
+        );
+        let action = text(&fault["action"])?;
+        ensure!(
+            ["pause", "restart"].contains(&action),
+            "The process fault is unsupported."
+        );
+        ensure!(
+            fault["ack_deadline"]["clock_id"] == request["observation_deadline"]["clock_id"]
+                && manifest::decimal(&fault["ack_deadline"]["monotonic_ns"])?
+                    <= manifest::decimal(&request["observation_deadline"]["monotonic_ns"])?,
+            "The fault deadline differs."
+        );
+        ensure!(
+            if action == "restart" {
+                member["predecessor_incarnation"] == fault["incarnation"]
+                    && member["incarnation"] != fault["incarnation"]
+                    && fault["trigger_event"] == "await_restart_receipt"
+            } else {
+                member["incarnation"] == fault["incarnation"]
+            },
+            "The fault incarnation or trigger differs."
+        );
+        ensure!(
+            sequence(text(&request["scenario_kind"])?)?
+                .iter()
+                .any(|step| fault["trigger_event"] == *step),
+            "The fault trigger is unsupported."
+        );
+        let owner = &manifest["runtime"]["authority_live"]["members"][text(&member["member_id"])?]
+            ["process_owner"];
+        ensure!(
+            owner.is_object() && Path::new(text(&owner["socket"])?).is_absolute(),
+            "The owned process provider is required."
+        );
+    }
     ensure!(
-        request["scenario_kind"] != "restart" && array(&request["fault_schedule"])?.is_empty(),
-        "Live faults require a qualified process receipt adapter before any driver launch."
+        request["scenario_kind"] != "restart"
+            || (faults.len() == 1 && faults[0]["action"] == "restart"),
+        "The restart schedule is required."
     );
     let (clock_id, now) = clock()?;
     ensure!(
@@ -399,6 +455,7 @@ fn snapshot(
         missing("authority_target_unavailable")
     };
     result["schema_version"] = 1.into();
+    result["incarnation"] = mapping["identity"]["incarnation"].clone();
     result["record_id"] = format!("live-{sequence}").into();
     result["event_id"] = format!("live-{sequence}").into();
     result["event_kind"] = "authority_snapshot".into();
@@ -423,6 +480,7 @@ fn capture(
     nonce: &str,
     deadline: Instant,
     incarnation: &Value,
+    owner: &Value,
 ) -> Result<Value> {
     let remaining = deadline
         .saturating_duration_since(Instant::now())
@@ -440,7 +498,60 @@ fn capture(
         &id[20..32]
     )
     .into();
-    let report = observer::collect(&encoded(&binding)?, &encoded(authority)?, output)?;
+    let report = if owner.is_null() {
+        observer::collect(&encoded(&binding)?, &encoded(authority)?, output)?
+    } else {
+        let (clock_id, now) = clock()?;
+        let request = json!({"schema_version":1,"action":"capture","binding":binding,"authority":authority,
+            "clock_id":clock_id,"deadline_monotonic_ns":now.saturating_add(deadline.saturating_duration_since(Instant::now()).as_nanos() as u64)});
+        let response = process::call(
+            owner,
+            &request,
+            deadline.saturating_duration_since(Instant::now()),
+        )?;
+        let root = Path::new(text(&response["capture_root"])?);
+        let parent = Path::new(text(&owner["socket"])?)
+            .parent()
+            .ok_or_else(|| eyre::eyre!("The owner directory is absent."))?;
+        ensure!(
+            root.is_absolute() && root.parent() == Some(parent) && !root.is_symlink(),
+            "The owner capture path differs."
+        );
+        let bytes = regular(&root.join("report.json"), MAX_BYTES)?;
+        ensure!(
+            hash(&bytes) == response["report_sha256"],
+            "The owner capture report differs."
+        );
+        let report = parse(&bytes)?;
+        ensure!(
+            array(&report["artifacts"])?.len() <= 6,
+            "The capture artifact inventory exceeds its bound."
+        );
+        fs::create_dir(output)?;
+        for reference in array(&report["artifacts"])? {
+            let name = text(&reference["path"])?;
+            ensure!(
+                [
+                    "binding.json",
+                    "authority.json",
+                    "hello.json",
+                    "request.json",
+                    "response.json",
+                    "mapping.json"
+                ]
+                .contains(&name),
+                "The capture artifact name differs."
+            );
+            exclusive(&output.join(name), &artifact(root, reference)?, true)?;
+        }
+        ensure!(
+            record(&output.join("binding.json"))? == binding
+                && record(&output.join("authority.json"))? == *authority,
+            "The owner captured another request."
+        );
+        exclusive(&output.join("report.json"), &bytes, true)?;
+        report
+    };
     ensure!(
         report["status"] == "captured" && report["mapping_status"] == "mapped",
         "The authority capture failed."
@@ -455,7 +566,7 @@ fn capture(
         "The retained mapping differs."
     );
     ensure!(
-        &mapping["identity"]["incarnation"] == incarnation,
+        incarnation.is_null() || &mapping["identity"]["incarnation"] == incarnation,
         "The captured incarnation differs."
     );
     Ok(mapping)
@@ -491,6 +602,9 @@ pub fn run(bytes: &[u8], output: &Path) -> Result<Value> {
     let mut errors = Vec::new();
     let mut captures = Vec::new();
     let mut all_applied = true;
+    let mut active_bindings: BTreeMap<String, Value> = BTreeMap::new();
+    let mut active_incarnations: BTreeMap<String, Value> = BTreeMap::new();
+    let mut applied_faults = BTreeSet::new();
     inventory(output, &digest, &receipts)?;
     for (i, step) in operations.iter().enumerate() {
         let attempt = (|| -> Result<(Value, Vec<Value>, Value)> {
@@ -498,7 +612,24 @@ pub fn run(bytes: &[u8], output: &Path) -> Result<Value> {
             let member = &step["member"];
             let name = text(&member["member_id"])?;
             let spec = &config["members"][name];
-            let binding = spec["binding"].clone();
+            let mut binding = active_bindings
+                .get(name)
+                .unwrap_or(&spec["binding"])
+                .clone();
+            let scheduled = array(&envelope["request"]["fault_schedule"])?
+                .iter()
+                .find(|f| f["member_id"] == name);
+            let before_incarnation = if let Some(fault) = scheduled.filter(|f| {
+                f["action"] == "restart"
+                    && !applied_faults.contains(f["fault_id"].as_str().unwrap_or_default())
+            }) {
+                fault["incarnation"].clone()
+            } else {
+                active_incarnations
+                    .get(name)
+                    .unwrap_or(&member["incarnation"])
+                    .clone()
+            };
             let authority = &spec["authority"];
             ensure!(
                 array(&authority["targets"])?.len() == 1
@@ -534,10 +665,67 @@ pub fn run(bytes: &[u8], output: &Path) -> Result<Value> {
                 &before,
                 &format!("{digest}:{i}:before"),
                 deadline,
-                &member["incarnation"],
+                &before_incarnation,
+                &spec["process_owner"],
             )?;
             let before_ref = json!({"step":i,"path":format!("step-{i:02}/before/report.json"),"sha256":file_hash(&before.join("report.json"))?});
             captures.push(before_ref.clone());
+            let mut process_receipt = None;
+            if let Some(fault) = scheduled.filter(|f| {
+                f["trigger_event"] == step["operation"]
+                    && !applied_faults.contains(f["fault_id"].as_str().unwrap_or_default())
+            }) {
+                let fault_id = text(&fault["fault_id"])?;
+                let (clock_id, now) = clock()?;
+                let maximum = now.saturating_add(
+                    deadline
+                        .saturating_duration_since(Instant::now())
+                        .as_nanos() as u64,
+                );
+                let fault_request = json!({"schema_version":1,"execution_request_sha256":digest,"step":step,"fault":fault,
+                    "clock_id":clock_id,"deadline_monotonic_ns":manifest::decimal(&fault["ack_deadline"]["monotonic_ns"])?.min(maximum),
+                    "action":fault["action"],"hold_ms":spec["pause_hold_ms"].as_u64().unwrap_or(10),
+                    "process":{"pid":b.node_pid,"process_start_ticks":b.process_start_ticks,"executable_sha256":b.executable_sha256}});
+                save(
+                    output,
+                    &format!("step-{i:02}/process-request.json"),
+                    &encoded(&fault_request)?,
+                )?;
+                let response = process::call(
+                    &spec["process_owner"],
+                    &fault_request,
+                    deadline.saturating_duration_since(Instant::now()),
+                )?;
+                ensure!(
+                    response["before"]["pid"] == b.node_pid
+                        && response["before"]["process_start_ticks"] == b.process_start_ticks
+                        && response["after"]["executable_sha256"] == b.executable_sha256,
+                    "The process receipt candidate differs."
+                );
+                save(
+                    output,
+                    &format!("step-{i:02}/process-response.json"),
+                    &encoded(&response)?,
+                )?;
+                if fault["action"] == "restart" {
+                    ensure!(
+                        response["prior_exit"] == true
+                            && response["after"]["pid"] != response["before"]["pid"],
+                        "The predecessor exit is unavailable."
+                    );
+                    binding["node_pid"] = response["after"]["pid"].clone();
+                    binding["process_start_ticks"] =
+                        response["after"]["process_start_ticks"].clone();
+                    active_bindings.insert(name.to_owned(), binding.clone());
+                } else {
+                    ensure!(
+                        response["observed_state"] == "stopped" && response["resumed"] == true,
+                        "The pause and resume evidence is incomplete."
+                    );
+                }
+                applied_faults.insert(fault_id.to_owned());
+                process_receipt = Some((fault.clone(), response));
+            }
             let step_request = json!({"schema_version":1,"execution_request_sha256":digest,"execution_nonce":envelope["execution_nonce"],
                 "step":step,"inputs":envelope["request"]["inputs"],"input_root":root,"execution_output_root":output,
                 "fault_schedule":envelope["request"]["fault_schedule"],"observer_binding":binding,"before_capture":before_ref,
@@ -568,16 +756,56 @@ pub fn run(bytes: &[u8], output: &Path) -> Result<Value> {
                 }
                 manifest::hex(&applied["snapshot_digest"], 64)?;
             }
-            let capture_path = step_root.join("capture");
-            let mapping = capture(
-                &binding,
-                authority,
-                &capture_path,
-                &format!("{digest}:{i}:after"),
-                deadline,
-                &member["incarnation"],
-            )?;
-            captures.push(json!({"step":i,"path":format!("step-{i:02}/capture/report.json"),"sha256":file_hash(&capture_path.join("report.json"))?}));
+            let restarted = process_receipt
+                .as_ref()
+                .is_some_and(|(fault, _)| fault["action"] == "restart");
+            let after_incarnation = if restarted && incarnation::deferred(member) {
+                Value::Null
+            } else if restarted {
+                member["incarnation"].clone()
+            } else {
+                before_incarnation
+            };
+            let mut capture_attempt = 0usize;
+            let (mapping, capture_path) = loop {
+                let label = if capture_attempt == 0 {
+                    "capture".to_owned()
+                } else {
+                    format!("capture-{capture_attempt:03}")
+                };
+                let path = step_root.join(&label);
+                match capture(
+                    &binding,
+                    authority,
+                    &path,
+                    &format!("{digest}:{i}:after:{capture_attempt}"),
+                    deadline,
+                    &after_incarnation,
+                    &spec["process_owner"],
+                ) {
+                    Ok(mapping) => break (mapping, path),
+                    Err(error)
+                        if !restarted
+                            || capture_attempt >= 100
+                            || Instant::now() + Duration::from_millis(50) >= deadline =>
+                    {
+                        return Err(error)
+                    }
+                    Err(_) => {
+                        capture_attempt += 1;
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                }
+            };
+            if restarted {
+                ensure!(
+                    mapping["identity"]["incarnation"] != member["predecessor_incarnation"],
+                    "The replacement retained the predecessor incarnation."
+                );
+                active_incarnations
+                    .insert(name.to_owned(), mapping["identity"]["incarnation"].clone());
+            }
+            captures.push(json!({"step":i,"path":capture_path.strip_prefix(output)?.join("report.json"),"sha256":file_hash(&capture_path.join("report.json"))?}));
             if is_applied {
                 ensure!(
                     mapping["snapshot_digest"] == applied["snapshot_digest"],
@@ -592,8 +820,49 @@ pub fn run(bytes: &[u8], output: &Path) -> Result<Value> {
             let history = completed.entry(name.to_owned()).or_default();
             history.push(step["operation"].clone());
             let mut observations = Vec::new();
-            if step["operation"] == "evaluate" {
-                let value = snapshot(&envelope, step, &mapping, *all_applied, history, i)?;
+            if let Some((fault, response)) = process_receipt {
+                let mut value = snapshot(&envelope, step, &mapping, false, history, i * 2)?;
+                value["record_id"] = format!("live-fault-{i}").into();
+                value["event_kind"] = "fault_ack".into();
+                value["time"]["monotonic_ns"] =
+                    number(&response["monotonic_ns"])?.to_string().into();
+                let mut payload = response;
+                for field in ["fault_id", "action", "incarnation", "trigger_event"] {
+                    payload[field] = fault[field].clone();
+                }
+                if fault["action"] == "restart" {
+                    let (_, ready_at) = clock()?;
+                    ensure!(
+                        ready_at <= manifest::decimal(&fault["ack_deadline"]["monotonic_ns"])?,
+                        "The restart readiness receipt is late."
+                    );
+                    value["time"]["monotonic_ns"] = ready_at.to_string().into();
+                    payload["ready"] = true.into();
+                    payload["new_incarnation"] = mapping["identity"]["incarnation"].clone();
+                }
+                value["payload"] = payload;
+                if incarnation::deferred(member) {
+                    incarnation::enroll(
+                        member,
+                        array(&envelope["request"]["fault_schedule"])?,
+                        &value,
+                    )?;
+                }
+                let mut reference = save(
+                    output,
+                    &format!("step-{i:02}/fault.json"),
+                    &encoded(&value)?,
+                )?;
+                reference["observation_ids"] = json!([value["record_id"]]);
+                observations.push(reference);
+            }
+            if step["operation"] == "evaluate"
+                && &mapping["identity"]["incarnation"]
+                    == active_incarnations
+                        .get(name)
+                        .unwrap_or(&member["incarnation"])
+            {
+                let value = snapshot(&envelope, step, &mapping, *all_applied, history, i * 2 + 1)?;
                 let mut reference = save(
                     output,
                     &format!("step-{i:02}/observation.json"),
@@ -639,6 +908,8 @@ pub fn run(bytes: &[u8], output: &Path) -> Result<Value> {
         "node_launch_count":null,"blocked_reasons":["live_adapter_unqualified","paired_fork_choice_unavailable","exact_traversal_measurements_unavailable"],
         "source_digests":{
             "scripts/casper-soak/src/authority_live.rs":hash(include_bytes!("authority_live.rs")),
+            "scripts/casper-soak/src/authority_process.rs":hash(include_bytes!("authority_process.rs")),
+            "scripts/casper-soak/src/authority_incarnation.rs":hash(include_bytes!("authority_incarnation.rs")),
             "scripts/casper-soak/src/bin/casper-authority-live.rs":hash(include_bytes!("bin/casper-authority-live.rs")),
             "scripts/casper-soak/src/authority_observer.rs":hash(include_bytes!("authority_observer.rs")),
             "scripts/casper-soak/src/authority_mapping.rs":hash(include_bytes!("authority_mapping.rs"))}});

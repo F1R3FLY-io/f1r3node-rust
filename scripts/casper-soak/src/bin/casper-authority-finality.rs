@@ -2,6 +2,8 @@
 mod profile;
 #[path = "../authority_execution.rs"]
 mod execution;
+#[path = "../authority_incarnation.rs"]
+mod incarnation;
 
 use std::fs;
 use std::path::{Path, PathBuf};

@@ -828,13 +828,18 @@ name = "casper-soak"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "comm",
+ "crypto",
  "eyre",
  "libc",
+ "models",
+ "prost 0.14.4",
  "regex",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
+ "tokio",
  "zip 3.0.0",
 ]
 
