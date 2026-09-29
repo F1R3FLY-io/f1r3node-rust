@@ -22,7 +22,7 @@ use casper::rust::engine::engine_with_casper::EngineWithCasper;
 use casper::rust::engine::multi_parent_casper::MultiParentCasperImpl;
 use crypto::rust::public_key::PublicKey;
 
-use crate::helper::test_node::TestNode;
+use crate::helper::test_node::{ShardOverrides, TestNode};
 use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
 
 struct TestContext {
@@ -455,6 +455,116 @@ async fn end_to_end_win_finalizes_via_admission_hook() {
         finalized,
         "the admission-hook-driven register must finalize the win within \
          the settle ladder"
+    );
+}
+
+/// A floor advance must settle the verdicts it decides, without waiting for
+/// another block to be admitted.
+///
+/// The register arms each open sig against a floor height and re-checks when
+/// the floor advances — but the only thing that enters the register is block
+/// admission (`block_admission::admit_handle_valid_block`), while the floor is
+/// advanced by the finalizer. So an advance that lands after the last block of
+/// a height has been handled is not acted on until the next block arrives, one
+/// propose interval later. On a paced shard that is ~10s, and it is what splits
+/// a shard's verdicts into two waves either side of a test's deadline.
+///
+/// `finalization_rate = 0` suppresses the detached finalizer, so the floor moves
+/// only at the `last_finalized_block()` calls below — no block is admitted
+/// between the advance and the assertion.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_floor_advance_settles_the_verdict_without_another_block() {
+    use casper::rust::util::construct_deploy;
+
+    // Single-validator genesis: silent bonded validators never contribute
+    // witnessing weight, so the floor cannot advance at all without them.
+    let genesis_parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(1));
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(genesis_parameters))
+        .await
+        .expect("build single-validator genesis");
+    let shard_id = genesis.genesis_block.shard_id.clone();
+    let mut nodes = TestNode::create_network_with_overrides(genesis, 1, ShardOverrides {
+        max_parent_depth: Some(10),
+        finalization_rate: Some(0),
+        ..Default::default()
+    })
+    .await
+    .expect("create_network");
+    nodes[0].allow_empty_blocks = true;
+
+    let deploy = {
+        tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
+        construct_deploy::source_deploy_now_full(
+            r#"@"floor_advance_sweep"!(1)"#.to_string(),
+            None,
+            None,
+            None,
+            Some(0),
+            Some(shard_id.clone()),
+        )
+        .expect("build deploy")
+    };
+    let sig = deploy.sig.clone();
+    let carrier = nodes[0]
+        .add_block_from_deploys(std::slice::from_ref(&deploy))
+        .await
+        .expect("propose the win");
+    let carrier_number = carrier.body.state.block_number;
+
+    // Build height above the carrier so an advance has somewhere to go. No
+    // finalizer runs during this, so the floor stays at genesis throughout.
+    for round in 0..12i32 {
+        let marker = {
+            tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
+            construct_deploy::basic_deploy_data(round, None, Some(shard_id.clone()))
+                .expect("marker")
+        };
+        nodes[0]
+            .add_block_from_deploys(std::slice::from_ref(&marker))
+            .await
+            .expect("settle proposal");
+    }
+
+    let dag = nodes[0].casper.block_dag().await.expect("dag");
+    assert_eq!(
+        deploy_finalization_status::resolve(&dag, nodes[0].casper.block_store(), &sig, None)
+            .expect("resolve")
+            .state,
+        DeployFinalizationState::Pending,
+        "with no finalizer the floor never moved, so nothing can be settled yet"
+    );
+
+    // Advance the floor, admitting NO further block. Each call runs
+    // `compute_last_finalized_block` synchronously and adopts at most one floor.
+    let mut lfb_number = 0i64;
+    for _ in 0..12 {
+        lfb_number = nodes[0]
+            .casper
+            .last_finalized_block()
+            .await
+            .expect("advance the floor")
+            .body
+            .state
+            .block_number;
+    }
+
+    // The control: without this the test would look identical if the floor had
+    // never moved, which would make it red for a reason that is not the defect.
+    assert!(
+        lfb_number >= carrier_number,
+        "the floor must have advanced to at least the carrier for the verdict to be \
+         decidable at all: floor {lfb_number}, carrier {carrier_number}"
+    );
+
+    let dag = nodes[0].casper.block_dag().await.expect("dag");
+    assert_eq!(
+        deploy_finalization_status::resolve(&dag, nodes[0].casper.block_store(), &sig, None)
+            .expect("resolve")
+            .state,
+        DeployFinalizationState::Finalized,
+        "the floor advanced past the carrier, so the verdict is decided; leaving it \
+         unwritten until some later block happens to be admitted is the defect"
     );
 }
 
