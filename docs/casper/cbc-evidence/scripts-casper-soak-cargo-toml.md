@@ -1,15 +1,15 @@
 # CbC Evidence: scripts/casper-soak/Cargo.toml
 
-Local checks supply review evidence. Source-bound acceptance, hosted verification, and live qualification remain pending.
+Controlled verification does not qualify a node candidate. Source-bound acceptance remains pending.
 
 ```json
 {
   "artifact": {
     "path": "scripts/casper-soak/Cargo.toml",
     "id": "scripts-casper-soak-cargo-toml",
-    "commit": "ee468f5db3fa007ecde9b104eda545a544f1354a",
+    "commit": "63b9ace2b2c300b9dc605903d12bbb767566ae4b",
     "commit_is_base": true,
-    "sha256": "0389290c18cb725d108ce3709018f92d9f04fdf84a62eb97d905c53874f43139",
+    "sha256": "7282d2a9c1ebb41148ef08d73f2ff35923d1d372923618fee1584585e82c48d3",
     "working_tree": true
   },
   "claim": "docs/claims/casper-soak-harness.md",
@@ -23,9 +23,9 @@ Local checks supply review evidence. Source-bound acceptance, hosted verificatio
   "status": "pending",
   "scope": "campaign-verification-awaiting-source-bound-acceptance",
   "evidence": {
-    "kind": "local-verification-not-acceptance",
-    "ref": "docs/casper/cbc-evidence/runs/casper-campaign-control-20260921-01/report.json",
-    "sha256": "27e1a2980f81360199826944dd413284a36669c2646b78237632309de1d0fb6f"
+    "kind": "controlled-provider-verification-not-acceptance",
+    "ref": "docs/casper/cbc-evidence/runs/casper-authority-provider-20260928-01/report.json",
+    "sha256": "d85f9d4ce21cc13205e44f0ef94ab6ead8ca2a192a094febb128198135810470"
   },
   "tiers": {
     "refutation": "pending",
@@ -40,9 +40,9 @@ Local checks supply review evidence. Source-bound acceptance, hosted verificatio
   "waiver": null,
   "verified_at": null,
   "previous_ledger": {
-    "commit": "ee468f5db3fa007ecde9b104eda545a544f1354a",
-    "path": "docs/casper/cbc-evidence/scripts-casper-soak-cargo-toml.md",
-    "sha256": "786ee3422cc5308640e30f5dc7fc420abbfa13cf1c7fa61dd2150af1b6d0eae5"
+    "path": "docs/casper/cbc-evidence/runs/casper-authority-provider-20260928-01/previous-records/scripts-casper-soak-cargo-toml.md",
+    "sha256": "52a7366073d1cde9a6fd2ebb61e5e7d266ee7475e362075f1ee44514a0758a06",
+    "commit": "63b9ace2b2c300b9dc605903d12bbb767566ae4b"
   }
 }
 ```

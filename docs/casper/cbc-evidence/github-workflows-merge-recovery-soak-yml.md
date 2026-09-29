@@ -7,10 +7,10 @@ Local checks supply review evidence. Source-bound acceptance, hosted verificatio
   "artifact": {
     "path": ".github/workflows/merge-recovery-soak.yml",
     "id": "github-workflows-merge-recovery-soak-yml",
-    "commit": "515a011598c9db66ff5a1b2b014b2a2894f7c409",
+    "commit": "2fb0686cf38752a0251af6d1d3e26afebb6d9eb9",
     "commit_is_base": true,
-    "sha256": "0e61d97222f962d973e9bb5322e6f70d3d302c7936be0ac59e05efafc86c9ece",
-    "working_tree": true
+    "sha256": "931b0f44db5b3d7d4b3e12fb5071d5e98a381fd021b7a1cea79308d6905bdbaa",
+    "working_tree": false
   },
   "claim": "docs/claims/casper-campaign-execution.md",
   "claim_ids": [
@@ -26,8 +26,8 @@ Local checks supply review evidence. Source-bound acceptance, hosted verificatio
   "scope": "campaign-verification-awaiting-source-bound-acceptance",
   "evidence": {
     "kind": "local-verification-not-acceptance",
-    "ref": "docs/casper/cbc-evidence/runs/casper-campaign-phase-20260922-01/report.json",
-    "sha256": "cdd7e051aaa4959f84bf8a87840630e3aacf1d0bd8c09b3f6297afca69d3248f"
+    "ref": "docs/casper/cbc-evidence/runs/casper-campaign-renewal-20260928-01/report.json",
+    "sha256": "8550908edc6a0b897afecfd2c1d326b4be2225bfec18e7a77737864dcbd607a5"
   },
   "tiers": {
     "refutation": "pending",
@@ -82,6 +82,25 @@ Local checks supply review evidence. Source-bound acceptance, hosted verificatio
       },
       "claim_digests": {
         "docs/claims/casper-campaign-execution.md": "8840cb6021093cb3dae8f1add287cd299a1e1ed9eb1a8b3a8f3c753e10de3f1b",
+        "docs/claims/casper-soak-harness.md": "b6d4f83f958af79037c9b938edd52f0a91ef6f4e8858d6a85a2e4aa8b6346faf"
+      }
+    },
+    {
+      "artifact": {
+        "path": ".github/workflows/merge-recovery-soak.yml",
+        "id": "github-workflows-merge-recovery-soak-yml",
+        "commit": "515a011598c9db66ff5a1b2b014b2a2894f7c409",
+        "commit_is_base": true,
+        "sha256": "0e61d97222f962d973e9bb5322e6f70d3d302c7936be0ac59e05efafc86c9ece",
+        "working_tree": true
+      },
+      "evidence": {
+        "kind": "local-verification-not-acceptance",
+        "ref": "docs/casper/cbc-evidence/runs/casper-campaign-phase-20260922-01/report.json",
+        "sha256": "cdd7e051aaa4959f84bf8a87840630e3aacf1d0bd8c09b3f6297afca69d3248f"
+      },
+      "claim_digests": {
+        "docs/claims/casper-campaign-execution.md": "1574f70fc5b1f432b7bf1fa98a6deca125d3221e3b29864686a42da70a2b31bb",
         "docs/claims/casper-soak-harness.md": "b6d4f83f958af79037c9b938edd52f0a91ef6f4e8858d6a85a2e4aa8b6346faf"
       }
     }

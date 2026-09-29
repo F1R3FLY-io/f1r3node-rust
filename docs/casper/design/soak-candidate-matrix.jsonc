@@ -7,7 +7,7 @@
   "harness_revision": "1f749aa831f54f2c5b3a7c79be27581c89e55f46",
   "source_manifest": "docs/casper/cbc-evidence/runs/casper-candidate-repin-20260919-01/report.json",
   "source_manifest_sha256": "0aa3063c7947210b98bae8f1ea0aba1184f0cc76883d1d0bed25559b764cd911",
-  "external_harness_revision": "b3d14b27e3c6276b1eb4ab9ccef04e02b0c4e283",
+  "external_harness_revision": "e3c4e14189f0c6ced2e9674487fcbdeffd93141b",
   "model_sources": {
     "formal/tlaplus/carrier_index/CarrierIndex.tla": "5aae4327a4aca056d571d56d778dfe82684165fb4faa7123f480b8afd4d67575",
     "formal/tlaplus/carrier_index/MC_CarrierIndex.cfg": "4c5dc2805bb8ca65e1e4ff2fa9059efb30aef0b9caf71d7317d837d9c4249cd2",
@@ -236,7 +236,7 @@
     "formal/tlaplus/soak_disk/SoakStorageBudget.tla": "500988d95e331a6aea1ee3bd180d826e928567fe7f0f58f9250109bedf384ef8"
   },
   "configuration_sources": {
-    ".github/oci-validation.env": "404bf56cf59f263444e3b25794fb4f593e10ae2dc0c5e22c557fe5a72149d9d6",
+    ".github/oci-validation.env": "e3aa05e5d9dbe5582f9445ab4291193c59d2c735029eab454003cce0ef782995",
     "docs/casper/design/soak-interface-contract.md": "addd0a25f3d6eb044097533224d3d500dce97785886eeab33897a1e69af033e7",
     "scripts/bench/soak-gate-thresholds.json": "ce0183b9373d951bb7d1b15091b1f6a7829d3bcfb7458bc9a507ebd9f7159072",
     "scripts/bench/soak-metrics.json": "d4a71e7996dc0b0a74fcfc339f5164121c246db7c2f4e27114b7ea80c2edfef7"
@@ -346,5 +346,11 @@
     "candidate_refresh_status": "blocked-no-published-tag",
     "workload_pinning_status": "blocked-live-adapter-unimplemented",
     "baseline_status": "not-run"
+  },
+  "configuration_reconciliation": {
+    "report": "docs/casper/cbc-evidence/runs/casper-campaign-inventory-20260928-01/report.json",
+    "sha256": "c9c146fe0436fd048a0a70d53b3346b53b9c635a1c2a3e9e7e26378966a84cad",
+    "external_harness_revision": "e3c4e14189f0c6ced2e9674487fcbdeffd93141b",
+    "acceptance": "pending"
   }
 }

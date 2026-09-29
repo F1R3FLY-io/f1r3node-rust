@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "report_sha256": "8550908edc6a0b897afecfd2c1d326b4be2225bfec18e7a77737864dcbd607a5",
+  "source_digests_match": true,
+  "log_digests_match": true,
+  "workflow_ledger_sha256": "de3181cf8c7b9f833244726c5cbf3bcd7be3f762692b6b7138a06eb035a77dbf",
+  "claim_status_changed": false,
+  "qualification": "pending"
+}
