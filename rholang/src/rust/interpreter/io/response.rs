@@ -248,6 +248,138 @@ pub fn err_eos() -> Par {
     ])
 }
 
+// ---------------------------------------------------------------------
+// Extractors — receive side of the reply protocol.
+//
+// Both `extract_ok_u64` (for quantities) and `extract_ok_fd` (for file
+// descriptors) reject negative `i64` payloads: quantities are
+// semantically non-negative, and fds are constrained by the allocator
+// contract (`Fd` design invariants) to `[0, i64::MAX]`.  A malformed
+// or byzantine `previous` with a negative payload yields `None` on
+// both — corrupt data never becomes downstream state.
+// ---------------------------------------------------------------------
+
+/// Extract the head-`true` + second-element-u64 shape from a cached
+/// `previous` reply, treating the second element as a **non-negative
+/// quantity**.  Returns `Some(n)` if the Par is `[true, n_int]` with
+/// `n_int >= 0`; `None` otherwise (error reply, wrong shape, or
+/// negative).
+///
+/// # Semantic scope
+///
+/// For reply values that ARE semantically non-negative quantities:
+/// - `fs_write` / `fs_write_at` reply `n` (bytes written; libc
+///   `write()` returns `ssize_t` with negatives flagged upstream, so
+///   a well-formed reply always has `n >= 0` bounded above by
+///   `MAX_WRITE_BYTES < i64::MAX`).
+/// - `fs_seek` reply `new_pos` (POSIX file offset; non-negative).
+///
+/// A well-formed reply always fits in a positive i64 for these
+/// callers.  The reject-negative guard is a defense-in-depth safety
+/// net: a byzantine `previous` with `n < 0` would otherwise
+/// reinterpret to a huge unsigned and corrupt downstream state
+/// (e.g., `position.saturating_add(n)` saturates to `u64::MAX`).
+pub fn extract_ok_u64(previous: &[Par]) -> Option<u64> {
+    let head = previous.first()?;
+    let items = RhoList::unapply(head)?;
+    let ok_par = items.first()?;
+    if RhoBoolean::unapply(ok_par) != Some(true) {
+        return None;
+    }
+    let n = RhoNumber::unapply(items.get(1)?)?;
+    if n < 0 {
+        None
+    } else {
+        Some(n as u64)
+    }
+}
+
+/// Fd-specific extraction from a cached `[true, fd]` reply.  Uses
+/// `Fd::try_from(i64)` to enforce the allocator contract — a
+/// well-formed reply carries `GInt(fd_as_i64)` with `fd_as_i64 >= 0`
+/// (fds are constrained to `[0, i64::MAX]` per the [`Fd`] design
+/// invariants).  Any negative payload is malformed / byzantine and
+/// yields `None`.
+///
+/// # Return type
+///
+/// Returns [`Fd`], not raw `u64` — the newtype is a compile-time
+/// guard against a future call site accidentally passing an fd to a
+/// quantity slot (or vice versa).  Call sites unwrap via
+/// [`Fd::as_u64`] at the fd-table boundary.
+pub fn extract_ok_fd(previous: &[Par]) -> Option<Fd> {
+    let head = previous.first()?;
+    let items = RhoList::unapply(head)?;
+    let ok_par = items.first()?;
+    if RhoBoolean::unapply(ok_par) != Some(true) {
+        return None;
+    }
+    let n = RhoNumber::unapply(items.get(1)?)?;
+    Fd::try_from(n).ok()
+}
+
+/// Extract the string FSERR code from an error reply of shape
+/// `[false, "FSERR_...", "msg"]`.  Returns `None` if the reply is
+/// not an error (head is `true`), the shape doesn't match, or the
+/// code slot is missing / non-string.  Both leader (fresh syscall
+/// reply) and follower (cached `previous` reply) use this to derive
+/// an identical failure code, keeping WAL entries byte-identical
+/// across the leader/follower split.
+pub fn extract_err_code(reply: &[Par]) -> Option<String> {
+    let head = reply.first()?;
+    let items = RhoList::unapply(head)?;
+    let ok_par = items.first()?;
+    if RhoBoolean::unapply(ok_par) != Some(false) {
+        return None;
+    }
+    RhoString::unapply(items.get(1)?)
+}
+
+/// Counterpart to `extract_ok_u64`: extract the bytes payload from
+/// a cached `[true, ByteArray]` reply.  Used by `fs_read` /
+/// `fs_read_at`'s `is_replay = true` branch to re-hash the leader's
+/// returned bytes and append a matching Read/ReadAt WAL entry —
+/// keeping leader/follower WALs byte-identical without re-issuing
+/// the syscall on the follower.
+pub fn extract_ok_bytes(previous: &[Par]) -> Option<Vec<u8>> {
+    let head = previous.first()?;
+    let items = RhoList::unapply(head)?;
+    let ok_par = items.first()?;
+    if RhoBoolean::unapply(ok_par) != Some(true) {
+        return None;
+    }
+    RhoByteArray::unapply(items.get(1)?)
+}
+
+/// Extract the length of the inner list from a cached
+/// `[true, [x, y, z, ...]]` reply.  Returns `Some(n)` where `n` is
+/// the number of items in the inner list; `None` on error replies
+/// (`[false, ...]`), on `[true, non_list]` shapes, or on any non-
+/// list-of-list reply.
+///
+/// Entries-family handlers (`fs_entries`, eventually
+/// `fs_entries_stream`) use this on their `is_replay = true` branch
+/// to recover the leader-supplied entry count from `previous` and
+/// match the leader's per-entry supplement charge — keeping the
+/// canonical event log byte-identical across the leader/follower
+/// split without re-executing the syscall.
+///
+/// Total; never panics.  A hostile or out-of-band `previous` shape
+/// yields `None`, and the caller treats `None` as "charge 0 per-
+/// entry supplement" — which matches the leader path's charge on
+/// error replies (also 0), preserving parity even when the reply is
+/// malformed.
+pub fn extract_ok_list_len(previous: &[Par]) -> Option<u64> {
+    let head = previous.first()?;
+    let outer = RhoList::unapply(head)?;
+    let ok_par = outer.first()?;
+    if RhoBoolean::unapply(ok_par) != Some(true) {
+        return None;
+    }
+    let inner = RhoList::unapply(outer.get(1)?)?;
+    Some(inner.len() as u64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -495,5 +627,149 @@ mod tests {
         let over = (i64::MAX as u64).wrapping_add(1);
         assert_eq!(ok_u64(over), ok_int(i64::MAX));
         assert_eq!(ok_u64(u64::MAX), ok_int(i64::MAX));
+    }
+
+    // --- extract_ok_list_len ---------------------------------------
+
+    #[test]
+    fn extract_ok_list_len_matches_ok_list_arity() {
+        for n in [0usize, 1, 10, 65_536] {
+            let items: Vec<Par> = (0..n).map(|_| Par::default()).collect();
+            let reply = ok_list(items);
+            assert_eq!(
+                extract_ok_list_len(std::slice::from_ref(&reply)),
+                Some(n as u64),
+                "extract_ok_list_len must count exactly the number of items \
+                 in ok_list — mismatch at n={n} means the two-branch charge \
+                 for fs_entries would over/under-count entries."
+            );
+        }
+    }
+
+    #[test]
+    fn extract_ok_list_len_returns_none_on_error_reply() {
+        let reply = err(
+            super::super::errors::FSERR_QUOTA_EXCEEDED,
+            "entries exceeds MAX_ENTRIES",
+        );
+        assert_eq!(extract_ok_list_len(std::slice::from_ref(&reply)), None);
+    }
+
+    #[test]
+    fn extract_ok_list_len_returns_none_on_ok_non_list_shape() {
+        let reply = ok_int(42);
+        assert_eq!(extract_ok_list_len(std::slice::from_ref(&reply)), None);
+    }
+
+    #[test]
+    fn extract_ok_list_len_returns_none_on_empty_previous() {
+        let previous: [Par; 0] = [];
+        assert_eq!(extract_ok_list_len(&previous), None);
+    }
+
+    #[test]
+    fn extract_ok_list_len_returns_none_on_bare_ok() {
+        let reply = ok_bare();
+        assert_eq!(extract_ok_list_len(std::slice::from_ref(&reply)), None);
+    }
+
+    // --- extract_ok_fd (reject-negative — allocator contract) -----
+
+    /// The allocator contract on [`Fd`] is enforced on the receive
+    /// side too: a wire payload with a negative `i64` fd is malformed
+    /// (only a bugged or byzantine emitter could produce one) and
+    /// extraction returns `None` rather than reinterpreting the bit
+    /// pattern.  Reciprocal of `fd_try_from_i64_rejects_negatives`
+    /// on the emit side.
+    #[test]
+    fn extract_ok_fd_rejects_negative_i64() {
+        for neg in [-1i64, -100, -1_000_000_000, i64::MIN] {
+            let reply = ok_int(neg);
+            assert_eq!(
+                extract_ok_fd(std::slice::from_ref(&reply)),
+                None,
+                "extract_ok_fd must reject negative fd payload {neg}"
+            );
+        }
+    }
+
+    /// Error replies bail cleanly (head is `false`, no fd to extract).
+    #[test]
+    fn extract_ok_fd_rejects_error_replies() {
+        let reply = err(super::super::errors::FSERR_BAD_ARG, "invalid path");
+        assert_eq!(extract_ok_fd(std::slice::from_ref(&reply)), None);
+    }
+
+    /// Valid fds (allocator produces them in `[0, i64::MAX]`) round-
+    /// trip through `ok_fd` + `extract_ok_fd` losslessly.
+    #[test]
+    fn ok_fd_and_extract_ok_fd_round_trip_in_valid_i64_range() {
+        for raw in [
+            0u64,
+            1,
+            100,
+            1_000_000,
+            (i64::MAX as u64) - 1,
+            i64::MAX as u64,
+        ] {
+            let fd = Fd::try_from(raw).expect("in-range");
+            let reply = ok_fd(fd);
+            assert_eq!(
+                extract_ok_fd(std::slice::from_ref(&reply)),
+                Some(fd),
+                "round-trip failed for fd {raw}"
+            );
+        }
+    }
+
+    // --- extract_ok_u64 (reject-negative — for quantities) --------
+
+    #[test]
+    fn extract_ok_u64_rejects_negative_i64_quantities() {
+        for neg in [-1i64, -100, -1_000_000_000, i64::MIN] {
+            let reply = ok_int(neg);
+            assert_eq!(
+                extract_ok_u64(std::slice::from_ref(&reply)),
+                None,
+                "extract_ok_u64 must return None on negative quantity {neg}"
+            );
+        }
+    }
+
+    #[test]
+    fn extract_ok_u64_rejects_error_replies() {
+        let reply = err(super::super::errors::FSERR_QUOTA_EXCEEDED, "over cap");
+        assert_eq!(extract_ok_u64(std::slice::from_ref(&reply)), None);
+    }
+
+    #[test]
+    fn extract_ok_u64_accepts_nonneg_quantities() {
+        for n in [0u64, 1, 100, 1_000_000, i64::MAX as u64] {
+            let reply = ok_int(n as i64);
+            assert_eq!(extract_ok_u64(std::slice::from_ref(&reply)), Some(n));
+        }
+    }
+
+    /// With the reject-negative rule on both extractors AND the `Fd`
+    /// allocator contract limiting fds to `[0, i64::MAX]`, the two
+    /// helpers agree on every valid payload.  They differ only in
+    /// their return type (`Option<Fd>` vs `Option<u64>`) — the
+    /// underlying numeric value is identical for well-formed replies.
+    #[test]
+    fn extract_ok_fd_and_extract_ok_u64_agree_on_valid_payloads() {
+        for n in [
+            0u64,
+            1,
+            100,
+            1_000_000,
+            (i64::MAX as u64) - 1,
+            i64::MAX as u64,
+        ] {
+            let reply = ok_int(n as i64);
+            let fd = extract_ok_fd(std::slice::from_ref(&reply));
+            let u = extract_ok_u64(std::slice::from_ref(&reply));
+            assert_eq!(fd.map(Fd::as_u64), u, "helpers must agree on n={n}");
+            assert_eq!(fd, Some(Fd::try_from(n).expect("in-range")));
+        }
     }
 }
