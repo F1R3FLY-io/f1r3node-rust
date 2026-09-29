@@ -211,6 +211,10 @@ impl Score {
     pub const BIG_RAT: i32 = 16;
     pub const FIXED_POINT: i32 = 17;
     pub const UINT64: i32 = 18;
+    pub const INT32: i32 = 20;
+    pub const UINT32: i32 = 21;
+    pub const UINT16: i32 = 22;
+    pub const UINT8: i32 = 23;
 
     // Vars
     pub const BOUND_VAR: i32 = 50;

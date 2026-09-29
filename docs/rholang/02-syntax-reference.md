@@ -219,6 +219,7 @@ target.method(args)
 | Type | Syntax | Examples |
 |------|--------|----------|
 | Integer | digits | `0`, `42`, `-7` |
+| Sized integer | digits + i32/i64/u8/u16/u32/u64 | `42i32`, `255u8`, `42u64` |
 | Float | digits + f32/f64 | `3.14f64`, `2.5f32` |
 | BigInt | digits + n | `100n`, `999999999999999n` |
 | BigRat | expr with r suffix | `1r`, `3r` (use `1r / 3r` for rationals) |

@@ -763,6 +763,38 @@ impl Sortable<Expr> for ExprSortMatcher {
                         Tree::<ScoreAtom>::create_leaf_from_bytes(u.to_be_bytes().to_vec()),
                     ]),
                 },
+
+                ExprInstance::GInt32(x) => ScoredTerm {
+                    term: e.clone(),
+                    score: Tree::<ScoreAtom>::create_node_from_i64s(vec![
+                        Score::INT32 as i64,
+                        *x as i64,
+                    ]),
+                },
+
+                ExprInstance::GUint32(x) => ScoredTerm {
+                    term: e.clone(),
+                    score: Tree::<ScoreAtom>::create_node_from_i64s(vec![
+                        Score::UINT32 as i64,
+                        *x as i64,
+                    ]),
+                },
+
+                ExprInstance::GUint16(x) => ScoredTerm {
+                    term: e.clone(),
+                    score: Tree::<ScoreAtom>::create_node_from_i64s(vec![
+                        Score::UINT16 as i64,
+                        *x as i64,
+                    ]),
+                },
+
+                ExprInstance::GUint8(x) => ScoredTerm {
+                    term: e.clone(),
+                    score: Tree::<ScoreAtom>::create_node_from_i64s(vec![
+                        Score::UINT8 as i64,
+                        *x as i64,
+                    ]),
+                },
             },
 
             // TODO get rid of Empty nodes in Protobuf unless they represent sth indeed optional - OLD

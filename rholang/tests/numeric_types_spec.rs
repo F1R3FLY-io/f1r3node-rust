@@ -9,7 +9,8 @@ use models::rhoapi::{
 };
 use models::rust::utils::{
     new_gbigint_expr, new_gbigrat_expr, new_gbool_expr, new_gdouble_expr, new_gfixedpoint_expr,
-    new_gint_expr, new_guint64_expr,
+    new_gint32_expr, new_gint_expr, new_guint16_expr, new_guint32_expr, new_guint64_expr,
+    new_guint8_expr,
 };
 use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::env::Env;
@@ -706,15 +707,16 @@ async fn ground_passthrough() {
 }
 
 #[test]
-fn integer_literals_other_than_i64_and_u64_are_rejected_at_compile_time() {
+fn integer_literals_with_unsupported_width_or_range_are_rejected_at_compile_time() {
     for source in [
-        r#"new so(`rho:io:stdout`) in { so!(1u32 + 1u64) }"#,
         r#"new so(`rho:io:stdout`) in { so!(1u32 + 1u128) }"#,
-        r#"new so(`rho:io:stdout`) in { so!(255u8) }"#,
         r#"new so(`rho:io:stdout`) in { so!(42i8) }"#,
-        r#"new so(`rho:io:stdout`) in { so!(42i32) }"#,
+        r#"new so(`rho:io:stdout`) in { so!(42i16) }"#,
         r#"new so(`rho:io:stdout`) in { so!(42i128) }"#,
-        r#"new so(`rho:io:stdout`) in { so!(1i32 + 1i64) }"#,
+        r#"new so(`rho:io:stdout`) in { so!(256u8) }"#,
+        r#"new so(`rho:io:stdout`) in { so!(65536u16) }"#,
+        r#"new so(`rho:io:stdout`) in { so!(4294967296u32) }"#,
+        r#"new so(`rho:io:stdout`) in { so!(2147483648i32) }"#,
         r#"new so(`rho:io:stdout`) in { so!(18446744073709551616u64) }"#,
     ] {
         assert!(
@@ -732,11 +734,28 @@ fn integer_literals_other_than_i64_and_u64_are_rejected_at_compile_time() {
         r#"new so(`rho:io:stdout`) in { so!(1u64 + 1u64) }"#,
         r#"new so(`rho:io:stdout`) in { so!(18446744073709551615u64) }"#,
         r#"new so(`rho:io:stdout`) in { so!(1 + 1n) }"#,
+        r#"new so(`rho:io:stdout`) in { so!(42i32) }"#,
+        r#"new so(`rho:io:stdout`) in { so!(4294967295u32) }"#,
+        r#"new so(`rho:io:stdout`) in { so!(65535u16) }"#,
+        r#"new so(`rho:io:stdout`) in { so!(255u8) }"#,
     ] {
         assert!(
             Compiler::source_to_adt(source).is_ok(),
             "expected {source} to compile"
         );
+    }
+}
+
+#[test]
+fn sized_int_literals_compile_to_their_own_types() {
+    for (source, expected) in [
+        ("@0!(42i32)", new_gint32_expr(42)),
+        ("@0!(42u32)", new_guint32_expr(42)),
+        ("@0!(42u16)", new_guint16_expr(42)),
+        ("@0!(42u8)", new_guint8_expr(42)),
+    ] {
+        let par = Compiler::source_to_adt(source).unwrap();
+        assert_eq!(par.sends[0].data[0].exprs, vec![expected], "{source}");
     }
 }
 
@@ -853,4 +872,191 @@ async fn uint64_and_int_do_not_mix() {
     assert!(r
         .eval_expr(&binop_expr!(lt, u(1), gint_par(2)), &e)
         .is_err());
+}
+
+// ============================================================================
+// GInt32, GUint32, GUint16, GUint8
+// ============================================================================
+
+fn gint32_par(value: i32) -> Par { Par::default().with_exprs(vec![new_gint32_expr(value)]) }
+
+fn guint32_par(value: u32) -> Par { Par::default().with_exprs(vec![new_guint32_expr(value)]) }
+
+fn guint16_par(value: u16) -> Par { Par::default().with_exprs(vec![new_guint16_expr(value)]) }
+
+fn guint8_par(value: u8) -> Par { Par::default().with_exprs(vec![new_guint8_expr(value)]) }
+
+#[tokio::test]
+async fn sized_int_arithmetic() {
+    let (r, e) = setup!();
+    assert_ok_expr!(
+        r,
+        e,
+        binop_expr!(plus, gint32_par(-7), gint32_par(3)),
+        new_gint32_expr(-4)
+    );
+    assert_ok_expr!(
+        r,
+        e,
+        binop_expr!(minus, guint32_par(5), guint32_par(3)),
+        new_guint32_expr(2)
+    );
+    assert_ok_expr!(
+        r,
+        e,
+        binop_expr!(mult, guint16_par(6), guint16_par(7)),
+        new_guint16_expr(42)
+    );
+    assert_ok_expr!(
+        r,
+        e,
+        binop_expr!(div, guint8_par(7), guint8_par(2)),
+        new_guint8_expr(3)
+    );
+    assert_ok_expr!(
+        r,
+        e,
+        binop_expr!(modulo, gint32_par(-7), gint32_par(2)),
+        new_gint32_expr(-1)
+    );
+    assert_ok_expr!(r, e, neg_expr!(gint32_par(5)), new_gint32_expr(-5));
+}
+
+#[tokio::test]
+async fn sized_int_add_and_sub_wrap_at_their_width() {
+    let (r, e) = setup!();
+    assert_ok_expr!(
+        r,
+        e,
+        binop_expr!(plus, guint8_par(255), guint8_par(1)),
+        new_guint8_expr(0)
+    );
+    assert_ok_expr!(
+        r,
+        e,
+        binop_expr!(minus, guint8_par(0), guint8_par(1)),
+        new_guint8_expr(255)
+    );
+    assert_ok_expr!(
+        r,
+        e,
+        binop_expr!(plus, guint16_par(u16::MAX), guint16_par(1)),
+        new_guint16_expr(0)
+    );
+    assert_ok_expr!(
+        r,
+        e,
+        binop_expr!(plus, guint32_par(u32::MAX), guint32_par(1)),
+        new_guint32_expr(0)
+    );
+    assert_ok_expr!(
+        r,
+        e,
+        binop_expr!(plus, gint32_par(i32::MAX), gint32_par(1)),
+        new_gint32_expr(i32::MIN)
+    );
+}
+
+#[tokio::test]
+async fn sized_int_overflow_and_zero_errors() {
+    let (r, e) = setup!();
+    assert_err_contains!(
+        r,
+        e,
+        binop_expr!(mult, guint8_par(16), guint8_par(16)),
+        "Arithmetic overflow"
+    );
+    assert_err_contains!(
+        r,
+        e,
+        binop_expr!(div, gint32_par(i32::MIN), gint32_par(-1)),
+        "Arithmetic overflow"
+    );
+    assert_err_contains!(
+        r,
+        e,
+        neg_expr!(gint32_par(i32::MIN)),
+        "Arithmetic overflow in negation"
+    );
+    assert_err!(
+        r,
+        e,
+        binop_expr!(div, guint16_par(1), guint16_par(0)),
+        "Division by zero"
+    );
+    assert_err!(
+        r,
+        e,
+        binop_expr!(modulo, guint32_par(1), guint32_par(0)),
+        "Modulo by zero"
+    );
+    assert!(r.eval_expr(&neg_expr!(guint8_par(1)), &e).is_err());
+}
+
+#[tokio::test]
+async fn sized_int_comparison() {
+    let (r, e) = setup!();
+    assert_ok_expr!(
+        r,
+        e,
+        binop_expr!(lt, gint32_par(-1), gint32_par(1)),
+        new_gbool_expr(true)
+    );
+    assert_ok_expr!(
+        r,
+        e,
+        binop_expr!(gt, guint32_par(u32::MAX), guint32_par(1)),
+        new_gbool_expr(true)
+    );
+    assert_ok_expr!(
+        r,
+        e,
+        binop_expr!(lte, guint16_par(2), guint16_par(2)),
+        new_gbool_expr(true)
+    );
+    assert_ok_expr!(
+        r,
+        e,
+        binop_expr!(gte, guint8_par(1), guint8_par(2)),
+        new_gbool_expr(false)
+    );
+    assert_ok_expr!(
+        r,
+        e,
+        binop_expr!(eq, guint8_par(1), guint16_par(1)),
+        new_gbool_expr(false)
+    );
+}
+
+#[tokio::test]
+async fn sized_int_types_do_not_mix() {
+    let (r, e) = setup!();
+    for input in [
+        binop_expr!(plus, guint32_par(1), guint64_par(1)),
+        binop_expr!(plus, gint32_par(1), gint_par(1)),
+        binop_expr!(minus, guint8_par(1), guint16_par(1)),
+        binop_expr!(mult, guint16_par(1), guint32_par(1)),
+        binop_expr!(div, gint32_par(1), guint32_par(1)),
+        binop_expr!(modulo, guint8_par(1), gint_par(1)),
+        binop_expr!(lt, guint8_par(1), guint16_par(2)),
+    ] {
+        assert!(
+            r.eval_expr(&input, &e).is_err(),
+            "expected error for {input:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn out_of_range_small_uint_is_a_reduce_error() {
+    let (r, e) = setup!();
+    let bad_u8 = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::GUint8(256)),
+    }]);
+    assert_err_contains!(
+        r,
+        e,
+        binop_expr!(plus, bad_u8, guint8_par(1)),
+        "out of range for u8"
+    );
 }

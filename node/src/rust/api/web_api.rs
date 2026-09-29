@@ -1129,6 +1129,18 @@ pub enum RhoExpr {
     ExprUint64 {
         data: u64,
     },
+    ExprInt32 {
+        data: i32,
+    },
+    ExprUint32 {
+        data: u32,
+    },
+    ExprUint16 {
+        data: u32,
+    },
+    ExprUint8 {
+        data: u32,
+    },
     ExprString {
         data: String,
     },
@@ -1769,6 +1781,10 @@ fn expr_from_expr_proto(expr: Expr) -> Option<RhoExpr> {
         ExprInstance::GBool(v) => RhoExpr::ExprBool { data: v },
         ExprInstance::GInt(v) => RhoExpr::ExprInt { data: v },
         ExprInstance::GUint64(v) => RhoExpr::ExprUint64 { data: v },
+        ExprInstance::GInt32(v) => RhoExpr::ExprInt32 { data: v },
+        ExprInstance::GUint32(v) => RhoExpr::ExprUint32 { data: v },
+        ExprInstance::GUint16(v) => RhoExpr::ExprUint16 { data: v },
+        ExprInstance::GUint8(v) => RhoExpr::ExprUint8 { data: v },
         ExprInstance::GString(v) => RhoExpr::ExprString { data: v },
         ExprInstance::GUri(v) => RhoExpr::ExprUri { data: v },
         ExprInstance::GByteArray(bytes) => RhoExpr::ExprBytes {
@@ -2025,6 +2041,10 @@ fn extract_key_from_expr(expr: &RhoExpr) -> String {
         RhoExpr::ExprString { data } => data.clone(),
         RhoExpr::ExprInt { data } => data.to_string(),
         RhoExpr::ExprUint64 { data } => data.to_string(),
+        RhoExpr::ExprInt32 { data } => data.to_string(),
+        RhoExpr::ExprUint32 { data } => data.to_string(),
+        RhoExpr::ExprUint16 { data } => data.to_string(),
+        RhoExpr::ExprUint8 { data } => data.to_string(),
         RhoExpr::ExprBool { data } => data.to_string(),
         RhoExpr::ExprFloat { data } => data.to_string(),
         RhoExpr::ExprBigInt { data } => data.clone(),
@@ -2571,6 +2591,27 @@ mod tests {
             expr_instance: Some(ExprInstance::GDouble(2.5f64.to_bits())),
         });
         assert!(matches!(double, Some(RhoExpr::ExprFloat { data }) if data == 2.5));
+
+        let sized = |instance| {
+            expr_from_expr_proto(Expr {
+                expr_instance: Some(instance),
+            })
+        };
+        assert!(
+            matches!(sized(ExprInstance::GUint64(u64::MAX)), Some(RhoExpr::ExprUint64 { data }) if data == u64::MAX)
+        );
+        assert!(
+            matches!(sized(ExprInstance::GInt32(-7)), Some(RhoExpr::ExprInt32 { data }) if data == -7)
+        );
+        assert!(
+            matches!(sized(ExprInstance::GUint32(7)), Some(RhoExpr::ExprUint32 { data }) if data == 7)
+        );
+        assert!(
+            matches!(sized(ExprInstance::GUint16(7)), Some(RhoExpr::ExprUint16 { data }) if data == 7)
+        );
+        assert!(
+            matches!(sized(ExprInstance::GUint8(7)), Some(RhoExpr::ExprUint8 { data }) if data == 7)
+        );
 
         let big_int = expr_from_expr_proto(Expr {
             expr_instance: Some(ExprInstance::GBigInt(vec![0x01, 0x00])),

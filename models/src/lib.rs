@@ -464,6 +464,10 @@ impl PartialEq for expr::ExprInstance {
             (ExprInstance::GBigRat(a), ExprInstance::GBigRat(b)) => a == b,
             (ExprInstance::GFixedPoint(a), ExprInstance::GFixedPoint(b)) => a == b,
             (ExprInstance::GUint64(a), ExprInstance::GUint64(b)) => a == b,
+            (ExprInstance::GInt32(a), ExprInstance::GInt32(b)) => a == b,
+            (ExprInstance::GUint32(a), ExprInstance::GUint32(b)) => a == b,
+            (ExprInstance::GUint16(a), ExprInstance::GUint16(b)) => a == b,
+            (ExprInstance::GUint8(a), ExprInstance::GUint8(b)) => a == b,
             _ => false,
         }
     }
@@ -509,6 +513,10 @@ impl Hash for expr::ExprInstance {
             ExprInstance::GBigRat(a) => a.hash(state),
             ExprInstance::GFixedPoint(a) => a.hash(state),
             ExprInstance::GUint64(a) => a.hash(state),
+            ExprInstance::GInt32(a) => a.hash(state),
+            ExprInstance::GUint32(a) => a.hash(state),
+            ExprInstance::GUint16(a) => a.hash(state),
+            ExprInstance::GUint8(a) => a.hash(state),
         }
     }
 }

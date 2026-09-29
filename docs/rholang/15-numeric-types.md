@@ -41,6 +41,24 @@ Addition and subtraction wrap modulo 2^64. Multiplication overflow returns an er
 
 Comparisons use unsigned order. Division and modulo by zero return an error. Unary negation is not defined on `UInt64`. `UInt64` and `Int` do not mix: `1u64 + 1` is an error.
 
+## Int32, UInt32, UInt16, UInt8 (GInt32, GUint32, GUint16, GUint8)
+
+Fixed-width integers. Suffixes: `i32`, `u32`, `u16`, `u8`. Each width is a separate type.
+
+```rho
+-7i32
+4294967295u32      // u32::MAX
+65535u16           // u16::MAX, for example a Unicode code point
+255u8              // u8::MAX, for example a byte
+256u8              // compile error: out of range for u8
+```
+
+- Addition and subtraction wrap at the width of the type: `255u8 + 1u8` is `0u8`, and `2147483647i32 + 1i32` is `-2147483648i32`.
+- Multiplication overflow returns an error, the same as for `Int`: `16u8 * 16u8` is an error.
+- Division and modulo by zero return an error. `-2147483648i32 / -1i32` returns an overflow error.
+- Unary negation is defined only on `Int32`. Comparisons use the order of the type.
+- Two different integer types do not mix: `1u8 + 1u16`, `1u32 + 1u64` and `1i32 + 1` are errors.
+
 ## Float (GDouble)
 
 IEEE 754 double-precision (f64). Stored as raw bits (`fixed64` in protobuf) to preserve `-0.0`, NaN payloads, and exact bit representations.
@@ -90,13 +108,15 @@ No size cap. Gas scales with operand byte length (see [Cost Model](13-cost-model
 
 ### Int Literals with Bit Width
 
-Rholang syntax accepts signed (`i8`, `i16`, `i32`, `i64`, `i128`, ...) and unsigned (`u8`, `u16`, `u32`, `u64`, `u128`, ...) width suffixes. An interpreter can support a subset of these widths. This interpreter supports `i64` (the same type as an unsuffixed `Int`) and `u64` (`UInt64`). A literal with any other width suffix is rejected at compile time. Use `%` on `i64` or `u64` values to get the behavior of a smaller width.
+Rholang syntax accepts signed (`i8`, `i16`, `i32`, `i64`, `i128`, ...) and unsigned (`u8`, `u16`, `u32`, `u64`, `u128`, ...) width suffixes. An interpreter can support a subset of these widths. This interpreter supports `i64` (the same type as an unsuffixed `Int`), `i32`, `u64`, `u32`, `u16` and `u8`. A literal with any other width suffix, or a value that is out of range for its width, is rejected at compile time.
 
 ```rho
 42i64              // Int(42), the same as 42
 42u64              // UInt64(42)
-42i32              // compile error: Integer width i32 is not supported by this interpreter
-1u32 + 1u64        // compile error: Integer width u32 is not supported by this interpreter
+42i32              // Int32(42)
+42u8               // UInt8(42)
+42i8               // compile error: Integer width i8 is not supported by this interpreter
+1u32 + 1u64        // compiles, but the addition is an error: UInt32 + UInt64
 1u128              // compile error (use 1n for an arbitrary-precision BigInt)
 ```
 
@@ -220,6 +240,7 @@ All binary operations require matching types. None of these work:
 42 + 3.14f64             // ERROR: Int + Float
 100n + 42                // ERROR: BigInt + Int
 1u64 + 1                 // ERROR: UInt64 + Int
+1u8 + 1u16               // ERROR: UInt8 + UInt16
 1r / 2r + 0.5f64         // ERROR: BigRat + Float
 1.5p1 + 1.50p2           // ERROR: scale mismatch (even within FixedPoint)
 ```
@@ -230,6 +251,10 @@ All binary operations require matching types. None of these work:
 |------|-------------|----------|
 | Int | `g_int` (int64) | Direct |
 | UInt64 | `g_uint64` (uint64) | Direct |
+| Int32 | `g_int32` (int32) | Direct |
+| UInt32 | `g_uint32` (uint32) | Direct |
+| UInt16 | `g_uint16` (uint32) | Direct, value <= 65535 |
+| UInt8 | `g_uint8` (uint32) | Direct, value <= 255 |
 | Float | `g_double` (fixed64) | Raw IEEE 754 bits |
 | BigInt | `g_big_int` (bytes) | Big-endian two's complement |
 | BigRat | `g_big_rat` { numerator, denominator } | Both big-endian two's complement bytes |
