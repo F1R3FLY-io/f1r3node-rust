@@ -220,6 +220,7 @@ target.method(args)
 |------|--------|----------|
 | Integer | digits | `0`, `42`, `-7` |
 | Float | digits + optional f64 | `3.14f64`, `2.5` |
+| Float32 | digits + f32 | `2.5f32` |
 | BigInt | digits + n | `100n`, `999999999999999n` |
 | BigRat | expr with r suffix | `1r`, `3r` (use `1r / 3r` for rationals) |
 | FixedPoint | decimal + p + scale | `1.50p2`, `10p0`, `0.001p3` |

@@ -1524,6 +1524,24 @@ impl DebruijnInterpreter {
                     }
                 }
 
+                (ExprInstance::GFloat32(d1), ExprInstance::GFloat32(d2)) => {
+                    self.cost.charge(comparison_cost())?;
+                    let f1 = f32::from_bits(d1);
+                    let f2 = f32::from_bits(d2);
+                    if f1.is_nan() || f2.is_nan() {
+                        Ok(Expr {
+                            expr_instance: Some(ExprInstance::GBool(false)),
+                        })
+                    } else {
+                        Ok(Expr {
+                            expr_instance: Some(ExprInstance::GBool(relopi(
+                                f1.partial_cmp(&f2).map_or(0, |o| o as i64),
+                                0,
+                            ))),
+                        })
+                    }
+                }
+
                 (ExprInstance::GBigInt(b1), ExprInstance::GBigInt(b2)) => {
                     self.cost
                         .charge(bigint_comparison_cost(b1.len(), b2.len()))?;
@@ -1590,6 +1608,10 @@ impl DebruijnInterpreter {
                     expr_instance: Some(ExprInstance::GDouble(*x)),
                 }),
 
+                ExprInstance::GFloat32(x) => Ok(Expr {
+                    expr_instance: Some(ExprInstance::GFloat32(*x)),
+                }),
+
                 ExprInstance::GBigInt(x) => Ok(Expr {
                     expr_instance: Some(ExprInstance::GBigInt(x.clone())),
                 }),
@@ -1626,6 +1648,12 @@ impl DebruijnInterpreter {
                             let f = f64::from_bits(bits);
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::GDouble((-f).to_bits())),
+                            })
+                        }
+                        ExprInstance::GFloat32(bits) => {
+                            let f = f32::from_bits(bits);
+                            Ok(Expr {
+                                expr_instance: Some(ExprInstance::GFloat32((-f).to_bits())),
                             })
                         }
                         ExprInstance::GBigInt(bytes) => {
@@ -1682,6 +1710,13 @@ impl DebruijnInterpreter {
                             let result = f64::from_bits(d1) * f64::from_bits(d2);
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::GDouble(result.to_bits())),
+                            })
+                        }
+                        (ExprInstance::GFloat32(d1), ExprInstance::GFloat32(d2)) => {
+                            self.cost.charge(multiplication_cost())?;
+                            let result = f32::from_bits(d1) * f32::from_bits(d2);
+                            Ok(Expr {
+                                expr_instance: Some(ExprInstance::GFloat32(result.to_bits())),
                             })
                         }
                         (ExprInstance::GBigInt(b1), ExprInstance::GBigInt(b2)) => {
@@ -1760,6 +1795,13 @@ impl DebruijnInterpreter {
                             let result = f64::from_bits(d1) / f64::from_bits(d2);
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::GDouble(result.to_bits())),
+                            })
+                        }
+                        (ExprInstance::GFloat32(d1), ExprInstance::GFloat32(d2)) => {
+                            self.cost.charge(division_cost())?;
+                            let result = f32::from_bits(d1) / f32::from_bits(d2);
+                            Ok(Expr {
+                                expr_instance: Some(ExprInstance::GFloat32(result.to_bits())),
                             })
                         }
                         (ExprInstance::GBigInt(b1), ExprInstance::GBigInt(b2)) => {
@@ -1844,7 +1886,8 @@ impl DebruijnInterpreter {
                                 expr_instance: Some(ExprInstance::GInt(lhs % rhs)),
                             })
                         }
-                        (ExprInstance::GDouble(_), ExprInstance::GDouble(_)) => {
+                        (ExprInstance::GDouble(_), ExprInstance::GDouble(_))
+                        | (ExprInstance::GFloat32(_), ExprInstance::GFloat32(_)) => {
                             Err(InterpreterError::ReduceError(
                                 "Modulus not defined on floating point".to_string(),
                             ))
@@ -1940,6 +1983,14 @@ impl DebruijnInterpreter {
                             })
                         }
 
+                        (ExprInstance::GFloat32(d1), ExprInstance::GFloat32(d2)) => {
+                            self.cost.charge(sum_cost())?;
+                            let result = f32::from_bits(d1) + f32::from_bits(d2);
+                            Ok(Expr {
+                                expr_instance: Some(ExprInstance::GFloat32(result.to_bits())),
+                            })
+                        }
+
                         (ExprInstance::GBigInt(b1), ExprInstance::GBigInt(b2)) => {
                             self.cost.charge(bigint_sum_cost(b1.len(), b2.len()))?;
                             make_bigint_expr(add_twos_complement(&b1, &b2), "+")
@@ -1992,6 +2043,7 @@ impl DebruijnInterpreter {
 
                         (ExprInstance::GInt(_), other)
                         | (ExprInstance::GDouble(_), other)
+                        | (ExprInstance::GFloat32(_), other)
                         | (ExprInstance::GBigInt(_), other)
                         | (ExprInstance::GBigRat(_), other)
                         | (ExprInstance::GFixedPoint(_), other) => {
@@ -2026,6 +2078,14 @@ impl DebruijnInterpreter {
                             let result = f64::from_bits(d1) - f64::from_bits(d2);
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::GDouble(result.to_bits())),
+                            })
+                        }
+
+                        (ExprInstance::GFloat32(d1), ExprInstance::GFloat32(d2)) => {
+                            self.cost.charge(subtraction_cost())?;
+                            let result = f32::from_bits(d1) - f32::from_bits(d2);
+                            Ok(Expr {
+                                expr_instance: Some(ExprInstance::GFloat32(result.to_bits())),
                             })
                         }
 
@@ -2103,6 +2163,7 @@ impl DebruijnInterpreter {
 
                         (ExprInstance::GInt(_), other)
                         | (ExprInstance::GDouble(_), other)
+                        | (ExprInstance::GFloat32(_), other)
                         | (ExprInstance::GBigInt(_), other)
                         | (ExprInstance::GBigRat(_), other)
                         | (ExprInstance::GFixedPoint(_), other) => {
@@ -7149,6 +7210,7 @@ fn get_type(expr_instance: ExprInstance) -> String {
         ExprInstance::GBool(_) => String::from("bool"),
         ExprInstance::GInt(_) => String::from("int"),
         ExprInstance::GDouble(_) => String::from("float"),
+        ExprInstance::GFloat32(_) => String::from("float32"),
         ExprInstance::GBigInt(_) => String::from("bigint"),
         ExprInstance::GBigRat(_) => String::from("bigrat"),
         ExprInstance::GFixedPoint(_) => String::from("fixedpoint"),
@@ -7197,6 +7259,7 @@ fn get_unforgeable_type(inf_instance: &UnfInstance) -> String {
 fn par_contains_nan_double(par: &Par) -> bool {
     par.exprs.iter().any(|e| match &e.expr_instance {
         Some(ExprInstance::GDouble(bits)) => f64::from_bits(*bits).is_nan(),
+        Some(ExprInstance::GFloat32(bits)) => f32::from_bits(*bits).is_nan(),
         Some(ExprInstance::EListBody(list)) => list.ps.iter().any(par_contains_nan_double),
         Some(ExprInstance::ETupleBody(tuple)) => tuple.ps.iter().any(par_contains_nan_double),
         Some(ExprInstance::ESetBody(set)) => set.ps.iter().any(par_contains_nan_double),
