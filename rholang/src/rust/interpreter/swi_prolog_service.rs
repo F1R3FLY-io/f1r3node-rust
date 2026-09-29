@@ -188,6 +188,11 @@ pub async fn petta_execute_with_blocks(
         let proc_handle = tokio::spawn(tokio::time::timeout(Duration::from_secs(10), {
             let mut cmd = Command::new(&env.script_path);
             cmd.arg(&metta_file_path)
+                // The node may run under an LD_PRELOAD (e.g. jemalloc from the
+                // Docker entrypoint); inherited by petta.sh it hangs the
+                // bubblewrap-sandboxed interpreter. The sandbox sets its own
+                // LD_PRELOAD (libsandbox) internally, so drop it for the child.
+                .env_remove("LD_PRELOAD")
                 .env("PETTA_DIR", &env.petta_dir)
                 .env("CACHE_DIR", &env.cache_dir)
                 .env("SANDBOX_LIB_PATH", &env.sandbox_lib_path);
@@ -286,6 +291,9 @@ pub async fn petta_execute_framed(metta_code: &str) -> Result<(Vec<Frame>, Par),
     let result = async {
         let mut cmd = Command::new(&env.script_path);
         cmd.arg(&metta_file_path)
+            // Strip any inherited LD_PRELOAD (e.g. the node's jemalloc) so it
+            // does not hang the sandboxed interpreter; see petta_execute_with_blocks.
+            .env_remove("LD_PRELOAD")
             .env("PETTA_MODE", "NODE")
             .env("PETTA_DIR", &env.petta_dir)
             .env("CACHE_DIR", &env.cache_dir)
