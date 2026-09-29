@@ -740,3 +740,21 @@ Candidate qualification remains outstanding. It needs prepared block histories, 
 The driver reports unknown application status after transport delivery. A transport acknowledgment cannot prove block validation or DAG admission.
 
 This work does not start a blockchain candidate or dispatch cloud resources. Docker process controls remain outside this implementation.
+
+## Live executor security review: 2026-09-28
+
+The maintainer identified [CodeQL alert 41](https://github.com/F1R3FLY-io/f1r3node-rust/security/code-scanning/41) through this [PR review comment](https://github.com/F1R3FLY-io/f1r3node-rust/pull/436#discussion_r4128609240).
+The rule reports a hard-coded cryptographic value at `scripts/casper-soak/src/authority_live.rs:769`.
+The cited statement initializes `capture_attempt` to zero.
+
+The capture call combines the execution digest, step index, capture phase, and retry counter.
+The capture function hashes that string to derive `binding.request_id`.
+The execution digest covers the complete envelope, including `execution_nonce`.
+The normal executor obtains fresh bytes from `/dev/urandom` before it constructs that envelope.
+The node observer separately supplies a challenge and checks the returned challenge.
+
+This source review does not close the finding.
+The code-scanning alert API returned HTTP 403, so the full CodeQL trace remains unavailable.
+TASK-017-12 must verify freshness across captures, retries, and executions, including direct live executor calls.
+The task must then record a correction or an evidence-supported false-positive assessment.
+The alert remains pending review. This note changes no source artifact, evidence acceptance, or claim status.

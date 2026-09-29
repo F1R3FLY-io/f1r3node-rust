@@ -1314,6 +1314,15 @@ tasks:
     live_provider_evidence: docs/casper/cbc-evidence/runs/casper-authority-provider-20260928-01/report.json
     live_provider_guide: docs/casper/design/authority-provider-adaptation.md
     live_provider_status: "The Rust driver submits pinned blocks through the production TLS transport. Owned process receipts connect pause and restart to captures. Explicit successor enrollment supports random node incarnations. Candidate qualification remains pending."
+    live_executor_security_review:
+      status: pending_triage
+      review: "https://github.com/F1R3FLY-io/f1r3node-rust/pull/436#discussion_r4128609240"
+      alert: "https://github.com/F1R3FLY-io/f1r3node-rust/security/code-scanning/41"
+      finding: "CodeQL reports a hard-coded cryptographic value at authority_live.rs:769, where capture_attempt starts at zero."
+      source_review: "The counter contributes to a request ID through the execution digest. The normal executor supplies fresh entropy in execution_nonce."
+      remaining: "Retrieve the full alert trace and verify nonce freshness across captures, retries, and executions. Record a fix or a supported false-positive assessment."
+      access_limit: "The code-scanning alert API returned HTTP 403. The PR review comment was readable."
+      work_log: docs/work-logs/task-017-12-mac-continuation.md#live-executor-security-review-2026-09-28
     live_mapping_remaining: "Prepare candidate block histories and captured input exports. Add missing node observations and qualify the provider. Docker fault receipts remain unimplemented."
     candidate_inventory_evidence: docs/casper/cbc-evidence/runs/casper-campaign-inventory-20260928-01/report.json
     candidate_inventory_review: "All 225 model hashes and four configuration hashes match. The matrix and three suite pins select e3c4e14189f0c6ced2e9674487fcbdeffd93141b. Source-bound acceptance remains pending. No workload pin or qualification changed."
