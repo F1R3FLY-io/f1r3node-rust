@@ -4,7 +4,13 @@
 
 This handoff is prepared for review, not accepted. TASK-017-13 remains in progress and blocked on TASK-017-12 results and the remaining acceptance requirements.
 
-The latest review uses commit `2530b83853e946dd32a850d78dbbc9491fc23c3f`. The [TASK-017-13 work log](../work-logs/task-017-13-gate-handoff-2026-09-21.md) records the ownership transfer, current gates, and delivery blockers.
+The latest review uses commit `211a4e73a6c1c8c4e4d3de35f2debdf1869ab74b` on 2026-09-28. The [TASK-017-13 work log](../work-logs/task-017-13-gate-handoff-2026-09-21.md#parallel-review-on-2026-09-28) records the checks and remaining requirements.
+
+The previous review used `2530b83853e946dd32a850d78dbbc9491fc23c3f`. Its gate counts remain historical results.
+
+At this review, [PR #436](https://github.com/F1R3FLY-io/f1r3node-rust/pull/436) remains open against `feature/casper-node-observation`. Its base is `670037c2511abd5f576063b3153681a873244a18`.
+
+The changed-artifact review covers that committed comparison. Concurrent TASK-017-12 additions require a new audit before acceptance.
 
 The previous preparation used commit `5cc4e665b52f0cc5279ec577ac5075b5b9897caf`. Its [review report](../casper/cbc-evidence/runs/casper-handoff-preparation-20260919-02/report.json) retains that checkpoint's source identities and gate outcomes.
 
@@ -14,7 +20,7 @@ On 2026-09-19, GitHub reported that PR #436 targets `dev` at `6940a5beb4aa806d3d
 
 Earlier records of the stack parent and draft status are historical. This review does not change the PR base or its status.
 
-PR #216 remains open at `619beb4a4a7ad3f8967d4586daf0f5c552bd150e`, with no merge commit.
+The September 21 review recorded PR #216 open at `619beb4a4a7ad3f8967d4586daf0f5c552bd150e`, with no merge commit.
 
 The approved amendment in `5cc4e665b` permits an EPIC-018 branch stacked on PR #216 after handoff acceptance. It does not require a merge before branch creation.
 
@@ -29,7 +35,7 @@ Post-merge claim discharge still requires the actual merge revision. Neither the
 | Bounded models | The eight accepted claim inventories cite passing finite safety checks and named negative controls. | The models do not prove node correctness or unbounded liveness. |
 | Executable bindings | The current audit reports Claim001 pending and seven profile claims discharged. All soak fields remain pending. | Controlled fixtures do not qualify live adapters. |
 | Product observations | TASK-017-12 has not supplied completed baseline evidence to this review. | No campaign result, seed, or run identity is inferred. |
-| Full changed scope | The default gate has 29 gaps among 149 artifacts. The canonical diagnostic has 28 gaps. Both exit 4. | Campaign claims, missing records, and the independent governance claim require current evidence. |
+| Full changed scope | The default gate has 50 gaps among 181 mandatory artifacts. The canonical diagnostic has 61 gaps. Both exit 4. | Node records use a separate evidence directory. Campaign claims, source bindings, and the governance claim require current evidence. |
 
 The claim audit checks metadata, not node behavior. The separate gate-only candidate has controlled fixture checks, not hosted verification or protection enforcement.
 
@@ -37,7 +43,7 @@ Earlier execution revisions remain unchanged.
 
 The accepted claims use `bounded-safety-pass`, `not-applicable`, and `passed` for refutation, construction, and binding. Every claim retains `soak: pending`.
 
-## Accepted source inventory
+## Historical accepted source inventory
 
 The [claim index](../claims/casper-soak-harness.md) links all eight specifications. The source-bound audit checks 123 declared artifacts across these claims.
 
@@ -60,7 +66,7 @@ The initial review package retains its earlier 125-source and 142-input manifest
 
 ### Model identities
 
-These SHA-256 values identify the current accepted model sources. Configuration and verification-plan hashes are in the source manifest.
+These SHA-256 values identify the model sources in the historical accepted reports. Configuration and verification-plan hashes are in the historical source manifest.
 
 | Model | SHA-256 |
 | --- | --- |
@@ -144,7 +150,11 @@ The two campaign helpers are mandatory and high-weight. Their synthetic fixture 
 
 The [authorization record](../work-logs/soak-formal-gate-authorization.md) approves conditional protection changes, enforcement tests, and evidence-backed final acceptance. It is not an enforcement result.
 
-At the latest recorded check, `dev` lacks `Formal verification gate`. Baseline availability remains the activation prerequisite, and Git publication or merge requires separate authorization.
+The September 28 check finds `dev` at `0b9ae5bcec94a2df8f6112bbbc6c950ad2e603b2`. Its slashing workflow lacks `Formal verification gate`.
+
+Effective rulesets do not require the gate. The classic protection endpoint returns HTTP 403, so complete protection visibility remains unverified.
+
+Gate availability on `dev` remains the activation prerequisite. Git publication or merge requires separate authorization.
 
 No deferral of this governance requirement has been approved. The user now requests independent gate delivery to `dev` and the approved protection change.
 
@@ -152,7 +162,7 @@ The [current work log](../work-logs/task-017-13-gate-handoff-2026-09-21.md) reco
 
 ## Baseline inputs still required
 
-The user transferred TASK-017-12 to another agent. The replacement owner's identity has not been supplied to this session.
+The user assigned TASK-017-12 to the main agent and requested parallel TASK-017-13 work on 2026-09-28.
 
 The [dispatch preparation](../work-logs/task-017-12-preparation.md) retains the resource approval and qualification requirements.
 
@@ -160,11 +170,17 @@ The approved baseline budget now covers one four-hour preflight runner and two 2
 
 Each candidate must receive a full 24-hour workload window. The Linux owner still must resolve workflow integration, launch limits, candidate selection, and live qualification.
 
-The separate 60-hour campaign is approved after a passing baseline. Its candidate count and runner lifetime limits still need an explicit decision.
+The September 22 approval permits one 64 GB stability runner per architecture, each with a maximum lifetime of 64 hours.
 
-The proposed two additional 64-hour runners are not approved by the baseline budget. Additional repetitions remain unapproved.
+Both full 24-hour baselines must pass before either 60-hour workload. Additional repetitions remain unapproved.
 
-Before final review, record whether the 60-hour phase is a required TASK-017-13 input or a separately tracked delivery. Approval alone does not decide that requirement.
+The maintainer decided the 60-hour scope on 2026-09-28. The phase is not a closure requirement for this branch or for PR #436, because it cannot run before the branch is merged.
+
+The phase is a post-merge obligation. TASK-018-7 owns the run and its record after the changes are in `master`. The obligation closes on passing evidence for the two architectures.
+
+[Issue 473](https://github.com/F1R3FLY-io/f1r3node-rust/issues/473) is the single record on GitHub of all post-merge obligations of the stack. The 60-hour phase is obligation O1, with the stage `campaign-stability-60h`.
+
+The issue lists eight obligations. They are TASK-018-1 through TASK-018-7, the governance claim `CLAIM-SOAK-GATE-001`, and the release publication of TASK-017-15.
 
 The final handoff still needs these baseline fields:
 
@@ -177,9 +193,9 @@ The final handoff still needs these baseline fields:
 
 These campaign fields remain unknown in this review. A fixture seed cannot substitute for a campaign seed.
 
-D-07 Reading A is ratified. Recovery qualification waits for the actual PR #216 merge because the selected pre-merge node lacks its occurrence store.
+D-07 Reading A is ratified. The September 22 phase decision defers occurrence-dependent publication and recovery qualification to EPIC-018 after PR #216 integration.
 
-Do not report recovery as passed or require an unavailable recovery observation to appear in the pre-merge baseline. Authority and publication qualification retain their own requirements.
+Pre-merge admission requires authority/finality qualification. Publication and recovery verdicts remain pending and cannot contribute a passing baseline result.
 
 [D-11](../casper/design/decision-ledger/11-cbc-fv-governance.md) retains the scan benchmark requirement. No baseline benchmark result has been supplied here.
 
@@ -199,7 +215,7 @@ Deliver the following records for each candidate. This checklist does not author
 | Failure history | Product failures, infrastructure stops, partial evidence, independent exits, and any approved repetition. | Not supplied |
 | Resources | Actual machine count, memory, launch count, lifetime limits, capture, and cleanup results. | Not supplied |
 | Governance baselines | Scan benchmark and User Contract Concurrency results with revisions, commands, counts, and digests. | Not supplied |
-| Follow-on campaign | Explicit phase scope, approved candidate and runner limits, baseline prerequisite, and result or pending state. | Not supplied |
+| Follow-on campaign | Approved candidate and runner limits, both passing baselines, and result or pending state. | Resources approved. The scope is decided: TASK-018-7 owns the phase after the merge. Results remain open. |
 
 A non-passing result must remain visible. Submitting a failure report does not automatically satisfy acceptance or authorize the 60-hour phase.
 
@@ -219,6 +235,7 @@ The tracker also retains an older prose start condition that conflicts with the 
 | TASK-018-4 | Reverify accounting, carrier, and Phlo profiles. | @jeffrey-l-turner or @jltatbeach |
 | TASK-018-5 | Run approved comparisons and both governance reruns. | @jeffrey-l-turner or @jltatbeach |
 | TASK-018-6 | Audit the new source-bound evidence and submit the separate PR. | @jeffrey-l-turner or @jltatbeach |
+| TASK-018-7 | Run and record the 60-hour stability soak after the changes are in `master`. | @jeffrey-l-turner or @jltatbeach |
 
 ## Assumptions and retention
 
@@ -228,7 +245,7 @@ Host controls depend on Linux pidfds, procfs, trusted paths, and available kerne
 
 Docker-daemon behavior, storage availability, and enforced child termination remain explicit assumptions. A host failure cannot produce a passing result from incomplete evidence.
 
-Live observation interfaces remain separately qualified. D-07 Reading A is resolved, but recovery qualification still depends on the merged implementation.
+Live observation interfaces require separate qualification. D-07 Reading A is resolved. Publication and recovery qualification remain pending for EPIC-018.
 
 Historical missing references and unavailable independent exits remain unresolved where recorded.
 
@@ -244,13 +261,19 @@ TASK-017-15 owns separately authorized release publication. Draft-release consum
 - [x] Review the actual PR scope and list all current mandatory-artifact gaps.
 - [x] Record the Linux delivery fields, approved resource boundaries, and missing results.
 - [x] Distinguish stacked branch preparation from post-merge claim discharge.
-- [ ] Receive and review required TASK-017-12 evidence and resolve the campaign completion scope.
+- [x] Resolve the campaign completion scope. The 60-hour phase is a post-merge obligation under TASK-018-7.
+- [ ] Receive and review required TASK-017-12 evidence.
 - [ ] Resolve the campaign-helper and independent governance claim gaps.
 - [ ] Review scan and concurrency baseline evidence.
-- [ ] Confirm named TASK-018 implementers and receive handoff acceptance.
+- [x] Confirm named TASK-018 implementers.
+- [ ] Receive acceptance of the completed handoff.
 - [ ] Repeat current-source, full-scope, and strict task-completion checks.
 
-Prepared by `pi-casper-handoff-mac`. Acceptance recipient, acceptance timestamp, and accepted evidence revision remain unassigned.
+Prepared by `pi-casper-handoff-mac` and refreshed by the parallel TASK-017-13 agent on 2026-09-28. The task owner from 2026-09-28 is `claude-session-f3cbc961`.
+
+The [current review report](../casper/cbc-evidence/runs/casper-pre-merge-review-20260928-01/report.json) records the gap owners and the scope decision.
+
+Either confirmed TASK-018 implementer may receive the handoff. On 2026-09-28 the maintainer named `@jltatbeach` for the handoff acceptance. The acceptance timestamp and accepted evidence revision remain unassigned.
 
 TASK-017-14 reduction and TASK-017-15 publication remain gated on their recorded prerequisites. This draft does not change those dependencies.
 

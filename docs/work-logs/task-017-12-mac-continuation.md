@@ -397,3 +397,364 @@ The checks retain failures for unresolved deploys, terminal failures, and confli
 The fix and regression files are applied in the sibling `system-integration` repository. The destination files match the verified files from the isolated checkout.
 
 The full integration test has not rerun. The fix requires publication before this repository can select its immutable suite revision. No commit or push occurred.
+
+## Authority client scope: 2026-09-28
+
+The user requested TASK-017-12 continuation on `formal/soak-casper-consensus`. The starting revision is `211a4e73a6c1c8c4e4d3de35f2debdf1869ab74b`.
+
+The node observer exposes detached authority evaluation. The harness has no client for that protocol. Its existing profile rejects live requests.
+
+The first implementation adds three files under `scripts/casper-soak`: `src/authority_observer.rs`, `src/bin/casper-authority-observe.rs`, and `tests/authority_observer.rs`.
+
+The client checks process identity, request correlation, frame limits, and deadlines. It retains raw evidence for later qualification.
+
+The [client claim](../claims/casper-authority-observer-client.md) remains pending. The existing mandatory attributes cover all three files.
+
+The synthetic profile requires fixture loading and observations that detached evaluation does not provide directly. Raw capture cannot satisfy those requirements or enable campaign admission.
+
+TASK-017-13 preparation proceeds separately. Final claim review and handoff depend on TASK-017-12 evidence.
+
+### Client behavior and use
+
+The client connects to an existing Linux observer socket. The client and node must share a process namespace and effective user identity.
+
+The node configuration must permit the client process and its start time. A different client process cannot reuse that permission.
+
+The binding contains nine fields: `socket`, `node_pid`, `process_start_ticks`, `source_revision`, `executable_sha256`, `configuration_sha256`, `approved_request_sha256`, `request_id`, and `timeout_ms`.
+
+Use trusted launch records for the expected node identity. Do not derive the expected executable or configuration digest from an unverified greeting.
+
+Supply the existing `AuthorityRequest` object as the authority file. The client forwards that object and checks the response copy without interpreting its evaluation results.
+
+```bash
+cargo build --locked -p casper-soak --bin casper-authority-observe
+target/debug/casper-authority-observe \
+  --binding binding.json \
+  --authority authority-request.json \
+  --output capture-001
+```
+
+The output directory must not exist. The client creates a private directory and retains input, greeting, request, response, and report files.
+
+Exit zero means that the client captured a correlated response. An unavailable evaluation can still produce that exit. The report always keeps qualification pending.
+
+Exit two means that input validation or capture failed. The client retains completed captures when a later protocol check fails.
+
+The report identifies the client executable and compiled helper sources. Socket framing uses the production protocol's length prefix and frame limit.
+
+### Verification and remaining work
+
+Eight tests pass in an isolated Linux container with networking disabled. Four portable tests pass on the native host. All seven existing authority profile tests pass.
+
+The Linux tests reject wrong process identities, changed executables, oversized frames, duplicate keys, truncated frames, replayed responses, and expired deadlines.
+
+The timeout test also sends small fragments repeatedly. The common deadline expires even when individual reads receive data.
+
+Native and Linux Clippy checks pass with warnings denied. The verification package records source digests, command outcomes, and retained log digests.
+
+The first compile failed because this crate does not enable Serde derive macros. The binding parser now uses the existing checked JSON helpers.
+
+The first Linux run exposed an incorrect binding field count. A later timeout assertion included evidence-file hashing and exceeded its one-second test allowance.
+
+The final test separates the 500-millisecond socket deadline from a five-second allowance for evidence output. The client deadline remains unchanged.
+
+These controlled sockets do not execute a blockchain node. No real candidate has been qualified, and no baseline or stability campaign has started.
+
+The selected candidate still needs an observer-capable immutable image. Live scenario mapping must account for fixture loading, expected heads, finality, and unavailable fault controls.
+
+All 225 model hashes match their matrix entries. The `.github/oci-validation.env` entry differs after the inherited suite update and needs source-bound reconciliation.
+
+The authoritative reservation object, independent supervisor, deployment qualification, and campaign claim acceptance remain prerequisites. TASK-017-12 stays in progress.
+
+### Live profile interface gaps
+
+The source review found four gaps between the accepted profile and the available node interface.
+
+| Profile requirement | Available node interface | Consequence |
+| --- | --- | --- |
+| Applied fixture identity and step receipt | `AuthorityRequest` selects an existing captured DAG. It has no fixture-loading operation. | A capture digest cannot establish that the requested fixture was loaded. |
+| Selected head observation | `AuthorityResponse` provides target evaluations and a floor result. | A floor hash cannot substitute for a selected head. |
+| Original fault tolerance and display projection | `TargetResult` exposes the original value as floating-point bits. The projection always reports `equivocation_snapshot_unavailable`. | Conversion needs an explicit contract. The client cannot invent the missing projection. |
+| Fault application receipts | The observer advertises `fault_control` as unsupported. | Fault scenarios remain blocked. |
+
+The measured and reference results share a captured input. That property alone does not satisfy the profile's fixture, head, projection, and fault requirements.
+
+Node interface changes belong to the separate prerequisite. Live qualification requires those interfaces or a separately reviewed profile contract. This continuation changes neither contract.
+
+The three new client artifact records resolve through the shared checker. Its strict check returns exit four with three pending records and no missing records.
+
+## Campaign inventory reconciliation: 2026-09-28
+
+The candidate matrix now records the inherited integration suite at `e3c4e14189f0c6ced2e9674487fcbdeffd93141b`.
+
+PR #450 supplied this update through merge `0b9ae5bcec94a2df8f6112bbbc6c950ad2e603b2`. That merge is an ancestor of the current branch.
+
+The GitHub comparison identifies six commits after the previously recorded suite revision. The validator lifecycle resolver now includes deploy inclusion in its settlement budget.
+
+The comparison shows no change to the launcher or load-test entrypoint. The compose change updates a documentation reference.
+
+The matrix configuration digest now matches `.github/oci-validation.env`. All three workflow pin sites select the same suite revision.
+
+All 225 model hashes and four configuration hashes match their current files. The repository workflow security checks pass.
+
+The [reconciliation report](../casper/cbc-evidence/runs/casper-campaign-inventory-20260928-01/report.json) records the source hashes, comparison, and remaining limits.
+
+Historical reports retain their original bytes. Their recorded suite revisions describe earlier verification and do not qualify the updated campaign.
+
+Candidate image pins and null workload pins remain unchanged. The matrix remains non-dispatchable, and source-bound acceptance remains pending.
+
+The live adapter still requires the node interface additions listed above. This inventory correction does not supply those interfaces or qualify a candidate.
+
+## Campaign control renewal: 2026-09-28
+
+The [renewal report](../casper/cbc-evidence/runs/casper-campaign-renewal-20260928-01/report.json) binds the current 52-file inventory to renewed local verification.
+
+The campaign model and five negative controls pass with the pinned TLC verifier. All three model-runner regression tests pass.
+
+The controller and supervisor pass 32 tests. All 16 reservation tests pass in an isolated Linux container.
+
+The planner passes 133 admission and duration checks. Its controlled API fixtures launch no node or cloud runner.
+
+The first aggregate attempt failed because the native PATH selected incompatible utilities. A later retry omitted cargo, and sandbox restrictions blocked a fixture output write.
+
+The retained component reruns use GNU utilities and preserve the earlier failures. The first aggregate report remains failed.
+
+The source inventory stayed unchanged through verification. The current lockfile adds the node dependency `paste`, and the workflow contains the inherited integration-suite update.
+
+The workflow evidence record now has its current source digest and the renewal report digest. Its prior records and pending claim status remain intact.
+
+The strict eight-claim audit returns exit four. Claim001 remains pending, claims 002 through 008 remain discharged, and all eight soak fields remain pending.
+
+The GitHub review confirms `dev` at `0b9ae5bce`. PR #447 remains open at `670037c25`, with `fix/node-log-and-accept-backoff` as its base.
+
+This renewal supplies local verification evidence. It does not deploy OCI controls, qualify the node interface, or establish a passing campaign.
+
+## Authority interface mapping correction: 2026-09-28
+
+The [mapping report](../casper/cbc-evidence/runs/casper-authority-mapping-20260928-01/report.json) corrects the earlier four-gap assessment. That assessment assigned too much work to the node prerequisite.
+
+This review uses branch revision `2fb0686cf38752a0251af6d1d3e26afebb6d9eb9`. It binds 17 local source files and four external provider files by digest.
+
+The external files come from the selected integration suite revision `e3c4e14189f0c6ced2e9674487fcbdeffd93141b`. The review did not use the older sibling checkout.
+
+### Process controls and receipts
+
+Ordinary pause and restart operations belong to TASK-017-12 on `formal/soak-casper-consensus`. They do not require the observer's unsupported internal fault-control capability.
+
+The Docker provider supports pause, unpause, restart, process inspection, and exit observation. The owned subprocess provider supports signal-based pause, unpause, and process replacement.
+
+The adopted subprocess handle cannot restart its process. Its inferred exit value also cannot establish the actual exit status.
+
+The harness must bind each receipt to the scheduled fault, request, process, and deadline. It must retain observed process state and restart evidence.
+
+Restart evidence must include the previous process exit, readiness, and the new observer incarnation. Command success alone does not establish fault application.
+
+A fault at an internal node operation remains a separate capability. The ordinary process schedule does not establish that capability.
+
+### Paired fork-choice observations
+
+The public `showMainChain` API already invokes the live estimator and exposes its selected chain. The earlier statement about absent selected-head observations was too broad.
+
+However, this API does not bind its response to an observer snapshot or evaluation mode. Separate live calls cannot establish the required shared input.
+
+The observer compares oracle and floor results on one detached capture. It does not run paired fork-choice evaluations or return their selected heads.
+
+EPIC-019 on `feature/casper-node-observation` owns the required observation extension. The extension must bind both fork-choice modes, estimator configuration, results, and work to one capture.
+
+A finalized floor cannot substitute for a selected head. Existing oracle reference results cannot substitute for a fork-choice reference result.
+
+### Display projection and numeric values
+
+The public block API already reports display fault tolerance. Its calculation subtracts initial fault derived from the live equivocation tracker.
+
+The detached observer snapshot does not contain that tracker. Its display projection explicitly reports `equivocation_snapshot_unavailable`.
+
+EPIC-019 owns capture of the equivocation inputs and their use in the detached display calculation. A separate public block response lacks this capture binding.
+
+TASK-017-12 owns the numeric mapping. The observer preserves floating-point bits, while the accepted profile compares rational values.
+
+A rounded floating-point value must not become its ideal mathematical fraction. The mapping must preserve the original bits and handle values outside the rational schema.
+
+### Fixtures, finality, and work
+
+The accepted synthetic inputs contain opaque fixture JSON. They are not executable block fixtures with valid signatures and complete node state.
+
+Existing deploy and propose operations support ordinary workloads. Their success does not establish malformed signatures, duplicate justifications, or controlled missing dependencies.
+
+TASK-017-12 must define executable scenarios and retain evidence of their applied inputs. This requirement does not establish a need for a production fixture-loading endpoint.
+
+The observer returns capture digests and counts. It does not return the complete canonical DAG, electorate, and justification artifacts required by the current profile input binding.
+
+The harness needs a reviewed mapping between those input identities. A bounded node export or additional digests might be necessary after that contract is defined.
+
+Finality mapping must distinguish oracle decisions, floor outcomes, live events, and persisted state. An oracle threshold result alone does not establish finalization.
+
+The mapping must also preserve threshold precision and the difference between strict and inclusive comparisons. Holds and unavailable observations must remain explicit.
+
+Work counters require defined counting sites and evaluation scope. Metadata reads do not necessarily count distinct visited vertices, and traversal operations do not necessarily count edges.
+
+TASK-017-12 owns these mappings. EPIC-019 owns additional node instrumentation only where the agreed measurement requires it.
+
+### Remaining implementation and verification
+
+The next harness work defines executable fixtures, input bindings, numeric conversion, finality interpretation, and counter semantics. Process receipts can use the existing providers.
+
+The node dependency comprises paired fork-choice observations and captured display-projection inputs. Further input exports or counters require a specific contract before implementation.
+
+The live adapter must then connect qualified observations to the profile. Its current `live_adapter_unqualified` rejection remains necessary until that path has separate verification.
+
+The [validation record](../casper/cbc-evidence/runs/casper-authority-mapping-20260928-01/validation.json) confirms source digests and external Python syntax. This source review executed no provider operations and establishes no live qualification.
+
+TASK-017-12 remains in progress. Candidate qualification, executable workload pins, campaign service qualification, required acceptance, preflight, and both full baselines remain outstanding.
+
+## Authority adapter implementation: 2026-09-28
+
+The [adapter report](../casper/cbc-evidence/runs/casper-authority-adapter-20260928-01/report.json) records the implemented observation mapper, process recorder, and verification results.
+
+The observer client now retains `mapping.json` with the raw transport artifacts. Mapping errors produce a separate rejected record without erasing the captured response.
+
+The mapper preserves binary32 bits and converts supported values to exact fractions. Nonfinite values and fractions outside the profile schema retain explicit absence reasons.
+
+The mapper checks exact oracle witnesses and preserves the selected threshold comparator. It separates persisted finality from oracle decisions and detached floor results.
+
+Work counters retain their original names and request scope. Missing vertex and edge measurements remain missing.
+
+The Python process recorder uses the existing owned subprocess controls. It verifies the predecessor capture and process identity before invoking the provider.
+
+Pause requires an observed stopped state and records resume cleanup separately. Restart requires observed exit, a replacement child, and a new observer incarnation.
+
+The replacement must preserve the source revision, executable digest, and configuration digest. A late receipt cannot report successful application.
+
+The recorder accepts only an owned subprocess handle. Docker and adopted-process execution remain outside this implementation.
+
+Readiness means an available authority endpoint capture. The recorder does not establish network convergence, provider timing bounds, or full candidate qualification.
+
+The new adapter workflow runs nine Linux client tests, eight mapping tests, and ten process receipt tests. All 27 tests pass locally in Linux.
+
+The numeric tests include 20,000 deterministic binary32 samples. Native client and mapping tests pass, and all seven existing authority profile tests pass.
+
+Linux and native Clippy checks pass. Workflow security checks, Rust formatting, shell syntax, and whitespace checks also pass.
+
+The local Linux gate verifies unchanged source digests. No hosted run of the new workflow has occurred.
+
+The client and adapter records remain pending. Controlled processes and fixture observer captures do not qualify a blockchain node.
+
+The current PR review confirms that preflight and both full baselines remain completion requirements. The later 60-hour phase remains a post-merge obligation.
+
+PR #447 remains open at `670037c2511abd5f576063b3153681a873244a18`. Its head does not supply the additional observation contract identified in the source mapping.
+
+Executable scenarios still need applied fixture identities, captured input bindings, and exact traversal measurements. The accepted live profile remains blocked until these bindings exist.
+
+The node branch owns paired fork-choice results and captured display-projection inputs. This continuation made no node changes.
+
+Campaign service deployment, selected candidate qualification, source-bound acceptance, preflight, and baseline execution remain outstanding. TASK-017-12 remains in progress.
+
+## Executable scenario bindings: 2026-09-28
+
+The [execution report](../casper/cbc-evidence/runs/casper-authority-execution-20260928-01/report.json) records the completed harness binding and current verification results.
+
+The production `execute` command runs a pinned provider executable with the generated scenario operations. It retains the inputs, request, output, and receipt chain.
+
+Each applied receipt must identify the exact operation and retained input bytes. Observation records must match the request and member identities.
+
+The binding sends final evaluations and fault acknowledgments to the existing collector and classifier. Missing steps, missing evaluations, and unapplied receipts cannot pass.
+
+Controlled execution covers all nine scenario kinds. Rejection tests cover replayed requests, reordered steps, broken chains, late receipts, changed inputs, and incorrect executable digests.
+
+A partial receipt inventory preserves an observed product failure after executor failure. Timeout and blocked-admission tests verify process cleanup and launch prevention.
+
+Native and Linux verification each pass 12 Rust tests. The ignored provider helper executes as a child process through the production command.
+
+The threshold test checks 2,000 cases. The clean model and three negative controls pass. Native Clippy denies warnings and passes.
+
+The final native wrapper uses ARM Java and test optimization level zero. The optimized native dependency build failed, and the evidence retains that failure.
+
+The sandbox blocked the TLC local listener. The approved external run passed with identical source inventories before and after verification.
+
+Claim002 now remains pending because its accepted implementation changed. All 13 current artifact records retain matching source, specification, and evidence digests.
+
+The 12 previously accepted records preserve their historical acceptance. The strict audit returns exit 4 for pending claims instead of exit 2 for refusal.
+
+These fixtures launch no blockchain nodes and dispatch no cloud resources. Provider receipts remain assertions until a live provider receives qualification.
+
+The live provider must supply mapped observations, captured input exports, traversal measurements, and process receipts. The other agent owns the node observation additions.
+
+Renewed acceptance and hosted verification remain pending. Candidate qualification, campaign services, preflight, and both full baselines still prevent TASK-017-12 completion.
+
+## Live qualification executor: 2026-09-28
+
+The [live executor report](../casper/cbc-evidence/runs/casper-authority-live-20260928-01/report.json) records the implementation and controlled Linux verification.
+
+The new `casper-authority-live` executable consumes the execution envelope. It verifies the observer identity before each workload operation and captures the node afterward.
+
+A pinned native driver supplies fixture operations and input exports. The executor checks the exported bytes and captured snapshot digest before emitting an applied receipt.
+
+The executor constructs observations from the node response. It preserves separate bounded and reference decisions, exact numeric values, and persisted finality.
+
+Missing heads, traversal measurements, and projection values remain missing. A null driver permits captures but produces unknown receipts and an incomplete execution.
+
+Atomic inventory updates preserve completed receipts after a later failure. The timeout test confirms that the driver process exits and leaves a valid partial inventory.
+
+Eight live executor tests pass on Linux. The native fixture helper executes through the production binary during those tests.
+
+All 27 existing client, mapping, and process receipt tests also pass on Linux. Native and Linux Clippy checks pass.
+
+The first full gate exposed a malformed PID test fixture. The corrected fixture and final gate pass, and the evidence retains the failed gate.
+
+The observer module now exposes its mapper to the live executor. This visibility change lets both paths use the same conversion logic.
+
+The existing adapter workflow now runs the live gate. The changed workflow and observer records remain pending with refreshed source digests.
+
+This implementation does not supply a candidate-specific fixture driver. The node observer currently lacks paired heads and the required exact input and traversal exports.
+
+Fault schedules remain blocked before driver launch. Connecting the process recorder requires an adapter that binds the predecessor and replacement incarnations.
+
+The [provider guide](../casper/design/authority-live-executor.md) defines the operation protocol and remaining integration work. Full live execution and TASK-017-12 remain incomplete.
+
+## Provider transport and process adaptation: 2026-09-28
+
+The live driver now submits pinned block bytes through the current Rust peer transport. The older integration client supplied the operation pattern.
+
+The process owner starts a pinned native child. Its private socket supports pause, restart, and observer capture requests.
+
+The node authorizes the persistent owner PID and start ticks. The executor receives captures through that owner and retains their verified artifact bytes.
+
+Restart handling verifies the predecessor socket identity, observes child exit, removes that same socket, and starts the replacement. The executor verifies successor readiness.
+
+Explicit `observed_restart` enrollment supports the random incarnation that the node generates. Receipt validation and classification bind subsequent observations to that successor.
+
+The Linux gate passes 27 tests and Clippy. The profile gate passes 13 Rust tests, 2,000 threshold cases, and four model controls.
+
+The profile gate needed an approved rerun because the sandbox denied the TLC listener. The failed attempt remains in the local evidence directory.
+
+The [provider report](../casper/cbc-evidence/runs/casper-authority-provider-20260928-01/report.json) records the sources and verification scope. It preserves the preceding records.
+
+The source and claim records remain pending. The strict claim audit returns exit 4, with claims 001 and 002 pending and claims 003 through 008 discharged.
+
+The shared artifact audit reports 26 pending mandatory artifacts. It reports no stale discharge refusal.
+
+The [provider guide](../casper/design/authority-provider-adaptation.md) documents configuration and use. The adapter workflow includes the transport, process, live executor, and classifier checks.
+
+Candidate qualification remains outstanding. It needs prepared block histories, captured input exports, and the missing node observations.
+
+The driver reports unknown application status after transport delivery. A transport acknowledgment cannot prove block validation or DAG admission.
+
+This work does not start a blockchain candidate or dispatch cloud resources. Docker process controls remain outside this implementation.
+
+## Live executor security review: 2026-09-28
+
+The maintainer identified [CodeQL alert 41](https://github.com/F1R3FLY-io/f1r3node-rust/security/code-scanning/41) through this [PR review comment](https://github.com/F1R3FLY-io/f1r3node-rust/pull/436#discussion_r4128609240).
+The rule reports a hard-coded cryptographic value at `scripts/casper-soak/src/authority_live.rs:769`.
+The cited statement initializes `capture_attempt` to zero.
+
+The capture call combines the execution digest, step index, capture phase, and retry counter.
+The capture function hashes that string to derive `binding.request_id`.
+The execution digest covers the complete envelope, including `execution_nonce`.
+The normal executor obtains fresh bytes from `/dev/urandom` before it constructs that envelope.
+The node observer separately supplies a challenge and checks the returned challenge.
+
+This source review does not close the finding.
+The code-scanning alert API returned HTTP 403, so the full CodeQL trace remains unavailable.
+TASK-017-12 must verify freshness across captures, retries, and executions, including direct live executor calls.
+The task must then record a correction or an evidence-supported false-positive assessment.
+The alert remains pending review. This note changes no source artifact, evidence acceptance, or claim status.

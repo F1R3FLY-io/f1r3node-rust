@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "report_sha256": "89cdb6c70c900c5a90dd971bb7840f5122d6146c392e894c0c558a14aa9b84d8",
+  "source_digests_match": true,
+  "log_digests_match": true,
+  "gate_source_inventory_unchanged": true,
+  "qualification": "pending",
+  "claim_discharge": "pending",
+  "artifact_records": {
+    "count": 9,
+    "status": "pending",
+    "all_source_claim_and_evidence_digests_match": true
+  }
+}
