@@ -79,6 +79,7 @@ allow-build-scripts = [
   "icu_normalizer_data@2.2.0", "icu_normalizer_data@2.3.0",
   "icu_properties_data@2.2.0", "icu_properties_data@2.3.0", "indexmap@1.9.3",
   "libc@0.2.189", "libfuzzer-sys@0.4.13", "libm@0.2.16", "libz-ng-sys@1.1.29",
+  "linkme@0.3.37", "linkme-impl@0.3.37",
   "lmdb-master-sys@0.2.6", "matrixmultiply@0.3.11", "mime_guess@2.0.5",
   "native-tls@0.2.18", "nom@4.2.3", "ntapi@0.4.3", "num-complex@0.2.4",
   "num-traits@0.2.19", "object@0.39.1", "oid-registry@0.7.1",
