@@ -613,6 +613,150 @@ impl Wal {
         let _ = guard.ack_hashes.split_off(mark.len);
         guard.entries.split_off(mark.len)
     }
+
+    /// Replace the entry matching `ack_hash` with `new_entry`.
+    /// Preserves the entry's `ack_hash` sidecar slot (only the
+    /// `WalEntry` payload changes).  Returns `true` if a match
+    /// was found and updated, `false` otherwise (no change).
+    ///
+    /// Used by partial-write finalize on paths where the full
+    /// replacement (rather than a targeted field update) is
+    /// clearer at the call site.
+    ///
+    /// # Search order
+    ///
+    /// Reverse tail-first — the placeholder was appended moments
+    /// ago in the same handler, so common case is O(1).  A
+    /// duplicate `ack_hash` across entries (shouldn't happen for
+    /// fresh unforgeables) updates the most-recent one.
+    ///
+    /// # Sentinel caveat
+    ///
+    /// A caller passing the `[0u8; 32]` sentinel would match every
+    /// legacy-`append`-populated entry (the sentinel is what
+    /// `append` records when no ack hash was supplied).  Only pass
+    /// fresh unforgeables from `stable_hash_provider::hash(ack_par)`
+    /// — never the sentinel.
+    pub fn update_last_entry_by_ack_hash(&self, ack_hash: [u8; 32], new_entry: WalEntry) -> bool {
+        let mut guard = poison_abort(self.inner.write(), "Wal");
+        assert_alignment(&guard);
+        match find_by_ack_hash(&guard, &ack_hash) {
+            Some(i) => {
+                guard.entries[i] = new_entry;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Update the `length` and `payload_ref` of the entry matching
+    /// `ack_hash`, in place, preserving every other field (`op`,
+    /// `path`, `offset`, `outcome`, ...).  Used by
+    /// `finalize_write_journal` on partial writes.
+    ///
+    /// # Why key by `ack_hash` instead of re-looking-up the fd
+    ///
+    /// The naive alternative had the finalize path re-look-up
+    /// `(cmode, canon_path)` from the fd table between
+    /// `journal_write` and finalize.  If the fd was closed in
+    /// that window (which the linear-cell mutex on `File.rho`
+    /// makes exceedingly narrow but not impossible), the lookup
+    /// would return `None` and the placeholder would silently
+    /// stay full-length instead of being truncated to actual
+    /// bytes — leader/follower divergence on the partial-write
+    /// path.  Keying by `ack_hash` (a fresh unforgeable, unique
+    /// per syscall) means the finalize path never re-reads
+    /// mutable fd-table state; the placeholder was appended
+    /// moments ago in the same handler and cannot be aliased
+    /// away.
+    ///
+    /// Returns `true` if a match was found and updated.  Same
+    /// reverse-tail-first search and sentinel caveat as
+    /// `update_last_entry_by_ack_hash`.
+    pub fn update_partial_write_by_ack_hash(
+        &self,
+        ack_hash: [u8; 32],
+        actual_bytes: &[u8],
+    ) -> bool {
+        let mut guard = poison_abort(self.inner.write(), "Wal");
+        assert_alignment(&guard);
+        match find_by_ack_hash(&guard, &ack_hash) {
+            Some(i) => {
+                let entry = &mut guard.entries[i];
+                entry.length = Some(actual_bytes.len() as u64);
+                entry.payload_ref = Some(PayloadRef::hash(actual_bytes));
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Update only the `outcome` field of the entry matching
+    /// `ack_hash`.  Used by `finalize_failure_journal` on the
+    /// leader (and its follower mirror) to flip a placeholder
+    /// from `Success` to `Failure { code }` when the syscall
+    /// reply carries an error.  All other fields (`op`, `path`,
+    /// `offset`, `length`, `payload_ref`, ...) are preserved so
+    /// consumers can see WHAT the caller asked for and WHY
+    /// replay should skip it.
+    ///
+    /// Returns `true` if a match was found and updated.  Same
+    /// reverse-tail-first search and sentinel caveat as
+    /// `update_last_entry_by_ack_hash`.
+    pub fn update_outcome_by_ack_hash(&self, ack_hash: [u8; 32], outcome: WalOutcome) -> bool {
+        let mut guard = poison_abort(self.inner.write(), "Wal");
+        assert_alignment(&guard);
+        match find_by_ack_hash(&guard, &ack_hash) {
+            Some(i) => {
+                guard.entries[i].outcome = outcome;
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+/// Reverse tail-first search for an entry whose sidecar
+/// `ack_hash` matches — the common shape all three
+/// `update_*_by_ack_hash` methods share.  Returns the matched
+/// index (or `None`) so each caller can perform its specific
+/// mutation without re-implementing the scan.
+///
+/// The reverse iteration order is load-bearing: a fresh
+/// unforgeable ack hash almost always matches the tail entry
+/// (the placeholder was appended moments ago in the same
+/// handler), giving O(1) common-case cost.  A hypothetical
+/// duplicate ack hash across entries wins on the most-recent
+/// match — pinned by
+/// `update_last_entry_picks_most_recent_on_duplicate_ack`.
+///
+/// Callers MUST first call `assert_alignment(&inner)` so the
+/// `entries` index reachable via the returned `Some(i)` is
+/// still valid for mutation.
+fn find_by_ack_hash(inner: &WalInner, ack_hash: &[u8; 32]) -> Option<usize> {
+    (0..inner.ack_hashes.len())
+        .rev()
+        .find(|&i| inner.ack_hashes[i] == *ack_hash)
+}
+
+/// Fail-hard-in-release invariant guard.  The `entries` and
+/// `ack_hashes` sidecar vecs sit under a single `RwLock` and are
+/// updated in lockstep by every `Wal` method — but a
+/// hypothetical future refactor that violates this discipline
+/// would silently misroute the reverse-scan in the `update_*`
+/// paths (matching a stale ack hash to a stale entry).  A panic
+/// here is loud, single-source, and caught by any CI that runs
+/// the mutating handlers.
+///
+/// `#[track_caller]` so the panic points at the specific
+/// `update_*` method rather than at this helper.
+#[track_caller]
+fn assert_alignment(guard: &WalInner) {
+    assert_eq!(
+        guard.entries.len(),
+        guard.ack_hashes.len(),
+        "Wal invariant: entries and ack_hashes must be index-aligned"
+    );
 }
 
 #[cfg(test)]
@@ -1028,4 +1172,174 @@ mod tests {
     // `Wal: Send + Sync` — no runtime test needed; the module-
     // scope `_WAL_IS_SEND_SYNC` const witness above enforces the
     // bound at every `cargo build` (not only `cargo test`).
+
+    // --- update_*_by_ack_hash --------------------------------------
+
+    /// Test helper — build an entry with a distinguishable ack
+    /// hash keyed on `i` (byte pattern `[i; 32]`).  Different
+    /// `i` values give distinct hashes so tests can target
+    /// specific entries without collision.
+    fn ack_hash(i: u8) -> [u8; 32] { [i; 32] }
+
+    #[test]
+    fn update_last_entry_replaces_matched_entry() {
+        let wal = Wal::new();
+        wal.append_with_ack(mk_entry(1), ack_hash(0x01)).unwrap();
+        wal.append_with_ack(mk_entry(2), ack_hash(0x02)).unwrap();
+        wal.append_with_ack(mk_entry(3), ack_hash(0x03)).unwrap();
+
+        let replacement = mk_entry(99);
+        assert!(wal.update_last_entry_by_ack_hash(ack_hash(0x02), replacement.clone()));
+
+        let snap = wal.snapshot();
+        assert_eq!(snap[0].length, Some(1));
+        assert_eq!(snap[1].length, Some(99));
+        assert_eq!(snap[2].length, Some(3));
+        assert_eq!(snap.len(), 3);
+    }
+
+    #[test]
+    fn update_last_entry_returns_false_on_no_match() {
+        let wal = Wal::new();
+        wal.append_with_ack(mk_entry(1), ack_hash(0x01)).unwrap();
+
+        let unmatched = mk_entry(999);
+        assert!(!wal.update_last_entry_by_ack_hash(ack_hash(0xFF), unmatched));
+        // Buffer is unchanged.
+        let snap = wal.snapshot();
+        assert_eq!(snap.len(), 1);
+        assert_eq!(snap[0].length, Some(1));
+    }
+
+    /// A duplicate `ack_hash` across entries (shouldn't happen
+    /// for fresh unforgeables in practice — pinned here to
+    /// document what does happen: the reverse-scan wins, so the
+    /// most-recent match is replaced).
+    #[test]
+    fn update_last_entry_picks_most_recent_on_duplicate_ack() {
+        let wal = Wal::new();
+        wal.append_with_ack(mk_entry(1), ack_hash(0x01)).unwrap();
+        wal.append_with_ack(mk_entry(2), ack_hash(0x01)).unwrap(); // dup
+        wal.append_with_ack(mk_entry(3), ack_hash(0x02)).unwrap();
+
+        assert!(wal.update_last_entry_by_ack_hash(ack_hash(0x01), mk_entry(99)));
+        let snap = wal.snapshot();
+        assert_eq!(snap[0].length, Some(1)); // first dup untouched
+        assert_eq!(snap[1].length, Some(99)); // second dup replaced
+        assert_eq!(snap[2].length, Some(3));
+    }
+
+    /// `update_partial_write_by_ack_hash` updates ONLY `length`
+    /// and `payload_ref`.  Every other field (`op`, `path`,
+    /// `offset`, `mode_bits`, `owner`, `group`, `outcome`,
+    /// `extra_path`) MUST be preserved so consumers see the
+    /// original caller intent.
+    #[test]
+    fn update_partial_write_preserves_all_other_fields() {
+        let wal = Wal::new();
+        // Placeholder entry: op=Write, path=/tmp/f0.txt, length=Some(0),
+        // outcome=Success (per mk_entry(0)).
+        let placeholder = mk_entry(0);
+        wal.append_with_ack(placeholder.clone(), ack_hash(0x42))
+            .unwrap();
+
+        let actual = b"hi";
+        assert!(wal.update_partial_write_by_ack_hash(ack_hash(0x42), actual));
+
+        let snap = wal.snapshot();
+        let entry = &snap[0];
+        // Updated fields.
+        assert_eq!(entry.length, Some(actual.len() as u64));
+        assert_eq!(entry.payload_ref, Some(PayloadRef::hash(actual)));
+        // Preserved fields.
+        assert_eq!(entry.op, placeholder.op);
+        assert_eq!(entry.path, placeholder.path);
+        assert_eq!(entry.offset, placeholder.offset);
+        assert_eq!(entry.mode_bits, placeholder.mode_bits);
+        assert_eq!(entry.owner, placeholder.owner);
+        assert_eq!(entry.group, placeholder.group);
+        assert_eq!(entry.extra_path, placeholder.extra_path);
+        assert_eq!(entry.outcome, placeholder.outcome);
+    }
+
+    #[test]
+    fn update_partial_write_returns_false_on_no_match() {
+        let wal = Wal::new();
+        wal.append_with_ack(mk_entry(1), ack_hash(0x01)).unwrap();
+        assert!(!wal.update_partial_write_by_ack_hash(ack_hash(0xFF), b"nope"));
+    }
+
+    /// Zero-byte partial write: the reserve-and-finalize pattern
+    /// permits `Ok(n) if n < requested → update_partial_write(...,
+    /// &bytes[..n])` with `n = 0`.  Pin that `length` becomes
+    /// `Some(0)` (not `None`) and `payload_ref` becomes
+    /// `Some(PayloadRef::hash(&[]))` (not `None`) — the update is
+    /// semantically distinct from "not called at all."
+    #[test]
+    fn update_partial_write_with_empty_bytes_pins_zero_length_and_empty_hash() {
+        let wal = Wal::new();
+        wal.append_with_ack(mk_entry(5), ack_hash(0x05)).unwrap();
+
+        assert!(wal.update_partial_write_by_ack_hash(ack_hash(0x05), &[]));
+
+        let snap = wal.snapshot();
+        assert_eq!(snap[0].length, Some(0));
+        assert_eq!(snap[0].payload_ref, Some(PayloadRef::hash(&[])));
+    }
+
+    /// `update_outcome_by_ack_hash` flips `outcome` to
+    /// `Failure { code }` and preserves every other field so the
+    /// replay path can see WHAT the caller asked for and WHY
+    /// replay should skip it.
+    #[test]
+    fn update_outcome_flips_success_to_failure() {
+        let wal = Wal::new();
+        let placeholder = mk_entry(7);
+        wal.append_with_ack(placeholder.clone(), ack_hash(0x77))
+            .unwrap();
+
+        let failure = WalOutcome::Failure { code: 42 };
+        assert!(wal.update_outcome_by_ack_hash(ack_hash(0x77), failure));
+
+        let snap = wal.snapshot();
+        let entry = &snap[0];
+        assert_eq!(entry.outcome, failure);
+        // Every other field preserved.
+        assert_eq!(entry.op, placeholder.op);
+        assert_eq!(entry.path, placeholder.path);
+        assert_eq!(entry.length, placeholder.length);
+        assert_eq!(entry.payload_ref, placeholder.payload_ref);
+    }
+
+    #[test]
+    fn update_outcome_returns_false_on_no_match() {
+        let wal = Wal::new();
+        wal.append_with_ack(mk_entry(1), ack_hash(0x01)).unwrap();
+        assert!(!wal.update_outcome_by_ack_hash(ack_hash(0xFF), WalOutcome::Failure { code: 1 }));
+    }
+
+    /// A drained deploy's ack hashes should no longer be
+    /// updateable — pin that the update methods return `false`
+    /// on ack hashes whose entries have been removed via
+    /// `take_deploy_entries_insertion_order`.  Guards against a
+    /// bug where a late-arriving finalize call could mutate an
+    /// entry belonging to a completed deploy.
+    #[test]
+    fn update_returns_false_for_drained_ack_hashes() {
+        let wal = Wal::new();
+        let mark = wal.begin_deploy();
+        wal.append_with_ack(mk_entry(1), ack_hash(0xAA)).unwrap();
+        wal.append_with_ack(mk_entry(2), ack_hash(0xBB)).unwrap();
+
+        // Drain the deploy — both entries + their ack hashes
+        // leave the buffer.
+        let drained = wal.take_deploy_entries_insertion_order(mark);
+        assert_eq!(drained.len(), 2);
+        assert!(wal.is_empty());
+
+        // Neither ack hash is updateable now.
+        assert!(!wal.update_outcome_by_ack_hash(ack_hash(0xAA), WalOutcome::Failure { code: 1 }));
+        assert!(!wal.update_partial_write_by_ack_hash(ack_hash(0xBB), b"late"));
+        assert!(!wal.update_last_entry_by_ack_hash(ack_hash(0xAA), mk_entry(99)));
+    }
 }
