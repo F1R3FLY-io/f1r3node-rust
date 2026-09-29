@@ -218,7 +218,7 @@ Not every overlapping channel touch is a conflict. Some channels carry data with
 
 When the conflict-set merger inspects a shared channel, it looks up the channel's tag against this table. If a `MergeType` is found, the deploys are merged rather than treated as conflicting. If not, ordinary conflict resolution applies (one deploy is kept, the other rejected).
 
-`BitmaskOr` exists for a specific class of channel: two writes to the same channel can each set distinct bits in a bitmap and combine without conflict. The motivating case is the registry's `TreeHashMap` interior nodes, where two inserts at different keys race on the parent's child-bitmap update. `casper/tests/multi_node/bridge_contract_concurrent_merge.rs` covers this case at unit level.
+`BitmaskOr` exists for a specific class of channel: two writes to the same channel can each set distinct bits in a bitmap and combine without conflict. The motivating case is the registry's `TreeHashMap` interior nodes, where two inserts at different keys race on the parent's child-bitmap update. `casper/tests/multi_node/registry_key_merge.rs` covers this case directly: writes to different keys merge, and writes to the same key conflict. `casper/tests/multi_node/bridge_contract_concurrent_merge.rs` covers it through the bridge contract.
 
 To diagnose a suspected merge rejection, run with `RUST_LOG=f1r3fly.merge.tag_check=trace` to see which channels match a `MergeType` and which do not.
 

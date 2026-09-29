@@ -1,6 +1,9 @@
 use std::fs;
 use std::path::Path;
 
+/// A textual filter, not a parser. String literals are kept on purpose: in
+/// Rholang `"_deposit"` and `"findOrCreate"` are method names in strings. A
+/// `//` inside a string would cut the rest of that line.
 fn without_comments(source: &str) -> String {
     let mut code = String::with_capacity(source.len());
     let mut rest = source;

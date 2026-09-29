@@ -363,12 +363,9 @@ impl TestNode {
                 if sender_idx == receiver_idx {
                     continue;
                 }
-                let (left, right) = nodes.split_at_mut(sender_idx.max(receiver_idx));
-                let (receiver, sender) = if receiver_idx < sender_idx {
-                    (&mut left[receiver_idx], &mut right[0])
-                } else {
-                    (&mut right[0], &mut left[sender_idx])
-                };
+                let [receiver, sender] = nodes
+                    .get_disjoint_mut([receiver_idx, sender_idx])
+                    .expect("receiver and sender are different nodes");
                 receiver.sync_with_one(sender).await?;
             }
         }
