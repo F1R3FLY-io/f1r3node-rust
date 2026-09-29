@@ -1,3 +1,4 @@
+pub mod consensus_fingerprint;
 pub mod errors;
 pub mod mode;
 pub mod nss;
