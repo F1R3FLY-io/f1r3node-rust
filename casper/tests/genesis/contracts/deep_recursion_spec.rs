@@ -34,7 +34,8 @@ async fn eval_rholang_code(code: &str, timeout: Duration) -> Result<(), String> 
         matcher,
         rholang::rust::interpreter::external_services::ExternalServices::noop(),
     )
-    .await;
+    .await
+    .unwrap();
 
     let rand = Blake2b512Random::create_from_length(128);
 

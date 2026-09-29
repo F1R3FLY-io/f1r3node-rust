@@ -397,7 +397,8 @@ impl ReportingRuntime {
             extra_system_processes,
             external_services,
         )
-        .await;
+        .await
+        .map_err(|e| e.to_string())?;
 
         rholang::rust::interpreter::rho_runtime::bootstrap_registry(&runtime).await;
 

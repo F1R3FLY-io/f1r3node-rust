@@ -237,7 +237,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             Arc::new(Box::new(Matcher)),
             external_services.clone(),
         )
-        .await
+        .await?
     };
 
     // Runtime manager (play and replay runtimes)

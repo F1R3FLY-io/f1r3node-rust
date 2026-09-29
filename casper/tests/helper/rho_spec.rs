@@ -368,7 +368,8 @@ pub async fn get_results(
                 matcher,
                 rholang::rust::interpreter::external_services::ExternalServices::noop(),
             )
-            .await;
+            .await
+            .unwrap();
 
             // Position the runtime at the genesis post-state so the standard library / registry
             // (rho:lang:listOps, rho:system:pos, rho:vault:*, …) resolve for the test suite.

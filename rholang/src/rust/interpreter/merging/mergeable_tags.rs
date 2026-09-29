@@ -26,6 +26,8 @@ use models::rhoapi::{GPrivate, GUnforgeable, Par};
 use prost::Message;
 use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 
+use crate::rust::interpreter::errors::InterpreterError;
+
 pub const NON_NEGATIVE_NUMBER_PK: &str =
     "e33c9f1e925819d04733db4ec8539a84507c9e9abd32822059349449fe03997d";
 pub const NON_NEGATIVE_NUMBER_TIMESTAMP: i64 = 1559156251792;
@@ -90,17 +92,18 @@ pub fn default_mergeable_tags() -> HashMap<Par, MergeType> {
 
 /// The tag bound to `rho:system:bitmaskMergeableTag`. Registry.rho reads that single
 /// URI, so a second BitmaskOr tag is refused rather than left to map iteration order.
-pub fn bitmask_or_tag(tags: &HashMap<Par, MergeType>) -> Option<&Par> {
+pub fn bitmask_or_tag(tags: &HashMap<Par, MergeType>) -> Result<Option<&Par>, InterpreterError> {
     let mut found = tags
         .iter()
         .filter(|(_, merge_type)| **merge_type == MergeType::BitmaskOr)
         .map(|(tag, _)| tag);
     let tag = found.next();
-    assert!(
-        found.next().is_none(),
-        "at most one BitmaskOr mergeable tag is supported: rho:system:bitmaskMergeableTag binds a single tag"
-    );
-    tag
+    if found.next().is_some() {
+        return Err(InterpreterError::SetupError(
+            "at most one BitmaskOr mergeable tag is supported: rho:system:bitmaskMergeableTag binds a single tag".into(),
+        ));
+    }
+    Ok(tag)
 }
 
 #[cfg(test)]
@@ -147,15 +150,17 @@ mod tests {
     fn the_default_registry_binds_its_bitmask_tag() {
         assert_eq!(
             bitmask_or_tag(&default_mergeable_tags()),
-            Some(&bitmask_or_mergeable_tag_name())
+            Ok(Some(&bitmask_or_mergeable_tag_name()))
         );
     }
 
     #[test]
-    #[should_panic(expected = "at most one BitmaskOr mergeable tag")]
     fn a_second_bitmask_tag_is_refused() {
         let mut tags = default_mergeable_tags();
         tags.insert(Par::default(), MergeType::BitmaskOr);
-        bitmask_or_tag(&tags);
+        assert!(matches!(
+            bitmask_or_tag(&tags),
+            Err(InterpreterError::SetupError(_))
+        ));
     }
 }

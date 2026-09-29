@@ -474,7 +474,7 @@ impl RuntimeManager {
         }
     }
 
-    pub async fn spawn_runtime(&self) -> RhoRuntimeImpl {
+    pub async fn spawn_runtime(&self) -> Result<RhoRuntimeImpl, CasperError> {
         let start = std::time::Instant::now();
         let new_space = self.space.spawn().expect("Failed to spawn RSpace");
         let runtime = rho_runtime::create_rho_runtime(
@@ -484,14 +484,14 @@ impl RuntimeManager {
             &mut Vec::new(),
             self.external_services.clone(),
         )
-        .await;
+        .await?;
         metrics::histogram!(RUNTIME_SPAWN_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(start.elapsed().as_secs_f64());
 
-        runtime
+        Ok(runtime)
     }
 
-    pub async fn spawn_replay_runtime(&self) -> RhoRuntimeImpl {
+    pub async fn spawn_replay_runtime(&self) -> Result<RhoRuntimeImpl, CasperError> {
         let start = std::time::Instant::now();
         let new_replay_space = self
             .replay_space
@@ -505,13 +505,13 @@ impl RuntimeManager {
             &mut Vec::new(),
             self.external_services.clone(),
         )
-        .await;
+        .await?;
         metrics::counter!(RUNTIME_SPAWN_REPLAY_CALLS_METRIC, "source" => CASPER_METRICS_SOURCE)
             .increment(1);
         metrics::histogram!(RUNTIME_SPAWN_REPLAY_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(start.elapsed().as_secs_f64());
 
-        runtime
+        Ok(runtime)
     }
 
     pub async fn compute_state(
@@ -523,7 +523,7 @@ impl RuntimeManager {
         invalid_blocks: Option<HashMap<BlockHash, Validator>>,
     ) -> Result<(StateHash, Vec<ProcessedDeploy>, Vec<ProcessedSystemDeploy>), CasperError> {
         let invalid_blocks = invalid_blocks.unwrap_or_default();
-        let runtime = self.spawn_runtime().await;
+        let runtime = self.spawn_runtime().await?;
         let mut runtime_ops = RuntimeOps::new(runtime);
 
         // Block data used for mergeable key
@@ -620,7 +620,7 @@ impl RuntimeManager {
         }
 
         let invalid_blocks = invalid_blocks.unwrap_or_default();
-        let runtime = self.spawn_runtime().await;
+        let runtime = self.spawn_runtime().await?;
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_spawn_runtime", rss_kb);
         }
@@ -724,7 +724,7 @@ impl RuntimeManager {
         block_time: i64,
         block_number: i64,
     ) -> Result<(StateHash, StateHash, Vec<ProcessedDeploy>), CasperError> {
-        let runtime = self.spawn_runtime().await;
+        let runtime = self.spawn_runtime().await?;
         let mut runtime_ops = RuntimeOps::new(runtime);
 
         let (pre_state, state_hash, processed) = runtime_ops
@@ -792,7 +792,7 @@ impl RuntimeManager {
                     tracing::info!("[CACHE] ReplayCache hit for sender seq={}", seq_num);
 
                     // Rig the replay runtime with cached event log
-                    let replay_runtime = self.spawn_replay_runtime().await;
+                    let replay_runtime = self.spawn_replay_runtime().await?;
                     let rspace_events: Vec<_> = entry
                         .event_log
                         .iter()
@@ -817,7 +817,7 @@ impl RuntimeManager {
             .await
             .map_err(|error| CasperError::Other(format!("Replay semaphore closed: {}", error)))?;
         let invalid_blocks = invalid_blocks.unwrap_or_default();
-        let replay_runtime = self.spawn_replay_runtime().await;
+        let replay_runtime = self.spawn_replay_runtime().await?;
         let runtime_ops = RuntimeOps::new(replay_runtime);
         let mut replay_runtime_ops = ReplayRuntimeOps::new(runtime_ops);
 
@@ -861,7 +861,7 @@ impl RuntimeManager {
         start: &StateHash,
         deploy: &Signed<DeployData>,
     ) -> Result<Vec<Par>, CasperError> {
-        let runtime = self.spawn_runtime().await;
+        let runtime = self.spawn_runtime().await?;
         let mut runtime_ops = RuntimeOps::new(runtime);
         let computed = runtime_ops.capture_results(start, deploy).await?;
         Ok(computed)
@@ -876,7 +876,7 @@ impl RuntimeManager {
             return Ok(cached.clone());
         }
 
-        let runtime = self.spawn_runtime().await;
+        let runtime = self.spawn_runtime().await?;
         let mut runtime_ops = RuntimeOps::new(runtime);
         let computed = runtime_ops.get_active_validators(start_hash).await?;
 
@@ -901,7 +901,7 @@ impl RuntimeManager {
         &self,
         start_hash: &StateHash,
     ) -> Result<Option<i64>, CasperError> {
-        let runtime = self.spawn_runtime().await;
+        let runtime = self.spawn_runtime().await?;
         let mut runtime_ops = RuntimeOps::new(runtime);
         runtime_ops
             .get_fault_tolerance_threshold_ppm(start_hash)
@@ -916,7 +916,7 @@ impl RuntimeManager {
         &self,
         start_hash: &StateHash,
     ) -> Result<Option<(i32, i64, i64)>, CasperError> {
-        let runtime = self.spawn_runtime().await;
+        let runtime = self.spawn_runtime().await?;
         let mut runtime_ops = RuntimeOps::new(runtime);
         runtime_ops.get_consensus_parameters(start_hash).await
     }
@@ -927,7 +927,7 @@ impl RuntimeManager {
             return Ok(cached.clone());
         }
 
-        let runtime = self.spawn_runtime().await;
+        let runtime = self.spawn_runtime().await?;
         let mut runtime_ops = RuntimeOps::new(runtime);
         let computed = runtime_ops.compute_bonds(hash).await?;
 
@@ -948,7 +948,7 @@ impl RuntimeManager {
         hash: &StateHash,
         deployer: Option<PublicKey>,
     ) -> Result<(Vec<Par>, u64), CasperError> {
-        let runtime = self.spawn_runtime().await;
+        let runtime = self.spawn_runtime().await?;
         let mut runtime_ops = RuntimeOps::new(runtime);
         runtime_ops
             .play_exploratory_deploy_with_phlo_limit(
@@ -961,7 +961,7 @@ impl RuntimeManager {
     }
 
     pub async fn get_data(&self, hash: StateHash, channel: &Par) -> Result<Vec<Par>, CasperError> {
-        let mut runtime = self.spawn_runtime().await;
+        let mut runtime = self.spawn_runtime().await?;
 
         runtime
             .reset(&Blake2b256Hash::from_bytes_prost(&hash))
@@ -977,7 +977,7 @@ impl RuntimeManager {
         hash: StateHash,
         channels: Vec<Par>,
     ) -> Result<Vec<(Vec<BindPattern>, Par)>, CasperError> {
-        let mut runtime = self.spawn_runtime().await;
+        let mut runtime = self.spawn_runtime().await?;
 
         runtime
             .reset(&Blake2b256Hash::from_bytes_prost(&hash))

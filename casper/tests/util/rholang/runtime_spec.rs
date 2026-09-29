@@ -26,7 +26,8 @@ async fn empty_state_hash_should_be_the_same_as_hard_coded_cached_value() {
         Arc::new(Box::new(Matcher)),
         rholang::rust::interpreter::external_services::ExternalServices::noop(),
     )
-    .await;
+    .await
+    .unwrap();
 
     let hard_coded_hash = RuntimeManager::empty_state_hash_fixed();
     let mut runtime_ops = RuntimeOps::new(runtime);
@@ -50,7 +51,8 @@ async fn state_hash_after_fixed_rholang_term_execution_should_be_hash_fixed_with
         Arc::new(Box::new(Matcher)),
         rholang::rust::interpreter::external_services::ExternalServices::noop(),
     )
-    .await;
+    .await
+    .unwrap();
 
     let contract = r#"
          new a in {

@@ -256,7 +256,7 @@ where
     F: Fn(&S::Result) -> bool,
     <S as SystemDeployTrait>::Result: PartialEq,
 {
-    let runtime = runtime_manager.spawn_runtime().await;
+    let runtime = runtime_manager.spawn_runtime().await.unwrap();
     {
         runtime
             .set_block_data(BlockData {
@@ -282,7 +282,7 @@ where
         } => {
             result_assertion(&play_result);
 
-            let replay_runtime = runtime_manager.spawn_replay_runtime().await;
+            let replay_runtime = runtime_manager.spawn_replay_runtime().await.unwrap();
             {
                 replay_runtime
                     .set_block_data(BlockData {
@@ -802,7 +802,7 @@ async fn compute_state_should_charge_for_parsing_and_execution() {
             )
             .unwrap();
 
-            let runtime = runtime_manager.spawn_runtime().await;
+            let runtime = runtime_manager.spawn_runtime().await.unwrap();
             runtime.cost.set(inital_phlo.clone());
             let term = Compiler::source_to_adt(&deploy.data.term).unwrap();
             let _ = runtime.inj(term, Env::new(), rand).await;
@@ -2836,7 +2836,7 @@ in {
                 .to_string();
 
             // Checkpoint via a fresh runtime so exploratory deploy can see the state
-            let runtime = runtime_manager.spawn_runtime().await;
+            let runtime = runtime_manager.spawn_runtime().await.unwrap();
             let mut runtime_ops = RuntimeOps::new(runtime);
             runtime_ops
                 .runtime
@@ -3760,7 +3760,7 @@ async fn strict_exploratory_query_propagates_execution_failure() {
             let failing_par =
                 Compiler::source_to_adt(failing_source).expect("compile failing term");
 
-            let runtime = runtime_manager.spawn_runtime().await;
+            let runtime = runtime_manager.spawn_runtime().await.unwrap();
             let mut ops = RuntimeOps::new(runtime);
 
             // Lenient path (display/API callers): degrades to an empty result.
