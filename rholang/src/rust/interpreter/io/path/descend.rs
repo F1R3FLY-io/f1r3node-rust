@@ -10,12 +10,14 @@
 // # How it works
 //
 // 1. Reject `rel` if it is empty, absolute, or contains `..`.
-// 2. Open `root` as a dirfd with `O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC`.
-//    `O_NOFOLLOW` on the root open closes the "swap root with a
-//    symlink post-boot" attack.
-// 3. Optionally verify the opened root's `(dev, inode)` pair against
-//    the caller-supplied boot-captured expected pair (H-5:
-//    rename-and-recreate defense).
+// 2. Open `root.path()` as a dirfd with `O_DIRECTORY | O_NOFOLLOW |
+//    O_CLOEXEC`.  `O_NOFOLLOW` closes the "swap root with a symlink
+//    post-boot" attack.
+// 3. Verify the opened root's `(dev, inode)` pair matches
+//    `root.identity()` (the pair `Root::capture` recorded at
+//    boot).  Mismatch → `RootIdentityChanged` — the H-5
+//    rename-and-recreate defense; unconditional now that the input
+//    type is `&Root` (there is no "skip identity check" mode).
 // 4. Descend along `rel`'s components via
 //    `openat(dirfd, name, O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)`
 //    at every intermediate.  Any symlink component surfaces as
@@ -34,65 +36,38 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path};
 
+use super::identity::Root;
 use super::{io_msg_scrub, QuarantineError, SafeParent};
 
 /// Descend from `root` along `rel` without following any symlink,
 /// and return a handle to the leaf's parent + the leaf's basename.
 ///
-/// Convenience for callers that don't have a boot-captured root
-/// identity to verify against.  Equivalent to
-/// `safe_descend_verified(root, rel, None)`.
-///
-/// See [`safe_descend_verified`] for the full precondition contract
-/// (in particular, `root` MUST be canonicalized).
-pub fn safe_descend(root: &Path, rel: &str) -> Result<SafeParent, QuarantineError> {
-    safe_descend_verified(root, rel, None)
-}
-
-/// Verified variant of [`safe_descend`].  If `expected_root_id` is
-/// `Some((dev, inode))`, the opened root's `(dev, inode)` pair is
-/// checked against the expected value after opening; a mismatch
+/// Takes a [`Root`] rather than a raw `&Path` so canonicalization
+/// and boot-time `(dev, inode)` capture are enforced at construction
+/// time (see [`Root::capture`]).  The H-5 rename-and-recreate defense
+/// is always on: after `open_dir`s the canonical root, `fstat_dev_inode`
+/// on the opened fd is compared against `root.identity()`; a mismatch
 /// surfaces `QuarantineError::RootIdentityChanged`.
-///
-/// This is the H-5 rename-and-recreate defense: an attacker with
-/// write access to the root's parent can `mv /legit /legit.bak &&
-/// mkdir /legit && populate` — the new `/legit` is a real directory
-/// with a different inode.  `O_NOFOLLOW` allows opening real dirs,
-/// so the descent would silently land in the attacker's tree
-/// without this check.
-///
-/// The boot-time capture of the expected `(dev, inode)` pair lives
-/// in the `path::identity` submodule (Wave 1 PR 1.3).
-///
-/// # Preconditions
-///
-/// **`root` MUST be a fully canonicalized absolute path.**
-/// `open_dir` applies `O_NOFOLLOW` only to the *final* component
-/// of `root`; if any intermediate directory in `root`'s path is a
-/// symlink, it is silently followed.  An attacker who controls the
-/// parent of the provisioned root can then redirect the whole tree
-/// and bypass every downstream check.  Callers must invoke
-/// `.canonicalize()` at boot time and hand the result to this
-/// function; do not accept a raw operator string.
-///
-/// The follow-up `path::identity` module (Wave 1 PR 1.3) introduces
-/// a `Root` newtype whose constructor performs this canonicalization,
-/// so the precondition becomes compiler-enforceable.  Until then,
-/// this contract is a documented caller responsibility.
 ///
 /// # TOCTOU-immunity contract
 ///
-/// The `SafeParent.dirfd` returned by this function is bound to the
-/// exact path resolved here.  Every subsequent syscall against the
-/// leaf MUST be an `*at` variant referencing that dirfd (`fchmodat`,
+/// The `SafeParent.dirfd` returned is bound to the exact path
+/// resolved here.  Every subsequent syscall against the leaf MUST
+/// be an `*at` variant referencing that dirfd (`fchmodat`,
 /// `fchownat`, `renameat`, `unlinkat`, `fstatat`, `openat`, ...).
 /// Rebuilding the path string and using a non-`*at` syscall
 /// re-opens the TOCTOU window.
-pub fn safe_descend_verified(
-    root: &Path,
-    rel: &str,
-    expected_root_id: Option<(u64, u64)>,
-) -> Result<SafeParent, QuarantineError> {
+///
+/// # Residual threat: intermediate symlink in root's parent chain
+///
+/// `open_dir` applies `O_NOFOLLOW` only to the *final* component of
+/// `root.path()`; if an intermediate directory is *replaced* with a
+/// symlink between [`Root::capture`] and this descent, the swap is
+/// silently followed.  See [`Root::capture`]'s docstring for the
+/// operator-side mitigation (provision roots on filesystems where
+/// the node user does not have write access to the root's parent
+/// chain).
+pub fn safe_descend(root: &Root, rel: &str) -> Result<SafeParent, QuarantineError> {
     if rel.is_empty() {
         return Err(QuarantineError::Empty);
     }
@@ -125,17 +100,16 @@ pub fn safe_descend_verified(
     // symlink-swap on the root path fails cleanly (ELOOP on Linux,
     // ENOTDIR on macOS — both map to `SymlinkComponent`).  What
     // this does NOT close: rename-and-recreate.  That's the H-5
-    // defense below; a caller supplies `expected_root_id` from a
-    // boot-captured `(dev, inode)` and we verify after open.
-    let cur = open_dir(root, true)?;
+    // defense below.
+    let cur = open_dir(root.path(), true)?;
 
-    // H-5: verify the opened root's identity matches the boot-
-    // captured expected pair.  Detects rename-and-recreate.
-    if let Some(expected) = expected_root_id {
-        let actual = fstat_dev_inode(cur.as_raw_fd())?;
-        if actual != expected {
-            return Err(QuarantineError::RootIdentityChanged);
-        }
+    // H-5: verify the opened root's identity matches the pair
+    // `Root::capture` recorded at boot.  Detects rename-and-recreate:
+    // a fresh mkdir yields a new inode, so `actual != root.identity()`
+    // and we bail before landing in an attacker's tree.
+    let actual = fstat_dev_inode(cur.as_raw_fd())?;
+    if actual != root.identity() {
+        return Err(QuarantineError::RootIdentityChanged);
     }
 
     let mut cur = cur;
@@ -149,14 +123,14 @@ pub fn safe_descend_verified(
     Ok(SafeParent { dirfd: cur, leaf })
 }
 
-/// Fetch a directory's `(dev, inode)` pair via `fstat(2)`.  Used by
-/// [`safe_descend_verified`] for the H-5 identity check and by the
-/// eventual `path::identity` submodule for boot-time capture.
+/// Fetch a directory's `(dev, inode)` pair via `fstat(2)`.  Used
+/// by [`safe_descend`] for the H-5 identity check against a
+/// [`Root`]'s captured pair.
 ///
-/// `pub(super)` — visible to other `path::*` submodules but not
-/// externally.  Callers in other io modules should go through the
-/// identity registry (Wave 1 PR 1.3) rather than opening fds
-/// directly.
+/// Kept `pub(super)` — visible to sibling `path::*` submodules
+/// (currently only the tests in this file use it externally-ish).
+/// Callers in other io modules go through [`Root`] +
+/// [`super::identity::RootIdentityRegistry`], not raw fd fstats.
 pub(super) fn fstat_dev_inode(fd: i32) -> Result<(u64, u64), QuarantineError> {
     // SAFETY: `libc::stat` is a POD C struct — `zeroed()` is a
     // valid initialization (all fields are integer types).  The
@@ -176,7 +150,7 @@ pub(super) fn fstat_dev_inode(fd: i32) -> Result<(u64, u64), QuarantineError> {
     }
 }
 
-fn open_dir(path: &Path, nofollow: bool) -> Result<OwnedFd, QuarantineError> {
+pub(super) fn open_dir(path: &Path, nofollow: bool) -> Result<OwnedFd, QuarantineError> {
     let cpath = CString::new(path.as_os_str().as_bytes())
         .map_err(|e| QuarantineError::IoError(io::ErrorKind::InvalidInput, e.to_string()))?;
     // SAFETY: `cpath` is a locally-owned CString outliving this
@@ -253,8 +227,8 @@ fn openat_dir(
     // SAFETY: `parent` is a borrowed `OwnedFd` with an open dirfd
     // for the borrow's lifetime.  Caller passes `name` as a valid
     // NUL-terminated `*const c_char` whose lifetime covers this
-    // call (`safe_descend_verified` owns the CString across the
-    // openat).  `openat` returns a fresh fd (or -1) without
+    // call (`safe_descend` owns the CString across the openat).
+    // `openat` returns a fresh fd (or -1) without
     // retaining `name`.
     unsafe {
         let mut flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC;
@@ -331,6 +305,7 @@ mod tests {
 
     use tempfile::TempDir;
 
+    use super::super::identity::Root;
     use super::*;
 
     fn assert_err(actual: Result<SafeParent, QuarantineError>, expected: QuarantineError) {
@@ -345,14 +320,14 @@ mod tests {
     #[test]
     fn safe_descend_rejects_empty() {
         let tmp = TempDir::new().unwrap();
-        let root = tmp.path().canonicalize().unwrap();
+        let root = Root::capture(tmp.path()).unwrap();
         assert_err(safe_descend(&root, ""), QuarantineError::Empty);
     }
 
     #[test]
     fn safe_descend_rejects_parent_traversal() {
         let tmp = TempDir::new().unwrap();
-        let root = tmp.path().canonicalize().unwrap();
+        let root = Root::capture(tmp.path()).unwrap();
         assert_err(
             safe_descend(&root, "../escape.txt"),
             QuarantineError::EscapesRoot,
@@ -364,7 +339,7 @@ mod tests {
     #[test]
     fn safe_descend_rejects_absolute() {
         let tmp = TempDir::new().unwrap();
-        let root = tmp.path().canonicalize().unwrap();
+        let root = Root::capture(tmp.path()).unwrap();
         assert_err(
             safe_descend(&root, "/etc/passwd"),
             QuarantineError::EscapesRoot,
@@ -377,7 +352,7 @@ mod tests {
     #[test]
     fn safe_descend_rejects_root_self_after_collapse() {
         let tmp = TempDir::new().unwrap();
-        let root = tmp.path().canonicalize().unwrap();
+        let root = Root::capture(tmp.path()).unwrap();
         assert_err(safe_descend(&root, "."), QuarantineError::RootSelf);
         assert_err(safe_descend(&root, "./"), QuarantineError::RootSelf);
     }
@@ -397,7 +372,7 @@ mod tests {
     #[test]
     fn safe_descend_treats_percent_encoded_parent_as_literal() {
         let tmp = TempDir::new().unwrap();
-        let root = tmp.path().canonicalize().unwrap();
+        let root = Root::capture(tmp.path()).unwrap();
         // The literal filename "%2e%2e" doesn't exist, so we expect
         // an IoError(NotFound) — not a rejection at the component
         // level.  Crucially, the descent DOES NOT treat it as
@@ -418,9 +393,9 @@ mod tests {
     #[test]
     fn safe_descend_returns_safe_parent_for_existing_leaf() {
         let tmp = TempDir::new().unwrap();
-        let root = tmp.path().canonicalize().unwrap();
-        fs::create_dir(root.join("d")).unwrap();
-        fs::write(root.join("d/leaf.txt"), b"x").unwrap();
+        fs::create_dir(tmp.path().join("d")).unwrap();
+        fs::write(tmp.path().join("d/leaf.txt"), b"x").unwrap();
+        let root = Root::capture(tmp.path()).unwrap();
 
         let sp = safe_descend(&root, "d/leaf.txt").expect("descend succeeds");
         assert_eq!(
@@ -447,13 +422,13 @@ mod tests {
     #[test]
     fn safe_descend_rejects_symlink_intermediate() {
         let tmp = TempDir::new().unwrap();
-        let root = tmp.path().canonicalize().unwrap();
         // Create a real target dir with a file, and a symlink at
         // `root/link` pointing to the target dir.
-        let target = root.join("target");
+        let target = tmp.path().join("target");
         fs::create_dir(&target).unwrap();
         fs::write(target.join("leaf.txt"), b"x").unwrap();
-        symlink(&target, root.join("link")).unwrap();
+        symlink(&target, tmp.path().join("link")).unwrap();
+        let root = Root::capture(tmp.path()).unwrap();
 
         assert_err(
             safe_descend(&root, "link/leaf.txt"),
@@ -471,9 +446,9 @@ mod tests {
     #[test]
     fn safe_descend_accepts_symlink_at_leaf_position() {
         let tmp = TempDir::new().unwrap();
-        let root = tmp.path().canonicalize().unwrap();
-        fs::write(root.join("real.txt"), b"x").unwrap();
-        symlink(root.join("real.txt"), root.join("link.txt")).unwrap();
+        fs::write(tmp.path().join("real.txt"), b"x").unwrap();
+        symlink(tmp.path().join("real.txt"), tmp.path().join("link.txt")).unwrap();
+        let root = Root::capture(tmp.path()).unwrap();
 
         let sp = safe_descend(&root, "link.txt").expect("leaf-symlink descend succeeds");
         assert_eq!(sp.leaf.to_str().unwrap(), "link.txt");
@@ -481,91 +456,47 @@ mod tests {
 
     // --- H-5 root identity verification ---------------------------
 
-    /// With a matching `expected_root_id`, descent proceeds normally.
+    /// Baseline: with a `Root` captured against an untouched
+    /// filesystem, the H-5 identity check passes and descent
+    /// proceeds.  Every `safe_descend` call runs the check now
+    /// (there is no "skip" mode); this pins the happy path.
     #[test]
-    fn safe_descend_verified_accepts_matching_root_identity() {
+    fn safe_descend_identity_check_passes_when_root_unchanged() {
         let tmp = TempDir::new().unwrap();
-        let root = tmp.path().canonicalize().unwrap();
-        fs::write(root.join("leaf.txt"), b"x").unwrap();
+        fs::write(tmp.path().join("leaf.txt"), b"x").unwrap();
+        let root = Root::capture(tmp.path()).unwrap();
 
-        // Capture the root's actual (dev, inode) via a probe open.
-        let probe = open_dir(&root, true).unwrap();
-        let expected = fstat_dev_inode(probe.as_raw_fd()).unwrap();
-        drop(probe);
-
-        let sp = safe_descend_verified(&root, "leaf.txt", Some(expected))
-            .expect("matching identity descend succeeds");
+        let sp = safe_descend(&root, "leaf.txt").expect("matching identity descend succeeds");
         assert_eq!(sp.leaf.to_str().unwrap(), "leaf.txt");
     }
 
-    /// A mismatched `expected_root_id` surfaces
-    /// `QuarantineError::RootIdentityChanged` — simulating the H-5
-    /// rename-and-recreate scenario where the root's inode has
-    /// changed since boot.
+    /// Scenario pin for the H-5 attack shape: capture the root's
+    /// identity via `Root::capture`, then simulate a rename-and-
+    /// recreate (`mv legit legit.bak && mkdir legit && populate`).
+    /// The new `legit` directory has a fresh inode; descent with
+    /// the original `Root` (still carrying the pre-rename identity)
+    /// must surface `RootIdentityChanged`.
     #[test]
-    fn safe_descend_verified_rejects_mismatched_root_identity() {
+    fn safe_descend_rejects_rename_and_recreate() {
         let tmp = TempDir::new().unwrap();
-        let root = tmp.path().canonicalize().unwrap();
-        fs::write(root.join("leaf.txt"), b"x").unwrap();
-
-        // A guaranteed-wrong expected pair.
-        let wrong = (u64::MAX, u64::MAX);
-        assert_err(
-            safe_descend_verified(&root, "leaf.txt", Some(wrong)),
-            QuarantineError::RootIdentityChanged,
-        );
-    }
-
-    /// Scenario pin for the actual H-5 attack shape: capture the
-    /// root's real identity, then simulate a rename-and-recreate
-    /// (`mv legit legit.bak && mkdir legit && populate`).  The new
-    /// `legit` directory has a fresh inode; descent with the
-    /// original captured identity must surface
-    /// `RootIdentityChanged`.  Complements the synthetic
-    /// `(u64::MAX, u64::MAX)` fast-check above with a realistic
-    /// end-to-end reproduction of the attack the H-5 defense
-    /// exists to close.
-    #[test]
-    fn safe_descend_verified_rejects_real_rename_and_recreate() {
-        let tmp = TempDir::new().unwrap();
-        let root = tmp.path().join("legit");
-        fs::create_dir(&root).unwrap();
-        fs::write(root.join("leaf.txt"), b"real").unwrap();
-        let root = root.canonicalize().unwrap();
-
-        // Capture the original root identity.
-        let probe = open_dir(&root, true).unwrap();
-        let orig_id = fstat_dev_inode(probe.as_raw_fd()).unwrap();
-        drop(probe);
+        let root_path = tmp.path().join("legit");
+        fs::create_dir(&root_path).unwrap();
+        fs::write(root_path.join("leaf.txt"), b"real").unwrap();
+        let root = Root::capture(&root_path).unwrap();
 
         // Rename-and-recreate: move the original away, create a
-        // fresh directory in its place.  The fresh mkdir yields a
+        // fresh directory in its place.  A fresh mkdir yields a
         // new inode on every supported filesystem.
         let backup = tmp.path().join("legit.bak");
-        fs::rename(&root, &backup).unwrap();
-        fs::create_dir(&root).unwrap();
-        fs::write(root.join("leaf.txt"), b"attacker").unwrap();
+        fs::rename(&root_path, &backup).unwrap();
+        fs::create_dir(&root_path).unwrap();
+        fs::write(root_path.join("leaf.txt"), b"attacker").unwrap();
 
-        // Descent with the ORIGINAL identity must reject the fresh root.
+        // Descent with the ORIGINAL Root must reject the fresh root.
         assert_err(
-            safe_descend_verified(&root, "leaf.txt", Some(orig_id)),
+            safe_descend(&root, "leaf.txt"),
             QuarantineError::RootIdentityChanged,
         );
-    }
-
-    /// Explicit pin for `expected_root_id = None` — the H-5 branch
-    /// is skipped entirely.  Complements the H-5 tests by ensuring
-    /// the two-branch behavior (Some → verify, None → skip) is
-    /// exercised both ways.
-    #[test]
-    fn safe_descend_verified_with_none_identity_skips_h5_check() {
-        let tmp = TempDir::new().unwrap();
-        let root = tmp.path().canonicalize().unwrap();
-        fs::write(root.join("leaf.txt"), b"x").unwrap();
-
-        let sp = safe_descend_verified(&root, "leaf.txt", None)
-            .expect("None identity means H-5 skipped, descent succeeds");
-        assert_eq!(sp.leaf.to_str().unwrap(), "leaf.txt");
     }
 
     // --- Directory-at-leaf happy path -----------------------------
@@ -577,8 +508,8 @@ mod tests {
     #[test]
     fn safe_descend_accepts_directory_at_leaf_position() {
         let tmp = TempDir::new().unwrap();
-        let root = tmp.path().canonicalize().unwrap();
-        fs::create_dir(root.join("subdir")).unwrap();
+        fs::create_dir(tmp.path().join("subdir")).unwrap();
+        let root = Root::capture(tmp.path()).unwrap();
 
         let sp = safe_descend(&root, "subdir").expect("dir-leaf descend succeeds");
         assert_eq!(sp.leaf.to_str().unwrap(), "subdir");
@@ -608,7 +539,7 @@ mod tests {
     #[test]
     fn safe_descend_nul_in_component_surfaces_invalid_input() {
         let tmp = TempDir::new().unwrap();
-        let root = tmp.path().canonicalize().unwrap();
+        let root = Root::capture(tmp.path()).unwrap();
         match safe_descend(&root, "a\0b") {
             Err(QuarantineError::IoError(kind, _)) => {
                 assert_eq!(
