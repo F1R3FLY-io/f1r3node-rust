@@ -345,3 +345,83 @@ Local outputs of this session are under `target/task-017-13-verification-2026092
 The bulk outputs are not in the external evidence store. TASK-017-14 owns their retention.
 
 This session changed the tracker, this log, the handoff, and the new review package. It made no branch, Git index, workflow, claim, protection, or deployment change.
+
+## Obligation gate branch on 2026-09-28
+
+### Position in the stack
+
+The maintainer changed the position of the branch before its creation. The earlier text in this log, which puts the branch on top of the stack, is history.
+
+| Item | Value |
+| --- | --- |
+| Branch | `ci/soak-obligation-gate` |
+| Start point | `fix/soak-finalization-attribution` at `566841b16` |
+| Position | Between `fix/soak-finalization-attribution` and `feature/randomized-exercise-soak` |
+| Name | One branch with this name. The name `ci/formal-verification-gate` is not used. |
+
+The maintainer created the branch and made the first push. Commit `602cce4b1` records the position in the tracker.
+
+### Files
+
+| File | Function |
+| --- | --- |
+| `.github/workflows/soak-obligation.yml` | Runs the controls on a pull request. Records a soak result after a soak run, or for a run ID from a manual dispatch. |
+| `scripts/ci/check-soak-obligation.sh` | Collects the evidence of one soak run, checks it, and records the result in issue 473. |
+| `scripts/ci/test-check-soak-obligation.sh` | Controls for the check, with a local substitute for the GitHub client. |
+
+The three files use bash, `jq`, `gh`, and `unzip`. They have no CbC tag. A tag needs a maintainer decision.
+
+### Behavior
+
+| Condition | Result |
+| --- | --- |
+| The run is not a soak run, has no campaign result, or has a different stage | No record. The job passes. |
+| The evidence is not valid | No record. The job fails. |
+| The result does not satisfy criteria 1 to 4 | One comment with the failed criteria. The obligation stays open. |
+| The result satisfies criteria 1 to 4 for one architecture | One comment with the evidence |
+| The two architectures satisfy the criteria at one revision | One more comment for criterion 5 |
+| The two result records also contain each evidence item | The check marks the line of obligation O1 |
+
+The check does not close the issue. It does not change a line of a different obligation.
+
+A comment is only a pointer to a run. The check gets the evidence of the other architecture again before it accepts a pair. It reads pointers only from comments of the workflow account.
+
+### Criterion 1
+
+The required commit is the merge commit of pull request 436, which the check reads from GitHub. A manual dispatch can supply a different full commit ID.
+
+The check uses two comparisons from GitHub. The required commit must be an ancestor of the soaked revision. The soaked revision must be an ancestor of `master`.
+
+A squash merge of a lower pull request makes the merge commit of pull request 436 absent from `master`. The manual input is the procedure for that condition.
+
+### Evidence gap
+
+The campaign result record has no seeds and no window times. Issue 473 and TASK-018-7 list these items as evidence.
+
+| Item | State in the campaign evidence |
+| --- | --- |
+| Seeds | Absent from each campaign record |
+| Start and end of the workload window | Present in the worker result as `started_epoch` and `finished_epoch`. Absent from the campaign result. |
+
+The check reads three optional fields of the campaign result: `seeds`, `started_epoch`, and `finished_epoch`. These names are a proposal to the owner of the campaign control.
+
+The check marks obligation O1 only when the two result records contain the three fields. With the current campaign control, the check records the results and does not mark the obligation.
+
+### Checks
+
+| Check | Result |
+| --- | --- |
+| Controls on macOS | 245 checks passed |
+| Controls in an Ubuntu 24.04 container | 245 checks passed |
+| Deliberate defects in copies of the check script | 17 of 19 detected. For the other 2, a second check rejects the same input. |
+| Repository supply-chain test | 11 tests passed. The new workflow pins its actions. |
+| Workflow syntax | The file parses. No hosted run exists. |
+
+The controls made no network request and no issue update. No soak run with the stage `campaign-stability-60h` exists, so the check has no result from real evidence.
+
+### Limits
+
+- The check copies the result rules of `campaign.sh`. It does not call that script, because the script rejects the stability stage as a prior result.
+- The result artifact of a soak run expires after 30 days. The check cannot get expired evidence.
+- The `workflow_run` trigger works only after the workflow file is on the default branch.
+- The release gate in `release.yml` is not in this change. It needs the agreement of the maintainers.

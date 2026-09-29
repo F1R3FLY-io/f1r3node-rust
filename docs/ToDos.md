@@ -1902,6 +1902,16 @@ post_merge_obligations:
       - "Change the base of PR #189 to ci/soak-obligation-gate."
       - "Merge ci/soak-obligation-gate into feature/randomized-exercise-soak in each merge round of the stack."
       - "Use this branch to implement automatic result recording for all stack obligations in issue 473."
+    implemented_by: claude-session-f3cbc961
+    files:
+      - .github/workflows/soak-obligation.yml
+      - scripts/ci/check-soak-obligation.sh
+      - scripts/ci/test-check-soak-obligation.sh
+    work_log: docs/work-logs/task-017-13-gate-handoff-2026-09-21.md#obligation-gate-branch-on-2026-09-28
+    implementation_status: "The check for obligation O1 and its controls are implemented. The controls pass locally. No hosted run and no real soak evidence exist."
+    automated_obligations: [O1]
+    evidence_gap: "The campaign result record has no seeds and no window times. The check marks obligation O1 only when the record has the fields seeds, started_epoch, and finished_epoch. These field names are a proposal to the owner of the campaign control."
+    not_in_scope: "The release gate in release.yml needs the agreement of the maintainers. The check does not close issue 473."
   obligations:
     O1: TASK-018-7
     O2: TASK-018-1
