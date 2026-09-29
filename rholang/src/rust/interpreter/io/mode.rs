@@ -103,9 +103,20 @@ pub fn open_options(intent: OpenIntent) -> OpenOptions {
 }
 
 /// Translate `OpenIntent` to raw `openat(2)` flags plus the file-
-/// creation mode used when `O_CREAT` is set.  Callers (see
-/// `path::safe_open`) combine the returned flags with
-/// `O_NOFOLLOW|O_CLOEXEC` before issuing the syscall.
+/// creation mode used when `O_CREAT` is set.
+///
+/// # Safety-neutral output
+///
+/// The returned flags are the intent-to-flags translation *only* —
+/// no TOCTOU or symlink hardening is applied here.  A caller that
+/// hands these flags directly to `openat` (bypassing
+/// `path::safe_open`) can open a file *through* a symlink, defeating
+/// the restricted-root guarantee.
+///
+/// The canonical call site is `path::safe_open`, which walks via
+/// `safe_descend` (H-5 identity check + descent-level `O_NOFOLLOW`)
+/// then combines these flags with `O_NOFOLLOW | O_CLOEXEC` on the
+/// leaf open.
 pub fn fopen_flags(intent: OpenIntent) -> (libc::c_int, libc::mode_t) {
     let mut flags: libc::c_int = match intent.mode {
         AccessMode::Read => libc::O_RDONLY,
