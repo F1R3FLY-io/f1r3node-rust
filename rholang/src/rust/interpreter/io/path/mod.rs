@@ -41,6 +41,7 @@ compile_error!(
 );
 
 pub mod descend;
+pub mod identity;
 
 use std::ffi::CString;
 use std::io;
