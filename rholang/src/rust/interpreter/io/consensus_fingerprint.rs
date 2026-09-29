@@ -98,12 +98,16 @@ const _: () = assert!(
 /// fingerprint that force-splits peering.  With this guard, that
 /// failure mode panics loudly at boot.
 ///
-/// Currently 0 (Wave 2 initial state — no consensus constants
-/// registered yet).  When adding a consensus constant: register
-/// with the next-highest `order` AND bump this count.  Both must
-/// move together; the golden-hex pin in `tests` below also
-/// forces a coordinated change of the encoded fingerprint.
-const EXPECTED_ENTRY_COUNT: usize = 0;
+/// When adding a consensus constant: register with the next-
+/// highest `order` AND bump this count.  Both must move together;
+/// the golden-hex pin in `tests` below also forces a coordinated
+/// change of the encoded fingerprint.
+///
+/// Currently 3 — Wave 2 PR 2.3 (`wal` types) registered:
+///   order 1 — `MAX_WAL_ENTRIES` (u64_be)
+///   order 2 — `WAL_OUTCOME_VARIANTS` (u64_be)
+///   order 3 — `WAL_OP_VARIANTS` (u64_be)
+const EXPECTED_ENTRY_COUNT: usize = 3;
 
 /// A single consensus-observable constant's contribution to the
 /// fingerprint fold.
@@ -385,8 +389,13 @@ mod tests {
         // ONLY when intentionally rolling the consensus surface.
         //
         // Initial anchor (Wave 2 PR 2.2, empty fold): first 8 bytes
-        // of Blake2b256(empty).
-        const EXPECTED_FOR_CURRENT: &str = "0e5751c026e543b2";
+        // of Blake2b256(empty) — `0e5751c026e543b2`.
+        // Wave 2 PR 2.3 rolls to `a98e6ea54e4efb84` — Blake2b256 of
+        // the concatenation of three u64-BE encodings:
+        //   order 1: MAX_WAL_ENTRIES = 65_536
+        //   order 2: WAL_OUTCOME_VARIANTS = 2
+        //   order 3: WAL_OP_VARIANTS = 16
+        const EXPECTED_FOR_CURRENT: &str = "a98e6ea54e4efb84";
         assert_eq!(
             fp, EXPECTED_FOR_CURRENT,
             "fingerprint changed — a `register_consensus_constant!` \
