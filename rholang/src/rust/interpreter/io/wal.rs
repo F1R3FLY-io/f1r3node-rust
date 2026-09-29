@@ -42,8 +42,11 @@
 // a wire-format change.
 
 use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
 
 use crypto::rust::hash::blake2b256::Blake2b256;
+
+use super::errors::poison_abort;
 
 /// Per-runtime cap on WAL entries.  Prevents an adversarial deploy
 /// from growing the WAL without bound.  Enforced by the (yet-to-
@@ -79,7 +82,7 @@ const _: () = assert!(
 crate::register_consensus_constant!(order = 1, name = MAX_WAL_ENTRIES, u64_be);
 
 /// Opaque marker returned by `Wal::begin_deploy` and consumed by
-/// `Wal::take_deploy_entries` (both in a subsequent slice).
+/// `Wal::take_deploy_entries_insertion_order` (both in a subsequent slice).
 /// Records the WAL length at the deploy boundary so post-deploy
 /// drain covers exactly the entries this deploy contributed.  Also
 /// usable by soft-checkpoint machinery as a snapshot point to
@@ -91,7 +94,7 @@ pub struct WalMark {
 
 impl WalMark {
     /// Length recorded at the moment this mark was minted.  Public
-    /// so the (subsequent-slice) `Wal::take_deploy_entries` can
+    /// so the (subsequent-slice) `Wal::take_deploy_entries_insertion_order` can
     /// slice the buffer from `mark.len()` to the current tail.
     pub fn len(&self) -> usize { self.len }
 
@@ -373,6 +376,245 @@ impl PayloadRef {
     }
 }
 
+// Compile-time witness that `Wal: Send + Sync`.  Hoisted to module
+// scope (rather than a `#[test]`) so every `cargo build` catches
+// a regression, not only `cargo test`.  A refactor that broke
+// either bound would surface here at build time instead of at
+// some unrelated tokio-spawn site.
+const _WAL_IS_SEND_SYNC: fn() = || {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<Wal>();
+};
+
+/// Per-runtime append-only WAL buffer.  Cloneable (shares the
+/// underlying `Arc<RwLock<WalInner>>` via reference-counting) so
+/// every handler closure can journal into the same list.
+///
+/// # Locking discipline
+///
+/// Both the entry Vec and the parallel ack-hash sidecar live under
+/// a single `RwLock<WalInner>` guard — index-alignment between the
+/// two vectors becomes *structural* (they can't be updated apart)
+/// rather than an invariant to remember at every mutation site.
+/// Read/write split lets pure observers (`len`, `snapshot`, ...)
+/// share concurrently while mutators (`append*`, `truncate_to`,
+/// `take_*`, `clear`) take an exclusive guard.
+///
+/// Every guard acquisition routes through `poison_abort` per
+/// DD-FailClosedOnInvariantBreak — a thread that panicked while
+/// holding a Wal guard aborts the deploy rather than continuing
+/// with potentially half-updated buffer state.
+///
+/// # Ack-hash sidecar
+///
+/// The `ack_hashes` sidecar records the Blake2b256 hash of the
+/// ack channel Par each syscall published its reply on.  Every fs
+/// syscall's ack is a fresh unforgeable per call, so this is a
+/// unique key within a deploy.  A subsequent
+/// `take_deploy_entries_in_log_order` walk (later slice) matches
+/// each entry to a Produce event via its sidecar hash so the
+/// drain order is scheduler-independent and byte-identical
+/// across validators.
+///
+/// Stored as `Vec<[u8; 32]>` rather than a typed hash newtype to
+/// keep this module free of `rspace_plus_plus` — the caller
+/// computes the hash via `stable_hash_provider::hash(ack)` and
+/// passes bytes.
+#[derive(Clone, Debug, Default)]
+pub struct Wal {
+    inner: Arc<RwLock<WalInner>>,
+}
+
+/// Inner state guarded by the `Wal`'s single `RwLock`.  Private —
+/// the invariant "entries and ack_hashes are index-aligned" is
+/// maintained by every `Wal` method that touches either vec, and
+/// nothing outside the module can construct or mutate `WalInner`
+/// directly.
+#[derive(Debug, Default)]
+struct WalInner {
+    entries: Vec<WalEntry>,
+    /// Parallel to `entries`, index-aligned.  See the `Wal`
+    /// struct's docstring for the ack-hash sidecar design.  A
+    /// legacy `append(entry)` populates a sentinel `[0u8; 32]`
+    /// here — the sentinel is guaranteed not to match any real
+    /// Produce event's `channel_hash` for a fresh unforgeable, so
+    /// log-order drain naturally skips these entries and falls
+    /// back to insertion order.
+    ack_hashes: Vec<[u8; 32]>,
+}
+
+impl Wal {
+    /// Construct an empty WAL buffer.  Alias for `Default::default`
+    /// — kept explicit for call-site readability.
+    pub fn new() -> Self { Self::default() }
+
+    /// Legacy append: no ack-hash sidecar populated (records
+    /// `[0u8; 32]`, which is guaranteed not to match any real
+    /// Produce event's `channel_hash` for a fresh unforgeable).
+    /// Kept for tests + soft-checkpoint machinery.  Production
+    /// handler paths should use `append_with_ack`.
+    ///
+    /// Returns `Err(())` if appending would exceed
+    /// `MAX_WAL_ENTRIES` — callers translate to
+    /// `FSERR_QUOTA_EXCEEDED`.
+    #[allow(clippy::result_unit_err)]
+    pub fn append(&self, entry: WalEntry) -> Result<(), ()> {
+        self.append_with_ack(entry, [0u8; 32])
+    }
+
+    /// Append an entry with its ack-channel hash for later log-
+    /// order-based drain (subsequent slice).  The hash comes from
+    /// `stable_hash_provider::hash(ack_par)` on the handler side.
+    /// A sentinel `[0u8; 32]` disables log-order matching for
+    /// that entry (falls back to insertion order in the eventual
+    /// `take_deploy_entries_in_log_order` walk).
+    ///
+    /// Returns `Err(())` if appending would exceed
+    /// `MAX_WAL_ENTRIES`.
+    #[allow(clippy::result_unit_err)]
+    pub fn append_with_ack(&self, entry: WalEntry, ack_hash: [u8; 32]) -> Result<(), ()> {
+        let mut guard = poison_abort(self.inner.write(), "Wal");
+        if guard.entries.len() >= MAX_WAL_ENTRIES {
+            return Err(());
+        }
+        guard.entries.push(entry);
+        // Single RwLock over both vecs makes index-alignment
+        // structurally enforced — no cross-mutex ordering to
+        // maintain.
+        guard.ack_hashes.push(ack_hash);
+        Ok(())
+    }
+
+    /// Point-in-time clone of the current entries.  Cheap — a Vec
+    /// clone.  Intended for tests + snapshot / checkpoint
+    /// machinery.
+    ///
+    /// The read guard is dropped BEFORE this function returns;
+    /// concurrent mutators may advance the WAL immediately after.
+    /// The returned Vec is self-contained (owns its allocation)
+    /// and therefore memory-safe, but callers MUST NOT use the
+    /// clone's `.len()` to validate against a subsequent
+    /// `Wal::len()` call — the two can diverge under concurrency.
+    /// For a snapshot whose length is pinned atomically with the
+    /// clone, use `snapshot_with_mark` below.
+    pub fn snapshot(&self) -> Vec<WalEntry> {
+        let guard = poison_abort(self.inner.read(), "Wal");
+        guard.entries.clone()
+    }
+
+    /// Snapshot the current entries AND their length under a
+    /// single read guard, so the returned `(entries, mark)` pair
+    /// is guaranteed internally consistent (no concurrent-
+    /// mutation ambiguity between the entries clone and its
+    /// length marker).  Prefer this over `snapshot()` +
+    /// `snapshot_mark()` called separately — the separate calls
+    /// take two guards and a concurrent writer can slip a
+    /// mutation in between.
+    pub fn snapshot_with_mark(&self) -> (Vec<WalEntry>, WalMark) {
+        let guard = poison_abort(self.inner.read(), "Wal");
+        let entries = guard.entries.clone();
+        let mark = WalMark { len: entries.len() };
+        (entries, mark)
+    }
+
+    /// Number of journaled entries at the moment of the read.
+    /// Same concurrency caveat as `snapshot`: the returned value
+    /// is a snapshot and may be stale by the time the caller acts
+    /// on it.
+    pub fn len(&self) -> usize { poison_abort(self.inner.read(), "Wal").entries.len() }
+
+    /// True if the buffer contains zero entries at the moment of
+    /// the read.
+    pub fn is_empty(&self) -> bool { self.len() == 0 }
+
+    /// Clear all entries (and their ack-hash sidecar).  Called on
+    /// runtime reset (defence-in-depth for the invariant that a
+    /// reset-and-reused runtime starts every deploy from an empty
+    /// WAL) and by tests.
+    pub fn clear(&self) {
+        let mut guard = poison_abort(self.inner.write(), "Wal");
+        guard.entries.clear();
+        guard.ack_hashes.clear();
+    }
+
+    /// Record the current buffer length as a `WalMark`.  Callers
+    /// use this to bracket a scope (e.g., a deploy attempt) that
+    /// may need to be rolled back via `truncate_to`.
+    pub fn snapshot_mark(&self) -> WalMark {
+        let guard = poison_abort(self.inner.read(), "Wal");
+        WalMark {
+            len: guard.entries.len(),
+        }
+    }
+
+    /// Truncate entries appended after `mark`.  Called from
+    /// soft-checkpoint revert alongside a symmetric handle-table
+    /// truncation.
+    ///
+    /// # Monotonicity
+    ///
+    /// A `mark` at-or-past the current length is a no-op.  This
+    /// covers the "stale mark from a snapshot that predates a
+    /// clear-and-repopulate cycle" case without a panic.
+    pub fn truncate_to(&self, mark: WalMark) {
+        let mut guard = poison_abort(self.inner.write(), "Wal");
+        if mark.len < guard.entries.len() {
+            guard.entries.truncate(mark.len);
+            // Keep sidecar index-aligned.
+            guard.ack_hashes.truncate(mark.len);
+        }
+    }
+
+    /// Per-deploy boundary marker.  Called at the top of a deploy
+    /// before user code runs.  Paired with
+    /// `take_deploy_entries_insertion_order` (or the yet-to-land
+    /// `take_deploy_entries_in_log_order`) which drains exactly
+    /// the entries this deploy contributed, letting a downstream
+    /// slice attach a deploy's WAL contributions to its
+    /// `ProcessedDeploy` (either via a proto-schema extension or
+    /// via an out-of-band side-map keyed by deploy signature).
+    ///
+    /// Semantically equivalent to `snapshot_mark`; kept as a
+    /// distinct method so the deploy-boundary intent is
+    /// unambiguous at call sites.
+    pub fn begin_deploy(&self) -> WalMark { self.snapshot_mark() }
+
+    /// Drain entries appended after `mark` **in insertion order**
+    /// (scheduler-dependent).  Returns them AND removes them from
+    /// the WAL, so the underlying buffer stays bounded across
+    /// deploys.  If a caller wants to peek without draining, use
+    /// `snapshot_with_mark` and diff the length against `mark`.
+    ///
+    /// # Callers: pick your ordering explicitly
+    ///
+    /// The name has an `_insertion_order` suffix — deliberately
+    /// search-hostile — because callers that will hash the
+    /// returned Vec into a **consensus commitment** (e.g., a
+    /// snapshot root) MUST use `take_deploy_entries_in_log_order`
+    /// (subsequent slice) instead.  Log order re-orders by the
+    /// canonical `deploy_log` event sequence and is deterministic
+    /// across validators; insertion order reflects `Par`
+    /// scheduling on this run and is safe only for non-consensus
+    /// consumers (tests, soft-checkpoint machinery).
+    ///
+    /// This slice ships only the insertion-order variant because
+    /// the log-order path depends on `stable_hash_provider` /
+    /// `deploy_log` types that haven't been ported yet.  The
+    /// suffix is the machinery that keeps a future consensus
+    /// consumer from casually grabbing this method and getting
+    /// silent non-determinism.
+    pub fn take_deploy_entries_insertion_order(&self, mark: WalMark) -> Vec<WalEntry> {
+        let mut guard = poison_abort(self.inner.write(), "Wal");
+        if mark.len >= guard.entries.len() {
+            return Vec::new();
+        }
+        // Also drain the ack_hash sidecar to keep it index-
+        // aligned with the (now-shorter) entries Vec.
+        let _ = guard.ack_hashes.split_off(mark.len);
+        guard.entries.split_off(mark.len)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -563,4 +805,227 @@ mod tests {
         // Trigger Clone + PartialEq.
         assert_eq!(entry, entry.clone());
     }
+
+    // --- Wal buffer ------------------------------------------------
+
+    /// Test helper — construct a distinct `WalEntry` per index so
+    /// insertion-order pins can distinguish entries by their
+    /// `length` field.
+    fn mk_entry(i: u64) -> WalEntry {
+        WalEntry {
+            op: WalOp::Write,
+            path: PathBuf::from(format!("/tmp/f{i}.txt")),
+            extra_path: None,
+            offset: None,
+            length: Some(i),
+            payload_ref: Some(PayloadRef::Hash([i as u8; 32])),
+            mode_bits: None,
+            owner: None,
+            group: None,
+            outcome: WalOutcome::Success,
+        }
+    }
+
+    #[test]
+    fn wal_new_starts_empty() {
+        let wal = Wal::new();
+        assert_eq!(wal.len(), 0);
+        assert!(wal.is_empty());
+        assert!(wal.snapshot().is_empty());
+        let (entries, mark) = wal.snapshot_with_mark();
+        assert!(entries.is_empty());
+        assert_eq!(mark.len(), 0);
+        assert!(mark.is_empty());
+    }
+
+    #[test]
+    fn wal_default_matches_new() {
+        let a = Wal::default();
+        let b = Wal::new();
+        assert_eq!(a.len(), b.len());
+        assert_eq!(a.snapshot(), b.snapshot());
+    }
+
+    /// `append` populates entries and increments length; the
+    /// legacy variant stores the sentinel `[0u8; 32]` in the
+    /// ack-hash sidecar (verified indirectly by the truncate/take
+    /// tests which exercise index-alignment).
+    #[test]
+    fn wal_append_grows_entries() {
+        let wal = Wal::new();
+        wal.append(mk_entry(1)).unwrap();
+        wal.append(mk_entry(2)).unwrap();
+        assert_eq!(wal.len(), 2);
+        assert!(!wal.is_empty());
+        let snap = wal.snapshot();
+        assert_eq!(snap.len(), 2);
+        assert_eq!(snap[0].length, Some(1));
+        assert_eq!(snap[1].length, Some(2));
+    }
+
+    /// `append_with_ack` populates both vecs.  Sidecar alignment
+    /// is visible through the `truncate_to` and
+    /// `take_deploy_entries_insertion_order` paths, which panic
+    /// on misalignment via `Vec::truncate` / `split_off` bounds —
+    /// a mismatch would be caught by the
+    /// `wal_take_deploy_entries_drains_only_post_mark_entries`
+    /// test below.
+    #[test]
+    fn wal_append_with_ack_populates_both_vecs() {
+        let wal = Wal::new();
+        wal.append_with_ack(mk_entry(1), [0xAAu8; 32]).unwrap();
+        wal.append_with_ack(mk_entry(2), [0xBBu8; 32]).unwrap();
+        assert_eq!(wal.len(), 2);
+    }
+
+    /// Cap enforcement — the (`MAX_WAL_ENTRIES + 1`)th append
+    /// returns `Err(())`, callers translate to
+    /// `FSERR_QUOTA_EXCEEDED`.
+    ///
+    /// Fills the buffer with cheap `WalEntry`s (65 536 total),
+    /// which allocates roughly 65 536 × ~200 B ≈ 13 MiB — well
+    /// within test-runner limits and finishes in a fraction of a
+    /// second on a debug build.
+    #[test]
+    fn wal_append_returns_err_past_max_wal_entries() {
+        let wal = Wal::new();
+        // Fill to MAX_WAL_ENTRIES.
+        for i in 0..MAX_WAL_ENTRIES {
+            wal.append(mk_entry(i as u64))
+                .unwrap_or_else(|()| panic!("append {i} unexpectedly failed"));
+        }
+        assert_eq!(wal.len(), MAX_WAL_ENTRIES);
+        // The next append trips the cap.
+        assert_eq!(wal.append(mk_entry(MAX_WAL_ENTRIES as u64)), Err(()));
+        // And the buffer is unchanged.
+        assert_eq!(wal.len(), MAX_WAL_ENTRIES);
+    }
+
+    #[test]
+    fn wal_clear_drops_all_entries() {
+        let wal = Wal::new();
+        wal.append(mk_entry(1)).unwrap();
+        wal.append(mk_entry(2)).unwrap();
+        assert_eq!(wal.len(), 2);
+        wal.clear();
+        assert_eq!(wal.len(), 0);
+        assert!(wal.is_empty());
+    }
+
+    /// `snapshot_with_mark` returns a `(Vec, WalMark)` pair whose
+    /// length invariant holds at read time.  Pin explicitly so a
+    /// future refactor that split the read into two guards would
+    /// fire this test if a concurrent-mutation-shaped scenario
+    /// snuck in.
+    #[test]
+    fn wal_snapshot_with_mark_pair_is_length_consistent() {
+        let wal = Wal::new();
+        for i in 0..5 {
+            wal.append(mk_entry(i)).unwrap();
+        }
+        let (entries, mark) = wal.snapshot_with_mark();
+        assert_eq!(entries.len(), 5);
+        assert_eq!(mark.len(), 5);
+        assert_eq!(entries.len(), mark.len());
+    }
+
+    #[test]
+    fn wal_truncate_to_shrinks_to_mark() {
+        let wal = Wal::new();
+        for i in 0..5 {
+            wal.append(mk_entry(i)).unwrap();
+        }
+        let mark = WalMark { len: 2 };
+        wal.truncate_to(mark);
+        assert_eq!(wal.len(), 2);
+        let snap = wal.snapshot();
+        assert_eq!(snap[0].length, Some(0));
+        assert_eq!(snap[1].length, Some(1));
+    }
+
+    /// Monotonicity — a mark past current length is a no-op, not
+    /// a panic (covers a stale mark from a snapshot that predates
+    /// a clear-and-repopulate cycle).
+    #[test]
+    fn wal_truncate_to_past_current_len_is_noop() {
+        let wal = Wal::new();
+        wal.append(mk_entry(0)).unwrap();
+        wal.append(mk_entry(1)).unwrap();
+        wal.truncate_to(WalMark { len: 99 });
+        assert_eq!(wal.len(), 2);
+    }
+
+    /// `begin_deploy` + `take_deploy_entries_insertion_order`
+    /// drain exactly the deploy's contribution.  Also verifies
+    /// the ack-hash sidecar is drained in lockstep with `entries`
+    /// — a misalignment bug would surface as a subsequent `take`
+    /// panicking on `split_off` bounds.
+    #[test]
+    fn wal_take_deploy_entries_drains_only_post_mark_entries() {
+        let wal = Wal::new();
+        // Pre-deploy entries.
+        wal.append_with_ack(mk_entry(0), [0x01; 32]).unwrap();
+        wal.append_with_ack(mk_entry(1), [0x02; 32]).unwrap();
+        let mark = wal.begin_deploy();
+        assert_eq!(mark.len(), 2);
+        // Deploy contributions.
+        wal.append_with_ack(mk_entry(2), [0x03; 32]).unwrap();
+        wal.append_with_ack(mk_entry(3), [0x04; 32]).unwrap();
+        wal.append_with_ack(mk_entry(4), [0x05; 32]).unwrap();
+        assert_eq!(wal.len(), 5);
+
+        let drained = wal.take_deploy_entries_insertion_order(mark);
+        assert_eq!(drained.len(), 3);
+        assert_eq!(drained[0].length, Some(2));
+        assert_eq!(drained[1].length, Some(3));
+        assert_eq!(drained[2].length, Some(4));
+        // The pre-deploy entries survive.
+        assert_eq!(wal.len(), 2);
+        let survivors = wal.snapshot();
+        assert_eq!(survivors[0].length, Some(0));
+        assert_eq!(survivors[1].length, Some(1));
+
+        // Second drain against the same mark yields empty (the
+        // entries past the mark are gone).
+        let second = wal.take_deploy_entries_insertion_order(mark);
+        assert!(second.is_empty());
+
+        // Subsequent appends still succeed — proves the sidecar
+        // stayed aligned (a mismatch would panic in the next
+        // truncate_to / split_off inside append_with_ack's cap
+        // check would not fire, but the invariant is verified
+        // structurally by the single-guard design).
+        wal.append_with_ack(mk_entry(5), [0x06; 32]).unwrap();
+        assert_eq!(wal.len(), 3);
+    }
+
+    /// A drain against a mark past the current length yields an
+    /// empty Vec (not a panic).  Same "stale mark tolerance"
+    /// property as `truncate_to`.
+    #[test]
+    fn wal_take_deploy_entries_past_current_len_yields_empty() {
+        let wal = Wal::new();
+        wal.append(mk_entry(0)).unwrap();
+        let drained = wal.take_deploy_entries_insertion_order(WalMark { len: 99 });
+        assert!(drained.is_empty());
+        assert_eq!(wal.len(), 1);
+    }
+
+    /// `Wal` is `Clone` — a cloned handle shares the underlying
+    /// buffer via `Arc`.  A `.append` through one handle is
+    /// visible via `.snapshot` through the other.  This pins the
+    /// "every handler closure can journal into the same list"
+    /// contract that motivates the `Arc<RwLock<...>>` shape.
+    #[test]
+    fn wal_clone_shares_underlying_buffer() {
+        let a = Wal::new();
+        let b = a.clone();
+        a.append(mk_entry(42)).unwrap();
+        assert_eq!(b.len(), 1);
+        assert_eq!(b.snapshot()[0].length, Some(42));
+    }
+
+    // `Wal: Send + Sync` — no runtime test needed; the module-
+    // scope `_WAL_IS_SEND_SYNC` const witness above enforces the
+    // bound at every `cargo build` (not only `cargo test`).
 }
