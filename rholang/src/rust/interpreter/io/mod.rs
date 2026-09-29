@@ -2,6 +2,7 @@ pub mod errors;
 pub mod mode;
 pub mod nss;
 pub mod response;
+pub mod stat;
 
 /// Consensus vs. oracular execution mode.
 ///
