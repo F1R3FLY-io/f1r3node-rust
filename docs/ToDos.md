@@ -195,6 +195,18 @@ execution_contract:
   git_policy: "Do not merge, push, or create a PR without separate user authorization. Commits require /quick-commit consent."
   evidence_policy: "Every batch registers a pending claim before implementation, keeps compact records under docs/cbc-evidence/, and keeps bulk evidence outside Git."
   completion_policy: "Close after every batch claim is accepted, PR #447 merges to dev, and PR #436 returns to dev."
+pending_record_refresh:
+  recorded_by: claude-session-f3cbc961
+  recorded_on: 2026-09-29
+  decided_by: maintainer
+  cause: "This branch received the two CI corrections of formal/soak-casper-consensus, from commits b96aebf84 and 38e576041. PR #447 failed Lint and Node observation binding tests without them."
+  changed_artifacts:
+    - .github/workflows/slashing-tests.yml
+    - scripts/ci/check-node-observation-bindings.sh
+  new_artifacts:
+    - scripts/ci/test-check-node-observation-bindings.sh
+  state: "The evidence records of the two changed artifacts hold the digests from before the corrections. Their recorded acceptance applies to those earlier bytes. No evidence record and no claim status changed."
+  owner: "The owner of this epic refreshes the records in the next verification cycle."
 tasks:
   - id: TASK-019-1
     title: "Batch A: local capability interface and runtime shutdown correction"

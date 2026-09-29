@@ -82,15 +82,14 @@ jobs:
           toolchain: nightly-2026-02-09
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
-          save-if: >-
-            ${{ github.event_name == 'push' &&
-            (github.ref == 'refs/heads/dev' ||
-            github.ref == 'refs/heads/master') }}
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/master') }}
       - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y protobuf-compiler libprotobuf-dev \
             libssl-dev pkg-config libclang-dev clang cmake jq binutils
+      - name: Check observer strip equivalence controls
+        run: bash scripts/ci/test-check-node-observation-bindings.sh
       - name: Run node observation binding tests
         run: |
           bash scripts/ci/check-node-observation-bindings.sh \

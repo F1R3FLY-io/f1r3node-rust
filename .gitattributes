@@ -5,6 +5,7 @@ formal/tlaplus/node_observation/** cbc=mandatory cbc-weight=high
 formal/rocq/node_observation/** cbc=mandatory cbc-weight=high
 formal/rocq/node_authority/** cbc=mandatory cbc-weight=high
 scripts/ci/check-node-observation-bindings.sh cbc=mandatory cbc-weight=high
+scripts/ci/test-check-node-observation-bindings.sh cbc=mandatory cbc-weight=high
 scripts/ci/check-tla-invariants.sh cbc=mandatory cbc-weight=high
 scripts/ci/test-check-tla-invariants.sh cbc=mandatory cbc-weight=high
 scripts/ci/check-formal-invariants.sh cbc=mandatory cbc-weight=high
