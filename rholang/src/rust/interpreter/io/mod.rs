@@ -15,6 +15,7 @@ pub mod path;
 pub mod response;
 pub mod snapshot_chunk;
 pub mod stat;
+pub mod verify;
 pub mod wal;
 
 /// Consensus vs. oracular execution mode.
