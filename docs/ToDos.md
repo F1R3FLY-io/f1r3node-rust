@@ -1408,7 +1408,7 @@ tasks:
     current_review_status: "The review at 211a4e73a covers 181 changed mandatory artifacts. The default gate reports 50 gaps and the Casper-directory diagnostic reports 61. Both gates exit 4. Claim001 is pending and seven profile claims are discharged."
     gap_owners: "TASK-017-12 owns 38 gaps in campaign artifacts. EPIC-019 owns 10 node observation gaps, which need named maintainer acceptance of the cycle 03 package. This task owns 2 formal-gate gaps."
     handoff_acceptance_maintainer: "@jltatbeach"
-    gate_candidate_status: "A gate-only candidate against dev at 0b9ae5bce passes its fixture suites in scratch files. The maintainer decided on 2026-09-28 that the gate branch starts from the top of the stack. The formal gate thus reaches dev with the stack merge, and the candidate stays a record."
+    gate_candidate_status: "A gate-only candidate against dev at 0b9ae5bce passes its fixture suites in scratch files. The maintainer decided on 2026-09-28 that the gate branch is ci/soak-obligation-gate, which starts from fix/soak-finalization-attribution. That start point already has the formal gate. The formal gate thus reaches dev with the stack merge, and the candidate stays a record."
     campaign_60h_scope: "The maintainer decided on 2026-09-28 that the 60-hour phase is not a closure requirement for this branch or for PR #436. The phase cannot run before the branch is merged. TASK-018-7 owns the run and its record after the changes are in master."
     work_log: docs/work-logs/task-017-13-gate-handoff-2026-09-21.md
     preparation_log: docs/work-logs/task-017-13-preparation.md
@@ -1546,11 +1546,17 @@ post_merge_obligations:
   rule: "One issue records all obligations that stay open when the stack merges into master. The issue closes only when each obligation has passing evidence or a recorded waiver."
   automation_plan:
     branch: ci/soak-obligation-gate
-    base_branch: feature/randomized-exercise-soak
-    status: planned
+    base_branch: fix/soak-finalization-attribution
+    status: in_progress
+    created_on: 2026-09-28
+    created_from: 566841b16
+    stack_position: "Between fix/soak-finalization-attribution and feature/randomized-exercise-soak."
+    location_history: "The first decision of 2026-09-28 put the branch on top of the stack, from feature/randomized-exercise-soak. The maintainer changed the position on the same day, before the branch creation."
     instructions:
-      - "Create ci/soak-obligation-gate from feature/randomized-exercise-soak."
-      - "Open its PR against feature/randomized-exercise-soak and place it at the top of the PR stack."
+      - "The maintainer created ci/soak-obligation-gate from fix/soak-finalization-attribution."
+      - "Open its PR against fix/soak-finalization-attribution."
+      - "Change the base of PR #189 to ci/soak-obligation-gate."
+      - "Merge ci/soak-obligation-gate into feature/randomized-exercise-soak in each merge round of the stack."
       - "Use this branch to implement automatic result recording for all stack obligations in issue 473."
   obligations:
     O1: TASK-018-7
@@ -1731,7 +1737,7 @@ tasks:
     github_record_url: https://github.com/F1R3FLY-io/f1r3node-rust/issues/473
     github_record_label: post-merge-obligation
     github_record_obligation: O1
-    github_record_note: "The maintainer requested issue 473 on 2026-09-28. It is the single record of all post-merge obligations of the stack, and this task is obligation O1. The automatic update is planned for the branch ci/soak-obligation-gate, which the maintainer creates on top of the stack from feature/randomized-exercise-soak."
+    github_record_note: "The maintainer requested issue 473 on 2026-09-28. It is the single record of all post-merge obligations of the stack, and this task is obligation O1. The automatic update is planned for the branch ci/soak-obligation-gate. The maintainer created that branch on 2026-09-28 from fix/soak-finalization-attribution, below feature/randomized-exercise-soak in the stack."
     stage_decision: "The maintainer confirmed the stage campaign-stability-60h on 2026-09-28."
     acceptance:
       - "The soaked revision is on master and contains the merge commit of the EPIC-017 changes."
