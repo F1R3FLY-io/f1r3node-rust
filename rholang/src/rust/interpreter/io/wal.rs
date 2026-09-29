@@ -428,21 +428,20 @@ mod tests {
     /// the direct `as u8` cast that works on field-less enums
     /// won't compile.  `#[repr(u8)]` guarantees the discriminant
     /// is the first byte of the value's storage — read it via a
-    /// pointer cast.
+    /// pointer cast (encapsulated by `wal_outcome_disc` below).
     #[test]
     fn wal_outcome_discriminants_pinned() {
-        // SAFETY for all three reads below: `WalOutcome` is
-        // `#[repr(u8)]`, so the first byte of any live value is
-        // its discriminant regardless of the variant's payload.
-        // The reference outlives the pointer read.
-        let success_disc = unsafe { *(&WalOutcome::Success as *const _ as *const u8) };
-        let failure_zero = unsafe { *(&WalOutcome::Failure { code: 0 } as *const _ as *const u8) };
-        let failure_max =
-            unsafe { *(&WalOutcome::Failure { code: u32::MAX } as *const _ as *const u8) };
-        assert_eq!(success_disc, 0);
-        assert_eq!(failure_zero, 1);
+        fn wal_outcome_disc(v: &WalOutcome) -> u8 {
+            // SAFETY: `WalOutcome` is `#[repr(u8)]`, so the first
+            // byte of any live value's storage is its discriminant
+            // regardless of the variant's payload.  The `&v`
+            // reference outlives the pointer read.
+            unsafe { *(v as *const _ as *const u8) }
+        }
+        assert_eq!(wal_outcome_disc(&WalOutcome::Success), 0);
+        assert_eq!(wal_outcome_disc(&WalOutcome::Failure { code: 0 }), 1);
         // Payload variance must not affect the discriminant byte.
-        assert_eq!(failure_max, 1);
+        assert_eq!(wal_outcome_disc(&WalOutcome::Failure { code: u32::MAX }), 1);
     }
 
     /// Count parity: `WAL_OP_VARIANTS` matches the actual variant

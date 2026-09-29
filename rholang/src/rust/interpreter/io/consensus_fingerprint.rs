@@ -103,11 +103,20 @@ const _: () = assert!(
 /// the golden-hex pin in `tests` below also forces a coordinated
 /// change of the encoded fingerprint.
 ///
-/// Currently 3 — Wave 2 PR 2.3 (`wal` types) registered:
-///   order 1 — `MAX_WAL_ENTRIES` (u64_be)
-///   order 2 — `WAL_OUTCOME_VARIANTS` (u64_be)
-///   order 3 — `WAL_OP_VARIANTS` (u64_be)
-const EXPECTED_ENTRY_COUNT: usize = 3;
+/// Currently 10 — additions so far:
+///   PR 2.3 (`wal` types):
+///     order 1  — `MAX_WAL_ENTRIES`       (u64_be)
+///     order 2  — `WAL_OUTCOME_VARIANTS`  (u64_be)
+///     order 3  — `WAL_OP_VARIANTS`       (u64_be)
+///   PR 2.4 (`mod` constants):
+///     order 4  — `MAX_READ_BYTES`        (u64_be)
+///     order 5  — `MAX_TRUNCATE_BYTES`    (u64_be)
+///     order 6  — `MAX_OPEN_FDS`          (u64_be)
+///     order 7  — `MAX_CHUNK_ITEMS`       (u64_be)
+///     order 8  — `CMODE_ORACULAR_STR`    (str_bytes)
+///     order 9  — `CMODE_CONSENSUS_STR`   (str_bytes)
+///     order 10 — `FS_NONCE`              (i64_be)
+const EXPECTED_ENTRY_COUNT: usize = 10;
 
 /// A single consensus-observable constant's contribution to the
 /// fingerprint fold.
@@ -390,12 +399,17 @@ mod tests {
         //
         // Initial anchor (Wave 2 PR 2.2, empty fold): first 8 bytes
         // of Blake2b256(empty) — `0e5751c026e543b2`.
-        // Wave 2 PR 2.3 rolls to `a98e6ea54e4efb84` — Blake2b256 of
-        // the concatenation of three u64-BE encodings:
-        //   order 1: MAX_WAL_ENTRIES = 65_536
-        //   order 2: WAL_OUTCOME_VARIANTS = 2
-        //   order 3: WAL_OP_VARIANTS = 16
-        const EXPECTED_FOR_CURRENT: &str = "a98e6ea54e4efb84";
+        // Wave 2 PR 2.3 (wal types) → `a98e6ea54e4efb84`.
+        // Wave 2 PR 2.4 (mod constants) → `b2024bf3be489a44`.
+        //   Adds orders 4-10 to the fold:
+        //     4  MAX_READ_BYTES         = 64 * 1024 * 1024   (u64_be)
+        //     5  MAX_TRUNCATE_BYTES     = 16 * 1024^3        (u64_be)
+        //     6  MAX_OPEN_FDS           = 1024               (u64_be)
+        //     7  MAX_CHUNK_ITEMS        = 65_536             (u64_be)
+        //     8  CMODE_ORACULAR_STR     = "oracular"         (str_bytes)
+        //     9  CMODE_CONSENSUS_STR    = "consensus"        (str_bytes)
+        //    10  FS_NONCE               = i64::MAX           (i64_be)
+        const EXPECTED_FOR_CURRENT: &str = "b2024bf3be489a44";
         assert_eq!(
             fp, EXPECTED_FOR_CURRENT,
             "fingerprint changed — a `register_consensus_constant!` \
