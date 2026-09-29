@@ -103,7 +103,7 @@ const _: () = assert!(
 /// the golden-hex pin in `tests` below also forces a coordinated
 /// change of the encoded fingerprint.
 ///
-/// Currently 10 — additions so far:
+/// Currently 13 — additions so far:
 ///   PR 2.3 (`wal` types):
 ///     order 1  — `MAX_WAL_ENTRIES`       (u64_be)
 ///     order 2  — `WAL_OUTCOME_VARIANTS`  (u64_be)
@@ -116,7 +116,11 @@ const _: () = assert!(
 ///     order 8  — `CMODE_ORACULAR_STR`    (str_bytes)
 ///     order 9  — `CMODE_CONSENSUS_STR`   (str_bytes)
 ///     order 10 — `FS_NONCE`              (i64_be)
-const EXPECTED_ENTRY_COUNT: usize = 10;
+///   PR 2.5 (`lock` types):
+///     order 11 — `MAX_RANGES_PER_FILE`   (u64_be)
+///     order 12 — `MAX_WAITERS_PER_FILE`  (u64_be)
+///     order 13 — `LOCK_ID_CEILING`       (u64_be)
+const EXPECTED_ENTRY_COUNT: usize = 13;
 
 /// A single consensus-observable constant's contribution to the
 /// fingerprint fold.
@@ -409,7 +413,17 @@ mod tests {
         //     8  CMODE_ORACULAR_STR     = "oracular"         (str_bytes)
         //     9  CMODE_CONSENSUS_STR    = "consensus"        (str_bytes)
         //    10  FS_NONCE               = i64::MAX           (i64_be)
-        const EXPECTED_FOR_CURRENT: &str = "b2024bf3be489a44";
+        // Wave 2 PR 2.5 (lock types) → `b49df15c4b948c53`.
+        //   Adds orders 11-13 to the fold:
+        //    11  MAX_RANGES_PER_FILE    = 1024               (u64_be)
+        //    12  MAX_WAITERS_PER_FILE   = 1024               (u64_be)
+        //    13  LOCK_ID_CEILING        = i64::MAX - 2^16    (u64_be)
+        // (LOCK_ID_CEILING was tightened from `u64::MAX - 2^16` to
+        //  `i64::MAX - 2^16` per the PR 2.5 review — closes the
+        //  Rholang-i64 wire-truncation footgun by aligning the
+        //  ceiling with `LockId::try_from(u64)`'s wire-safety
+        //  check.  Rolls this pin one extra time within PR 2.5.)
+        const EXPECTED_FOR_CURRENT: &str = "b49df15c4b948c53";
         assert_eq!(
             fp, EXPECTED_FOR_CURRENT,
             "fingerprint changed — a `register_consensus_constant!` \
