@@ -3,6 +3,7 @@ pub mod mode;
 pub mod nss;
 pub mod path;
 pub mod response;
+pub mod snapshot_chunk;
 pub mod stat;
 
 /// Consensus vs. oracular execution mode.
