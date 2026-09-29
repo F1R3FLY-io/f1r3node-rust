@@ -376,6 +376,78 @@ impl PayloadRef {
     }
 }
 
+/// Serving-side persistence hook.  A leader validator's
+/// `journal_write` calls `persist(bytes)` after computing
+/// `PayloadRef::hash(bytes)` so the bytes are stashed content-
+/// addressed on disk; joining validators later request them via
+/// the peer-fetch sub-protocol and the server side reads them
+/// back via a matching `PayloadLookup` impl.
+///
+/// # Design placement
+///
+/// The trait is intentionally minimal — one method, sync (writes
+/// are small and infrequent relative to Rholang execution) — and
+/// lives in **this crate** so the fs-write handlers (Wave 4) can
+/// call it without a `casper`-crate dependency.  The concrete
+/// impl (`DirectoryPayloadStore`) lives in `casper` because it's
+/// paired with the reader half `PayloadLookup`, both consumed by
+/// the wire-message dispatch.
+///
+/// # Fail-open discipline
+///
+/// Errors are stringified — the caller side just logs (not a
+/// hard failure).  A joiner-side fetch protocol will find the
+/// bytes on other peers, and hard-failing here would abort the
+/// deploy for a defense-in-depth backup hop.
+pub trait PayloadPersistence: Send + Sync + std::fmt::Debug {
+    /// Persist `bytes` content-addressed under `Blake2b256(bytes)`.
+    /// Returns the computed hash so the caller can echo it into
+    /// the WAL entry.  Idempotent — a second call with the same
+    /// bytes is a no-op (or an overwrite with identical content).
+    fn persist(&self, bytes: &[u8]) -> Result<[u8; 32], String>;
+}
+
+/// Serving-side "payload source" recorder — the second tier of
+/// the joiner-side payload-fetch chain.  A leader validator's
+/// `journal_write` (and the symmetric follower-side replay-branch
+/// call) invokes `record(payload_hash, &deploy_sig)` after
+/// computing the write's content hash, so a persistent
+/// `payload_hash → deploy_sig` index accumulates alongside the
+/// WAL.  On boot, a joiner's reducer consults this index to
+/// translate an unresolved WAL `payload_hash` into a source
+/// `ProcessedDeploy` that can be re-executed to reproduce the
+/// requested bytes — closing the gap the local `PayloadLookup`
+/// leaves for first-time joiners with empty payload stores.
+///
+/// # Chaining
+///
+/// `payload_hash → deploy_sig` (this trait) chains through the
+/// existing `deploy_sig → block_hash` map (block-storage's
+/// `deploy_index`, populated as an atomic side-effect of block
+/// insertion) → block bytes → `ProcessedDeploy` → deploy replay
+/// → the requested payload bytes.
+///
+/// # Design placement
+///
+/// The trait is intentionally minimal — one method, sync — and
+/// lives in **this crate** so the fs-write handlers can call it
+/// without a `casper`-crate dependency.  The concrete impl
+/// (`BlockStorageBackedRecorder`) lives in `casper` because it
+/// wraps the block-storage's `payload_source_index` typed store.
+///
+/// # Fail-open discipline
+///
+/// Errors are stringified.  `journal_write` logs at warn on `Err`
+/// and continues — a failure here is a defense-in-depth backup
+/// hop, the joiner still has the local `PayloadLookup` plus
+/// peer fetch to fall through to.
+pub trait PayloadSourceRecorder: Send + Sync + std::fmt::Debug {
+    /// Record that `payload_hash` was produced by the deploy
+    /// identified by `deploy_sig`.  Idempotent by content;
+    /// last-writer-wins on the `(payload_hash → deploy_sig)` key.
+    fn record(&self, payload_hash: [u8; 32], deploy_sig: &[u8]) -> Result<(), String>;
+}
+
 // Compile-time witness that `Wal: Send + Sync`.  Hoisted to module
 // scope (rather than a `#[test]`) so every `cargo build` catches
 // a regression, not only `cargo test`.  A refactor that broke
@@ -384,6 +456,23 @@ impl PayloadRef {
 const _WAL_IS_SEND_SYNC: fn() = || {
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<Wal>();
+};
+
+// Compile-time witnesses that both payload traits are dyn-safe
+// AND their `dyn` forms are `Send + Sync`.  Handler-side
+// plumbing stores these as `Arc<dyn PayloadPersistence>` /
+// `Arc<dyn PayloadSourceRecorder>` and hands clones into
+// `spawn_blocking` closures across the tokio runtime; a refactor
+// that broke dyn-safety (e.g., by adding a generic method) or
+// dropped either bound would fail this static check at build
+// time instead of at some unrelated Arc-clone-into-spawn site.
+const _PAYLOAD_PERSISTENCE_IS_DYN_SEND_SYNC: fn() = || {
+    fn assert_send_sync<T: Send + Sync + ?Sized>() {}
+    assert_send_sync::<dyn PayloadPersistence>();
+};
+const _PAYLOAD_SOURCE_RECORDER_IS_DYN_SEND_SYNC: fn() = || {
+    fn assert_send_sync<T: Send + Sync + ?Sized>() {}
+    assert_send_sync::<dyn PayloadSourceRecorder>();
 };
 
 /// Per-runtime append-only WAL buffer.  Cloneable (shares the
@@ -1341,5 +1430,126 @@ mod tests {
         assert!(!wal.update_outcome_by_ack_hash(ack_hash(0xAA), WalOutcome::Failure { code: 1 }));
         assert!(!wal.update_partial_write_by_ack_hash(ack_hash(0xBB), b"late"));
         assert!(!wal.update_last_entry_by_ack_hash(ack_hash(0xAA), mk_entry(99)));
+    }
+
+    // --- PayloadPersistence + PayloadSourceRecorder ----------------
+
+    use std::sync::{Arc, Mutex};
+
+    /// In-memory `PayloadPersistence` fake for exercising the
+    /// trait shape.  Records every `persist` call's bytes so tests
+    /// can assert the call happened and the hash matches.
+    #[derive(Debug, Default)]
+    struct MockPersistence {
+        seen: Mutex<Vec<(Vec<u8>, [u8; 32])>>,
+    }
+
+    impl PayloadPersistence for MockPersistence {
+        fn persist(&self, bytes: &[u8]) -> Result<[u8; 32], String> {
+            let hash = match PayloadRef::hash(bytes) {
+                PayloadRef::Hash(h) => h,
+                _ => unreachable!("PayloadRef::hash always yields Hash"),
+            };
+            self.seen.lock().unwrap().push((bytes.to_vec(), hash));
+            Ok(hash)
+        }
+    }
+
+    /// Round-trip a `PayloadPersistence` impl through an
+    /// `Arc<dyn PayloadPersistence>` and confirm:
+    ///   - The trait is dyn-safe (compilation of the `Arc<dyn ...>`
+    ///     construction).
+    ///   - `persist(bytes)` returns the same hash as
+    ///     `PayloadRef::hash(bytes)` — pins the "content-addressed
+    ///     under `Blake2b256(bytes)`" contract.
+    ///   - Idempotence: two calls with the same bytes return the
+    ///     same hash.
+    #[test]
+    fn payload_persistence_dyn_roundtrip() {
+        let mock: Arc<dyn PayloadPersistence> = Arc::new(MockPersistence::default());
+        let bytes = b"consensus-payload";
+        let h1 = mock.persist(bytes).expect("persist ok");
+        let h2 = mock.persist(bytes).expect("persist ok (idempotent)");
+        assert_eq!(h1, h2);
+        let expected = match PayloadRef::hash(bytes) {
+            PayloadRef::Hash(h) => h,
+            _ => unreachable!(),
+        };
+        assert_eq!(h1, expected);
+    }
+
+    /// A `PayloadPersistence` impl that returns `Err(_)` (peer
+    /// storage backend unavailable, disk full, etc.).  Pins the
+    /// stringified-error contract — callers translate to a log-at-
+    /// warn, don't hard-abort the deploy.
+    #[test]
+    fn payload_persistence_err_shape() {
+        #[derive(Debug)]
+        struct AlwaysFails;
+        impl PayloadPersistence for AlwaysFails {
+            fn persist(&self, _bytes: &[u8]) -> Result<[u8; 32], String> {
+                Err("backend unavailable".to_string())
+            }
+        }
+        let boxed: Box<dyn PayloadPersistence> = Box::new(AlwaysFails);
+        match boxed.persist(b"anything") {
+            Err(msg) => assert!(msg.contains("backend")),
+            Ok(_) => panic!("AlwaysFails must return Err"),
+        }
+    }
+
+    /// In-memory `PayloadSourceRecorder` fake — records every
+    /// `record` call for later assertions.
+    #[derive(Debug, Default)]
+    struct MockRecorder {
+        seen: Mutex<Vec<([u8; 32], Vec<u8>)>>,
+    }
+
+    impl PayloadSourceRecorder for MockRecorder {
+        fn record(&self, payload_hash: [u8; 32], deploy_sig: &[u8]) -> Result<(), String> {
+            self.seen
+                .lock()
+                .unwrap()
+                .push((payload_hash, deploy_sig.to_vec()));
+            Ok(())
+        }
+    }
+
+    /// `PayloadSourceRecorder` round-trip: two distinct records
+    /// under a shared `Arc<dyn ...>` handle both land in the
+    /// mock's log, in order.  Pins dyn-safety + the `(hash,
+    /// deploy_sig)` argument order.
+    #[test]
+    fn payload_source_recorder_dyn_roundtrip() {
+        let mock = Arc::new(MockRecorder::default());
+        let handle: Arc<dyn PayloadSourceRecorder> = mock.clone();
+        handle.record([0xAAu8; 32], b"deploy-sig-1").unwrap();
+        handle.record([0xBBu8; 32], b"deploy-sig-2").unwrap();
+        let log = mock.seen.lock().unwrap();
+        assert_eq!(log.len(), 2);
+        assert_eq!(log[0], ([0xAAu8; 32], b"deploy-sig-1".to_vec()));
+        assert_eq!(log[1], ([0xBBu8; 32], b"deploy-sig-2".to_vec()));
+    }
+
+    /// A `PayloadSourceRecorder` impl that returns `Err(_)` — pins
+    /// the stringified-error contract for the log-at-warn caller
+    /// path, symmetric with `payload_persistence_err_shape`.  The
+    /// index backend being down (or any other transient failure)
+    /// MUST NOT hard-abort the deploy — the joiner's fetch chain
+    /// falls through to `PayloadLookup` and peer fetch.
+    #[test]
+    fn payload_source_recorder_err_shape() {
+        #[derive(Debug)]
+        struct AlwaysFails;
+        impl PayloadSourceRecorder for AlwaysFails {
+            fn record(&self, _payload_hash: [u8; 32], _deploy_sig: &[u8]) -> Result<(), String> {
+                Err("index backend down".to_string())
+            }
+        }
+        let boxed: Box<dyn PayloadSourceRecorder> = Box::new(AlwaysFails);
+        match boxed.record([0; 32], b"sig") {
+            Err(msg) => assert!(msg.contains("backend")),
+            Ok(()) => panic!("AlwaysFails must return Err"),
+        }
     }
 }
