@@ -20,6 +20,8 @@ use casper::rust::casper::MultiParentCasper;
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::engine::engine_with_casper::EngineWithCasper;
 use casper::rust::engine::multi_parent_casper::MultiParentCasperImpl;
+use casper::rust::finality::floor::floor_of_block;
+use casper::rust::safety::clique_oracle::FtThreshold;
 use crypto::rust::public_key::PublicKey;
 
 use crate::helper::test_node::{ShardOverrides, TestNode};
@@ -537,24 +539,32 @@ async fn a_floor_advance_settles_the_verdict_without_another_block() {
 
     // Advance the floor, admitting NO further block. Each call runs
     // `compute_last_finalized_block` synchronously and adopts at most one floor.
-    let mut lfb_number = 0i64;
     for _ in 0..12 {
-        lfb_number = nodes[0]
+        nodes[0]
             .casper
             .last_finalized_block()
             .await
-            .expect("advance the floor")
-            .body
-            .state
-            .block_number;
+            .expect("advance the floor");
     }
 
     // The control: without this the test would look identical if the floor had
     // never moved, which would make it red for a reason that is not the defect.
+    // The verdict basis is the adopted LFB's DERIVED floor, so that is what has
+    // to clear the carrier — the LFB's own height is not the decidable quantity.
+    let dag = nodes[0].casper.block_dag().await.expect("dag");
+    let basis = floor_of_block(
+        &dag,
+        nodes[0].casper.block_store(),
+        &dag.last_finalized_block(),
+        FtThreshold::from_f32_lossy(0.0),
+    )
+    .await
+    .expect("floor of the adopted LFB");
     assert!(
-        lfb_number >= carrier_number,
-        "the floor must have advanced to at least the carrier for the verdict to be \
-         decidable at all: floor {lfb_number}, carrier {carrier_number}"
+        basis.block_number >= carrier_number,
+        "the derived floor must have advanced to at least the carrier for the \
+         verdict to be decidable at all: floor {}, carrier {carrier_number}",
+        basis.block_number
     );
 
     let dag = nodes[0].casper.block_dag().await.expect("dag");

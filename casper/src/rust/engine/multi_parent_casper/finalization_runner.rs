@@ -56,6 +56,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
+use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use comm::rust::transport::transport_layer::TransportLayer;
 use models::rust::block_hash::BlockHash;
@@ -210,6 +211,10 @@ pub(crate) struct FinalizationContext {
     pub(crate) enable_mergeable_channel_gc: bool,
     pub(crate) ftt: crate::rust::safety::clique_oracle::FtThreshold,
     pub(crate) divergence_monitor: Arc<DivergenceMonitor>,
+    pub(crate) deploy_lifecycle: Arc<crate::rust::finality::deploy_lifecycle::DeployLifecycle>,
+    pub(crate) deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
+    pub(crate) deploy_lifespan: i64,
+    pub(crate) max_parent_depth: i32,
 }
 
 /// Build a `FinalizationContext` from a `MultiParentCasperImpl`. Single
@@ -234,6 +239,10 @@ pub(crate) fn build_finalization_context<
             this.casper_shard_conf.fault_tolerance_threshold_ppm,
         ),
         divergence_monitor: this.divergence_monitor.clone(),
+        deploy_lifecycle: this.deploy_lifecycle.clone(),
+        deploy_storage: this.deploy_storage.clone(),
+        deploy_lifespan: this.casper_shard_conf.deploy_lifespan,
+        max_parent_depth: this.casper_shard_conf.max_parent_depth,
     }
 }
 
@@ -346,6 +355,31 @@ async fn report_committee_drift(
     );
 }
 
+/// Never fatal: deferring a verdict to the next block admission is the
+/// pre-existing behaviour, so a failure here costs latency, not correctness.
+async fn sweep_register_after_advance(
+    block_dag_storage: &BlockDagKeyValueStorage,
+    block_store: &KeyValueBlockStore,
+    deploy_lifecycle: &crate::rust::finality::deploy_lifecycle::DeployLifecycle,
+    deploy_storage: &parking_lot::Mutex<KeyValueDeployStorage>,
+    deploy_lifespan: i64,
+    max_parent_depth: i32,
+    ftt: crate::rust::safety::clique_oracle::FtThreshold,
+) -> Result<(), CasperError> {
+    let dag = block_dag_storage.get_representation()?;
+    let terminalized = deploy_lifecycle
+        .observe(
+            &dag,
+            block_store,
+            None,
+            deploy_lifespan,
+            crate::rust::finality::deploy_lifecycle::citability_horizon(max_parent_depth),
+            ftt,
+        )
+        .await?;
+    crate::rust::finality::deploy_lifecycle::release_terminalized(deploy_storage, &terminalized)
+}
+
 pub(crate) async fn compute_last_finalized_block(
     ctx: FinalizationContext,
 ) -> Result<BlockMessage, CasperError> {
@@ -358,6 +392,10 @@ pub(crate) async fn compute_last_finalized_block(
         enable_mergeable_channel_gc,
         ftt,
         divergence_monitor,
+        deploy_lifecycle,
+        deploy_storage,
+        deploy_lifespan,
+        max_parent_depth,
     } = ctx;
     let lfb_lookup_started = std::time::Instant::now();
     // Get current LFB hash and height
@@ -561,20 +599,27 @@ pub(crate) async fn compute_last_finalized_block(
             .await
             .map_err(CasperError::KvStoreError)?;
         divergence_monitor.on_advance();
+        // After `record_directly_finalized` returns, not inside its effect
+        // closure: there the mark is not yet persisted, so the register would
+        // read the old floor and cross nothing.
+        if let Err(e) = sweep_register_after_advance(
+            &block_dag_storage,
+            &block_store,
+            &deploy_lifecycle,
+            &deploy_storage,
+            deploy_lifespan,
+            max_parent_depth,
+            ftt,
+        )
+        .await
+        {
+            tracing::warn!("register sweep failed, verdict deferred: {}", e);
+        }
         new_lfb.hash
     } else {
         last_finalized_block_hash
     };
     let finalizer_ms = finalizer_started.elapsed().as_millis();
-
-    // Deploy-pool release is NOT done here. The register
-    // (`finality::deploy_lifecycle`) is the one component that re-evaluates
-    // as the floor advances, so it is the only component that can name the
-    // moment a deploy stops being re-proposable; block admission releases
-    // the pool copy against exactly its write-once terminal list. The
-    // finality marker is never a release edge: a marked block can still be
-    // excluded from every future cone, and an orphaned carrier's pool copy
-    // is its only route back into a live branch.
 
     // Return the finalized block
     let read_started = std::time::Instant::now();
