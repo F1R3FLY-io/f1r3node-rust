@@ -6,6 +6,7 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$root"
 out="$1"
 [[ ! -e "$out" && ! -L "$out" ]] || exit 2
+mkdir -p "$(dirname "$out")"
 mkdir -m 700 "$out"
 out="$(cd "$out" && pwd)"
 finish() {

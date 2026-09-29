@@ -7,7 +7,7 @@ on:
       - models/**
       - crypto/**
       - shared/**
-      - rspace++/**
+      - 'rspace\+\+/**'
       - graphz/**
       - docs/casper/design/authority-*.md
       - formal/tlaplus/casper_soak/profiles/authority_finality/**
