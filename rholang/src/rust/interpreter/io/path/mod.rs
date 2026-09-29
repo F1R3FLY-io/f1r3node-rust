@@ -40,6 +40,8 @@ compile_error!(
      consensus-safe non-unix analogue."
 );
 
+pub mod descend;
+
 use std::ffi::CString;
 use std::io;
 use std::os::fd::{AsRawFd, OwnedFd};
@@ -81,6 +83,7 @@ pub enum QuarantineError {
 /// Callers issue every subsequent syscall via `*at` against the
 /// dirfd — never by rebuilding the path — or the TOCTOU-immunity
 /// is lost.
+#[derive(Debug)]
 pub struct SafeParent {
     pub dirfd: OwnedFd,
     pub leaf: CString,
