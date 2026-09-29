@@ -291,7 +291,7 @@ fn to_c(name: &OsStr) -> Result<CString, QuarantineError> {
 /// escape (`ENOENT` on `..`, etc.); carry the `ErrorKind` so
 /// `quarantine_err_reply` can route `AlreadyExists` →
 /// `FSERR_ALREADY_EXISTS`, `NotFound` → `FSERR_NOT_FOUND`, etc.
-fn map_open_err(e: std::io::Error) -> QuarantineError {
+pub(super) fn map_open_err(e: std::io::Error) -> QuarantineError {
     match e.raw_os_error() {
         Some(libc::ELOOP) => QuarantineError::SymlinkComponent,
         _ => QuarantineError::IoError(e.kind(), io_msg_scrub(&e)),
