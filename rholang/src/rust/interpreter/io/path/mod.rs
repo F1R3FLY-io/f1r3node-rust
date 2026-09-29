@@ -42,6 +42,7 @@ compile_error!(
 
 pub mod descend;
 pub mod identity;
+pub mod open;
 
 use std::ffi::CString;
 use std::io;
