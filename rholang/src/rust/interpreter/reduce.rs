@@ -1751,18 +1751,6 @@ impl DebruijnInterpreter {
                                 expr_instance: Some(ExprInstance::GInt(result)),
                             })
                         }
-                        (ExprInstance::GUint64(lhs), ExprInstance::GUint64(rhs)) => {
-                            self.cost.charge(multiplication_cost())?;
-                            let result = lhs.checked_mul(rhs).ok_or_else(|| {
-                                InterpreterError::ReduceError(format!(
-                                    "Arithmetic overflow in multiplication: {}u64 * {}u64",
-                                    lhs, rhs
-                                ))
-                            })?;
-                            Ok(Expr {
-                                expr_instance: Some(ExprInstance::GUint64(result)),
-                            })
-                        }
                         (ExprInstance::GDouble(d1), ExprInstance::GDouble(d2)) => {
                             self.cost.charge(multiplication_cost())?;
                             let result = f64::from_bits(d1) * f64::from_bits(d2);
@@ -1848,17 +1836,6 @@ impl DebruijnInterpreter {
                             }
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::GInt(lhs / rhs)),
-                            })
-                        }
-                        (ExprInstance::GUint64(lhs), ExprInstance::GUint64(rhs)) => {
-                            self.cost.charge(division_cost())?;
-                            if rhs == 0 {
-                                return Err(InterpreterError::ReduceError(
-                                    "Division by zero".to_string(),
-                                ));
-                            }
-                            Ok(Expr {
-                                expr_instance: Some(ExprInstance::GUint64(lhs / rhs)),
                             })
                         }
                         (ExprInstance::GDouble(d1), ExprInstance::GDouble(d2)) => {
@@ -1959,17 +1936,6 @@ impl DebruijnInterpreter {
                                 expr_instance: Some(ExprInstance::GInt(lhs % rhs)),
                             })
                         }
-                        (ExprInstance::GUint64(lhs), ExprInstance::GUint64(rhs)) => {
-                            self.cost.charge(modulo_cost())?;
-                            if rhs == 0 {
-                                return Err(InterpreterError::ReduceError(
-                                    "Modulo by zero".to_string(),
-                                ));
-                            }
-                            Ok(Expr {
-                                expr_instance: Some(ExprInstance::GUint64(lhs % rhs)),
-                            })
-                        }
                         (ExprInstance::GDouble(_), ExprInstance::GDouble(_)) => {
                             Err(InterpreterError::ReduceError(
                                 "Modulus not defined on floating point".to_string(),
@@ -2064,13 +2030,6 @@ impl DebruijnInterpreter {
                             self.cost.charge(sum_cost())?;
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::GInt(lhs.wrapping_add(rhs))),
-                            })
-                        }
-
-                        (ExprInstance::GUint64(lhs), ExprInstance::GUint64(rhs)) => {
-                            self.cost.charge(sum_cost())?;
-                            Ok(Expr {
-                                expr_instance: Some(ExprInstance::GUint64(lhs.wrapping_add(rhs))),
                             })
                         }
 
@@ -2174,13 +2133,6 @@ impl DebruijnInterpreter {
                             self.cost.charge(subtraction_cost())?;
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::GInt(lhs.wrapping_sub(rhs))),
-                            })
-                        }
-
-                        (ExprInstance::GUint64(lhs), ExprInstance::GUint64(rhs)) => {
-                            self.cost.charge(subtraction_cost())?;
-                            Ok(Expr {
-                                expr_instance: Some(ExprInstance::GUint64(lhs.wrapping_sub(rhs))),
                             })
                         }
 
@@ -7368,6 +7320,16 @@ enum SizedIntOp {
 }
 
 impl SizedIntOp {
+    fn name(self) -> &'static str {
+        match self {
+            SizedIntOp::Add => "addition",
+            SizedIntOp::Sub => "subtraction",
+            SizedIntOp::Mul => "multiplication",
+            SizedIntOp::Div => "division",
+            SizedIntOp::Mod => "modulo",
+        }
+    }
+
     fn symbol(self) -> &'static str {
         match self {
             SizedIntOp::Add => "+",
@@ -7382,7 +7344,8 @@ impl SizedIntOp {
 fn is_sized_int_pair(lhs: &ExprInstance, rhs: &ExprInstance) -> bool {
     matches!(
         (lhs, rhs),
-        (ExprInstance::GInt32(_), ExprInstance::GInt32(_))
+        (ExprInstance::GUint64(_), ExprInstance::GUint64(_))
+            | (ExprInstance::GInt32(_), ExprInstance::GInt32(_))
             | (ExprInstance::GUint32(_), ExprInstance::GUint32(_))
             | (ExprInstance::GUint16(_), ExprInstance::GUint16(_))
             | (ExprInstance::GUint8(_), ExprInstance::GUint8(_))
@@ -7398,7 +7361,8 @@ macro_rules! sized_int_op {
         let b = <$t>::try_from($rhs).map_err(|_| out_of_range($rhs.to_string()))?;
         let overflow = || {
             InterpreterError::ReduceError(format!(
-                "Arithmetic overflow in {}{} {} {}{}",
+                "Arithmetic overflow in {}: {}{} {} {}{}",
+                $op.name(),
                 a,
                 $suffix,
                 $op.symbol(),
@@ -7435,6 +7399,9 @@ fn eval_sized_int_op(
     rhs: &ExprInstance,
 ) -> Result<ExprInstance, InterpreterError> {
     Ok(match (lhs, rhs) {
+        (ExprInstance::GUint64(a), ExprInstance::GUint64(b)) => {
+            ExprInstance::GUint64(sized_int_op!(u64, "u64", op, *a, *b))
+        }
         (ExprInstance::GInt32(a), ExprInstance::GInt32(b)) => {
             ExprInstance::GInt32(sized_int_op!(i32, "i32", op, *a, *b))
         }
@@ -7704,7 +7671,15 @@ fn describe_par_type(par: &Par) -> String {
         match par.exprs[0].expr_instance.as_ref() {
             Some(ExprInstance::GBool(_)) => "Bool".to_string(),
             Some(ExprInstance::GInt(_)) => "Int".to_string(),
+            Some(ExprInstance::GUint64(_)) => "UInt64".to_string(),
+            Some(ExprInstance::GInt32(_)) => "Int32".to_string(),
+            Some(ExprInstance::GUint32(_)) => "UInt32".to_string(),
+            Some(ExprInstance::GUint16(_)) => "UInt16".to_string(),
+            Some(ExprInstance::GUint8(_)) => "UInt8".to_string(),
+            Some(ExprInstance::GDouble(_)) => "Float".to_string(),
             Some(ExprInstance::GBigInt(_)) => "BigInt".to_string(),
+            Some(ExprInstance::GBigRat(_)) => "BigRat".to_string(),
+            Some(ExprInstance::GFixedPoint(_)) => "FixedPoint".to_string(),
             Some(ExprInstance::GString(_)) => "String".to_string(),
             Some(ExprInstance::GUri(_)) => "Uri".to_string(),
             Some(ExprInstance::GByteArray(_)) => "ByteArray".to_string(),

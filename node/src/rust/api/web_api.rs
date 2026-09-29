@@ -2040,11 +2040,11 @@ fn extract_key_from_expr(expr: &RhoExpr) -> String {
     match expr {
         RhoExpr::ExprString { data } => data.clone(),
         RhoExpr::ExprInt { data } => data.to_string(),
-        RhoExpr::ExprUint64 { data } => data.to_string(),
-        RhoExpr::ExprInt32 { data } => data.to_string(),
-        RhoExpr::ExprUint32 { data } => data.to_string(),
-        RhoExpr::ExprUint16 { data } => data.to_string(),
-        RhoExpr::ExprUint8 { data } => data.to_string(),
+        RhoExpr::ExprUint64 { data } => format!("{}u64", data),
+        RhoExpr::ExprInt32 { data } => format!("{}i32", data),
+        RhoExpr::ExprUint32 { data } => format!("{}u32", data),
+        RhoExpr::ExprUint16 { data } => format!("{}u16", data),
+        RhoExpr::ExprUint8 { data } => format!("{}u8", data),
         RhoExpr::ExprBool { data } => data.to_string(),
         RhoExpr::ExprFloat { data } => data.to_string(),
         RhoExpr::ExprBigInt { data } => data.clone(),
@@ -2389,6 +2389,45 @@ mod tests {
     }
 
     #[test]
+    fn test_expr_from_expr_proto_map_keeps_int_and_sized_int_keys_apart() {
+        let entry = |key: ExprInstance, value: &str| KeyValuePair {
+            key: Some(Par {
+                exprs: vec![Expr {
+                    expr_instance: Some(key),
+                }],
+                ..Default::default()
+            }),
+            value: Some(Par {
+                exprs: vec![Expr {
+                    expr_instance: Some(ExprInstance::GString(value.to_string())),
+                }],
+                ..Default::default()
+            }),
+        };
+        let map = EMap {
+            kvs: vec![
+                entry(ExprInstance::GInt(5), "int"),
+                entry(ExprInstance::GUint64(5), "u64"),
+                entry(ExprInstance::GInt32(5), "i32"),
+                entry(ExprInstance::GUint8(5), "u8"),
+            ],
+            ..Default::default()
+        };
+        match expr_from_expr_proto(Expr {
+            expr_instance: Some(ExprInstance::EMapBody(map)),
+        }) {
+            Some(RhoExpr::ExprMap { data }) => {
+                assert_eq!(data.len(), 4);
+                assert!(matches!(data["5"], RhoExpr::ExprString { data: ref d } if d == "int"));
+                assert!(matches!(data["5u64"], RhoExpr::ExprString { data: ref d } if d == "u64"));
+                assert!(matches!(data["5i32"], RhoExpr::ExprString { data: ref d } if d == "i32"));
+                assert!(matches!(data["5u8"], RhoExpr::ExprString { data: ref d } if d == "u8"));
+            }
+            _ => panic!("Expected ExprMap"),
+        }
+    }
+
+    #[test]
     fn test_expr_from_expr_proto_map() {
         let map = EMap {
             kvs: vec![
@@ -2540,6 +2579,27 @@ mod tests {
         // Test int key
         let expr = RhoExpr::ExprInt { data: 42 };
         assert_eq!(extract_key_from_expr(&expr), "42");
+
+        assert_eq!(
+            extract_key_from_expr(&RhoExpr::ExprUint64 { data: 42 }),
+            "42u64"
+        );
+        assert_eq!(
+            extract_key_from_expr(&RhoExpr::ExprInt32 { data: -42 }),
+            "-42i32"
+        );
+        assert_eq!(
+            extract_key_from_expr(&RhoExpr::ExprUint32 { data: 42 }),
+            "42u32"
+        );
+        assert_eq!(
+            extract_key_from_expr(&RhoExpr::ExprUint16 { data: 42 }),
+            "42u16"
+        );
+        assert_eq!(
+            extract_key_from_expr(&RhoExpr::ExprUint8 { data: 42 }),
+            "42u8"
+        );
 
         // Test bool key
         let expr = RhoExpr::ExprBool { data: true };

@@ -279,6 +279,8 @@ API responses from `explore-deploy`, `data-at-name-by-block-hash`, `registry`, a
 
 - **No silent drops**: every Rholang type has a representation. Unknown future types render as `ExprUnknown` with a type name — never silently disappear from responses.
 - **Map keys**: any RhoExpr can be a map key. Primitives use natural string representation; complex types are serialized to JSON strings.
+- **Sized integer map keys**: a key of type `UInt64`, `Int32`, `UInt32`, `UInt16` or `UInt8` has its type suffix, for example `"5u64"` or `"5u8"`. An `Int` key has no suffix (`"5"`). Keys of different integer types therefore stay separate.
+- **64-bit integers in JSON**: `ExprInt` and `ExprUint64` values are JSON numbers. A JavaScript `Number` holds integers exactly only up to 2^53, so a client in JavaScript must use a parser with 64-bit integer support to read larger values exactly.
 - **Extended numerics**: `BigInt`, `BigRat`, and `FixedPoint` are represented as decimal strings (not binary) for client readability. `Float` is IEEE 754 f64.
 - **Process-level constructs** (sends, receives, new bindings) are represented as `ExprUnknown { type_name: "Process" }` rather than full AST serialization. These are rarely returned by data queries.
 - **Deploy not found**: returns HTTP 404 (not 400) so clients can distinguish "not yet in block" from "invalid request."

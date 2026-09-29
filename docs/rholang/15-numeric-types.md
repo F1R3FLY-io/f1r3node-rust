@@ -41,6 +41,11 @@ Addition and subtraction wrap modulo 2^64. Multiplication overflow returns an er
 
 Comparisons use unsigned order. Division and modulo by zero return an error. Unary negation is not defined on `UInt64`. `UInt64` and `Int` do not mix: `1u64 + 1` is an error.
 
+```rho
+-(1u64)                           // ERROR: negation is not defined on uint64
+1u64 + 1                          // ERROR: UInt64 + Int
+```
+
 ## Int32, UInt32, UInt16, UInt8 (GInt32, GUint32, GUint16, GUint8)
 
 Fixed-width integers. Suffixes: `i32`, `u32`, `u16`, `u8`. Each width is a separate type.
@@ -109,6 +114,8 @@ No size cap. Gas scales with operand byte length (see [Cost Model](13-cost-model
 ### Int Literals with Bit Width
 
 Rholang syntax accepts signed (`i8`, `i16`, `i32`, `i64`, `i128`, ...) and unsigned (`u8`, `u16`, `u32`, `u64`, `u128`, ...) width suffixes. An interpreter can support a subset of these widths. This interpreter supports `i64` (the same type as an unsuffixed `Int`), `i32`, `u64`, `u32`, `u16` and `u8`. A literal with any other width suffix, or a value that is out of range for its width, is rejected at compile time.
+
+> **Breaking change.** Earlier versions accepted every width suffix and silently converted the literal: `1u32` and `1i8` became `Int`, and `1u128` became `BigInt`. Now `i32`, `u32`, `u16` and `u8` are separate types, and `i8`, `i16`, `i128` and `u128` do not compile. To keep the earlier behavior, rewrite the literal as an unsuffixed `Int` (`1`) or as a `BigInt` (`1n`). All nodes in a shard must run the same version before a deploy uses a sized integer literal.
 
 ```rho
 42i64              // Int(42), the same as 42

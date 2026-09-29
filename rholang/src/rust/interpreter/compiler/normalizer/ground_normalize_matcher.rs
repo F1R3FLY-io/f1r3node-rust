@@ -281,6 +281,26 @@ mod tests {
     }
 
     #[test]
+    fn i64_literal_range_is_enforced() {
+        for (value, expected) in [
+            ("9223372036854775807", i64::MAX),
+            ("-9223372036854775808", i64::MIN),
+        ] {
+            let expr = normalize_ground(&Proc::SignedIntLiteral { value, bits: 64 }).unwrap();
+            assert_eq!(expr.expr_instance, Some(ExprInstance::GInt(expected)));
+        }
+        match normalize_ground(&Proc::SignedIntLiteral {
+            value: "9223372036854775808",
+            bits: 64,
+        }) {
+            Err(InterpreterError::NormalizerError(msg)) => {
+                assert!(msg.contains("out of range for i64"), "{msg}")
+            }
+            other => panic!("expected NormalizerError, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn sized_ints_compile_to_their_own_types() {
         let cases = [
             (
