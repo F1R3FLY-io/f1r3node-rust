@@ -1,6 +1,7 @@
 pub mod errors;
 pub mod mode;
 pub mod nss;
+pub mod path;
 pub mod response;
 pub mod stat;
 
