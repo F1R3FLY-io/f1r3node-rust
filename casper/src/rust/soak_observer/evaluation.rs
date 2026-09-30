@@ -16,6 +16,7 @@ use shared::rust::dag::observation_work::{
 use shared::rust::store::key_value_store::KvStoreError;
 use shared::rust::store::soak_snapshot::ReadLimits;
 
+use super::display::{self, DisplayInputs};
 use super::fork_choice::{
     self, EvaluationMode, ForkChoiceObservation, ForkChoiceResult, LatestMessageCounts, LowerBound,
     LowerBoundRule,
@@ -122,6 +123,24 @@ pub struct AuthorityRequest {
     pub strict: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fork_choice: Option<ForkChoiceSelection>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_display"
+    )]
+    pub display: Option<DisplaySelection>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DisplaySelection {
+    pub max_equivocation_records: usize,
+}
+
+fn deserialize_display<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<DisplaySelection>, D::Error> {
+    DisplaySelection::deserialize(deserializer).map(Some)
 }
 
 #[derive(Serialize)]
@@ -169,6 +188,12 @@ pub fn parse_hash(hash: &str) -> Result<BlockHash, String> {
 
 impl AuthorityRequest {
     pub fn validate(&self) -> Result<(), String> {
+        if let Some(selection) = &self.display {
+            block_storage::rust::dag::soak_equivocations::validate_row_limit(
+                selection.max_equivocation_records,
+            )
+            .map_err(|e| e.to_string())?;
+        }
         self.capture.validate()?;
         self.evaluation.validate().map_err(|e| e.to_string())?;
         if self.targets.len() > 16 || self.body_hashes.len() > self.capture.max_blocks {
@@ -298,6 +323,8 @@ pub struct TargetResult {
     pub oracle_witness: Value<ExactOracleResult>,
     pub original_fault_tolerance: Value<u32>,
     pub display_projection: Value<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_inputs: Option<Value<DisplayInputs>>,
     pub persisted_fault_tolerance: Value<u32>,
     pub reference_comparison: Value<OracleComparison>,
 }
@@ -345,6 +372,18 @@ pub struct AuthorityResponse {
     pub fork_choice: Value<ForkChoiceObservation>,
     pub work: WorkReport,
     pub events: Vec<ObservationEvent>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_scope: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub equivocation_capture: Option<Value<EquivocationCapture>>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct EquivocationCapture {
+    pub store: &'static str,
+    pub row_count: usize,
+    pub byte_count: usize,
+    pub digest: String,
 }
 
 pub(super) fn digest(value: &impl Serialize, meter: &CheckedWork) -> Result<String, String> {
@@ -522,18 +561,46 @@ async fn evaluate_inner(
         .iter()
         .map(|s| parse_hash(s))
         .collect::<Result<Vec<_>, _>>()?;
-    let snapshot = soak_snapshot::capture(&endpoint.dag, &endpoint.blocks, &CaptureRequest {
+    let capture_request = CaptureRequest {
         limits: request.capture.limits(remaining),
         bodies: &body_hashes,
-    })
-    .map_err(|e| format!("capture_unavailable:{e}"))?;
+    };
+    let (snapshot, tracker) = match &request.display {
+        None => (
+            soak_snapshot::capture(&endpoint.dag, &endpoint.blocks, &capture_request)
+                .map_err(|e| format!("capture_unavailable:{e}"))?,
+            None,
+        ),
+        Some(selection) => {
+            let (snapshot, tracker) = soak_snapshot::capture_with_equivocations(
+                &endpoint.dag,
+                &endpoint.blocks,
+                &capture_request,
+                selection.max_equivocation_records,
+            )
+            .map_err(|e| format!("capture_unavailable:{e}"))?;
+            (snapshot, Some(tracker))
+        }
+    };
     if !binding.is_active() {
         return Err("instance_changed".to_string());
     }
     prepare(&snapshot, meter)?;
     let (request_digest_input, fork_choice_selection) = request.digest_input();
-    let authority_digest = match fork_choice_selection {
-        None => digest(
+    let authority_digest = match (fork_choice_selection, tracker.as_ref()) {
+        (_, Some(tracker)) => digest(
+            &(
+                "batch-e-authority-v1",
+                snapshot.digest(),
+                tracker.digest(),
+                &endpoint.authority,
+                &request_digest_input,
+                fork_choice_selection,
+                request.display.as_ref(),
+            ),
+            meter,
+        )?,
+        (None, None) => digest(
             &(
                 "batch-b2-authority-v1",
                 snapshot.digest(),
@@ -542,7 +609,7 @@ async fn evaluate_inner(
             ),
             meter,
         )?,
-        Some(selection) => digest(
+        (Some(selection), None) => digest(
             &(
                 "batch-b2-authority-v1",
                 snapshot.digest(),
@@ -603,20 +670,22 @@ async fn evaluate_inner(
             .map_err(|e| e.to_string()),
             Err(error) => Err(error.clone()),
         };
+        let mut original_missing_history = false;
         let original_bits = match &original {
             None => Value::NotRequested,
             Some(Err(error)) => Value::unavailable(&input_digest, error),
-            Some(Ok(view)) => Value::from_result(
-                &input_digest,
-                CliqueOracle::ft_witnessed_metered(
+            Some(Ok(view)) => {
+                let result = CliqueOracle::ft_witnessed_metered(
                     &original_work,
                     &hash,
                     &view.representation,
                     &snapshot.latest_messages,
                 )
-                .await
-                .map(f32::to_bits),
-            ),
+                .await;
+                original_missing_history =
+                    matches!(&result, Err(KvStoreError::MissingBlock { .. }));
+                Value::from_result(&input_digest, result.map(f32::to_bits))
+            }
         };
         let comparison = if request.reference {
             match (
@@ -680,6 +749,44 @@ async fn evaluate_inner(
             Some(matches!(&decision, Value::Available { .. })),
             Some(snapshot.digest()),
         );
+        let (display_projection, display_inputs) = match &tracker {
+            None => (
+                Value::unavailable(&input_digest, "equivocation_snapshot_unavailable"),
+                None,
+            ),
+            Some(tracker) => {
+                let base = match &original_bits {
+                    Value::Available { value, .. } => Some(("original_oracle", *value)),
+                    _ if original_missing_history => Some((
+                        "missing_history_minimum",
+                        crate::rust::safety_oracle::MIN_FAULT_TOLERANCE.to_bits(),
+                    )),
+                    _ => None,
+                };
+                let calculated =
+                    display::calculate(&snapshot, tracker, &hash, base, &measured_work);
+                match calculated {
+                    Ok((bits, inputs)) => (
+                        Value::available(&input_digest, bits),
+                        Some(Value::available(&input_digest, inputs)),
+                    ),
+                    Err(reason) => {
+                        if reason.contains("observation_work:") {
+                            return Err(reason);
+                        }
+                        let reason = if reason == "display_base_unavailable" && !request.original {
+                            "original_not_requested"
+                        } else {
+                            &reason
+                        };
+                        (
+                            Value::unavailable(&input_digest, reason),
+                            Some(Value::unavailable(&input_digest, reason)),
+                        )
+                    }
+                }
+            }
+        };
         targets.push(TargetResult {
             target: target.clone(),
             input_scope: "captured_latest_messages",
@@ -689,10 +796,8 @@ async fn evaluate_inner(
             oracle_decision: decision,
             oracle_witness: witness,
             original_fault_tolerance: original_bits,
-            display_projection: Value::unavailable(
-                &input_digest,
-                "equivocation_snapshot_unavailable",
-            ),
+            display_projection,
+            display_inputs,
             persisted_fault_tolerance: persisted,
             reference_comparison: comparison,
         });
@@ -805,6 +910,14 @@ async fn evaluate_inner(
         &authority_digest,
         fork_choice_digest.as_deref(),
     );
+    let equivocation_capture = tracker.as_ref().map(|tracker| {
+        Value::available(&authority_digest, EquivocationCapture {
+            store: "equivocation-tracker",
+            row_count: tracker.rows().len(),
+            byte_count: tracker.raw_bytes(),
+            digest: hex::encode(tracker.digest()),
+        })
+    });
     Ok(AuthorityResponse {
         scope: "batch-b2-detached-authority-evaluation",
         live_profile_qualified: false,
@@ -835,6 +948,8 @@ async fn evaluate_inner(
         fork_choice: fork_choice_observation,
         work,
         events: Vec::new(),
+        display_scope: request.display.as_ref().map(|_| display::DISPLAY_SCOPE),
+        equivocation_capture,
     })
 }
 

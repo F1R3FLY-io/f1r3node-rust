@@ -845,7 +845,8 @@ tasks:
       - "The maintainer confirms the reduced diff before the merge."
   - id: TASK-019-9
     title: "Batch D: paired fork-choice observation bound to one capture"
-    status: in_progress
+    status: complete
+    completed_on: "2026-09-30"
     claimed_by: claude-session-f3cbc961
     claimed_at: 2026-09-30T04:40:00Z
     assignment: "User decision 2026-09-30: agent A (this session) takes Batch D and then the removals of TASK-019-8. Agent B (the pi session of 2026-09-30, see docs/work-logs/node-observation-agent-b-20260930.md) takes the record refresh, the STE fix, the TASK-019-8 inventory, and Batch E after Batch D."
@@ -854,10 +855,26 @@ tasks:
     recorded_on: 2026-09-30
     blocked_by: []
     precedes: [TASK-019-10]
-    stage: "Steps 1 to 15 of 16 complete on 2026-09-30. Verification on the pinned revision 3ab092cc5: observer 39, unit 57, mod.rs 66, clippy clean, gate both tiers clean, paired model 203 states with 5 controls, Linux binding driver exit 0. Evidence package docs/cbc-evidence/runs/casper-node-fork-choice-batch-d-3ab092cc5-01 (2 files), 28 records at batch-d-verification-01 plus the driver record refresh, strict audit exit 4 with 29 pending (expected before acceptance). The file hand-off to Agent B is in the work log. Step 16 (acceptance request to the named maintainer) is next."
+    stage: "All 16 steps complete on 2026-09-30. The named maintainer accepted claim 004 at revision 3ab092cc5 on the evidence package. 21 records are discharged. 8 shared records have Batch E successor versions that point at the accepted Batch D version through previous_record."
+    proposed_reviewer: jltatbeach
+    eligible_maintainers: [spreston8, dylon, metaweta, jeffrey-l-turner, jltatbeach]
+    acceptance_request: docs/work-logs/task-019-9-paired-fork-choice.md#step-16-on-2026-09-30-acceptance-request
+    accepted_by: jltatbeach
+    acceptance_record: https://github.com/F1R3FLY-io/f1r3node-rust/pull/447#issuecomment-5918385665
+    acceptance_form: "Issue comment by the named maintainer, edited 2026-09-30T19:45:09Z. The 2 earlier acceptances were pull request reviews. The text names the claim, the revision, and the package."
+    acceptance_revision: 3ab092cc58fb30f4da39e6c8b28b8d25206c661b
+    acceptance_reviewed_at: 2026-09-30T19:41:35Z
+    finding_1_decision: "No production change in this batch. An issue for the production score extent is optional and not opened."
+    tiers_reached:
+      refutation: "PairedForkChoice model, 203 distinct states clean, 5 negative controls violate their named invariants. Formal gate clean in both tiers."
+      construction: "Pending for the 13 U rows, accepted as recorded. D1 and D11 inherit accepted theorems. D7, D12, D16 accepted as bounded by design."
+      binding: "16 properties mapped to 30 tests. Observer 39, unit 57, mod.rs 66, node 21 plus 1 ignored, node library 259. Linux binding driver exit 0."
+    strict_cbc_result: "Exit 4 with 29 pending before the acceptance. After the acceptance the 29-file inventory has 20 discharged and 9 pending: 8 Batch E successors and the soak gate record of check-tla-invariants.sh. 21 record files are discharged in total."
+    acceptance_package: docs/cbc-evidence/runs/casper-node-fork-choice-batch-d-3ab092cc5-01
+    evidence_commit: 28606f110
     consumer: "TASK-017-12 harness profile on formal/soak-casper-consensus: the profile compares the selected head of a bounded member and a reference member on equal inputs."
     claims: [CLAIM-CASPER-NODE-OBSERVATION-004]
-    claim_status: pending
+    claim_status: accepted
     claim_file: docs/claims/casper-node-fork-choice-observation.md
     plan: docs/plans/casper-node-observation-batch-d.md
     draft_reviewed_base: 670037c2511abd5f576063b3153681a873244a18

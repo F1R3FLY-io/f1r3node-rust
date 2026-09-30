@@ -13,6 +13,7 @@ use crate::rust::casper::{CasperShardConf, MultiParentCasper};
 use crate::rust::estimator::Estimator;
 
 pub mod evaluation;
+pub mod display;
 pub mod fork_choice;
 pub mod reference;
 

@@ -1,44 +1,43 @@
 # CbC Evidence: casper/src/rust/soak_observer/evaluation.rs
 
-This record binds the Batch D verification of 2026-09-30 at revision `3ab092cc5` to the file. Named maintainer review and acceptance of the claim remain pending.
+This pending successor preserves the committed prior record through `previous_record`.
+Earlier acceptance does not cover the Batch E source changes.
 
 ```json
 {
   "artifact": {
     "path": "casper/src/rust/soak_observer/evaluation.rs",
     "id": "casper-src-rust-soak-observer-evaluation-rs",
-    "commit": "3ab092cc58fb30f4da39e6c8b28b8d25206c661b",
+    "commit": "28606f1103343a6d4e1e425a7d9a96c93459c57a",
     "commit_is_base": true,
     "working_tree": false,
     "sha256": "147c804f53b34b2811fba6a80b6eb9610606e089825248c8bb86c9a113be79ea",
-    "sha256_at_registration": "3834185fb6dbcebecf6a676af46bc49d6c7ca8abe1052a53ef10a5115cfdb56f"
+    "sha256_at_registration": "147c804f53b34b2811fba6a80b6eb9610606e089825248c8bb86c9a113be79ea"
   },
-  "claim": "docs/claims/casper-node-fork-choice-observation.md",
+  "claim": "docs/claims/casper-node-display-projection.md",
   "claim_ids": [
-    "CLAIM-CASPER-NODE-OBSERVATION-004"
+    "CLAIM-CASPER-NODE-OBSERVATION-004",
+    "CLAIM-CASPER-NODE-OBSERVATION-005"
   ],
   "claim_digests": {
-    "docs/claims/casper-node-fork-choice-observation.md": "24619b06b7c3c4b3849227cea5126c237a9f45e97c628205003866ee6c3c1940"
-  },
-  "previous_record": {
-    "path": "docs/cbc-evidence/casper-src-rust-soak-observer-evaluation-rs.md",
-    "sha256": "bc1e312ab18ca90e024d51bcdd321f3515fb5cf3cd1871ab562998e774d0e242",
-    "commit": "3ab092cc58fb30f4da39e6c8b28b8d25206c661b"
+    "docs/claims/casper-node-fork-choice-observation.md": "24619b06b7c3c4b3849227cea5126c237a9f45e97c628205003866ee6c3c1940",
+    "docs/claims/casper-node-display-projection.md": "ace855346324009b5f08972b5c12e043abaf8889ff40501b525d0fa09cd49dce"
   },
   "status": "pending",
-  "scope": "batch-d-verification-01",
-  "evidence": {
-    "kind": "tiered-evidence-recorded-pending-acceptance",
-    "ref": "docs/cbc-evidence/runs/casper-node-fork-choice-batch-d-3ab092cc5-01/report.json",
-    "sha256": "6eb70a7bd3a4833555780e3ebd87104964a45a0c8f518af55869fde4da323297"
+  "scope": "batch-e-registration",
+  "previous_record": {
+    "path": "docs/cbc-evidence/casper-src-rust-soak-observer-evaluation-rs.md",
+    "commit": "28606f1103343a6d4e1e425a7d9a96c93459c57a",
+    "sha256": "ae254857b9dc3f349e750c3f8cd2c9b01c830b773f6a8e15ab1d7c75b56d00d5"
   },
+  "evidence": null,
   "tiers": {
-    "refutation": "recorded",
+    "refutation": "pending",
     "construction": "pending",
-    "binding": "recorded"
+    "binding": "pending"
   },
   "soak": "pending",
   "waiver": null,
-  "verified_at": "2026-09-30T17:50:15+00:00"
+  "verified_at": null
 }
 ```

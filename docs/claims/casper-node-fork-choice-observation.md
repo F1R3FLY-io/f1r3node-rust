@@ -1,10 +1,10 @@
 # Casper Node Paired Fork-Choice Observation
 
-This claim was registered as pending on 2026-09-30, before the implementation. It contains no acceptance evidence.
+This claim was registered as pending on 2026-09-30, before the implementation. The named maintainer `jltatbeach` accepted it on 2026-09-30 at revision `3ab092cc5` on the evidence package `docs/cbc-evidence/runs/casper-node-fork-choice-batch-d-3ab092cc5-01` ([PR #447 comment 5918385665](https://github.com/F1R3FLY-io/f1r3node-rust/pull/447#issuecomment-5918385665)).
 
 ```yaml
 claim_id: CLAIM-CASPER-NODE-OBSERVATION-004
-status: pending
+status: accepted
 adapter: null
 scope: batch-d-paired-fork-choice
 artifacts:
@@ -107,7 +107,7 @@ The binding tier maps each property to named tests in the bindings manifest. The
 
 The compact evidence package goes in `docs/cbc-evidence/runs/`. The ledger records go in `docs/cbc-evidence/`.
 
-The claim stays pending until the named maintainer accepts the source-bound evidence.
+The named maintainer accepted the source-bound evidence on 2026-09-30. Decisions: D7, D12, and D16 are bounded by design. The construction gaps of the 13 U rows are accepted as recorded. The D1 and D11 inherited extensions are accepted. Finding 1 needs no production change in this batch.
 
 ## What the claim does not cover
 

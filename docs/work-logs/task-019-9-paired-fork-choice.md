@@ -299,6 +299,62 @@ The 28 records with the scope `batch-d-registration` now have the scope `batch-d
 
 The record of `scripts/ci/check-node-observation-bindings.sh` has a new version on top of the Agent B refresh of 2026-09-30. It adds claim 004, the digest of the changed script, and the evidence reference. The Batch E owner can refresh that record after this version.
 
+## Step 16 on 2026-09-30: acceptance request
+
+The acceptance belongs to the named maintainer `jltatbeach`. This session posts nothing to the pull request. The request below is the record for the maintainer, who finds it in the pull request diff and in the tracker. The acceptance form follows the 2 earlier acceptances in PR #447 review 5294038948. That review text names the claim, the reviewed revision, the evidence package, the bounded-by-design decisions, and the construction gaps.
+
+### Request text
+
+Batch D (TASK-019-9, paired fork-choice observation) is ready for the acceptance review. The claim stays `pending` until the named maintainer accepts the source-bound evidence.
+
+**Pinned revision:** `3ab092cc58fb30f4da39e6c8b28b8d25206c661b` on `feature/casper-node-observation`. **Evidence commit:** `28606f110`.
+
+**What to review.**
+
+| Item | Location |
+|------|----------|
+| Claim and the 16 properties | `docs/claims/casper-node-fork-choice-observation.md` |
+| Applicability review, rows D1 to D16 | `formal/tlaplus/node_observation/README.md`, section "Batch D applicability review" |
+| Binding manifest, 16 properties to 30 tests | `formal/tlaplus/node_observation/bindings.json`, claim 004 entry |
+| Evidence package | `docs/cbc-evidence/runs/casper-node-fork-choice-batch-d-3ab092cc5-01/` (`report.json`, `sources.sha256`) |
+| Work log with the 16 steps and the 4 findings | `docs/work-logs/task-019-9-paired-fork-choice.md` |
+
+**Decisions that need the maintainer's answer.**
+
+1. Classification of D7, D12, and D16 as bounded by design (fixed response schema, fixed number of work paths, constant value).
+2. The 13 rows with pending construction and Rust tests only (D1 to D6, D8 to D11, D13 to D15).
+3. Finding 1: the production estimator credits the main parent of a block at the common ancestor height. The reference follows R-SCORE and stops at the ancestor. Heads agree on every fixture. `score_count` differs by 1 on 2 of 12 random DAGs. The maintainer decides whether the production estimator changes. That change is outside Batch D.
+4. The 2 failure rows without a test: `missing_body_coverage` and `score_overflow`.
+
+**Verification on the pinned revision.**
+
+| Check | Result |
+|-------|--------|
+| `MC_PairedForkChoice` | 203 distinct states, no error. 5 negative controls violate their named invariants. |
+| Formal gate, default and `--soak-pr` tiers | 31 and 16 configurations clean, 83 controls violated their expected invariants, self-test PASS |
+| Observer suite, estimator and floor unit tests, `casper/tests/mod.rs` suites | 39, 57, 66 passed |
+| Node binding driver (Linux) | Exit 0. Node observer tests 21 passed and 1 ignored. Node library tests 259 passed. |
+| `cargo clippy --all-targets -- -D warnings` (casper, node, shared) | Clean |
+| Strict ledger audit over the 29 claim artifacts | Exit 4, 29 pending (expected before acceptance) |
+
+**Other findings.**
+
+- Finding 2: the floor derivation work depends on the message order. The bounded evaluation passes the messages in validator order. The production caller does not change.
+- Finding 3: the raw debug node test executable (571 MB) fails the observer self-check. CI strips it before the run. A local Linux run must strip it too.
+- Finding 4: the bounded refusal carried a raw production error with a backtrace. The bounded evaluation now gives the `failed` state with an error class.
+
+**Not in this request:** the display projection and the equivocation inputs (Batch E, TASK-019-10), the harness mapping of the new fields (TASK-017-12), and a live fork-choice profile.
+
+### Acceptance on 2026-09-30
+
+The named maintainer `jltatbeach` accepted the claim in [PR #447 comment 5918385665](https://github.com/F1R3FLY-io/f1r3node-rust/pull/447#issuecomment-5918385665) at 19:41:35Z, edited at 19:45:09Z. The text names the claim, revision `3ab092cc5`, and the evidence package. It accepts D7, D12, and D16 as bounded by design, the 13 construction gaps as recorded, and the D1 and D11 inherited extensions. On finding 1 the maintainer requires no production change and leaves an issue optional. The form is an issue comment, where the 2 earlier acceptances were pull request reviews. The substance meets the rule of TASK-019-4.
+
+21 records changed to `discharged` with the scope `batch-d-acceptance-01` and the evidence kind `tiered-evidence-accepted`. The 8 records of the shared files had Batch E successor versions in the index at that time (scope `batch-e-registration`). Their `previous_record` points at the accepted Batch D version in commit `28606f110`, so the chain records the acceptance. The strict audit of the 29-file inventory gives 20 discharged and 9 pending. The 9 are the 8 Batch E successors and `scripts/ci/check-tla-invariants.sh`, whose record belongs to the soak gate claim. The discharged driver record is outside the inventory.
+
+### Planned record changes at the acceptance
+
+The tracker fields `accepted_by`, `acceptance_record`, `acceptance_revision`, `acceptance_reviewed_at`, and `acceptance_package` get their values. The claim status becomes `accepted`, and TASK-019-9 becomes `complete`. The 29 records of the inventory become `discharged` with the evidence kind `tiered-evidence-accepted`, and the strict audit of the inventory gives exit 0.
+
 ## Progress
 
 - [x] Claim the task and start the work log.
@@ -315,4 +371,4 @@ The record of `scripts/ci/check-node-observation-bindings.sh` has a new version 
 - [x] Binding entries and applicability review.
 - [x] Gate, binding check, test suites, results recorded.
 - [x] Compact evidence package.
-- [ ] Acceptance request.
+- [x] Acceptance request recorded. Claim accepted on 2026-09-30.

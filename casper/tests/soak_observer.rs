@@ -213,6 +213,7 @@ impl Fixture {
             reference: true,
             strict: false,
             fork_choice: None,
+            display: None,
         }
     }
 }

@@ -1,6 +1,6 @@
 # CbC Evidence: formal/tlaplus/node_observation/MC_PairedForkChoice_absent_unsafe.tla
 
-This record binds the Batch D verification of 2026-09-30 at revision `3ab092cc5` to the file. Named maintainer review and acceptance of the claim remain pending.
+The named maintainer accepted CLAIM-CASPER-NODE-OBSERVATION-004 at revision `3ab092cc5` on 2026-09-30 (PR #447, comment 5918385665). This record is discharged for the Batch D bytes of the file.
 
 ```json
 {
@@ -20,10 +20,10 @@ This record binds the Batch D verification of 2026-09-30 at revision `3ab092cc5`
   "claim_digests": {
     "docs/claims/casper-node-fork-choice-observation.md": "24619b06b7c3c4b3849227cea5126c237a9f45e97c628205003866ee6c3c1940"
   },
-  "status": "pending",
-  "scope": "batch-d-verification-01",
+  "status": "discharged",
+  "scope": "batch-d-acceptance-01",
   "evidence": {
-    "kind": "tiered-evidence-recorded-pending-acceptance",
+    "kind": "tiered-evidence-accepted",
     "ref": "docs/cbc-evidence/runs/casper-node-fork-choice-batch-d-3ab092cc5-01/report.json",
     "sha256": "6eb70a7bd3a4833555780e3ebd87104964a45a0c8f518af55869fde4da323297"
   },
@@ -34,11 +34,18 @@ This record binds the Batch D verification of 2026-09-30 at revision `3ab092cc5`
   },
   "soak": "pending",
   "waiver": null,
-  "verified_at": "2026-09-30T17:50:15+00:00",
+  "verified_at": "2026-09-30T19:50:26+00:00",
   "previous_record": {
     "path": "docs/cbc-evidence/formal-tlaplus-node-observation-MC-PairedForkChoice-absent-unsafe-tla.md",
-    "sha256": "fda370f0bc732d0da1c7bff0a87d1877049f79a8b1d0e79318cbc9f0e2e13773",
-    "commit": "3ab092cc58fb30f4da39e6c8b28b8d25206c661b"
+    "sha256": "1a852a3428b24223a902cb048dad2d2e4c777e8a50373101ba6350e14158423b",
+    "commit": "28606f1103343a6d4e1e425a7d9a96c93459c57a"
+  },
+  "acceptance": {
+    "claim_id": "CLAIM-CASPER-NODE-OBSERVATION-004",
+    "accepted_by": "jltatbeach",
+    "record": "https://github.com/F1R3FLY-io/f1r3node-rust/pull/447#issuecomment-5918385665",
+    "revision": "3ab092cc58fb30f4da39e6c8b28b8d25206c661b",
+    "reviewed_at": "2026-09-30T19:41:35Z"
   }
 }
 ```

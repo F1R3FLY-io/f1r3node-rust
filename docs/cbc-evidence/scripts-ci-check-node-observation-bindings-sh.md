@@ -1,6 +1,6 @@
 # CbC Evidence: scripts/ci/check-node-observation-bindings.sh
 
-Batch D added the claim 004 file to the hash list of the driver. The driver passed on revision `3ab092cc5` in a Linux container. Named maintainer acceptance of the changed source remains pending.
+The named maintainer accepted CLAIM-CASPER-NODE-OBSERVATION-004 at revision `3ab092cc5` on 2026-09-30 (PR #447, comment 5918385665). This record is discharged for the Batch D bytes of the file.
 
 ```json
 {
@@ -17,11 +17,11 @@ Batch D added the claim 004 file to the hash list of the driver. The driver pass
     "CLAIM-CASPER-NODE-OBSERVATION-001",
     "CLAIM-CASPER-NODE-OBSERVATION-004"
   ],
-  "status": "pending",
-  "scope": "batch-d-verification-01",
+  "status": "discharged",
+  "scope": "batch-d-acceptance-01",
   "adapter": null,
   "evidence": {
-    "kind": "tiered-evidence-recorded-pending-acceptance",
+    "kind": "tiered-evidence-accepted",
     "ref": "docs/cbc-evidence/runs/casper-node-fork-choice-batch-d-3ab092cc5-01/report.json",
     "sha256": "6eb70a7bd3a4833555780e3ebd87104964a45a0c8f518af55869fde4da323297"
   },
@@ -29,7 +29,7 @@ Batch D added the claim 004 file to the hash list of the driver. The driver pass
   "acceptance_status": "pending",
   "soak": "pending",
   "waiver": null,
-  "verified_at": "2026-09-30T17:50:15+00:00",
+  "verified_at": "2026-09-30T19:50:26+00:00",
   "limits": "The report states the verification limits. Earlier acceptance does not cover the corrected source.",
   "claim_digests": {
     "docs/claims/casper-node-observation.md": "b865e33216b210a8915662e6ebd4f91d2b397a68f8f4dcf31fcd306aa8ca6c38",
@@ -37,14 +37,21 @@ Batch D added the claim 004 file to the hash list of the driver. The driver pass
   },
   "previous_record": {
     "path": "docs/cbc-evidence/scripts-ci-check-node-observation-bindings-sh.md",
-    "sha256": "7222ee6f13ff4a417af3e4d48d5a40dc90498da364562c217273ad04f5b01013",
-    "commit": "3ab092cc58fb30f4da39e6c8b28b8d25206c661b"
+    "sha256": "d10ed8a0963398a85b0e330b77b1b321627fcaaa2f83019eb787594e1ab4aadb",
+    "commit": "28606f1103343a6d4e1e425a7d9a96c93459c57a"
   },
   "previous_artifact_sha256": "947937192ae8761330cd8b36b437edcd9e3256a53803477e7c076f9cd1c1e5ca",
   "tiers": {
     "refutation": "not-applicable",
     "construction": "not-applicable",
     "binding": "recorded"
+  },
+  "acceptance": {
+    "claim_id": "CLAIM-CASPER-NODE-OBSERVATION-004",
+    "accepted_by": "jltatbeach",
+    "record": "https://github.com/F1R3FLY-io/f1r3node-rust/pull/447#issuecomment-5918385665",
+    "revision": "3ab092cc58fb30f4da39e6c8b28b8d25206c661b",
+    "reviewed_at": "2026-09-30T19:41:35Z"
   }
 }
 ```

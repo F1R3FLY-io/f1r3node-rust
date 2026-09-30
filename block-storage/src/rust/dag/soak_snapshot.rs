@@ -21,6 +21,7 @@ use super::block_dag_key_value_storage::{BlockDagKeyValueStorage, KeyValueDagRep
 use super::block_metadata_store::BlockMetadataStore;
 use super::carrier_index::CarrierIndex;
 use super::deploy_lifecycle_types::DeployLifecycleTables;
+use super::soak_equivocations::{self, EquivocationSnapshot};
 use crate::rust::key_value_block_store::{BlockDecodeLimits, KeyValueBlockStore};
 
 pub const SNAPSHOT_SCHEMA_VERSION: u32 = 2;
@@ -318,8 +319,44 @@ pub fn capture_observed(
     dag: &BlockDagKeyValueStorage,
     blocks: &KeyValueBlockStore,
     request: &CaptureRequest<'_>,
-    mut observe: impl FnMut(CapturePhase),
+    observe: impl FnMut(CapturePhase),
 ) -> Result<DetachedDagSnapshot, SnapshotError> {
+    capture_inner(dag, blocks, request, None, observe).map(|(snapshot, _)| snapshot)
+}
+
+pub fn capture_with_equivocations(
+    dag: &BlockDagKeyValueStorage,
+    blocks: &KeyValueBlockStore,
+    request: &CaptureRequest<'_>,
+    max_rows: usize,
+) -> Result<(DetachedDagSnapshot, EquivocationSnapshot), SnapshotError> {
+    capture_with_equivocations_observed(dag, blocks, request, max_rows, |_| {})
+}
+
+pub fn capture_with_equivocations_observed(
+    dag: &BlockDagKeyValueStorage,
+    blocks: &KeyValueBlockStore,
+    request: &CaptureRequest<'_>,
+    max_rows: usize,
+    observe: impl FnMut(CapturePhase),
+) -> Result<(DetachedDagSnapshot, EquivocationSnapshot), SnapshotError> {
+    let (snapshot, tracker) = capture_inner(dag, blocks, request, Some(max_rows), observe)?;
+    Ok((
+        snapshot,
+        tracker.ok_or_else(|| malformed("equivocation capture missing"))?,
+    ))
+}
+
+fn capture_inner(
+    dag: &BlockDagKeyValueStorage,
+    blocks: &KeyValueBlockStore,
+    request: &CaptureRequest<'_>,
+    max_rows: Option<usize>,
+    mut observe: impl FnMut(CapturePhase),
+) -> Result<(DetachedDagSnapshot, Option<EquivocationSnapshot>), SnapshotError> {
+    if let Some(limit) = max_rows {
+        soak_equivocations::validate_row_limit(limit)?;
+    }
     let limits = &request.limits;
     limits.validate()?;
     let mut work = WorkMeter {
@@ -411,17 +448,19 @@ pub fn capture_observed(
     let frontier_raw = frontier_typed.raw_store();
     let blocks_raw = blocks.soak_capture_store();
 
-    let mut reader = BoundedLmdbReader::open(
-        &[
-            metadata_raw,
-            latest_raw,
-            invalid_raw,
-            floor_raw,
-            frontier_raw,
-            blocks_raw,
-        ],
-        limits.read.clone(),
-    )?;
+    let tracker_raw = max_rows.map(|_| access.equivocations_index().store.raw_store());
+    let mut stores = vec![
+        metadata_raw,
+        latest_raw,
+        invalid_raw,
+        floor_raw,
+        frontier_raw,
+        blocks_raw,
+    ];
+    if let Some(raw) = tracker_raw {
+        stores.push(raw);
+    }
+    let mut reader = BoundedLmdbReader::open(&stores, limits.read.clone())?;
 
     let dag_set: BTreeSet<BlockHash> = state.dag_set.iter().cloned().collect();
     let mut captured_blocks: BTreeMap<BlockHash, DetachedBlock> = BTreeMap::new();
@@ -543,6 +582,63 @@ pub fn capture_observed(
         }
         bodies.insert(hash.clone(), BlockBody::Held(raw));
     }
+    let tracker_rows = match (max_rows, tracker_raw) {
+        (Some(limit), Some(raw)) => {
+            let before_bytes = reader.usage().bytes;
+            let raw_rows = scan(&mut reader, raw, limit, &mut work)?;
+            let raw_bytes = reader.usage().bytes - before_bytes;
+            work.charge(
+                raw_rows
+                    .len()
+                    .checked_mul(128)
+                    .ok_or(SnapshotError::CounterOverflow("equivocation allocation"))?,
+            )?;
+            let mut rows = Vec::with_capacity(raw_rows.len());
+            for (key, value) in raw_rows {
+                let amount = key
+                    .len()
+                    .checked_mul(2)
+                    .and_then(|n| value.len().checked_mul(3).and_then(|v| n.checked_add(v)))
+                    .and_then(|n| n.checked_add(128))
+                    .ok_or(SnapshotError::CounterOverflow("equivocation work"))?;
+                work.charge(amount)?;
+                rows.push(soak_equivocations::decode_row(
+                    &key,
+                    &value,
+                    limits.max_blocks,
+                )?);
+            }
+            let longest = rows.iter().map(|r| r.equivocator.len()).max().unwrap_or(0);
+            let amount = rows
+                .len()
+                .checked_mul(rows.len())
+                .and_then(|n| n.checked_mul(longest.saturating_add(64)))
+                .and_then(|n| n.checked_mul(4))
+                .and_then(|n| n.checked_add(256))
+                .ok_or(SnapshotError::CounterOverflow("equivocation sealing"))?;
+            work.charge(amount)?;
+            let canonical_bytes = rows
+                .iter()
+                .try_fold(128usize, |total, row| {
+                    total
+                        .checked_add(row.equivocator.len())
+                        .and_then(|n| n.checked_add(52))
+                })
+                .ok_or(SnapshotError::CounterOverflow(
+                    "equivocation canonical bytes",
+                ))?;
+            bounded(
+                "equivocation canonical bytes",
+                canonical_bytes,
+                limits
+                    .read
+                    .max_total_bytes
+                    .saturating_sub(reader.usage().bytes),
+            )?;
+            Some((rows, raw_bytes))
+        }
+        _ => None,
+    };
     observe(CapturePhase::RowsRead);
 
     let usage = reader.usage();
@@ -559,6 +655,21 @@ pub fn capture_observed(
     drop(access);
     observe(CapturePhase::GuardsReleased);
 
+    if tracker_rows.is_some() {
+        work.charge(
+            transactions
+                .iter()
+                .try_fold(256usize, |n, t| n.checked_add(t.environment.len()))
+                .ok_or(SnapshotError::CounterOverflow(
+                    "equivocation transaction copy",
+                ))?,
+        )?;
+    }
+    let tracker = tracker_rows
+        .map(|(rows, raw_bytes)| {
+            EquivocationSnapshot::seal(rows, raw_bytes, generation_before, transactions.clone())
+        })
+        .transpose()?;
     let data = SnapshotData {
         schema_version: SNAPSHOT_SCHEMA_VERSION,
         scope: SNAPSHOT_SCOPE,
@@ -605,7 +716,7 @@ pub fn capture_observed(
         blocks: captured_blocks,
         bodies,
     };
-    DetachedDagSnapshot::seal(data, work)
+    DetachedDagSnapshot::seal(data, work).map(|snapshot| (snapshot, tracker))
 }
 
 struct CanonicalEncoder {
