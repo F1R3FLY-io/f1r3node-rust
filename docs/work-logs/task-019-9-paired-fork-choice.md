@@ -32,13 +32,13 @@ The draft has the reviewed base `670037c25`. At `e90e4cffa` the 16 existing file
 
 The user confirmed the 34-file scope and accepted the 12 recommendations of the draft (question 8: the 3 consensus files get the mandatory tag and 3 ledger records). The decisions are in the [plan](../plans/casper-node-observation-batch-d.md).
 
-Registered: the [plan](../plans/casper-node-observation-batch-d.md), the pending [claim](../claims/casper-node-fork-choice-observation.md) `CLAIM-CASPER-NODE-OBSERVATION-004`, 4 mandatory tag lines in `.gitattributes` (`fork_choice.rs`, `estimator.rs`, `dag_operations.rs`, `proto_util.rs`), and 28 pending ledger records with the scope `batch-d-registration`.
+Registered: the [plan](../plans/casper-node-observation-batch-d.md), the pending [claim](../claims/casper-node-fork-choice-observation.md) `CLAIM-CASPER-NODE-OBSERVATION-004`, 4 mandatory tag lines in `.gitattributes` (`fork_choice.rs`, `estimator.rs`, `dag_operations.rs`, `proto_util.rs`), and 14 pending ledger records with the scope `batch-d-registration`.
 
 | Record group | Count | Note |
 |---|---|---|
 | Replaced records of changed files | 11 | `previous_record` names the replaced accepted record and its digest |
 | New records of the newly tagged files | 3 | `sha256_at_registration` holds the digest before the change |
-| New records of new files | 14 | `sha256` is null until the file exists |
+| New records of new files | 0 now, 14 at step 5 | Written when each file exists and has a digest. The user chose this on 2026-09-30 to limit empty files on the branch. The registration commit `bc6e2f3d4` had the 14 placeholders, and the next commit removed them. |
 | Kept under another claim | 1 | `scripts/ci/check-tla-invariants.sh` stays under `CLAIM-SOAK-GATE-001`, as at the Batch B2 registration |
 
 The record generator is `target/batch-d-registration-20260930-01/write-pending-records.sh` (local, ignored by Git). Each record parses as JSON.
