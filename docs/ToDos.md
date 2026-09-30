@@ -152,17 +152,46 @@ tasks:
     completed_date: 2026-09-30
   - id: TASK-020-3
     title: "One sink per deployment and a container log cap check"
-    status: in_progress
+    status: complete
+    completed_on: "2026-09-30"
+    recorded_by: claude-session-f3cbc961
     claimed_by: pi-session-01a0ab62-71b3-7248-a800-37a6fde2e4fa
     claimed_at: 2026-09-30T02:23:57Z
     claimed_at_source: clock_checkpoint_after_claim
     blocked_by: []
     work_log: docs/work-logs/task-020-3-deployment-log-caps-20260930.md
-    implementation_status: "The local deployment commands and repository guards pass. The external container caps already exist, but system-integration still selects both sinks. The task remains open."
-    completion_blocker: "Review the external log-reader contract, change the deployment to one sink, and record its verified merge revision."
+    implementation_status: "The node deployment commands and repository guards pass at 7d64c9d03. The external single-sink change merged into system-integration dev on 2026-09-30. Its main promotion is pending and is appended when it lands."
     external_handoff: docs/handoffs/task-020-3-system-integration-20260930.md
     external_main_revision: e3c4e14189f0c6ced2e9674487fcbdeffd93141b
-    external_single_sink_merge_revision: null
+    external_single_sink_merge_revision: ccd717195b35f75cef826f41d96b7028d8a874c0
+    external_change:
+      repository: F1R3FLY-io/system-integration
+      pull_request: 146
+      branch: fix/single-log-sink-per-deployment
+      base_revision: ef9844893f19df3e7523bb97e9e0da0ca241bb10
+      receiver: claude-session-fbb1f4d0
+      dev_merge_revision: ccd717195b35f75cef826f41d96b7028d8a874c0
+      dev_merged_at: 2026-09-30T22:10:44Z
+      main_promotion_revision: null
+      request_record: "system-integration docs/ToDos.md, section REQUEST: one node log sink per deployment (SI-TASK-020-3)"
+    sink_contract:
+      compose_and_smoke_test: "stdout through sink = stdout in conf/rust.conf and conf/standalone-dev.conf, bounded by json-file 100m x 3, read by docker logs and shardctl"
+      integration_docker_provider: "file through --log-sink=file before run at 6 launch sites (NODE_LOG_SINK_ARGS in integration-tests/test/infra/compose.py), read from /var/lib/rnode/logs/node.log*"
+      integration_subprocess_provider: "stdout through the conf, read from the captured process output"
+      development_override: "both only through an explicit --log-sink=both before run"
+    external_verification:
+      - "unit-tests/test_log_sink_policy.py at ccd717195: 34 passed (run from a git archive export with the repository Poetry environment)."
+      - "poetry run pytest unit-tests at the PR head: 355 passed. ruff 0.16.0 check and format clean."
+      - "docker compose config for the 5 node variants: 11 node services, all json-file 100m and 3 files, Compose files unchanged."
+      - "Live suites (system-integration commit e7163d57): test_heartbeat passed in PR CI. test_token_metadata standalone and shared, and test_shard_degradation: 15 of 15 passed locally with F1R3FLY_NODE_DEFAULTS_CONF set."
+    node_verification_at_7d64c9d03:
+      - "scripts/ci/test-compose-log-policy.sh: shard-vps2 3, ci-shard 5, ci-standalone 1 node services passed."
+      - "cargo nextest run -p node --test log_sink_cli: 3 passed."
+      - "scripts/supply-chain cargo test --test repository: 18 passed."
+      - "Pre-commit fmt, clippy, test, and deny passed at the merge commit 7d64c9d03 (dev ccd4a4823 merged)."
+    remaining_outside_this_task:
+      - "The byte limits of node commit 6e1c8833a reach system-integration runs through the next node repin of SYSTEM_INTEGRATION_REF. TASK-020-4 on formal/soak-casper-consensus enforces them in the harness."
+      - "Append the system-integration main promotion revision to external_change when it lands."
     unit_tests: [scripts/supply-chain/tests/repository.rs, scripts/supply-chain/tests/support/compose_logging.rs, node/tests/log_sink_cli.rs]
     files:
       - Cargo.lock
@@ -186,7 +215,7 @@ tasks:
     notes:
       - "The six base Compose files already cap at 100m and three files. The CI port overlays inherit these limits."
       - "The monitoring Compose file has no blockchain node service. Its storage policy is outside this task."
-      - "The local system-integration checkout is stale. Remote main already caps all eleven node service definitions across five variants. Its conf/rust.conf still selects both sinks."
+      - "The local system-integration checkout was stale at hand-off time. Remote main already capped all eleven node service definitions across five variants. Its conf/rust.conf selected both sinks until PR #146."
   - id: TASK-020-4
     title: "Harness enforcement of node log growth under EPIC-017"
     status: pending
