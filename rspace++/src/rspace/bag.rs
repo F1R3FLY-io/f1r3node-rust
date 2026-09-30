@@ -989,8 +989,12 @@ impl Bag {
         if probe.distinct_len == 1 {
             let mut result = Self::new();
             for (path, multiplicity) in probe.iter() {
-                if let Some(counter) = index.entries.get(&path) {
-                    result.set_count(&path, Some(multiplicity.min(*counter)));
+                let counter = index.count(&path);
+                if counter != 0 {
+                    result.set_count(
+                        &path,
+                        Some(multiplicity.min(Multiplicity::new(counter).expect("stored count"))),
+                    );
                 }
             }
             return result;
@@ -1014,6 +1018,19 @@ impl Bag {
     pub fn subtract(&self, other: &Self) -> Self {
         if self.is_empty() || other.is_empty() {
             return self.clone();
+        }
+        if self.distinct_len == 1 {
+            let (path, current) = self.iter().next().expect("singleton Bag has one endpoint");
+            let removed = other.count(&path);
+            if removed == 0 {
+                return self.clone();
+            }
+            if removed >= current.get() {
+                return Self::new();
+            }
+            let mut result = Self::new();
+            result.set_count(&path, Some(Multiplicity(current.get() - removed)));
+            return result;
         }
         Self::try_from_sorted_unique(|writer| {
             self.with_read_cursor(|mut current| {

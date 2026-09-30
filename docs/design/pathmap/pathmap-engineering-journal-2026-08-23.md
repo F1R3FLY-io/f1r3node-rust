@@ -18400,6 +18400,30 @@ are retained; the uncompressed raw log SHA-256 is
 and the committed gzip SHA-256 is
 `74d43648f15dd9c7776eab7d622d2e952db3c2ab008e9d70189dfea467ccff41`.
 
+**MEASURED.** The preregistered adaptive experiment 368 kept that complete
+matrix and the same acceptance rule. Every cell now meets the allocation-call
+gate, but four singleton timing cells remain over the 1.05 upper-ratio ceiling:
+singleton-left subtraction against an equal, maximum, or 1,024-endpoint right
+bag, and disjoint singleton meet. The largest one-sided 99% upper ratio is
+1.087447167. The 1,024-endpoint half-overlap meet upper ratio is 0.760859030;
+its subtraction upper ratio is 1.030485008. The small regressions therefore
+do not describe the multi-key cursor path. Experiment 368 is rejected without
+excluding observations. Its [complete compressed raw run](../stack-safety/measurements/bag-cursor-algebra-2026-09-30-adaptive.log.gz)
+and [39-cell fits](../stack-safety/measurements/bag-cursor-algebra-2026-09-30-adaptive-fits.tsv)
+have SHA-256 digests
+`c73f0b29e8cfcbc024103f4ff2cba568db689bf7f40ec03f78ca144394843df5`
+and `343e83760a46fce8176922f0202d4899c03eb767d59c958a6a7ebaf91d92cba3`;
+the uncompressed raw digest is
+`dc6cfe520e857349b76f089dfc1795c9068d9474869362448c4997798a352301`.
+
+**DECISION.** For a singleton left bag, subtraction now makes one exact point
+query: no removal shares the original bag, complete removal yields empty, and
+partial removal writes one reduced multiplicity. Singleton meet uses the same
+point-count route as the frozen control. These changes preserve the multi-key
+borrowed cursor algorithm. The focused release suite passes 3 allocation and
+38 Bag tests. A newly locked complete matrix, rather than a subset of the
+favorable cells above, must decide the performance gate.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
