@@ -134,3 +134,7 @@ The external acceptance blocker prevents task completion, so no completion helpe
 Another participant committed TASK-020-2 and changed index entries during this session.
 This session issued no `git add`, `git commit`, `git push`, checkout, synchronization, or merge command.
 The existing task and evidence records were preserved.
+
+## Pare-back on 2026-09-30
+
+The raw records of the evidence package `task-020-3-20260930-01` were removed on 2026-09-30 in the pare-back of the branch. Its `report.json` keeps the results and the digests of the removed files.

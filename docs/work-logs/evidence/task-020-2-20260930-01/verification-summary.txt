@@ -1,7 +1,0 @@
-RED: exit 101, observed [40000] against the requested 128-byte file bound.
-Initial node configuration test: 12 passed, 1 failed, exit 100.
-Corrected full run: shared 123, node 259, comm 399, total 781 passed, zero skips.
-Doctests: node 1 passed, shared and comm 0, exit 0.
-Direct Clippy: shared and node, all targets, warnings denied, exit 0.
-Rust format: three changed Rust files passed.
-Strict completion: full, zero gaps, force false, exit 0.

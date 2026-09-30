@@ -143,7 +143,7 @@ The unchanged completion helper ran against a tracker copy with strict mode enab
 
 EPIC-020 has no `user_flow` field. The test link was supplied, but that link cannot substitute for the missing flow relationship.
 
-The [refusal record](./evidence/task-020-1-hosted-20260930-01/strict-completion-refusal.txt) preserves the integrity result. No completion status or completion date was applied.
+The refusal record preserved the integrity result: grade `partial`, one gap `no_flow_link`, exit 3. No completion status or completion date was applied.
 
 The live tracker now links the actual regression file and hosted evidence. TASK-020-1 remains in progress until a real flow relationship permits strict completion.
 
@@ -194,3 +194,7 @@ EPIC-020 remains in progress. TASK-020-2, TASK-020-3, TASK-020-4, and every unre
 The full integrity grade describes documentation relationships. It does not establish complete resource qualification or discharge disk-protection claims.
 
 This session created no commit, push, merge, campaign, production change, or unrelated closure.
+
+## Pare-back on 2026-09-30
+
+The raw records of the evidence packages `task-020-1-hosted-20260930-01` and `task-020-1-flow-repair-20260930-01` were removed on 2026-09-30 in the pare-back of the branch. Each `report.json` keeps the results and the digests of the removed files.

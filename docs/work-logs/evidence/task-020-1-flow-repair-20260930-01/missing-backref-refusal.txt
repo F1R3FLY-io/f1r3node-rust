@@ -1,9 +1,0 @@
-
-INTEGRITY REPORT (warning):
-Target: TASK-020-1    Grade: partial    Gaps: 1
-Gaps:
-  - story_missing_backref
-Details:
-  [story_missing_backref] Cascaded from flow FLOW-002
-
-Refusing to mark TASK-020-1 complete due to gaps (--strict). Use --force to override.

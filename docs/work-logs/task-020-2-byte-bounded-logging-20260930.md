@@ -123,3 +123,7 @@ TASK-020-1 ownership and verification fields remain unchanged. TASK-020-3 and TA
 These are local macOS results for the current source. No hosted Linux result, container-log cap, full disk-protection discharge, or live resource qualification is inferred.
 
 The next task is TASK-020-3. It requires repository deployment changes and a separately coordinated system-integration change.
+
+## Pare-back on 2026-09-30
+
+The raw records of the evidence package `task-020-2-20260930-01` were removed on 2026-09-30 in the pare-back of the branch. Its `report.json` keeps the results and the digests of the removed files.
