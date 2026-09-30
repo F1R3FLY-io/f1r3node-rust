@@ -63,7 +63,8 @@ if rg -n '^[[:space:]]*Axiom[[:space:]]+[A-Za-z0-9_]+[[:space:]]*:' "$SANITIZED_
   exit 1
 fi
 
-if rg -n 'TODO|FIXME|deferred|future work|placeholder|not formally proven|open work' "$SANITIZED_THEORIES" "${VERIFICATION_DOCS[@]}"; then
+if rg -n 'TODO|FIXME|deferred|future work|not formally proven|open work' "$SANITIZED_THEORIES" "${VERIFICATION_DOCS[@]}" || \
+   rg -n 'placeholder' "$SANITIZED_THEORIES"; then
   echo "error: found an incompletion marker in proof theories or verification docs" >&2
   exit 1
 fi
