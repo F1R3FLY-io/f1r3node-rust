@@ -975,17 +975,14 @@ impl Bag {
     }
 
     pub fn meet(&self, other: &Self) -> Self {
-        if self.is_empty() {
-            return self.clone();
-        }
-        if other.is_empty() {
-            return other.clone();
-        }
         let (probe, index) = if self.distinct_len <= other.distinct_len {
             (self, other)
         } else {
             (other, self)
         };
+        if probe.distinct_len == 0 {
+            return probe.clone();
+        }
         if probe.distinct_len == 1 {
             let mut result = Self::new();
             for (path, multiplicity) in probe.iter() {

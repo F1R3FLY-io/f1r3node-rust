@@ -18424,6 +18424,23 @@ borrowed cursor algorithm. The focused release suite passes 3 allocation and
 38 Bag tests. A newly locked complete matrix, rather than a subset of the
 favorable cells above, must decide the performance gate.
 
+**MEASURED.** Experiment 369 applied the singleton-left subtraction route to
+the same locked matrix. All allocation-call cells and 38 of 39 wall-time cells
+pass. Disjoint singleton meet remains over the ceiling: median candidate to
+control ratio 1.071416185, upper ratio 1.075308099. The candidate still checks
+both inputs for emptiness before selecting its singleton point operation,
+whereas the control selects and probes immediately. The experiment is rejected;
+its [complete compressed raw run](../stack-safety/measurements/bag-cursor-algebra-2026-09-30-singleton.log.gz)
+and [39-cell fits](../stack-safety/measurements/bag-cursor-algebra-2026-09-30-singleton-fits.tsv)
+have SHA-256 digests
+`47b476ebe0f075ea5c95ebbaf7bf88ccb7a7c2581e8d8bd7be0106df059633db`
+and `90799bfa8661d5b50d78b1d33959782bea7b104ca86f988024625e70913c487c`;
+the uncompressed raw digest is
+`66b09116a1fbf0537c2d42eb52171bede609c953d4b46bca9966d5ecd9261296`.
+The next candidate selects the smaller probe first and checks its one empty
+case, preserving the singleton point and multi-key cursor algorithms. Its full
+matrix must be registered and measured afresh.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
