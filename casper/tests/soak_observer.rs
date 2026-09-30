@@ -167,6 +167,7 @@ impl Fixture {
         conf.fault_tolerance_threshold_ppm = 1_000_000;
         conf.fault_tolerance_threshold = -1.0;
         conf.max_parent_depth = 12;
+        conf.max_number_of_parents = 100;
         conf.deploy_lifespan = 50;
         Arc::new(AttachedCasper {
             dag: self.dag.clone(),
@@ -778,6 +779,7 @@ fn endpoint(fixture: &Fixture) -> CaptureEndpoint {
     conf.fault_tolerance_threshold_ppm = 1_000_000;
     conf.fault_tolerance_threshold = -1.0;
     conf.max_parent_depth = 12;
+    conf.max_number_of_parents = 100;
     conf.deploy_lifespan = 50;
     CaptureEndpoint::new(
         fixture.dag.clone(),
@@ -846,7 +848,7 @@ async fn a_request_without_a_fork_choice_selection_keeps_the_batch_b2_digest_and
 }
 
 #[tokio::test]
-async fn a_fork_choice_selection_binds_the_inputs_and_reports_the_unimplemented_state() {
+async fn a_fork_choice_selection_binds_the_inputs_and_the_digest() {
     use casper::rust::soak_observer::evaluation::{
         fork_choice_input_digest, AuthorityRequest, ForkChoiceSelection,
     };
@@ -885,7 +887,9 @@ async fn a_fork_choice_selection_binds_the_inputs_and_reports_the_unimplemented_
         matches!(field, Value::Unavailable { reason, input_digest: Some(d) }
             if reason == "not_implemented" && d == digest)
     }
-    assert!(not_implemented(&value.bounded, input_digest));
+    assert!(
+        matches!(&value.bounded, Value::Available { input_digest: d, .. } if d == input_digest)
+    );
     assert!(not_implemented(&value.reference, input_digest));
     assert!(not_implemented(&value.comparison, input_digest));
     let mut changed = inputs.clone();
@@ -910,6 +914,107 @@ async fn a_fork_choice_selection_binds_the_inputs_and_reports_the_unimplemented_
     assert!(json.contains("\"fork_choice\":{\"reference\":true}"));
     let unknown = json.replace("{\"reference\":true}", "{\"reference\":true,\"extra\":1}");
     assert!(serde_json::from_str::<AuthorityRequest>(&unknown).is_err());
+}
+
+#[tokio::test]
+async fn bounded_fork_choice_matches_the_production_estimator_on_the_capture() {
+    use casper::rust::estimator::Estimator;
+    use casper::rust::soak_observer::evaluation::ForkChoiceSelection;
+    use casper::rust::soak_observer::fork_choice::{EvaluationMode, LowerBoundRule};
+    let fixture = fork_fixture().await;
+    let controller = ObserverController::new("incarnation".to_string());
+    controller.install(Some(fixture.casper(true).as_ref()));
+    let before = fixture.stored();
+    let mut request = fixture.request();
+    request.targets = vec![hex::encode(tag(4))];
+    request.fork_choice = Some(ForkChoiceSelection { reference: true });
+    let response = controller
+        .authority_snapshot(request, Instant::now() + Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert_eq!(fixture.stored(), before);
+    let observation = available(&response.fork_choice);
+    assert_eq!(observation.latest_messages.captured, 3);
+    assert_eq!(observation.latest_messages.invalid, 0);
+    assert_eq!(observation.latest_messages.not_held, 0);
+    assert_eq!(observation.latest_messages.not_own_testimony, 0);
+    assert_eq!(observation.latest_messages.used, 3);
+    let bounded = available(&observation.bounded);
+    assert_eq!(bounded.mode, EvaluationMode::Bounded);
+    assert_eq!(bounded.lower_bound.rule, LowerBoundRule::ApprovedBlock);
+    assert_eq!(bounded.lower_bound.hash, hex::encode(tag(1)));
+    assert_eq!(bounded.lower_bound.block_number, 0);
+    let endpoint = endpoint(&fixture);
+    let mut dag = fixture.dag.get_representation().unwrap();
+    let floor = dag.lookup_unsafe(&tag(1)).unwrap();
+    let expected = Estimator::apply()
+        .tips_with_latest_messages(
+            &mut dag,
+            &floor,
+            fork_latest_messages(),
+            endpoint.fork_choice_inputs().max_number_of_parents,
+            Some(endpoint.authority().max_parent_depth),
+        )
+        .await
+        .unwrap();
+    assert_eq!(bounded.head, hex::encode(&expected.tips[0]));
+    assert_eq!(bounded.head, hex::encode(tag(4)));
+    assert_eq!(bounded.common_ancestor, hex::encode(&expected.lca));
+    let expected_tips: Vec<String> = expected.tips.iter().map(hex::encode).collect();
+    assert_eq!(bounded.tips, expected_tips);
+    assert_eq!(bounded.tip_scores.len(), bounded.tips.len());
+    assert_eq!(bounded.tip_scores[0], expected.scores[&expected.tips[0]]);
+    assert_eq!(bounded.score_count, expected.scores.len());
+    assert_eq!(bounded.score_digest.len(), 64);
+    assert!(bounded.visited_blocks >= 3);
+    assert!(bounded.examined_edges >= 3);
+    assert!(
+        matches!(&observation.reference, Value::Unavailable { reason, .. } if reason == "not_implemented")
+    );
+    assert!(
+        matches!(&observation.comparison, Value::Unavailable { reason, .. } if reason == "not_implemented")
+    );
+    assert!(matches!(&response.floor_result, Value::Available { .. }));
+    assert!(matches!(
+        &response.targets[0].oracle_decision,
+        Value::Available { .. }
+    ));
+}
+
+#[tokio::test]
+async fn a_zero_parent_limit_gives_no_head_and_no_substitute() {
+    use casper::rust::soak_observer::evaluation::ForkChoiceSelection;
+    let fixture = fork_fixture().await;
+    let mut conf = CasperShardConf::new();
+    conf.fault_tolerance_threshold_ppm = 1_000_000;
+    conf.fault_tolerance_threshold = -1.0;
+    conf.max_parent_depth = 12;
+    conf.deploy_lifespan = 50;
+    assert_eq!(conf.max_number_of_parents, 0);
+    let casper = Arc::new(AttachedCasper {
+        dag: fixture.dag.clone(),
+        blocks: fixture.blocks.clone(),
+        approved: fixture.chain[0].clone(),
+        conf,
+        binding: OnceLock::new(),
+        supported: true,
+    });
+    let controller = ObserverController::new("incarnation".to_string());
+    controller.install(Some(casper.as_ref()));
+    let mut request = fixture.request();
+    request.targets = vec![hex::encode(tag(4))];
+    request.fork_choice = Some(ForkChoiceSelection { reference: false });
+    let response = controller
+        .authority_snapshot(request, Instant::now() + Duration::from_secs(5))
+        .await
+        .unwrap();
+    let observation = available(&response.fork_choice);
+    assert_eq!(observation.inputs.max_number_of_parents, 0);
+    assert_eq!(observation.latest_messages.used, 3);
+    assert!(
+        matches!(&observation.bounded, Value::Unavailable { reason, input_digest: Some(d) }
+        if reason == "no_head_selected" && d == &observation.input_digest)
+    );
 }
 
 #[test]

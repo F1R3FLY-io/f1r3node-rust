@@ -104,6 +104,22 @@ The response has the field `fork_choice: Value<ForkChoiceObservation>`. With no 
 
 Checks: the 24 casper observer and estimator tests passed, which include the 2 new tests. `node/tests/soak_observer.rs` is Linux only (`#![cfg(target_os = "linux")]`) and runs in CI. `cargo clippy --all-targets -- -D warnings` for `casper` and `node` passed. `rustfmt --check` passed on the 5 Rust files.
 
+## Step 9 on 2026-09-30: `bounded` evaluation
+
+`bounded_fork_choice` in `evaluation.rs` runs on path 4 of the shared budget. It builds a new scratch view of the capture and applies the 2 filters of `compute_snapshot` with metered reads. It counts the captured, invalid, not held, not own testimony, and used latest messages.
+
+It reads the approved block from the capture, with the refusals `approved_block_not_captured` and `approved_block_mismatch`. It calls `fork_choice_floor_metered` and then `tips_with_latest_messages_metered` with the bound parent limit and the adopted parent depth, as the production caller does.
+
+`ForkChoice` in `estimator.rs` gets the field `lca`, so the observer reports the common ancestor that the production function used. The result carries the lower bound with its rule, the head, and up to 64 tips with their scores. It also carries the score count and a digest of the sorted score map. The path 4 metadata reads and traversal steps are `visited_blocks` and `examined_edges`.
+
+An empty tip list gives the refusal `no_head_selected`. The estimator returns an empty list when the parent limit is 0, which is the `CasperShardConf::new()` value. The production default is 100, and the test fixtures now use it.
+
+Tests: the `bounded` head, tips, common ancestor, and scores equal the production estimator on the same capture. The production stores are unchanged. A parent limit of 0 gives `no_head_selected` and no substitute head. The step 8 test now expects an available `bounded` result.
+
+Checks: 68 tests of the observer, estimator, and fork-choice suites passed. One pre-existing property test in `proto_util` reports a leaked process under nextest, which is not a change of this step. `cargo clippy --all-targets -- -D warnings` for `casper` and `node` passed. `rustfmt --check` passed.
+
+Not tested at the integration level: `approved_block_not_captured` and `approved_block_mismatch`. The endpoint binds the hash and the number from one block. The model control `absent_unsafe` covers the refusal rule.
+
 ## Progress
 
 - [x] Claim the task and start the work log.
@@ -113,7 +129,7 @@ Checks: the 24 casper observer and estimator tests passed, which include the 2 n
 - [x] 2 work paths.
 - [x] Metered functions in the 4 consensus files.
 - [x] Input record and input digest.
-- [ ] `bounded` evaluation and tests.
+- [x] `bounded` evaluation and tests.
 - [ ] `reference` evaluation and tests.
 - [ ] Comparison, response field, negative controls.
 - [ ] Capability entry and node tests.

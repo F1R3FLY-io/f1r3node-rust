@@ -129,3 +129,25 @@ The 72-file list remains prospective until the completed Batch D source check.
 Batch E still requires scope confirmation and the completed Batch D handoff.
 The review does not claim complete floating-point proofs, tracker wire proofs, hosted test coverage, or live qualification.
 Final cleanup remains on branch 4.
+
+### Scope approval and blocked handoff
+
+The user approved the scope and directed continuation on 2026-09-30.
+The published PR #447 head matches local HEAD `06f0d3e8cf85f7072769960cde3746dc0830a68f`.
+The approval removes the earlier scope-confirmation blocker, not the Batch D dependency.
+Agent A has completed steps 1 through 8 of 16 and still owns the shared implementation files.
+
+Agent B promoted the [approved plan](../plans/casper-node-observation-batch-e.md) and updated only the Batch E task metadata.
+The tracker records all sixteen decisions, the five ratified tags, the 4,096-row ceiling, and the complete 72-file scope.
+The proposed task owner now matches Pi session `01a0ab62-71b3-7248-a800-37a6fde2e4fa`.
+TASK-019-10 remains pending and unclaimed until the completed Batch D handoff.
+
+The claim remains unregistered, the tags remain unapplied, and no ledger or implementation file changed through this continuation.
+The final source check must use the completed Batch D revision before registration or code changes.
+New paths require a scope amendment.
+Agent B did not stage, commit, push, merge, or remove files.
+
+The first tracker comparison detected Agent A's concurrent update from Batch D step 8 to step 9.
+Agent B preserved that update and verified the remaining tracker content outside Batch E as unchanged.
+The approved path list, approval fields, and Batch D blocker passed the scoped check.
+The new plan and log prose passed the STE Check, and the whitespace check passed.

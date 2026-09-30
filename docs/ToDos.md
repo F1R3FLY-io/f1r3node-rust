@@ -854,7 +854,7 @@ tasks:
     recorded_on: 2026-09-30
     blocked_by: []
     precedes: [TASK-019-10]
-    stage: "Steps 1 to 8 of 16 complete on 2026-09-30. Step 5: PairedForkChoice model. Step 6: WORK_PATHS = 6. Step 7: metered entry points in 4 consensus files. Step 8: ForkChoiceInputs bound at attachment, optional request selection, fork-choice input digest, response field fork_choice with the not_implemented state, result types in fork_choice.rs with its ledger record. Step 9 (bounded evaluation) is next."
+    stage: "Steps 1 to 9 of 16 complete on 2026-09-30. Step 5: PairedForkChoice model. Step 6: WORK_PATHS = 6. Step 7: metered entry points in 4 consensus files. Step 8: ForkChoiceInputs, request selection, input digest, response field. Step 9: bounded evaluation on a scratch view with the metered floor and estimator, equal to the production estimator in the test. Step 10 (reference evaluation in fork_choice.rs) is next."
     consumer: "TASK-017-12 harness profile on formal/soak-casper-consensus: the profile compares the selected head of a bounded member and a reference member on equal inputs."
     claims: [CLAIM-CASPER-NODE-OBSERVATION-004]
     claim_status: pending
@@ -881,17 +881,29 @@ tasks:
     title: "Batch E: equivocation input capture for the detached display projection"
     status: pending
     claimed_by: null
-    proposed_owner: claude-session-7015f552
+    proposed_owner: pi-session-01a0ab62-71b3-7248-a800-37a6fde2e4fa
     recorded_by: claude-session-f3cbc961
     recorded_on: 2026-09-30
     blocked_by: [TASK-019-9]
     claims: [CLAIM-CASPER-NODE-OBSERVATION-005]
     claim_status: not_registered
-    plan_draft: "target/node-observation-prep-20260928-01/batch-e/ (local, ignored by Git; the plan moves to docs/plans/casper-node-observation-batch-e.md at the file-scope confirmation)"
+    plan: docs/plans/casper-node-observation-batch-e.md
+    plan_draft: "target/node-observation-prep-20260928-01/batch-e/ (historical local draft, ignored by Git)"
     draft_reviewed_base: 670037c2511abd5f576063b3153681a873244a18
-    file_scope_confirmed: false
-    file_scope_size: "30 files: 13 code and test files, 11 formal files, the remainder are claim, plan, and record files"
-    open_questions: "6 in the draft: tracker capture consistency, retained row content, source of the display arithmetic, refusal extent on a failed tracker read, base value for a missing block, and the finalized test of the display calculation"
+    scope_reviewed_base: 030384f5f31613c64552f7d5b517ef1fe2552d11
+    file_scope_confirmed: true
+    file_scope_confirmed_by: user
+    file_scope_confirmed_at: 2026-09-30T15:38:36.579734+00:00
+    scope_recorded_by: pi-session-01a0ab62-71b3-7248-a800-37a6fde2e4fa
+    approval_checkpoint: 06f0d3e8cf85f7072769960cde3746dc0830a68f
+    file_scope_size: "72 files: 39 main files, 31 ledger records, and 2 run files. The scope has 33 new files and 39 changed files."
+    decisions: "All 16 documented recommendations approved, with the complete shared arithmetic, 5 mandatory tags, and the 4096-row ceiling."
+    cbc_tags_ratified: true
+    cbc_tags_applied: false
+    implementation_baseline: null
+    source_scope_recheck_required: true
+    stage: "Scope confirmed and plan promoted. Batch D is at step 8 of 16 at approval. Implementation and claim registration await its completed handoff and the final shared-source check."
+    open_questions: "No scope decision remains open. A new implementation path requires a scope amendment."
     scope: "Capture the equivocation inputs in the same interval as the detached DAG capture, and calculate the display projection from captured inputs only, with the arithmetic of the live calculation."
     acceptance:
       - "The detached observer reports the display projection from the captured inputs, not as unavailable."

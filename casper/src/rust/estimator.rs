@@ -43,6 +43,7 @@ use crate::rust::util::proto_util;
 pub struct ForkChoice {
     pub tips: Vec<BlockHash>,
     pub scores: HashMap<BlockHash, i64>,
+    pub lca: BlockHash,
 }
 
 /// Stateless GHOST fork-choice. The parent-count and parent-depth bounds are
@@ -165,6 +166,7 @@ impl Estimator {
         Ok(ForkChoice {
             tips,
             scores: scores_map,
+            lca,
         })
     }
 

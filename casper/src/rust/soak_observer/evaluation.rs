@@ -8,18 +8,23 @@ use block_storage::rust::dag::soak_snapshot::{
 use block_storage::rust::key_value_block_store::BlockDecodeLimits;
 use crypto::rust::hash::sha_256::Sha256Hasher;
 use models::rust::block_hash::BlockHash;
+use models::rust::validator::Validator;
 use serde::{Deserialize, Serialize};
 use shared::rust::dag::observation_work::{
     CheckedWork, WorkKind, WorkLimits, WorkMeter, WorkUsage,
 };
 use shared::rust::store::soak_snapshot::ReadLimits;
 
-use super::fork_choice::{self, ForkChoiceObservation, LatestMessageCounts, LowerBoundRule};
+use super::fork_choice::{
+    self, EvaluationMode, ForkChoiceObservation, ForkChoiceResult, LatestMessageCounts, LowerBound,
+    LowerBoundRule,
+};
 use super::reference::Reference;
 use super::{
     AuthorityInputs, CaptureEndpoint, Coverage, EventKind, FloorOutcome, ObservationEvent,
     ObserverBinding,
 };
+use crate::rust::estimator::Estimator;
 use crate::rust::finality::floor::{self, Floor, FloorOfView};
 use crate::rust::safety::clique_oracle::{CliqueOracle, ExactOracleResult, FtThreshold};
 
@@ -736,17 +741,19 @@ async fn evaluate_inner(
         }
     };
     let fork_choice_observation = match (fork_choice_selection, fork_choice_digest) {
-        (Some(_), Some(input_digest)) => Value::available(&input_digest, ForkChoiceObservation {
-            input_digest: input_digest.clone(),
-            inputs: endpoint.fork_choice.clone(),
-            latest_messages: LatestMessageCounts {
-                captured: snapshot.latest_messages.len(),
-                ..LatestMessageCounts::default()
-            },
-            bounded: Value::unavailable(&input_digest, "not_implemented"),
-            reference: Value::unavailable(&input_digest, "not_implemented"),
-            comparison: Value::unavailable(&input_digest, "not_implemented"),
-        }),
+        (Some(_), Some(input_digest)) => {
+            let bounded_work = meter.for_path(4).map_err(|e| e.to_string())?;
+            let (counts, bounded) =
+                bounded_fork_choice(&snapshot, endpoint, threshold, &bounded_work).await;
+            Value::available(&input_digest, ForkChoiceObservation {
+                input_digest: input_digest.clone(),
+                inputs: endpoint.fork_choice.clone(),
+                latest_messages: counts,
+                bounded: Value::from_result(&input_digest, bounded),
+                reference: Value::unavailable(&input_digest, "not_implemented"),
+                comparison: Value::unavailable(&input_digest, "not_implemented"),
+            })
+        }
         _ => Value::NotRequested,
     };
     let work = work_report(meter, request, &authority_digest);
@@ -781,6 +788,130 @@ async fn evaluate_inner(
         work,
         events: Vec::new(),
     })
+}
+
+async fn bounded_fork_choice(
+    snapshot: &DetachedDagSnapshot,
+    endpoint: &CaptureEndpoint,
+    threshold: FtThreshold,
+    meter: &CheckedWork,
+) -> (LatestMessageCounts, Result<ForkChoiceResult, String>) {
+    let mut counts = LatestMessageCounts {
+        captured: snapshot.latest_messages.len(),
+        ..LatestMessageCounts::default()
+    };
+    let result = async {
+        let mut view = scratch(snapshot, meter)?;
+        let captured: std::collections::HashMap<Validator, BlockHash> = snapshot
+            .latest_messages
+            .iter()
+            .map(|(validator, hash)| (validator.clone(), hash.clone()))
+            .collect();
+        meter
+            .charge(
+                WorkKind::Metadata,
+                captured.len() as u64,
+                meter.metadata_bytes(),
+            )
+            .map_err(|e| e.to_string())?;
+        let invalid = view
+            .representation
+            .invalid_latest_messages_from_hashes(&captured)
+            .map_err(|e| e.to_string())?;
+        counts.invalid = invalid.len();
+        let mut used: std::collections::HashMap<Validator, BlockHash> =
+            std::collections::HashMap::with_capacity(captured.len());
+        for (validator, hash) in &captured {
+            if invalid.contains_key(validator) {
+                continue;
+            }
+            match view
+                .representation
+                .lookup_metered(meter, hash)
+                .map_err(|e| e.to_string())?
+            {
+                None => counts.not_held += 1,
+                Some(metadata) if metadata.sender != *validator => counts.not_own_testimony += 1,
+                Some(_) => {
+                    used.insert(validator.clone(), hash.clone());
+                }
+            }
+        }
+        counts.used = used.len();
+        let approved_hash = parse_hash(&endpoint.authority.approved_block_hash)?;
+        let approved = view
+            .representation
+            .lookup_metered(meter, &approved_hash)
+            .map_err(|e| e.to_string())?
+            .ok_or("approved_block_not_captured")?;
+        if approved.block_number != endpoint.fork_choice.approved_block_number {
+            return Err("approved_block_mismatch".to_string());
+        }
+        let floor_block = floor::fork_choice_floor_metered(
+            meter,
+            &view.representation,
+            &view.blocks,
+            used.values(),
+            approved.clone(),
+            threshold,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+        let rule = if floor_block.block_hash == approved.block_hash {
+            LowerBoundRule::ApprovedBlock
+        } else {
+            LowerBoundRule::FinalizedFloor
+        };
+        let choice = Estimator::apply()
+            .tips_with_latest_messages_metered(
+                meter,
+                &mut view.representation,
+                &floor_block,
+                used,
+                endpoint.fork_choice.max_number_of_parents,
+                Some(endpoint.authority.max_parent_depth),
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        let head = choice.tips.first().ok_or("no_head_selected")?;
+        let mut sorted_scores: std::collections::BTreeMap<String, i64> =
+            std::collections::BTreeMap::new();
+        for (hash, score) in &choice.scores {
+            meter.step(WorkKind::Traversal).map_err(|e| e.to_string())?;
+            sorted_scores.insert(hex::encode(hash), *score);
+        }
+        let score_digest = digest(&sorted_scores, meter)?;
+        let (_, paths, _) = meter.usage();
+        let usage = &paths[4];
+        Ok(ForkChoiceResult {
+            mode: EvaluationMode::Bounded,
+            lower_bound: LowerBound {
+                hash: hex::encode(&floor_block.block_hash),
+                block_number: floor_block.block_number,
+                rule,
+            },
+            common_ancestor: hex::encode(&choice.lca),
+            head: hex::encode(head),
+            tips: choice
+                .tips
+                .iter()
+                .take(fork_choice::MAX_REPORTED_TIPS)
+                .map(hex::encode)
+                .collect(),
+            tip_scores: choice
+                .tips
+                .iter()
+                .take(fork_choice::MAX_REPORTED_TIPS)
+                .map(|tip| choice.scores.get(tip).copied().unwrap_or(0))
+                .collect(),
+            score_count: choice.scores.len(),
+            score_digest,
+            visited_blocks: usage.metadata,
+            examined_edges: usage.traversal,
+        })
+    }
+    .await;
+    (counts, result)
 }
 
 pub fn fork_choice_input_digest(
