@@ -1,0 +1,660 @@
+// File-descriptor table — slice 1 of the `handle_table` submodule
+// tree.
+//
+// Per-runtime `Arc<Inner>` holding an `Arc<tokio::sync::RwLock<
+// HashMap<u64, FileHandle>>>` mapping opaque `u64` fds to open
+// `File` handles.  Fds are monotonic — the counter never rewinds
+// — so a closed fd is never reused.  This preserves the invariant
+// that a stale fd reliably observes `FSERR_CLOSED` rather than
+// aliasing a later-opened file.
+//
+// # This slice provides
+//
+// The pure-storage foundations:
+//   - `FileHandle` — the per-fd metadata record (owning
+//     `Arc<File>` OR a shadow-handle `None` for follower replay).
+//   - `FileHandleTable` — the runtime-wide cloneable handle with
+//     the private `Inner` allocator + map.
+//   - `new` / `default` / `insert` / `insert_at` / `remove` /
+//     `raw_fd` / `with_mut`.
+//
+// # Deferred to later `handle_table` slices
+//
+//   - WAL wiring (`wal: Wal` field + `wal()` accessor).
+//   - Cross-registry sharing plumbing (`root_registry: Root
+//     IdentityRegistry`, `lock_registry: LockRegistry`,
+//     `dir_handles: DirHandleTable`, `payload_store`,
+//     `payload_source_recorder`) + their `share_*` methods.
+//   - Deploy-scope cell (`current_deploy_scope`,
+//     `current_deploy_sig`) + `close_all_for_deploy` /
+//     `has_active_handles_sync`.
+//   - Soft-checkpoint machinery (`snapshot_next_fd` /
+//     `seed_next_fd_watermark` / `seed_next_fd_from_state_hash` /
+//     `truncate_to`) + its `FD_ENTROPY_HEADROOM_BITS` const-
+//     assert.
+//
+// Each deferred field / method group has its own natural
+// dependency:  `lock_registry` waits for `lock.rs`'s
+// `LockRegistry` slice; `dir_handles` waits for
+// `dir_handle_table.rs`; sharing methods wait for
+// `RootIdentityRegistry::share_from` in a future `path::identity`
+// slice.  Landing the fd allocator alone now unblocks the
+// FileHandle *construction* path in Wave 4 handlers even while
+// the higher-order plumbing catches up.
+//
+// # Fd namespace: NOT unique across FileHandleTable +
+//   DirHandleTable
+//
+// File fds and directory-stream fds (once `dir_handle_table.rs`
+// lands) will live in **separate** tables and can share numeric
+// values.  The Rholang layer routes each fd to the correct native
+// (`fs_close` vs. `fs_entries_stream_close`, etc.) based on the
+// URN that produced the fd — a fd from `fs_open` goes to file
+// handlers, a fd from `entriesStreamOpen` goes to dir-stream
+// handlers.  The Rust handler layer looks up in the corresponding
+// table.
+//
+// A bug that routed a file fd to a dir-stream handler (or vice
+// versa) would produce `FSERR_CLOSED` — the handler's own table
+// lookup fails.  Sound at the boundary but subtle for anyone
+// reading `fd: u64` in isolation.  Refactor guardrail: if a
+// future slice unifies these into `HandleTable<T>` with a
+// discriminator tag, migrate carefully — every URN dispatch site
+// assumes the two tables are disjoint namespaces.
+
+use std::collections::HashMap;
+use std::fs::File;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+
+// `tokio::sync::RwLock` rather than `std::sync::RwLock` — the
+// load-bearing reason is that `std::sync::RwLockReadGuard` /
+// `RwLockWriteGuard` are `!Send`, so a caller wanting to hold a
+// guard across an `.await` boundary (which every `insert` /
+// `remove` / `raw_fd` / `with_mut` caller does, since they're all
+// `async fn`) requires tokio's variant.  A secondary benefit:
+// `spawn_blocking` closures don't need to acquire the guard —
+// callers snapshot the metadata they need via `with_mut` /
+// `raw_fd` BEFORE the closure and hand the values in.  Tokio's
+// `RwLock` also does not poison, so there's no `poison_abort`
+// equivalent to route through here (contrast `Wal`'s std-lock
+// design in `wal.rs`).
+use tokio::sync::RwLock;
+
+use super::mode::AccessMode;
+use super::ConsensusMode;
+
+/// Per-fd metadata record.
+///
+/// # `file: Option<Arc<File>>` — Arc keepalive vs. shadow handles
+///
+/// The `Arc` wrapper lets `raw_fd()` hand out clones that keep
+/// the underlying `File` alive across a `spawn_blocking(libc::
+/// read/write/...)` call — the OS fd stays valid until every
+/// closure clone drops, defeating the race where a concurrent
+/// `remove(fd)` would otherwise close the fd out from under the
+/// pending syscall.
+///
+/// The `Option::None` case is a **shadow handle** — inserted on
+/// the follower's `fs_open` replay branch (Wave 4) so subsequent
+/// replay-branch mutating handlers can still look up
+/// `(cmode, canon_path)` via `with_mut` for symmetric WAL
+/// journaling.  The follower never touches `file` on the replay
+/// branch (read/write handlers short-circuit on `is_replay = true`
+/// and return the cached `previous` reply), so a `None` here is
+/// never dereferenced through the syscall path.  `raw_fd()`
+/// returns `None` for shadow handles — any code path that reaches
+/// for the OS fd on a shadow handle gets `FSERR_CLOSED`, which is
+/// the correct failure mode if it ever happens.
+///
+/// # Metadata-coupling caveat
+///
+/// The Arc keepalive protects the OS fd only.  The `FileHandle`
+/// ENTRY in the table can still be removed via `remove(fd)`
+/// while a `spawn_blocking` closure holds an `Arc<File>` clone.
+/// Once removed, any handler that reads `FileHandle` fields (like
+/// `canon_path`, `mode`, `cmode`, `position`) via a fresh
+/// `with_mut` / `raw_fd` lookup would see `None`.  Callers MUST
+/// snapshot the metadata they need BEFORE the `spawn_blocking`,
+/// or accept that a mid-flight remove races the update.  Under
+/// the sequential-deploy invariant, only ONE syscall closure can
+/// be in flight per fd at a time, so the race window doesn't
+/// materialize under production wiring.
+///
+/// # Shape A invariant on `canon_path`
+///
+/// `canon_path` MUST be the RAW `canonicalize_lexical(rholang_canon_
+/// root, rel)` — the Rholang-side `canonRoot` as the reducer
+/// received it, NOT the output of
+/// `RootIdentityRegistry::resolve_or_identity`.  Under Consensus-fs
+/// Shape A, Consensus caps carry `canonRoot = BUNDLE_ROOT_PREFIX`
+/// so this field is bundle-relative (e.g. `/@bundle/target`); the
+/// registry rewrites for the syscall at every handler entry.
+/// Downstream WAL journaling copies this field verbatim into
+/// `entry.path`, so a Shape A violation here would silently record
+/// per-validator absolute paths and break leader/follower WAL
+/// byte-identity.
+#[derive(Debug)]
+pub struct FileHandle {
+    /// Underlying OS file wrapped in `Arc`, or `None` for a
+    /// shadow handle.
+    pub file: Option<Arc<File>>,
+    /// See the struct-level "Shape A invariant" section.
+    pub canon_path: PathBuf,
+    /// Access mode captured at `fs_open` time.
+    pub mode: AccessMode,
+    /// Per-cap consensus mode captured at `fs_open` time.
+    /// Mutating handlers (`fs_write`, `fs_write_at`,
+    /// `fs_truncate`) consult this via `handles.with_mut` to
+    /// decide whether to journal the op into the consensus WAL.
+    pub cmode: ConsensusMode,
+    /// Shadow file-position.  Tracks the notional position the
+    /// fd would be at after every sequential `fs_write` /
+    /// `fs_read` / `fs_seek`.  Consensus symmetry: both leader
+    /// and follower evolve `position` deterministically from the
+    /// same sequence of contract-arg values + reply values, so
+    /// `journal_write` reads identical `position` on both sides
+    /// for the same syscall.
+    ///
+    /// Updates:
+    ///  * `fs_open` non-append modes → `0` (POSIX default).
+    ///  * `fs_open` append modes (`a` / `a+`) on Consensus caps →
+    ///    `fs_open` rejects with `FSERR_BAD_ARG` (`O_APPEND`
+    ///    moves the write offset atomically at each write;
+    ///    without fstat-per-write plus a matching shadow-EOF
+    ///    simulation on the follower, WAL offset cannot be
+    ///    recorded correctly).
+    ///  * Successful sequential `fs_write(n)` / `fs_read(n)` →
+    ///    `position += n`.
+    ///  * Successful `fs_seek` → `position = new_pos`.
+    ///  * `fs_write_at` / `fs_read_at` / `fs_truncate` do NOT
+    ///    move the fd position, so `position` is untouched.
+    pub position: u64,
+    /// Deploy scope this file was opened under.  Populated at
+    /// `fs_open` time from the (yet-to-land) `current_deploy_
+    /// scope` cell; consulted by the (yet-to-land)
+    /// `close_all_for_deploy` sweep to reclaim files a deploy
+    /// left open past its `WalDeployScope::drop`.  Sentinel
+    /// `[0u8; 32]` for out-of-deploy opens (test paths only
+    /// under normal operation).
+    pub deploy: super::lock::DeployScope,
+}
+
+/// Per-runtime file-descriptor table.  Cloneable — clones share
+/// the underlying `Arc<Inner>` via reference counting, so every
+/// handler closure holds an independent handle onto the same
+/// underlying map.
+///
+/// # Slice 1 shape
+///
+/// The plumbing fields (`wal`, `root_registry`, `lock_registry`,
+/// `current_deploy_scope`, `dir_handles`, `payload_store`,
+/// `payload_source_recorder`) that fileio's `FileHandleTable`
+/// carries are DEFERRED to later slices — each is gated on a
+/// downstream module landing (or on a `share_*` API needing a
+/// helper method that doesn't exist yet).  The slice-1 struct
+/// is intentionally minimal so the fd allocator can land against
+/// today's dev without dragging in an unlanded dependency chain.
+#[derive(Debug, Clone, Default)]
+pub struct FileHandleTable {
+    inner: Arc<Inner>,
+}
+
+#[derive(Debug)]
+struct Inner {
+    table: RwLock<HashMap<u64, FileHandle>>,
+    /// Monotonic per-runtime fd allocator.  Starts at 1
+    /// (fd = 0 is reserved as the "unset" sentinel at the
+    /// Rholang boundary — a caller receiving fd = 0 knows the
+    /// allocation failed even before checking the outer
+    /// `Result`).
+    next_fd: AtomicU64,
+}
+
+impl Default for Inner {
+    fn default() -> Self {
+        Inner {
+            table: RwLock::new(HashMap::new()),
+            next_fd: AtomicU64::new(1),
+        }
+    }
+}
+
+impl FileHandleTable {
+    /// Construct an empty handle table with an fd counter
+    /// starting at 1.
+    pub fn new() -> Self { Self::default() }
+
+    /// Insert a fresh handle, returning the freshly-allocated
+    /// monotonic fd.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(())` when:
+    ///   - the per-runtime fd cap (`super::MAX_OPEN_FDS`) is
+    ///     reached, OR
+    ///   - `next_fd` would wrap past `u64::MAX`.
+    ///
+    /// The handler layer translates either to
+    /// `FSERR_QUOTA_EXCEEDED`.  The `u64::MAX` wrap guard
+    /// prevents a lifetime allocation of ~2^32 open/close
+    /// cycles combined with a (subsequent-slice) high-watermark
+    /// seed from wrapping to `fd = 0` (which would alias any
+    /// stale reference at low fd values).
+    #[allow(clippy::result_unit_err)]
+    pub async fn insert(&self, handle: FileHandle) -> Result<u64, ()> {
+        let mut table = self.inner.table.write().await;
+        if table.len() >= super::MAX_OPEN_FDS {
+            return Err(());
+        }
+        // Fetch-then-check on a monotonic counter — we bail out
+        // before the increment would overflow.  Serialized under
+        // the write lock, so `Relaxed` ordering is sufficient
+        // (the lock's acquire/release edges provide the
+        // synchronization that would otherwise need SeqCst).
+        let current = self.inner.next_fd.load(Ordering::Relaxed);
+        if current == u64::MAX {
+            return Err(());
+        }
+        let fd = self.inner.next_fd.fetch_add(1, Ordering::Relaxed);
+        if fd == u64::MAX {
+            // Post-fetch defensive check.  In principle unreachable
+            // under the write lock (`current != u64::MAX` and no
+            // concurrent mutator between the load and the
+            // fetch_add), but kept as belt-and-suspenders — if the
+            // lock discipline ever regresses, this pins the counter
+            // at `u64::MAX` so subsequent `insert` calls fail fast.
+            self.inner.next_fd.store(u64::MAX, Ordering::Relaxed);
+            return Err(());
+        }
+        // Structural invariant: `insert_at`'s `fetch_max` on
+        // `next_fd` ensures the allocator never reissues a fd
+        // that a prior `insert_at` populated.  `debug_assert!`
+        // catches a regression in the invariant loudly in debug
+        // builds while release stays zero-cost.
+        debug_assert!(
+            !table.contains_key(&fd),
+            "FileHandleTable::insert allocator reissued a fd \
+             (fd={fd}) already populated by an earlier `insert_at` \
+             — the `insert_at` `fetch_max(next_fd, fd + 1)` \
+             invariant has regressed"
+        );
+        table.insert(fd, handle);
+        Ok(fd)
+    }
+
+    /// Insert a handle at a **specific** fd, bypassing the
+    /// monotonic allocator.  Used by the (Wave 4) follower's
+    /// `fs_open` replay branch — the leader's fd (extracted from
+    /// the cached `previous` reply) is passed here so the
+    /// follower's fd table indexes the same numeric key as the
+    /// leader's, enabling symmetric WAL journaling in subsequent
+    /// replay-branch mutating handlers.
+    ///
+    /// # Structural non-collision invariant
+    ///
+    /// Advances `next_fd` via `fetch_max(fd + 1)` so a subsequent
+    /// `insert()` allocation CANNOT reissue the fd this call
+    /// populated.  This is a structural guarantee at the module
+    /// boundary — no follow-up "seed the counter from the state
+    /// hash" pass is required to keep `insert` and `insert_at`
+    /// non-overlapping on the same table.
+    ///
+    /// (The eventual soft-checkpoint slice's `seed_next_fd_from_
+    /// state_hash` still has a role — it establishes a fresh
+    /// per-runtime watermark at boot/reset for aliasing-
+    /// prevention against stale tuplespace references from prior
+    /// process lifetimes.  Independent from this invariant.)
+    ///
+    /// Returns `true` on success, `false` if the fd slot was
+    /// already occupied — which would indicate a follower state-
+    /// derivation bug and MUST NOT overwrite silently.
+    pub async fn insert_at(&self, fd: u64, handle: FileHandle) -> bool {
+        let mut table = self.inner.table.write().await;
+        if table.contains_key(&fd) {
+            return false;
+        }
+        table.insert(fd, handle);
+        // Advance the monotone counter past this fd so the next
+        // `insert()` can't collide.  `fetch_max` is idempotent —
+        // if `next_fd` was already past `fd + 1`, this is a
+        // no-op.  Saturates at `u64::MAX` if `fd == u64::MAX`
+        // (that specific fd's allocation stays valid; the next
+        // `insert()` will trip the wrap guard).
+        let advance_to = fd.saturating_add(1);
+        self.inner.next_fd.fetch_max(advance_to, Ordering::Relaxed);
+        true
+    }
+
+    /// Remove and drop the handle at `fd`.  Dropping the
+    /// `FileHandle` releases the `Arc<File>` reference; the OS
+    /// fd closes when the last outstanding clone drops (which
+    /// closes any TOCTOU window for a concurrent `raw_fd` clone
+    /// held by a `spawn_blocking` closure — see the field-level
+    /// docstring on `FileHandle::file`).
+    ///
+    /// Returns `true` if the fd was present, `false` otherwise.
+    /// Idempotent — closing an unknown fd is a no-op returning
+    /// `false`.
+    pub async fn remove(&self, fd: u64) -> bool {
+        let mut table = self.inner.table.write().await;
+        table.remove(&fd).is_some()
+    }
+
+    /// Look up an `Arc<File>` clone for a given logical fd
+    /// handle.  Used by the `spawn_blocking` closures so they
+    /// can hand a valid OS fd into libc syscalls without holding
+    /// the tokio `RwLock` across the syscall.
+    ///
+    /// Returns `None` if the fd is absent OR the handle is a
+    /// shadow (`file: None`, follower's `fs_open` replay branch).
+    /// Shadow handles are inserted only on the follower's replay
+    /// path; the read/write syscall paths short-circuit on
+    /// `is_replay = true` before reaching `raw_fd`, so a `None`
+    /// here from a shadow handle should never be observed in
+    /// practice — but the fail-closed return (translated to
+    /// `FSERR_CLOSED` upstream) is correct if it ever is.
+    ///
+    /// The returned value is an `Arc<File>` clone (not a raw
+    /// `i32`) so the caller can move it into a `spawn_blocking`
+    /// closure and derive the raw fd inside via `.as_raw_fd()`.
+    /// The Arc keeps the underlying `File` alive for the
+    /// closure's lifetime even if a concurrent `remove(fd)`
+    /// drops the table's own Arc — closing the TOCTOU window a
+    /// bare-`i32` return would leave open.
+    #[cfg(unix)]
+    pub async fn raw_fd(&self, fd: u64) -> Option<Arc<File>> {
+        let table = self.inner.table.read().await;
+        table.get(&fd).and_then(|h| h.file.clone())
+    }
+
+    /// Run `f` against the handle at `fd` under a write lock.
+    /// Returns `None` if the fd is absent, otherwise `Some(f's
+    /// return value)`.
+    ///
+    /// # Snapshot-before-spawn discipline
+    ///
+    /// Callers that follow this with a `spawn_blocking` closure
+    /// MUST snapshot the fields they need INSIDE this call
+    /// (moved-out via `.clone()` or bit-copy), NOT re-read them
+    /// from a fresh `with_mut` after the closure returns — the
+    /// second lookup could race with a `remove(fd)` and observe
+    /// `None`.
+    pub async fn with_mut<F, R>(&self, fd: u64, f: F) -> Option<R>
+    where F: FnOnce(&mut FileHandle) -> R {
+        let mut table = self.inner.table.write().await;
+        table.get_mut(&fd).map(f)
+    }
+}
+
+// Compile-time witnesses.  `FileHandleTable` is stored on the
+// runtime and cloned into every handler closure — any refactor
+// that broke `Send + Sync` would surface here at build time
+// instead of at some unrelated tokio-spawn site.  `FileHandle`
+// itself must also be `Send + Sync` because it is guarded by a
+// tokio `RwLock` (which requires `T: Send`).
+const _FILE_HANDLE_TABLE_IS_SEND_SYNC: fn() = || {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<FileHandleTable>();
+};
+const _FILE_HANDLE_IS_SEND_SYNC: fn() = || {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<FileHandle>();
+};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Test helper — a shadow handle (no OS fd), suitable for
+    /// filling the table without actually opening files.  The
+    /// bulk of the slice-1 tests use these to exercise the
+    /// allocator and map without racing against the process fd
+    /// limit.
+    fn shadow_handle(deploy_byte: u8) -> FileHandle {
+        FileHandle {
+            file: None,
+            canon_path: PathBuf::from("/tmp/shadow"),
+            mode: AccessMode::Read,
+            cmode: ConsensusMode::Consensus,
+            position: 0,
+            deploy: [deploy_byte; 32],
+        }
+    }
+
+    #[tokio::test]
+    async fn new_table_starts_empty_with_fd_counter_at_1() {
+        let table = FileHandleTable::new();
+        assert!(table.inner.table.read().await.is_empty());
+        assert_eq!(table.inner.next_fd.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn insert_returns_monotonic_fds_starting_at_1() {
+        let table = FileHandleTable::new();
+        let fd1 = table.insert(shadow_handle(0x01)).await.unwrap();
+        let fd2 = table.insert(shadow_handle(0x02)).await.unwrap();
+        let fd3 = table.insert(shadow_handle(0x03)).await.unwrap();
+        assert_eq!(fd1, 1);
+        assert_eq!(fd2, 2);
+        assert_eq!(fd3, 3);
+    }
+
+    #[tokio::test]
+    async fn insert_returns_err_past_max_open_fds() {
+        let table = FileHandleTable::new();
+        // Fill to the cap using shadow handles.
+        for i in 0..super::super::MAX_OPEN_FDS {
+            table
+                .insert(shadow_handle(i as u8))
+                .await
+                .unwrap_or_else(|()| panic!("insert {i} unexpectedly failed"));
+        }
+        // The next insert trips the cap.
+        assert_eq!(table.insert(shadow_handle(0xFF)).await, Err(()));
+    }
+
+    #[tokio::test]
+    async fn remove_returns_true_on_present_fd_false_otherwise() {
+        let table = FileHandleTable::new();
+        let fd = table.insert(shadow_handle(0x42)).await.unwrap();
+        assert!(table.remove(fd).await);
+        // Idempotent — removing again returns false.
+        assert!(!table.remove(fd).await);
+        // Unrelated fds return false too.
+        assert!(!table.remove(9999).await);
+    }
+
+    /// A removed fd is NOT reused — the monotonic allocator
+    /// advances past it.  This is the load-bearing "stale fd
+    /// reliably observes `FSERR_CLOSED`" invariant that the
+    /// module docstring calls out.
+    #[tokio::test]
+    async fn removed_fd_is_not_reused_by_subsequent_insert() {
+        let table = FileHandleTable::new();
+        let fd1 = table.insert(shadow_handle(0x01)).await.unwrap();
+        assert_eq!(fd1, 1);
+        assert!(table.remove(fd1).await);
+        // The next insert allocates fd = 2, not fd = 1.
+        let fd2 = table.insert(shadow_handle(0x02)).await.unwrap();
+        assert_eq!(fd2, 2);
+    }
+
+    #[tokio::test]
+    async fn insert_at_places_handle_at_specific_fd() {
+        let table = FileHandleTable::new();
+        assert!(table.insert_at(42, shadow_handle(0xAA)).await);
+        // Present at fd = 42.
+        let deploy_readback = table
+            .with_mut(42, |h| h.deploy)
+            .await
+            .expect("fd 42 must be present");
+        assert_eq!(deploy_readback, [0xAA; 32]);
+    }
+
+    /// `insert_at` must NOT overwrite an occupied slot — this
+    /// guards against a follower state-derivation bug where the
+    /// same leader fd was replayed twice.
+    #[tokio::test]
+    async fn insert_at_rejects_collision() {
+        let table = FileHandleTable::new();
+        assert!(table.insert_at(7, shadow_handle(0x01)).await);
+        assert!(!table.insert_at(7, shadow_handle(0x02)).await);
+        // Original handle survives.
+        let deploy_readback = table.with_mut(7, |h| h.deploy).await.unwrap();
+        assert_eq!(deploy_readback, [0x01; 32]);
+    }
+
+    /// `insert_at` advances `next_fd` via `fetch_max(fd + 1)`
+    /// so a subsequent `insert()` allocation CANNOT reissue the
+    /// fd this call populated.  Structural non-collision
+    /// invariant — no follow-up "seed the counter" pass is
+    /// required to keep `insert` and `insert_at` disjoint.
+    #[tokio::test]
+    async fn insert_at_advances_monotonic_counter_past_placed_fd() {
+        let table = FileHandleTable::new();
+        assert!(table.insert_at(1000, shadow_handle(0x01)).await);
+        // next_fd is now 1001 — advanced past the placed fd.
+        assert_eq!(table.inner.next_fd.load(Ordering::Relaxed), 1001);
+        // A subsequent insert() allocates 1001, NOT 1 — the
+        // allocator can never reissue an insert_at'd fd.
+        let fd = table.insert(shadow_handle(0x02)).await.unwrap();
+        assert_eq!(fd, 1001);
+    }
+
+    /// `insert_at` is idempotent on its counter advance —
+    /// repeated calls with the same or lower fd don't rewind
+    /// the counter (since `fetch_max` is monotonic-max).
+    #[tokio::test]
+    async fn insert_at_below_current_counter_does_not_rewind() {
+        let table = FileHandleTable::new();
+        // Bump the counter past 100.
+        assert!(table.insert_at(500, shadow_handle(0x01)).await);
+        assert_eq!(table.inner.next_fd.load(Ordering::Relaxed), 501);
+        // A below-counter insert_at doesn't rewind.
+        assert!(table.insert_at(100, shadow_handle(0x02)).await);
+        assert_eq!(table.inner.next_fd.load(Ordering::Relaxed), 501);
+    }
+
+    /// The reviewer-flagged silent-overwrite hazard, pinned.
+    /// Pre-fix: `insert_at(1)` followed by `insert()` would
+    /// silently overwrite the shadow handle at fd = 1.  Post-
+    /// fix: the `insert_at`'s `fetch_max(fd + 1)` advances the
+    /// counter to 2, so `insert()` allocates fd = 2 (or higher),
+    /// and the shadow at fd = 1 survives.
+    #[tokio::test]
+    async fn insert_after_insert_at_does_not_overwrite() {
+        let table = FileHandleTable::new();
+        // Follower's shadow-leader replay-branch insert.
+        assert!(table.insert_at(1, shadow_handle(0xAA)).await);
+        // A subsequent independent `insert()` MUST NOT reissue
+        // fd = 1.  Pre-fix, this would silently overwrite the
+        // shadow handle.
+        let fresh_fd = table.insert(shadow_handle(0xBB)).await.unwrap();
+        assert_ne!(fresh_fd, 1, "insert must not reissue insert_at'd fd");
+        // The shadow at fd = 1 survives — verified by reading
+        // back the distinctive deploy byte.
+        let shadow_deploy = table.with_mut(1, |h| h.deploy).await.unwrap();
+        assert_eq!(shadow_deploy, [0xAA; 32]);
+        // The fresh handle lives at fresh_fd with its own deploy.
+        let fresh_deploy = table.with_mut(fresh_fd, |h| h.deploy).await.unwrap();
+        assert_eq!(fresh_deploy, [0xBB; 32]);
+    }
+
+    #[tokio::test]
+    async fn raw_fd_returns_none_for_absent_fd_and_shadow_handle() {
+        let table = FileHandleTable::new();
+        // Absent fd → None.
+        assert!(table.raw_fd(999).await.is_none());
+        // Present but shadow (file: None) → None.
+        let fd = table.insert(shadow_handle(0x01)).await.unwrap();
+        assert!(table.raw_fd(fd).await.is_none());
+    }
+
+    /// `raw_fd` returns `Some(Arc<File>)` when the handle owns
+    /// a real OS fd.  The Arc-clone contract is what makes the
+    /// `spawn_blocking` closure safe against a concurrent
+    /// `remove(fd)`: pin that a clone survives a remove of the
+    /// original table entry, closing the TOCTOU window a bare
+    /// `i32` return would leave open (bare fd → concurrent
+    /// remove drops `File` → OS fd closes → unrelated `open(2)`
+    /// reuses the integer → pending syscall targets wrong fd).
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn raw_fd_arc_clone_survives_concurrent_remove() {
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f.txt");
+        let file = File::create(&path).unwrap();
+
+        let table = FileHandleTable::new();
+        let fd = table
+            .insert(FileHandle {
+                file: Some(Arc::new(file)),
+                canon_path: path.clone(),
+                mode: AccessMode::Write,
+                cmode: ConsensusMode::Oracular,
+                position: 0,
+                deploy: [0u8; 32],
+            })
+            .await
+            .unwrap();
+
+        // Grab an Arc<File> clone (the raw_fd contract).
+        let clone = table.raw_fd(fd).await.expect("raw_fd must return Some");
+        // Concurrently remove the table entry.  The table's own
+        // Arc<File> drops; only our `clone` keeps the File alive.
+        assert!(table.remove(fd).await);
+        // The clone MUST still be usable — `try_clone()` on the
+        // still-open OS fd succeeds, and we can write through
+        // the duplicate.  A regression that closed the OS fd on
+        // table removal would fail either `try_clone()` (EBADF)
+        // or the subsequent `write_all` (EBADF).
+        let mut dup = clone
+            .try_clone()
+            .expect("File::try_clone must succeed while Arc clone is live");
+        dup.write_all(b"post-remove")
+            .expect("write must succeed on the surviving fd");
+    }
+
+    #[tokio::test]
+    async fn with_mut_mutates_handle_and_persists() {
+        let table = FileHandleTable::new();
+        let fd = table.insert(shadow_handle(0x01)).await.unwrap();
+
+        // Advance position via the mutation callback.
+        let returned = table
+            .with_mut(fd, |h| {
+                h.position += 42;
+                h.position
+            })
+            .await
+            .unwrap();
+        assert_eq!(returned, 42);
+
+        // Re-read to confirm the mutation persisted.
+        let readback = table.with_mut(fd, |h| h.position).await.unwrap();
+        assert_eq!(readback, 42);
+    }
+
+    #[tokio::test]
+    async fn with_mut_returns_none_for_absent_fd() {
+        let table = FileHandleTable::new();
+        assert!(table.with_mut(9999, |_| ()).await.is_none());
+    }
+
+    /// Clone-shares-underlying-table invariant.  Handler closures
+    /// receive cloned handles; a mutation through one clone must
+    /// be visible through the other.
+    #[tokio::test]
+    async fn clone_shares_underlying_table() {
+        let a = FileHandleTable::new();
+        let b = a.clone();
+        let fd = a.insert(shadow_handle(0x42)).await.unwrap();
+        // Visible via the sibling clone.
+        let deploy = b.with_mut(fd, |h| h.deploy).await.unwrap();
+        assert_eq!(deploy, [0x42; 32]);
+    }
+}
