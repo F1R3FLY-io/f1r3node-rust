@@ -415,7 +415,7 @@ async fn pre_charge_deploy_should_reduce_user_account_balance_by_correct_amount(
                     pk: user_pk.clone(),
                     rand: Blake2b512Random::create_from_bytes(&[1]),
                 },
-                |result| *result == 0,
+                |result| *result == 0.into(),
             )
             .await
             .unwrap();
@@ -449,7 +449,7 @@ async fn pre_charge_deploy_should_reduce_user_account_balance_by_correct_amount(
                     pk: user_pk,
                     rand: Blake2b512Random::create_from_bytes(&[3]),
                 },
-                |result| *result == 9000000,
+                |result| *result == 9000000.into(),
             )
             .await
             .unwrap();
@@ -525,7 +525,7 @@ async fn balance_deploy_should_compute_rev_balances() {
                     pk: user_pk.clone(),
                     rand: Blake2b512Random::create_from_bytes(&[]),
                 },
-                |result| *result == 9000000,
+                |result| *result == 9000000.into(),
             )
             .await
             .unwrap();
@@ -877,7 +877,7 @@ async fn capture_result_should_return_the_value_at_the_specified_channel_after_a
                 .unwrap();
 
             assert!(result1.len() == 1);
-            assert!(result1[0] == ParBuilderUtil::mk_term("37").unwrap());
+            assert!(result1[0] == ParBuilderUtil::mk_term("37n").unwrap());
         },
     )
     .await

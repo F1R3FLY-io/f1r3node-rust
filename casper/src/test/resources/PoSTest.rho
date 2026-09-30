@@ -99,7 +99,7 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                    @rewards <- rewardsCh) {
                 @ListOps!("forall", rewards.toList(), *rewardsZeroPred, *rewardsZeroCh) |
                 contract rewardsZeroPred(@(_, reward), resultCh) = {
-                  resultCh!(reward == 0)
+                  resultCh!(reward == 0n)
                 } |
                 rhoSpec!("assertMany",
                   [
@@ -175,11 +175,11 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                           rhoSpec!("assertMany",
                             [
                               ((bondAmt, "==", finalBonds.get(userPubKey)), "the user's bond is expected in the final map"),
-                              ((bondAmt, "==", initialUserBalance - finalUserBalance), "the user account decreases accordingly"),
-                              ((bondAmt, "==", finalPosBalance - initialPosBalance), "the PoS account increases accordingly"),
+                              ((bondAmt.toBigInt(), "==", initialUserBalance - finalUserBalance), "the user account decreases accordingly"),
+                              ((bondAmt.toBigInt(), "==", finalPosBalance - initialPosBalance), "the PoS account increases accordingly"),
                               ((finalCoopBalance, "==", initialCoopBalance), "Coop vault balance does not change"),
                               ((Nil, "==", initialBonds.get(userPubKey)), "the user's bond is not expected in the initial map"),
-                              ((0, "==", rewards.getOrElse(userPubKey, 0)), "new validator should not have any rewards")
+                              ((0n, "==", rewards.getOrElse(userPubKey, 0n)), "new validator should not have any rewards")
                             ],
                             *ackCh
                           )
@@ -245,9 +245,9 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                               rhoSpec!("assertMany",
                                 [
                                   ((finalBonds, "==", initialBonds), "user is not in the bond map after withdraw"),
-                                  ((finalRewards, "==", initialRewards.set(userPubKey, 0)), "rewards don't change for bonding"),
-                                  ((finalUserBalance, "==", initialUserBalance - bondAmt), "user balance should change by bond amount"),
-                                  ((finalPosBalance, "==", initialPosBalance + bondAmt), "pos balance should change by bond amount"),
+                                  ((finalRewards, "==", initialRewards.set(userPubKey, 0n)), "rewards don't change for bonding"),
+                                  ((finalUserBalance, "==", initialUserBalance - bondAmt.toBigInt()), "user balance should change by bond amount"),
+                                  ((finalPosBalance, "==", initialPosBalance + bondAmt.toBigInt()), "pos balance should change by bond amount"),
                                   ((true, "==", withdrawers.contains(userPubKey)), "withdrawer is moved to withdrawers map"),
                                   (((bondAmt, quarantinePeriod), "==", withdrawers.get(userPubKey)), "withdrawer state has correct quarantine period and bonds after withdrawing from pos")
                                 ],
@@ -303,7 +303,7 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                                 @PoS!("getRewards", *rewardsCh) |
                                 for (@rewards <- rewardsCh) {
                                   stdlog!("info", ("After precharge and refund of the rewards", rewards)) |
-                                  validatorRewardCh!(rewards.getOrElse(validatorPubKey, 0)) |
+                                  validatorRewardCh!(rewards.getOrElse(validatorPubKey, 0n)) |
                                   for (@validatorReward <- validatorRewardCh) {
                                     setBlockData!("blockNumber", blockNumber, *blockDataCh) |
                                     stdlog!("info", ("Successfully set block number",  blockNumber)) |
@@ -343,7 +343,7 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                                                       rhoSpec!("assertMany",
                                                         [
                                                           ((finalBonds, "==", initialBonds), "bonds don't change after the same user bonds and withdraws successfully"),
-                                                          ((intermediateValidatorBalance, "==", initialValidatorBalance - bondAmt), "withdrawer is not paid before quarantine period is over"),
+                                                          ((intermediateValidatorBalance, "==", initialValidatorBalance - bondAmt.toBigInt()), "withdrawer is not paid before quarantine period is over"),
                                                           ((validatorReward, "==", finalValidatorBalance - initialValidatorBalance), "after payment, validator's balance only changes by their accumulated rewards"),
                                                           ((false, "==", initialWithdrawers.contains(validatorPubKey)), "before validator withdraws, they should not be in withdrawers map"),
                                                           ((true, "==", intermediateWithdrawers.contains(validatorPubKey)), "after validator requests to withdraw and before quarantine is finished, they should be in withdrawers map"),
@@ -418,10 +418,10 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                                     ((0, "==", initialBonds.getOrElse(user2PubKey, 0)), "user2's bond is not expected in the initial map"),
                                     ((user1Bond, "==", finalBonds.get(user1PubKey)), "user1's bond is expected in the final map"),
                                     ((user2Bond, "==", finalBonds.get(user2PubKey)), "user2's bond is expected in the final map"),
-                                    ((user1Bond, "==", initialUser1Balance - finalUser1Balance), "user1's account decreases as expected"),
-                                    ((user2Bond, "==", initialUser2Balance - finalUser2Balance), "user2's account decreases as expected"),
+                                    ((user1Bond.toBigInt(), "==", initialUser1Balance - finalUser1Balance), "user1's account decreases as expected"),
+                                    ((user2Bond.toBigInt(), "==", initialUser2Balance - finalUser2Balance), "user2's account decreases as expected"),
                                     ((finalCoopBalance, "==", initialCoopBalance), "Coop vault balance does not change"),
-                                    ((user1Bond + user2Bond, "==", finalPosBalance - initialPosBalance), "the PoS account increases as expected")
+                                    (((user1Bond + user2Bond).toBigInt(), "==", finalPosBalance - initialPosBalance), "the PoS account increases as expected")
                                   ],
                                   *ackCh
                                 )
@@ -479,25 +479,25 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                                 stdlog!("info", ("Final rewards", finalRewards)) |
                                 @ListOps!("fold", finalRewards.toList(), {}, *computeDelta, *deltaRewardsCh) |
                                 contract computeDelta(@(pk, finalReward), @acc, resultCh) = {
-                                  resultCh!(acc.set(pk, finalReward - initialRewards.getOrElse(pk, 0)))
+                                  resultCh!(acc.set(pk, finalReward - initialRewards.getOrElse(pk, 0n)))
                                 } |
                                 for (@deltaRewards <- deltaRewardsCh) {
                                   @ListOps!("forall", deltaRewards, *isPositive, *allRewardsPositiveCh) |
                                   contract isPositive(@n, resultCh) = {
-                                    resultCh!(n > 0)
+                                    resultCh!(n > 0n)
                                   } |
-                                  @ListOps!("fold", deltaRewards.toList(), 0, *sumDelta, *deltaSumCh) |
+                                  @ListOps!("fold", deltaRewards.toList(), 0n, *sumDelta, *deltaSumCh) |
                                   contract sumDelta(@(_, delta), @acc, resultCh) = {
                                     resultCh!(acc + delta)
                                   } |
                                   rhoSpec!("assertMany",
                                     [
-                                      ((userCharge - userRefund, "==", initialUser1Balance - finalUser1Balance), "the user account decreases"),
-                                      ((userCharge - userRefund, "==", finalPosBalance - initialPosBalance), "the pos account increases"),
+                                      (((userCharge - userRefund).toBigInt(), "==", initialUser1Balance - finalUser1Balance), "the user account decreases"),
+                                      (((userCharge - userRefund).toBigInt(), "==", finalPosBalance - initialPosBalance), "the pos account increases"),
                                       //TODO: active validator stake-weighted reward
-                                      ((19, "==", finalRewards.get(validatorPubKey)), "the validator's finalRewards is as expected"),
+                                      ((19n, "==", finalRewards.get(validatorPubKey)), "the validator's finalRewards is as expected"),
                                       //TODO use arbitrary precision numbers instead of long ints
-                                      ((98, "== <-", *deltaSumCh), "the sum difference should equal the payment"),
+                                      ((98n, "== <-", *deltaSumCh), "the sum difference should equal the payment"),
                                       ((true, "== <-", *allRewardsPositiveCh), "the rewards can only grow")
                                     ],
                                     *ackCh
@@ -557,25 +557,25 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                                    @finalRewards     <- rewardsCh) {
                                 @ListOps!("fold", finalRewards.toList(), {}, *computeDelta, *deltaRewardsCh) |
                                 contract computeDelta(@(pk, finalReward), @acc, resultCh) = {
-                                  resultCh!(acc.set(pk, finalReward - initialRewards.getOrElse(pk, 0)))
+                                  resultCh!(acc.set(pk, finalReward - initialRewards.getOrElse(pk, 0n)))
                                 } |
                                 for (@deltaRewards <- deltaRewardsCh) {
                                   @ListOps!("forall", deltaRewards, *isPositive, *allRewardsPositiveCh) |
                                   contract isPositive(@n, resultCh) = {
-                                    resultCh!(n > 0)
+                                    resultCh!(n > 0n)
                                   } |
-                                  @ListOps!("fold", deltaRewards.toList(), 0, *sumDelta, *deltaSumCh) |
+                                  @ListOps!("fold", deltaRewards.toList(), 0n, *sumDelta, *deltaSumCh) |
                                   contract sumDelta(@(_, delta), @acc, resultCh) = {
                                     resultCh!(acc + delta)
                                   } |
                                   rhoSpec!("assertMany",
                                     [
-                                      ((userCharge - userRefund, "==", initialUserBalance - finalUserBalance), "the user account decreases"),
-                                      ((userCharge - userRefund, "==", finalPosBalance - initialPosBalance), "the pos account increases"),
+                                      (((userCharge - userRefund).toBigInt(), "==", initialUserBalance - finalUserBalance), "the user account decreases"),
+                                      (((userCharge - userRefund).toBigInt(), "==", finalPosBalance - initialPosBalance), "the pos account increases"),
                                       //TODO: active validator stake-weighted reward
-                                      ((8, "==", finalRewards.get(validatorPubKey)), "the validator's finalRewards is as expected"),
+                                      ((8n, "==", finalRewards.get(validatorPubKey)), "the validator's finalRewards is as expected"),
                                       //TODO use arbitrary precision numbers instead of long ints
-                                      ((50, "== <-", *deltaSumCh), "the sum difference should equal the payment"),
+                                      ((50n, "== <-", *deltaSumCh), "the sum difference should equal the payment"),
                                       ((true, "== <-", *allRewardsPositiveCh), "the rewards can only grow")
                                     ],
                                     *ackCh
@@ -702,7 +702,7 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                         for(@finalRewards <- finalRewardsCh) {
                           rhoSpec!("assertMany",
                             [
-                              ((0, "==", finalRewards.get(validatorPubKey)), "the new validator should have no reward")
+                              ((0n, "==", finalRewards.get(validatorPubKey)), "the new validator should have no reward")
                             ],
                             *ackCh
                           )
@@ -840,9 +840,9 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                                     rhoSpec!("assertMany",
                                       [
                                         ((finalBonds, "==", initialBonds.set(slashedValidator, 0)), "Slashed validator's bond is reduced to 0"),
-                                        ((0, "==", finalRewards.get(slashedValidator)), "Slashed validator's rewards are reduced to 0"),
-                                        ((finalPosBalance, "==", initialPosBalance - initialBonds.get(slashedValidator)), "Slashed validator's funds are transferred out of the PoS vault"),
-                                        ((finalCoopBalance, "==", initialCoopBalance + initialBonds.get(slashedValidator)), "Slashed validator's funds are transferred to the Coop vault")
+                                        ((0n, "==", finalRewards.get(slashedValidator)), "Slashed validator's rewards are reduced to 0"),
+                                        ((finalPosBalance, "==", initialPosBalance - initialBonds.get(slashedValidator).toBigInt()), "Slashed validator's funds are transferred out of the PoS vault"),
+                                        ((finalCoopBalance, "==", initialCoopBalance + initialBonds.get(slashedValidator).toBigInt()), "Slashed validator's funds are transferred to the Coop vault")
                                       ],
                                       *ackCh
                                     )

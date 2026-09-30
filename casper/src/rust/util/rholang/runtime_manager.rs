@@ -18,6 +18,7 @@ use models::rust::casper::protocol::casper_message::{
     Bond, DeployData, Event, ProcessedDeploy, ProcessedSystemDeploy, SystemDeployData,
 };
 use models::rust::validator::Validator;
+use num_bigint::BigInt;
 use rholang::rust::interpreter::external_services::ExternalServices;
 use rholang::rust::interpreter::matcher::r#match::Matcher;
 use rholang::rust::interpreter::merging::rholang_merging_logic::{
@@ -1357,7 +1358,7 @@ impl RuntimeManager {
             .iter()
             .flat_map(|m| m.keys().cloned())
             .collect::<std::collections::BTreeSet<_>>();
-        let mut initial_values: BTreeMap<Blake2b256Hash, i64> = BTreeMap::new();
+        let mut initial_values: BTreeMap<Blake2b256Hash, BigInt> = BTreeMap::new();
         for ch in unique_channels {
             let data = reader.get_data(&ch).map_err(|e| {
                 CasperError::RuntimeError(format!(
@@ -1377,7 +1378,7 @@ impl RuntimeManager {
             // guarantee — interior nodes always numeric, leaves always Map). Treat as
             // hard failure so the merge is rejected rather than silently substituting 0.
             let value = match data.first() {
-                None => 0,
+                None => BigInt::default(),
                 Some(datum) => match RholangMergingLogic::try_get_number_with_rnd(&datum.a) {
                     Some((n, _)) => n,
                     None => {
@@ -1398,7 +1399,7 @@ impl RuntimeManager {
         // deltas are rejected downstream at merge (combine checked_add / apply checked_add).
         Ok(RholangMergingLogic::calculate_num_channel_diff(
             channels_data,
-            move |ch| initial_values.get(ch).copied(),
+            move |ch| initial_values.get(ch).cloned(),
         ))
     }
 

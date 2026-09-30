@@ -6,6 +6,8 @@ use std::hash::Hash;
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use indexmap::IndexSet;
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
+use num_bigint::BigInt;
+use num_traits::ToPrimitive;
 use rspace_plus_plus::rspace::errors::HistoryError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider;
@@ -14,12 +16,14 @@ use rspace_plus_plus::rspace::hot_store_trie_action::{
 };
 use rspace_plus_plus::rspace::internal::Datum;
 use rspace_plus_plus::rspace::merger::channel_change::ChannelChange;
-use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
+use rspace_plus_plus::rspace::merger::merging_logic::{
+    apply_mergeable_value, mergeable_value_diff, MergeType,
+};
 use rspace_plus_plus::rspace::merger::state_change::StateChange;
 use rspace_plus_plus::rspace::serializers::serializers;
 use rspace_plus_plus::rspace::trace::event::Produce;
 
-use crate::rust::interpreter::rho_type::RhoNumber;
+use crate::rust::interpreter::rho_type::{RhoBigInt, RhoNumber};
 
 pub struct RholangMergingLogic;
 
@@ -42,9 +46,9 @@ impl RholangMergingLogic {
      * @param getInitialValue Accessor to initial value
      */
     pub fn calculate_num_channel_diff<Key: Clone + Eq + Hash + Ord>(
-        channel_values: Vec<BTreeMap<Key, (i64, MergeType)>>,
-        get_initial_value: impl Fn(&Key) -> Option<i64> + Send + Sync,
-    ) -> Vec<BTreeMap<Key, (i64, MergeType)>> {
+        channel_values: Vec<BTreeMap<Key, (BigInt, MergeType)>>,
+        get_initial_value: impl Fn(&Key) -> Option<BigInt> + Send + Sync,
+    ) -> Vec<BTreeMap<Key, (BigInt, MergeType)>> {
         // First collect unique keys while preserving order
         let unique_keys: Vec<_> = channel_values
             .iter()
@@ -55,7 +59,7 @@ impl RholangMergingLogic {
 
         let mut state = unique_keys
             .iter()
-            .map(|key| (key.clone(), get_initial_value(key).unwrap_or(0)))
+            .map(|key| (key.clone(), get_initial_value(key).unwrap_or_default()))
             .collect::<BTreeMap<_, _>>();
 
         // Process each channel value map
@@ -66,21 +70,17 @@ impl RholangMergingLogic {
 
                 for (ch, (end_val, merge_type)) in end_val_map {
                     if let Some(prev_val) = state.get(&ch) {
-                        let diff = match merge_type {
-                            // wrapping_sub is DELIBERATE: it is the exact group inverse of
-                            // the wrapping add that language-level execution (reduce.rs
-                            // GInt `+`, intended 64-bit semantics) used to produce `end_val`.
-                            // So the diff recovers the deploy's TRUE intended delta even when
-                            // execution overflowed and stored a wrapped `end_val`. An
-                            // over-large delta is rejected DOWNSTREAM — at combine
-                            // (checked_add, rspace++ combine_mergeable_value) and at the
-                            // terminal apply (calculate_number_channel_merge, checked_add +
-                            // `>= 0`) — never here; erroring here would crash block
-                            // processing on a deploy that must instead be gracefully
-                            // rejected at merge time.
-                            MergeType::IntegerAdd => end_val.wrapping_sub(*prev_val),
-                            MergeType::BitmaskOr => ((end_val as u64) & !(*prev_val as u64)) as i64,
-                        };
+                        // IntegerAdd uses i64 wrapping_sub DELIBERATELY: it is the exact
+                        // group inverse of the wrapping add that language-level execution
+                        // (reduce.rs GInt `+`, intended 64-bit semantics) used to produce
+                        // `end_val`. So the diff recovers the deploy's TRUE intended delta
+                        // even when execution overflowed and stored a wrapped `end_val`.
+                        // An over-large delta is rejected DOWNSTREAM — at combine
+                        // (rspace++ combine_mergeable_value) and at the terminal apply
+                        // (calculate_number_channel_merge) — never here; erroring here
+                        // would crash block processing on a deploy that must instead be
+                        // gracefully rejected at merge time. BigIntAdd is exact.
+                        let diff = mergeable_value_diff(prev_val, &end_val, merge_type);
                         diffs.insert(ch.clone(), (diff, merge_type));
                         state.insert(ch, end_val);
                     }
@@ -100,7 +100,7 @@ impl RholangMergingLogic {
      */
     pub fn calculate_number_channel_merge(
         channel_hash: &Blake2b256Hash,
-        diff: i64,
+        diff: &BigInt,
         merge_type: MergeType,
         changes: &ChannelChange<Vec<u8>>,
         get_base_data: impl Fn(&Blake2b256Hash) -> Result<Vec<Datum<ListParWithRandom>>, HistoryError>,
@@ -112,25 +112,20 @@ impl RholangMergingLogic {
         // None = channel doesn't exist yet (treat as 0); Err = invariant
         // violation (non-numeric or multi-value pre-state) — propagate so the
         // merge is rejected rather than silently substituting 0.
-        let init_num = Self::convert_to_read_number(get_base_data)(channel_hash)?.unwrap_or(0);
+        let init_num =
+            Self::convert_to_read_number(get_base_data)(channel_hash)?.unwrap_or_default();
         // Terminal apply that WRITES the merged number-channel value. Mirror the
-        // vault rule in conflict_set_merger::cal_merged_result (checked_add + `>= 0`):
+        // vault rule in conflict_set_merger::cal_merged_result (range + `>= 0`):
         // a wrapping_add here could silently commit an overflowed/negative balance
         // to consensus state. Reject loudly instead (defense-in-depth backstop —
         // the accepted branch set already passed the same gate at the combine step).
-        let new_val = match merge_type {
-            MergeType::IntegerAdd => match init_num.checked_add(diff) {
-                Some(v) if v >= 0 => v,
-                _ => {
-                    return Err(HistoryError::MergeError(format!(
-                        "Number channel {:?} merge rejected: base {} + diff {} \
-                         overflows i64 or yields a negative balance",
-                        channel_hash, init_num, diff,
-                    )));
-                }
-            },
-            MergeType::BitmaskOr => ((init_num as u64) | (diff as u64)) as i64,
-        };
+        let new_val = apply_mergeable_value(&init_num, diff, merge_type).ok_or_else(|| {
+            HistoryError::MergeError(format!(
+                "Number channel {:?} merge rejected: base {} + diff {} ({:?}) \
+                 overflows the channel range or yields a negative balance",
+                channel_hash, init_num, diff, merge_type,
+            ))
+        })?;
 
         // Calculate merged random generator (use only unique changes as input)
         let new_rnd = if changes.added.iter().collect::<HashSet<_>>().len() == 1 {
@@ -159,7 +154,8 @@ impl RholangMergingLogic {
         };
 
         // Create final merged value
-        let datum_encoded = Self::create_datum_encoded(channel_hash, new_val, new_rnd);
+        let datum_encoded =
+            Self::create_datum_encoded(channel_hash, &new_val, merge_type, new_rnd)?;
 
         // Create update store action
         Ok(HotStoreTrieAction::TrieInsertAction(
@@ -223,23 +219,49 @@ impl RholangMergingLogic {
         Ok(())
     }
 
-    /// Returns the i64 + RNG pair for a single-Par integer channel value, or
-    /// None when the value isn't a single-Par integer (e.g., a Rholang Map on
-    /// a registry leaf node tagged with the bitmask tag). Non-numeric values
-    /// fall through to the existing conflict-rejection path rather than
-    /// wedging the merger.
+    /// Returns the number + RNG pair for a single-Par `Int` or `BigInt`
+    /// channel value, or None when the value isn't a single-Par number (e.g.,
+    /// a Rholang Map on a registry leaf node tagged with the bitmask tag).
+    /// Non-numeric values fall through to the existing conflict-rejection path
+    /// rather than wedging the merger.
     pub fn try_get_number_with_rnd(
         par_with_rnd: &ListParWithRandom,
-    ) -> Option<(i64, Blake2b512Random)> {
+    ) -> Option<(BigInt, Blake2b512Random)> {
         if par_with_rnd.pars.len() != 1 {
             return None;
         }
-        RhoNumber::unapply(&par_with_rnd.pars[0]).map(|num| {
-            (
-                num,
-                Blake2b512Random::from_bytes(&par_with_rnd.random_state),
-            )
-        })
+        let par = &par_with_rnd.pars[0];
+        RhoNumber::unapply(par)
+            .map(BigInt::from)
+            .or_else(|| RhoBigInt::unapply(par))
+            .map(|num| {
+                (
+                    num,
+                    Blake2b512Random::from_bytes(&par_with_rnd.random_state),
+                )
+            })
+    }
+
+    /// Merge strategy for a channel value under the strategy of its mergeable
+    /// tag. Additive tags follow the value kind: `Int` merges as `IntegerAdd`
+    /// (i64 range) and `BigInt` as `BigIntAdd`. `BitmaskOr` accepts only `Int`.
+    /// Returns None when the value is not a number valid for the tag.
+    pub fn number_merge_type(
+        par_with_rnd: &ListParWithRandom,
+        tag: MergeType,
+    ) -> Option<MergeType> {
+        if par_with_rnd.pars.len() != 1 {
+            return None;
+        }
+        let par = &par_with_rnd.pars[0];
+        let is_int = RhoNumber::unapply(par).is_some();
+        let is_bigint = !is_int && RhoBigInt::unapply(par).is_some();
+        match tag {
+            MergeType::IntegerAdd | MergeType::BigIntAdd if is_int => Some(MergeType::IntegerAdd),
+            MergeType::IntegerAdd | MergeType::BigIntAdd if is_bigint => Some(MergeType::BigIntAdd),
+            MergeType::BitmaskOr if is_int => Some(MergeType::BitmaskOr),
+            _ => None,
+        }
     }
 
     pub fn encoded_datum_is_number(bytes: &[u8]) -> bool {
@@ -251,11 +273,22 @@ impl RholangMergingLogic {
 
     fn create_datum_encoded(
         channel_hash: &Blake2b256Hash,
-        num: i64,
+        num: &BigInt,
+        merge_type: MergeType,
         rnd: Blake2b512Random,
-    ) -> Vec<u8> {
+    ) -> Result<Vec<u8>, HistoryError> {
         // Create value with random generator
-        let num_par = RhoNumber::create_par(num);
+        let num_par = match merge_type {
+            MergeType::BigIntAdd => RhoBigInt::create_par(num),
+            MergeType::IntegerAdd | MergeType::BitmaskOr => {
+                RhoNumber::create_par(num.to_i64().ok_or_else(|| {
+                    HistoryError::MergeError(format!(
+                        "Number channel {:?} merged value {} does not fit an Int ({:?})",
+                        channel_hash, num, merge_type,
+                    ))
+                })?)
+            }
+        };
         let par_with_rnd = ListParWithRandom {
             pars: vec![num_par],
             random_state: rnd.to_bytes(),
@@ -283,7 +316,7 @@ impl RholangMergingLogic {
         };
 
         // Encode datum
-        serializers::encode_datum(&datum)
+        Ok(serializers::encode_datum(&datum))
     }
 
     /// Adapter from a fallible channel-data reader to a fallible single-number
@@ -295,7 +328,7 @@ impl RholangMergingLogic {
     ///   propagate to reject the merge rather than silently substitute 0.
     pub fn convert_to_read_number<F>(
         get_data_func: F,
-    ) -> impl Fn(&Blake2b256Hash) -> Result<Option<i64>, HistoryError>
+    ) -> impl Fn(&Blake2b256Hash) -> Result<Option<BigInt>, HistoryError>
     where F: Fn(&Blake2b256Hash) -> Result<Vec<Datum<ListParWithRandom>>, HistoryError> {
         move |hash: &Blake2b256Hash| {
             let data = get_data_func(hash)?;
@@ -329,7 +362,7 @@ pub struct DeployMergeableData {
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct NumberChannel {
     pub hash: Blake2b256Hash,
-    pub diff: i64,
+    pub diff: BigInt,
     pub merge_type: MergeType,
 }
 
@@ -535,7 +568,8 @@ mod tests {
         init_values.insert(ch_c.clone(), 20i64);
 
         // Define the accessor function to get initial values
-        let get_data_on_hash = |hash: String| -> Option<i64> { init_values.get(&hash).copied() };
+        let get_data_on_hash =
+            |hash: String| -> Option<BigInt> { init_values.get(&hash).copied().map(BigInt::from) };
 
         // Define input channel values (Vec of Maps); all entries use IntegerAdd
         // semantics for the existing vault path.
@@ -544,18 +578,18 @@ mod tests {
 
         // Map 0: {A -> 20}
         let mut map0 = BTreeMap::new();
-        map0.insert(ch_a.clone(), (20i64, mt));
+        map0.insert(ch_a.clone(), (BigInt::from(20i64), mt));
         input.push(map0);
 
         // Map 1: {B -> 3}
         let mut map1 = BTreeMap::new();
-        map1.insert(ch_b.clone(), (3i64, mt));
+        map1.insert(ch_b.clone(), (BigInt::from(3i64), mt));
         input.push(map1);
 
         // Map 2: {A -> 15, C -> 10}
         let mut map2 = BTreeMap::new();
-        map2.insert(ch_a.clone(), (15i64, mt));
-        map2.insert(ch_c.clone(), (10i64, mt));
+        map2.insert(ch_a.clone(), (BigInt::from(15i64), mt));
+        map2.insert(ch_c.clone(), (BigInt::from(10i64), mt));
         input.push(map2);
 
         // Calculate the differences
@@ -569,18 +603,18 @@ mod tests {
 
         // Expected Map 0: {A -> 10}
         let mut expected_map0 = BTreeMap::new();
-        expected_map0.insert(ch_a.clone(), (10i64, mt));
+        expected_map0.insert(ch_a.clone(), (BigInt::from(10i64), mt));
         expected.push(expected_map0);
 
         // Expected Map 1: {B -> 3}
         let mut expected_map1 = BTreeMap::new();
-        expected_map1.insert(ch_b.clone(), (3i64, mt));
+        expected_map1.insert(ch_b.clone(), (BigInt::from(3i64), mt));
         expected.push(expected_map1);
 
         // Expected Map 2: {A -> -5, C -> -10}
         let mut expected_map2 = BTreeMap::new();
-        expected_map2.insert(ch_a.clone(), (-5i64, mt));
-        expected_map2.insert(ch_c.clone(), (-10i64, mt));
+        expected_map2.insert(ch_a.clone(), (BigInt::from(-5i64), mt));
+        expected_map2.insert(ch_c.clone(), (BigInt::from(-10i64), mt));
         expected.push(expected_map2);
 
         // Assert that the results match the expected values
@@ -595,14 +629,15 @@ mod tests {
         let mt = MergeType::BitmaskOr;
         let mut init_values = HashMap::new();
         init_values.insert(ch.clone(), 0b0001i64);
-        let get_initial = |k: &String| -> Option<i64> { init_values.get(k).copied() };
+        let get_initial =
+            |k: &String| -> Option<BigInt> { init_values.get(k).copied().map(BigInt::from) };
 
         let mut map0 = BTreeMap::new();
-        map0.insert(ch.clone(), (0b0101i64, mt));
+        map0.insert(ch.clone(), (BigInt::from(0b0101i64), mt));
         let result = RholangMergingLogic::calculate_num_channel_diff(vec![map0], get_initial);
 
         let mut expected_map0 = BTreeMap::new();
-        expected_map0.insert(ch.clone(), (0b0100i64, mt));
+        expected_map0.insert(ch.clone(), (BigInt::from(0b0100i64), mt));
         assert_eq!(result, vec![expected_map0]);
     }
 
@@ -617,13 +652,25 @@ mod tests {
     // production encode path (create_datum_encoded) then decoded back, so the base
     // reader sees precisely what a real pre-state would.
     fn num_base_data(n: i64) -> Vec<Datum<ListParWithRandom>> {
-        let encoded = RholangMergingLogic::create_datum_encoded(&test_hash(), n, test_rnd());
+        let encoded = RholangMergingLogic::create_datum_encoded(
+            &test_hash(),
+            &BigInt::from(n),
+            MergeType::IntegerAdd,
+            test_rnd(),
+        )
+        .unwrap();
         vec![serializers::decode_datum(&encoded)]
     }
 
     // One valid added-change entry so the RNG merge on an ACCEPTED path has input.
     fn one_change() -> ChannelChange<Vec<u8>> {
-        let encoded = RholangMergingLogic::create_datum_encoded(&test_hash(), 0, test_rnd());
+        let encoded = RholangMergingLogic::create_datum_encoded(
+            &test_hash(),
+            &BigInt::from(0),
+            MergeType::IntegerAdd,
+            test_rnd(),
+        )
+        .unwrap();
         ChannelChange {
             added: vec![encoded],
             removed: vec![],
@@ -636,7 +683,7 @@ mod tests {
         // (The old wrapping_add silently committed i64::MIN to consensus state.)
         let res = RholangMergingLogic::calculate_number_channel_merge(
             &test_hash(),
-            1,
+            &BigInt::from(1),
             MergeType::IntegerAdd,
             &ChannelChange::empty(),
             |_h| -> Result<Vec<Datum<ListParWithRandom>>, HistoryError> {
@@ -654,7 +701,7 @@ mod tests {
         // rejection is the "never return a wrong Ok" guard.
         let res = RholangMergingLogic::calculate_number_channel_merge(
             &test_hash(),
-            -1,
+            &BigInt::from(-1),
             MergeType::IntegerAdd,
             &ChannelChange::empty(),
             |_h| -> Result<Vec<Datum<ListParWithRandom>>, HistoryError> { Ok(vec![]) },
@@ -667,7 +714,7 @@ mod tests {
         // base = 10, diff = +5 -> 15, non-negative & in range -> Ok(write action).
         let res = RholangMergingLogic::calculate_number_channel_merge(
             &test_hash(),
-            5,
+            &BigInt::from(5),
             MergeType::IntegerAdd,
             &one_change(),
             |_h| -> Result<Vec<Datum<ListParWithRandom>>, HistoryError> { Ok(num_base_data(10)) },
@@ -685,7 +732,7 @@ mod tests {
         // BitmaskOr never overflows; base = i64::MAX, diff = 1 -> Ok (no rejection).
         let res = RholangMergingLogic::calculate_number_channel_merge(
             &test_hash(),
-            1,
+            &BigInt::from(1),
             MergeType::BitmaskOr,
             &one_change(),
             |_h| -> Result<Vec<Datum<ListParWithRandom>>, HistoryError> {
@@ -711,14 +758,115 @@ mod tests {
         let wrapped_end = prev.wrapping_add(intended); // overflowed end, as execution stored it
         let mut init = HashMap::new();
         init.insert(ch.clone(), prev);
-        let get_initial = |k: &String| -> Option<i64> { init.get(k).copied() };
+        let get_initial = |k: &String| -> Option<BigInt> { init.get(k).copied().map(BigInt::from) };
 
         let mut map0 = BTreeMap::new();
-        map0.insert(ch.clone(), (wrapped_end, mt));
+        map0.insert(ch.clone(), (BigInt::from(wrapped_end), mt));
         let result = RholangMergingLogic::calculate_num_channel_diff(vec![map0], get_initial);
 
         let mut expected = BTreeMap::new();
-        expected.insert(ch.clone(), (intended, mt)); // delta recovered exactly
+        expected.insert(ch.clone(), (BigInt::from(intended), mt)); // delta recovered exactly
         assert_eq!(result, vec![expected]);
+    }
+    fn bigint_base_data(n: &BigInt) -> Vec<Datum<ListParWithRandom>> {
+        let encoded = RholangMergingLogic::create_datum_encoded(
+            &test_hash(),
+            n,
+            MergeType::BigIntAdd,
+            test_rnd(),
+        )
+        .unwrap();
+        vec![serializers::decode_datum(&encoded)]
+    }
+
+    fn written_value(
+        action: HotStoreTrieAction<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
+    ) -> Par {
+        match action {
+            HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertBinaryProduce(p)) => {
+                let datum: Datum<ListParWithRandom> = serializers::decode_datum(&p.data[0]);
+                datum.a.pars[0].clone()
+            }
+            _ => panic!("expected a binary produce insert"),
+        }
+    }
+
+    #[test]
+    fn merge_bigint_add_past_i64_writes_bigint_value() {
+        let base = BigInt::from(i64::MAX);
+        let res = RholangMergingLogic::calculate_number_channel_merge(
+            &test_hash(),
+            &BigInt::from(i64::MAX),
+            MergeType::BigIntAdd,
+            &one_change(),
+            |_h| -> Result<Vec<Datum<ListParWithRandom>>, HistoryError> {
+                Ok(bigint_base_data(&base))
+            },
+        )
+        .expect("BigIntAdd must not overflow");
+        assert_eq!(
+            RhoBigInt::unapply(&written_value(res)),
+            Some(BigInt::from(i64::MAX) * 2)
+        );
+    }
+
+    #[test]
+    fn merge_bigint_add_negative_result_is_rejected() {
+        let res = RholangMergingLogic::calculate_number_channel_merge(
+            &test_hash(),
+            &BigInt::from(-11),
+            MergeType::BigIntAdd,
+            &one_change(),
+            |_h| -> Result<Vec<Datum<ListParWithRandom>>, HistoryError> {
+                Ok(bigint_base_data(&BigInt::from(10)))
+            },
+        );
+        assert!(matches!(res, Err(HistoryError::MergeError(_))));
+    }
+
+    #[test]
+    fn diff_bigint_add_is_exact() {
+        let ch = "X".to_string();
+        let prev = BigInt::from(i64::MAX);
+        let end = BigInt::parse_bytes(b"1000000000000000000000000000000", 10).unwrap();
+        let get_initial = |_k: &String| -> Option<BigInt> { Some(prev.clone()) };
+        let mut map0 = BTreeMap::new();
+        map0.insert(ch.clone(), (end.clone(), MergeType::BigIntAdd));
+        let result = RholangMergingLogic::calculate_num_channel_diff(vec![map0], get_initial);
+        let mut expected = BTreeMap::new();
+        expected.insert(ch, (&end - &prev, MergeType::BigIntAdd));
+        assert_eq!(result, vec![expected]);
+    }
+
+    #[test]
+    fn number_merge_type_follows_value_kind() {
+        let int_value = ListParWithRandom {
+            pars: vec![RhoNumber::create_par(7)],
+            random_state: vec![],
+        };
+        let bigint_value = ListParWithRandom {
+            pars: vec![RhoBigInt::create_par(&BigInt::from(7))],
+            random_state: vec![],
+        };
+        assert_eq!(
+            RholangMergingLogic::number_merge_type(&int_value, MergeType::IntegerAdd),
+            Some(MergeType::IntegerAdd)
+        );
+        assert_eq!(
+            RholangMergingLogic::number_merge_type(&bigint_value, MergeType::IntegerAdd),
+            Some(MergeType::BigIntAdd)
+        );
+        assert_eq!(
+            RholangMergingLogic::number_merge_type(&int_value, MergeType::BitmaskOr),
+            Some(MergeType::BitmaskOr)
+        );
+        assert_eq!(
+            RholangMergingLogic::number_merge_type(&bigint_value, MergeType::BitmaskOr),
+            None
+        );
+        assert_eq!(
+            RholangMergingLogic::try_get_number_with_rnd(&bigint_value).map(|(n, _)| n),
+            Some(BigInt::from(7))
+        );
     }
 }
