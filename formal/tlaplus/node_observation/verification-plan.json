@@ -115,6 +115,42 @@
       "configuration": "MC_ObserverSession_freshness_pre_fix.cfg",
       "expected_exit": 12,
       "invariant": "FreshChallenges"
+    },
+    {
+      "module": "MC_PairedForkChoice",
+      "configuration": "MC_PairedForkChoice.cfg",
+      "expected_exit": 0,
+      "invariant": null
+    },
+    {
+      "module": "MC_PairedForkChoice_digest_unsafe",
+      "configuration": "MC_PairedForkChoice_digest_unsafe.cfg",
+      "expected_exit": 12,
+      "invariant": "OneCapture"
+    },
+    {
+      "module": "MC_PairedForkChoice_floor_unsafe",
+      "configuration": "MC_PairedForkChoice_floor_unsafe.cfg",
+      "expected_exit": 12,
+      "invariant": "HeadNotFloor"
+    },
+    {
+      "module": "MC_PairedForkChoice_absent_unsafe",
+      "configuration": "MC_PairedForkChoice_absent_unsafe.cfg",
+      "expected_exit": 12,
+      "invariant": "NoFabricatedHead"
+    },
+    {
+      "module": "MC_PairedForkChoice_compare_unsafe",
+      "configuration": "MC_PairedForkChoice_compare_unsafe.cfg",
+      "expected_exit": 12,
+      "invariant": "CompareSameInput"
+    },
+    {
+      "module": "MC_PairedForkChoice_budget_unsafe",
+      "configuration": "MC_PairedForkChoice_budget_unsafe.cfg",
+      "expected_exit": 12,
+      "invariant": "SharedBudget"
     }
   ]
 }

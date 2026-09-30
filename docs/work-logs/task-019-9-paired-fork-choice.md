@@ -43,12 +43,28 @@ Registered: the [plan](../plans/casper-node-observation-batch-d.md), the pending
 
 The record generator is `target/batch-d-registration-20260930-01/write-pending-records.sh` (local, ignored by Git). Each record parses as JSON.
 
+## Step 5 on 2026-09-30: bounded model
+
+`PairedForkChoice.tla` models one capture, the 2 evaluations, the shared budget, and the comparison. Domain: 2 captures, 2 candidate heads, budget 3. The positive configuration explores 203 distinct states.
+
+| Control | Invariant | Result |
+|---|---|---|
+| `digest_unsafe` | `OneCapture` | Exit 12, 21 states |
+| `floor_unsafe` | `HeadNotFloor` | Exit 12, 17 states |
+| `absent_unsafe` | `NoFabricatedHead` | Exit 12, 17 states |
+| `compare_unsafe` | `CompareSameInput` | Exit 12, 113 states |
+| `budget_unsafe` | `SharedBudget` | Exit 12, 29 states |
+
+The first `compare_unsafe` control did not fail, because equal inputs cannot show a missing digest check. The control now also lets the reference read a different capture. A reachability check with 6 negated invariants ran on the positive model. The model reaches a matching comparison, a mismatching comparison, an unavailable comparison, a limit refusal, a history refusal, and a full budget.
+
+Registration: `check-tla-invariants.sh` (default tier, PR tier, 5 controls, plan count 19 to 25, third positive model), `test-check-tla-invariants.sh` (family loop), `verification-plan.json` (6 entries), `README.md` (inventory and model section). `bash scripts/ci/check-tla-invariants.sh --soak-pr` passed in 72 s with 16 clean configurations and 83 controls. `bash scripts/ci/test-check-tla-invariants.sh` passed in 145 s. The 13 ledger records of the model files are written with their digests.
+
 ## Progress
 
 - [x] Claim the task and start the work log.
 - [x] File-scope confirmation and the 12 answers.
 - [x] Pending claim, mandatory tags, pending ledger records.
-- [ ] Bounded model and 5 controls, registered in the gate.
+- [x] Bounded model and 5 controls, registered in the gate.
 - [ ] 2 work paths.
 - [ ] Metered functions in the 4 consensus files.
 - [ ] Input record and input digest.

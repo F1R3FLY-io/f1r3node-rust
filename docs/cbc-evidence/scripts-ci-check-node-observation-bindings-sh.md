@@ -1,56 +1,50 @@
 # CbC Evidence: scripts/ci/check-node-observation-bindings.sh
 
-The approved binding driver remains pending implementation and verification.
+The corrected binding driver passed the recorded verification checks.
+Named maintainer acceptance of the changed source remains pending.
+
+## Source refresh on 2026-09-30
+
+The [refresh report](runs/node-observation-ci-refresh-20260930-01/report.json) binds the current source to the verification results.
+The report preserves the earlier record identity and its acceptance.
+The current record remains pending until the applicable acceptance requirements are met.
 
 ```json
 {
   "artifact": {
     "path": "scripts/ci/check-node-observation-bindings.sh",
     "id": "scripts-ci-check-node-observation-bindings-sh",
-    "commit": "78d696ea6780ca72105d9b35d2266b0329d777ed",
+    "commit": "bc226f89b46366ea4cb0c1907d6781050afb7d0c",
     "commit_is_base": true,
-    "working_tree": true,
-    "sha256": "947937192ae8761330cd8b36b437edcd9e3256a53803477e7c076f9cd1c1e5ca"
+    "working_tree": false,
+    "sha256": "0894960136677e1efb0245bcb17240a0d6ce40155d5cb54e0e7487f27dcac317"
   },
   "claim": "docs/claims/casper-node-observation.md",
   "claim_ids": [
     "CLAIM-CASPER-NODE-OBSERVATION-001"
   ],
+  "status": "pending",
+  "scope": "agent-b-ci-correction-refresh-20260930-01",
+  "adapter": null,
+  "evidence": {
+    "kind": "source-bound-hosted-checks-and-elf-mutation-controls",
+    "ref": "docs/cbc-evidence/runs/node-observation-ci-refresh-20260930-01/report.json",
+    "sha256": "0dc0d1cabf7a8ed2d8846dbffc8a19e9b4beb117286c8b65540d068bfbb9aeba"
+  },
+  "verification_status": "recorded",
+  "acceptance_status": "pending",
+  "soak": "pending",
+  "waiver": null,
+  "verified_at": "2026-09-30T04:44:34.480367+00:00",
+  "limits": "The report states the verification limits. Earlier acceptance does not cover the corrected source.",
   "claim_digests": {
     "docs/claims/casper-node-observation.md": "b865e33216b210a8915662e6ebd4f91d2b397a68f8f4dcf31fcd306aa8ca6c38"
   },
-  "adapter": null,
-  "status": "discharged",
-  "scope": "task-019-4-handoff-cycle-02",
-  "evidence": {
-    "kind": "tiered-evidence-accepted",
-    "ref": "docs/cbc-evidence/runs/casper-node-claim-gate-78d696ea6-01/report.json",
-    "sha256": "79361b7df306cde8f0b157d0749dd4b09e2a33b24dd9ad99710ff9d198ee43d2"
-  },
-  "tiers": {
-    "refutation": "recorded",
-    "construction": "recorded-partial",
-    "binding": "recorded-partial"
-  },
-  "soak": "pending",
-  "waiver": null,
-  "verified_at": "2026-09-23T16:55:28Z",
   "previous_record": {
     "path": "docs/cbc-evidence/scripts-ci-check-node-observation-bindings-sh.md",
-    "sha256": "6fff5e00458d52f5485a973c9d5e90e5a09387e22107a4e875f94731b8784456",
-    "commit": "03d7f1b27544b2c5a93b664d8684b24ea16cf3e9"
+    "commit": "bc226f89b46366ea4cb0c1907d6781050afb7d0c",
+    "sha256": "732a0c5be21d878d59282e28e16773eb8a9a5b5abc63dcb1741c2d4ffcec125e"
   },
-  "accepted_claim_digests": {
-    "docs/claims/casper-node-observation.md": "703418566c148f28a4d952e29e7dc135843242ea7fbb7e3fdc3111b6e4373274"
-  },
-  "acceptance": {
-    "reviewer": "jltatbeach",
-    "review_id": 5294038948,
-    "url": "https://github.com/F1R3FLY-io/f1r3node-rust/pull/447#pullrequestreview-5294038948",
-    "revision": "4c0c0dbe7c8958debefdb02f2b21795786c45900",
-    "submitted_at": "2026-09-23T16:55:28Z",
-    "package": "docs/cbc-evidence/runs/casper-node-claim-gate-78d696ea6-01",
-    "decisions": "A1, A2, A8, A10, B13 accepted as bounded by design; construction gaps A3, A4, A9, B9, B11, B12 and the A7 and B2 deadline parts accepted as recorded"
-  }
+  "previous_artifact_sha256": "947937192ae8761330cd8b36b437edcd9e3256a53803477e7c076f9cd1c1e5ca"
 }
 ```

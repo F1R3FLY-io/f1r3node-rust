@@ -8,16 +8,17 @@ The reconciliation starts from node revision `10e7b8452824e12a1fe2743dca7989b79f
 
 ## Canonical inventory
 
-[verification-plan.json](verification-plan.json) lists two positive configurations and 17 negative controls. Each configuration has one matching entry module.
+[verification-plan.json](verification-plan.json) lists three positive configurations and 22 negative controls. Each configuration has one matching entry module.
 
-The entry modules extend either `ObserverSession` or `BoundedCapture`. They do not contain separate state machines.
+The entry modules extend `ObserverSession`, `BoundedCapture`, or `PairedForkChoice`. They do not contain separate state machines.
 
-The gate registers the union of the downstream 16 controls and the node freshness control. It rejects disagreement with the plan or configuration inventory.
+The gate registers the union of the downstream 16 controls, the node freshness control, and the 5 Batch D controls. It rejects disagreement with the plan or configuration inventory.
 
 | Family | Positive configuration | Negative controls |
 | --- | --- | --- |
 | Session | `MC_ObserverSession` | `freshness_pre_fix`, `challenge_unsafe`, `identity_unsafe`, `frame_unsafe`, `deadline_unsafe`, `repeat_unsafe`, `budget_unsafe`. |
 | Capture | `MC_BoundedCapture` | `admission_unsafe`, `deadline_unsafe`, `order_unsafe`, `open_unsafe`, `validation_unsafe`, `generation_unsafe`, `incomplete_unsafe`, `bytes_unsafe`, `release_unsafe`, `write_unsafe`. |
+| Paired fork choice | `MC_PairedForkChoice` | `digest_unsafe`, `floor_unsafe`, `absent_unsafe`, `compare_unsafe`, `budget_unsafe`. |
 
 A clean check must exit zero with the completed-search marker and no error. A negative check must exit 12 with its named invariant and a trace.
 
@@ -81,6 +82,26 @@ Copied sizes are one, two, or three units, with a limit of two. These values do 
 | `Detached`, `ReadOnly` | Reader consumption, guard release, and sealing. | Effect abstraction, not a complete store-write proof. |
 
 Both models permit stuttering and assume no fairness. They establish bounded safety results, not eventual completion or universal timing bounds.
+
+## Paired fork-choice model
+
+`PairedForkChoice` models the Batch D observation of [CLAIM-CASPER-NODE-OBSERVATION-004](../../../docs/claims/casper-node-fork-choice-observation.md). Its domain has two captures, two candidate heads, and a budget of three work units.
+
+One request makes one capture. The `bounded` evaluation runs first and the `reference` evaluation second. Each evaluation reads a capture digest, selects a head or refuses with a reason, and charges work units to the shared budget.
+
+An evaluation that would exceed the budget stops with the reason `limit` and charges the remaining units only. The comparison runs last. It is available only when both results are available and both input digests are equal.
+
+The model does not contain the fork-choice rules, the DAG, or the weights. A selected head is an arbitrary candidate. The model states which values a result can carry and when a comparison is permitted, not which head is correct.
+
+| Invariants | Rust boundary | Limit |
+| --- | --- | --- |
+| `OneCapture` | The input digest of each evaluation in `evaluation.rs` and the capture binding in `soak_observer.rs`. | The digest coverage of each input is a hash assumption. |
+| `HeadNotFloor` | The head fields of `ForkChoiceResult`. | The model has one floor value. It does not model the oracle results. |
+| `NoFabricatedHead` | The state and reason fields of each result. | Refusal completeness is not modeled. The refusal reasons are a sample. |
+| `CompareSameInput` | The comparison in `evaluation.rs`. | The model compares heads only, not tips or scores. |
+| `SharedBudget` | The two new work paths in `observation_work.rs` and the charge sites. | Charge placement in the Rust code is a correspondence obligation. |
+
+Each negative control sets the `Bug` constant to one value and lists `TypeOK` and its named invariant. The `compare_unsafe` control also lets the reference read a different capture, because a comparison of equal inputs cannot show the missing digest check.
 
 ## Construction and binding
 

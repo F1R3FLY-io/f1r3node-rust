@@ -829,7 +829,7 @@ tasks:
     recorded_on: 2026-09-30
     blocked_by: []
     precedes: [TASK-019-10]
-    stage: "Steps 1 to 4 of 16 complete on 2026-09-30: scope confirmed, task record and work log, pending claim and mandatory tags, 14 pending ledger records. Step 5 (bounded model and controls) is next."
+    stage: "Steps 1 to 5 of 16 complete on 2026-09-30. Step 5: PairedForkChoice model with 5 invariants and 5 negative controls, registered in the gate, the plan manifest, the gate test, and the README. Gate PR tier and gate test pass locally. Step 6 (2 work paths) is next and changes Rust code."
     consumer: "TASK-017-12 harness profile on formal/soak-casper-consensus: the profile compares the selected head of a bounded member and a reference member on equal inputs."
     claims: [CLAIM-CASPER-NODE-OBSERVATION-004]
     claim_status: pending
@@ -841,7 +841,7 @@ tasks:
     file_scope_confirmed_by: user
     file_scope_size: "34 files: 17 new and 17 changed (11 Rust source and test files, 16 formal files, 3 gate and tag files, 4 documents), plus 28 ledger records at the end (14 now, 14 at step 5) and 1 run package"
     decisions: "The 12 recommendations of the draft, accepted by the user on 2026-09-30. Decision 8: estimator.rs, dag_operations.rs, and proto_util.rs get the mandatory tag and 3 ledger records. The table is in the plan."
-    ledger_registration: "14 pending records under scope batch-d-registration: 11 replaced records of changed files (previous_record names the replaced record) and 3 new records of the newly tagged files. The 14 records of the new files are written at step 5, when each file exists and has a digest (user decision 2026-09-30, to limit empty files on the branch). scripts/ci/check-tla-invariants.sh keeps its record under CLAIM-SOAK-GATE-001, as at the Batch B2 registration."
+    ledger_registration: "14 pending records under scope batch-d-registration: 11 replaced records of changed files (previous_record names the replaced record) and 3 new records of the newly tagged files. 13 records of the model files were written at step 5 with their digests. The record of fork_choice.rs follows at step 10 (user decision 2026-09-30: a record is written when its file exists). scripts/ci/check-tla-invariants.sh keeps its record under CLAIM-SOAK-GATE-001, as at the Batch B2 registration."
     scope: "Add a paired fork-choice observation to the authority_snapshot operation. One capture supplies the inputs of the 2 evaluations. No new consensus rule and no new production limit."
     acceptance:
       - "The response of authority_snapshot carries the selected head of the bounded evaluation and of the reference evaluation, with the input digest of the shared capture."

@@ -1,0 +1,511 @@
+{
+  "schema_version": 1,
+  "scope": "agent-b-ci-correction-refresh-20260930-01",
+  "observed_at": "2026-09-30T04:44:34.480367+00:00",
+  "source_checkpoint": "bc226f89b46366ea4cb0c1907d6781050afb7d0c",
+  "source_inventory": [
+    {
+      "path": ".github/workflows/slashing-tests.yml",
+      "sha256": "37956499d722765a831cc70633130d419380317d01dface8a366eb0fd3d71fdd"
+    },
+    {
+      "path": "scripts/ci/check-node-observation-bindings.sh",
+      "sha256": "0894960136677e1efb0245bcb17240a0d6ce40155d5cb54e0e7487f27dcac317"
+    },
+    {
+      "path": "scripts/ci/test-check-node-observation-bindings.sh",
+      "sha256": "1841a3861695d32b89f511624af3f4057faed3f82422ed6389230c7fbdc60fa7"
+    }
+  ],
+  "historical_records": [
+    {
+      "path": "docs/cbc-evidence/github-workflows-slashing-tests-yml.md",
+      "commit": "bc226f89b46366ea4cb0c1907d6781050afb7d0c",
+      "sha256": "3230815cb3fb435e32ea2ddfdfda619b60a83e52b0deb6bb11ddba3fbc6a6d07",
+      "artifact_sha256": "991507a49e77745dd8a6a9ecfbd4be8d2cc9cb3645d9e1b1862b8430cd01267b",
+      "status": "pending",
+      "acceptance": null,
+      "evidence": {
+        "kind": "workflow-tests+bounded-model-check",
+        "ref": "docs/cbc-evidence/soak-g0-b2-2026-09-08/manifest.jsonc",
+        "counterexample": "docs/cbc-evidence/soak-g0-b2-2026-09-08/red.log",
+        "detail": "Direct TLC runs establish bounded baseline results. Hosted execution and the complete gate claim remain open."
+      }
+    },
+    {
+      "path": "docs/cbc-evidence/scripts-ci-check-node-observation-bindings-sh.md",
+      "commit": "bc226f89b46366ea4cb0c1907d6781050afb7d0c",
+      "sha256": "732a0c5be21d878d59282e28e16773eb8a9a5b5abc63dcb1741c2d4ffcec125e",
+      "artifact_sha256": "947937192ae8761330cd8b36b437edcd9e3256a53803477e7c076f9cd1c1e5ca",
+      "status": "discharged",
+      "acceptance": {
+        "reviewer": "jltatbeach",
+        "review_id": 5294038948,
+        "url": "https://github.com/F1R3FLY-io/f1r3node-rust/pull/447#pullrequestreview-5294038948",
+        "revision": "4c0c0dbe7c8958debefdb02f2b21795786c45900",
+        "submitted_at": "2026-09-23T16:55:28Z",
+        "package": "docs/cbc-evidence/runs/casper-node-claim-gate-78d696ea6-01",
+        "decisions": "A1, A2, A8, A10, B13 accepted as bounded by design; construction gaps A3, A4, A9, B9, B11, B12 and the A7 and B2 deadline parts accepted as recorded"
+      },
+      "evidence": {
+        "kind": "tiered-evidence-accepted",
+        "ref": "docs/cbc-evidence/runs/casper-node-claim-gate-78d696ea6-01/report.json",
+        "sha256": "79361b7df306cde8f0b157d0749dd4b09e2a33b24dd9ad99710ff9d198ee43d2"
+      }
+    }
+  ],
+  "record_inventory": {
+    "stale_corrected_artifact_records": 2,
+    "missing_regression_record": 1,
+    "claimed_count_of_ten_not_reproduced": true,
+    "other_stale_records_excluded": [
+      "block-storage/src/rust/dag/block_dag_key_value_storage.rs",
+      "scripts/ci/check-tla-invariants.sh"
+    ]
+  },
+  "hosted": {
+    "run_id": 36666866162,
+    "attempt": 1,
+    "event": "pull_request",
+    "pr_head": "7cdfee6b772cb8be73303bc2784a8c810adad4d1",
+    "tested_merge": "07d0e583399bdc8def445eea3d74fa3095aa0205",
+    "tested_merge_parents": [
+      "8e76d56281457db5c8f7cbe0d5cb980d47c17771",
+      "7cdfee6b772cb8be73303bc2784a8c810adad4d1"
+    ],
+    "jobs": {
+      "node_bindings": 109733293452,
+      "tla": 109733293444,
+      "rocq": 109733293566
+    },
+    "job_conclusions": "success",
+    "workflow_sha256": "37956499d722765a831cc70633130d419380317d01dface8a366eb0fd3d71fdd",
+    "artifacts": [
+      {
+        "id": 11076765868,
+        "name": "node-observation-36666866162-1",
+        "zip_sha256": "032ef723f3e445b4bc555c6ea7f04b06e13d98fe8fafa5f1537be31e903c6c03"
+      },
+      {
+        "id": 11076249744,
+        "name": "tla-invariant-logs-36666866162-1",
+        "zip_sha256": "f0ce753b43fa66a5520a87cf7d2dd1c3d54d43b3bce7021e8f2ebe1cde785853"
+      }
+    ],
+    "binding_exit": 0,
+    "passed_tests": {
+      "node_library": 259,
+      "node_observer": 20
+    },
+    "ignored_tests": 1,
+    "zero_skips_claimed": false,
+    "source_inputs": [
+      {
+        "path": "Cargo.lock",
+        "sha256": "7c8e7894bd8e61be30519855e682285b423efe6256ed11f7cfe421627107a789"
+      },
+      {
+        "path": "rust-toolchain.toml",
+        "sha256": "cef5cc010fbd237ab34a4d07129372406e11ff8595c2efc1126d9c93e039aed4"
+      },
+      {
+        "path": ".cargo/config.toml",
+        "sha256": "da7e626941c437575405e8eade493a1994483236d0f775c39800b2b2e93f230f"
+      },
+      {
+        "path": "node/Cargo.toml",
+        "sha256": "813dee574f66922d83c3d1baf27dbdc4eb78494422d8ac7f4e909ea37e5beadf"
+      },
+      {
+        "path": "node/src/rust/soak_observer.rs",
+        "sha256": "59f40fd5632955d7fbaae0cd6221e942d3dc7505ad8a096a2d95bce10d2ed878"
+      },
+      {
+        "path": "node/tests/soak_observer.rs",
+        "sha256": "3b69fa3df590f5687fdb719578557a0eef0df05c4fe60072e30c95cc8e782e86"
+      },
+      {
+        "path": "scripts/ci/check-node-observation-bindings.sh",
+        "sha256": "0894960136677e1efb0245bcb17240a0d6ce40155d5cb54e0e7487f27dcac317"
+      },
+      {
+        "path": "scripts/ci/test-check-node-observation-bindings.sh",
+        "sha256": "1841a3861695d32b89f511624af3f4057faed3f82422ed6389230c7fbdc60fa7"
+      },
+      {
+        "path": "docs/claims/casper-node-observation.md",
+        "sha256": "b865e33216b210a8915662e6ebd4f91d2b397a68f8f4dcf31fcd306aa8ca6c38"
+      },
+      {
+        "path": "docs/claims/casper-node-authority-snapshot.md",
+        "sha256": "741d16a73647f7107d44f7416dc1b878054ffbc4ae78136365b5fd536b271822"
+      },
+      {
+        "path": "formal/tlaplus/node_observation/BoundedCapture.tla",
+        "sha256": "6a4108143aefdcc9f59670160bffe527f37348a2c417053ae12a4fc7fcce0948"
+      },
+      {
+        "path": "formal/tlaplus/node_observation/MC_BoundedCapture.tla",
+        "sha256": "f3ec133279c1cb0c628277c33d187ee0d8f1dad9984a218b4006f83acf16e8d7"
+      },
+      {
+        "path": "formal/tlaplus/node_observation/MC_BoundedCapture_admission_unsafe.tla",
+        "sha256": "68b3d3a02b40633d54577a280a1dfaa9600811a99502520dd7f27529df4cd57f"
+      },
+      {
+        "path": "formal/tlaplus/node_observation/MC_BoundedCapture_bytes_unsafe.tla",
+        "sha256": "fbedc4b24bd2aacebe23a70f4880c2d11405bac3eb30b9844061ed32b9f32904"
+      },
+      {
+        "path": "formal/tlaplus/node_observation/MC_BoundedCapture_deadline_unsafe.tla",
+        "sha256": "103f4523b3719ff9bd4d6c9974d4632ae75f21aef62a5fb483e2b58384b15828"
+      },
+      {
+        "path": "formal/tlaplus/node_observation/MC_BoundedCapture_generation_unsafe.tla",
+        "sha256": "517277c25f209e5468b27b3ee5bc77b0860cd0b54b3a3532be07580d95df54ed"
+      },
+      {
+        "path": "formal/tlaplus/node_observation/MC_BoundedCapture_incomplete_unsafe.tla",
+        "sha256": "6c441cffbbcf5bada625c71c5aaf8d399fb50095054c1001b5b2321ec0a47ea2"
+      },
+      {
+        "path": "formal/tlaplus/node_observation/MC_BoundedCapture_open_unsafe.tla",
+        "sha256": "8a13a17ead44d6f24501080456680d49a2ee09b6fc5f8ab110a5fffd9d73785a"
+      },
+      {
+        "path": "formal/tlaplus/node_observation/MC_BoundedCapture_order_unsafe.tla",
+        "sha256": "927ca1030b336b9b20110ac3517e4004ab892143c0b306c93124baa98d47e114"
+      },
+      {
+        "path": "formal/tlaplus/node_observation/MC_BoundedCapture_release_unsafe.tla",
+        "sha256": "5562f8111e0b9d164b20367e73b15aef0bcd25838bb6f5ebc2c9a19f4baa1db4"
+      },
+      {
+        "path": "formal/tlaplus/node_observation/MC_BoundedCapture_validation_unsafe.tla",
+        "sha256": "b1e1570e9496a330ea881560d032cab82c71aa6b80e4e7517b2513dcc20d94ca"
+      },
+      {
+        "path": "formal/tlaplus/node_observation/MC_BoundedCapture_write_unsafe.tla",
+        "sha256": "d19d344d015fa93470d6d27e6e663cc6869126587ce162469e8c41194e141a00"
+      },
+      {
+        "path": "formal/tlaplus/node_observation/MC_ObserverSession.tla",
+        "sha256": "1dbb4ff655594466bab3382402a3bb22631aaa6abb74c79d52ddf211e9006176"
+      },
+      {
+        "path": "formal/tlaplus/node_observation/MC_ObserverSession_budget_unsafe.tla",
+        "sha256": "871106f33930940102bec72fbac69ea28182ff8d12cd7771ffecd63d48135292"
+      },
+      {
+        "path": "formal/tlaplus/node_observation/MC_ObserverSession_challenge_unsafe.tla",
+        "sha256": "a3d7fe9a6e4aad45ac2acaf595e876c99c1fd09b6a5b23c34c327f0352b9398a"
+      },
+      {
+        "path": "formal/tlaplus/node_observation/MC_ObserverSession_deadline_unsafe.tla",
+        "sha256": "223e56f2fc65419efb7a611cd95ec084ab866db80c9ed7e20284877af033ecaf"
+      },
+      {
+        "path": "formal/tlaplus/node_observation/MC_ObserverSession_frame_unsafe.tla",
+        "sha256": "68ddde1e42dd197959c36b57ff4a9db37555c230e4333cb7599814cb42071b8e"
+      },
+      {
+        "path": "formal/tlaplus/node_observation/MC_ObserverSession_freshness_pre_fix.tla",
+        "sha256": "8e4f178283c13927692b012c8285f1c7da931927503d459882f02ef1b481f0f8"
+      },
+      {
+        "path": "formal/tlaplus/node_observation/MC_ObserverSession_identity_unsafe.tla",
+        "sha256": "29b73831fabf68d38db3b330a5d5d56448ec84f9af42fcf00ae952c7db62ed9b"
+      },
+      {
+        "path": "formal/tlaplus/node_observation/MC_ObserverSession_repeat_unsafe.tla",
+        "sha256": "ab2efae7826cbcbb9c41f748d452e88d747983049e695390f6f9febf29dd19c4"
+      },
+      {
+        "path": "formal/tlaplus/node_observation/ObserverSession.tla",
+        "sha256": "af6ddf2f6e48eb5084f0f63a0db076ff77310dd8341ba24cc7732de936e0e6d5"
+      },
+      {
+        "path": "formal/tlaplus/node_observation/MC_BoundedCapture.cfg",
+        "sha256": "396718266cab3e27f01affa6e82836aaad98dc6adff6f0df3209206d8894e6ff"
+      },
+      {
+        "path": "formal/tlaplus/node_observation/MC_BoundedCapture_admission_unsafe.cfg",
+        "sha256": "8b142e9af11a06c13d3b71f90426d13716dd0b36c208fe60f97c6efb49a3e66f"
+      },
+      {
+        "path": "formal/tlaplus/node_observation/MC_BoundedCapture_bytes_unsafe.cfg",
+        "sha256": "3ee939c1f8cef5ea420fbfbc8626f0a029d8534f3a83980952aec297eac9206e"
+      },
+      {
+        "path": "formal/tlaplus/node_observation/MC_BoundedCapture_deadline_unsafe.cfg",
+        "sha256": "01fb2af77d7cd7872fff3bb598fb2c11abc632a64c3d52a8da7f97a837545e58"
+      },
+      {
+        "path": "formal/tlaplus/node_observation/MC_BoundedCapture_generation_unsafe.cfg",
+        "sha256": "00a59b451cbb6e699b6d94b461b2396491ccab8d88c2160d0734de18efe715b9"
+      },
+      {
+        "path": "formal/tlaplus/node_observation/MC_BoundedCapture_incomplete_unsafe.cfg",
+        "sha256": "d126cf86466d7f82cd9364b29ba81648bebc230c223c6f39a9d4489eea126a96"
+      },
+      {
+        "path": "formal/tlaplus/node_observation/MC_BoundedCapture_open_unsafe.cfg",
+        "sha256": "e0b96edbfba4685dd975c7825fba77db3186488c8a2b0ad8b182d984116111bd"
+      },
+      {
+        "path": "formal/tlaplus/node_observation/MC_BoundedCapture_order_unsafe.cfg",
+        "sha256": "e1d7d12a93e502a1f42988e6b4c87526721782b68f1ea93115bfdee270378f2e"
+      },
+      {
+        "path": "formal/tlaplus/node_observation/MC_BoundedCapture_release_unsafe.cfg",
+        "sha256": "a66ecbdb4c1b7b3f198fc5f187b7b3935b4754fc2ec5effea9f3f2cc5dbd531f"
+      },
+      {
+        "path": "formal/tlaplus/node_observation/MC_BoundedCapture_validation_unsafe.cfg",
+        "sha256": "8c14e18002986cc43b543894efebd34f763238d72de1dee405fd96d09b82475b"
+      },
+      {
+        "path": "formal/tlaplus/node_observation/MC_BoundedCapture_write_unsafe.cfg",
+        "sha256": "0818d4e1db55235576535127d955398799174e4f3df6deeae84765cd63bf1867"
+      },
+      {
+        "path": "formal/tlaplus/node_observation/MC_ObserverSession.cfg",
+        "sha256": "4e71ad2f75be0b45cedd6391bcef3b3807f4bb7aab50b5e5fef0f25d67d2c7a7"
+      },
+      {
+        "path": "formal/tlaplus/node_observation/MC_ObserverSession_budget_unsafe.cfg",
+        "sha256": "987c3e4dcc45fdf059d56c78b8e507f1ab3364158303640de08ead4da21743cc"
+      },
+      {
+        "path": "formal/tlaplus/node_observation/MC_ObserverSession_challenge_unsafe.cfg",
+        "sha256": "0c5bc05e0f39dec8dc3ddb2bdd59fa50c7574d2c66021c033db92ad2ccda6085"
+      },
+      {
+        "path": "formal/tlaplus/node_observation/MC_ObserverSession_deadline_unsafe.cfg",
+        "sha256": "dfdfe1958d35e0ea854637f423fdb8324d722bba1411d2af1c4d06d036be0f08"
+      },
+      {
+        "path": "formal/tlaplus/node_observation/MC_ObserverSession_frame_unsafe.cfg",
+        "sha256": "3383df6c84ce482158bb402a76e10bd29ad7dbdcc488238c8e26b115e3cd737d"
+      },
+      {
+        "path": "formal/tlaplus/node_observation/MC_ObserverSession_freshness_pre_fix.cfg",
+        "sha256": "f5a58a030f8f75cea9fb99949c367781611570e9c658140ae2ae72e6dc4992e0"
+      },
+      {
+        "path": "formal/tlaplus/node_observation/MC_ObserverSession_identity_unsafe.cfg",
+        "sha256": "88a91a691356a5e37315e925bd3dd1b5877d1fee9327df61980d7060050a8c27"
+      },
+      {
+        "path": "formal/tlaplus/node_observation/MC_ObserverSession_repeat_unsafe.cfg",
+        "sha256": "7f4760e0bbd56c5d528b71639ed86f4ac63c10987298dc7ee5231b03edd2c127"
+      },
+      {
+        "path": "formal/tlaplus/node_observation/bindings.json",
+        "sha256": "7280e8cbcd3d5c7a08f26642049c9461509dc234a777d214f2d2dee62c1e45ad"
+      },
+      {
+        "path": "formal/tlaplus/node_observation/verification-plan.json",
+        "sha256": "0da58d7c5c4f17a9cb26995508db51d5fb152c89a54c8ce252c24972149a883a"
+      },
+      {
+        "path": "formal/tlaplus/node_observation/README.md",
+        "sha256": "94368f7b691ada20b9bef3acc85f97a8cc05702cb47ae64dac72f5d6b5a69aaf"
+      },
+      {
+        "path": "formal/rocq/node_observation/_CoqProject",
+        "sha256": "791d84d2380cefbe0f1b9bc8954adcc977440ce3b8939e084da41ab80210a9d4"
+      },
+      {
+        "path": "formal/rocq/node_observation/README.md",
+        "sha256": "44ae785860ab32ee45d1d4788d639777251918f0ce8c0cfee1bbcd48850b3e57"
+      },
+      {
+        "path": "formal/rocq/node_observation/theories/BoundedCapture.v",
+        "sha256": "a2cb0858ece3634ce364cd0b92af6e5e6b908e8df968855e3d84e4d7f66c54a2"
+      },
+      {
+        "path": "formal/rocq/node_observation/theories/MainTheorem.v",
+        "sha256": "f5dc4c1423be9953c9a948df5eee294fcf2049d0942f178578ba334d3bf5e13f"
+      },
+      {
+        "path": "formal/rocq/node_observation/theories/ObserverSession.v",
+        "sha256": "83040ea7cbc77e72655704ef87f04f600b1da107c64c69be822786e7770b9550"
+      }
+    ],
+    "source_input_hashes_verified_against_pr_head": 58,
+    "raw_and_executed_digest_recheck_log_entries": 4,
+    "executable_binaries_downloaded": false,
+    "allocated_sections_segments_and_section_hashes_match": true,
+    "node_model_signatures": [
+      {
+        "module": "MC_ObserverSession",
+        "expected_exit": 0,
+        "invariant": null,
+        "signature_verified": true
+      },
+      {
+        "module": "MC_ObserverSession_challenge_unsafe",
+        "expected_exit": 12,
+        "invariant": "FreshChallenge",
+        "signature_verified": true
+      },
+      {
+        "module": "MC_ObserverSession_identity_unsafe",
+        "expected_exit": 12,
+        "invariant": "BoundIdentity",
+        "signature_verified": true
+      },
+      {
+        "module": "MC_ObserverSession_frame_unsafe",
+        "expected_exit": 12,
+        "invariant": "BoundFrame",
+        "signature_verified": true
+      },
+      {
+        "module": "MC_ObserverSession_deadline_unsafe",
+        "expected_exit": 12,
+        "invariant": "BoundDeadline",
+        "signature_verified": true
+      },
+      {
+        "module": "MC_ObserverSession_repeat_unsafe",
+        "expected_exit": 12,
+        "invariant": "OneRequest",
+        "signature_verified": true
+      },
+      {
+        "module": "MC_ObserverSession_budget_unsafe",
+        "expected_exit": 12,
+        "invariant": "SessionBudget",
+        "signature_verified": true
+      },
+      {
+        "module": "MC_BoundedCapture",
+        "expected_exit": 0,
+        "invariant": null,
+        "signature_verified": true
+      },
+      {
+        "module": "MC_BoundedCapture_admission_unsafe",
+        "expected_exit": 12,
+        "invariant": "ValidAdmission",
+        "signature_verified": true
+      },
+      {
+        "module": "MC_BoundedCapture_deadline_unsafe",
+        "expected_exit": 12,
+        "invariant": "BoundLockWait",
+        "signature_verified": true
+      },
+      {
+        "module": "MC_BoundedCapture_order_unsafe",
+        "expected_exit": 12,
+        "invariant": "GuardOrder",
+        "signature_verified": true
+      },
+      {
+        "module": "MC_BoundedCapture_open_unsafe",
+        "expected_exit": 12,
+        "invariant": "OpenIdentity",
+        "signature_verified": true
+      },
+      {
+        "module": "MC_BoundedCapture_validation_unsafe",
+        "expected_exit": 12,
+        "invariant": "ValidatedIdentity",
+        "signature_verified": true
+      },
+      {
+        "module": "MC_BoundedCapture_generation_unsafe",
+        "expected_exit": 12,
+        "invariant": "GenerationStable",
+        "signature_verified": true
+      },
+      {
+        "module": "MC_BoundedCapture_incomplete_unsafe",
+        "expected_exit": 12,
+        "invariant": "CompleteRows",
+        "signature_verified": true
+      },
+      {
+        "module": "MC_BoundedCapture_bytes_unsafe",
+        "expected_exit": 12,
+        "invariant": "BoundBytes",
+        "signature_verified": true
+      },
+      {
+        "module": "MC_BoundedCapture_release_unsafe",
+        "expected_exit": 12,
+        "invariant": "Detached",
+        "signature_verified": true
+      },
+      {
+        "module": "MC_BoundedCapture_write_unsafe",
+        "expected_exit": 12,
+        "invariant": "ReadOnly",
+        "signature_verified": true
+      },
+      {
+        "module": "MC_ObserverSession_freshness_pre_fix",
+        "expected_exit": 12,
+        "invariant": "FreshChallenges",
+        "signature_verified": true
+      }
+    ],
+    "independent_model_exit_files": false,
+    "full_tla_console_counts": {
+      "positive": 15,
+      "negative": 78
+    },
+    "rocq_closed_context_outputs": 40,
+    "tested_merge_tree": "4ff911d0e90ba771789975f91acd48f3a703e5b2",
+    "published_pr_tree": "70bc3c861cc4195a7150d3eb98e168d7c48517ac",
+    "whole_tree_matches_pr_head": false,
+    "current_pr_base": "d673a5cf2793dc242426159ab5bdb711fab8efca"
+  },
+  "local_strip_regression": {
+    "exit": 0,
+    "mutations_rejected": 12,
+    "image": "sha256:fc6351ab4210530ff9fe6768c81c17855cabeff6a69555107a6c413d2f1cd484",
+    "platform": "aarch64-unknown-linux-gnu",
+    "rustc": "1.98.0 (88d9e12ae 2026-08-18)",
+    "binutils": "2.40",
+    "network": "none",
+    "source_mount": "read-only",
+    "memory_limit_mib": 768,
+    "cpu_limit": 1,
+    "pids_limit": 64,
+    "temporary_storage_limit_mib": 128,
+    "initial_failures": [
+      {
+        "exit": 127,
+        "reason": "The login shell did not find rustc."
+      },
+      {
+        "exit": 1,
+        "reason": "The rustup proxy tried to change the read-only image."
+      },
+      {
+        "exit": 126,
+        "reason": "The temporary filesystem did not permit fixture execution."
+      }
+    ],
+    "final_method": "Use the installed compiler directly and permit execution only on the bounded temporary filesystem."
+  },
+  "limits": [
+    "The downloaded artifact does not include the executed binaries. Their digests were rechecked by the hosted job, not independently reconstructed here.",
+    "The model logs establish the expected result signatures. Independent exit files are absent.",
+    "The local ELF fixtures do not qualify a blockchain node or a campaign image.",
+    "Batch D and Batch E acceptance remain separate.",
+    "CLAIM-SOAK-GATE-001 remains pending. No enforcement or final acceptance occurred.",
+    "The new regression artifact still requires claim-inventory review.",
+    "The generic CbC status gate does not validate source hashes. Before refresh, it reported the changed driver as discharged. Independent hash validation found the stale identity.",
+    "The tested merge base differs from the current PR base. The tested complete Git tree differs from the published PR head tree.",
+    "The 58-file input manifest does not enumerate all transitive Rust sources. These results qualify the recorded CI correction inputs, not the complete current branch.",
+    "Only ELF64 fixtures were executed. The ELF32 normalization branch remains untested."
+  ],
+  "private_scratch": "target/node-observation-agent-b-20260930-01",
+  "claim_acceptance": false,
+  "task_complete": false
+}

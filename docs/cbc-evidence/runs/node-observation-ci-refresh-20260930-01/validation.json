@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "scope": "agent-b-ci-correction-refresh-20260930-01",
+  "validated_at": "2026-09-30T05:15:33.875173+00:00",
+  "report_sha256": "0dc0d1cabf7a8ed2d8846dbffc8a19e9b4beb117286c8b65540d068bfbb9aeba",
+  "source_hashes_checked": 3,
+  "record_report_links_checked": 3,
+  "historical_record_hashes_checked": 2,
+  "hosted_zip_hashes_checked": 2,
+  "hosted_input_hashes_checked": 58,
+  "records_checked": [
+    "docs/cbc-evidence/github-workflows-slashing-tests-yml.md",
+    "docs/cbc-evidence/scripts-ci-check-node-observation-bindings-sh.md",
+    "docs/cbc-evidence/scripts-ci-test-check-node-observation-bindings-sh.md"
+  ],
+  "current_records_pending": 3,
+  "scoped_gate_exit": 4,
+  "scoped_gate_gaps": 3,
+  "local_strip_exit": 0,
+  "local_strip_refusals": 12,
+  "identity_validation_passed": true,
+  "claim_acceptance": false,
+  "task_complete": false,
+  "tested_whole_tree_matches_pr_head": false
+}

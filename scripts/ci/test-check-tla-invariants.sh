@@ -290,7 +290,7 @@ fi
 grep -q 'not registered in NEGATIVE_CONTROLS' "$WORK/run.log" ||
     fail 'The gate failed for a reason other than the unregistered control.'
 rm -f "$planted"
-for family in ObserverSession BoundedCapture; do
+for family in ObserverSession BoundedCapture PairedForkChoice; do
     planted="$tla/node_observation/MC_${family}_planted_unsafe.cfg"
     cp "$tla/node_observation/MC_${family}.cfg" "$planted"
     if run_gate gate; then fail 'The gate accepted an unregistered node unsafe configuration.'; fi

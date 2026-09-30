@@ -54,6 +54,32 @@ Removing those five manifests leaves every other package companion without a pat
 
 The diff against `dev` before any removal is 239 files, with 24,288 insertions and 323 deletions. Documentation accounts for 135 files and 12,047 insertions, formal inputs for 53 files and 2,746 insertions, tests for 10 files and 3,513 insertions, workflows and scripts for 8 files and 310 insertions, and source for 33 files and 5,672 insertions.
 
+## Provisional refresh by Agent B on 2026-09-30
+
+Agent B recorded the [current inventory and checks](node-observation-agent-b-20260930.md#cleanup-inventory) without removing files.
+The checkpoint is `bc226f89b46366ea4cb0c1907d6781050afb7d0c`.
+The actual PR base is `fix/node-log-and-accept-backoff` at `d673a5cf2793dc242426159ab5bdb711fab8efca`.
+The separate cumulative comparison uses `dev` at `eb98d8e07ecfb3f9354002ee4b5fbf18323da151`.
+
+The committed stack diff contains 246 files, 24,409 added lines, and 319 deleted lines.
+The committed cumulative diff contains 274 files, 28,992 added lines, and 387 deleted lines.
+The scoped inventory contains 226 paths, including active changes.
+It retains 221 paths and identifies the same five self-manifests for final review.
+Their hashes match the earlier tracker list.
+
+The offline check inspected 2,235 links and found four missing local targets in `docs/discoveries/2026-09-19-soak-dispatch-preconditions.md`.
+The check exited 1.
+The linked Agent B log names each missing target.
+The earlier zero-error result above remains historical evidence, not the current result.
+
+The three-artifact CI record gate exits 4 with three pending records after source-specific verification.
+That scoped result is not a full node claim audit.
+The new Batch D claim and the changed Batch D artifacts require their own verification and acceptance.
+
+The inventory remains provisional until the final Batch D, Batch E, and record-refresh content is available.
+Agent A owns any separately authorized removals.
+The authorization field remains false.
+
 ## Decision requested
 
 The five proposed removals reduce the diff by five files and about 1.2 KiB. They change no claim status, record status, tier field, or audit result. The task holds at `removals_authorized: false` until the user or the maintainer authorizes the list or decides to remove nothing.
