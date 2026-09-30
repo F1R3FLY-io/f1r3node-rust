@@ -249,6 +249,21 @@ pending_record_refresh:
     - scripts/ci/test-check-node-observation-bindings.sh
   state: "The evidence records of the two changed artifacts hold the digests from before the corrections. Their recorded acceptance applies to those earlier bytes. No evidence record and no claim status changed."
   owner: "The owner of this epic refreshes the records in the next verification cycle."
+branch_completion_plan:
+  decided_by: user
+  decided_on: 2026-09-30
+  recorded_by: claude-session-f3cbc961
+  decision: "Finish the work on this branch before the stack merge round continues above it. Branch 1 (fix/node-log-and-accept-backoff at d673a5cf2) is merged into this branch at 7cdfee6b7 and pushed. The merges into formal/soak-casper-consensus and above wait."
+  order:
+    - "TASK-019-9 (Batch D): tracker record, pending claim, file-scope confirmation, implementation, tests, evidence record."
+    - "TASK-019-10 (Batch E): the same sequence, after TASK-019-9."
+    - "pending_record_refresh: refresh the 10 evidence records after the last code change of the batches."
+    - "TASK-019-8: final branch cleanup, when the branch content is final."
+    - "Then the merge round upward, and TASK-019-6 when the stack merges."
+  open_inputs:
+    - "Owner of TASK-019-9, TASK-019-10, the record refresh, and TASK-019-8: claude-session-7015f552 holds the epic claim. A transfer to another session needs the user's decision."
+    - "File-scope confirmation of Batch D, then of Batch E."
+    - "One STE finding from branch 1 in docs/User-Flows.md: a paragraph with 7 sentences."
 tasks:
   - id: TASK-019-1
     title: "Batch A: local capability interface and runtime shutdown correction"
@@ -803,6 +818,57 @@ tasks:
       - "Every file an accepted claim cites is still present at its recorded digest."
       - "Each removed file is listed with a reason, and any externalized evidence names its location and digest."
       - "The maintainer confirms the reduced diff before the merge."
+  - id: TASK-019-9
+    title: "Batch D: paired fork-choice observation bound to one capture"
+    status: pending
+    claimed_by: null
+    proposed_owner: claude-session-7015f552
+    recorded_by: claude-session-f3cbc961
+    recorded_on: 2026-09-30
+    blocked_by: []
+    precedes: [TASK-019-10]
+    consumer: "TASK-017-12 harness profile on formal/soak-casper-consensus: the profile compares the selected head of a bounded member and a reference member on equal inputs."
+    claims: [CLAIM-CASPER-NODE-OBSERVATION-004]
+    claim_status: not_registered
+    plan_draft: "target/node-observation-prep-20260928-01/batch-d/ (local, ignored by Git; the plan moves to docs/plans/casper-node-observation-batch-d.md at the file-scope confirmation)"
+    draft_reviewed_base: 670037c2511abd5f576063b3153681a873244a18
+    file_scope_confirmed: false
+    file_scope_size: "24 files: 11 code and test files, the remainder are formal, claim, plan, and record files"
+    open_questions: "2 in the draft: the lower bound of the reference evaluation, and independent reference against a second estimator call"
+    scope: "Add a paired fork-choice observation to the authority_snapshot operation. One capture supplies the inputs of the 2 evaluations. No new consensus rule and no new production limit."
+    acceptance:
+      - "The response of authority_snapshot carries the selected head of the bounded evaluation and of the reference evaluation, with the input digest of the shared capture."
+      - "The estimator, the common ancestor walk, the weight read, and fork_choice_floor have metered entry points, and the current entry points call them with NoopWork."
+      - "The work paths of observation_work.rs increase from 4 to 6, with tests for the limits."
+      - "The node capability list has the fork_choice entry, and node/tests/soak_observer.rs tests its admission."
+      - "CLAIM-CASPER-NODE-OBSERVATION-004 is registered as pending before the first code change, and its evidence record is source bound."
+    constraints:
+      - "No code before the user confirms the exact file list of the plan draft."
+      - "Confirmation of this batch does not authorize Batch E."
+  - id: TASK-019-10
+    title: "Batch E: equivocation input capture for the detached display projection"
+    status: pending
+    claimed_by: null
+    proposed_owner: claude-session-7015f552
+    recorded_by: claude-session-f3cbc961
+    recorded_on: 2026-09-30
+    blocked_by: [TASK-019-9]
+    claims: [CLAIM-CASPER-NODE-OBSERVATION-005]
+    claim_status: not_registered
+    plan_draft: "target/node-observation-prep-20260928-01/batch-e/ (local, ignored by Git; the plan moves to docs/plans/casper-node-observation-batch-e.md at the file-scope confirmation)"
+    draft_reviewed_base: 670037c2511abd5f576063b3153681a873244a18
+    file_scope_confirmed: false
+    file_scope_size: "30 files: 13 code and test files, 11 formal files, the remainder are claim, plan, and record files"
+    open_questions: "6 in the draft: tracker capture consistency, retained row content, source of the display arithmetic, refusal extent on a failed tracker read, base value for a missing block, and the finalized test of the display calculation"
+    scope: "Capture the equivocation inputs in the same interval as the detached DAG capture, and calculate the display projection from captured inputs only, with the arithmetic of the live calculation."
+    acceptance:
+      - "The detached observer reports the display projection from the captured inputs, not as unavailable."
+      - "The capture reads the equivocation tracker in the same consistency interval as the DAG capture, with a refusal when the read fails."
+      - "The display arithmetic has one source that the live path and the detached path share, with a test that compares the two on equal inputs."
+      - "CLAIM-CASPER-NODE-OBSERVATION-005 is registered as pending before the first code change, and its evidence record is source bound."
+    constraints:
+      - "No code before the user confirms the exact file list of the plan draft."
+      - "Starts after TASK-019-9, because both change casper/src/rust/soak_observer.rs, evaluation.rs, and the two soak_observer test files."
 ---
 ```
 
