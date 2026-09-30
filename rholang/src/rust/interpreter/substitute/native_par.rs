@@ -79,7 +79,7 @@ fn copy_metered<T: Clone + CloneBacking>(
     value: &T,
     backing: &dyn BackingMeter,
 ) -> Result<T, InterpreterError> {
-    clone_backing::reserve(value, &cleanup_meter(backing)).map_err(rejected)?;
+    clone_backing::reserve_copy_and_cleanup(value, backing).map_err(rejected)?;
     Ok(value.clone())
 }
 

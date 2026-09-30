@@ -230,6 +230,31 @@ async fn counter_publication_prepays_growth_and_preserves_state_at_every_cut() {
     assert_eq!(space.produce_counter.lock().unwrap().get(&source), Some(&i32::MAX));
 }
 
+#[tokio::test]
+async fn counter_preparation_prepays_nested_source_cleanup() {
+    let space = space().await;
+    let small = Produce::create(&1u8, &7u8, false);
+    let mut large = small.clone();
+    large.output_value = vec![vec![7; 64]; 512];
+    let measure = |source: &Produce| {
+        let meter = Meter::default();
+        space
+            .prepare_metered_produce_counter(source, false, &meter)
+            .unwrap();
+        meter.used.get()[0]
+    };
+    let copy_work = |source: &Produce| {
+        let meter = Meter::default();
+        native_backing::reserve(source, &meter).unwrap();
+        meter.used.get()[0]
+    };
+    let added_work = measure(&large) - measure(&small);
+    let added_copy_work = copy_work(&large) - copy_work(&small);
+    assert!(added_copy_work > 0);
+    assert!(added_work >= added_copy_work * 2);
+    assert!(space.produce_counter.lock().unwrap().is_empty());
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(128))]
 

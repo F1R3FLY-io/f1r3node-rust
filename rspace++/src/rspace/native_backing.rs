@@ -40,23 +40,36 @@ fn walk(
     result.map_err(|_| RSpaceError::HostWorkRejected)
 }
 
+#[cfg(test)]
 pub(crate) fn reserve<T: CloneBacking>(
     value: &T,
     meter: &dyn SourceMeter,
 ) -> Result<(), RSpaceError> {
     walk(meter, |reserve| clone_backing::reserve(value, reserve))
 }
-pub(crate) fn reserve_slice<T: CloneBacking>(
+pub(crate) fn reserve_copy_and_cleanup<T: CloneBacking>(
+    value: &T,
+    meter: &dyn SourceMeter,
+) -> Result<(), RSpaceError> {
+    walk(meter, |reserve| clone_backing::reserve_copy_and_cleanup(value, reserve))
+}
+pub(crate) fn reserve_slice_copy_and_cleanup<T: CloneBacking>(
     values: &[T],
     meter: &dyn SourceMeter,
 ) -> Result<(), RSpaceError> {
-    walk(meter, |reserve| clone_backing::reserve_slice(values, reserve))
+    walk(meter, |reserve| clone_backing::reserve_slice_copy_and_cleanup(values, reserve))
 }
 pub(crate) fn inspect<T: CloneBacking>(
     value: &T,
     meter: &dyn SourceMeter,
 ) -> Result<(), RSpaceError> {
     walk(meter, |reserve| clone_backing::inspect(value, reserve))
+}
+pub(crate) fn reserve_cleanup<T: CloneBacking>(
+    value: &T,
+    meter: &dyn SourceMeter,
+) -> Result<(), RSpaceError> {
+    inspect(value, meter)
 }
 pub(crate) fn inspect_slice<T: CloneBacking>(
     values: &[T],

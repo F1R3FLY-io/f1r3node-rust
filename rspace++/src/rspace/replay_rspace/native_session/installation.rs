@@ -99,7 +99,7 @@ where
                 };
                 matched.push(value);
                 if !datum.persist {
-                    native_backing::reserve(channel, &meter)?;
+                    native_backing::reserve_copy_and_cleanup(channel, &meter)?;
                     chosen.push((channel.clone(), index));
                 }
                 found = true;

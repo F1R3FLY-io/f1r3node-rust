@@ -205,7 +205,7 @@ pub fn produce<C: Serialize, A: Serialize>(
 }
 
 pub fn clone_produce(source: &Produce, meter: &dyn SourceMeter) -> Result<Produce> {
-    crate::rspace::native_backing::reserve(source, meter)?;
+    crate::rspace::native_backing::reserve_copy_and_cleanup(source, meter)?;
     Ok(source.clone())
 }
 

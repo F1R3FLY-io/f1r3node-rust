@@ -59,6 +59,11 @@ impl NativeReplayBoundary {
         if usage != journal.recording.used {
             return Err(NativeReplayError::Outcome);
         }
+        work(
+            &self.replay.inner.host,
+            HostWorkDimension::VerificationOperations,
+            3,
+        )?;
         Ok(NativeReplayAccountingSnapshot {
             recording: journal.recording.clone(),
             operations: Arc::clone(&journal.operations),

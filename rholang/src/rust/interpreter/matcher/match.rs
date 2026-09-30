@@ -187,7 +187,7 @@ fn guard_passes_metered(
     for binding in matched {
         meter.reserve(1, 0, 0)?;
         for par in &binding.pars {
-            clone_backing::reserve(par, meter)?;
+            clone_backing::reserve_copy_and_cleanup(par, meter)?;
             env.push_metered(par.clone(), meter)?;
         }
     }

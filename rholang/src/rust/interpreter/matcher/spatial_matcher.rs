@@ -145,7 +145,7 @@ impl<'a> MatcherWork<'a> {
         let result = if inspect {
             clone_backing::inspect(value, &meter)
         } else {
-            clone_backing::reserve(value, &meter)
+            clone_backing::reserve_copy_and_cleanup(value, &meter)
         };
         if result.is_err() {
             return self.reject(RSpaceError::HostWorkRejected);
@@ -169,7 +169,7 @@ impl<'a> MatcherWork<'a> {
             self.reserve(operations, scanned, backing)
                 .ok_or(BackingError::Rejected)
         };
-        if clone_backing::reserve_slice(values, &meter).is_err() {
+        if clone_backing::reserve_slice_copy_and_cleanup(values, &meter).is_err() {
             return self.reject(RSpaceError::HostWorkRejected);
         }
         Some(())

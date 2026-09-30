@@ -379,30 +379,40 @@ mod tests {
 
     #[test]
     fn metered_expr_substitution_rejects_late_collection_work() {
-        let env: Env<Par> = Env::new();
+        let mut env: Env<Par> = Env::new();
+        let locally_free = vec![1; 17];
+        env.shift = locally_free.len() as i32;
+        let final_reservation = (
+            2 * (locally_free.len() + 1),
+            locally_free.len(),
+            locally_free.len(),
+        );
         let expr = Expr {
             expr_instance: Some(ExprInstance::ESetBody(ESet {
                 ps: vec![par(3), par(1), par(2)],
-                locally_free: Vec::new(),
+                locally_free,
                 connective_used: false,
                 remainder: None,
             })),
         };
         let substitute = substitute();
         let calls = Cell::new(0usize);
-        let count = |_: usize, _: usize, _: usize| {
+        let final_call = Cell::new(None);
+        let count = |operations: usize, scanned: usize, backing: usize| {
             calls.set(calls.get() + 1);
+            if (operations, scanned, backing) == final_reservation {
+                assert!(final_call.get().is_none());
+                final_call.set(Some(calls.get()));
+            }
             Ok::<(), BackingError>(())
         };
         substitute
             .substitute_expr_metered(expr.clone(), 0, &env, &count)
             .unwrap();
-        let last = calls.get();
-        assert!(last > 1);
-        let seen = Cell::new(0usize);
-        let reject = |_: usize, _: usize, _: usize| {
-            seen.set(seen.get() + 1);
-            if seen.get() == last {
+        assert!(calls.get() > 1);
+        assert_eq!(final_call.get(), Some(calls.get()));
+        let reject = |operations: usize, scanned: usize, backing: usize| {
+            if (operations, scanned, backing) == final_reservation {
                 Err(BackingError::Rejected)
             } else {
                 Ok(())

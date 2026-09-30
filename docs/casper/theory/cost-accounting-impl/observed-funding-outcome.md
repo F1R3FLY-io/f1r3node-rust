@@ -848,10 +848,14 @@ Native root publication writes the root tag and current-root pointer in one stri
 Cold leaves and radix nodes are written separately before root publication, so failed exports can leave unreachable content.
 It does not prove filesystem durability across power loss or the correctness of the storage backend.
 Native export reserves store-change collection, serialization, and staged radix preparation before checkpoint publication.
+Native radix decoding reserves both encoded bytes and the digest-key comparison before rejecting a malformed node.
+Native radix preparation reserves read-cache and write-cache probes separately before decoding a cache hit.
 Native checkpoint preparation reserves the root copy and returned repository backing.
+An empty checkpoint also reserves its returned repository clone before export closes the session.
 Commit constructs the returned repository before it writes cold leaves, radix nodes, or the root record.
 Export reserves and constructs its returned root before checkpoint publication.
 Allocator tests cover no-op and mixed-action preparation and commit with varied payload sizes.
+Reservation-cut tests confirm that an empty export remains open until all preparation succeeds.
 Storage backend writes and cleanup still require complete host-resource bounds before funded-runtime activation.
 
 ### Native callback conformance
@@ -1032,6 +1036,8 @@ Stored consume publication reserves the continuation, identity output, and affec
 Matched produce publication now stages data, continuation, and join retirement before the first store mutation.
 It checks every original index and reserves the affected map copies and vector work before publication.
 Later payload destruction and other native cleanup paths still require complete bounds before native activation.
+Checkpoint capture prepays cleanup for cloned logs, counters, authority state, and mergeable state.
+Native cache publication and retirement, candidate preparation, matcher cloning, guard evaluation, and metered sorting prepay cleanup for their owned copies.
 Economic byte charges do not establish these host-resource bounds.
 Restore makes no new host reservation, but that fact alone does not prove that every discarded allocation received a prior cleanup charge.
 
@@ -1114,11 +1120,14 @@ Matching, mutation, export, and cleanup still require complete reservation cover
 
 `HistoryRepository::native_history_reader` creates a borrowed reader at an explicit state root.
 The reader reserves host work before key allocation, storage lookup, hash verification, and framing scans.
+Each node and leaf lookup reserves its key-copy work before changing the reusable scratch buffer.
+Hash verification reserves the 32-byte pointer comparison even for short nodes and empty leaves.
 It reads radix nodes and cold leaves through `KeyValueStore::with_value`, without constructing a node cache or copying the complete payload.
 Borrowed node bytes never cross another storage lookup.
 The leaf consumer receives validated record slices only after the entire frame and its content hash pass verification.
 The consumer runs inside the backend read guard. It must not perform nested storage access or wait for a writer.
 The consumer must reserve its own decoding, copying, and cleanup work before creating owned payloads.
+The native replay consumer reserves a second operation and scan allowance for decoded payload cleanup before each typed field is constructed.
 
 Lookup prefixes and stored leaf tags have different orders:
 

@@ -191,11 +191,25 @@ fn walk_slice<T: CloneBacking>(
 pub fn reserve<T: CloneBacking>(value: &T, meter: &dyn BackingMeter) -> Result<(), BackingError> {
     walk(value, meter, true)
 }
+pub fn reserve_copy_and_cleanup<T: CloneBacking>(
+    value: &T,
+    meter: &dyn BackingMeter,
+) -> Result<(), BackingError> {
+    reserve(value, meter)?;
+    inspect(value, meter)
+}
 pub fn reserve_slice<T: CloneBacking>(
     values: &[T],
     meter: &dyn BackingMeter,
 ) -> Result<(), BackingError> {
     walk_slice(values, meter, true)
+}
+pub fn reserve_slice_copy_and_cleanup<T: CloneBacking>(
+    values: &[T],
+    meter: &dyn BackingMeter,
+) -> Result<(), BackingError> {
+    reserve_slice(values, meter)?;
+    inspect_slice(values, meter)
 }
 pub fn inspect<T: CloneBacking>(value: &T, meter: &dyn BackingMeter) -> Result<(), BackingError> {
     walk(value, meter, false)

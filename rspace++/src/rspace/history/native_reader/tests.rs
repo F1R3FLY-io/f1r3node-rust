@@ -42,6 +42,40 @@ impl NativeReadMeter for Meter {
     }
 }
 
+struct ScanMeter {
+    limit: usize,
+    total: Cell<usize>,
+    last: Cell<usize>,
+}
+
+impl ScanMeter {
+    fn new(limit: usize) -> Self {
+        Self {
+            limit,
+            total: Cell::new(0),
+            last: Cell::new(0),
+        }
+    }
+}
+
+impl NativeReadMeter for ScanMeter {
+    type Error = &'static str;
+
+    fn reserve(&self, charge: NativeReadCharge) -> Result<(), Self::Error> {
+        let next = self
+            .total
+            .get()
+            .checked_add(charge.scanned_bytes)
+            .ok_or("scan overflow")?;
+        if next > self.limit {
+            return Err("scan exhausted");
+        }
+        self.total.set(next);
+        self.last.set(charge.scanned_bytes);
+        Ok(())
+    }
+}
+
 fn frame(kind: NativeLeafKind, payload: &[u8], trailing: &[u8]) -> ([u8; 32], Vec<u8>) {
     let tag = match kind {
         NativeLeafKind::Joins => 0_u32,
@@ -141,6 +175,78 @@ fn every_reservation_rejection_prevents_the_consumer() {
             assert_eq!(calls.get(), 0);
         }
     }
+}
+
+#[test]
+fn node_lookup_rejection_precedes_scratch_copy_at_each_depth() {
+    let nodes = InMemoryKeyValueStore::new();
+    let leaves = InMemoryKeyValueStore::new();
+    let child = [11; 32];
+    let mut node = empty_node();
+    node[0] = Item::NodePtr {
+        prefix: Vec::new(),
+        ptr: child.to_vec(),
+    };
+    let bytes = encode(&node);
+    let root = digest(&bytes);
+    nodes.put_one(root.to_vec(), bytes).unwrap();
+    let reader = NativeHistoryReader::new(root, &nodes, &leaves);
+    let lookup = [0; 33];
+
+    let mut scratch = vec![9; 40];
+    assert!(matches!(
+        reader.leaf_pointer(&lookup, &mut scratch, &Meter::new(0)),
+        Err(NativeReadError::Host("exhausted"))
+    ));
+    assert_eq!(scratch, vec![9; 40]);
+
+    assert!(matches!(
+        reader.leaf_pointer(&lookup, &mut scratch, &Meter::new(2)),
+        Err(NativeReadError::Host("exhausted"))
+    ));
+    assert_eq!(scratch, root);
+}
+
+#[test]
+fn short_node_and_empty_leaf_prepay_digest_comparisons() {
+    let nodes = InMemoryKeyValueStore::new();
+    let leaves = InMemoryKeyValueStore::new();
+    let root = [42; 32];
+    let short_node = vec![3, 1, 9];
+    nodes.put_one(root.to_vec(), short_node.clone()).unwrap();
+    let reader = NativeHistoryReader::new(root, &nodes, &leaves);
+    let full = ScanMeter::new(usize::MAX);
+    let result = reader.with_records(NativeLeafKind::Data, &[7; 32], &full, |_| Ok(()));
+    assert!(matches!(result, Err(NativeReadError::Invalid(NativeReadFault::NodeHash))));
+    assert_eq!(full.last.get(), short_node.len() * 3 + root.len());
+    let short = ScanMeter::new(full.total.get() - 1);
+    assert!(matches!(
+        reader.with_records(NativeLeafKind::Data, &[7; 32], &short, |_| Ok(())),
+        Err(NativeReadError::Host("scan exhausted"))
+    ));
+
+    let (pointer, leaf) = frame(NativeLeafKind::Data, &0_u64.to_le_bytes(), &[]);
+    let leaf_len = leaf.len();
+    let root = install(&nodes, &leaves, NativeLeafKind::Data, pointer, leaf, false);
+    let reader = NativeHistoryReader::new(root, &nodes, &leaves);
+    let full = ScanMeter::new(usize::MAX);
+    assert!(
+        reader
+            .with_records(NativeLeafKind::Data, &[7; 32], &full, |_| Ok(()))
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(full.last.get(), leaf_len * 3 + pointer.len());
+    let short = ScanMeter::new(full.total.get() - 1);
+    let called = Cell::new(false);
+    assert!(matches!(
+        reader.with_records(NativeLeafKind::Data, &[7; 32], &short, |_| {
+            called.set(true);
+            Ok(())
+        }),
+        Err(NativeReadError::Host("scan exhausted"))
+    ));
+    assert!(!called.get());
 }
 
 #[test]

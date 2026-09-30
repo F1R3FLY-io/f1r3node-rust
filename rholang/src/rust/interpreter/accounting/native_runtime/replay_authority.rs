@@ -139,7 +139,7 @@ impl ReplayAuthorityBinding {
             if row.observation.kind == AuthorityByteEventKind::Comm {
                 backing::reserve_event_lookup(&host)?;
                 clone_backing::inspect(row.observation.as_ref(), &host)?;
-                clone_backing::reserve(&row.observation.authority, &host)?;
+                clone_backing::reserve_copy_and_cleanup(&row.observation.authority, &host)?;
                 let id = row.observation.event_id;
                 if state.pending_stack_event_ids.contains(&id)
                     || state.pending_replay_events.contains_key(&id)
@@ -305,13 +305,13 @@ impl RuntimeBudget {
             return Err(invalid());
         }
         let host = native.host_work();
-        clone_backing::reserve(&state.events, &host)?;
-        clone_backing::reserve_slice(state.byte_observations.rows(), &host)?;
-        clone_backing::reserve(&state.realized, &host)?;
-        clone_backing::reserve(&state.reserved, &host)?;
-        clone_backing::reserve(&state.frontier, &host)?;
-        clone_backing::reserve(&state.stack_births, &host)?;
-        clone_backing::reserve(&*introductions, &host)?;
+        clone_backing::reserve_copy_and_cleanup(&state.events, &host)?;
+        clone_backing::reserve_slice_copy_and_cleanup(state.byte_observations.rows(), &host)?;
+        clone_backing::reserve_copy_and_cleanup(&state.realized, &host)?;
+        clone_backing::reserve_copy_and_cleanup(&state.reserved, &host)?;
+        clone_backing::reserve_copy_and_cleanup(&state.frontier, &host)?;
+        clone_backing::reserve_copy_and_cleanup(&state.stack_births, &host)?;
+        clone_backing::reserve_copy_and_cleanup(&*introductions, &host)?;
         Ok(NativeAuthorityCheckpoint {
             generation: Arc::clone(&native.generation),
             events: state.events.clone(),
@@ -330,10 +330,10 @@ impl RuntimeBudget {
             return Ok(());
         };
         let host = native.host_work();
-        clone_backing::reserve(&state.events, &host)?;
-        clone_backing::reserve(&state.realized, &host)?;
-        clone_backing::reserve(&state.stack_births, &host)?;
-        clone_backing::reserve_slice(state.byte_observations.rows(), &host)?;
+        clone_backing::reserve_copy_and_cleanup(&state.events, &host)?;
+        clone_backing::reserve_copy_and_cleanup(&state.realized, &host)?;
+        clone_backing::reserve_copy_and_cleanup(&state.stack_births, &host)?;
+        clone_backing::reserve_slice_copy_and_cleanup(state.byte_observations.rows(), &host)?;
         backing::reserve_result_vectors(&state, &host)
     }
 

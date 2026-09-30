@@ -179,7 +179,7 @@ where
             .unwrap_or(0)
             .checked_add(1)
             .ok_or(RSpaceError::HostWorkRejected)?;
-        native_backing::reserve(source, meter)?;
+        native_backing::reserve_copy_and_cleanup(source, meter)?;
         let (operations, bytes) =
             tree_backing::<Produce, i32>(entries).ok_or(RSpaceError::HostWorkRejected)?;
         meter.reserve(operations, bytes, bytes)?;
@@ -274,8 +274,8 @@ where
                         .checked_add(1)
                         .ok_or(RSpaceError::HostWorkRejected)?;
                     let mut all = buffer(count, reader.meter)?;
-                    native_backing::reserve(data, reader.meter)?;
-                    native_backing::reserve(source, reader.meter)?;
+                    native_backing::reserve_copy_and_cleanup(data, reader.meter)?;
+                    native_backing::reserve_copy_and_cleanup(source, reader.meter)?;
                     all.push((
                         Datum {
                             a: data.clone(),
@@ -314,7 +314,7 @@ where
             if let Some(position) = channel_position(&result, channel, reader.meter)? {
                 result[position].values = values;
             } else {
-                native_backing::reserve(channel, reader.meter)?;
+                native_backing::reserve_copy_and_cleanup(channel, reader.meter)?;
                 result.push(ChannelData {
                     channel: channel.clone(),
                     values,
@@ -362,9 +362,9 @@ where
                 let Some(matched) = self.matcher.get_metered(pattern, &datum.a, meter)? else {
                     continue;
                 };
-                native_backing::reserve(channel, meter)?;
-                native_backing::reserve(&datum.source, meter)?;
-                native_backing::reserve(&datum.a, meter)?;
+                native_backing::reserve_copy_and_cleanup(channel, meter)?;
+                native_backing::reserve_copy_and_cleanup(&datum.source, meter)?;
+                native_backing::reserve_copy_and_cleanup(&datum.a, meter)?;
                 candidates.push(ConsumeCandidate {
                     channel: channel.clone(),
                     datum: Datum {
@@ -390,7 +390,7 @@ where
         }
         let mut matched = buffer(candidates.len(), meter)?;
         for candidate in &candidates {
-            native_backing::reserve(&candidate.datum.a, meter)?;
+            native_backing::reserve_copy_and_cleanup(&candidate.datum.a, meter)?;
             matched.push(candidate.datum.a.clone());
         }
         native_backing::inspect(continuation, meter)?;
@@ -413,7 +413,7 @@ where
     ) -> Result<COMM> {
         let mut indexed = buffer(data.len(), meter)?;
         for (index, candidate) in data.iter().enumerate() {
-            native_backing::reserve(&candidate.datum.source, meter)?;
+            native_backing::reserve_copy_and_cleanup(&candidate.datum.source, meter)?;
             indexed.push((candidate.datum.source.clone(), index));
         }
         sort(
@@ -491,11 +491,11 @@ where
             for key in times_repeated.keys() {
                 meter.reserve(1, key.hash.0.len(), 0)?;
             }
-            native_backing::reserve(source, meter)?;
+            native_backing::reserve_copy_and_cleanup(source, meter)?;
             times_repeated.insert(source.clone(), count);
         }
-        native_backing::reserve(consume, meter)?;
-        native_backing::reserve(peeks, meter)?;
+        native_backing::reserve_copy_and_cleanup(consume, meter)?;
+        native_backing::reserve_copy_and_cleanup(peeks, meter)?;
         Ok(COMM {
             consume: consume.clone(),
             produces,

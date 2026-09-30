@@ -386,13 +386,18 @@ where
                 .reserve_native_commit(root, meter)?;
             meter.reserve(1, root.0.len(), root.0.len())?;
             prepared.root = Some(root.clone());
-            let result_backing = size_of::<HistoryRepositoryImpl<C, P, A, K>>()
-                .checked_add(size_of::<Mutex<Box<dyn History>>>())
-                .and_then(|bytes| bytes.checked_add(2 * size_of::<usize>()))
-                .and_then(|bytes| bytes.checked_add(align_of::<Mutex<Box<dyn History>>>() * 2))
-                .ok_or(RSpaceError::HostWorkRejected)?;
-            meter.reserve(2, 0, result_backing)?;
         }
+        let result_backing = size_of::<HistoryRepositoryImpl<C, P, A, K>>()
+            .checked_add(if prepared.prepared_history.is_some() {
+                size_of::<Mutex<Box<dyn History>>>()
+                    .checked_add(2 * size_of::<usize>())
+                    .and_then(|bytes| bytes.checked_add(align_of::<Mutex<Box<dyn History>>>() * 2))
+                    .ok_or(RSpaceError::HostWorkRejected)?
+            } else {
+                0
+            })
+            .ok_or(RSpaceError::HostWorkRejected)?;
+        meter.reserve(2, 0, result_backing)?;
         prepared.backing = Some(NativeCheckpointBacking {
             history: self.current_history.clone(),
             roots: self.roots_repository.clone(),

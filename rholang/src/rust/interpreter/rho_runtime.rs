@@ -1703,7 +1703,7 @@ impl NativeReplayEnvironment {
         let authority = self.budget.native_authority_checkpoint()?;
         let session = self.session.checkpoint().await?;
         let mergeable = self.merge_chs.read().await;
-        super::accounting::clone_backing::reserve(&*mergeable, &self.host)?;
+        super::accounting::clone_backing::reserve_copy_and_cleanup(&*mergeable, &self.host)?;
         let mergeable = mergeable.clone();
         Ok(NativeReplayEnvironmentCheckpoint {
             session,
@@ -1775,7 +1775,7 @@ impl NativeReplayEnvironment {
         let result = async {
             let evidence = self.session.completed_evidence().await?;
             let mergeable = self.merge_chs.read().await;
-            super::accounting::clone_backing::reserve(&*mergeable, &host)?;
+            super::accounting::clone_backing::reserve_copy_and_cleanup(&*mergeable, &host)?;
             let mergeable = mergeable.clone();
             if host.is_rejected() {
                 return Err(InterpreterError::HostWorkRejected);

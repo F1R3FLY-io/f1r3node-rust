@@ -83,9 +83,15 @@ fn reserve<M: NativeReadMeter + ?Sized>(
 
 fn lookup_credit<M: NativeReadMeter + ?Sized>(
     meter: &M,
-    key: &[u8],
+    key_len: usize,
 ) -> Result<(), NativeReadError<M::Error>> {
-    reserve(meter, 4, key.len() * 2, key.len() + 8)
+    let scanned = key_len
+        .checked_mul(2)
+        .ok_or(NativeReadError::Invalid(NativeReadFault::Overflow))?;
+    let backing = key_len
+        .checked_add(8)
+        .ok_or(NativeReadError::Invalid(NativeReadFault::Overflow))?;
+    reserve(meter, 4, scanned, backing)
 }
 
 impl<'a> NativeHistoryReader<'a> {
@@ -111,9 +117,9 @@ impl<'a> NativeHistoryReader<'a> {
         let mut pointer = self.root;
         let mut first = true;
         while !remaining.is_empty() {
+            lookup_credit(meter, pointer.len())?;
             scratch.clear();
             scratch.extend_from_slice(&pointer);
-            lookup_credit(meter, scratch)?;
             let mut result = Err(NativeReadError::Invalid(NativeReadFault::MissingNode));
             self.nodes
                 .with_value(scratch, &mut |bytes| {
@@ -128,7 +134,7 @@ impl<'a> NativeHistoryReader<'a> {
                         if bytes.len() > MAX_NODE_BYTES {
                             return Err(NativeReadError::Invalid(NativeReadFault::NodeSize));
                         }
-                        reserve(meter, 3 + bytes.len() / 34, bytes.len() * 3, 0)?;
+                        reserve(meter, 3 + bytes.len() / 34, bytes.len() * 3 + pointer.len(), 0)?;
                         if digest(bytes) != pointer {
                             return Err(NativeReadError::Invalid(NativeReadFault::NodeHash));
                         }
@@ -173,12 +179,12 @@ impl<'a> NativeHistoryReader<'a> {
         };
         let mut consume = Some(consume);
         for serialized in [false, true] {
+            lookup_credit(meter, pointer.len() + if serialized { 8 } else { 0 })?;
             scratch.clear();
             if serialized {
                 scratch.extend_from_slice(&32_u64.to_le_bytes());
             }
             scratch.extend_from_slice(&pointer);
-            lookup_credit(meter, &scratch)?;
             let mut present = false;
             let mut result = Err(NativeReadError::Invalid(NativeReadFault::MissingLeaf));
             self.leaves
@@ -191,6 +197,7 @@ impl<'a> NativeHistoryReader<'a> {
                         let scanned = bytes
                             .len()
                             .checked_mul(3)
+                            .and_then(|scanned| scanned.checked_add(pointer.len()))
                             .ok_or(NativeReadError::Invalid(NativeReadFault::Overflow))?;
                         reserve(meter, 4 + bytes.len() / 8, scanned, 0)?;
                         let (records, hash_bytes) =

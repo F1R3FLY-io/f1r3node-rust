@@ -149,6 +149,38 @@ fn owned_environment_push_matches_put_and_prepays_growth() {
 }
 
 #[test]
+fn metered_environment_copy_rejects_unfunded_arc_cleanup() {
+    use std::cell::Cell;
+    use std::sync::Arc;
+
+    use shared::rust::clone_backing::{self, BackingError};
+
+    let value = Arc::<str>::from("payload".repeat(1024));
+    let mut env = Env::<Arc<str>>::new();
+    env.push(value.clone()).unwrap();
+    let copied_scans = Cell::new(0usize);
+    clone_backing::reserve(&value, &|_, scanned, _| {
+        copied_scans.set(copied_scans.get() + scanned);
+        Ok(())
+    })
+    .unwrap();
+    let lookup_scans = env.env_map.capacity().max(1) * std::mem::size_of::<i32>();
+    let limit = lookup_scans + copied_scans.get();
+    let used = Cell::new(0usize);
+    let meter = |_: usize, scanned: usize, _: usize| {
+        let next = used.get() + scanned;
+        if next > limit {
+            Err(BackingError::Rejected)
+        } else {
+            used.set(next);
+            Ok(())
+        }
+    };
+    assert_eq!(env.get_metered(&0, &meter), Err(BackingError::Rejected));
+    assert_eq!(env.get(&0), Some(value));
+}
+
+#[test]
 fn metered_guard_evaluation_preserves_results_and_rejects_each_short_dimension() {
     use std::cell::Cell;
 

@@ -82,8 +82,8 @@ fn reserve_checkpoint_metadata<E: NativeReplayEpoch>(
         epoch.reserve_comparison(operations, scanned)?;
         epoch.reserve_work(0, backing)
     };
-    crate::rspace::native_backing::reserve(log, &meter)?;
-    crate::rspace::native_backing::reserve(counters, &meter)
+    crate::rspace::native_backing::reserve_copy_and_cleanup(log, &meter)?;
+    crate::rspace::native_backing::reserve_copy_and_cleanup(counters, &meter)
 }
 
 impl<C, P, A, K, E> NativeReplaySession<C, P, A, K, E>

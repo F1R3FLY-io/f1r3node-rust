@@ -20,17 +20,33 @@ fn meter(host: &HostWorkBudget) -> impl Fn(usize, usize, usize) -> Result<(), Ba
     }
 }
 
+#[cfg(test)]
 pub(crate) fn reserve<T: CloneBacking>(
     value: &T,
     host: &HostWorkBudget,
 ) -> Result<(), InterpreterError> {
     backing::reserve(value, &meter(host)).map_err(|_| InterpreterError::HostWorkRejected)
 }
+pub(crate) fn reserve_copy_and_cleanup<T: CloneBacking>(
+    value: &T,
+    host: &HostWorkBudget,
+) -> Result<(), InterpreterError> {
+    backing::reserve_copy_and_cleanup(value, &meter(host))
+        .map_err(|_| InterpreterError::HostWorkRejected)
+}
+#[cfg(test)]
 pub(crate) fn reserve_slice<T: CloneBacking>(
     values: &[T],
     host: &HostWorkBudget,
 ) -> Result<(), InterpreterError> {
     backing::reserve_slice(values, &meter(host)).map_err(|_| InterpreterError::HostWorkRejected)
+}
+pub(crate) fn reserve_slice_copy_and_cleanup<T: CloneBacking>(
+    values: &[T],
+    host: &HostWorkBudget,
+) -> Result<(), InterpreterError> {
+    backing::reserve_slice_copy_and_cleanup(values, &meter(host))
+        .map_err(|_| InterpreterError::HostWorkRejected)
 }
 pub(crate) fn inspect<T: CloneBacking>(
     value: &T,

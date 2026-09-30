@@ -485,8 +485,8 @@ fn reserve_authority_clone(
 ) -> Result<(), InterpreterError> {
     if let Some(host) = host {
         let backing =
-            |operations, scanned, bytes| reserve_owned_backing(host, operations, scanned, bytes);
-        shared_clone_backing::reserve(authority, &backing)
+            |operations, scanned, bytes| reserve_native_backing(host, operations, scanned, bytes);
+        shared_clone_backing::reserve_copy_and_cleanup(authority, &backing)
             .map_err(|_| InterpreterError::HostWorkRejected)?;
     }
     Ok(())
@@ -2396,8 +2396,8 @@ impl RuntimeBudget {
     ) -> Result<Sig, InterpreterError> {
         let signature = self.signature.lock().expect("signature lock");
         let backing =
-            |operations, scanned, bytes| reserve_owned_backing(host, operations, scanned, bytes);
-        shared_clone_backing::reserve(&*signature, &backing)
+            |operations, scanned, bytes| reserve_native_backing(host, operations, scanned, bytes);
+        shared_clone_backing::reserve_copy_and_cleanup(&*signature, &backing)
             .map_err(|_| InterpreterError::HostWorkRejected)?;
         Ok(signature.clone())
     }
@@ -3436,6 +3436,22 @@ mod runtime_budget_tests {
         );
         let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
         limits.set(HostWorkDimension::SearchStateBytes, HostWorkLimit::new(0));
+        let limited = HostWorkBudget::new(limits);
+        assert!(matches!(
+            budget.signature_with_host_work(&limited),
+            Err(InterpreterError::HostWorkRejected)
+        ));
+        let copied_scans = std::cell::Cell::new(0u64);
+        shared_clone_backing::reserve(&signature, &|_, scanned, _| {
+            copied_scans.set(copied_scans.get() + scanned as u64);
+            Ok(())
+        })
+        .unwrap();
+        let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
+        limits.set(
+            HostWorkDimension::VerificationBytes,
+            HostWorkLimit::new(copied_scans.get()),
+        );
         let limited = HostWorkBudget::new(limits);
         assert!(matches!(
             budget.signature_with_host_work(&limited),

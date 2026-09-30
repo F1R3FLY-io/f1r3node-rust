@@ -40,7 +40,7 @@ fn bounded_legacy_events(
         let Some(amount) = row.legacy_amount else {
             continue;
         };
-        clone_backing::reserve(&row.authority, host)?;
+        clone_backing::reserve_copy_and_cleanup(&row.authority, host)?;
         let encoded_len = row.authority.encoded_len();
         let length = encoded_len
             .checked_add(49)

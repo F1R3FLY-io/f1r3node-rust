@@ -9,13 +9,18 @@ use crate::rspace::history::native_reader::{
 };
 use crate::rspace::history::radix_tree::{Item, empty_node, encode};
 
-struct ChargeCounter<'a>(&'a Cell<usize>);
+struct ChargeCounter<'a> {
+    operations: &'a Cell<usize>,
+    scanned: &'a Cell<usize>,
+}
 
 impl NativeReadMeter for ChargeCounter<'_> {
     type Error = RSpaceError;
 
     fn reserve(&self, charge: NativeReadCharge) -> Result<(), Self::Error> {
-        self.0.set(self.0.get() + charge.operations);
+        self.operations
+            .set(self.operations.get() + charge.operations);
+        self.scanned.set(self.scanned.get() + charge.scanned_bytes);
         Ok(())
     }
 }
@@ -70,34 +75,71 @@ async fn cold_typed_rows_prepay_cleanup_before_cache_handoff() {
     let projection = hash(&channel);
     let key: [u8; 32] = projection.0.as_slice().try_into().unwrap();
     let frame_operations = Cell::new(0);
+    let frame_scanned = Cell::new(0);
     let decode_operations = Cell::new(0);
+    let decode_scanned = Cell::new(0);
     let rows_count = Cell::new(0);
     history
         .native_history_reader(session.root)
-        .with_records(NativeLeafKind::Data, &key, &ChargeCounter(&frame_operations), |rows| {
-            rows_count.set(rows.len());
-            for row in rows.iter() {
-                let datum: Datum<String> =
-                    decode_record(row, &ChargeCounter(&decode_operations)).unwrap();
-                assert_eq!(datum.a, "retained");
-            }
-            Ok::<_, RSpaceError>(())
-        })
+        .with_records(
+            NativeLeafKind::Data,
+            &key,
+            &ChargeCounter {
+                operations: &frame_operations,
+                scanned: &frame_scanned,
+            },
+            |rows| {
+                rows_count.set(rows.len());
+                for row in rows.iter() {
+                    let datum: Datum<String> = decode_record(row, &ChargeCounter {
+                        operations: &decode_operations,
+                        scanned: &decode_scanned,
+                    })
+                    .unwrap();
+                    assert_eq!(datum.a, "retained");
+                }
+                Ok::<_, RSpaceError>(())
+            },
+        )
         .unwrap()
         .unwrap();
     let actual_operations = Cell::new(0);
+    let actual_scanned = Cell::new(0);
     let values = session
-        .read_records::<Datum<String>>(NativeLeafKind::Data, projection, &|operations, _, _| {
-            actual_operations.set(actual_operations.get() + operations);
-            Ok(())
-        })
+        .read_records::<Datum<String>>(
+            NativeLeafKind::Data,
+            projection,
+            &|operations, scanned, _| {
+                actual_operations.set(actual_operations.get() + operations);
+                actual_scanned.set(actual_scanned.get() + scanned);
+                Ok(())
+            },
+        )
         .unwrap();
     assert_eq!(values.len(), rows_count.get());
     assert!(decode_operations.get() > 0);
+    assert!(decode_scanned.get() > 0);
     assert_eq!(
         actual_operations.get(),
         frame_operations.get() + 2 * rows_count.get() + 1 + 2 * decode_operations.get()
     );
+    assert_eq!(actual_scanned.get(), frame_scanned.get() + 2 * decode_scanned.get());
+    let limit = actual_scanned.get() - 1;
+    let used = Cell::new(0usize);
+    let rejected = session.read_records::<Datum<String>>(
+        NativeLeafKind::Data,
+        hash(&channel),
+        &|_, scanned, _| {
+            let next = used.get() + scanned;
+            if next > limit {
+                Err(RSpaceError::HostWorkRejected)
+            } else {
+                used.set(next);
+                Ok(())
+            }
+        },
+    );
+    assert!(matches!(rejected, Err(RSpaceError::HostWorkRejected)));
     assert!(session.space.get_store().snapshot().data_flat().is_empty());
 }
 

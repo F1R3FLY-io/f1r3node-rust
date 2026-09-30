@@ -26,7 +26,7 @@ fn eval_inner(
     meter: Option<&dyn BackingMeter>,
 ) -> Result<Par, EvalError> {
     if let Some(meter) = meter {
-        clone_backing::reserve(par, meter)?;
+        clone_backing::reserve_copy_and_cleanup(par, meter)?;
         meter.reserve(
             1,
             par.exprs.len(),
@@ -59,8 +59,8 @@ fn eval_inner(
 
 fn concatenate(a: Par, b: Par, meter: Option<&dyn BackingMeter>) -> Result<Par, EvalError> {
     if let Some(meter) = meter {
-        clone_backing::reserve(&a, meter)?;
-        clone_backing::reserve(&b, meter)?;
+        clone_backing::reserve_copy_and_cleanup(&a, meter)?;
+        clone_backing::reserve_copy_and_cleanup(&b, meter)?;
         let scanned = a
             .locally_free
             .len()
@@ -101,7 +101,7 @@ fn eval_expr_to_par(
     meter: Option<&dyn BackingMeter>,
 ) -> Result<Par, EvalError> {
     if let Some(meter) = meter {
-        clone_backing::reserve(expr, meter)?;
+        clone_backing::reserve_copy_and_cleanup(expr, meter)?;
         meter.reserve(
             4,
             0,
@@ -280,7 +280,7 @@ fn single_expr_instance(
     meter: Option<&dyn BackingMeter>,
 ) -> Result<ExprInstance, EvalError> {
     if let Some(meter) = meter {
-        clone_backing::reserve(par, meter)?;
+        clone_backing::reserve_copy_and_cleanup(par, meter)?;
     }
     if !par.sends.is_empty()
         || !par.receives.is_empty()

@@ -104,7 +104,7 @@ impl<A: Clone> Env<A> {
         )?;
         match self.env_map.get(&position) {
             Some(value) => {
-                clone_backing::reserve(value, meter)?;
+                clone_backing::reserve_copy_and_cleanup(value, meter)?;
                 Ok(Some(value.clone()))
             }
             None => Ok(None),

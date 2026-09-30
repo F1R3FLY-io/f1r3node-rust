@@ -709,6 +709,25 @@ fn metadata_reservation_includes_every_source_and_output_payload() {
     assert!(bytes >= 3 * (64 + 38 + 3 * size_of::<Vec<u8>>()));
 }
 
+#[test]
+fn checkpoint_metadata_prepays_clone_and_cleanup() {
+    let mut produce = Produce::create(&"channel", &"payload", false);
+    produce.output_value = vec![vec![7; 512]];
+    let log = vec![Event::IoEvent(IOEvent::Produce(produce.clone()))];
+    let counters = BTreeMap::from([(produce, 1)]);
+    let clone_only = Epoch::default();
+    let clone_meter = |operations, scanned, backing| {
+        clone_only.reserve_comparison(operations, scanned)?;
+        clone_only.reserve_work(0, backing)
+    };
+    crate::rspace::native_backing::reserve(&log, &clone_meter).unwrap();
+    crate::rspace::native_backing::reserve(&counters, &clone_meter).unwrap();
+    let prepaid = Epoch::default();
+    reserve_checkpoint_metadata(&prepaid, &log, &counters).unwrap();
+    assert!(prepaid.work.load(Ordering::Relaxed) >= clone_only.work.load(Ordering::Relaxed) * 2);
+    assert!(prepaid.bytes.load(Ordering::Relaxed) >= clone_only.bytes.load(Ordering::Relaxed));
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(48))]
 

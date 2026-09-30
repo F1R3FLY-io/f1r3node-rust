@@ -137,7 +137,8 @@ impl<'a> NativeRadixBuilder<'a> {
     }
 
     fn decode_node(&self, key: &[u8], bytes: &[u8]) -> Result<Node, RSpaceError> {
-        self.meter.reserve(1, bytes.len(), DEF_SIZE)?;
+        self.meter
+            .reserve(1, Self::checked_sum(bytes.len(), key.len())?, DEF_SIZE)?;
         if Blake2b256Hash::new(bytes).0 != key {
             return Err(Self::invalid());
         }
@@ -183,6 +184,7 @@ impl<'a> NativeRadixBuilder<'a> {
         if let Some(cached) = self.tree.cache_r.get(key) {
             return Ok(Arc::clone(cached.value()));
         }
+        self.meter.reserve(1, key.len(), 0)?;
         if let Some(encoded) = self.tree.cache_w.get(key) {
             let node = self.decode_node(key, encoded.value())?;
             drop(encoded);
@@ -642,6 +644,69 @@ mod tests {
                 builder.load_node(&key),
                 Err(RSpaceError::RadixTreeError(RadixTreeError::SerializationError(_)))
             ));
+        }
+    }
+
+    #[test]
+    fn write_cache_lookup_reserves_before_decode() {
+        let store = Arc::new(InMemoryKeyValueStore::new());
+        let tree = RadixTreeImpl::new(store);
+        let bytes = super::super::encode(&empty_node());
+        let key = Blake2b256Hash::new(&bytes).0;
+        tree.cache_w.insert(key.clone(), bytes);
+        let calls = Cell::new(0usize);
+        let second = Cell::new((0usize, 0usize));
+        let meter = |_, scanned, backing| {
+            let next = calls.get() + 1;
+            calls.set(next);
+            if next == 2 {
+                second.set((scanned, backing));
+                Err(RSpaceError::HostWorkRejected)
+            } else {
+                Ok(())
+            }
+        };
+        assert!(matches!(
+            NativeRadixBuilder::new(&tree, &meter).load_node(&key),
+            Err(RSpaceError::HostWorkRejected)
+        ));
+        assert_eq!(calls.get(), 2);
+        assert_eq!(second.get(), (key.len(), 0));
+        assert!(tree.cache_r.is_empty());
+        assert!(tree.cache_w.contains_key(&key));
+    }
+
+    #[test]
+    fn native_decoder_prepays_digest_comparison_for_short_records() {
+        let store = Arc::new(InMemoryKeyValueStore::new());
+        let tree = RadixTreeImpl::new(store);
+        let bytes = [3, 1, 9];
+        let key = [0; DEF_SIZE];
+        let required = bytes.len() + key.len();
+        for allowed in [required - 1, required] {
+            let scanned = Cell::new(0usize);
+            let meter = |_, amount, _| {
+                let next = scanned
+                    .get()
+                    .checked_add(amount)
+                    .ok_or(RSpaceError::HostWorkRejected)?;
+                if next > allowed {
+                    return Err(RSpaceError::HostWorkRejected);
+                }
+                scanned.set(next);
+                Ok(())
+            };
+            let result = NativeRadixBuilder::new(&tree, &meter).decode_node(&key, &bytes);
+            if allowed < required {
+                assert!(matches!(result, Err(RSpaceError::HostWorkRejected)));
+                assert_eq!(scanned.get(), 0);
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(RSpaceError::RadixTreeError(RadixTreeError::SerializationError(_)))
+                ));
+                assert_eq!(scanned.get(), required);
+            }
         }
     }
 }

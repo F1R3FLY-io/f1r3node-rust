@@ -148,6 +148,28 @@ fn checkpoint_and_result_reject_before_unpaid_copies_and_preserve_live_state() {
 }
 
 #[test]
+fn authority_checkpoint_prepays_cloned_state_cleanup() {
+    let (budget, host) = populated(100_000_000);
+    let before = host.usage(HostWorkDimension::VerificationOperations).get();
+    let checkpoint = budget.native_authority_checkpoint().unwrap();
+    let prepaid = host.usage(HostWorkDimension::VerificationOperations).get() - before;
+    let before = host.usage(HostWorkDimension::VerificationOperations).get();
+    let introductions = budget.introduction_authorities.lock().unwrap();
+    let state = budget.authority_state.lock().unwrap();
+    clone_backing::reserve(&state.events, &host).unwrap();
+    clone_backing::reserve_slice(state.byte_observations.rows(), &host).unwrap();
+    clone_backing::reserve(&state.realized, &host).unwrap();
+    clone_backing::reserve(&state.reserved, &host).unwrap();
+    clone_backing::reserve(&state.frontier, &host).unwrap();
+    clone_backing::reserve(&state.stack_births, &host).unwrap();
+    clone_backing::reserve(&*introductions, &host).unwrap();
+    let clone_only = host.usage(HostWorkDimension::VerificationOperations).get() - before;
+    assert!(clone_only > 0);
+    assert!(prepaid >= clone_only * 2);
+    drop((state, introductions, checkpoint));
+}
+
+#[test]
 fn restored_observation_capacity_must_be_paid_again_before_growth() {
     let (budget, host) = populated(100_000_000);
     let checkpoint = budget.native_authority_checkpoint().unwrap();

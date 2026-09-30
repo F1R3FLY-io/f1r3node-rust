@@ -116,6 +116,9 @@ fn returned_produce_clone_reserves_nested_payload_backing_before_copy() {
     assert_eq!(bincode::serialize(&copied).unwrap(), bincode::serialize(&source).unwrap());
     let required = baseline.used.get();
     assert!(required.iter().all(|amount| *amount > 0));
+    let clone_only = Meter::default();
+    crate::rspace::native_backing::reserve(&source, &clone_only).unwrap();
+    assert!(required[0] >= clone_only.used.get()[0] * 2);
     for dimension in 0..3 {
         let mut limits = required;
         limits[dimension] -= 1;

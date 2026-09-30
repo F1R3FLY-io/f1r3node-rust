@@ -86,12 +86,14 @@ where
         })?;
         let meter =
             Meter(|operations, scanned, backing| reserve.reserve(operations, scanned, backing));
-        let decode_meter = Meter(|operations: usize, scanned, backing| {
+        let decode_meter = Meter(|operations: usize, scanned: usize, backing| {
             reserve.reserve(
                 operations
                     .checked_mul(2)
                     .ok_or(RSpaceError::HostWorkRejected)?,
-                scanned,
+                scanned
+                    .checked_mul(2)
+                    .ok_or(RSpaceError::HostWorkRejected)?,
                 backing,
             )
         });

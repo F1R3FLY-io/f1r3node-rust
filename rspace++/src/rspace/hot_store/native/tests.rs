@@ -1,5 +1,6 @@
 use std::cell::Cell;
 use std::hash::Hasher;
+use std::sync::Arc;
 
 use shared::rust::clone_backing::{BackingError, Walker};
 
@@ -117,6 +118,36 @@ fn warm_cache_copy_prepays_cleanup_before_caller_rejection() {
     assert_eq!(result, Err(RSpaceError::HostWorkRejected));
     assert!(rejecting.operations.get() >= one_copy.operations.get() * 2);
     assert_eq!(map.get(&key), Some(payload));
+}
+
+#[test]
+fn shared_map_insertion_prepays_copied_entry_cleanup() {
+    let small = vec!["payload".to_owned()];
+    let large = vec!["payload".to_owned(); 512];
+    let copy_work = |value: &Vec<String>| {
+        let meter = Meter::new(usize::MAX);
+        native_backing::reserve(value, &meter).unwrap();
+        meter.operations.get()
+    };
+    let added_copy_work = copy_work(&large) - copy_work(&small);
+    assert!(added_copy_work > 0);
+    for replace in [false, true] {
+        let work = |value: Vec<String>| {
+            let map = map();
+            let key = CollisionKey(1, "key".to_owned());
+            map.insert(key.clone(), value);
+            let _checkpoint = map.snapshot_shards();
+            let meter = Meter::new(usize::MAX);
+            if replace {
+                map.native_insert_replace(&key, Vec::new(), &meter).unwrap();
+            } else {
+                map.native_insert_new(&CollisionKey(2, "candidate".to_owned()), Vec::new(), &meter)
+                    .unwrap();
+            }
+            meter.operations.get()
+        };
+        assert!(work(large.clone()) - work(small.clone()) >= added_copy_work * 2);
+    }
 }
 
 #[test]
@@ -587,7 +618,7 @@ impl Rows {
                 let result = store.get_data_with_reader(
                     &channel,
                     &|| {
-                        reserve_copy_and_cleanup(&self.data, meter)?;
+                        native_backing::reserve_copy_and_cleanup(&self.data, meter)?;
                         Ok(self.data.clone())
                     },
                     meter,
@@ -598,7 +629,7 @@ impl Rows {
                 let result = store.get_continuations_with_reader(
                     &[],
                     &|| {
-                        reserve_copy_and_cleanup(&self.continuations, meter)?;
+                        native_backing::reserve_copy_and_cleanup(&self.continuations, meter)?;
                         Ok(self.continuations.clone())
                     },
                     meter,
@@ -610,7 +641,7 @@ impl Rows {
                 let result = store.get_joins_with_reader(
                     &channel,
                     &|| {
-                        reserve_copy_and_cleanup(&self.joins, meter)?;
+                        native_backing::reserve_copy_and_cleanup(&self.joins, meter)?;
                         Ok(self.joins.clone())
                     },
                     meter,
@@ -638,17 +669,35 @@ fn owned_cache_copy_prepays_rollback_cleanup() {
     let data = Rows::new().data;
     let copy = Meter::new(usize::MAX);
     native_backing::reserve(&data, &copy).unwrap();
+    let cleanup = Meter::new(usize::MAX);
+    native_backing::inspect(&data, &cleanup).unwrap();
     let copy_and_cleanup = Meter::new(usize::MAX);
-    reserve_copy_and_cleanup(&data, &copy_and_cleanup).unwrap();
-    assert_eq!(copy_and_cleanup.operations.get(), copy.operations.get() * 2);
-    assert_eq!(copy_and_cleanup.backing.get(), copy.backing.get());
+    native_backing::reserve_copy_and_cleanup(&data, &copy_and_cleanup).unwrap();
+    assert_eq!(copy_and_cleanup.operations.get(), copy.operations.get() + cleanup.operations.get());
+    assert_eq!(copy_and_cleanup.scanned.get(), copy.scanned.get() + cleanup.scanned.get());
+    assert_eq!(copy_and_cleanup.backing.get(), copy.backing.get() + cleanup.backing.get());
     let rejected = Meter::new(0);
     let (result, allocated) = measure_allocations(|| {
-        reserve_copy_and_cleanup(&data, &rejected)?;
+        native_backing::reserve_copy_and_cleanup(&data, &rejected)?;
         Ok::<_, RSpaceError>(data.clone())
     });
     assert_eq!(result, Err(RSpaceError::HostWorkRejected));
     assert_eq!(allocated, 0);
+}
+
+#[test]
+fn owned_copy_prepays_nested_arc_cleanup() {
+    let data = vec![Arc::<str>::from("payload".repeat(1024))];
+    let copy = Meter::new(usize::MAX);
+    native_backing::reserve(&data, &copy).unwrap();
+    let cleanup = Meter::new(usize::MAX);
+    native_backing::inspect(&data, &cleanup).unwrap();
+    let both = Meter::new(usize::MAX);
+    native_backing::reserve_copy_and_cleanup(&data, &both).unwrap();
+    assert!(cleanup.scanned.get() > copy.scanned.get());
+    assert_eq!(both.operations.get(), copy.operations.get() + cleanup.operations.get());
+    assert_eq!(both.scanned.get(), copy.scanned.get() + cleanup.scanned.get());
+    assert_eq!(both.backing.get(), copy.backing.get() + cleanup.backing.get());
 }
 
 fn export_store() -> Store {

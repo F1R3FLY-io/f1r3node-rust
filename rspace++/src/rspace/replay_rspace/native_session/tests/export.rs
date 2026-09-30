@@ -121,6 +121,55 @@ async fn native_checkpoint_prepays_commit_allocation() {
 }
 
 #[tokio::test]
+async fn empty_native_checkpoint_prepays_repository_clone() {
+    let session = session().await;
+    let history = session.space.get_history_repository();
+    let original = history.root();
+    let calls = std::cell::Cell::new(0usize);
+    let reserved = std::cell::Cell::new(0usize);
+    let final_backing = std::cell::Cell::new(0usize);
+    let (committed, allocated) = measure_allocations(|| {
+        let prepared = history.prepare_native_checkpoint(Vec::new(), &|_, _, backing| {
+            calls.set(calls.get() + 1);
+            reserved.set(
+                reserved
+                    .get()
+                    .checked_add(backing)
+                    .ok_or(RSpaceError::HostWorkRejected)?,
+            );
+            final_backing.set(backing);
+            Ok(())
+        })?;
+        history.commit_native_checkpoint(prepared)
+    });
+    assert_eq!(committed.unwrap().root(), original);
+    assert!(allocated <= reserved.get());
+    assert!(
+        final_backing.get() >=
+            std::mem::size_of::<
+                crate::rspace::history::history_repository_impl::HistoryRepositoryImpl<
+                    String,
+                    String,
+                    String,
+                    String,
+                >,
+            >()
+    );
+    let remaining = std::cell::Cell::new(calls.get() - 1);
+    assert!(matches!(
+        history.prepare_native_checkpoint(Vec::new(), &|_, _, _| {
+            if remaining.get() == 0 {
+                return Err(RSpaceError::HostWorkRejected);
+            }
+            remaining.set(remaining.get() - 1);
+            Ok(())
+        }),
+        Err(RSpaceError::HostWorkRejected)
+    ));
+    assert_eq!(history.root(), original);
+}
+
+#[tokio::test]
 async fn native_checkpoint_preparation_matches_legacy_and_rejects_every_short_cut() {
     let native_session = session().await;
     let history = native_session.space.get_history_repository();
@@ -233,6 +282,26 @@ async fn every_prepublication_export_cut_preserves_the_live_session() {
         assert!(!session.epoch.state.lock().unwrap().3);
         assert_eq!(values(&session).await, ["retained"]);
         session.export().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn every_empty_export_cut_preserves_the_live_session() {
+    let baseline = session().await;
+    let before = baseline.epoch.calls.load(Ordering::Relaxed);
+    baseline.export().await.unwrap();
+    let calls = baseline.epoch.calls.load(Ordering::Relaxed) - before;
+    assert!(calls > 0);
+    for accepted in 0..calls {
+        let session = session().await;
+        let root = session.space.get_history_repository().root();
+        *session.epoch.remaining_calls.lock().unwrap() = Some(accepted);
+        assert!(session.export().await.is_err(), "accepted={accepted}");
+        *session.epoch.remaining_calls.lock().unwrap() = None;
+        assert_eq!(session.space.get_history_repository().root(), root);
+        assert!(!session.unavailable.load(Ordering::Acquire));
+        assert!(!session.epoch.state.lock().unwrap().3);
+        assert_eq!(session.export().await.unwrap().root(), &root);
     }
 }
 

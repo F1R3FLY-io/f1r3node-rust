@@ -53,7 +53,7 @@ impl<'a> SorterMeter<'a> {
     }
 
     pub fn clone<T: Clone + CloneBacking>(&self, value: &T) -> Result<T, BackingError> {
-        clone_backing::reserve(value, self.backing)?;
+        clone_backing::reserve_copy_and_cleanup(value, self.backing)?;
         Ok(value.clone())
     }
 
@@ -65,7 +65,7 @@ impl<'a> SorterMeter<'a> {
         &self,
         values: &[T],
     ) -> Result<Vec<T>, BackingError> {
-        clone_backing::reserve_slice(values, self.backing)?;
+        clone_backing::reserve_slice_copy_and_cleanup(values, self.backing)?;
         Ok(values.to_vec())
     }
 
@@ -102,5 +102,49 @@ impl<'a> SorterMeter<'a> {
         }
         values.push(value);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+
+    #[test]
+    fn clones_reject_when_nested_cleanup_is_unfunded() {
+        let source = vec![Arc::<str>::from("payload".repeat(1024))];
+        let copied_scans = Cell::new(0usize);
+        clone_backing::reserve(&source, &|_, scanned, _| {
+            copied_scans.set(copied_scans.get() + scanned);
+            Ok(())
+        })
+        .unwrap();
+        let used = Cell::new(0usize);
+        let reserve = |_: usize, scanned: usize, _: usize| {
+            let next = used.get() + scanned;
+            if next > copied_scans.get() {
+                Err(BackingError::Rejected)
+            } else {
+                used.set(next);
+                Ok(())
+            }
+        };
+        assert_eq!(
+            SorterMeter::new(&reserve).clone(&source),
+            Err(BackingError::Rejected)
+        );
+
+        copied_scans.set(0);
+        clone_backing::reserve_slice(&source, &|_, scanned, _| {
+            copied_scans.set(copied_scans.get() + scanned);
+            Ok(())
+        })
+        .unwrap();
+        used.set(0);
+        assert_eq!(
+            SorterMeter::new(&reserve).clone_slice(&source),
+            Err(BackingError::Rejected)
+        );
     }
 }
