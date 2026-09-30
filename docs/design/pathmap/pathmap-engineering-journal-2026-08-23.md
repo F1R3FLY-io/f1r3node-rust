@@ -18464,6 +18464,40 @@ same 31 paired samples. This protocol change applies to all 39 cells and is
 registered before any new measurement. Experiments 367–370 remain rejected
 historical observations; they are not retroactively refit or removed.
 
+**MEASURED.** Experiment 371 executes the uniformly warmed full matrix. Its
+2,418 retained rows cover every registered cell and arm. All 39 time cells
+meet the unchanged 1.05 ceiling; the largest one-sided 99% upper median ratio
+is 1.044359991. No treatment cell increases allocation calls. Singleton-left
+versus 1,024-endpoint meet has upper ratio 1.004858642, disjoint singleton
+meet 0.983112181, and the 1,024-endpoint half-overlap meet 0.773719909.
+Pgmcp decision 397 accepts this preregistered run. The
+[complete compressed raw run](../stack-safety/measurements/bag-cursor-algebra-2026-09-30-steady-warmup.log.gz)
+has SHA-256
+`44c52917c5aac3224d6d85284d35ed95b8c1653479ae387c83f97cfe5ca763cf`,
+the [39-cell fits](../stack-safety/measurements/bag-cursor-algebra-2026-09-30-steady-warmup-fits.tsv)
+have SHA-256
+`40eb118c04fd4aa3a6665c8a337a41c39f2f069e985fec9c01a590c616b6f2d1`,
+and the uncompressed raw digest is
+`1b70d96e6af9a5deb9a9a3e1826a1bfc2c8b5fac0b8622ce17b76f3efaa4014c`.
+
+The operation decision matrix is now:
+
+| Operation and support | Implementation | Reason |
+| --- | --- | --- |
+| Meet, empty smaller input | Share that empty input | The pointwise minimum has empty support. |
+| Meet, singleton smaller input | One public iterator endpoint and exact point count | Avoid cursor and writer setup for one key. |
+| Meet, at least two endpoints in smaller input | Borrowed ordered probe cursor, exact indexed count, one sorted writer | Preserve exact-key semantics without per-key path allocation. |
+| Subtract, either input empty | Share the left input | Truncated subtraction is unchanged. |
+| Subtract, singleton left input | One endpoint and exact point count; share unchanged, return empty, or write one reduced endpoint | Avoid two cursor and writer setups for one key. |
+| Subtract, multi-key left input | Merge borrowed ordered left and right cursors into one sorted writer | Preserve all unmatched left endpoints and subtract only exact matches. |
+| Subbag, any support | Borrowed ordered left cursor and exact right count | Early failure on the first underrepresented exact endpoint. |
+
+Each branch is selected from support size and exact point counts, not the
+benchmark case name. Prefix-related endpoints remain independent. The proof
+establishes finite-support algebra assuming a complete duplicate-free cursor
+walk; the release cursor property binds that assumption to the guarded native
+reader, and the old/new test asserts result equality for every measured shape.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
