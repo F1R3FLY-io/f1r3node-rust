@@ -6,13 +6,21 @@
 // [`SnapshotBlob`] convenience combiner (encoded bytes + root +
 // Merkle root over 4 MiB chunks).
 //
-// Slice 2 (this PR) provides the symmetric decoder
+// Slice 2 (PR #505) provided the symmetric decoder
 // [`decode_wal_slice`] + [`SnapshotError`] + supporting
 // primitives.  Together, encoder + decoder are the round-trip
 // substrate that joiners use to apply a fetched snapshot to a
-// fresh tree.  On-disk read / write / manifest / writer /
-// pruning / payload-hash sidecar all land in subsequent slices
-// as their own natural units.
+// fresh tree.
+//
+// Slice 3 (this PR) adds the on-disk read/write path:
+// [`snapshot_path`] (content-addressed filename derivation),
+// [`write_snapshot`] (atomic tmp+rename + fsync), and
+// [`read_snapshot_bytes`] (hash + version verification on
+// load).  Plus [`referenced_payload_hashes`] as a small helper
+// that later slices thread through the sidecar path.
+//
+// Manifest / writer / pruning / payload-hash sidecar all land
+// in subsequent slices as their own natural units.
 //
 // # Snapshot semantics — log-structured
 //
@@ -729,6 +737,250 @@ fn decode_fixed_32(bytes: &[u8], cursor: &mut usize) -> Result<[u8; 32], Snapsho
     out.copy_from_slice(&bytes[*cursor..end]);
     *cursor = end;
     Ok(out)
+}
+
+// ===========================================================
+// Disk I/O (slice 3) — content-addressed read + write
+// ===========================================================
+
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Per-process monotonic counter used in tmp filenames.  Belt-and-
+/// suspenders alongside the nanosecond stamp: an NTP backward jump
+/// could yield the same `now_nanos` for two back-to-back writes;
+/// the counter guarantees distinct tmp paths regardless of clock.
+static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Content-addressed on-disk snapshot path.
+///
+/// Layout: `{snapshot_dir}/{root_hex}.wal`.  The filename IS the
+/// content hash, so a joining validator can request a snapshot
+/// by root and verify byte-for-byte after fetch.  Full 64-char
+/// (256-bit) hex — no truncation, so accidental collision is
+/// impossible under Blake2b256's preimage resistance.
+pub fn snapshot_path(snapshot_dir: &Path, root: &[u8; 32]) -> PathBuf {
+    let mut hex = String::with_capacity(64);
+    for b in root {
+        use std::fmt::Write;
+        let _ = write!(hex, "{b:02x}");
+    }
+    snapshot_dir.join(format!("{hex}.wal"))
+}
+
+/// Write a snapshot to `snapshot_dir` under its content-addressed
+/// filename.  Returns `(path, root, merkle_root)` where `root` is
+/// the atomic Blake2b256 of the whole blob (drives the filename)
+/// and `merkle_root` is the Phase 7b-1 Merkle root over 4 MiB
+/// chunk hashes (used by joiners to verify chunks fetched via
+/// the yet-to-land wire opcode).
+///
+/// # Atomic tmp+rename
+///
+/// A crash mid-write could leave a partial file at the final path
+/// that the read-time root check would reject as
+/// [`SnapshotError::RootMismatch`] — but that's a noisy
+/// false-alarm.  Instead:
+///
+///   1. Write to a per-process, per-invocation tmp path
+///      (`{stem}.{pid}-{nanos}-{counter}.wal.tmp`).
+///   2. `fsync` the tmp file (durability before rename).
+///   3. `rename` to the content-addressed final path (POSIX-
+///      atomic on the same filesystem).
+///   4. Open the parent dir + `fsync` (rename metadata durability).
+///
+/// The per-process/per-invocation tmp naming prevents two
+/// concurrent writers in the SAME PROCESS writing the SAME
+/// content from stomping the same tmp file mid-write.  The
+/// per-nanosecond suffix distinguishes back-to-back writes from
+/// the same process; a monotonic [`TMP_COUNTER`] provides
+/// belt-and-suspenders coverage against NTP backward jumps
+/// yielding a duplicate `now_nanos`.
+///
+/// # Idempotent
+///
+/// Writing the same content twice produces the same final path
+/// (content-addressed).  Two concurrent writes with distinct
+/// tmp files still race on the final rename, but since the
+/// content is byte-identical the outcome is one of two
+/// identical files — observationally indistinguishable.
+///
+/// # Explicit mode 0o644 on unix
+///
+/// Snapshot files get an explicit `0o644` mode so the leader's
+/// umask does NOT leak to any joiner reading over shared
+/// storage.  Content is deterministic across validators; the
+/// file metadata should be too.
+///
+/// # Sidecar deferred
+///
+/// A later slice will thread payload-hash sidecar writes through
+/// this function (via [`referenced_payload_hashes`], defined
+/// below).  This slice ships the snapshot-blob write path alone.
+pub fn write_snapshot(
+    snapshot_dir: &Path,
+    entries: &[WalEntry],
+) -> Result<(PathBuf, [u8; 32], [u8; 32]), SnapshotError> {
+    let blob = snapshot_blob(entries);
+    let final_path = snapshot_path(snapshot_dir, &blob.root);
+
+    // Ensure directory exists.  Callers should have validated
+    // this at boot; a race that removed it mid-flight surfaces
+    // here as ENOENT.
+    if let Some(parent) = final_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    // Per-process, per-invocation tmp filename — see the
+    // "Atomic tmp+rename" docstring section.
+    let now_nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let counter = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let tmp_name = format!(
+        "{}.{}-{}-{}.wal.tmp",
+        final_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("snapshot"),
+        std::process::id(),
+        now_nanos,
+        counter
+    );
+    let tmp_path = final_path.with_file_name(tmp_name);
+
+    // Write + fsync tmp file.  `create_new(true)` — a collision
+    // on the per-process/per-nanos tmp path indicates a serious
+    // clock or PID malfunction; surface it rather than
+    // overwriting.
+    {
+        use std::io::Write as _;
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o644);
+        }
+        let mut file = opts.open(&tmp_path)?;
+        file.write_all(&blob.bytes)?;
+        file.sync_all()?;
+    }
+
+    // Atomic rename to the content-addressed final path.
+    std::fs::rename(&tmp_path, &final_path)?;
+
+    // Fsync the parent dir so the rename entry itself is durable
+    // (POSIX: rename's atomicity does not imply metadata
+    // durability).  Some filesystems (tmpfs, some network fs)
+    // reject dir fsync with a legitimate errno — log at debug
+    // rather than surfacing.
+    if let Some(parent) = final_path.parent() {
+        match std::fs::File::open(parent) {
+            Ok(dir_file) => {
+                if let Err(e) = dir_file.sync_all() {
+                    tracing::debug!(
+                        target: "f1r3fly.fs_wal.snapshot",
+                        parent = %parent.display(),
+                        error = %e,
+                        "dir fsync after rename failed (fs may not support dir fsync)"
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::debug!(
+                    target: "f1r3fly.fs_wal.snapshot",
+                    parent = %parent.display(),
+                    error = %e,
+                    "opening parent dir for fsync failed"
+                );
+            }
+        }
+    }
+
+    Ok((final_path, blob.root, blob.merkle_root))
+}
+
+/// Read + verify a snapshot from `snapshot_dir` by its content-
+/// addressed root.  Returns the raw bytes (still encoded — call
+/// [`decode_wal_slice`] to get `Vec<WalEntry>`).
+///
+/// # Two-layer verification
+///
+/// 1. **Hash check** — recompute `Blake2b256(bytes)` and
+///    compare against the requested `root`.  Mismatch returns
+///    [`SnapshotError::RootMismatch`].
+/// 2. **Version check** — leading byte matches
+///    `SNAPSHOT_FORMAT_VERSION`.  Mismatch returns
+///    [`SnapshotError::UnsupportedVersion`].
+///
+/// # Why hash-first ordering (diagnostic clarity, not security)
+///
+/// Both orderings are equally secure — an attacker needs
+/// `hash(bytes) == root` either way, and a version-first check
+/// would actually add a constraint on the attacker rather than
+/// weakening one.  The choice is about which error surfaces
+/// FIRST for the common byzantine-peer scenario and what
+/// diagnostic action that implies:
+///
+///   - **Hash-first (this ordering)**: byzantine peer serves
+///     corrupt bytes → `RootMismatch` → operator knows to
+///     re-fetch from a different peer set.
+///   - **Version-first (rejected)**: byzantine peer serves
+///     corrupt bytes with a happen-to-match version byte →
+///     `RootMismatch`; with a wrong version byte →
+///     `UnsupportedVersion` — misleading, since it makes a
+///     byzantine-peer situation look like a fleet-upgrade
+///     issue.
+///
+/// The operator's remediation differs by variant:
+/// `RootMismatch` → "re-fetch from another peer";
+/// `UnsupportedVersion` → "the fleet needs a coordinated
+/// upgrade."  Serving the wrong diagnostic for a
+/// byzantine-peer scenario would send the operator down the
+/// wrong triage path.
+pub fn read_snapshot_bytes(snapshot_dir: &Path, root: &[u8; 32]) -> Result<Vec<u8>, SnapshotError> {
+    let path = snapshot_path(snapshot_dir, root);
+    let bytes = std::fs::read(&path)?;
+    let got = hash_of(&bytes);
+    if got != *root {
+        return Err(SnapshotError::RootMismatch {
+            expected: *root,
+            got,
+        });
+    }
+    // Version check post-hash (see docstring).
+    let Some(&version) = bytes.first() else {
+        return Err(SnapshotError::Truncated { got: 0, need: 1 });
+    };
+    if version != SNAPSHOT_FORMAT_VERSION {
+        return Err(SnapshotError::UnsupportedVersion {
+            got: version,
+            supported: SNAPSHOT_FORMAT_VERSION,
+        });
+    }
+    Ok(bytes)
+}
+
+/// Extract the set of unique payload hashes referenced by a WAL
+/// slice.  Skips entries whose `payload_ref` is `None` or
+/// `DeployRef` — only the `Hash` variant references bytes that
+/// live in the payload store.  Deduplicates via `HashSet`.
+///
+/// The (yet-to-land) payload-hash sidecar slice will thread this
+/// through [`write_snapshot`] so the sidecar records which
+/// payloads a given snapshot references, letting payload-store
+/// retention union across all retained snapshots without
+/// decoding the full WAL bytes each pass.
+pub fn referenced_payload_hashes(entries: &[WalEntry]) -> std::collections::HashSet<[u8; 32]> {
+    let mut set = std::collections::HashSet::new();
+    for e in entries {
+        if let Some(PayloadRef::Hash(h)) = e.payload_ref {
+            set.insert(h);
+        }
+    }
+    set
 }
 
 #[cfg(test)]
@@ -1455,4 +1707,242 @@ mod tests {
     // module-scope `_SNAPSHOT_ERROR_IS_SEND_SYNC` const witness
     // above enforces the bound at every `cargo build` (not only
     // `cargo test`).
+
+    // --- Slice 3: disk I/O -----------------------------------------
+
+    /// `snapshot_path` produces `{dir}/{root_hex}.wal` with a
+    /// full 64-char (256-bit) hex encoding — no truncation, so
+    /// accidental collision is impossible under Blake2b256
+    /// preimage resistance.
+    #[test]
+    fn snapshot_path_uses_full_root_hex_with_wal_extension() {
+        let dir = PathBuf::from("/tmp/snapshots");
+        let root: [u8; 32] = [0xABu8; 32];
+        let path = snapshot_path(&dir, &root);
+        // 0xAB = "ab" in hex; 32 bytes → 64-char string "abab...ab".
+        let hex64 = "ab".repeat(32);
+        assert_eq!(path, dir.join(format!("{hex64}.wal")));
+        assert_eq!(
+            path.file_name().and_then(|s| s.to_str()),
+            Some(format!("{hex64}.wal").as_str())
+        );
+    }
+
+    #[test]
+    fn snapshot_path_differs_by_root_byte() {
+        let dir = PathBuf::from("/x");
+        let a = [0u8; 32];
+        let mut b = [0u8; 32];
+        b[31] = 1; // flip the trailing byte
+        assert_ne!(
+            snapshot_path(&dir, &a),
+            snapshot_path(&dir, &b),
+            "different roots MUST produce different paths"
+        );
+        // Sanity: identical roots produce identical paths (idempotence).
+        assert_eq!(snapshot_path(&dir, &a), snapshot_path(&dir, &a));
+    }
+
+    /// End-to-end write → read round-trip: the bytes we read
+    /// back byte-equal the bytes we wrote, and the returned root
+    /// matches `Blake2b256(bytes)`.
+    #[test]
+    fn write_snapshot_then_read_bytes_roundtrips() {
+        let tmp = tempfile::tempdir().unwrap();
+        let entries = diverse_entries();
+        let (path, root, merkle_root) = write_snapshot(tmp.path(), &entries).expect("write ok");
+        // File exists at the content-addressed path.
+        assert!(path.exists());
+        assert_eq!(path, snapshot_path(tmp.path(), &root));
+        // Reader returns the same bytes we produced.
+        let bytes = read_snapshot_bytes(tmp.path(), &root).expect("read ok");
+        assert_eq!(bytes, encode_wal_slice(&entries));
+        // The reader-side hash-check confirms `root == Blake2b256(bytes)`
+        // — no need to re-assert here.
+        // Merkle root matches an independent computation.
+        use super::super::snapshot_chunk::{chunk_snapshot, snapshot_merkle_root};
+        let expected_merkle = snapshot_merkle_root(
+            &chunk_snapshot(&bytes)
+                .iter()
+                .map(|c| c.hash)
+                .collect::<Vec<_>>(),
+        );
+        assert_eq!(merkle_root, expected_merkle);
+    }
+
+    /// Writing the same entries twice is idempotent — both writes
+    /// land at the same content-addressed path, and both leave
+    /// byte-identical files.
+    #[test]
+    fn write_snapshot_is_idempotent_by_content_address() {
+        let tmp = tempfile::tempdir().unwrap();
+        let entries = vec![mk_write_entry(5, b"hello")];
+        let (path_a, root_a, _) = write_snapshot(tmp.path(), &entries).expect("first write ok");
+        let (path_b, root_b, _) = write_snapshot(tmp.path(), &entries).expect("second write ok");
+        assert_eq!(path_a, path_b);
+        assert_eq!(root_a, root_b);
+        // Reader-side round-trip still works after the rewrite.
+        let bytes = read_snapshot_bytes(tmp.path(), &root_a).expect("read ok");
+        assert_eq!(bytes, encode_wal_slice(&entries));
+    }
+
+    /// Missing snapshot file surfaces as `SnapshotError::Io(NotFound)`
+    /// via the `From<io::Error>` impl.
+    #[test]
+    fn read_snapshot_bytes_missing_file_returns_io_not_found() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = [0x11u8; 32];
+        match read_snapshot_bytes(tmp.path(), &root) {
+            Err(SnapshotError::Io(e)) => {
+                assert_eq!(e.kind(), std::io::ErrorKind::NotFound);
+            }
+            other => panic!("expected Io(NotFound), got {other:?}"),
+        }
+    }
+
+    /// A snapshot whose on-disk bytes don't hash to the requested
+    /// root surfaces as `RootMismatch`.  Simulates a corrupt or
+    /// tampered file by writing custom bytes to a
+    /// content-addressed path whose name says the root is X but
+    /// the bytes hash to Y.
+    #[test]
+    fn read_snapshot_bytes_wrong_bytes_returns_root_mismatch() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Pretend the caller requested this root.
+        let claimed_root = [0x22u8; 32];
+        let path = snapshot_path(tmp.path(), &claimed_root);
+        // Write bytes that hash to something else.
+        std::fs::write(&path, b"not the right bytes").unwrap();
+        match read_snapshot_bytes(tmp.path(), &claimed_root) {
+            Err(SnapshotError::RootMismatch { expected, got }) => {
+                assert_eq!(expected, claimed_root);
+                assert_ne!(got, claimed_root);
+            }
+            other => panic!("expected RootMismatch, got {other:?}"),
+        }
+    }
+
+    /// Post-hash version check: if a file's hash matches but the
+    /// leading version byte doesn't match `SNAPSHOT_FORMAT_VERSION`,
+    /// return `UnsupportedVersion`.  Constructs the pathological
+    /// case by hashing a bad-version blob and pointing the reader
+    /// at the resulting root.
+    #[test]
+    fn read_snapshot_bytes_wrong_version_returns_unsupported_version() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Deliberately bogus version byte.
+        let bad_bytes: Vec<u8> = vec![99u8, 0, 0, 0, 0];
+        let bad_root = {
+            let h = Blake2b256::hash(bad_bytes.clone());
+            let mut out = [0u8; 32];
+            out.copy_from_slice(&h);
+            out
+        };
+        let path = snapshot_path(tmp.path(), &bad_root);
+        std::fs::write(&path, &bad_bytes).unwrap();
+        match read_snapshot_bytes(tmp.path(), &bad_root) {
+            Err(SnapshotError::UnsupportedVersion { got, supported }) => {
+                assert_eq!(got, 99);
+                assert_eq!(supported, SNAPSHOT_FORMAT_VERSION);
+            }
+            other => panic!("expected UnsupportedVersion, got {other:?}"),
+        }
+    }
+
+    /// A zero-byte file hashes to the empty-input Blake2b256
+    /// digest.  If a caller requests THAT root, the read succeeds
+    /// past the hash check but fails the version check with
+    /// `Truncated { got: 0, need: 1 }`.  Pins the truncation
+    /// guard's role as a defense against a "hash-matches-but-
+    /// empty" file that could otherwise crash the version-byte
+    /// indexer.
+    #[test]
+    fn read_snapshot_bytes_zero_length_at_matching_root_returns_truncated() {
+        let tmp = tempfile::tempdir().unwrap();
+        let empty_root = {
+            let h = Blake2b256::hash(Vec::new());
+            let mut out = [0u8; 32];
+            out.copy_from_slice(&h);
+            out
+        };
+        let path = snapshot_path(tmp.path(), &empty_root);
+        std::fs::write(&path, b"").unwrap();
+        match read_snapshot_bytes(tmp.path(), &empty_root) {
+            Err(SnapshotError::Truncated { got: 0, need: 1 }) => (),
+            other => panic!("expected Truncated {{ got: 0, need: 1 }}, got {other:?}"),
+        }
+    }
+
+    // --- referenced_payload_hashes ---------------------------------
+
+    #[test]
+    fn referenced_payload_hashes_extracts_hash_variants_only() {
+        let block_hash = [0xEE; 32];
+        let entries = vec![
+            // Skipped: no payload_ref.
+            WalEntry {
+                op: WalOp::Chmod,
+                path: PathBuf::from("/a"),
+                extra_path: None,
+                offset: None,
+                length: None,
+                payload_ref: None,
+                mode_bits: Some(0o644),
+                owner: None,
+                group: None,
+                outcome: WalOutcome::Success,
+            },
+            // Included: Hash variant.
+            mk_write_entry(3, b"aa"),
+            mk_write_entry(3, b"bb"),
+            // Skipped: DeployRef variant (bytes live in block
+            // storage, not payload store).
+            WalEntry {
+                op: WalOp::WriteAt,
+                path: PathBuf::from("/c"),
+                extra_path: None,
+                offset: Some(0),
+                length: Some(8),
+                payload_ref: Some(PayloadRef::DeployRef {
+                    block_hash,
+                    deploy_index: 0,
+                    arg_index: 0,
+                }),
+                mode_bits: None,
+                owner: None,
+                group: None,
+                outcome: WalOutcome::Success,
+            },
+        ];
+        let set = referenced_payload_hashes(&entries);
+        assert_eq!(
+            set.len(),
+            2,
+            "expected exactly the two Hash-variant entries"
+        );
+    }
+
+    /// Duplicates dedupe via the HashSet — a WAL slice with N
+    /// entries all referencing the same payload contributes ONE
+    /// hash to the set.
+    #[test]
+    fn referenced_payload_hashes_deduplicates() {
+        let entries = vec![
+            mk_write_entry(5, b"same"),
+            mk_write_entry(5, b"same"),
+            mk_write_entry(5, b"same"),
+        ];
+        let set = referenced_payload_hashes(&entries);
+        assert_eq!(
+            set.len(),
+            1,
+            "three copies of the same payload dedupe to one hash"
+        );
+    }
+
+    #[test]
+    fn referenced_payload_hashes_empty_input_yields_empty_set() {
+        let set = referenced_payload_hashes(&[]);
+        assert!(set.is_empty());
+    }
 }
