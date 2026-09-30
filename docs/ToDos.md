@@ -854,7 +854,7 @@ tasks:
     recorded_on: 2026-09-30
     blocked_by: []
     precedes: [TASK-019-10]
-    stage: "Steps 1 to 12 of 16 complete on 2026-09-30. Steps 5 to 11: model, work paths, metered entry points, inputs and digest, bounded and reference evaluations, comparison, controls, property test. Step 12: capability entry fork_choice and 2 node tests (admission and unknown-field refusal). Findings: the production score map credits one block below the ancestor, and the floor work depends on the message order. Step 13 (binding entries, applicability review, step-13 hand-off to Agent B) is next."
+    stage: "Steps 1 to 13 of 16 complete on 2026-09-30. Steps 5 to 12: model, work paths, metered entry points, inputs and digest, bounded and reference evaluations, comparison, controls, property test, capability entry. Step 13: claim 004 binding entry (16 properties, 30 tests), Batch D applicability review in the README, 3 refusal tests, failed state with an error class. The file hand-off to Agent B (TASK-019-10) is in the work log. Findings 1 to 4 are in the work log. Step 14 (formal gate, binding check, test suites, results) is next."
     consumer: "TASK-017-12 harness profile on formal/soak-casper-consensus: the profile compares the selected head of a bounded member and a reference member on equal inputs."
     claims: [CLAIM-CASPER-NODE-OBSERVATION-004]
     claim_status: pending

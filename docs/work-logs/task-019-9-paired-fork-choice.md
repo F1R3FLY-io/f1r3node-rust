@@ -201,6 +201,71 @@ The node test file is Linux-only. The local check ran the file in a `rust:bookwo
 
 CI strips the debug information with `objcopy --strip-debug` before the run, as `scripts/ci/check-node-observation-bindings.sh` does. The stripped file is 30 MB and passes. A local Linux run must strip the file in the same way. No code change follows from this finding.
 
+## Step 13 on 2026-09-30: binding entries, applicability review, refusal tests
+
+`formal/tlaplus/node_observation/bindings.json` has the entry for claim 004. It maps the 16 properties to 30 tests of `casper/tests/soak_observer.rs` and `node/tests/soak_observer.rs`, and 5 properties to the model invariants. The gaps column names each missing test. The insertion added 396 lines and removed none.
+
+`formal/tlaplus/node_observation/README.md` has the section "Batch D applicability review". The table has the 16 rows D1 to D16 in the format of the C table, with the decision "Pending maintainer review" on each row. The section also defines `visited_blocks` and `examined_edges`, records the score extent finding, the failed state, and the testimony filter limit.
+
+`scripts/ci/check-node-observation-bindings.sh` hashes `docs/claims/casper-node-fork-choice-observation.md` with the other inputs. The record of that script needs a refresh in step 15.
+
+Three refusal tests cover the failure rows of the plan. Each test sends a request with the reference through the controller and an `AttachedCasper` with a chosen approved block:
+
+| Row | Test | Result |
+|-----|------|--------|
+| Approved block not in the capture | `an_approved_block_outside_the_capture_refuses_both_evaluations` | Both `unavailable`, reason `approved_block_not_captured`. Comparison `result_unavailable`. |
+| Approved block number differs | `an_approved_block_number_mismatch_refuses_both_evaluations` | Both `unavailable`, reason `approved_block_mismatch`. |
+| Parent absent from the DAG | `an_incomplete_history_refuses_the_reference_with_its_reason` | Reference `unavailable`, reason `history_incomplete`. Bounded `failed`, reason `production_error:missing_block`. |
+
+The rows `missing_body_coverage` and `score_overflow` have no test. The first needs a capture without a body that the floor derivation reads, which the fixture API does not give. The second needs stakes near the integer limit.
+
+### Finding 4: the bounded refusal carried a raw production error
+
+The `bounded` evaluation mapped each production error with `to_string()`. A missing parent gave a reason of several kilobytes with a backtrace. The plan requires the failed state with an error class.
+
+`evaluation.rs` now has `store_reason` and `casper_reason`. They keep a work limit reason as it is and map the other errors to a class such as `production_error:missing_block`. `fork_choice_value` gives the `failed` state for `score_overflow` and for a class reason, and the `unavailable` state for the other reasons. The `Failed` variant of `Value` had no constructor before this change.
+
+Checks: 39 observer tests passed. `cargo clippy --all-targets -- -D warnings` for `casper` passed. The STE check of the README adds table-row findings only, which the legacy C table also carries (the checker joins the 6 cells of a row).
+
+## Hand-off to Agent B after step 13
+
+This section is the explicit file hand-off for TASK-019-10. It transfers the shared files at their final Batch D state. The Batch D verification, the evidence package, and the acceptance request stay in steps 14 to 16 of TASK-019-9.
+
+**Pinned revision.** The commit that contains this section on `feature/casper-node-observation`. Agent B pins the SHA of that commit and checks the digests below against the committed files.
+
+**Shared files and their SHA-256 at this revision.**
+
+| File | SHA-256 | Batch D state |
+|------|---------|---------------|
+| `casper/src/rust/soak_observer.rs` | `fe7f2873fc0d6c1e2c8ee9a704598273fa79bd892045c85586d8d77dd54ccdca` | Final since step 8 |
+| `casper/src/rust/soak_observer/evaluation.rs` | `147c804f53b34b2811fba6a80b6eb9610606e089825248c8bb86c9a113be79ea` | Final at step 13 |
+| `casper/src/rust/soak_observer/fork_choice.rs` | `a06eba79338b7c6b6eb38b73aedcc4e1b5fa25d750b09ff45ab9a1593d4a9d5c` | Final since step 11 |
+| `casper/tests/soak_observer.rs` | `8750c7c9ba7bf72db70f4dcb93180c4e275429a783c3c38a976bafe91fa9e9bf` | Final at step 13 |
+| `node/src/rust/soak_observer.rs` | `7067d54f444b0f689984ad77ab34efa5c81113443c12e0e820a66d562edd8e98` | Final since step 12 |
+| `node/tests/soak_observer.rs` | `e70f2f90d0d2a8a42e02082322c8a1432c585c61dca8eb58f3243a84248290cc` | Final since step 12 |
+| `shared/src/rust/dag/observation_work.rs` | `2e8f5771e80d14f8b2a371f9e21e479f9bf3a13ee0ec1583bd47c15fad994812` | Final since step 6, `WORK_PATHS = 6` |
+
+Agent A makes no further change to these 7 files in steps 14 to 16. A Batch E change to a shared file must keep the Batch D tests green. It must not change the Batch B2 digest test or the fork-choice input digest.
+
+**Interfaces that Batch E can use.** `Value<T>` has 4 states, and `Value::Failed` is now constructed. `WorkMeter` has 6 paths, and paths 4 and 5 belong to Batch D. A new path needs `WORK_PATHS = 7` and a new entry in the work report. `AuthorityRequest.fork_choice` is optional with a default of none. The capability list has 6 entries.
+
+**Record refresh scope.** The 28 ledger records with the scope `batch-d-registration` belong to Batch D. Agent A sets their digests in step 15. Agent B does not edit them. A Batch E record for a shared file gets a new record with `previous_record` set to the Batch D record.
+
+The record of `scripts/ci/check-node-observation-bindings.sh` has the scope `agent-b-ci-correction-refresh-20260930-01`. Step 13 changed the hash list of the script, so that record needs a Batch D refresh in step 15. Agent B waits for that refresh before a Batch E record of the same script.
+
+**Exact test commands.** Run the commands from the repository root.
+
+| Suite | Command | Count |
+|-------|---------|-------|
+| Observer integration tests | `cargo nextest run --locked --release -p casper --test soak_observer` | 39 |
+| Estimator and floor unit tests | `cargo nextest run --locked --release -p casper -E 'binary(casper) & (test(/estimator/) \| test(/floor/))'` | 57 |
+| Estimator, fork-choice, and floor suites in `casper/tests/mod.rs` | `cargo nextest run --locked --release -p casper -E 'binary(mod) & (test(/estimator/) \| test(/fork_choice/) \| test(/floor/))'` | 66 |
+| Node observer tests (Linux only) | `cargo test --locked -p node --test soak_observer --no-run`, then `objcopy --strip-debug <executable> <stripped>` and run `<stripped> --test-threads=2` | 21 passed, 1 ignored |
+| Node binding driver (Linux only) | `scripts/ci/check-node-observation-bindings.sh <output-directory>` | 2 executables |
+| Formal gate | `scripts/ci/check-tla-invariants.sh` with `TLA_TOOLS_JAR` set, and `scripts/ci/test-check-tla-invariants.sh` | 25 plan entries |
+
+The raw debug node test executable is 571 MB and fails the observer self-check. Strip it before the run, as finding 3 records. Run `rustfmt --edition 2021` on each changed Rust file before a commit request.
+
 ## Progress
 
 - [x] Claim the task and start the work log.
@@ -214,6 +279,6 @@ CI strips the debug information with `objcopy --strip-debug` before the run, as 
 - [x] `reference` evaluation and tests.
 - [x] Comparison, response field, negative controls.
 - [x] Capability entry and node tests.
-- [ ] Binding entries and applicability review.
+- [x] Binding entries and applicability review.
 - [ ] Gate, binding check, test suites, results recorded.
 - [ ] Compact evidence package and the acceptance request.

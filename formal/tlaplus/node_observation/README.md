@@ -244,3 +244,60 @@ A separate capture must observe persisted metadata.
 
 B2 does not claim a live authority profile.
 The [work log](../../../docs/work-logs/task-019-3-node-authority-evaluation.md) records the tests, the construction cycle, and the source-bound evidence packages.
+
+## Batch D applicability review
+
+[CLAIM-CASPER-NODE-OBSERVATION-004](../../../docs/claims/casper-node-fork-choice-observation.md) covers the paired fork-choice observation.
+The earlier acceptances apply to claims 001, 002, and 003 at their recorded revisions.
+They do not accept this extension.
+
+Batch D adds the bounded model `PairedForkChoice` with 5 invariants and 5 negative controls.
+The model has no construction project. Its refutation tier covers the value states, the capture binding, and the shared budget.
+It does not cover the fork-choice rules. The Rust tests bind those rules to the production estimator and to the [specification](../../../docs/casper/theory/fork-choice/fork-choice-specification.md).
+
+The named maintainer has not reviewed the classifications below. The decision column records the proposal only.
+
+| Property | Class | Refutation | Construction | Binding | Decision |
+| --- | --- | --- | --- | --- | --- |
+| D1: one capture | U | `OneCapture`, control `digest_unsafe` | Inherited capture theorems. The scratch construction stays pending. | Reference on the capture and the scratch view test. | Pending maintainer review. |
+| D2: digest coverage | U | `OneCapture` | Pending. Digest coverage of each input is a hash assumption. | Selection and capture change tests. | Pending maintainer review. |
+| D3: adopted inputs | U | None | Pending. The adoption routes are not modeled. | Endpoint value test and the zero parent limit test. | Pending maintainer review. |
+| D4: measured path | U | None | Pending. The call structure is not mechanized. | Production estimator parity, scratch view, and 12 random DAGs. | Pending maintainer review. |
+| D5: caller filters | U | None | Pending. The filter is a copy of the caller logic. | Estimator parity and the count parity of the 2 evaluations. | Pending maintainer review. |
+| D6: independent reference | U | None | Pending. The reference semantics are not mechanized. | 5 reference controls with a required head mismatch. | Pending maintainer review. |
+| D7: result identity | F proposed | None | Not applicable proposed. The domain is the fixed response schema. | Result field tests and the schema check test. | Pending maintainer review. |
+| D8: comparison rule | U | `CompareSameInput`, control `compare_unsafe` | Pending. The extension of the authority theorem awaits the maintainer. | Different captures and unavailable results. | Pending maintainer review. |
+| D9: no substitute head | U | `HeadNotFloor`, control `floor_unsafe` | Pending. | Zero parent limit, schema check, and heads in tips on 12 random DAGs. | Pending maintainer review. |
+| D10: explicit absence | U | `NoFabricatedHead`, control `absent_unsafe` | Pending. Refusal completeness is not modeled. | 7 refusal tests, with 2 rows untested. | Pending maintainer review. |
+| D11: work bounds | U | `SharedBudget`, control `budget_unsafe` | Inherited budget theorems through the shared meter, with charge placement pending. | Limit tests of the 4 metered functions and of the reference. | Pending maintainer review. |
+| D12: separate counts | F proposed | None | Not applicable proposed for the fixed number of paths. | Sum of the 6 paths and the response work fields. | Pending maintainer review. |
+| D13: unchanged production result | U | None | Pending. | 4 differential tests and the ordinary estimator and floor suites. | Pending maintainer review. |
+| D14: unchanged Batch B2 result | U | None | Pending. | Byte and digest comparison without a selection. | Pending maintainer review. |
+| D15: read-only behavior | U | None | Pending without a model of effect confinement. | Scratch view test and the ordinary regressions. | Pending maintainer review. |
+| D16: no live qualification | F proposed | None | Not applicable proposed for the constant value. | Node capability and admission tests. | Pending maintainer review. |
+
+Three properties propose a bounded-by-design classification. Thirteen properties keep pending construction with Rust tests, and 2 of those inherit accepted theorems through the capture and the shared meter.
+
+The work fields of a fork-choice result have these meanings.
+`visited_blocks` is the metadata count of the evaluation path.
+`examined_edges` is the traversal count of the evaluation path.
+
+The `bounded` path counts the reads of the production functions under the checked meter.
+The `reference` path counts the reads of the captured maps. The 2 counts are not comparable.
+
+The `bounded` and `reference` results agree in head and tips on every fixture.
+Their score maps do not agree in extent.
+
+The production estimator credits the main parent of a block at the common ancestor height.
+The reference stops at the common ancestor, as R-SCORE states. The comparison does not compare scores.
+
+A production error in the `bounded` evaluation gives the failed state with an error class, such as `production_error:missing_block`.
+A work limit gives the unavailable state with the limit reason.
+
+The reference gives `history_incomplete` when the captured history does not reach the lower bound.
+
+The testimony filter has no negative control. The DAG storage records a latest message under its sender only, so a foreign message is not constructible through the capture.
+The count parity of the 2 evaluations covers that filter.
+
+Batch D does not claim a live fork-choice profile.
+The [work log](../../../docs/work-logs/task-019-9-paired-fork-choice.md) records the steps, the findings, and the test results.

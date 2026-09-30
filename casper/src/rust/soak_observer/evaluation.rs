@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use shared::rust::dag::observation_work::{
     CheckedWork, WorkKind, WorkLimits, WorkMeter, WorkUsage,
 };
+use shared::rust::store::key_value_store::KvStoreError;
 use shared::rust::store::soak_snapshot::ReadLimits;
 
 use super::fork_choice::{
@@ -24,6 +25,7 @@ use super::{
     AuthorityInputs, CaptureEndpoint, Coverage, EventKind, FloorOutcome, ObservationEvent,
     ObserverBinding,
 };
+use crate::rust::errors::CasperError;
 use crate::rust::estimator::Estimator;
 use crate::rust::finality::floor::{self, Floor, FloorOfView};
 use crate::rust::safety::clique_oracle::{CliqueOracle, ExactOracleResult, FtThreshold};
@@ -776,14 +778,11 @@ async fn evaluate_inner(
                     &endpoint.authority,
                 )
                 .evaluate();
-                (
-                    Value::from_result(&input_digest, checked_result(reference)),
-                    true,
-                )
+                (fork_choice_value(&input_digest, reference), true)
             } else {
                 (Value::NotRequested, false)
             };
-            let bounded = Value::from_result(&input_digest, checked_result(bounded));
+            let bounded = fork_choice_value(&input_digest, bounded);
             let comparison = if compare_requested {
                 fork_choice::compare(&bounded, &reference)
             } else {
@@ -845,6 +844,49 @@ fn checked_result(result: Result<ForkChoiceResult, String>) -> Result<ForkChoice
     Ok(result)
 }
 
+fn fork_choice_value(
+    digest: &str,
+    result: Result<ForkChoiceResult, String>,
+) -> Value<ForkChoiceResult> {
+    match checked_result(result) {
+        Ok(value) => Value::available(digest, value),
+        Err(reason) if reason == "score_overflow" || reason.starts_with("production_error:") => {
+            Value::Failed {
+                input_digest: Some(digest.to_string()),
+                reason,
+            }
+        }
+        Err(reason) => Value::unavailable(digest, reason),
+    }
+}
+
+fn store_reason(error: KvStoreError) -> String {
+    match error {
+        KvStoreError::InvalidArgument(text) if text.starts_with("observation_work:") => text,
+        KvStoreError::KeyNotFound(_) => "production_error:key_not_found".to_string(),
+        KvStoreError::IoError(_) => "production_error:io".to_string(),
+        KvStoreError::SerializationError(_) => "production_error:serialization".to_string(),
+        KvStoreError::InvalidArgument(_) => "production_error:invalid_argument".to_string(),
+        KvStoreError::LockError(_) => "production_error:lock".to_string(),
+        KvStoreError::LastFinalizedBlockUninitialized => {
+            "production_error:last_finalized_block_uninitialized".to_string()
+        }
+        KvStoreError::MissingBlock { .. } => "production_error:missing_block".to_string(),
+    }
+}
+
+fn casper_reason(error: CasperError) -> String {
+    match error {
+        CasperError::KvStoreError(error) => store_reason(error),
+        CasperError::BlockNotHeld(..) => "production_error:missing_block".to_string(),
+        CasperError::IncompatibleFinalizedFork(_) => {
+            "production_error:incompatible_finalized_fork".to_string()
+        }
+        CasperError::LockError(_) => "production_error:lock".to_string(),
+        _ => "production_error:casper".to_string(),
+    }
+}
+
 async fn bounded_fork_choice(
     snapshot: &DetachedDagSnapshot,
     endpoint: &CaptureEndpoint,
@@ -869,11 +911,11 @@ async fn bounded_fork_choice(
                 captured.len() as u64,
                 meter.metadata_bytes(),
             )
-            .map_err(|e| e.to_string())?;
+            .map_err(store_reason)?;
         let invalid = view
             .representation
             .invalid_latest_messages_from_hashes(&captured)
-            .map_err(|e| e.to_string())?;
+            .map_err(store_reason)?;
         counts.invalid = invalid.len();
         let mut used: std::collections::BTreeMap<Validator, BlockHash> =
             std::collections::BTreeMap::new();
@@ -884,7 +926,7 @@ async fn bounded_fork_choice(
             match view
                 .representation
                 .lookup_metered(meter, hash)
-                .map_err(|e| e.to_string())?
+                .map_err(store_reason)?
             {
                 None => counts.not_held += 1,
                 Some(metadata) if metadata.sender != *validator => counts.not_own_testimony += 1,
@@ -898,7 +940,7 @@ async fn bounded_fork_choice(
         let approved = view
             .representation
             .lookup_metered(meter, &approved_hash)
-            .map_err(|e| e.to_string())?
+            .map_err(store_reason)?
             .ok_or("approved_block_not_captured")?;
         if approved.block_number != endpoint.fork_choice.approved_block_number {
             return Err("approved_block_mismatch".to_string());
@@ -912,7 +954,7 @@ async fn bounded_fork_choice(
             threshold,
         )
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(casper_reason)?;
         let rule = if floor_block.block_hash == approved.block_hash {
             LowerBoundRule::ApprovedBlock
         } else {
@@ -928,12 +970,12 @@ async fn bounded_fork_choice(
                 Some(endpoint.authority.max_parent_depth),
             )
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(store_reason)?;
         let head = choice.tips.first().ok_or("no_head_selected")?;
         let mut sorted_scores: std::collections::BTreeMap<String, i64> =
             std::collections::BTreeMap::new();
         for (hash, score) in &choice.scores {
-            meter.step(WorkKind::Traversal).map_err(|e| e.to_string())?;
+            meter.step(WorkKind::Traversal).map_err(store_reason)?;
             sorted_scores.insert(hex::encode(hash), *score);
         }
         let score_digest = digest(&sorted_scores, meter)?;

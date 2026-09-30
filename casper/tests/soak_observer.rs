@@ -1019,6 +1019,116 @@ async fn a_zero_parent_limit_gives_no_head_and_no_substitute() {
     );
 }
 
+fn attached(fixture: &Fixture, approved: BlockMessage) -> Arc<AttachedCasper> {
+    let mut conf = CasperShardConf::new();
+    conf.fault_tolerance_threshold_ppm = 1_000_000;
+    conf.fault_tolerance_threshold = -1.0;
+    conf.max_parent_depth = 12;
+    conf.max_number_of_parents = 100;
+    conf.deploy_lifespan = 50;
+    Arc::new(AttachedCasper {
+        dag: fixture.dag.clone(),
+        blocks: fixture.blocks.clone(),
+        approved,
+        conf,
+        binding: OnceLock::new(),
+        supported: true,
+    })
+}
+
+fn refusal<T: std::fmt::Debug>(value: &Value<T>) -> (&'static str, &str) {
+    match value {
+        Value::Unavailable { reason, .. } => ("unavailable", reason),
+        Value::Failed { reason, .. } => ("failed", reason),
+        other => panic!("unexpected value: {other:?}"),
+    }
+}
+
+async fn fork_choice_with(
+    fixture: &Fixture,
+    approved: BlockMessage,
+    target: BlockHash,
+) -> casper::rust::soak_observer::fork_choice::ForkChoiceObservation {
+    use casper::rust::soak_observer::evaluation::ForkChoiceSelection;
+    let controller = ObserverController::new("incarnation".to_string());
+    controller.install(Some(attached(fixture, approved).as_ref()));
+    let mut request = fixture.request();
+    request.targets = vec![hex::encode(target)];
+    request.fork_choice = Some(ForkChoiceSelection { reference: true });
+    let response = controller
+        .authority_snapshot(request, Instant::now() + Duration::from_secs(5))
+        .await
+        .unwrap();
+    available(&response.fork_choice).clone()
+}
+
+#[tokio::test]
+async fn an_approved_block_outside_the_capture_refuses_both_evaluations() {
+    let fixture = fork_fixture().await;
+    let absent = graph_block(&fixture.chain[0], 0xEE, 0, 7, &[], &[]);
+    let observation = fork_choice_with(&fixture, absent, tag(4)).await;
+    assert_eq!(observation.latest_messages.used, 3);
+    assert_eq!(
+        refusal(&observation.bounded),
+        ("unavailable", "approved_block_not_captured")
+    );
+    assert_eq!(
+        refusal(&observation.reference),
+        ("unavailable", "approved_block_not_captured")
+    );
+    assert_eq!(
+        refusal(&observation.comparison),
+        ("unavailable", "result_unavailable")
+    );
+}
+
+#[tokio::test]
+async fn an_approved_block_number_mismatch_refuses_both_evaluations() {
+    let fixture = fork_fixture().await;
+    let mut renumbered = fixture.chain[0].clone();
+    renumbered.body.state.block_number = 5;
+    let observation = fork_choice_with(&fixture, renumbered, tag(4)).await;
+    assert_eq!(observation.inputs.approved_block_number, 5);
+    assert_eq!(
+        refusal(&observation.bounded),
+        ("unavailable", "approved_block_mismatch")
+    );
+    assert_eq!(
+        refusal(&observation.reference),
+        ("unavailable", "approved_block_mismatch")
+    );
+    assert_eq!(
+        refusal(&observation.comparison),
+        ("unavailable", "result_unavailable")
+    );
+}
+
+#[tokio::test]
+async fn an_incomplete_history_refuses_the_reference_with_its_reason() {
+    let base = Fixture::new().await;
+    let template = &base.chain[0];
+    let fixture = Fixture::from_chain(vec![
+        graph_block(template, 1, 0, 7, &[], &[]),
+        graph_block(template, 2, 1, 7, &[9], &[(7, 1)]),
+        graph_block(template, 3, 1, 8, &[1], &[(8, 1)]),
+    ])
+    .await;
+    let observation = fork_choice_with(&fixture, fixture.chain[0].clone(), tag(3)).await;
+    assert_eq!(observation.latest_messages.used, 2);
+    assert_eq!(
+        refusal(&observation.reference),
+        ("unavailable", "history_incomplete")
+    );
+    assert_eq!(
+        refusal(&observation.bounded),
+        ("failed", "production_error:missing_block")
+    );
+    assert_eq!(
+        refusal(&observation.comparison),
+        ("unavailable", "result_unavailable")
+    );
+}
+
 #[tokio::test]
 async fn reference_fork_choice_matches_the_bounded_result_on_the_capture() {
     use casper::rust::soak_observer::evaluation::ForkChoiceSelection;
