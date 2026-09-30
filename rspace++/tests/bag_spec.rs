@@ -500,6 +500,104 @@ fn meet_combines_exact_values_when_an_overlap_is_also_a_prefix() {
     assert_eq!(right.meet(&left), bag(&[(b"\x07", 1), (b"\x08", 1)]));
 }
 
+fn algebra_count_strategy() -> impl Strategy<Value = u64> {
+    prop_oneof![Just(0), Just(1), Just(u64::MAX), any::<u64>()]
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 128, failure_persistence: None, ..ProptestConfig::default() })]
+    #[test]
+    fn exact_algebra_retains_prefix_related_endpoint_independence(
+        prefix in vec(any::<u8>(), 0..32),
+        left_counts in prop::array::uniform3(algebra_count_strategy()),
+        right_counts in prop::array::uniform3(algebra_count_strategy()),
+    ) {
+        let mut first_child = prefix.clone();
+        first_child.push(0);
+        let mut second_child = prefix.clone();
+        second_child.push(1);
+        let keys = [prefix, first_child, second_child];
+        let mut left = Bag::new();
+        let mut right = Bag::new();
+        for (index, key) in keys.iter().enumerate() {
+            if left_counts[index] != 0 {
+                left.insert_many(key, Multiplicity::new(left_counts[index]).unwrap()).unwrap();
+            }
+            if right_counts[index] != 0 {
+                right.insert_many(key, Multiplicity::new(right_counts[index]).unwrap()).unwrap();
+            }
+        }
+        let left_snapshot = left.clone();
+        let right_snapshot = right.clone();
+        let left_bytes = left.compact_bytes();
+        let right_bytes = right.compact_bytes();
+        let join = left.join(&right);
+        let meet = left.meet(&right);
+        let subtract = left.subtract(&right);
+
+        for (index, key) in keys.iter().enumerate() {
+            prop_assert_eq!(join.count(key), left_counts[index].max(right_counts[index]));
+            prop_assert_eq!(meet.count(key), left_counts[index].min(right_counts[index]));
+            prop_assert_eq!(subtract.count(key), left_counts[index].saturating_sub(right_counts[index]));
+        }
+        prop_assert_eq!(
+            left.is_subbag_of(&right),
+            left_counts.iter().zip(right_counts).all(|(left, right)| *left <= right),
+        );
+        prop_assert_eq!(left.compact_bytes(), left_bytes);
+        prop_assert_eq!(right.compact_bytes(), right_bytes);
+        prop_assert_eq!(left, left_snapshot);
+        prop_assert_eq!(right, right_snapshot);
+    }
+}
+
+#[test]
+fn ancestor_membership_cannot_substitute_for_an_exact_descendant() {
+    let ancestor = bag(&[(b"", u64::MAX)]);
+    let descendant = bag(&[(b"\0", 1)]);
+    assert_eq!(ancestor.meet(&descendant), Bag::new());
+    assert_eq!(ancestor.subtract(&descendant), ancestor);
+    assert_eq!(descendant.subtract(&ancestor), descendant);
+    assert!(!ancestor.is_subbag_of(&descendant));
+    assert!(!descendant.is_subbag_of(&ancestor));
+    assert_eq!(ancestor.join(&descendant).count(b""), u64::MAX);
+    assert_eq!(ancestor.join(&descendant).count(b"\0"), 1);
+}
+
+#[test]
+fn deep_prefix_algebra_is_stack_safe_and_preserves_copy_on_write_roots() {
+    std::thread::Builder::new()
+        .stack_size(128 * 1024)
+        .spawn(|| {
+            let prefix = vec![0xA5; 200_000];
+            let mut child = prefix.clone();
+            child.push(0);
+            let mut sibling = prefix.clone();
+            sibling.push(1);
+            let left = bag(&[(&prefix, 7), (&child, 3)]);
+            let right = bag(&[(&prefix, 5), (&sibling, 11)]);
+            let left_snapshot = left.clone();
+            let right_snapshot = right.clone();
+            let join = left.join(&right);
+            let meet = left.meet(&right);
+            let subtract = left.subtract(&right);
+            assert_eq!(join.count(&prefix), 7);
+            assert_eq!(join.count(&child), 3);
+            assert_eq!(join.count(&sibling), 11);
+            assert_eq!(meet.count(&prefix), 5);
+            assert_eq!(meet.distinct_len(), 1);
+            assert_eq!(subtract.count(&prefix), 2);
+            assert_eq!(subtract.count(&child), 3);
+            assert_eq!(subtract.count(&sibling), 0);
+            assert!(!left.is_subbag_of(&right));
+            assert_eq!(left, left_snapshot);
+            assert_eq!(right, right_snapshot);
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
 #[test]
 fn bag_lattice_satisfies_commutativity_associativity_and_absorption() {
     let a = bag(&[(b"shared", 2), (b"a", 8)]);

@@ -1,4 +1,4 @@
-From Stdlib Require Import Arith PeanoNat Lia FunctionalExtensionality.
+From Stdlib Require Import Arith PeanoNat Lia FunctionalExtensionality Bool.Bool.
 From Stdlib Require Import Lists.List Sorting.Permutation.
 
 Set Implicit Arguments.
@@ -164,6 +164,288 @@ Qed.
 Theorem meet_is_subbag_right : forall left right, subbag (meet left right) right.
 Proof.
   intros left right key. unfold meet. apply Nat.le_min_r.
+Qed.
+
+Inductive cursor_algebra := CursorJoin | CursorMeet | CursorSubtract.
+
+Definition cursor_count (operation : cursor_algebra) (left right : nat) : nat :=
+  match operation with
+  | CursorJoin => Nat.max left right
+  | CursorMeet => Nat.min left right
+  | CursorSubtract => left - right
+  end.
+
+Definition cursor_result (operation : cursor_algebra) (left right : bag) : bag :=
+  fun key => cursor_count operation (left key) (right key).
+
+Definition cursor_valid
+  (operation : cursor_algebra) (left right output : bag) (visited : list Key) : Prop :=
+  forall key,
+    (In key visited -> output key = cursor_result operation left right key) /\
+    (~ In key visited -> output key = 0).
+
+Definition cursor_step
+  (operation : cursor_algebra) (left right : bag)
+  (visited : list Key) (output : bag) (key : Key) : list Key * bag :=
+  (key :: visited,
+   set_count key (cursor_result operation left right key) output).
+
+Theorem empty_cursor_valid :
+  forall operation left right, cursor_valid operation left right empty [].
+Proof.
+  intros operation left right key. split.
+  - intro impossible. inversion impossible.
+  - intro absent. reflexivity.
+Qed.
+
+Theorem cursor_step_preserves_exact_counts :
+  forall operation left right visited output key,
+    cursor_valid operation left right output visited ->
+    ~ In key visited ->
+    cursor_valid operation left right
+      (snd (cursor_step operation left right visited output key))
+      (fst (cursor_step operation left right visited output key)).
+Proof.
+  intros operation left right visited output key valid fresh candidate.
+  unfold cursor_step; simpl. split.
+  - intros [same | old].
+    + subst candidate. unfold set_count.
+      destruct (key_eq_dec key key); [reflexivity | contradiction].
+    + unfold set_count. destruct (key_eq_dec candidate key) as [equal | different].
+      * subst candidate. contradiction.
+      * exact (proj1 (valid candidate) old).
+  - intros absent. unfold set_count.
+    destruct (key_eq_dec candidate key) as [equal | different].
+    + subst candidate. exfalso. apply absent. left. reflexivity.
+    + apply (proj2 (valid candidate)).
+      intro old. apply absent. right. exact old.
+Qed.
+
+Fixpoint cursor_walk
+  (operation : cursor_algebra) (left right : bag)
+  (keys : list Key) (state : list Key * bag) : list Key * bag :=
+  match keys with
+  | [] => state
+  | key :: rest =>
+      cursor_walk operation left right rest
+        (cursor_step operation left right (fst state) (snd state) key)
+  end.
+
+Theorem cursor_walk_preserves_exact_counts :
+  forall operation left right keys visited output,
+    NoDup keys ->
+    (forall key, In key keys -> ~ In key visited) ->
+    cursor_valid operation left right output visited ->
+    cursor_valid operation left right
+      (snd (cursor_walk operation left right keys (visited, output)))
+      (fst (cursor_walk operation left right keys (visited, output))).
+Proof.
+  intros operation left right keys.
+  induction keys as [|key rest IH]; intros visited output unique fresh valid.
+  - exact valid.
+  - inversion unique as [|? ? absent rest_unique]; subst.
+    simpl. apply IH.
+    + exact rest_unique.
+    + intros candidate present [same | old].
+      * subst candidate. apply absent. exact present.
+      * exact (fresh candidate (or_intror present) old).
+    + apply cursor_step_preserves_exact_counts.
+      * exact valid.
+      * apply (fresh key). left. reflexivity.
+Qed.
+
+Theorem cursor_finished_is_pointwise_algebra :
+  forall operation left right visited output,
+    cursor_valid operation left right output visited ->
+    (forall key, left key <> 0 \/ right key <> 0 -> In key visited) ->
+    output = cursor_result operation left right.
+Proof.
+  intros operation left right visited output valid complete.
+  apply functional_extensionality. intro key.
+  destruct (Nat.eq_dec (left key) 0) as [left_zero | left_nonzero];
+    destruct (Nat.eq_dec (right key) 0) as [right_zero | right_nonzero].
+  - destruct (in_dec key_eq_dec key visited) as [present | absent].
+    + apply (proj1 (valid key)). exact present.
+    + rewrite (proj2 (valid key) absent).
+      unfold cursor_result, cursor_count. rewrite left_zero, right_zero.
+      destruct operation; reflexivity.
+  - apply (proj1 (valid key)). apply complete. right. exact right_nonzero.
+  - apply (proj1 (valid key)). apply complete. left. exact left_nonzero.
+  - apply (proj1 (valid key)). apply complete. left. exact left_nonzero.
+Qed.
+
+Theorem cursor_walk_preserves_visited :
+  forall operation left right keys visited output key,
+    In key visited ->
+    In key (fst (cursor_walk operation left right keys (visited, output))).
+Proof.
+  intros operation left right keys.
+  induction keys as [|head rest IH]; intros visited output key present.
+  - exact present.
+  - simpl. apply IH. right. exact present.
+Qed.
+
+Theorem cursor_walk_visits_input :
+  forall operation left right keys visited output key,
+    In key keys ->
+    In key (fst (cursor_walk operation left right keys (visited, output))).
+Proof.
+  intros operation left right keys.
+  induction keys as [|head rest IH]; intros visited output key present.
+  - inversion present.
+  - simpl. destruct present as [same | later].
+    + subst key. apply cursor_walk_preserves_visited.
+      left. reflexivity.
+    + apply IH. exact later.
+Qed.
+
+Theorem cursor_walk_refines_pointwise_algebra :
+  forall operation left right keys,
+    NoDup keys ->
+    (forall key, left key <> 0 \/ right key <> 0 -> In key keys) ->
+    snd (cursor_walk operation left right keys ([], empty)) =
+      cursor_result operation left right.
+Proof.
+  intros operation left right keys unique complete.
+  apply cursor_finished_is_pointwise_algebra with
+    (visited := fst (cursor_walk operation left right keys ([], empty))).
+  - apply cursor_walk_preserves_exact_counts.
+    + exact unique.
+    + intros key present absent. inversion absent.
+    + apply empty_cursor_valid.
+  - intros key supported. apply cursor_walk_visits_input.
+    apply complete. exact supported.
+Qed.
+
+Theorem cursor_join_refines_bag_join :
+  forall left right, cursor_result CursorJoin left right = join left right.
+Proof. reflexivity. Qed.
+
+Theorem cursor_meet_refines_bag_meet :
+  forall left right, cursor_result CursorMeet left right = meet left right.
+Proof. reflexivity. Qed.
+
+Theorem cursor_subtract_refines_bag_subtract :
+  forall left right, cursor_result CursorSubtract left right = subtract left right.
+Proof. reflexivity. Qed.
+
+Definition cursor_subbag_step
+  (left right : bag) (accepted : bool) (key : Key) : bool :=
+  andb accepted (Nat.leb (left key) (right key)).
+
+Theorem cursor_subbag_step_refines_conjunction :
+  forall left right accepted key,
+    cursor_subbag_step left right accepted key = true <->
+    accepted = true /\ left key <= right key.
+Proof.
+  intros left right accepted key.
+  unfold cursor_subbag_step. rewrite andb_true_iff, Nat.leb_le.
+  reflexivity.
+Qed.
+
+Definition cursor_subbag_valid
+  (left right : bag) (visited : list Key) (accepted : bool) : Prop :=
+  accepted = true <-> forall key, In key visited -> left key <= right key.
+
+Theorem empty_subbag_cursor_valid :
+  forall left right, cursor_subbag_valid left right [] true.
+Proof.
+  intros left right. split.
+  - intros yes key impossible. inversion impossible.
+  - reflexivity.
+Qed.
+
+Theorem cursor_subbag_step_preserves_validity :
+  forall left right visited accepted key,
+    cursor_subbag_valid left right visited accepted ->
+    cursor_subbag_valid left right (key :: visited)
+      (cursor_subbag_step left right accepted key).
+Proof.
+  intros left right visited accepted key valid.
+  unfold cursor_subbag_valid in *.
+  rewrite cursor_subbag_step_refines_conjunction.
+  split.
+  - intros [old current] candidate [same | prior].
+    + subst candidate. exact current.
+    + apply (proj1 valid old candidate prior).
+  - intro bounded. split.
+    + apply (proj2 valid). intros candidate prior.
+      apply bounded. right. exact prior.
+    + apply bounded. left. reflexivity.
+Qed.
+
+Theorem cursor_subbag_finished_is_exact :
+  forall left right visited accepted,
+    cursor_subbag_valid left right visited accepted ->
+    (forall key, left key <> 0 -> In key visited) ->
+    accepted = true <-> subbag left right.
+Proof.
+  intros left right visited accepted valid complete.
+  split.
+  - intros yes key. destruct (Nat.eq_dec (left key) 0) as [zero | nonzero].
+    + rewrite zero. lia.
+    + apply (proj1 valid yes). apply complete. exact nonzero.
+  - intro bounded. apply (proj2 valid).
+    intros key present. apply bounded.
+Qed.
+
+Fixpoint cursor_subbag_walk
+  (left right : bag) (keys : list Key) (accepted : bool) : bool :=
+  match keys with
+  | [] => accepted
+  | key :: rest =>
+      cursor_subbag_walk left right rest
+        (cursor_subbag_step left right accepted key)
+  end.
+
+Theorem cursor_subbag_walk_checks_every_key :
+  forall left right keys accepted,
+    cursor_subbag_walk left right keys accepted = true <->
+      accepted = true /\ forall key, In key keys -> left key <= right key.
+Proof.
+  intros left right keys.
+  induction keys as [|head rest IH]; intro accepted.
+  - simpl. split.
+    + intros yes. split; [exact yes |].
+      intros key impossible. inversion impossible.
+    + intros [yes bounded]. exact yes.
+  - simpl. rewrite IH, cursor_subbag_step_refines_conjunction.
+    split.
+    + intros [[yes head_bounded] rest_bounded].
+      split; [exact yes |].
+      intros key [same | later].
+      * subst key. exact head_bounded.
+      * apply rest_bounded. exact later.
+    + intros [yes bounded]. split.
+      * split; [exact yes |].
+        apply bounded. left. reflexivity.
+      * intros key later. apply bounded. right. exact later.
+Qed.
+
+Theorem cursor_subbag_walk_refines_finite_support :
+  forall left right keys,
+    (forall key, left key <> 0 -> In key keys) ->
+    cursor_subbag_walk left right keys true = true <-> subbag left right.
+Proof.
+  intros left right keys complete.
+  rewrite cursor_subbag_walk_checks_every_key.
+  split.
+  - intros [_ bounded] key.
+    destruct (Nat.eq_dec (left key) 0) as [zero | nonzero].
+    + rewrite zero. lia.
+    + apply bounded. apply complete. exact nonzero.
+  - intro bounded. split.
+    + reflexivity.
+    + intros key present. apply bounded.
+Qed.
+
+Theorem cursor_count_respects_bound :
+  forall operation left right maximum,
+    left <= maximum -> right <= maximum ->
+    cursor_count operation left right <= maximum.
+Proof.
+  intros [| |] left right maximum left_bound right_bound;
+    simpl; lia.
 Qed.
 
 (** A normalized delta has disjoint addition and removal support.  This is the
