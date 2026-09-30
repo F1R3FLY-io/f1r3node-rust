@@ -1,17 +1,16 @@
-# CbC Evidence: node/tests/soak_observer.rs
+# CbC Evidence: formal/tlaplus/node_observation/MC_PairedForkChoice_absent_unsafe.tla
 
-This record registers the pending Batch D claim before implementation. It replaces the accepted record of the earlier claim, which previous_record names. It contains no acceptance evidence.
+This record registers the pending Batch D claim before implementation. The file does not exist yet. It contains no acceptance evidence.
 
 ```json
 {
   "artifact": {
-    "path": "node/tests/soak_observer.rs",
-    "id": "node-tests-soak-observer-rs",
+    "path": "formal/tlaplus/node_observation/MC_PairedForkChoice_absent_unsafe.tla",
+    "id": "formal-tlaplus-node-observation-MC-PairedForkChoice-absent-unsafe-tla",
     "commit": "e90e4cffae56fce5ab39eea5878c7772ffa5e880",
     "commit_is_base": true,
     "working_tree": true,
-    "sha256": null,
-    "sha256_at_registration": "3b69fa3df590f5687fdb719578557a0eef0df05c4fe60072e30c95cc8e782e86"
+    "sha256": null
   },
   "claim": "docs/claims/casper-node-fork-choice-observation.md",
   "claim_ids": [
@@ -19,11 +18,6 @@ This record registers the pending Batch D claim before implementation. It replac
   ],
   "claim_digests": {
     "docs/claims/casper-node-fork-choice-observation.md": "24619b06b7c3c4b3849227cea5126c237a9f45e97c628205003866ee6c3c1940"
-  },
-  "previous_record": {
-    "path": "docs/cbc-evidence/node-tests-soak-observer-rs.md",
-    "sha256": "346ecaa80e5f61063c1099109ef5f93418e46ecdaa91efda076269c308d9e6a9",
-    "commit": "e90e4cffae56fce5ab39eea5878c7772ffa5e880"
   },
   "status": "pending",
   "scope": "batch-d-registration",

@@ -820,21 +820,28 @@ tasks:
       - "The maintainer confirms the reduced diff before the merge."
   - id: TASK-019-9
     title: "Batch D: paired fork-choice observation bound to one capture"
-    status: pending
-    claimed_by: null
-    proposed_owner: claude-session-7015f552
+    status: in_progress
+    claimed_by: claude-session-f3cbc961
+    claimed_at: 2026-09-30T04:40:00Z
+    assignment: "User decision 2026-09-30: agent A (this session) takes Batch D and then the removals of TASK-019-8. Agent B (claude-session-7015f552) takes the record refresh, the STE fix, the TASK-019-8 inventory, and Batch E after Batch D."
+    work_log: docs/work-logs/task-019-9-paired-fork-choice.md
     recorded_by: claude-session-f3cbc961
     recorded_on: 2026-09-30
     blocked_by: []
     precedes: [TASK-019-10]
+    stage: "Steps 1 to 4 of 16 complete on 2026-09-30: scope confirmed, task record and work log, pending claim and mandatory tags, 28 pending ledger records. Step 5 (bounded model and controls) is next."
     consumer: "TASK-017-12 harness profile on formal/soak-casper-consensus: the profile compares the selected head of a bounded member and a reference member on equal inputs."
     claims: [CLAIM-CASPER-NODE-OBSERVATION-004]
-    claim_status: not_registered
-    plan_draft: "target/node-observation-prep-20260928-01/batch-d/ (local, ignored by Git; the plan moves to docs/plans/casper-node-observation-batch-d.md at the file-scope confirmation)"
+    claim_status: pending
+    claim_file: docs/claims/casper-node-fork-choice-observation.md
+    plan: docs/plans/casper-node-observation-batch-d.md
     draft_reviewed_base: 670037c2511abd5f576063b3153681a873244a18
-    file_scope_confirmed: false
-    file_scope_size: "24 files: 11 code and test files, the remainder are formal, claim, plan, and record files"
-    open_questions: "2 in the draft: the lower bound of the reference evaluation, and independent reference against a second estimator call"
+    file_scope_confirmed: true
+    file_scope_confirmed_on: 2026-09-30
+    file_scope_confirmed_by: user
+    file_scope_size: "34 files: 17 new and 17 changed (11 Rust source and test files, 16 formal files, 3 gate and tag files, 4 documents), plus 28 ledger records and 1 run package"
+    decisions: "The 12 recommendations of the draft, accepted by the user on 2026-09-30. Decision 8: estimator.rs, dag_operations.rs, and proto_util.rs get the mandatory tag and 3 ledger records. The table is in the plan."
+    ledger_registration: "28 pending records under scope batch-d-registration: 11 replaced records of changed files (previous_record names the replaced record), 3 new records of the newly tagged files, 14 new records of new files. scripts/ci/check-tla-invariants.sh keeps its record under CLAIM-SOAK-GATE-001, as at the Batch B2 registration."
     scope: "Add a paired fork-choice observation to the authority_snapshot operation. One capture supplies the inputs of the 2 evaluations. No new consensus rule and no new production limit."
     acceptance:
       - "The response of authority_snapshot carries the selected head of the bounded evaluation and of the reference evaluation, with the input digest of the shared capture."

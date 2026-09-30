@@ -1,17 +1,17 @@
-# CbC Evidence: node/src/rust/soak_observer.rs
+# CbC Evidence: casper/src/rust/estimator.rs
 
-This record registers the pending Batch D claim before implementation. It replaces the accepted record of the earlier claim, which previous_record names. It contains no acceptance evidence.
+This record registers the pending Batch D claim before implementation. The file received the mandatory tag on 2026-09-30 (decision 8 of the Batch D plan). It contains no acceptance evidence.
 
 ```json
 {
   "artifact": {
-    "path": "node/src/rust/soak_observer.rs",
-    "id": "node-src-rust-soak-observer-rs",
+    "path": "casper/src/rust/estimator.rs",
+    "id": "casper-src-rust-estimator-rs",
     "commit": "e90e4cffae56fce5ab39eea5878c7772ffa5e880",
     "commit_is_base": true,
     "working_tree": true,
     "sha256": null,
-    "sha256_at_registration": "59f40fd5632955d7fbaae0cd6221e942d3dc7505ad8a096a2d95bce10d2ed878"
+    "sha256_at_registration": "e50c77e854cbf5a93fdd1b8a3964cc551677ba744d11dae74da1538a7ee107f7"
   },
   "claim": "docs/claims/casper-node-fork-choice-observation.md",
   "claim_ids": [
@@ -19,11 +19,6 @@ This record registers the pending Batch D claim before implementation. It replac
   ],
   "claim_digests": {
     "docs/claims/casper-node-fork-choice-observation.md": "24619b06b7c3c4b3849227cea5126c237a9f45e97c628205003866ee6c3c1940"
-  },
-  "previous_record": {
-    "path": "docs/cbc-evidence/node-src-rust-soak-observer-rs.md",
-    "sha256": "70cff8715bc9a751c28727c2dbf111432ea306e64fe0ba39269eea09868b996d",
-    "commit": "e90e4cffae56fce5ab39eea5878c7772ffa5e880"
   },
   "status": "pending",
   "scope": "batch-d-registration",
