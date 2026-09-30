@@ -100,3 +100,17 @@ The final inventory requires the inherited stack sources.
 ## Decision requested
 
 The five proposed removals reduce the diff by five files and about 1.2 KiB. They change no claim status, record status, tier field, or audit result. The task holds at `removals_authorized: false` until the user or the maintainer authorizes the list or decides to remove nothing.
+
+## Removal on 2026-09-30
+
+The user authorized the removal of the 5 proposed files on 2026-09-30. Each file was an `artifacts.sha256` self-manifest of a run package. No acceptance names the file, and no path or digest cites it outside the TASK-019-8 inventory. The `report.json` and the companions of each package stay.
+
+| Package | SHA-256 of the removed file |
+|---------|-----------------------------|
+| `casper-node-authority-b2-d11acabcb-01` | `35eebe6533eec1ef9dc52ec45d380f4c73c457d4daa64305b67642e61567e673` |
+| `casper-node-claim-gate-03d7f1b27-01` | `a12319c726123e2be0014a6cb8847d1d350c4202a44eda2825afd2bde1606929` |
+| `casper-node-observer-batch-a-877cea722-01` | `21ad765308be31beb8ac8fc6e747b0a1b122c1d797a6a0fc21e867710e963adb` |
+| `casper-node-observer-shutdown-d021a1d53-01` | `8ffa6cc12210ee0fe5c47f797ad4b803c77e982a605fa34e7b4b97931a7e9023` |
+| `casper-node-snapshot-batch-b1-799e2136a-01` | `ce5315cce7c4070d01cd250f0b1ecd01a8a7ced7edc83ef973f341133944e5e7` |
+
+The removal happened on `feature/casper-node-observation` at base `97ab3e3d9`. The content stays in Git history. No claim status, record status, tier field, or audit result changed. The final file reduction of the stack stays on `fix/soak-finalization-attribution` under TASK-017-16.

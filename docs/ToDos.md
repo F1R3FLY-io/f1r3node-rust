@@ -607,6 +607,19 @@ tasks:
       work_log: docs/work-logs/node-observation-agent-b-20260930.md
     blocked_by: []
     precedes: [TASK-019-6]
+    removals_2026_09_30:
+      authorized_by: user
+      authorized_on: 2026-09-30
+      removed_by: claude-session-f3cbc961
+      base_revision: 97ab3e3d9
+      reason: uncited_checksum
+      history: "The content stays in Git history at 97ab3e3d9 and earlier. The digest of each file is below and in inventory.proposed_removals."
+      files:
+        - {path: docs/cbc-evidence/runs/casper-node-authority-b2-d11acabcb-01/artifacts.sha256, sha256: 35eebe6533eec1ef9dc52ec45d380f4c73c457d4daa64305b67642e61567e673}
+        - {path: docs/cbc-evidence/runs/casper-node-claim-gate-03d7f1b27-01/artifacts.sha256, sha256: a12319c726123e2be0014a6cb8847d1d350c4202a44eda2825afd2bde1606929}
+        - {path: docs/cbc-evidence/runs/casper-node-observer-batch-a-877cea722-01/artifacts.sha256, sha256: 21ad765308be31beb8ac8fc6e747b0a1b122c1d797a6a0fc21e867710e963adb}
+        - {path: docs/cbc-evidence/runs/casper-node-observer-shutdown-d021a1d53-01/artifacts.sha256, sha256: 8ffa6cc12210ee0fe5c47f797ad4b803c77e982a605fa34e7b4b97931a7e9023}
+        - {path: docs/cbc-evidence/runs/casper-node-snapshot-batch-b1-799e2136a-01/artifacts.sha256, sha256: ce5315cce7c4070d01cd250f0b1ecd01a8a7ced7edc83ef973f341133944e5e7}
     scope: "Remove discovery notes, work logs, plans, and CbC evidence files that are not integral to the branch's functionality or its accepted claims. Production code scope is reviewed under TASK-019-6, not here."
     retention_rules:
       - "Keep every file that an accepted claim, a CbC record, or the tracker cites by path or digest. Removing one breaks the source-bound audit."
