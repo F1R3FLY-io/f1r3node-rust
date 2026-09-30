@@ -56,7 +56,7 @@ This document captures user stories that drive feature development. User stories
 **Acceptance Criteria:**
 - [x] TASK-020-1 bounds accept-error retries and log output while preserving error delivery and connection recovery.
 - [x] TASK-020-1 applies no error backoff after a successful accept and releases listener resources when the consumer closes.
-- [ ] TASK-020-2 enforces byte limits for each log file and the complete log directory.
+- [x] TASK-020-2 enforces byte limits for each log file and the complete log directory.
 - [ ] TASK-020-3 uses one deployment sink and verifies container log caps, including the coordinated system-integration change.
 - [ ] TASK-020-4 stops the soak workload when node or container logs exceed their budgets.
 
@@ -65,6 +65,10 @@ This document captures user stories that drive feature development. User stories
 Hosted run 36651370411 passed all seven transport resource regressions and all 400 comm tests, with zero skipped tests.
 The [evidence report](work-logs/evidence/task-020-1-hosted-20260930-01/report.json) records the tested source and assertion bounds.
 These controlled tests do not verify complete deployment storage limits, the descriptor-exhaustion cause, or a live soak campaign.
+
+TASK-020-2 adds 100 MiB per-file and 2 GiB directory limits for the file sink.
+[Local verification](work-logs/task-020-2-byte-bounded-logging-20260930.md) passed 781 tests across shared, node, and comm, with zero skips.
+Container log caps, guardian enforcement, and a live deployment exercise remain separate obligations.
 The story remains open until all applicable tasks and deployment checks pass.
 
 ---

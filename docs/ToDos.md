@@ -128,13 +128,16 @@ tasks:
     completed_date: 2026-09-30
   - id: TASK-020-2
     title: "Bound the file log by bytes, not only by time"
-    status: pending
-    claimed_by: null
+    status: complete
+    claimed_by: pi-session-01a0ab62-71b3-7248-a800-37a6fde2e4fa
+    claimed_at: 2026-09-30T01:20:37Z
     blocked_by: []
+    work_log: docs/work-logs/task-020-2-byte-bounded-logging-20260930.md
     files:
-      - node/src/rust/configuration/model.rs
+      - shared/src/rust/tracing_init/mod.rs
+      - shared/src/rust/tracing_init/bounded_file.rs
       - node/src/main/resources/defaults.conf
-      - shared/src/rust/logging.rs
+      - node/src/rust/configuration/mod.rs
     acceptance:
       - "logging.file accepts a maximum size per file and a maximum total size for the log directory, with defaults that bound a node to a few gigabytes."
       - "When the total bound is reached the oldest rotated file is removed before the appender writes further."
@@ -144,6 +147,9 @@ tasks:
       - "Step 1. Extend the rotation configuration with size-based rolling alongside the existing period."
       - "Step 2. Enforce the total directory bound in the appender with an oldest-first eviction."
       - "Step 3. Add the appender test and update the configuration test that pins daily rotation."
+    unit_tests: [shared/src/rust/tracing_init/mod.rs, shared/src/rust/tracing_init/bounded_file.rs, node/src/rust/configuration/mod.rs]
+    completion_gaps: []
+    completed_date: 2026-09-30
   - id: TASK-020-3
     title: "One sink per deployment and a container log cap check"
     status: pending

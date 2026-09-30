@@ -1,0 +1,2 @@
+Recorded unit_tests for TASK-020-2: [shared/src/rust/tracing_init/mod.rs, shared/src/rust/tracing_init/bounded_file.rs, node/src/rust/configuration/mod.rs]
+Marked TASK-020-2 complete (full).

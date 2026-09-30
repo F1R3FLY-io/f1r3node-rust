@@ -86,7 +86,9 @@ TASK-020-1 has [source-bound hosted transport evidence](work-logs/evidence/task-
 The regression file is `comm/src/rust/transport/f1r3fly_server_resource_tests.rs`.
 The controlled recovery test reaches handshake timeout. It does not establish successful authenticated peer communication.
 
-Storage limits and guardian enforcement remain pending under TASK-020-2, TASK-020-3, and TASK-020-4.
+TASK-020-2 has [local file-budget verification](work-logs/task-020-2-byte-bounded-logging-20260930.md).
+The file sink defaults to 100 MiB per file and 2 GiB across its log directory.
+Container caps and guardian enforcement remain pending under TASK-020-3 and TASK-020-4.
 Integration-test references remain empty until actual deployment tests exist. No generated specification is treated as executed evidence.
 
 ---

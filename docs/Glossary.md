@@ -176,6 +176,20 @@ Disk hygiene removes eligible inactive files and caches between soak iterations.
 
 **Preferred usage.** Use this term for preventive cleanup. Distinguish disk hygiene from emergency writer termination by the disk guardian.
 
+### Byte budget
+
+A byte budget limits logical file bytes. The node file sink has separate budgets for each log file and its log directory.
+
+The directory budget includes active logs, rotated logs, and unrelated regular files. It excludes filesystem metadata, allocation overhead, and externally held deleted files.
+
+**Preferred usage.** State whether the budget applies to one file or the directory. Do not equate a byte budget with free-space admission.
+
+### Managed log
+
+A managed log uses the reserved `node.log` name or a supported node rotation suffix. The file sink can remove managed logs during retention.
+
+**Preferred usage.** Distinguish managed logs from unrelated files, which the file sink counts but does not remove.
+
 ### Disk admission
 
 Disk admission decides whether a soak iteration can start from the latest free-space sample. With protection enabled, the post-hygiene sample must reach floor plus band.
