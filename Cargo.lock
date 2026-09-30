@@ -3431,6 +3431,7 @@ dependencies = [
  "hex",
  "itertools 0.14.0",
  "pathmap",
+ "proc-macro2",
  "proptest",
  "proptest-derive",
  "prost 0.14.3",
@@ -8182,7 +8183,3 @@ dependencies = [
  "cc",
  "pkg-config",
 ]
-
-[[patch.unused]]
-name = "creusot-std"
-version = "0.12.0-dev"

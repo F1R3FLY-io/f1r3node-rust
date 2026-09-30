@@ -7,6 +7,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use proc_macro2::{TokenStream, TokenTree};
+
 #[test]
 fn act_cached_summary_has_source_preorder_and_independent_inventory_bindings() {
     let theory =
@@ -426,8 +428,10 @@ fn substitution_region_tables_have_registration_and_publication_bindings() {
         assert!(native.contains(&format!("fn {witness}(")));
     }
     assert!(native.contains("tables: RegisteredTables::capture(builder)"));
-    assert!(native
-        .contains("observed.tables.assert_preserved(&plan.paths, &plan.cuts, &plan.epathmaps)"));
+    assert!(contains_rust_token_sequence(
+        &native,
+        "observed.tables.assert_preserved(&plan.paths, &plan.cuts, &plan.epathmaps)"
+    ));
 }
 
 #[test]
@@ -700,7 +704,10 @@ fn substitution_region_publication_has_derived_invariants_and_native_capture() {
         assert!(native.contains(&format!("fn {witness}(")));
     }
     let source = read_repository_file("models/src/rust/rholang/protobuf_region.rs");
-    assert!(source.contains("builder.nodes.push(node);\n        #[cfg(test)]\n        emission_tests::record_publication(node_index, &frame.region, frame.schema, frame.path_leaf, &builder);"));
+    assert!(contains_rust_token_sequence(
+        &source,
+        "builder.nodes.push(node); #[cfg(test)] emission_tests::record_publication(node_index, &frame.region, frame.schema, frame.path_leaf, &builder);"
+    ));
     assert!(read_repository_file("models/src/lib.rs")
         .contains("#[cfg(test)]\nextern crate self as models;"));
 }
@@ -989,15 +996,28 @@ fn substitution_family_schedules_bind_actual_dispatch_and_combine() {
 
 #[test]
 fn collection_collision_elision_binds_model_and_native_observations() {
-    let theory = read_repository_file("formal/rocq/stack_safe_pda/theories/CollectionCollisionElision.v");
+    let theory =
+        read_repository_file("formal/rocq/stack_safe_pda/theories/CollectionCollisionElision.v");
     for theorem in [
-        "set_empty_exact", "set_singleton_exact", "set_dispatch_refines",
-        "set_multi_entry_unchanged", "set_observables_unchanged", "set_first_representative",
-        "map_empty_exact", "map_singleton_exact", "map_dispatch_refines",
-        "map_multi_entry_unchanged", "map_observables_unchanged", "map_first_key_and_strict_winner",
-        "empty_identity_work_zero", "singleton_identity_work_zero", "singleton_removed_work_exact",
-        "multi_entry_identity_work_unchanged", "identity_work_never_increases",
-        "nested_singleton_identity_work_zero", "rejecting_duplicate_set_dispatch_mutant",
+        "set_empty_exact",
+        "set_singleton_exact",
+        "set_dispatch_refines",
+        "set_multi_entry_unchanged",
+        "set_observables_unchanged",
+        "set_first_representative",
+        "map_empty_exact",
+        "map_singleton_exact",
+        "map_dispatch_refines",
+        "map_multi_entry_unchanged",
+        "map_observables_unchanged",
+        "map_first_key_and_strict_winner",
+        "empty_identity_work_zero",
+        "singleton_identity_work_zero",
+        "singleton_removed_work_exact",
+        "multi_entry_identity_work_unchanged",
+        "identity_work_never_increases",
+        "nested_singleton_identity_work_zero",
+        "rejecting_duplicate_set_dispatch_mutant",
         "rejecting_map_winner_dispatch_mutant",
     ] {
         assert!(theory.contains(&format!("Print Assumptions {theorem}.")));
@@ -1007,22 +1027,49 @@ fn collection_collision_elision_binds_model_and_native_observations() {
         assert!(!theory.contains(forbidden));
     }
     let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
-    assert!(has_runner_command(&runner, &["rocq_compile_with_closed_count", "theories/CollectionCollisionElision.v", "20"]));
-    assert!(has_runner_kernel_check(&runner, &["StackSafePDA.CollectionCollisionElision"]));
-    assert!(read_repository_file("formal/rocq/stack_safe_pda/_CoqProject")
-        .lines().any(|line| line == "theories/CollectionCollisionElision.v"));
-    assert!(has_runner_command(&runner, &["rpb3_run_tests", "6", "--release", "-j4", "--lib", "collection_collision_elision"]));
-    assert!(has_runner_command(&runner, &["rpb3_run_tests", "2", "--release", "-j4", "--lib", "par_construction::tests::ac_"]));
+    assert!(has_runner_command(&runner, &[
+        "rocq_compile_with_closed_count",
+        "theories/CollectionCollisionElision.v",
+        "20"
+    ]));
+    assert!(has_runner_kernel_check(&runner, &[
+        "StackSafePDA.CollectionCollisionElision"
+    ]));
+    assert!(
+        read_repository_file("formal/rocq/stack_safe_pda/_CoqProject")
+            .lines()
+            .any(|line| line == "theories/CollectionCollisionElision.v")
+    );
+    assert!(has_runner_command(&runner, &[
+        "rpb3_run_tests",
+        "6",
+        "--release",
+        "-j4",
+        "--lib",
+        "collection_collision_elision"
+    ]));
+    assert!(has_runner_command(&runner, &[
+        "rpb3_run_tests",
+        "2",
+        "--release",
+        "-j4",
+        "--lib",
+        "par_construction::tests::ac_"
+    ]));
     let native = read_repository_file("models/tests/support/collection_collision_elision.rs");
-    for witness in ["empty_singleton_observables_and_zero_identity_work",
+    for witness in [
+        "empty_singleton_observables_and_zero_identity_work",
         "multi_entry_identity_work_and_observables_unchanged",
         "singleton_all_schema_families_preserve_score_and_bytes",
         "nested_singletons_elide_positive_identity_work",
         "arity_errors_precede_identity_work",
-        "identity_counter_is_nested_panic_safe_and_thread_local"] {
+        "identity_counter_is_nested_panic_safe_and_thread_local",
+    ] {
         assert!(native.contains(&format!("fn {witness}(")));
     }
-    let catalog = read_repository_file("docs/design/pathmap/workspace-regression-formal-invariant-catalog-2026-08-28.md");
+    let catalog = read_repository_file(
+        "docs/design/pathmap/workspace-regression-formal-invariant-catalog-2026-08-28.md",
+    );
     for index in 1..=20 {
         assert_eq!(catalog.matches(&format!("| CCE-{index:02} |")).count(), 1);
     }
@@ -1064,50 +1111,124 @@ fn substitution_cost_model_binds_scoped_native_events() {
         assert!(!theory.contains(forbidden));
     }
     let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
-    assert!(has_runner_command(&runner, &["rocq_compile_with_closed_count", "theories/SubstitutionCost.v", "24"]));
-    assert!(has_runner_command(&runner, &["rpb3_run_tests", "10", "--lib", "payload_mapping_tests"]));
-    assert!(has_runner_command(&runner, &["rpb3_run_tests", "2", "--release", "-j4", "--features", "protobuf-projection-experiment",
-        "--lib", "protobuf_decoder_oracle::measurement::measurement_"]));
+    assert!(has_runner_command(&runner, &[
+        "rocq_compile_with_closed_count",
+        "theories/SubstitutionCost.v",
+        "24"
+    ]));
+    assert!(has_runner_command(&runner, &[
+        "rpb3_run_tests",
+        "10",
+        "--lib",
+        "payload_mapping_tests"
+    ]));
+    assert!(has_runner_command(&runner, &[
+        "rpb3_run_tests",
+        "2",
+        "--release",
+        "-j4",
+        "--features",
+        "protobuf-projection-experiment",
+        "--lib",
+        "protobuf_decoder_oracle::measurement::measurement_"
+    ]));
     let measurement = read_repository_file("models/tests/support/protobuf_decoder_measurement.rs");
-    for witness in ["measurement_fixtures_match_independent_resident_oracles", "measurement_entries_preserve_full_observations_and_arm_routing"] {
+    for witness in [
+        "measurement_fixtures_match_independent_resident_oracles",
+        "measurement_entries_preserve_full_observations_and_arm_routing",
+    ] {
         assert!(measurement.contains(&format!("fn {witness}(")));
     }
     let meter = read_repository_file("models/tests/support/epm_payload_mapping.rs");
-    for witness in ["allocation_trace_matches_signed_reference", "allocation_meter_tracks_lifecycle_and_reallocation",
-        "allocation_meter_scopes_restore_after_unwind_and_reject_nesting", "allocation_meter_is_thread_local_and_observes_external_frees",
-        "allocation_meter_overflow_invalidates_instead_of_wrapping"] {
+    for witness in [
+        "allocation_trace_matches_signed_reference",
+        "allocation_meter_tracks_lifecycle_and_reallocation",
+        "allocation_meter_scopes_restore_after_unwind_and_reject_nesting",
+        "allocation_meter_is_thread_local_and_observes_external_frees",
+        "allocation_meter_overflow_invalidates_instead_of_wrapping",
+    ] {
         assert!(meter.contains(&format!("fn {witness}(")));
     }
-    assert!(has_runner_kernel_check(&runner, &["StackSafePDA.SubstitutionCost"]));
-    assert!(read_repository_file("formal/rocq/stack_safe_pda/_CoqProject")
-        .lines().any(|line| line == "theories/SubstitutionCost.v"));
-    assert!(has_runner_command(&runner, &["rpb3_run_tests", "7", "--release", "-j4", "--features", "protobuf-projection-experiment", "--lib", "substitution_cost"]));
-    assert!(has_runner_command(&runner, &["rholang_run_tests", "4", "--features", "protobuf-projection-experiment", "--test", "stack_depth_gate", "substitution_scaling::costs"]));
+    assert!(has_runner_kernel_check(&runner, &[
+        "StackSafePDA.SubstitutionCost"
+    ]));
+    assert!(
+        read_repository_file("formal/rocq/stack_safe_pda/_CoqProject")
+            .lines()
+            .any(|line| line == "theories/SubstitutionCost.v")
+    );
+    assert!(has_runner_command(&runner, &[
+        "rpb3_run_tests",
+        "7",
+        "--release",
+        "-j4",
+        "--features",
+        "protobuf-projection-experiment",
+        "--lib",
+        "substitution_cost"
+    ]));
+    assert!(has_runner_command(&runner, &[
+        "rholang_run_tests",
+        "4",
+        "--features",
+        "protobuf-projection-experiment",
+        "--test",
+        "stack_depth_gate",
+        "substitution_scaling::costs"
+    ]));
     let model_tests = read_repository_file("models/tests/support/substitution_cost.rs");
-    for witness in ["scoped_cost_fold_matches_event_reference",
+    for witness in [
+        "scoped_cost_fold_matches_event_reference",
         "cost_scopes_are_isolated_panic_safe_and_checked",
         "shared_regions_record_handles_without_body_copies",
         "repeated_finish_calls_are_observable",
         "actual_shared_import_records_no_body_copy",
         "actual_resident_decode_records_input_bytes",
-        "actual_emission_modes_and_planning_counts_match_returned_bytes"] {
+        "actual_emission_modes_and_planning_counts_match_returned_bytes",
+    ] {
         assert!(model_tests.contains(&format!("fn {witness}(")));
     }
     let runtime_tests = read_repository_file("rholang/tests/support/substitution_scaling.rs");
     let oracle = read_repository_file("rholang/tests/support/substitute_oracle.rs");
-    assert!(has_runner_command(&runner, &["rholang_run_tests", "1", "--features", "protobuf-projection-experiment", "--lib", "every_corpus_case_agrees_under_both_environments"]));
-    assert!(has_runner_command(&runner, &["rholang_run_tests", "3", "--features", "protobuf-projection-experiment", "--lib", "region_cost_"]));
-    assert!(has_runner_command(&runner, &["rholang_run_tests", "1", "--features", "protobuf-projection-experiment", "--lib", "substitute_oracle::differential_substitute_worklist::error_paths_agree"]));
-    for witness in ["measured_par_substitution", "encoded_cost_census",
+    assert!(has_runner_command(&runner, &[
+        "rholang_run_tests",
+        "1",
+        "--features",
+        "protobuf-projection-experiment",
+        "--lib",
+        "every_corpus_case_agrees_under_both_environments"
+    ]));
+    assert!(has_runner_command(&runner, &[
+        "rholang_run_tests",
+        "3",
+        "--features",
+        "protobuf-projection-experiment",
+        "--lib",
+        "region_cost_"
+    ]));
+    assert!(has_runner_command(&runner, &[
+        "rholang_run_tests",
+        "1",
+        "--features",
+        "protobuf-projection-experiment",
+        "--lib",
+        "substitute_oracle::differential_substitute_worklist::error_paths_agree"
+    ]));
+    for witness in [
+        "measured_par_substitution",
+        "encoded_cost_census",
         "region_cost_census_exercises_all_nine_nonidentity_root_families",
         "region_cost_collision_merges_keys_without_multiplicity_work",
-        "region_cost_terminal_splices_preserve_unresolved_children"] {
+        "region_cost_terminal_splices_preserve_unresolved_children",
+    ] {
         assert!(oracle.contains(&format!("fn {witness}(")));
     }
-    for witness in ["nonidentity_costs_track_distinct_endpoints_and_single_finish",
+    for witness in [
+        "nonidentity_costs_track_distinct_endpoints_and_single_finish",
         "root_multiplicity_does_not_repeat_region_traversal",
         "substitution_error_records_partial_work_without_finish",
-        "identity_substitution_has_no_construction_events"] {
+        "identity_substitution_has_no_construction_events",
+    ] {
         assert!(runtime_tests.contains(&format!("fn {witness}(")));
     }
 }
@@ -1137,7 +1258,8 @@ fn admitted_incomplete_preservation_binds_shared_bytes_and_recursive_oracle() {
 
 #[test]
 fn decoded_component_construction_has_proof_and_native_witnesses() {
-    let theory = read_repository_file("formal/rocq/stack_safe_pda/theories/DecodedComponentConstruction.v");
+    let theory =
+        read_repository_file("formal/rocq/stack_safe_pda/theories/DecodedComponentConstruction.v");
     for theorem in [
         "ordered_hole_substitution_is_exact",
         "worklist_emission_refines_resident_substitution",
@@ -1157,34 +1279,106 @@ fn decoded_component_construction_has_proof_and_native_witnesses() {
         assert!(theory.contains(&format!("Print Assumptions {theorem}.")));
     }
     let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
-    assert!(has_runner_command(&runner, &["rocq_compile_with_closed_count",
-        "theories/DecodedComponentConstruction.v", "63"]));
-    assert_eq!(theory.matches("Print Assumptions ").count(), 63);
-    for (count, filter) in [("4", "planned_fragment_comparison_tests::"),
-        ("4", "planned_ground_leaf_tests::"), ("5", "planned_fragment_publication_tests::"),
-        ("5", "planned_pooled_storage_tests::")] {
-        assert!(has_runner_command(&runner, &["rpb3_run_tests", count, "--lib", filter]));
+    assert!(has_runner_command(&runner, &[
+        "rocq_compile_with_closed_count",
+        "theories/DecodedComponentConstruction.v",
+        "73"
+    ]));
+    assert_eq!(theory.matches("Print Assumptions ").count(), 73);
+    for (count, filter) in [
+        ("4", "planned_fragment_comparison_tests::"),
+        ("4", "planned_ground_leaf_tests::"),
+        ("5", "planned_fragment_publication_tests::"),
+        ("5", "planned_pooled_storage_tests::"),
+        ("9", "root_stream_"),
+    ] {
+        assert!(has_runner_command(&runner, &[
+            "rpb3_run_tests",
+            count,
+            "--lib",
+            filter
+        ]));
     }
-    assert!(has_runner_kernel_check(&runner, &["StackSafePDA.DecodedComponentConstruction"]));
-    assert!(has_runner_command(&runner, &["rpb3_run_tests", "9", "--lib", "incomplete_preservation_tests"]));
-    assert!(read_repository_file("formal/rocq/stack_safe_pda/_CoqProject").lines()
-        .any(|line| line == "theories/DecodedComponentConstruction.v"));
+    assert!(has_runner_kernel_check(&runner, &[
+        "StackSafePDA.DecodedComponentConstruction"
+    ]));
+    assert!(has_runner_command(&runner, &[
+        "rpb3_run_tests",
+        "9",
+        "--lib",
+        "incomplete_preservation_tests"
+    ]));
+    assert!(
+        read_repository_file("formal/rocq/stack_safe_pda/_CoqProject")
+            .lines()
+            .any(|line| line == "theories/DecodedComponentConstruction.v")
+    );
     let native = read_repository_file("models/tests/support/incomplete_component_preservation.rs");
-    for witness in ["planned_incomplete_top_level_families_match_resident_endpoints",
+    for witness in [
+        "planned_incomplete_top_level_families_match_resident_endpoints",
         "planned_incomplete_expr_presence_matrix_matches_resident_endpoints",
         "incomplete_collection_keeps_duplicate_pairs_and_order",
         "incomplete_nested_shells_preserve_guards_patterns_and_injections",
         "incomplete_slot_order_and_presence_mutants_change_bytes",
         "incomplete_plans_preserve_arbitrary_ordered_children",
         "incomplete_mixed_family_construction_keeps_handles_on_a_fixed_stack",
-        "incomplete_planning_has_no_resident_finish_events"] {
+        "incomplete_planning_has_no_resident_finish_events",
+    ] {
         assert!(native.contains(&format!("fn {witness}(")));
     }
     let production = read_repository_file("models/src/rust/par_construction.rs");
+    for theorem in [
+        "positive_partition_fits",
+        "every_intermediate_partition_fits",
+        "accepted_guard_bounds_every_summary",
+        "aggregate_guard_does_not_prove_key_addressability",
+        "guarded_step_refines_reference",
+        "declined_guard_preserves_reference_error",
+        "later_parse_error_precedes_deferred_emission",
+        "reweight_preserves_every_key",
+        "reweight_uses_exact_recorded_count",
+    ] {
+        assert!(theory.contains(&format!("Print Assumptions {theorem}.")));
+    }
+    let native = read_repository_file("models/tests/support/protobuf_construction_resources.rs");
+    for witness in [
+        "root_stream_preserves_unsorted_duplicates_and_metadata",
+        "root_stream_compact_counts_cross_byte_boundary",
+        "root_stream_late_changes_preserve_count_and_replay_topology",
+        "root_stream_decline_replays_first_insertion_topology",
+        "root_stream_key_overflow_is_deferred_without_publication",
+        "root_stream_retains_only_fixed_records_after_rewind",
+        "root_stream_replay_preserves_the_original_checked_failure",
+        "root_stream_teardown_keeps_deep_keys_on_a_small_stack",
+    ] {
+        assert!(native.contains(&format!("fn {witness}(")));
+    }
+    let bag = read_repository_file("rspace++/src/rspace/bag.rs");
+    for witness in [
+        "reweight_preserves_keys_snapshot_and_exact_cardinality",
+        "rejected_partial_reweight_publishes_no_result_or_snapshot_change",
+        "reweight_resumes_across_bounded_chunks_in_key_order",
+    ] {
+        assert!(bag.contains(&format!("fn {witness}(")));
+    }
+    assert!(has_runner_command(&runner, &[
+        "rspace_preparation_run_tests",
+        "3",
+        "--lib",
+        "reweight_tests::"
+    ]));
     assert!(production.contains("pub fn incomplete_component<T: ParBagComponent>"));
     assert!(production.contains("self.component(shell, wire_children, score, false).map(Some)"));
-    assert!(has_runner_command(&runner, &["rpb3_run_tests", "1", "--release", "-j4",
-        "--features", "protobuf-projection-experiment", "--lib", "incomplete_planning_has_no_resident_finish_events"]));
+    assert!(has_runner_command(&runner, &[
+        "rpb3_run_tests",
+        "1",
+        "--release",
+        "-j4",
+        "--features",
+        "protobuf-projection-experiment",
+        "--lib",
+        "incomplete_planning_has_no_resident_finish_events"
+    ]));
 }
 
 #[test]
@@ -1194,29 +1388,63 @@ fn frozen_decoder_oracle_has_provenance_proof_and_native_bindings() {
     assert_eq!(format!("{:x}", Blake2b512::digest(baseline)),
         "0345508b4e4ee4002f5b17cdb0adc143186fd78cb11846bd733d67ec8940919daac48097e7dafff4cec6e81422d01589ae0e032af198f3c4f9db5c5316f0c10f");
     let theory = read_repository_file("formal/rocq/stack_safe_pda/theories/DecoderOracleRouting.v");
-    for theorem in ["legacy_routes_frozen", "poisoned_legacy_routes_frozen",
-        "poison_detects_successor", "ordinary_routes_successor", "scope_restores_exact_state",
-        "nested_scope_restores_legacy", "routing_preserves_observation", "closed_reentry_stays_frozen",
-        "disjoint_thread_state", "missing_guard_poison_witness"] {
+    for theorem in [
+        "legacy_routes_frozen",
+        "poisoned_legacy_routes_frozen",
+        "poison_detects_successor",
+        "ordinary_routes_successor",
+        "scope_restores_exact_state",
+        "nested_scope_restores_legacy",
+        "routing_preserves_observation",
+        "closed_reentry_stays_frozen",
+        "disjoint_thread_state",
+        "missing_guard_poison_witness",
+    ] {
         assert!(theory.contains(&format!("Print Assumptions {theorem}.")));
     }
     let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
-    assert!(has_runner_command(&runner, &["rocq_compile_with_closed_count", "theories/DecoderOracleRouting.v", "10"]));
-    assert!(has_runner_kernel_check(&runner, &["StackSafePDA.DecoderOracleRouting"]));
-    assert!(has_runner_command(&runner, &["rpb3_run_tests", "13", "--lib", "protobuf_decoder_oracle::"]));
-    assert!(has_runner_command(&runner, &["rpb3_run_tests", "2", "--lib", "oracle_body_guards::"]));
-    assert!(read_repository_file("formal/rocq/stack_safe_pda/_CoqProject").lines()
-        .any(|line| line == "theories/DecoderOracleRouting.v"));
+    assert!(has_runner_command(&runner, &[
+        "rocq_compile_with_closed_count",
+        "theories/DecoderOracleRouting.v",
+        "10"
+    ]));
+    assert!(has_runner_kernel_check(&runner, &[
+        "StackSafePDA.DecoderOracleRouting"
+    ]));
+    assert!(has_runner_command(&runner, &[
+        "rpb3_run_tests",
+        "14",
+        "--lib",
+        "protobuf_decoder_oracle::"
+    ]));
+    assert!(has_runner_command(&runner, &[
+        "rpb3_run_tests",
+        "2",
+        "--lib",
+        "oracle_body_guards::"
+    ]));
+    assert!(
+        read_repository_file("formal/rocq/stack_safe_pda/_CoqProject")
+            .lines()
+            .any(|line| line == "theories/DecoderOracleRouting.v")
+    );
     let controller = read_repository_file("models/tests/support/protobuf_decoder_oracle.rs");
-    for witness in ["routing_scope_restores_nested_state_and_unwind", "successor_poison_is_live_and_legacy_route_bypasses_it",
-        "descriptor_corpus_routes_all_generated_decoders_independently", "root_and_partial_merge_observations_match_frozen_reference",
-        "late_failure_preserves_committed_fields_and_exact_error", "epathmap_adapter_and_indirect_value_decoders_are_isolated",
-        "arbitrary_buffers_preserve_root_merge_and_consumption", "canonical_fast_import_retains_baseline_borrowed_input_observation",
+    for witness in [
+        "routing_scope_restores_nested_state_and_unwind",
+        "successor_poison_is_live_and_legacy_route_bypasses_it",
+        "descriptor_corpus_routes_all_generated_decoders_independently",
+        "root_and_partial_merge_observations_match_frozen_reference",
+        "late_failure_preserves_committed_fields_and_exact_error",
+        "epathmap_adapter_and_indirect_value_decoders_are_isolated",
+        "arbitrary_buffers_preserve_root_merge_and_consumption",
+        "canonical_fast_import_retains_baseline_borrowed_input_observation",
+        "fixed_numeric_root_stream_matches_fragmented_frozen_reference",
         "repeated_fields_oneof_replacement_and_groups_preserve_observations",
         "public_new_keeps_uri_order_until_attachment_to_par",
         "public_collection_expr_keeps_order_and_duplicates_until_attachment_to_par",
         "public_receive_keeps_explicit_empty_condition_until_attachment_to_par",
-        "public_match_keeps_explicit_empty_guard_until_attachment_to_par"] {
+        "public_match_keeps_explicit_empty_guard_until_attachment_to_par",
+    ] {
         assert!(controller.contains(&format!("fn {witness}(")));
     }
     let guards = read_repository_file("models/tests/support/protobuf_decoder_body_guards.rs");
@@ -1226,120 +1454,233 @@ fn frozen_decoder_oracle_has_provenance_proof_and_native_bindings() {
 
 #[test]
 fn protobuf_par_accumulation_has_proof_and_native_bindings() {
-    let theory = read_repository_file("formal/rocq/stack_safe_pda/theories/ProtobufParAccumulation.v");
-    for theorem in ["each_field_refines", "ordered_fields_refine", "earlier_arena_roots_survive",
-        "insertion_preserves_metadata", "metadata_update_preserves_authority",
-        "connective_update_preserves_authority", "explicit_empty_locally_free_replaces",
-        "explicit_false_connective_replaces", "insertion_failure_preserves_authority",
-        "refusal_preserves_committed_state", "refusal_does_not_visit_suffix",
-        "derived_metadata_mutant_changes_observation", "union_metadata_mutant_changes_explicit_reset"] {
+    let theory =
+        read_repository_file("formal/rocq/stack_safe_pda/theories/ProtobufParAccumulation.v");
+    for theorem in [
+        "each_field_refines",
+        "ordered_fields_refine",
+        "earlier_arena_roots_survive",
+        "insertion_preserves_metadata",
+        "metadata_update_preserves_authority",
+        "connective_update_preserves_authority",
+        "explicit_empty_locally_free_replaces",
+        "explicit_false_connective_replaces",
+        "insertion_failure_preserves_authority",
+        "refusal_preserves_committed_state",
+        "refusal_does_not_visit_suffix",
+        "derived_metadata_mutant_changes_observation",
+        "union_metadata_mutant_changes_explicit_reset",
+    ] {
         assert!(theory.contains(&format!("Print Assumptions {theorem}.")));
     }
     let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
-    assert!(has_runner_command(&runner, &["rocq_compile_with_closed_count", "theories/ProtobufParAccumulation.v", "13"]));
-    assert!(has_runner_kernel_check(&runner, &["StackSafePDA.ProtobufParAccumulation"]));
-    assert!(has_runner_command(&runner, &["rpb3_run_tests", "6", "--lib", "protobuf_par_accumulation_tests"]));
-    assert!(has_runner_command(&runner, &["rpb3_run_tests", "1", "--release", "-j4", "--features",
-        "protobuf-projection-experiment", "--lib", "accumulation_emits_no_resident_root_until_requested"]));
-    assert!(read_repository_file("formal/rocq/stack_safe_pda/_CoqProject").lines()
-        .any(|line| line == "theories/ProtobufParAccumulation.v"));
+    assert!(has_runner_command(&runner, &[
+        "rocq_compile_with_closed_count",
+        "theories/ProtobufParAccumulation.v",
+        "13"
+    ]));
+    assert!(has_runner_kernel_check(&runner, &[
+        "StackSafePDA.ProtobufParAccumulation"
+    ]));
+    assert!(has_runner_command(&runner, &[
+        "rpb3_run_tests",
+        "6",
+        "--lib",
+        "protobuf_par_accumulation_tests"
+    ]));
+    assert!(has_runner_command(&runner, &[
+        "rpb3_run_tests",
+        "1",
+        "--release",
+        "-j4",
+        "--features",
+        "protobuf-projection-experiment",
+        "--lib",
+        "accumulation_emits_no_resident_root_until_requested"
+    ]));
+    assert!(
+        read_repository_file("formal/rocq/stack_safe_pda/_CoqProject")
+            .lines()
+            .any(|line| line == "theories/ProtobufParAccumulation.v")
+    );
     let native = read_repository_file("models/tests/support/protobuf_par_accumulation.rs");
-    for witness in ["all_component_families_preserve_explicit_root_metadata",
+    for witness in [
+        "all_component_families_preserve_explicit_root_metadata",
         "malformed_scalar_updates_keep_exact_state_error_and_consumption",
         "failed_occurrence_insert_preserves_builder_and_prior_roots",
         "move_reentry_and_insert_do_not_copy_metadata_or_finalize_pars",
         "mixed_nested_accumulation_is_stack_safe_and_finalizes_each_par_once",
         "ordered_field_events_match_frozen_committed_observations",
-        "accumulation_emits_no_resident_root_until_requested"] {
+        "accumulation_emits_no_resident_root_until_requested",
+    ] {
         assert!(native.contains(&format!("fn {witness}(")));
     }
 }
 
 #[test]
 fn epm_payload_representation_has_proof_and_native_bindings() {
-    let theory = read_repository_file("formal/rocq/stack_safe_pda/theories/EpmPayloadRepresentation.v");
+    let theory =
+        read_repository_file("formal/rocq/stack_safe_pda/theories/EpmPayloadRepresentation.v");
     for theorem in [
-        "erase_commutes_with_denotation", "install_commutes_with_denotation",
-        "each_writer_step_commutes", "writer_trace_commutes", "publication_commutes",
-        "operations_preserve_topology", "refusal_cannot_publish",
-        "scaffold_erasure_preserves_real_bindings", "equal_payloads_preserve_distinct_keys",
+        "erase_commutes_with_denotation",
+        "install_commutes_with_denotation",
+        "each_writer_step_commutes",
+        "writer_trace_commutes",
+        "publication_commutes",
+        "operations_preserve_topology",
+        "refusal_cannot_publish",
+        "scaffold_erasure_preserves_real_bindings",
+        "equal_payloads_preserve_distinct_keys",
         "scaffold_leak_mutant_is_observable",
-        "cursor_next_preserves_topology", "cursor_next_conserves_bindings",
-        "cursor_take_is_ordered_partition", "cursor_take_conserves_bindings",
-        "cursor_take_preserves_topology", "cursor_exhaustion_is_fused",
-        "cursor_early_retirement_owns_exact_suffix", "cursor_root_skip_mutant_is_observable",
-        "mapping_loop_refines_reference", "mapping_empty_accumulators_are_equivalent",
-        "mapping_success_preserves_keys_and_trace", "mapping_first_error_stops",
-        "mapping_failure_cannot_publish", "mapping_success_exact_callback_count",
-        "mapping_preserves_shape_and_mode", "mapping_first_error_mutant_is_observable",
-        "relative_spans_compose_exact_path", "scaffold_count_is_bounded_by_event_points",
+        "cursor_next_preserves_topology",
+        "cursor_next_conserves_bindings",
+        "cursor_take_is_ordered_partition",
+        "cursor_take_conserves_bindings",
+        "cursor_take_preserves_topology",
+        "cursor_exhaustion_is_fused",
+        "cursor_early_retirement_owns_exact_suffix",
+        "cursor_root_skip_mutant_is_observable",
+        "mapping_loop_refines_reference",
+        "mapping_empty_accumulators_are_equivalent",
+        "mapping_success_preserves_keys_and_trace",
+        "mapping_first_error_stops",
+        "mapping_failure_cannot_publish",
+        "mapping_success_exact_callback_count",
+        "mapping_preserves_shape_and_mode",
+        "mapping_first_error_mutant_is_observable",
+        "relative_spans_compose_exact_path",
+        "scaffold_count_is_bounded_by_event_points",
         "changing_span_lengths_preserves_scaffold_work",
-        "key_validation_ignores_payload_representation", "snapshot_admission_commutes",
-        "snapshot_rejection_preserves_parent", "snapshot_success_installs_exact_image",
-        "mode_conflict_precedes_key_validation", "neutral_mode_accepts_every_mode",
-        "first_key_failure_stops_validation", "key_validation_before_mode_mutant_is_observable",
-        "legacy_stage_refines_reference", "legacy_staging_ignores_representation",
-        "legacy_field_failure_is_atomic", "legacy_map_mode_precedes_fields",
-        "legacy_empty_field_preserves_owner", "legacy_merge_preserves_metadata",
-        "legacy_success_is_membership_union", "legacy_duplicate_keys_are_idempotent",
-        "legacy_first_frame_error_stops", "legacy_normalization_is_observable",
-        "legacy_split_metadata_is_outer", "legacy_leading_escape_dispatch_mutant_is_observable",
+        "key_validation_ignores_payload_representation",
+        "snapshot_admission_commutes",
+        "snapshot_rejection_preserves_parent",
+        "snapshot_success_installs_exact_image",
+        "mode_conflict_precedes_key_validation",
+        "neutral_mode_accepts_every_mode",
+        "first_key_failure_stops_validation",
+        "key_validation_before_mode_mutant_is_observable",
+        "legacy_stage_refines_reference",
+        "legacy_staging_ignores_representation",
+        "legacy_field_failure_is_atomic",
+        "legacy_map_mode_precedes_fields",
+        "legacy_empty_field_preserves_owner",
+        "legacy_merge_preserves_metadata",
+        "legacy_success_is_membership_union",
+        "legacy_duplicate_keys_are_idempotent",
+        "legacy_first_frame_error_stops",
+        "legacy_normalization_is_observable",
+        "legacy_split_metadata_is_outer",
+        "legacy_leading_escape_dispatch_mutant_is_observable",
     ] {
         assert!(theory.contains(&format!("Print Assumptions {theorem}.")));
     }
     let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
     assert_eq!(theory.matches("Print Assumptions ").count(), 49);
-    assert!(has_runner_command(&runner, &["rocq_compile_with_closed_count", "theories/EpmPayloadRepresentation.v", "49"]));
-    assert!(has_runner_command(&runner, &["rpb3_run_tests", "7", "--lib", "legacy_ingress_tests"]));
+    assert!(has_runner_command(&runner, &[
+        "rocq_compile_with_closed_count",
+        "theories/EpmPayloadRepresentation.v",
+        "49"
+    ]));
+    assert!(has_runner_command(&runner, &[
+        "rpb3_run_tests",
+        "7",
+        "--lib",
+        "legacy_ingress_tests"
+    ]));
     let legacy = read_repository_file("models/tests/support/epm_legacy_ingress.rs");
-    for witness in ["accepted_legacy_escape_alias_is_refiled_under_its_normalized_key",
+    for witness in [
+        "accepted_legacy_escape_alias_is_refiled_under_its_normalized_key",
         "normalization_matches_every_scalar_collection_and_escape_boundary",
         "framed_ingress_matches_frozen_reader_and_key_normalization",
         "legacy_fields_are_atomic_mode_checked_and_metadata_preserving",
         "planned_tag_one_and_public_projection_preserve_deep_values_without_internal_finishes",
         "split_metadata_belongs_to_outer_list_not_first_segment",
-        "tag_one_preserves_modes_duplicates_and_outer_metadata"] {
+        "tag_one_preserves_modes_duplicates_and_outer_metadata",
+    ] {
         assert!(legacy.contains(&format!("fn {witness}(")));
     }
-    assert!(has_runner_command(&runner, &["rpb3_run_tests", "4", "--lib", "snapshot_admission_tests"]));
+    assert!(has_runner_command(&runner, &[
+        "rpb3_run_tests",
+        "4",
+        "--lib",
+        "snapshot_admission_tests"
+    ]));
     let admission = read_repository_file("models/tests/support/epm_snapshot_admission.rs");
-    for witness in ["planned_and_resident_admission_match_generated_keys",
+    for witness in [
+        "planned_and_resident_admission_match_generated_keys",
         "all_modes_preserve_typed_empties_and_replace_instead_of_union",
         "root_and_first_key_errors_preserve_mode_precedence_and_deferred_policy",
-        "dangling_topology_and_rejected_deep_snapshots_retire_on_small_stack"] {
+        "dangling_topology_and_rejected_deep_snapshots_retire_on_small_stack",
+    ] {
         assert!(admission.contains(&format!("fn {witness}(")));
     }
-    assert!(has_runner_kernel_check(&runner, &["StackSafePDA.EpmPayloadRepresentation"]));
-    assert!(has_runner_command(&runner, &["rpb3_run_tests", "8", "--lib", "payload_representation_tests"]));
-    assert!(has_runner_command(&runner, &["rpb3_run_tests", "5", "--lib", "owned_cursor_tests"]));
-    assert!(has_runner_command(&runner, &["rpb3_run_tests", "10", "--lib", "payload_mapping_tests"]));
+    assert!(has_runner_kernel_check(&runner, &[
+        "StackSafePDA.EpmPayloadRepresentation"
+    ]));
+    assert!(has_runner_command(&runner, &[
+        "rpb3_run_tests",
+        "8",
+        "--lib",
+        "payload_representation_tests"
+    ]));
+    assert!(has_runner_command(&runner, &[
+        "rpb3_run_tests",
+        "5",
+        "--lib",
+        "owned_cursor_tests"
+    ]));
+    assert!(has_runner_command(&runner, &[
+        "rpb3_run_tests",
+        "10",
+        "--lib",
+        "payload_mapping_tests"
+    ]));
     let mapping = read_repository_file("models/tests/support/epm_payload_mapping.rs");
-    for witness in ["ordered_mapping_preserves_all_bindings_and_topology",
+    for witness in [
+        "ordered_mapping_preserves_all_bindings_and_topology",
         "modes_root_prefix_dense_siblings_and_repeated_values_are_exact",
         "first_error_and_panic_stop_callbacks_without_publishing",
         "compressed_stems_have_bounded_frames_scaffolds_and_retained_heap",
-        "deep_branching_success_error_and_unwind_are_stack_safe"] {
+        "deep_branching_success_error_and_unwind_are_stack_safe",
+    ] {
         assert!(mapping.contains(&format!("fn {witness}(")));
     }
     let cursor = read_repository_file("models/tests/support/epm_owned_cursor.rs");
-    for witness in ["root_prefix_siblings_and_dangling_paths_are_preserved",
+    for witness in [
+        "root_prefix_siblings_and_dangling_paths_are_preserved",
         "arbitrary_prefixes_partition_the_source_and_preserve_shared_roots",
         "partial_drop_and_callback_unwind_balance_payloads",
         "deep_branching_partial_consumption_is_stack_safe",
-        "public_consuming_boundaries_keep_modes_and_guard_callback_unwind"] {
+        "public_consuming_boundaries_keep_modes_and_guard_callback_unwind",
+    ] {
         assert!(cursor.contains(&format!("fn {witness}(")));
     }
-    assert!(has_runner_command(&runner, &["rpb3_run_tests", "1", "--release", "-j4", "--features",
-        "protobuf-projection-experiment", "--lib", "planned_handles_keep_exact_associations_without_resident_emission"]));
-    assert!(read_repository_file("formal/rocq/stack_safe_pda/_CoqProject").lines()
-        .any(|line| line == "theories/EpmPayloadRepresentation.v"));
+    assert!(has_runner_command(&runner, &[
+        "rpb3_run_tests",
+        "1",
+        "--release",
+        "-j4",
+        "--features",
+        "protobuf-projection-experiment",
+        "--lib",
+        "planned_handles_keep_exact_associations_without_resident_emission"
+    ]));
+    assert!(
+        read_repository_file("formal/rocq/stack_safe_pda/_CoqProject")
+            .lines()
+            .any(|line| line == "theories/EpmPayloadRepresentation.v")
+    );
     let native = read_repository_file("models/tests/support/epm_payload_representation.rs");
-    for witness in ["opaque_payloads_preserve_modes_topology_and_remove_scaffolds",
-        "equal_payload_handles_do_not_collapse_endpoints", "malformed_frames_and_deferred_precedence_are_pinned",
+    for witness in [
+        "opaque_payloads_preserve_modes_topology_and_remove_scaffolds",
+        "equal_payload_handles_do_not_collapse_endpoints",
+        "malformed_frames_and_deferred_precedence_are_pinned",
         "pending_protocol_misuse_never_publishes_incomplete_values",
         "scaffold_factory_remains_lazy_and_matches_nonroot_value_free_events",
         "planned_handles_keep_exact_associations_without_resident_emission",
-        "generic_topology_replay_and_drop_are_stack_safe", "arbitrary_prefix_maps_preserve_payload_association"] {
+        "generic_topology_replay_and_drop_are_stack_safe",
+        "arbitrary_prefix_maps_preserve_payload_association",
+    ] {
         assert!(native.contains(&format!("fn {witness}(")));
     }
 }
@@ -1348,25 +1689,50 @@ fn epm_payload_representation_has_proof_and_native_bindings() {
 fn protobuf_owned_slots_have_proof_and_native_bindings() {
     let theory = read_repository_file("formal/rocq/stack_safe_pda/theories/ProtobufOwnedSlots.v");
     let names = [
-        "absent_slot_commutes", "present_slot_commutes", "absent_and_present_default_remain_distinct",
-        "take_slot_commutes", "reopen_commutes", "take_reopen_commutes", "reopen_present_preserves_child",
-        "repeated_default_commutes", "repeated_append_commutes", "repeated_append_preserves_order",
-        "default_entry_commutes", "entry_key_update_commutes", "entry_value_update_commutes",
-        "keyed_replacement_commutes", "keyed_lookup_commutes", "successful_keyed_replacement_is_last_wins",
-        "successful_keyed_replacement_preserves_other_keys", "oneof_selection_commutes",
-        "same_oneof_arm_reopens_existing_child", "different_oneof_arm_starts_default",
-        "successful_oneof_attach_commutes", "successful_oneof_attach_selects_new_arm",
-        "child_attachment_commutes", "failed_attachment_preserves_committed_parent",
-        "failed_attachment_allows_later_success", "rejected_api_guard_preserves_parent",
-        "guarded_attachment_commutes", "optional_attachment_commutes", "repeated_attachment_commutes",
-        "repeated_prepend_mutant_changes_order", "absent_collapsed_to_default_mutant_changes_presence",
-        "ownership_path_rank_budget", "ownership_path_length_is_schema_bounded",
+        "absent_slot_commutes",
+        "present_slot_commutes",
+        "absent_and_present_default_remain_distinct",
+        "take_slot_commutes",
+        "reopen_commutes",
+        "take_reopen_commutes",
+        "reopen_present_preserves_child",
+        "repeated_default_commutes",
+        "repeated_append_commutes",
+        "repeated_append_preserves_order",
+        "default_entry_commutes",
+        "entry_key_update_commutes",
+        "entry_value_update_commutes",
+        "keyed_replacement_commutes",
+        "keyed_lookup_commutes",
+        "successful_keyed_replacement_is_last_wins",
+        "successful_keyed_replacement_preserves_other_keys",
+        "oneof_selection_commutes",
+        "same_oneof_arm_reopens_existing_child",
+        "different_oneof_arm_starts_default",
+        "successful_oneof_attach_commutes",
+        "successful_oneof_attach_selects_new_arm",
+        "child_attachment_commutes",
+        "failed_attachment_preserves_committed_parent",
+        "failed_attachment_allows_later_success",
+        "rejected_api_guard_preserves_parent",
+        "guarded_attachment_commutes",
+        "optional_attachment_commutes",
+        "repeated_attachment_commutes",
+        "repeated_prepend_mutant_changes_order",
+        "absent_collapsed_to_default_mutant_changes_presence",
+        "ownership_path_rank_budget",
+        "ownership_path_length_is_schema_bounded",
         "strict_schema_rank_excludes_positive_cycles",
-        "method_child_order_commutes", "method_child_order_preserves_cardinality",
-        "method_child_order_retains_target_last", "semantic_optional_commutes",
-        "semantic_optional_absent_retains_absence", "semantic_optional_present_retains_presence",
-        "component_frontier_selects_incomplete", "component_frontier_selects_complete",
-        "component_frontier_commutes", "method_unrotated_mutant_changes_order",
+        "method_child_order_commutes",
+        "method_child_order_preserves_cardinality",
+        "method_child_order_retains_target_last",
+        "semantic_optional_commutes",
+        "semantic_optional_absent_retains_absence",
+        "semantic_optional_present_retains_presence",
+        "component_frontier_selects_incomplete",
+        "component_frontier_selects_complete",
+        "component_frontier_commutes",
+        "method_unrotated_mutant_changes_order",
         "relocated_transition_preserves_payload_or_exact_error",
         "successful_resume_reuses_same_identity",
         "arbitrary_suspend_resume_trace_is_exact",
@@ -1377,17 +1743,40 @@ fn protobuf_owned_slots_have_proof_and_native_bindings() {
     ];
     assert_eq!(names.len(), 51);
     assert_eq!(theory.matches("Print Assumptions ").count(), names.len());
-    let catalog = read_repository_file("docs/design/pathmap/workspace-regression-formal-invariant-catalog-2026-08-28.md");
+    let catalog = read_repository_file(
+        "docs/design/pathmap/workspace-regression-formal-invariant-catalog-2026-08-28.md",
+    );
     for name in names {
         assert!(theory.contains(&format!("Print Assumptions {name}.")));
         assert!(catalog.contains(&format!("`{name}`")));
     }
     let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
-    assert!(has_runner_command(&runner, &["rocq_compile_with_closed_count", "theories/ProtobufOwnedSlots.v", "51"]));
-    assert!(has_runner_command(&runner, &["rpb3_run_tests", "3", "--lib", "snapshot_continuation_tests::"]));
-    assert!(has_runner_kernel_check(&runner, &["StackSafePDA.ProtobufOwnedSlots"]));
-    assert!(has_runner_command(&runner, &["rpb3_run_tests", "8", "--lib", "protobuf_owned_slots_tests"]));
-    assert!(has_runner_command(&runner, &["rpb3_run_tests", "7", "--lib", "protobuf_construction_tests"]));
+    assert!(has_runner_command(&runner, &[
+        "rocq_compile_with_closed_count",
+        "theories/ProtobufOwnedSlots.v",
+        "51"
+    ]));
+    assert!(has_runner_command(&runner, &[
+        "rpb3_run_tests",
+        "3",
+        "--lib",
+        "snapshot_continuation_tests::"
+    ]));
+    assert!(has_runner_kernel_check(&runner, &[
+        "StackSafePDA.ProtobufOwnedSlots"
+    ]));
+    assert!(has_runner_command(&runner, &[
+        "rpb3_run_tests",
+        "8",
+        "--lib",
+        "protobuf_owned_slots_tests"
+    ]));
+    assert!(has_runner_command(&runner, &[
+        "rpb3_run_tests",
+        "7",
+        "--lib",
+        "protobuf_construction_tests"
+    ]));
     let attachment = read_repository_file("models/tests/support/protobuf_construction.rs");
     for witness in [
         "all_component_families_match_frozen_attachment_for_complete_and_incomplete_shells",
@@ -1400,8 +1789,11 @@ fn protobuf_owned_slots_have_proof_and_native_bindings() {
     ] {
         assert!(attachment.contains(&format!("fn {witness}(")));
     }
-    assert!(read_repository_file("formal/rocq/stack_safe_pda/_CoqProject").lines()
-        .any(|line| line == "theories/ProtobufOwnedSlots.v"));
+    assert!(
+        read_repository_file("formal/rocq/stack_safe_pda/_CoqProject")
+            .lines()
+            .any(|line| line == "theories/ProtobufOwnedSlots.v")
+    );
     let native = read_repository_file("models/tests/support/protobuf_owned_slots.rs");
     for witness in [
         "every_descriptor_field_and_oneof_arm_projects_without_canonicalizing_its_owner",
@@ -1419,39 +1811,77 @@ fn protobuf_owned_slots_have_proof_and_native_bindings() {
 
 #[test]
 fn protobuf_decoder_control_composition_has_proof_and_native_bindings() {
-    let theory = read_repository_file("formal/rocq/stack_safe_pda/theories/ProtobufDecoderComposition.v");
+    let theory =
+        read_repository_file("formal/rocq/stack_safe_pda/theories/ProtobufDecoderComposition.v");
     for theorem in [
-        "mapped_frame_preserves_control", "mapped_frames_preserve_context_order",
-        "selected_error_and_contexts_are_preserved", "completed_body_restores_exact_parent",
-        "unfinished_body_cannot_restore", "absent_parent_cannot_restore",
-        "enter_preserves_admission_depth", "nested_inputs_restore_lifo",
-        "snapshot_policy_uses_preincrement_depth", "successful_admission_balances_depth",
-        "failed_admission_has_no_continuation", "admission_without_snapshot_is_rejected",
-        "routing_composes_payload_refinement", "first_error_leaves_suffix_unvisited",
-        "reopenable_child_is_not_frozen", "freeze_only_at_consuming_boundary",
-        "freezing_preserves_denotation", "reopen_preserves_existing_builder",
-        "guards_preserve_live_arena", "projection_and_retirement_use_live_arena",
-        "final_projection_failure_is_not_published", "projection_failure_trace_has_no_publication",
-        "success_retires_guards_and_arena_before_publication", "every_guard_has_one_retirement_per_owned_slot",
-        "reversed_context_mutant_is_observable", "premature_freeze_mutant_loses_reopenable_form",
+        "mapped_frame_preserves_control",
+        "mapped_frames_preserve_context_order",
+        "selected_error_and_contexts_are_preserved",
+        "completed_body_restores_exact_parent",
+        "unfinished_body_cannot_restore",
+        "absent_parent_cannot_restore",
+        "enter_preserves_admission_depth",
+        "nested_inputs_restore_lifo",
+        "snapshot_policy_uses_preincrement_depth",
+        "successful_admission_balances_depth",
+        "failed_admission_has_no_continuation",
+        "admission_without_snapshot_is_rejected",
+        "routing_composes_payload_refinement",
+        "first_error_leaves_suffix_unvisited",
+        "reopenable_child_is_not_frozen",
+        "freeze_only_at_consuming_boundary",
+        "freezing_preserves_denotation",
+        "reopen_preserves_existing_builder",
+        "guards_preserve_live_arena",
+        "projection_and_retirement_use_live_arena",
+        "final_projection_failure_is_not_published",
+        "projection_failure_trace_has_no_publication",
+        "success_retires_guards_and_arena_before_publication",
+        "every_guard_has_one_retirement_per_owned_slot",
+        "reversed_context_mutant_is_observable",
+        "premature_freeze_mutant_loses_reopenable_form",
     ] {
         assert!(theory.contains(&format!("Print Assumptions {theorem}.")));
     }
     assert_eq!(theory.matches("Print Assumptions ").count(), 26);
     let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
-    assert!(has_runner_command(&runner, &["rocq_compile_with_closed_count", "theories/ProtobufDecoderComposition.v", "26"]));
-    assert!(has_runner_kernel_check(&runner, &["StackSafePDA.ProtobufDecoderComposition"]));
-    assert!(has_runner_command(&runner, &["rpb3_run_tests", "5", "--lib", "decoder_control_tests::"]));
-    assert!(has_runner_command(&runner, &["rpb3_run_tests", "1", "--release", "-j4", "--features",
-        "protobuf-projection-experiment", "--lib", "deep_general_decoder_materializes_once_and_retires_failed_frames_on_small_stack"]));
-    assert!(read_repository_file("formal/rocq/stack_safe_pda/_CoqProject").lines()
-        .any(|line| line == "theories/ProtobufDecoderComposition.v"));
+    assert!(has_runner_command(&runner, &[
+        "rocq_compile_with_closed_count",
+        "theories/ProtobufDecoderComposition.v",
+        "26"
+    ]));
+    assert!(has_runner_kernel_check(&runner, &[
+        "StackSafePDA.ProtobufDecoderComposition"
+    ]));
+    assert!(has_runner_command(&runner, &[
+        "rpb3_run_tests",
+        "5",
+        "--lib",
+        "decoder_control_tests::"
+    ]));
+    assert!(has_runner_command(&runner, &[
+        "rpb3_run_tests",
+        "1",
+        "--release",
+        "-j4",
+        "--features",
+        "protobuf-projection-experiment",
+        "--lib",
+        "deep_general_decoder_materializes_once_and_retires_failed_frames_on_small_stack"
+    ]));
+    assert!(
+        read_repository_file("formal/rocq/stack_safe_pda/_CoqProject")
+            .lines()
+            .any(|line| line == "theories/ProtobufDecoderComposition.v")
+    );
     let native = read_repository_file("models/tests/support/protobuf_decoder_control.rs");
-    for witness in ["deep_general_decoder_materializes_once_and_retires_failed_frames_on_small_stack",
+    for witness in [
+        "deep_general_decoder_materializes_once_and_retires_failed_frames_on_small_stack",
         "nested_snapshot_inputs_restore_parent_and_preserve_failure_contexts",
         "epm_remainder_reopens_all_native_var_variants_without_losing_mode",
         "nested_error_locations_have_an_independent_nearest_first_witness",
-        "partial_map_failure_retires_unique_deep_pending_topology_before_arena"] {
+        "partial_map_failure_retires_unique_deep_pending_topology_before_arena",
+    ] {
         assert!(native.contains(&format!("fn {witness}(")));
     }
 }
@@ -1495,14 +1925,25 @@ fn epm_owned_retirement_has_explicit_proof_boundaries_and_native_bindings() {
     ];
     assert_eq!(names.len(), 32);
     assert_eq!(theory.matches("Print Assumptions ").count(), names.len());
-    let catalog = read_repository_file("docs/design/pathmap/workspace-regression-formal-invariant-catalog-2026-08-28.md");
+    let catalog = read_repository_file(
+        "docs/design/pathmap/workspace-regression-formal-invariant-catalog-2026-08-28.md",
+    );
     for name in names {
         assert!(theory.contains(&format!("Print Assumptions {name}.")));
         assert!(catalog.contains(&format!("`{name}`")));
     }
     let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
-    assert!(has_runner_command(&runner, &["rocq_compile_with_closed_count", "theories/EpmOwnedRetirement.v", "32"]));
-    assert!(has_runner_command(&runner, &["rpb3_run_tests", "6", "--lib", "resident_ownership_tests"]));
+    assert!(has_runner_command(&runner, &[
+        "rocq_compile_with_closed_count",
+        "theories/EpmOwnedRetirement.v",
+        "32"
+    ]));
+    assert!(has_runner_command(&runner, &[
+        "rpb3_run_tests",
+        "6",
+        "--lib",
+        "resident_ownership_tests"
+    ]));
     let resident = read_repository_file("models/tests/support/epm_resident_ownership.rs");
     for witness in [
         "cold_and_warm_aliases_share_storage_until_mutation",
@@ -1514,12 +1955,32 @@ fn epm_owned_retirement_has_explicit_proof_boundaries_and_native_bindings() {
     ] {
         assert!(resident.contains(&format!("fn {witness}(")));
     }
-    assert!(has_runner_kernel_check(&runner, &["StackSafePDA.EpmOwnedRetirement"]));
-    assert!(has_runner_command(&runner, &["rspace_preparation_run_tests", "5", "--lib", "stateful_retirement"]));
-    assert!(has_runner_command(&runner, &["rpb3_run_tests", "7", "--lib", "owned_retirement_tests"]));
-    assert!(has_runner_command(&runner, &["rpb3_run_tests", "8", "--lib", "planned_epm_ownership_tests"]));
-    assert!(read_repository_file("formal/rocq/stack_safe_pda/_CoqProject").lines()
-        .any(|line| line == "theories/EpmOwnedRetirement.v"));
+    assert!(has_runner_kernel_check(&runner, &[
+        "StackSafePDA.EpmOwnedRetirement"
+    ]));
+    assert!(has_runner_command(&runner, &[
+        "rspace_preparation_run_tests",
+        "5",
+        "--lib",
+        "stateful_retirement"
+    ]));
+    assert!(has_runner_command(&runner, &[
+        "rpb3_run_tests",
+        "7",
+        "--lib",
+        "owned_retirement_tests"
+    ]));
+    assert!(has_runner_command(&runner, &[
+        "rpb3_run_tests",
+        "8",
+        "--lib",
+        "planned_epm_ownership_tests"
+    ]));
+    assert!(
+        read_repository_file("formal/rocq/stack_safe_pda/_CoqProject")
+            .lines()
+            .any(|line| line == "theories/EpmOwnedRetirement.v")
+    );
     let native = read_repository_file("rspace++/tests/guarded_pathmap/stateful_retirement.rs");
     for witness in [
         "stateful_factory_is_lazy_and_uninstalled_barriers_are_retired",
@@ -1561,6 +2022,91 @@ fn read_repository_file(relative: &str) -> String {
     let path = repository_root().join(relative);
     std::fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()))
+}
+
+fn contains_rust_token_sequence(source: &str, expected: &str) -> bool {
+    let source: TokenStream = source.parse().expect("Rust source must tokenize");
+    let expected: Vec<TokenTree> = expected
+        .parse::<TokenStream>()
+        .expect("Rust binding must tokenize")
+        .into_iter()
+        .collect();
+    assert!(!expected.is_empty(), "Rust binding must contain tokens");
+
+    fn same_token(actual: &TokenTree, wanted: &TokenTree) -> bool {
+        std::mem::discriminant(actual) == std::mem::discriminant(wanted)
+            && actual.to_string() == wanted.to_string()
+    }
+
+    fn same_call_arguments(actual: &TokenTree, wanted: &TokenTree) -> bool {
+        let (TokenTree::Group(actual), TokenTree::Group(wanted)) = (actual, wanted) else {
+            return false;
+        };
+        if actual.delimiter() != proc_macro2::Delimiter::Parenthesis
+            || wanted.delimiter() != proc_macro2::Delimiter::Parenthesis
+        {
+            return false;
+        }
+        let mut actual: Vec<TokenTree> = actual.stream().into_iter().collect();
+        let mut wanted: Vec<TokenTree> = wanted.stream().into_iter().collect();
+        for arguments in [&mut actual, &mut wanted] {
+            if matches!(arguments.last(), Some(TokenTree::Punct(comma)) if comma.as_char() == ',') {
+                arguments.pop();
+            }
+        }
+        actual.len() == wanted.len()
+            && actual
+                .iter()
+                .zip(&wanted)
+                .all(|(left, right)| same_token(left, right))
+    }
+
+    fn contains(stream: TokenStream, expected: &[TokenTree]) -> bool {
+        let tokens: Vec<TokenTree> = stream.into_iter().collect();
+        tokens.windows(expected.len()).any(|window| {
+            window
+                .iter()
+                .zip(expected)
+                .enumerate()
+                .all(|(index, (actual, wanted))| {
+                    same_token(actual, wanted)
+                        || (index > 0
+                            && matches!(
+                                (&window[index - 1], &expected[index - 1]),
+                                (TokenTree::Ident(_), TokenTree::Ident(_))
+                            )
+                            && same_call_arguments(actual, wanted))
+                })
+        }) || tokens.into_iter().any(|token| match token {
+            TokenTree::Group(group) => contains(group.stream(), expected),
+            _ => false,
+        })
+    }
+
+    contains(source, &expected)
+}
+
+#[test]
+fn rust_binding_match_ignores_layout_but_rejects_noncode_and_reordering() {
+    let expected = "builder.nodes.push(node); #[cfg(test)] emission_tests::record_publication(node_index, &builder);";
+    let formatted = "fn witness() { builder.nodes.push(node);\n#[cfg(test)]\nemission_tests::record_publication(\nnode_index,\n&builder,\n); }";
+    assert!(contains_rust_token_sequence(formatted, expected));
+    assert!(!contains_rust_token_sequence(
+        &format!("fn decoy() {{ let text = {expected:?}; }}"),
+        expected
+    ));
+    assert!(!contains_rust_token_sequence(
+        &format!("fn decoy() {{ /* {expected} */ }}"),
+        expected
+    ));
+    assert!(!contains_rust_token_sequence(
+        "fn reversed() { #[cfg(test)] emission_tests::record_publication(node_index, &builder); builder.nodes.push(node); }",
+        expected
+    ));
+    assert!(!contains_rust_token_sequence(
+        "fn distinct_tuple() { let value = (node,); }",
+        "let value = (node);"
+    ));
 }
 
 fn has_runner_command(runner: &str, expected: &[&str]) -> bool {

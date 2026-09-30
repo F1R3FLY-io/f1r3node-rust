@@ -354,6 +354,7 @@ harness = false
 
 [dev-dependencies]
 blake2 = "0.10.6"
+proc-macro2 = "1"
 
 [build-dependencies]
 tonic-prost-build = { workspace = true }
