@@ -2035,3 +2035,170 @@ fn metered_ordering_preserves_duplicates_and_stops_before_unbounded_sorting() {
     assert!(work.allocate(usize::MAX, 2).is_err());
     assert_eq!(work.usage().2.as_deref(), Some("allocation_overflow"));
 }
+
+async fn display_response(fixture: &Fixture, mut request: AuthorityRequest) -> AuthorityResponse {
+    use casper::rust::soak_observer::evaluation::DisplaySelection;
+    request.display = Some(DisplaySelection {
+        max_equivocation_records: 16,
+    });
+    let controller = ObserverController::new("display-fixture".into());
+    controller.install(Some(fixture.casper(true).as_ref()));
+    controller
+        .authority_snapshot(request, Instant::now() + Duration::from_secs(10))
+        .await
+        .unwrap()
+}
+
+fn add_display_record(fixture: &Fixture, validator: u8, sequence: i32) {
+    use models::rust::equivocation_record::EquivocationRecord;
+    fixture
+        .dag
+        .access_equivocations_tracker(|tracker| {
+            tracker.add(EquivocationRecord::new(
+                vec![validator; 65].into(),
+                sequence,
+                std::collections::BTreeSet::from([vec![3; 32].into()]),
+            ))
+        })
+        .unwrap();
+}
+
+#[test]
+fn display_admission_rejects_null_duplicates_and_invalid_limits() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let fixture = runtime.block_on(Fixture::new());
+    let plain = serde_json::to_value(fixture.request()).unwrap();
+    assert!(plain.get("display").is_none());
+    for value in [
+        serde_json::Value::Null,
+        serde_json::json!({}),
+        serde_json::json!({"max_equivocation_records": 1.5}),
+        serde_json::json!({"max_equivocation_records": 1, "extra": true}),
+    ] {
+        let mut request = plain.clone();
+        request["display"] = value;
+        assert!(serde_json::from_value::<AuthorityRequest>(request).is_err());
+    }
+    for limit in [0, 4097] {
+        let mut request = plain.clone();
+        request["display"] = serde_json::json!({"max_equivocation_records": limit});
+        assert!(serde_json::from_value::<AuthorityRequest>(request)
+            .unwrap()
+            .validate()
+            .is_err());
+    }
+    let mut request = plain.clone();
+    request["display"] = serde_json::json!({"max_equivocation_records": 4096});
+    assert!(serde_json::from_value::<AuthorityRequest>(request)
+        .unwrap()
+        .validate()
+        .is_ok());
+    let serialized = serde_json::to_string(&plain).unwrap();
+    let duplicated = serialized.replacen('{', "{\"display\":{\"max_equivocation_records\":1},\"display\":{\"max_equivocation_records\":2},", 1);
+    assert!(serde_json::from_str::<AuthorityRequest>(&duplicated).is_err());
+}
+
+#[tokio::test]
+async fn display_bits_use_shared_arithmetic_and_record_multiplicity_without_live_calls() {
+    let fixture = Fixture::new().await;
+    add_display_record(&fixture, 7, 0);
+    add_display_record(&fixture, 7, 1);
+    add_display_record(&fixture, 9, 0);
+    let before = fixture.stored();
+    let response = display_response(&fixture, fixture.request()).await;
+    let target = &response.targets[0];
+    let original = f32::from_bits(*available(&target.original_fault_tolerance));
+    assert_eq!(
+        *available(&target.display_projection),
+        (original - 2.0).to_bits()
+    );
+    let inputs = available(target.display_inputs.as_ref().unwrap());
+    assert_eq!(inputs.matched_records, 2);
+    assert_eq!(inputs.distinct_equivocators, 1);
+    assert_eq!(inputs.total_weight, "100");
+    assert_eq!(inputs.equivocating_weight, "200");
+    assert_eq!(inputs.base_source, "original_oracle");
+    assert_eq!(
+        response.display_scope,
+        Some("batch-e-detached-display-projection")
+    );
+    assert_eq!(
+        available(response.equivocation_capture.as_ref().unwrap()).row_count,
+        3
+    );
+    assert!(response.work.measured.oracle > 0);
+    assert_eq!(before, fixture.stored());
+}
+
+#[tokio::test]
+async fn display_without_original_refuses_nonfinalized_targets_and_missing_targets() {
+    let fixture = Fixture::new().await;
+    let mut request = fixture.request();
+    request.original = false;
+    request.reference = false;
+    request.targets.push(hex::encode(tag(99)));
+    let response = display_response(&fixture, request).await;
+    assert!(
+        matches!(&response.targets[0].display_projection, Value::Unavailable { reason, .. } if reason == "original_not_requested")
+    );
+    assert!(
+        matches!(&response.targets[1].display_projection, Value::Unavailable { reason, .. } if reason == "target_not_held")
+    );
+}
+
+#[tokio::test]
+async fn display_finalized_set_and_metadata_flag_remain_separate() {
+    use models::rust::block_hash::BlockHashSerde;
+    use models::rust::block_metadata::BlockMetadata;
+    use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
+    let fixture = Fixture::new().await;
+    let hash = fixture.chain[1].block_hash.clone();
+    fixture
+        .dag
+        .record_directly_finalized(hash.clone(), 0.75, |_| async { Ok(()) })
+        .await
+        .unwrap();
+    let mut metadata = fixture
+        .dag
+        .get_representation()
+        .unwrap()
+        .lookup(&hash)
+        .unwrap()
+        .unwrap();
+    metadata.finalized = false;
+    let position = STORES
+        .iter()
+        .position(|name| *name == "block-metadata")
+        .unwrap();
+    let store: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata> =
+        KeyValueTypedStoreImpl::new(fixture.handles[position].clone());
+    store.put_one(BlockHashSerde(hash), metadata).unwrap();
+    let mut request = fixture.request();
+    request.original = false;
+    request.reference = false;
+    let response = display_response(&fixture, request).await;
+    let target = &response.targets[0];
+    assert_eq!(*available(&target.display_projection), 0.75f32.to_bits());
+    let inputs = available(target.display_inputs.as_ref().unwrap());
+    assert!(inputs.finalized_set_member);
+    assert!(!inputs.metadata_finalized);
+    assert_eq!(inputs.base_source, "persisted_metadata");
+    assert!(
+        matches!(&target.persisted_fault_tolerance, Value::Unavailable { reason, .. } if reason == "not_finalized")
+    );
+}
+
+#[tokio::test]
+async fn display_digest_changes_with_tracker_inputs_without_store_writes() {
+    let fixture = Fixture::new().await;
+    let first = display_response(&fixture, fixture.request()).await;
+    add_display_record(&fixture, 7, 4);
+    let before = fixture.stored();
+    let second = display_response(&fixture, fixture.request()).await;
+    assert_ne!(first.authority_digest, second.authority_digest);
+    assert_ne!(
+        available(first.equivocation_capture.as_ref().unwrap()).digest,
+        available(second.equivocation_capture.as_ref().unwrap()).digest
+    );
+    assert_eq!(before, fixture.stored());
+}

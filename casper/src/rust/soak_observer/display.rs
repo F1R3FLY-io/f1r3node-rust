@@ -51,14 +51,20 @@ pub fn calculate(
             std::mem::size_of::<(Validator, u64)>(),
         )
         .map_err(|e| e.to_string())?;
-    let mut weights = HashMap::new();
+    let mut weights = HashMap::with_capacity(block.metadata.weight_map.len());
     let mut checked_total = 0u64;
     for (validator, weight) in &block.metadata.weight_map {
         meter
             .charge(WorkKind::Allocation, 1, validator.len() as u64)
             .map_err(|e| e.to_string())?;
         meter
-            .charge(WorkKind::Oracle, validator.len() as u64 + 1, 0)
+            .charge(
+                WorkKind::Oracle,
+                (validator.len() as u64)
+                    .checked_add(1)
+                    .ok_or("display_work_overflow")?,
+                0,
+            )
             .map_err(|e| e.to_string())?;
         let weight = *weight as u64;
         checked_total = checked_total
@@ -67,15 +73,25 @@ pub fn calculate(
         weights.insert(validator.clone(), weight);
     }
     meter
-        .allocate(tracker.rows().len(), std::mem::size_of::<&Validator>())
+        .allocate(tracker.rows().len(), 32 * std::mem::size_of::<usize>())
         .map_err(|e| e.to_string())?;
     let mut checked_matched = 0u64;
     let mut matched_records = 0usize;
+    let mut scans = (weights.len() as u64)
+        .checked_add(4)
+        .ok_or("display_work_overflow")?;
     let mut distinct = BTreeSet::new();
     for row in tracker.rows() {
-        let key_cost = row.equivocator.len() as u64 + 1;
+        let key_cost = (row.equivocator.len() as u64)
+            .checked_add(1)
+            .ok_or("display_work_overflow")?;
+        scans = scans.checked_add(key_cost).ok_or("display_work_overflow")?;
         let compare_cost = key_cost
-            .checked_mul(tracker.rows().len() as u64 + 1)
+            .checked_mul(
+                (tracker.rows().len() as u64)
+                    .checked_add(1)
+                    .ok_or("display_work_overflow")?,
+            )
             .ok_or("display_work_overflow")?;
         meter
             .charge(WorkKind::Oracle, compare_cost, 0)
@@ -88,13 +104,6 @@ pub fn calculate(
             distinct.insert(&row.equivocator);
         }
     }
-    let scans = weights.len() as u64
-        + tracker
-            .rows()
-            .iter()
-            .map(|r| r.equivocator.len() as u64 + 1)
-            .sum::<u64>()
-        + 4;
     meter
         .charge(WorkKind::Oracle, scans, 0)
         .map_err(|e| e.to_string())?;

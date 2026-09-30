@@ -151,6 +151,10 @@
       "configuration": "MC_PairedForkChoice_budget_unsafe.cfg",
       "expected_exit": 12,
       "invariant": "SharedBudget"
-    }
+    },
+    {"module":"MC_DisplayProjection","configuration":"MC_DisplayProjection.cfg","expected_exit":0,"invariant":null},
+    {"module":"MC_DisplayProjection_fabricated_unsafe","configuration":"MC_DisplayProjection_fabricated_unsafe.cfg","expected_exit":12,"invariant":"NoFabrication"},
+    {"module":"MC_DisplayProjection_source_unsafe","configuration":"MC_DisplayProjection_source_unsafe.cfg","expected_exit":12,"invariant":"BaseSource"},
+    {"module":"MC_DisplayProjection_interval_unsafe","configuration":"MC_DisplayProjection_interval_unsafe.cfg","expected_exit":12,"invariant":"OneInterval"}
   ]
 }

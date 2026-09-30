@@ -648,6 +648,38 @@ fn authority_request(hello: &Value) -> Value {
 }
 
 #[tokio::test]
+async fn a_display_selection_is_admitted_and_invalid_display_fields_are_rejected() {
+    let directory = Directory::new();
+    let observer = Observer::bind(&configuration(&directory, true))
+        .unwrap()
+        .unwrap()
+        .spawn();
+    let (mut stream, hello) = connect(&directory.socket()).await;
+    let mut message = authority_request(&hello);
+    message["authority"]["display"] = json!({"max_equivocation_records": 4096});
+    send(&mut stream, &message).await;
+    let response = receive(&mut stream).await;
+    assert_eq!(response["kind"], "authority_snapshot");
+    assert_eq!(response["result"]["reason"], "awaiting_casper");
+    assert_eq!(response["identity"], hello["identity"]);
+    for selection in [
+        json!(null),
+        json!({}),
+        json!({"max_equivocation_records": 0}),
+        json!({"max_equivocation_records": 4097}),
+        json!({"max_equivocation_records": 1.5}),
+        json!({"max_equivocation_records": 1, "extra": true}),
+    ] {
+        let (mut stream, hello) = connect(&directory.socket()).await;
+        let mut message = authority_request(&hello);
+        message["authority"]["display"] = selection;
+        send(&mut stream, &message).await;
+        closed(&mut stream).await;
+    }
+    observer.stop().await;
+}
+
+#[tokio::test]
 async fn a_fork_choice_selection_is_admitted_and_an_unknown_selection_field_is_rejected() {
     let directory = Directory::new();
     let observer = Observer::bind(&configuration(&directory, true))

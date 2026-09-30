@@ -116,6 +116,7 @@ POST_FIX_CONFIGS=(
     node_observation/MC_ObserverSession
     node_observation/MC_BoundedCapture
     node_observation/MC_PairedForkChoice
+    node_observation/MC_DisplayProjection
 )
 
 TLC_WORKERS=auto
@@ -137,6 +138,7 @@ if [[ "$SOAK_PR" == true ]]; then
         node_observation/MC_ObserverSession
         node_observation/MC_BoundedCapture
         node_observation/MC_PairedForkChoice
+        node_observation/MC_DisplayProjection
     )
     TLC_WORKERS=2
 fi
@@ -199,6 +201,9 @@ NEGATIVE_CONTROLS=(
     node_observation/MC_PairedForkChoice_absent_unsafe:NoFabricatedHead
     node_observation/MC_PairedForkChoice_compare_unsafe:CompareSameInput
     node_observation/MC_PairedForkChoice_budget_unsafe:SharedBudget
+    node_observation/MC_DisplayProjection_fabricated_unsafe:NoFabrication
+    node_observation/MC_DisplayProjection_source_unsafe:BaseSource
+    node_observation/MC_DisplayProjection_interval_unsafe:OneInterval
     carrier_index/MC_CarrierIndex_dag_first_pre_fix:IndexCompleteForWindow
     carrier_index/MC_CarrierIndex_read_failure_pre_fix:AbsenceProofSound
     soak_disk/MC_SoakDiskAdmission_floor_only_pre_fix:AdmissionRequiresBand
@@ -284,10 +289,10 @@ done
 plan="$TLA_ROOT/node_observation/verification-plan.json"
 plan_entries=$(jq -er '
     .models as $models |
-    if ($models | length) == 25 and
-       ([$models[].module] | unique | length) == 25 and
+    if ($models | length) == 29 and
+       ([$models[].module] | unique | length) == 29 and
        ([$models[] | select(.expected_exit == 0) | .module] | sort) ==
-         ["MC_BoundedCapture", "MC_ObserverSession", "MC_PairedForkChoice"] and
+         ["MC_BoundedCapture", "MC_DisplayProjection", "MC_ObserverSession", "MC_PairedForkChoice"] and
        all($models[]; (.module | test("^MC_[A-Za-z_]+$")) and
          .configuration == (.module + ".cfg") and
          ((.expected_exit == 0 and .invariant == null) or
