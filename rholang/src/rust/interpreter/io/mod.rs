@@ -8,12 +8,14 @@
 
 pub mod consensus_fingerprint;
 pub mod errors;
+pub mod lock;
 pub mod mode;
 pub mod nss;
 pub mod path;
 pub mod response;
 pub mod snapshot_chunk;
 pub mod stat;
+pub mod verify;
 pub mod wal;
 
 /// Consensus vs. oracular execution mode.
