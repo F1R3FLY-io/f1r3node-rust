@@ -2,9 +2,20 @@
 
 ## Status
 
-The node repository implementation passes its local deployment checks. TASK-020-3 remains in progress.
+TASK-020-3 is complete on 2026-09-30. The node repository implementation passes its deployment checks at `7d64c9d03`.
 
-No receiver has claimed the external change. No external change, repin, commit, push, or live deployment has occurred in this session.
+The receiver `claude-session-fbb1f4d0` claimed the external change in the system-integration tracker (section "REQUEST: one node log sink per deployment", id `SI-TASK-020-3`). Pull request F1R3FLY-io/system-integration#146 (branch `fix/single-log-sink-per-deployment`, base `dev` at `ef9844893`) merged into `dev` at `ccd717195b35f75cef826f41d96b7028d8a874c0` on 2026-09-30T22:10:44Z. The `main` promotion is pending.
+
+| Deployment | Sink | Mechanism and reader |
+|------------|------|----------------------|
+| Compose variants and smoke-test CI | `stdout` | `sink = "stdout"` in `conf/rust.conf` and `conf/standalone-dev.conf`. Read by `docker logs` and `shardctl`. Bounded by `json-file` at 100m and 3 files. |
+| Integration tests, Docker provider | `file` | `--log-sink=file` before `run` at 6 launch sites. Read from `/var/lib/rnode/logs/node.log*`. |
+| Integration tests, subprocess provider | `stdout` | The conf. Read from the captured process output. |
+| Development | `both` | Only through an explicit `--log-sink=both` before `run`. |
+
+Verification at the merge revision: `unit-tests/test_log_sink_policy.py` 34 passed, 355 unit tests passed at the PR head, the 5 Compose variants render with 11 capped node services, and the live suites passed (`test_heartbeat` in PR CI, `test_token_metadata` and `test_shard_degradation` 15 of 15 locally). Node checks at `7d64c9d03`: compose log policy 9 services passed, `log_sink_cli` 3 passed, supply-chain repository tests 18 passed.
+
+The byte limits of node commit `6e1c8833a` reach system-integration runs through the next node repin. TASK-020-4 enforces them in the harness. No repin occurred in this session.
 
 ## Source identities
 
