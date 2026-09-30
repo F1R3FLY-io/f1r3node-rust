@@ -1,8 +1,8 @@
 # Transport resource review after the bootstrap log incident
 
-**Status:** Hosted transport regression verification passed. Strict TASK-020-1 closure remains blocked on missing user-flow linkage. Candidate resource qualification remains separate.
+**Status:** TASK-020-1 passed hosted transport regression verification and strict completion. TASK-020-2, TASK-020-3, TASK-020-4, and full resource qualification remain open.
 
-Earlier sections retain their original results and limitations. The final section records the hosted verification checkpoint.
+Earlier sections retain their original results and limitations. The final section records the approved linkage repair and task closure.
 
 ## Review gap
 
@@ -97,6 +97,8 @@ The hosted checks use one process for each test. The local results use the same 
 
 ## Hosted verification on 2026-09-30
 
+This section records the initial checkpoint before the linkage repair below.
+
 Verification session: `01a0ab62-71b3-7248-a800-37a6fde2e4fa`. The verification claim time is `2026-09-30T01:03:01Z`.
 
 The verification fields are separate from implementation ownership. `claimed_by` remains `claude-session-f3cbc961`. `verification_status` remains `in_progress` as requested.
@@ -150,3 +152,45 @@ This review does not waive that gap or create a placeholder flow. It changes no 
 The maintainer decision to leave the accept path untagged remains unchanged. Transport test success does not discharge disk-protection claims or finish TASK-020-2 through TASK-020-4.
 
 No commit, push, merge, campaign, or unrelated closure occurred.
+
+## Linkage repair and strict closure on 2026-09-30
+
+The user approved the proposed repair with “proceed with the repair”. The checkout was clean at `350f24f5964f40bb6632a034fa647956ff8a8b13`.
+
+That commit records the earlier verification. It does not change the hosted test inputs or replace the tested merge identity.
+
+The repair adds [US-009](../UserStories.md#us-009-bounded-node-behavior-under-resource-faults) and [FLOW-002](../User-Flows.md#flow-002-operate-a-node-through-resource-faults).
+
+The operator story requires bounded retries and log storage. The flow describes fault detection, bounded errors, recovery, and storage checks.
+
+EPIC-020 now references both records. The story references the flow and epic. The flow references the story and epic.
+
+The identifiers avoid existing references to US-006 and FLOW-001. Historical planning also references US-007 and US-008, so the repair uses US-009.
+
+Only the transport acceptance items are verified. File retention, container caps, and guardian enforcement remain pending.
+
+The story and flow remain in progress. The flow has no fabricated integration-test artifact or claim of completed live deployment verification.
+
+### Closure checks
+
+The nine hosted source hashes and the original evidence package checksums still match. No source, test, workflow, or historical evidence was renewed.
+
+The unchanged completion helper ran against a tracker copy with strict mode enabled and force disabled. TASK-020-1 received grade `full`, zero gaps, and exit 0.
+
+The helper CLI accepts `TODO-*`, but this repository uses `TASK-*`. A temporary wrapper omits only the final main invocation and calls `mark_task_complete`.
+
+The wrapper uses the original helper libraries. The legacy parser setting permits unrelated `review` statuses but does not weaken the strict integrity check.
+
+A disposable control removed the story's flow back-reference. Strict completion refused with exit 3 and `story_missing_backref`, leaving that tracker copy unchanged.
+
+The live TASK-020-1 completion fields match the successful helper output. The task now has `status: complete`, `completion_gaps: []`, and `completed_date: 2026-09-30`.
+
+The [closure report](./evidence/task-020-1-flow-repair-20260930-01/report.json) records the helper identity, integrity results, refusal control, and evidence limits.
+
+The implementation owner, claim time, and verification fields remain unchanged. The requested `verification_status: in_progress` field is preserved separately from task completion.
+
+EPIC-020 remains in progress. TASK-020-2, TASK-020-3, TASK-020-4, and every unrelated task record remain unchanged.
+
+The full integrity grade describes documentation relationships. It does not establish complete resource qualification or discharge disk-protection claims.
+
+This session created no commit, push, merge, campaign, production change, or unrelated closure.

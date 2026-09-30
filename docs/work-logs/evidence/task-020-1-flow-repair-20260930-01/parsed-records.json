@@ -1,0 +1,92 @@
+{
+  "target": "TASK-020-1",
+  "kind": "task",
+  "grade": "full",
+  "gaps": [],
+  "details": []
+}
+{
+  "id": "FLOW-002",
+  "title": "Operate a node through resource faults",
+  "status": "In Progress",
+  "implemented_in": "EPIC-020",
+  "related_stories": [
+    "US-009"
+  ],
+  "related_flows": [],
+  "personas": [
+    "Node operator"
+  ],
+  "integration_tests": [],
+  "journey": "Configure limits -> Observe a resource fault -> Inspect bounded errors -> Confirm recovery -> Verify storage limits",
+  "steps": [
+    {
+      "name": "Configure limits",
+      "description": "Configure the node log budget, one deployment sink, and container log caps before deployment."
+    },
+    {
+      "name": "Observe a resource fault",
+      "description": "Detect descriptor exhaustion or accept failures during node operation."
+    },
+    {
+      "name": "Inspect bounded errors",
+      "description": "Inspect error delivery, retry spacing, limited error logs, and suppressed-count summaries."
+    },
+    {
+      "name": "Confirm recovery",
+      "description": "Release exhausted resources and confirm that the listener accepts a new connection without persistent error backoff."
+    },
+    {
+      "name": "Verify storage limits",
+      "description": "Check file retention and container log budgets during sustained load."
+    }
+  ],
+  "key_interactions": [
+    "The listener preserves accept errors for its consumer while limiting retry frequency.",
+    "A successful accept resets the error backoff without delaying the next ordinary accept.",
+    "Consumer closure stops the listener and cancels unfinished handshakes.",
+    "File retention and container log caps prevent unbounded deployment log storage.",
+    "The soak guardian stops work when a node or container log exceeds its budget."
+  ],
+  "success_metrics": [
+    "Error retry delay doubles from 10 ms to a maximum of one second, subject to the documented timer rounding.",
+    "The listener emits at most one accept-error ERROR line per second and a suppressed-count summary after each minute with continuing errors.",
+    "The controlled Linux fault test observes one to six accept errors and less than 1,024 log bytes during 500 ms.",
+    "After descriptor release, the controlled test reaches the new connection's handshake timeout within two seconds without another accept error.",
+    "TASK-020-2 must establish file and directory byte limits.",
+    "TASK-020-3 must verify one sink and container log caps across the required deployments.",
+    "TASK-020-4 must verify the soak guardian's log-growth budgets."
+  ]
+}
+{
+  "id": "US-009",
+  "title": "Bounded node behavior under resource faults",
+  "status": "In Progress",
+  "implemented_in": "EPIC-020",
+  "persona": "node operator",
+  "capability": "bounded retries and log storage",
+  "benefit": "resource faults do not fill deployment disks",
+  "user_flow": "FLOW-002",
+  "acceptance_criteria": [
+    {
+      "text": "TASK-020-1 bounds accept-error retries and log output while preserving error delivery and connection recovery.",
+      "complete": true
+    },
+    {
+      "text": "TASK-020-1 applies no error backoff after a successful accept and releases listener resources when the consumer closes.",
+      "complete": true
+    },
+    {
+      "text": "TASK-020-2 enforces byte limits for each log file and the complete log directory.",
+      "complete": false
+    },
+    {
+      "text": "TASK-020-3 uses one deployment sink and verifies container log caps, including the coordinated system-integration change.",
+      "complete": false
+    },
+    {
+      "text": "TASK-020-4 stops the soak workload when node or container logs exceed their budgets.",
+      "complete": false
+    }
+  ]
+}

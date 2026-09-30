@@ -79,7 +79,8 @@ epic_id: EPIC-020
 title: "Node Log and Accept-Path Self-Limits"
 status: in_progress
 priority: p0
-user_story: null
+user_story: US-009
+user_flow: FLOW-002
 blocked_by: []
 created_at: 2026-09-23
 updated_at: 2026-09-30
@@ -97,7 +98,7 @@ execution_contract:
 tasks:
   - id: TASK-020-1
     title: "Back off and rate-limit the transport accept-error path"
-    status: in_progress
+    status: complete
     claimed_by: claude-session-f3cbc961
     claimed_at: 2026-09-30T00:40:00Z
     verification_claimed_by: 01a0ab62-71b3-7248-a800-37a6fde2e4fa
@@ -105,14 +106,13 @@ tasks:
     verification_status: in_progress
     blocked_by: []
     work_log: docs/work-logs/transport-accept-resource-review-20260923.md
-    implementation_status: "Hosted Test (comm) passed all 400 tests, including all seven resource regressions and the Linux descriptor-exhaustion test. Strict task closure remains blocked on no_flow_link."
+    implementation_status: "Hosted Test (comm) passed all 400 tests, including all seven resource regressions and the Linux descriptor-exhaustion test. The approved story and flow repair now links EPIC-020 to US-009 and FLOW-002."
     hosted_verification: docs/work-logs/evidence/task-020-1-hosted-20260930-01/report.json
     hosted_run: 36651370411
     hosted_job: 109688126217
     unit_tests: [comm/src/rust/transport/f1r3fly_server_resource_tests.rs]
-    completion_blocker: "EPIC-020 has no user_flow field. Strict completion refused with exit 3 without changing task status."
-    remaining:
-      - "Establish the real EPIC-020 user-flow linkage, then repeat strict completion. Do not force or create a placeholder link."
+    completion_blocker: null
+    remaining: []
     files:
       - comm/src/rust/transport/f1r3fly_server.rs
     acceptance:
@@ -124,6 +124,8 @@ tasks:
       - "Step 1. Add a backoff state to the listener task: reset on success, double on error from 10 ms to 1 s."
       - "Step 2. Route accept errors through a rate limiter that logs the first error, suppresses repeats inside the window, and logs a periodic summary with the suppressed count."
       - "Step 3. Add the descriptor-exhaustion test with a lowered RLIMIT_NOFILE in a child process or a socket-pair fixture, and a regression that the current code fails."
+    completion_gaps: []
+    completed_date: 2026-09-30
   - id: TASK-020-2
     title: "Bound the file log by bytes, not only by time"
     status: pending
