@@ -18498,6 +18498,24 @@ establishes finite-support algebra assuming a complete duplicate-free cursor
 walk; the release cursor property binds that assumption to the guarded native
 reader, and the old/new test asserts result equality for every measured shape.
 
+**VALIDATED.** The final focused release run passes 38 Bag semantic tests and
+three allocation tests; the latter's two ignored resource profiles are run
+separately under the registered experiment protocol. The full RSpace release
+nextest run executes 1,211 tests: 1,210 pass, 11 are skipped, and only
+`compressed_navigation_matches_scalar_generated_topology_histories` fails.
+Its panic originates in PathMap 0.2.2 `trie_node.rs:2846` while making an
+empty sentinel unique, reproducing PMU-006 from the pre-Bag full-suite run.
+The [compressed full-run log](../stack-safety/measurements/bag-cursor-algebra-2026-09-30-rspace-release.log.gz)
+has SHA-256
+`1458aba58bdf6a55dad7ecbc03e5dbc518b903590f4e5d2967ee97cd0a96b949`;
+the uncompressed log SHA-256 is
+`f9218a7018e709826d985db00bc7550c65e9a8c2b41cd4a097b92ed09e10a51c`.
+The changed-file pgmcp bug gate passes and reports no open bug anchored to
+`bag.rs`; its log SHA-256 is
+`738be2e4a7b19fae156cd1001e25fbfd4d8905264f8cecf6cb601a5554b79483`.
+The full-suite upstream failure remains a separate unresolved campaign item,
+so the package-level suite is not represented as green.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
