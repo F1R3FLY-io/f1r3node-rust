@@ -8,6 +8,7 @@
 //! Rholang processes represented by a `Par`.
 
 use std::collections::BTreeMap;
+use std::time::Instant;
 
 use models::rhoapi::connective::ConnectiveInstance;
 use models::rhoapi::expr::ExprInstance;
@@ -603,6 +604,49 @@ fn recursive_family_cursor_allocation_growth_is_subquadratic() {
         .is_err(),
         "the allocation-slope classifier must reject a quadratic control"
     );
+}
+
+#[test]
+#[ignore = "isolated geometric resource probe; select one family and depth by environment"]
+fn recursive_family_cursor_resource_probe() {
+    let family_name = std::env::var("RHOLANG_RECURSIVE_CURSOR_FAMILY")
+        .expect("set RHOLANG_RECURSIVE_CURSOR_FAMILY");
+    let family = Family::ALL
+        .into_iter()
+        .find(|family| family.name() == family_name)
+        .expect("select a recursive cursor family");
+    let depth = std::env::var("RHOLANG_RECURSIVE_CURSOR_DEPTH")
+        .expect("set RHOLANG_RECURSIVE_CURSOR_DEPTH")
+        .parse::<usize>()
+        .expect("cursor depth is a nonnegative integer");
+    let (target, pattern) = fixture(family, depth);
+    let input_bytes = protobuf_encoder::encoded_len(&target)
+        .checked_add(protobuf_encoder::encoded_len(&pattern))
+        .expect("encoded input byte length fits usize");
+    let expected_capture = new_gint_par(7, Vec::new(), false);
+
+    for sample in 0..34 {
+        let mut context = SpatialMatcherContext::new();
+        let target = target.clone();
+        let pattern = pattern.clone();
+        let start = Instant::now();
+        let (result, allocations, allocated_bytes) =
+            counting_alloc::measure(|| context.spatial_match(target, pattern));
+        let elapsed_ns = start.elapsed().as_nanos();
+        assert_eq!(result, Some(()));
+        if matches!(family, Family::ConnectiveNot | Family::ConnectiveOr) {
+            assert!(context.free_map.is_empty());
+        } else {
+            assert_eq!(context.free_map.get(&0), Some(&expected_capture));
+        }
+        if sample >= 3 {
+            println!(
+                "CURSOR_RESOURCE\t{}\t{depth}\t{input_bytes}\t{}\t{elapsed_ns}\t{allocations}\t{allocated_bytes}",
+                family.name(),
+                sample - 3
+            );
+        }
+    }
 }
 
 #[test]
