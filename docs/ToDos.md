@@ -261,7 +261,7 @@ branch_completion_plan:
     - "TASK-019-8: final branch cleanup, when the branch content is final."
     - "Then the merge round upward, and TASK-019-6 when the stack merges."
   open_inputs:
-    - "Owner of TASK-019-9, TASK-019-10, the record refresh, and TASK-019-8: claude-session-7015f552 holds the epic claim. A transfer to another session needs the user's decision."
+    - "Owners on 2026-09-30: agent A (claude-session-f3cbc961) has TASK-019-9 and the TASK-019-8 removals. Agent B (the pi session, docs/work-logs/node-observation-agent-b-20260930.md) has the record refresh, the STE fix, the TASK-019-8 inventory, and TASK-019-10. claude-session-7015f552 keeps the epic claim."
     - "File-scope confirmation of Batch D, then of Batch E."
     - "One STE finding from branch 1 in docs/User-Flows.md: a paragraph with 7 sentences."
 tasks:
@@ -823,7 +823,7 @@ tasks:
     status: in_progress
     claimed_by: claude-session-f3cbc961
     claimed_at: 2026-09-30T04:40:00Z
-    assignment: "User decision 2026-09-30: agent A (this session) takes Batch D and then the removals of TASK-019-8. Agent B (claude-session-7015f552) takes the record refresh, the STE fix, the TASK-019-8 inventory, and Batch E after Batch D."
+    assignment: "User decision 2026-09-30: agent A (this session) takes Batch D and then the removals of TASK-019-8. Agent B (the pi session of 2026-09-30, see docs/work-logs/node-observation-agent-b-20260930.md) takes the record refresh, the STE fix, the TASK-019-8 inventory, and Batch E after Batch D."
     work_log: docs/work-logs/task-019-9-paired-fork-choice.md
     recorded_by: claude-session-f3cbc961
     recorded_on: 2026-09-30

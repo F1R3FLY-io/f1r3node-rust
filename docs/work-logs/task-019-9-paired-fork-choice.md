@@ -11,7 +11,7 @@
 
 ## Split with agent B
 
-Agent B (`claude-session-7015f552`) owns the record refresh of the 10 evidence records, the STE fix in `docs/User-Flows.md`, the TASK-019-8 inventory, and Batch E after Batch D. Agent A owns Batch D and then the removals of TASK-019-8.
+Agent B (the pi session of 2026-09-30, [its work log](node-observation-agent-b-20260930.md)) owns the record refresh of the 10 evidence records, the STE fix in `docs/User-Flows.md`, the TASK-019-8 inventory, and Batch E after Batch D. Agent A owns Batch D and then the removals of TASK-019-8.
 
 Rules: one agent edits `docs/ToDos.md` at a time. Each agent stages only its own files. The user makes each commit with `/quick-commit`.
 
