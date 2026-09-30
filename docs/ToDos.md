@@ -152,21 +152,41 @@ tasks:
     completed_date: 2026-09-30
   - id: TASK-020-3
     title: "One sink per deployment and a container log cap check"
-    status: pending
-    claimed_by: null
+    status: in_progress
+    claimed_by: pi-session-01a0ab62-71b3-7248-a800-37a6fde2e4fa
+    claimed_at: 2026-09-30T02:23:57Z
+    claimed_at_source: clock_checkpoint_after_claim
     blocked_by: []
+    work_log: docs/work-logs/task-020-3-deployment-log-caps-20260930.md
+    implementation_status: "The local deployment commands and repository guards pass. The external container caps already exist, but system-integration still selects both sinks. The task remains open."
+    completion_blocker: "Review the external log-reader contract, change the deployment to one sink, and record its verified merge revision."
+    external_handoff: docs/handoffs/task-020-3-system-integration-20260930.md
+    external_main_revision: e3c4e14189f0c6ced2e9674487fcbdeffd93141b
+    external_single_sink_merge_revision: null
+    unit_tests: [scripts/supply-chain/tests/repository.rs, scripts/supply-chain/tests/support/compose_logging.rs, node/tests/log_sink_cli.rs]
     files:
-      - docker/ci-ports.shard.yml
-      - docker/ci-ports.standalone.yml
-      - docker/monitoring.yml
+      - Cargo.lock
+      - scripts/supply-chain/Cargo.toml
       - scripts/supply-chain/tests/repository.rs
+      - scripts/supply-chain/tests/support/compose_logging.rs
+      - scripts/ci/test-compose-log-policy.sh
+      - node/tests/log_sink_cli.rs
+      - docker/shard.yml
+      - docker/standalone.yml
+      - docker/observer.yml
+      - docker/validator4.yml
+      - docker/shard.vps1.yml
+      - docker/shard.vps2.yml
+      - docs/node/README.md
     acceptance:
       - "Every compose service in this repository that runs a node image sets logging.options.max-size and max-file."
       - "A repository test fails when a node compose service lacks the cap, in the same style as the workflow cache-write test."
       - "Deployment defaults use one sink. The sink both is documented as a development setting that doubles disk use."
       - "The system-integration compose file receives the same cap through a coordinated change in that repository, recorded here with its merge revision."
     notes:
-      - "docker/shard.yml, standalone.yml, observer.yml, validator4.yml, shard.vps1.yml, and shard.vps2.yml already cap at 100m."
+      - "The six base Compose files already cap at 100m and three files. The CI port overlays inherit these limits."
+      - "The monitoring Compose file has no blockchain node service. Its storage policy is outside this task."
+      - "The local system-integration checkout is stale. Remote main already caps all eleven node service definitions across five variants. Its conf/rust.conf still selects both sinks."
   - id: TASK-020-4
     title: "Harness enforcement of node log growth under EPIC-017"
     status: pending

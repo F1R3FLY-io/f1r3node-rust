@@ -68,7 +68,10 @@ These controlled tests do not verify complete deployment storage limits, the des
 
 TASK-020-2 adds 100 MiB per-file and 2 GiB directory limits for the file sink.
 [Local verification](work-logs/task-020-2-byte-bounded-logging-20260930.md) passed 781 tests across shared, node, and comm, with zero skips.
-Container log caps, guardian enforcement, and a live deployment exercise remain separate obligations.
+TASK-020-3 now has [local deployment verification](work-logs/task-020-3-deployment-log-caps-20260930.md) for explicit single sinks and configured container caps.
+Current system-integration already has container caps, but its Rust configuration still selects both sinks.
+The [external handoff](handoffs/task-020-3-system-integration-20260930.md) records the required contract review and single-sink change.
+Guardian enforcement and a live deployment exercise remain separate obligations.
 The story remains open until all applicable tasks and deployment checks pass.
 
 ---

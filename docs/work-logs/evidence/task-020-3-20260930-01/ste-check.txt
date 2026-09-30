@@ -1,0 +1,4 @@
+STE Check passed for the new work log, handoff, and changed prose extracts.
+The check covers deterministic prose rules only.
+Human STE review is still necessary.
+The result is not a claim of full ASD-STE100 conformance.

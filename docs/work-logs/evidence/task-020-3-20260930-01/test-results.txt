@@ -1,0 +1,13 @@
+Initial repository regression: exit 101, five passed, two failed.
+Final supply-chain suite: exit 0, 39 passed, zero ignored.
+Node/shared logging selection: exit 0, 33 passed, 352 filtered out.
+Controlled guard refusals: 48, all refused.
+Node CLI misplacement control: refused with UnknownArgument.
+Docker Compose: eight profiles passed, 18 profile-specific node entries.
+Baseline comparison: six profiles preserved all semantics except the root sink argument.
+Direct supply-chain Clippy: exit 0, -D warnings.
+Direct node CLI-test Clippy: exit 0, -D warnings.
+Rustfmt and Bash syntax: exit 0.
+Cargo-deny initial syntax attempt: exit 2.
+Cargo-deny corrected cached-database check: exit 0, advisories/bans/licenses/sources ok, permitted warnings retained.
+No hosted Linux execution or live container run occurred.
