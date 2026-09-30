@@ -182,6 +182,25 @@ The comparison does not compare scores, and the property test asserts `reference
 
 Checks: 80 tests of the observer, estimator, and fork-choice suites passed. `cargo clippy --all-targets -- -D warnings` for `casper` and `node` passed. `rustfmt --check` passed.
 
+## Step 12 on 2026-09-30: capability entry and node tests
+
+The capability list of `node/src/rust/soak_observer.rs` has the new entry `fork_choice`. The entry has the shape of the other entries. It is supported when the controller status is `attached`, and its `reason` is the status. The selection travels inside the authority request, so the support rule of `fork_choice` equals the rule of `authority`. The frame `schema_version` stays 1.
+
+The node tests in `node/tests/soak_observer.rs` changed in 2 places:
+
+- The capability test expects 6 entries and asserts that `fork_choice` carries the `authority` reason (`awaiting_casper` without Casper).
+- A new test sends an authority request with `"fork_choice": {"reference": true}`. The observer admits the request, reports `awaiting_casper`, and binds the request bytes in `request_sha256`. A selection with an unknown field, an empty object, or a string closes the session.
+
+The authority request body of the existing test moved into the helper `authority_request`.
+
+The node test file is Linux-only. The local check ran the file in a `rust:bookworm` container with `cargo test --locked -p node --test soak_observer`. Result: 21 passed, 0 failed, 1 ignored.
+
+### Finding 3: the raw debug test executable fails the observer self-check
+
+`profile.dev` has `debug = true`, so the raw test executable is 571 MB. `Observer::bind` reads `/proc/self/exe` and refuses a file above 512 MB with `ResourceLimit`. The 15 socket tests fail on the raw file.
+
+CI strips the debug information with `objcopy --strip-debug` before the run, as `scripts/ci/check-node-observation-bindings.sh` does. The stripped file is 30 MB and passes. A local Linux run must strip the file in the same way. No code change follows from this finding.
+
 ## Progress
 
 - [x] Claim the task and start the work log.
@@ -194,7 +213,7 @@ Checks: 80 tests of the observer, estimator, and fork-choice suites passed. `car
 - [x] `bounded` evaluation and tests.
 - [x] `reference` evaluation and tests.
 - [x] Comparison, response field, negative controls.
-- [ ] Capability entry and node tests.
+- [x] Capability entry and node tests.
 - [ ] Binding entries and applicability review.
 - [ ] Gate, binding check, test suites, results recorded.
 - [ ] Compact evidence package and the acceptance request.

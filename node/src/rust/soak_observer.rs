@@ -400,6 +400,7 @@ mod linux {
                     let status = self.controller.status();
                     let capabilities: Vec<_> = [
                         "authority",
+                        "fork_choice",
                         "publication",
                         "durable_work",
                         "fault_control",
@@ -407,7 +408,7 @@ mod linux {
                     ]
                     .into_iter()
                     .map(|name| {
-                        if name == "authority" {
+                        if name == "authority" || name == "fork_choice" {
                             json!({"name":name,"supported":status == "attached","reason":status})
                         } else {
                             json!({"name":name,"supported":false,"reason":"not_implemented"})
