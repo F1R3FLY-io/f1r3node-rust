@@ -202,10 +202,8 @@ jobs:
         run: echo "Ephemeral launch approved for this run; proceeding to OCI launch."
 
   # Launch ephemeral OCI VMs that will pick up the integration-tests matrix
-  # jobs. Runs in parallel with build_docker_image so the ~1-minute launch
-  # overhead overlaps with the ~7-minute Docker build. Each VM boots from a
-  # baked image, registers as a GitHub Actions runner with
-  # f1r3fly-rust-ci-ephemeral labels, picks up exactly one matrix job, then
+  # jobs. Each VM boots from a baked image, registers as a GitHub Actions runner
+  # under this run's own run-<id> label, picks up exactly one matrix job, then
   # self-terminates. Lifecycle: see F1R3FLY-io/system-integration ci/oci-runners/.
   #
   # This is the only job that handles secrets. It checks out ONLY the trusted
@@ -217,9 +215,12 @@ jobs:
   # SECURITY: do not remove that `needs:` — it is the only thing sequencing the
   # OCI credentials behind maintainer approval now that the environment is
   # declared one job upstream.
+  # `needs: build_docker_image` costs ~1 minute of overlap and stops a run that
+  # cannot use VMs from creating them: the tenancy rejects ~45% of launches at
+  # its creation throttle, so those six VMs are budget another run needed.
   launch_ephemeral_runners:
     name: Launch Ephemeral Runners
-    needs: await_approval
+    needs: [await_approval, build_docker_image]
     runs-on: ubuntu-latest
     environment: oci-credentials
     # Serializes real OCI VM creation across every heavy run in the repository:
@@ -350,8 +351,15 @@ jobs:
           # daily instance-creation quota is shared tenancy-wide, and the
           # previous 20-VM layout (5 identical slots per arch×provider)
           # exhausted it under normal PR traffic.
+          # run-$GITHUB_RUN_ID replaces the shared pool label so only this run's
+          # jobs match these VMs (#337). The launcher rejects an override that
+          # keeps the shared label, and requires one pool label — run-<id> is it.
+          # Keep these in step with the `runs-on` matrices below.
           pids=()
-          for _ in $(seq 1 4); do ./launch-runner.sh amd64 & pids+=($!); done
+          for _ in $(seq 1 4); do
+            RUNNER_LABELS="self-hosted,linux,x64,oracle-cloud,run-$GITHUB_RUN_ID" \
+              ./launch-runner.sh amd64 & pids+=($!)
+          done
           # arm64 runs its two legs SEQUENTIALLY (subprocess queues after
           # docker), so the runner serving the second leg idles longer than
           # the cloud-init idle watchdog's 2700s default — run 33208755550
@@ -360,7 +368,11 @@ jobs:
           # the observed docker-leg duration with margin. The launcher knob
           # exists from system-integration pin <pending 2026-08-28 repin>;
           # older launchers ignore the variable, so this is safe either way.
-          for _ in $(seq 1 2); do RUNNER_IDLE_TIMEOUT_SECS=7200 ./launch-runner.sh arm64 & pids+=($!); done
+          for _ in $(seq 1 2); do
+            RUNNER_IDLE_TIMEOUT_SECS=7200 \
+              RUNNER_LABELS="self-hosted,linux,arm64,oracle-cloud,run-$GITHUB_RUN_ID" \
+              ./launch-runner.sh arm64 & pids+=($!)
+          done
           failed=0
           for pid in "${pids[@]}"; do
             if ! wait "$pid"; then
@@ -408,8 +420,8 @@ jobs:
                   self-hosted,
                   linux,
                   x64,
-                  f1r3fly-rust-ci-ephemeral,
                   oracle-cloud,
+                  "run-${{ github.run_id }}",
                 ],
             }
           - {
@@ -420,8 +432,8 @@ jobs:
                   self-hosted,
                   linux,
                   x64,
-                  f1r3fly-rust-ci-ephemeral,
                   oracle-cloud,
+                  "run-${{ github.run_id }}",
                 ],
             }
           - {
@@ -432,8 +444,8 @@ jobs:
                   self-hosted,
                   linux,
                   arm64,
-                  f1r3fly-rust-ci-ephemeral,
                   oracle-cloud,
+                  "run-${{ github.run_id }}",
                 ],
             }
           - {
@@ -444,8 +456,8 @@ jobs:
                   self-hosted,
                   linux,
                   arm64,
-                  f1r3fly-rust-ci-ephemeral,
                   oracle-cloud,
+                  "run-${{ github.run_id }}",
                 ],
             }
     steps:
@@ -580,8 +592,8 @@ jobs:
                   self-hosted,
                   linux,
                   x64,
-                  f1r3fly-rust-ci-ephemeral,
                   oracle-cloud,
+                  "run-${{ github.run_id }}",
                 ],
             }
           - {
@@ -592,8 +604,8 @@ jobs:
                   self-hosted,
                   linux,
                   x64,
-                  f1r3fly-rust-ci-ephemeral,
                   oracle-cloud,
+                  "run-${{ github.run_id }}",
                 ],
             }
     steps:
@@ -665,6 +677,126 @@ jobs:
           name: ucc-logs-${{ matrix.arch }}-${{ matrix.provider }}-run${{ github.run_id }}-attempt${{ github.run_attempt }}
           path: system-integration/integration-tests/
           retention-days: 7
+
+  # Terminates VMs whose job never arrived — cancelled run, early failure,
+  # over-provision — instead of leaving them to the watchdog (2700s, 7200s on
+  # arm64) or the reaper, whose cron is throttled to ~5h spacing here.
+  # `always()` runs on cancellation too, which is the case that strands VMs.
+  # A runner's name equals its instance display name, so this run's runners name
+  # this run's VMs; one that never registered is still the reaper's job.
+  reclaim_ephemeral_runners:
+    name: Reclaim Ephemeral Runners
+    needs: [launch_ephemeral_runners, integration_tests, ucc_tests]
+    if: always() && needs.launch_ephemeral_runners.result != 'skipped'
+    runs-on: ubuntu-latest
+    environment: oci-credentials
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    steps:
+      - name: Clone system-integration
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          repository: F1R3FLY-io/system-integration
+          ref: ${{ env.SYSTEM_INTEGRATION_REF }}
+          path: system-integration
+          persist-credentials: false
+
+      - name: Install OCI CLI (pinned, checksum-verified)
+        shell: bash -ex {0}
+        run: |
+          curl -fsSL --retry 5 --retry-delay 10 "$OCI_CLI_INSTALLER_URL" -o /tmp/oci-install.sh
+          echo "$OCI_CLI_INSTALLER_SHA256  /tmp/oci-install.sh" | sha256sum -c -
+          bash /tmp/oci-install.sh \
+            --accept-all-defaults --install-dir /opt/oci-cli --exec-dir /usr/local/bin \
+            --oci-cli-version "$OCI_CLI_VERSION" \
+            --verify-checksum "$OCI_CLI_INSTALLER_PY_SHA256"
+          oci --version
+
+      - name: Configure OCI auth from secrets
+        shell: bash -e {0} # no -x: never trace the multi-line private key
+        env:
+          OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+          OCI_REGION: ${{ secrets.OCI_REGION }}
+          OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
+        run: |
+          mkdir -p ~/.oci
+          printf '%s\n' "$OCI_PRIVATE_KEY" > ~/.oci/oci_api_key.pem
+          chmod 600 ~/.oci/oci_api_key.pem
+          cat > ~/.oci/config <<EOF
+          [DEFAULT]
+          user=$OCI_USER_OCID
+          fingerprint=$OCI_FINGERPRINT
+          tenancy=$OCI_TENANCY_OCID
+          region=$OCI_REGION
+          key_file=$HOME/.oci/oci_api_key.pem
+          EOF
+          chmod 600 ~/.oci/config
+          oci iam region list >/dev/null && echo "OCI auth OK"
+
+      - name: Create runner-management token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.CI_GITHUB_APP_ID }}
+          private-key: ${{ secrets.CI_GITHUB_APP_PRIVATE_KEY }}
+          permission-administration: write
+
+      - name: Terminate this run's remaining VMs
+        shell: bash -e {0}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          . system-integration/ci/oci-runners/state.env
+
+          runners="$(gh api "repos/$GH_REPO/actions/runners" --paginate \
+            --jq ".runners[] | select(any(.labels[]; .name == \"run-$GITHUB_RUN_ID\")) | \"\(.id)\t\(.name)\t\(.busy)\"")"
+
+          if [ -z "$runners" ]; then
+            echo "No runners remain registered for run $GITHUB_RUN_ID; the VMs already self-terminated."
+            exit 0
+          fi
+
+          failures=0
+          while IFS=$'\t' read -r id name busy; do
+            [ -n "$name" ] || continue
+            echo "=== $name (runner $id, busy=$busy)"
+
+            ocid="$(oci compute instance list -c "$COMP" --region "$REGION" --all \
+              --query "data[?\"display-name\"=='$name' && \"lifecycle-state\"!='TERMINATED'].id | [0]" \
+              --raw-output 2>/dev/null || true)"
+
+            if [ -n "$ocid" ] && [ "$ocid" != "null" ]; then
+              if oci compute instance terminate --instance-id "$ocid" --force --region "$REGION"; then
+                echo "  terminated $ocid"
+              else
+                echo "  ::warning::could not terminate $ocid"
+                failures=$((failures + 1))
+              fi
+            else
+              echo "  no live instance; already gone"
+            fi
+
+            if gh api -X DELETE "repos/$GH_REPO/actions/runners/$id" >/dev/null 2>&1; then
+              echo "  deregistered runner $id"
+            else
+              # A runner mid-job refuses deletion; the reaper sweeps the entry later.
+              echo "  ::warning::could not deregister runner $id (busy=$busy)"
+              failures=$((failures + 1))
+            fi
+          done <<< "$runners"
+
+          echo "reclaim finished with $failures problem(s)"
+
+      - name: Remove OCI credentials
+        if: always()
+        shell: bash -e {0}
+        run: |
+          shred -fu ~/.oci/oci_api_key.pem 2>/dev/null || true
+          rm -rf ~/.oci
 
   # Smoke test: single-node docker-compose standalone deployment.
   smoke_docker_standalone:

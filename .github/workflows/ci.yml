@@ -24,14 +24,19 @@ on:
       - trying
     tags:
       - "**"
+  # `labeled` carries the ci-heavy opt-in. `edited` is gone: a title edit cost a
+  # heavy pipeline and changed nothing a test can observe.
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, edited]
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
+  merge_group:
 
 # GitHub keeps one running item and one pending item in each concurrency group.
 # Issue #267 showed that one shared push group can discard a pending test run.
 # A push key includes its ref and SHA. Thus, a branch and tag at one SHA stay
 # separate.
 # A newer PR head cancels only the obsolete run for that PR.
+# A merge group is never cancelled: the queue reads a cancelled check as failure
+# and ejects the group's pull requests.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && inputs.target_sha != '' && format('exact-{0}', inputs.target_sha) || (github.event_name == 'push' && format('{0}-{1}', github.ref, github.sha) || github.ref) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.target_sha != '') }}
@@ -80,6 +85,7 @@ jobs:
           PR_BASE_REF: ${{ github.base_ref }}
           PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
           PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_HAS_HEAVY_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'ci-heavy') }}
         shell: bash -euo pipefail {0}
         run: |
           target="$REQUESTED_TARGET_SHA"
@@ -123,8 +129,14 @@ jobs:
               exit 1
             }
           fi
+          # Heavy (OCI) runs for: merge_group, dev/master/tag push, dispatch
+          # naming a top PR, or a PR labelled ci-heavy. A plain PR push runs the
+          # GitHub-hosted checks only and reaches the heavy pipeline through the
+          # queue, so a green Integration context on a PR means "not run here".
           run_heavy=false
-          if [ "$EVENT_NAME" = workflow_dispatch ] && [ "$top" -gt 0 ]; then
+          if [ "$EVENT_NAME" = merge_group ]; then
+            run_heavy=true
+          elif [ "$EVENT_NAME" = workflow_dispatch ] && [ "$top" -gt 0 ]; then
             run_heavy=true
           elif [ "$EVENT_NAME" = push ] && {
             [ "$EVENT_REF" = refs/heads/dev ] ||
@@ -133,6 +145,7 @@ jobs:
           }; then
             run_heavy=true
           elif [ "$EVENT_NAME" = pull_request ] \
+            && [ "$PR_HAS_HEAVY_LABEL" = true ] \
             && [ "$PR_HEAD_REPOSITORY" = "$GITHUB_REPOSITORY" ] \
             && { [ "$PR_BASE_REF" = dev ] || [ "$PR_BASE_REF" = master ]; } \
             && [ "$PR_HEAD_REF" != dev ] && [ "$PR_HEAD_REF" != master ]; then
@@ -816,9 +829,11 @@ jobs:
     needs: [build_base, lint]
     # A newer branch or PR head replaces obsolete heavy work. Version tags use
     # separate groups and run to completion. OCI launch remains globally locked.
+    # A merge group is never cancelled: the queue reads a cancelled required
+    # check as a failure and ejects every pull request in the group.
     concurrency:
       group: ci-heavy-${{ github.event_name == 'workflow_dispatch' && inputs.target_sha != '' && format('exact-{0}', inputs.target_sha) || (github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.ref) }}
-      cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+      cancel-in-progress: ${{ github.event_name != 'merge_group' && !startsWith(github.ref, 'refs/tags/') }}
     if: needs.build_base.outputs.RUN_HEAVY == 'true'
     # `secrets: inherit` is required here, not incidental. A called workflow's
     # jobs do not receive `secrets.*` merely by naming an environment — the
@@ -843,13 +858,21 @@ jobs:
   integration_tests_amd64:
     name: Integration Tests (amd64)
     needs: pipeline
-    if: always() && needs.pipeline.result != 'skipped'
+    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       actions: read
     steps:
+      - name: Report deferred coverage
+        if: needs.pipeline.result == 'skipped'
+        shell: bash -e {0}
+        run: |
+          echo "Heavy integration coverage is deferred to the merge queue."
+          echo "Add the ci-heavy label to run it on this pull request now."
+
       - name: Check amd64 matrix slots
+        if: needs.pipeline.result != 'skipped'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash -e {0}
@@ -875,13 +898,21 @@ jobs:
   integration_tests_arm64:
     name: Integration Tests (arm64)
     needs: pipeline
-    if: always() && needs.pipeline.result != 'skipped'
+    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       actions: read
     steps:
+      - name: Report deferred coverage
+        if: needs.pipeline.result == 'skipped'
+        shell: bash -e {0}
+        run: |
+          echo "Heavy integration coverage is deferred to the merge queue."
+          echo "Add the ci-heavy label to run it on this pull request now."
+
       - name: Check arm64 matrix slots
+        if: needs.pipeline.result != 'skipped'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash -e {0}
