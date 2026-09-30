@@ -1,31 +1,9 @@
 #!/usr/bin/env bash
-# scripts/check-cost-accounted-rho-tla-invariants.sh
-#
-# Local-only TLA+ invariant runner for the cost_accounted_rho specs.
-# Per team policy (memory `feedback_formal_verification_is_local_only_not_ci`),
-# formal verification stays local — this script is NOT a CI step.
-#
-# Runs TLC against every .cfg under formal/tlaplus/cost_accounted_rho/
-# whose paired .tla module exists. Every TLC run goes through the shared
-# scripts/lib/tlc-run.sh launcher, which enforces a strict memory envelope
-# (on-disk metadir — NOT tmpfs; bounded -Xmx heap; bounded workers; and a
-# hard systemd-run MemoryMax / MemorySwapMax=0 ceiling) so a single large
-# model can't exhaust RAM. Tune via TLC_HEAP / TLC_WORKERS / TLC_RSS /
-# TLC_METADIR_ROOT (see the helper header).
-#
-# Each run is reported as PASS / FAIL based on the TLC output. Exit
-# code 0 iff every spec reports "Model checking completed. No error
-# has been found".
-#
-# Usage:
-#   bash scripts/check-cost-accounted-rho-tla-invariants.sh
-#   bash scripts/check-cost-accounted-rho-tla-invariants.sh --filter MC
-
 set -euo pipefail
 
 # Advisory by default per Greg's compile-time-shapes design: external-proof
 # certificates (Rocq/Lean/TLA+) are NOT a required gate. Set CA_ENFORCE_PROOFS=1
-# to run the full strict TLA+ invariant gate (preserved verbatim below).
+# to run the full strict TLA+ invariant gate.
 if [ "${CA_ENFORCE_PROOFS:-0}" != "1" ]; then
   echo "cost-accounted-rho TLA+ invariant gate: ADVISORY (relaxed; external-proof certificates not required). CA_ENFORCE_PROOFS=1 to run the full gate."
   exit 0
@@ -35,11 +13,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TLA_DIR="$REPO_ROOT/formal/tlaplus/cost_accounted_rho"
 
-FILTER="${1:-}"
-if [[ "$FILTER" == "--filter" ]]; then
-    shift
-    FILTER="${1:-}"
-    shift || true
+FILTER=""
+if [[ $# -gt 0 ]]; then
+    if [[ $# -ne 2 || "$1" != "--filter" || -z "$2" ]]; then
+        echo "ERROR: usage: $0 [--filter SUBSTRING]" >&2
+        exit 2
+    fi
+    FILTER="$2"
 fi
 
 if [[ ! -d "$TLA_DIR" ]]; then
@@ -47,15 +27,14 @@ if [[ ! -d "$TLA_DIR" ]]; then
     exit 2
 fi
 
-if ! command -v tlc >/dev/null 2>&1; then
-    echo "ERROR: tlc binary not on PATH; install tlaplus tooling" >&2
-    exit 2
-fi
-
 # Shared memory-bounded TLC launcher: on-disk metadir, capped -Xmx heap,
 # capped workers, hard systemd MemoryMax ceiling. See scripts/lib/tlc-run.sh.
 export TLC_REPO_ROOT="$REPO_ROOT"
 source "$REPO_ROOT/scripts/lib/tlc-run.sh"
+if [[ ! -f "$TLC_JAR" ]] && ! command -v tlc >/dev/null 2>&1; then
+    echo "ERROR: neither TLC jar nor tlc binary is available" >&2
+    exit 2
+fi
 
 cd "$TLA_DIR"
 
@@ -79,35 +58,41 @@ WRAPPED_BY[EvalStrictAbsent]=MCEvalStrictAbsent
 WRAPPED_BY[FullProtocol]=MCFull
 WRAPPED_BY[MergeableChannelAccounting]=MCMergeableChannelAccounting
 WRAPPED_BY[RuntimeBudgetReplay]=MCRuntimeBudgetReplay
-# MAJOR-5: the token-gated-join sequential-fuel griefing / atomicity obligation.
-# TokenGatedJoin.cfg is the NATIVE-model safety suite (must HOLD). The companion
-# TokenGatedJoinM2Grief.cfg is an EXPECTED-REFUTATION run (it confirms the griefing
-# vector for the TRANSPILER runtime-gate model by producing a counterexample), so
-# it is deliberately NOT registered here — a counterexample is its intended result,
-# not a pass. Run it explicitly: tlc -config TokenGatedJoinM2Grief.cfg MCTokenGatedJoin.tla
 WRAPPED_BY[TokenGatedJoin]=MCTokenGatedJoin
+WRAPPED_BY[TokenGatedJoinM2Grief]=MCTokenGatedJoin
+WRAPPED_BY[EvalNoLockNeg]=MCEvalNoLockNeg
 
-# Collect all .cfg files whose paired .tla module exists.
 specs=()
 spec_roots=()
 for cfg in *.cfg; do
     [[ -e "$cfg" ]] || continue
     base="${cfg%.cfg}"
     if [[ -z "$FILTER" || "$base" == *"$FILTER"* ]]; then
-        if [[ "$base" != MC* ]] && [[ -n "${WRAPPED_BY[$base]:-}" ]]; then
+        if [[ -n "${WRAPPED_BY[$base]:-}" ]]; then
             wrapper="${WRAPPED_BY[$base]}"
-            if [[ -f "${wrapper}.tla" ]]; then
-                specs+=("$base")
-                spec_roots+=("${wrapper}.tla")
+            if [[ ! -f "${wrapper}.tla" ]]; then
+                echo "ERROR: no wrapper module ${wrapper}.tla for $cfg" >&2
+                exit 2
             fi
+            specs+=("$base")
+            spec_roots+=("${wrapper}.tla")
         elif [[ -f "${base}.tla" ]]; then
             specs+=("$base")
             spec_roots+=("${base}.tla")
+        else
+            echo "ERROR: no module or classified wrapper for $cfg" >&2
+            exit 2
         fi
     fi
 done
 
-if [[ ${#specs[@]} -eq 0 ]]; then
+validator_selected=0
+if [[ -z "$FILTER" || "Validator" == *"$FILTER"* ]]; then
+    validator_selected=1
+fi
+
+if [[ ${#specs[@]} -eq 0 ]] \
+   && { [[ -z "$FILTER" ]] || [[ $validator_selected -eq 0 ]]; }; then
     echo "No matching specs found" >&2
     exit 2
 fi
@@ -128,26 +113,48 @@ METADIR_ROOT="$TLC_METADIR_ROOT/cost-accounted-gate"
 rm -rf "$METADIR_ROOT"
 mkdir -p "$METADIR_ROOT"
 trap 'rm -rf "$METADIR_ROOT"' EXIT
+log_dir="$REPO_ROOT/target/verification/cost-accounted-rho-tla"
+mkdir -p "$log_dir"
 
 for i in "${!specs[@]}"; do
     base="${specs[$i]}"
     spec_root="${spec_roots[$i]}"
     printf "  %-40s " "${base} (${spec_root%.tla})"
     metadir="$METADIR_ROOT/$base"
-    output=$(tlc_run "$metadir" "${base}.cfg" "$spec_root" -deadlock 2>&1 || true)
-    if echo "$output" | grep -q "Model checking completed. No error has been found"; then
+    log_file="$log_dir/$base.log"
+    if tlc_run "$metadir" "${base}.cfg" "$spec_root" -deadlock >"$log_file" 2>&1; then
+        rc=0
+    else
+        rc=$?
+    fi
+    if [[ "$base" == TokenGatedJoinM2Grief ]] \
+       && [[ $rc -eq 12 ]] \
+       && grep -Fxq 'Error: Invariant Inv_M2_NoGrieferDrainOfVictim is violated.' "$log_file"; then
+        echo "PASS (expected refutation)"
+        passes=$((passes + 1))
+    elif [[ "$base" == EvalNoLockNeg ]] \
+         && [[ $rc -eq 13 ]] \
+         && [[ "$(awk '$1 == "PROPERTY" {n++; property=$2} END {if (n == 1) print property}' "${base}.cfg")" == DisjointPoolsAdmitConcurrentlyNoGlobalLock ]] \
+         && grep -Fxq 'Error: Temporal properties were violated.' "$log_file" \
+         && grep -Fxq 'Error: The following behavior constitutes a counter-example:' "$log_file"; then
+        echo "PASS (expected refutation)"
+        passes=$((passes + 1))
+    elif [[ "$base" != TokenGatedJoinM2Grief && "$base" != EvalNoLockNeg ]] \
+         && [[ $rc -eq 0 ]] \
+         && grep -Fq 'Model checking completed. No error has been found.' "$log_file" \
+         && ! grep -Fq 'Error:' "$log_file"; then
         echo "PASS"
         passes=$((passes + 1))
-    elif echo "$output" | grep -q "Error:"; then
+    elif grep -Fq 'Error:' "$log_file"; then
         echo "FAIL"
         failures=$((failures + 1))
         failed_specs+=("$base")
-        echo "$output" | tail -10 | sed 's/^/    /'
+        tail -10 "$log_file" | sed 's/^/    /'
     else
         echo "INCONCLUSIVE"
         failures=$((failures + 1))
         failed_specs+=("$base")
-        echo "$output" | tail -5 | sed 's/^/    /'
+        tail -5 "$log_file" | sed 's/^/    /'
     fi
 done
 
@@ -158,37 +165,49 @@ done
 # Validator.tla. The state-machine obligations stay TLC-checked above
 # (RuntimeBudgetReplay). Local-only, like the rest of this script.
 VALIDATOR_TLA_DIR="$REPO_ROOT/formal/tlaplus/validator"
-if [[ -z "$FILTER" || "Validator" == *"$FILTER"* ]] \
-   && [[ -f "$VALIDATOR_TLA_DIR/Validator.tla" ]]; then
+if [[ $validator_selected -eq 1 && -f "$VALIDATOR_TLA_DIR/Validator.tla" ]]; then
     printf "  %-40s " "Validator (TLAPS contract proofs)"
     # TLAPS and its zenon backend install under ~/.local; make them findable
     # without disturbing the TLC PATH used above (scoped to this subshell).
     VALIDATOR_PATH="$HOME/.local/tlaps/bin:$HOME/.local/bin:/usr/bin:$PATH"
     if PATH="$VALIDATOR_PATH" command -v tlapm >/dev/null 2>&1; then
         # Run TLAPS from the validator dir so its .tlacache lands locally.
-        tlaps_out=$( cd "$VALIDATOR_TLA_DIR" \
-            && PATH="$VALIDATOR_PATH" tlapm Validator.tla 2>&1 || true )
+        if ( cd "$VALIDATOR_TLA_DIR" \
+            && PATH="$VALIDATOR_PATH" tlapm Validator.tla ) >"$log_dir/Validator.log" 2>&1; then
+            tlaps_rc=0
+        else
+            tlaps_rc=$?
+        fi
         # tlapm prints one "All N obligations proved." per module root; the
         # imported TLAPS.tla reports "All 0 obligation proved", so success is
         # a non-zero-obligation "All N obligations proved." for Validator.tla
         # with no "failed"/"omitted" anywhere.
-        if echo "$tlaps_out" | grep -Eq "All [1-9][0-9]* obligations? proved\." \
-           && ! echo "$tlaps_out" | grep -Eiq "obligation.*(failed|omitted)|[1-9][0-9]* (failed|omitted)"; then
+        if [[ $tlaps_rc -eq 0 ]] \
+           && grep -Eq "All [1-9][0-9]* obligations? proved\." "$log_dir/Validator.log" \
+           && ! grep -Eiq "obligation.*(failed|omitted)|[1-9][0-9]* (failed|omitted)" "$log_dir/Validator.log"; then
             echo "PASS"
             passes=$((passes + 1))
         else
             echo "FAIL"
             failures=$((failures + 1))
             failed_specs+=("Validator(TLAPS)")
-            echo "$tlaps_out" | tail -10 | sed 's/^/    /'
+            tail -10 "$log_dir/Validator.log" | sed 's/^/    /'
         fi
     else
-        echo "SKIP (tlapm not on PATH)"
+        echo "FAIL (tlapm not on PATH)"
+        printf '%s\n' 'tlapm not on PATH' >"$log_dir/Validator.log"
+        failures=$((failures + 1))
+        failed_specs+=("Validator(TLAPS)")
     fi
+elif [[ $validator_selected -eq 1 ]]; then
+    echo "  Validator (TLAPS contract proofs)        FAIL (model absent)"
+    printf '%s\n' 'Validator.tla model absent' >"$log_dir/Validator.log"
+    failures=$((failures + 1))
+    failed_specs+=("Validator(TLAPS)")
 fi
 
 echo
-echo "Summary: $passes passed, $failures failed (total $((${#specs[@]} + 1)))"
+echo "Summary: $passes passed, $failures failed (total $((passes + failures)))"
 if [[ $failures -gt 0 ]]; then
     echo "Failed specs:"
     printf '  - %s\n' "${failed_specs[@]}"

@@ -22,11 +22,6 @@
 (* that the property has TEETH: when the disjoint pool is NOT funded, the      *)
 (* concurrent-admission liveness DOES fail, so the green result on the funded  *)
 (* MCEval instance is meaningful.                                              *)
-(*                                                                          *)
-(* This wrapper is DELIBERATELY NOT registered in                             *)
-(* scripts/check-cost-accounted-rho-tla-invariants.sh's WRAPPED_BY map — a    *)
-(* counterexample is its intended result, not a pass. Run it explicitly:      *)
-(*   tlc -deadlock -config EvalNoLockNeg.cfg MCEvalNoLockNeg.tla               *)
 (****************************************************************************)
 
 EXTENDS EvalScheduling, TLC

@@ -140,20 +140,28 @@ done
 
 ### Aggregate runner (local-only)
 
-The companion script `scripts/check-cost-accounted-rho-tla-invariants.sh`
-runs ALL of the above (currently 24 specs) sequentially through TLC.
-Per the team's "formal verification is local-only, NOT in CI" policy
-this script does NOT live under `scripts/ci/`. Invoke directly from
-the repo root:
+The companion script `scripts/check-cost-accounted-rho-tla-invariants.sh` runs
+every configuration in this directory through a bounded TLC launcher and checks
+the validator contract with TLAPS. It is advisory by default. Set
+`CA_ENFORCE_PROOFS=1` for the strict local verification run; this is not a CI
+step. Invoke it from the repo root:
 
 ```bash
-bash scripts/check-cost-accounted-rho-tla-invariants.sh
-# Or filter:
-bash scripts/check-cost-accounted-rho-tla-invariants.sh --filter MC
-bash scripts/check-cost-accounted-rho-tla-invariants.sh --filter RuntimeBudget
+CA_ENFORCE_PROOFS=1 bash scripts/check-cost-accounted-rho-tla-invariants.sh
+CA_ENFORCE_PROOFS=1 bash scripts/check-cost-accounted-rho-tla-invariants.sh --filter TokenGatedJoin
 ```
 
-All specs should report: `Model checking completed. No error has been found.`
+The safe configurations must complete with `Model checking completed. No error
+has been found.` Two negative controls must instead produce their exact
+counterexamples: `TokenGatedJoinM2Grief.cfg` violates
+`Inv_M2_NoGrieferDrainOfVictim`, showing that a transpiler runtime gate can
+debit the victim pool before the join fires; `EvalNoLockNeg.cfg` refutes its
+single `DisjointPoolsAdmitConcurrentlyNoGlobalLock` temporal property when one
+pool is unfunded. The runner requires TLC's corresponding nonzero exit code and
+diagnostic for each control. A missing model, unclassified configuration,
+unexpected refutation, failed safe model, or incomplete TLAPS proof fails the
+run. Full per-model output is retained under
+`target/verification/cost-accounted-rho-tla/`.
 
 When Apalache is installed, the threat and search-frontier models can also
 be checked symbolically:
