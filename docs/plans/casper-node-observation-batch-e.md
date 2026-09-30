@@ -8,6 +8,9 @@ approval_checkpoint: 06f0d3e8cf85f7072769960cde3746dc0830a68f
 reviewed_checkpoint: 030384f5f31613c64552f7d5b517ef1fe2552d11
 task: TASK-019-10
 blocked_by: TASK-019-9
+handoff_milestone: TASK-019-9_step_13
+handoff_received: false
+requires_batch_d_task_completion: false
 main_files: 39
 ledger_records: 31
 run_files: 2
@@ -25,12 +28,15 @@ implementation_started: false
 The user approved the 72-file scope and the documented recommendations on 2026-09-30.
 The approval includes all sixteen decisions, the complete shared arithmetic, five mandatory tags, and the 4,096-row ceiling.
 Batch D is at step 8 of 16 at the approval checkpoint.
-Batch E implementation remains blocked until the completed Batch D handoff and the final shared-source check.
+
+Agent A will hand over the final Batch D files after step 13.
+Batch E implementation remains blocked until that explicit handoff and the final shared-source check.
+The file handoff does not establish completion, verification, or acceptance of the Batch D task.
 An additional implementation path requires a scope amendment.
 
 The review used checkpoint `030384f5f31613c64552f7d5b517ef1fe2552d11`.
 Agent A changed three shared observer files during that review.
-The final implementation baseline will use the completed Batch D revision, not the earlier review hashes.
+The implementation baseline will use the step-13 handoff revision, not the earlier review hashes.
 No claim, tag, or ledger registration occurred through this plan promotion.
 
 ## Approved design
@@ -154,7 +160,7 @@ That difference must remain visible rather than changing the old persisted resul
 
 The current node model manifest contains 25 entries after Batch D's model registration.
 The proposed display model adds four entries.
-Derive final gate counts from the completed Batch D manifest rather than the older 19-entry baseline.
+Derive final gate counts from the step-13 handoff manifest rather than the older 19-entry baseline.
 
 The existing binding driver runs node tests and omits several Batch E Rust and proof inputs from its hash list.
 Do not treat that job as complete Batch E test or source coverage.
@@ -282,8 +288,28 @@ No package was created.
 
 ## Handoff gate
 
+Agent A specified the file handoff after step 13 on 2026-09-30.
+The handoff must identify the revision and final state of these shared files:
+
+- `casper/src/rust/soak_observer.rs`
+- `casper/src/rust/soak_observer/evaluation.rs`
+- `casper/tests/soak_observer.rs`
+- `node/tests/soak_observer.rs`
+
+The handoff also identifies the post-Batch-D record refresh scope and the exact nextest filters.
+The record inventory must distinguish Batch D obligations from the approved Batch E records.
+Additional implementation paths require a scope amendment.
+
+`CasperShardConf::new()` has a parent limit of zero.
+Tests must select their intended limit explicitly rather than fabricate a selected head.
+Run rustfmt before requesting each commit.
+Commits still require separate authorization.
+
+The remaining Batch D evidence and acceptance work stays separate from this file-ownership transfer.
+Source-specific verification must bind the pinned Batch D revision rather than a later mutable Batch E tree.
+
 1. Retain the confirmed file list, all decisions, and the five ratified tags.
-2. Obtain the completed Batch D handoff.
+2. Obtain Agent A's explicit final-file handoff after Batch D step 13.
 3. Recheck shared source hashes, the metered functions, the response fields, and the formal inventories.
 4. Amend this scope if that check identifies an additional path.
 5. Claim the task with the user-assigned Agent B identity.

@@ -86,6 +86,79 @@ pub struct ForkChoiceObservation {
     pub comparison: Value<ForkChoiceComparison>,
 }
 
+#[doc(hidden)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReferenceControl {
+    None,
+    RankTipsByOwnScore,
+    CreditAllParents,
+    ReverseTieOrder,
+    KeepInvalidMessages,
+    KeepForeignMessages,
+    BoundAt(BlockHash),
+}
+
+pub fn validate_result(result: &ForkChoiceResult) -> Result<(), String> {
+    if result.tips.is_empty() || result.tips.len() > MAX_REPORTED_TIPS {
+        return Err("schema:tip_count".to_string());
+    }
+    if result.tips[0] != result.head {
+        return Err("schema:head_not_first_tip".to_string());
+    }
+    if result.tip_scores.len() != result.tips.len() {
+        return Err("schema:score_count".to_string());
+    }
+    if result.head == result.lower_bound.hash && result.tips.len() != 1 {
+        return Err("schema:head_is_lower_bound".to_string());
+    }
+    Ok(())
+}
+
+pub fn compare(
+    bounded: &Value<ForkChoiceResult>,
+    reference: &Value<ForkChoiceResult>,
+) -> Value<ForkChoiceComparison> {
+    match (bounded, reference) {
+        (
+            Value::Available {
+                input_digest: left,
+                value: bounded,
+            },
+            Value::Available {
+                input_digest: right,
+                value: reference,
+            },
+        ) => {
+            if left != right {
+                return Value::Unavailable {
+                    input_digest: Some(left.clone()),
+                    reason: "input_digest_mismatch".to_string(),
+                };
+            }
+            Value::Available {
+                input_digest: left.clone(),
+                value: ForkChoiceComparison {
+                    algorithm: COMPARISON_ALGORITHM,
+                    head_matches: bounded.head == reference.head,
+                    tips_match: bounded.tips == reference.tips,
+                    bounds_differ: bounded.lower_bound.hash != reference.lower_bound.hash,
+                },
+            }
+        }
+        (Value::NotRequested, _) | (_, Value::NotRequested) => Value::NotRequested,
+        (Value::Available { input_digest, .. }, _) => Value::Unavailable {
+            input_digest: Some(input_digest.clone()),
+            reason: "result_unavailable".to_string(),
+        },
+        (Value::Unavailable { input_digest, .. } | Value::Failed { input_digest, .. }, _) => {
+            Value::Unavailable {
+                input_digest: input_digest.clone(),
+                reason: "result_unavailable".to_string(),
+            }
+        }
+    }
+}
+
 pub struct ReferenceForkChoice<'a> {
     snapshot: &'a DetachedDagSnapshot,
     meter: &'a CheckedWork,
@@ -93,6 +166,7 @@ pub struct ReferenceForkChoice<'a> {
     authority: &'a AuthorityInputs,
     visited: HashSet<BlockHash>,
     examined_edges: u64,
+    control: ReferenceControl,
 }
 
 struct Ranked {
@@ -115,7 +189,30 @@ impl<'a> ReferenceForkChoice<'a> {
             authority,
             visited: HashSet::new(),
             examined_edges: 0,
+            control: ReferenceControl::None,
         }
+    }
+
+    #[doc(hidden)]
+    pub fn with_control(mut self, control: ReferenceControl) -> Self {
+        self.control = control;
+        self
+    }
+
+    fn order(
+        &self,
+        scores: &HashMap<BlockHash, i64>,
+        a: &BlockHash,
+        b: &BlockHash,
+    ) -> std::cmp::Ordering {
+        let score_a = scores.get(a).copied().unwrap_or(0);
+        let score_b = scores.get(b).copied().unwrap_or(0);
+        let tie = if self.control == ReferenceControl::ReverseTieOrder {
+            b.cmp(a)
+        } else {
+            a.cmp(b)
+        };
+        score_b.cmp(&score_a).then(tie)
     }
 
     fn metadata(&mut self, hash: &BlockHash) -> Result<&'a BlockMetadata, String> {
@@ -161,11 +258,15 @@ impl<'a> ReferenceForkChoice<'a> {
             self.visited.insert(hash.clone());
             if block.metadata.invalid || self.snapshot.invalid_blocks.contains_key(hash) {
                 counts.invalid += 1;
-                continue;
+                if self.control != ReferenceControl::KeepInvalidMessages {
+                    continue;
+                }
             }
             if block.metadata.sender != *validator {
                 counts.not_own_testimony += 1;
-                continue;
+                if self.control != ReferenceControl::KeepForeignMessages {
+                    continue;
+                }
             }
             used.insert(validator.clone(), hash.clone());
         }
@@ -265,6 +366,13 @@ impl<'a> ReferenceForkChoice<'a> {
                 }
                 let entry = scores.entry(current.clone()).or_insert(0);
                 *entry = entry.checked_add(weight).ok_or("score_overflow")?;
+                if self.control == ReferenceControl::CreditAllParents {
+                    for secondary in block.parents.iter().skip(1) {
+                        self.edge()?;
+                        let entry = scores.entry(secondary.clone()).or_insert(0);
+                        *entry = entry.checked_add(weight).ok_or("score_overflow")?;
+                    }
+                }
                 match block.parents.first() {
                     Some(main_parent) => {
                         self.edge()?;
@@ -305,17 +413,21 @@ impl<'a> ReferenceForkChoice<'a> {
         let ancestor_number = self.metadata(&ancestor)?.block_number;
         let scores = self.scores(messages, ancestor_number)?;
         let mut head = ancestor.clone();
-        loop {
-            let mut children = self.scored_main_children(&head, &scores)?;
-            if children.is_empty() {
-                break;
+        if self.control == ReferenceControl::RankTipsByOwnScore {
+            let mut candidates: Vec<BlockHash> = messages.values().cloned().collect();
+            candidates.sort_by(|a, b| self.order(&scores, a, b));
+            if let Some(first) = candidates.first() {
+                head = first.clone();
             }
-            children.sort_by(|a, b| {
-                let score_a = scores.get(a).copied().unwrap_or(0);
-                let score_b = scores.get(b).copied().unwrap_or(0);
-                score_b.cmp(&score_a).then_with(|| a.cmp(b))
-            });
-            head = children.swap_remove(0);
+        } else {
+            loop {
+                let mut children = self.scored_main_children(&head, &scores)?;
+                if children.is_empty() {
+                    break;
+                }
+                children.sort_by(|a, b| self.order(&scores, a, b));
+                head = children.swap_remove(0);
+            }
         }
         let mut frontier: BTreeSet<BlockHash> = BTreeSet::new();
         for hash in messages.values() {
@@ -327,11 +439,7 @@ impl<'a> ReferenceForkChoice<'a> {
         self.meter
             .charge(WorkKind::Traversal, ranked.len() as u64, 0)
             .map_err(|e| e.to_string())?;
-        ranked.sort_by(|a, b| {
-            let score_a = scores.get(a).copied().unwrap_or(0);
-            let score_b = scores.get(b).copied().unwrap_or(0);
-            score_b.cmp(&score_a).then_with(|| a.cmp(b))
-        });
+        ranked.sort_by(|a, b| self.order(&scores, a, b));
         let head_number = self.metadata(&head)?.block_number;
         let depth = i64::from(self.authority.max_parent_depth);
         let mut tips = vec![head.clone()];
@@ -370,7 +478,16 @@ impl<'a> ReferenceForkChoice<'a> {
                 return Err("approved_block_mismatch".to_string());
             }
             let messages = self.depth_filtered(&used)?;
-            let ranked = self.rank(&messages, &approved)?;
+            let bound = match &self.control {
+                ReferenceControl::BoundAt(hash) => self
+                    .snapshot
+                    .blocks
+                    .get(hash)
+                    .map(|block| block.metadata.clone())
+                    .ok_or("history_incomplete")?,
+                _ => approved.clone(),
+            };
+            let ranked = self.rank(&messages, &bound)?;
             let head = ranked.tips.first().ok_or("no_head_selected")?.clone();
             let mut sorted_scores: BTreeMap<String, i64> = BTreeMap::new();
             for (hash, score) in &ranked.scores {
@@ -383,8 +500,8 @@ impl<'a> ReferenceForkChoice<'a> {
             Ok(ForkChoiceResult {
                 mode: EvaluationMode::Reference,
                 lower_bound: LowerBound {
-                    hash: hex::encode(&approved.block_hash),
-                    block_number: approved.block_number,
+                    hash: hex::encode(&bound.block_hash),
+                    block_number: bound.block_number,
                     rule: LowerBoundRule::ApprovedBlock,
                 },
                 common_ancestor: hex::encode(&ranked.ancestor),

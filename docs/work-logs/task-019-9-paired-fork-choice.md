@@ -140,6 +140,48 @@ Checks: 71 tests of the observer, estimator, and fork-choice suites passed. `car
 
 Pending for step 11: the comparison, the response work fields, the 10 negative controls of the plan, and the property tests on random DAGs and permutations.
 
+## Step 11 on 2026-09-30: comparison, work fields, controls, property test
+
+`compare` in `fork_choice.rs` gives an available comparison only when both results are available with equal input digests. The fields are `head_matches`, `tips_match`, and `bounds_differ`. A missing result gives `result_unavailable`, and different digests give `input_digest_mismatch`.
+
+`validate_result` is a schema check that runs before a result becomes available. It checks 4 conditions: the head is the first tip, the tip count is 1 to 64, and each tip has a score. The head is the lower bound only when the tips are exactly the lower bound.
+
+`WorkReport` and `PartialWork` have the fields `fork_choice_bounded` and `fork_choice_reference`. They carry the fork-choice input digest and are `NotRequested` without the selection.
+
+The hidden `ReferenceControl` enum changes one rule of the reference for a test. The production path never sets it.
+
+| Control of the plan | Test result |
+|---|---|
+| Rank the tips by their own scores | Head mismatch on a fixture with 3 stakes and 2 branches |
+| Add the weight to all parents | Head mismatch on the same fixture, which has a merge block |
+| Reverse the hash order in a tie | Head mismatch on a fixture with 2 equal stakes |
+| Omit the invalid message filter | Head mismatch on a fixture with an `InsertMode::Invalid` latest message |
+| Omit the testimony filter | Not constructible: the DAG storage records a latest message under its sender only. The counts of `bounded` and `reference` agree on every fixture instead. |
+| Lower bound above the correct one | Head mismatch with the bound on the losing branch |
+| Different captures | `input_digest_mismatch` |
+| Floor hash in the head field | `schema:head_is_lower_bound` from `validate_result` |
+| Shared scratch view | A new scratch view and the production DAG have no cached floor row after a fork-choice observation |
+| Removed charge site | The 1-operation and 2-operation limit tests of steps 7 and 10 |
+
+The property test builds 12 random DAGs with a seeded generator through the LMDB fixture. Each DAG has up to 3 levels with 1 or 2 blocks for each level. The 3 validators have random stakes, and each block has a random main parent and an optional merge parent. The test asserts 4 properties for each DAG:
+
+- The `bounded` head equals the production estimator.
+- The reference matches `bounded` in head and tips.
+- Each head is in its tips.
+- A second identical request gives identical observation JSON and identical work counts.
+
+### Finding 1: the production score map credits one block below the common ancestor
+
+The estimator pushes the main parent of a block at the ancestor height and credits it before it stops. The reference stops at the ancestor, as R-SCORE states. The head does not change, because the descent starts at the ancestor. The `score_count` of `bounded` is 1 above the reference on 2 of the 12 random DAGs.
+
+The comparison does not compare scores, and the property test asserts `reference.score_count <= bounded.score_count`. The maintainer decides whether the production estimator changes. That change is outside this batch.
+
+### Finding 2: the work of the floor derivation depends on the message order
+
+`fork_choice_floor` caches floor rows, so the second message of a set costs less. The production caller passes the messages in `HashMap` order, and 2 identical requests gave different `bounded` work counts. The `bounded` evaluation now filters and passes the messages in validator order. The result never depended on the order. The production caller does not change.
+
+Checks: 80 tests of the observer, estimator, and fork-choice suites passed. `cargo clippy --all-targets -- -D warnings` for `casper` and `node` passed. `rustfmt --check` passed.
+
 ## Progress
 
 - [x] Claim the task and start the work log.
@@ -151,7 +193,7 @@ Pending for step 11: the comparison, the response work fields, the 10 negative c
 - [x] Input record and input digest.
 - [x] `bounded` evaluation and tests.
 - [x] `reference` evaluation and tests.
-- [ ] Comparison, response field, negative controls.
+- [x] Comparison, response field, negative controls.
 - [ ] Capability entry and node tests.
 - [ ] Binding entries and applicability review.
 - [ ] Gate, binding check, test suites, results recorded.

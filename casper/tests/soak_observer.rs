@@ -109,6 +109,10 @@ impl Fixture {
     }
 
     async fn from_chain(chain: Vec<BlockMessage>) -> Self {
+        Self::from_chain_marking(chain, &[]).await
+    }
+
+    async fn from_chain_marking(chain: Vec<BlockMessage>, invalid: &[BlockHash]) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let mapping = STORES
             .iter()
@@ -139,6 +143,8 @@ impl Fixture {
                 block,
                 if index == 0 {
                     InsertMode::Approved
+                } else if invalid.contains(&block.block_hash) {
+                    InsertMode::Invalid
                 } else {
                     InsertMode::Normal
                 },
@@ -883,17 +889,15 @@ async fn a_fork_choice_selection_binds_the_inputs_and_the_digest() {
         fork_choice_input_digest(&response.authority_digest, inputs, &meter(work_limits()))
             .unwrap();
     assert_eq!(input_digest, &expected);
-    fn not_implemented<T>(field: &Value<T>, digest: &str) -> bool {
-        matches!(field, Value::Unavailable { reason, input_digest: Some(d) }
-            if reason == "not_implemented" && d == digest)
-    }
     assert!(
         matches!(&value.bounded, Value::Available { input_digest: d, .. } if d == input_digest)
     );
     assert!(
         matches!(&value.reference, Value::Available { input_digest: d, .. } if d == input_digest)
     );
-    assert!(not_implemented(&value.comparison, input_digest));
+    assert!(
+        matches!(&value.comparison, Value::Available { input_digest: d, .. } if d == input_digest)
+    );
     let mut changed = inputs.clone();
     changed.max_number_of_parents += 1;
     assert_ne!(
@@ -971,9 +975,7 @@ async fn bounded_fork_choice_matches_the_production_estimator_on_the_capture() {
     assert!(bounded.visited_blocks >= 3);
     assert!(bounded.examined_edges >= 3);
     assert!(matches!(&observation.reference, Value::Available { .. }));
-    assert!(
-        matches!(&observation.comparison, Value::Unavailable { reason, .. } if reason == "not_implemented")
-    );
+    assert!(available(&observation.comparison).head_matches);
     assert!(matches!(&response.floor_result, Value::Available { .. }));
     assert!(matches!(
         &response.targets[0].oracle_decision,
@@ -1046,9 +1048,9 @@ async fn reference_fork_choice_matches_the_bounded_result_on_the_capture() {
     assert_eq!(reference.score_digest, bounded.score_digest);
     assert!(reference.visited_blocks >= 5);
     assert!(reference.examined_edges >= 4);
-    assert!(
-        matches!(&observation.comparison, Value::Unavailable { reason, .. } if reason == "not_implemented")
-    );
+    let comparison = available(&observation.comparison);
+    assert_eq!(comparison.algorithm, "immutable-ghost-reference-v1");
+    assert!(comparison.head_matches && comparison.tips_match && !comparison.bounds_differ);
 }
 
 #[tokio::test]
@@ -1103,6 +1105,397 @@ async fn reference_fork_choice_refuses_a_budget_limit_with_the_limit_reason() {
     .evaluate();
     let error = limited.unwrap_err();
     assert!(error.contains("observation_work:"), "{error}");
+}
+
+fn bonded_block(
+    template: &BlockMessage,
+    tag_value: u8,
+    height: i64,
+    validator_tag: u8,
+    parents: &[u8],
+    bonds: &[(u8, i64)],
+) -> BlockMessage {
+    let justifications: Vec<(u8, u8)> = parents.iter().map(|p| (validator_tag, *p)).collect();
+    let mut block = graph_block(
+        template,
+        tag_value,
+        height,
+        validator_tag,
+        parents,
+        &justifications,
+    );
+    block.body.state.bonds = bonds
+        .iter()
+        .map(|(v, stake)| Bond {
+            validator: Bytes::from(vec![*v; 65]),
+            stake: *stake,
+        })
+        .collect();
+    block
+}
+
+const THREE_STAKES: &[(u8, i64)] = &[(7, 6), (8, 4), (9, 3)];
+
+async fn two_branch_fixture(bonds: &[(u8, i64)], invalid: &[u8]) -> Fixture {
+    let base = Fixture::new().await;
+    let template = &base.chain[0];
+    let invalid: Vec<BlockHash> = invalid.iter().map(|t| tag(*t)).collect();
+    Fixture::from_chain_marking(
+        vec![
+            bonded_block(template, 1, 0, 7, &[], bonds),
+            bonded_block(template, 2, 1, 7, &[1], bonds),
+            bonded_block(template, 3, 1, 8, &[1], bonds),
+            bonded_block(template, 4, 2, 7, &[2], bonds),
+            bonded_block(template, 5, 2, 8, &[3, 2], bonds),
+            bonded_block(template, 6, 2, 9, &[3], bonds),
+        ],
+        &invalid,
+    )
+    .await
+}
+
+fn reference_with(
+    fixture: &Fixture,
+    captured: &block_storage::rust::dag::soak_snapshot::DetachedDagSnapshot,
+    control: casper::rust::soak_observer::fork_choice::ReferenceControl,
+) -> casper::rust::soak_observer::fork_choice::ForkChoiceResult {
+    use casper::rust::soak_observer::fork_choice::ReferenceForkChoice;
+    let endpoint = endpoint(fixture);
+    let wide = meter(work_limits());
+    let (_, result) = ReferenceForkChoice::new(
+        captured,
+        &wide,
+        endpoint.fork_choice_inputs(),
+        endpoint.authority(),
+    )
+    .with_control(control)
+    .evaluate();
+    result.unwrap()
+}
+
+#[tokio::test]
+async fn reference_controls_that_change_a_rule_produce_a_head_mismatch() {
+    use casper::rust::soak_observer::fork_choice::ReferenceControl;
+    let fixture = two_branch_fixture(THREE_STAKES, &[]).await;
+    let captured = snapshot(&fixture, &[]);
+    let correct = reference_with(&fixture, &captured, ReferenceControl::None);
+    assert_eq!(correct.head, hex::encode(tag(5)));
+    for control in [
+        ReferenceControl::RankTipsByOwnScore,
+        ReferenceControl::CreditAllParents,
+        ReferenceControl::BoundAt(tag(2)),
+    ] {
+        let wrong = reference_with(&fixture, &captured, control.clone());
+        assert_ne!(wrong.head, correct.head, "{control:?}");
+        assert_eq!(wrong.head, hex::encode(tag(4)), "{control:?}");
+    }
+}
+
+#[tokio::test]
+async fn reference_tie_order_control_produces_a_head_mismatch() {
+    use casper::rust::soak_observer::fork_choice::ReferenceControl;
+    let fixture = two_branch_fixture(&[(7, 5), (8, 5)], &[]).await;
+    let captured = snapshot(&fixture, &[]);
+    let correct = reference_with(&fixture, &captured, ReferenceControl::None);
+    assert_eq!(correct.head, hex::encode(tag(4)));
+    let reversed = reference_with(&fixture, &captured, ReferenceControl::ReverseTieOrder);
+    assert_eq!(reversed.head, hex::encode(tag(5)));
+}
+
+#[tokio::test]
+async fn reference_invalid_filter_control_produces_a_head_mismatch() {
+    use casper::rust::soak_observer::fork_choice::ReferenceControl;
+    let fixture = two_branch_fixture(THREE_STAKES, &[5]).await;
+    let captured = snapshot(&fixture, &[]);
+    let correct = reference_with(&fixture, &captured, ReferenceControl::None);
+    assert_eq!(correct.head, hex::encode(tag(4)));
+    let unfiltered = reference_with(&fixture, &captured, ReferenceControl::KeepInvalidMessages);
+    assert_eq!(unfiltered.head, hex::encode(tag(5)));
+}
+
+#[tokio::test]
+async fn bounded_and_reference_agree_on_the_two_branch_fixture_and_on_the_counts() {
+    use casper::rust::soak_observer::evaluation::ForkChoiceSelection;
+    let fixture = two_branch_fixture(THREE_STAKES, &[5]).await;
+    let controller = ObserverController::new("incarnation".to_string());
+    controller.install(Some(fixture.casper(true).as_ref()));
+    let mut request = fixture.request();
+    request.targets = vec![hex::encode(tag(4))];
+    request.fork_choice = Some(ForkChoiceSelection { reference: true });
+    let response = controller
+        .authority_snapshot(request, Instant::now() + Duration::from_secs(5))
+        .await
+        .unwrap();
+    let observation = available(&response.fork_choice);
+    assert_eq!(observation.latest_messages.captured, 3);
+    assert_eq!(observation.latest_messages.invalid, 1);
+    assert_eq!(observation.latest_messages.used, 2);
+    let comparison = available(&observation.comparison);
+    assert!(comparison.head_matches);
+    assert!(comparison.tips_match);
+    assert!(!comparison.bounds_differ);
+    assert_eq!(available(&observation.bounded).head, hex::encode(tag(4)));
+    assert!(
+        matches!(&response.work.fork_choice_bounded, Value::Available { value, .. } if value.operations > 0)
+    );
+    assert!(
+        matches!(&response.work.fork_choice_reference, Value::Available { value, .. } if value.operations > 0)
+    );
+}
+
+#[tokio::test]
+async fn work_report_without_a_selection_has_no_fork_choice_work() {
+    let fixture = Fixture::new().await;
+    let controller = ObserverController::new("incarnation".to_string());
+    controller.install(Some(fixture.casper(true).as_ref()));
+    let response = evaluate(&fixture, &controller).await;
+    assert!(matches!(
+        response.work.fork_choice_bounded,
+        Value::NotRequested
+    ));
+    assert!(matches!(
+        response.work.fork_choice_reference,
+        Value::NotRequested
+    ));
+    let json = serde_json::to_value(&response.work).unwrap();
+    assert_eq!(json["fork_choice_bounded"]["availability"], "not_requested");
+}
+
+#[tokio::test]
+async fn comparison_refuses_different_captures_and_unavailable_results() {
+    use casper::rust::soak_observer::fork_choice::{compare, ReferenceControl};
+    let fixture = fork_fixture().await;
+    let first = snapshot(&fixture, &[]);
+    let second = snapshot(&fixture, &[tag(2)]);
+    assert_ne!(first.digest(), second.digest());
+    let left = reference_with(&fixture, &first, ReferenceControl::None);
+    let right = reference_with(&fixture, &second, ReferenceControl::None);
+    assert_eq!(left.head, right.head);
+    let comparison = compare(
+        &Value::Available {
+            input_digest: first.digest_hex(),
+            value: left.clone(),
+        },
+        &Value::Available {
+            input_digest: second.digest_hex(),
+            value: right.clone(),
+        },
+    );
+    assert!(
+        matches!(comparison, Value::Unavailable { reason, .. } if reason == "input_digest_mismatch")
+    );
+    let comparison = compare(
+        &Value::Available {
+            input_digest: first.digest_hex(),
+            value: left.clone(),
+        },
+        &Value::Unavailable {
+            input_digest: Some(first.digest_hex()),
+            reason: "history_incomplete".to_string(),
+        },
+    );
+    assert!(
+        matches!(comparison, Value::Unavailable { reason, .. } if reason == "result_unavailable")
+    );
+    let comparison = compare(
+        &Value::Available {
+            input_digest: first.digest_hex(),
+            value: left.clone(),
+        },
+        &Value::Available {
+            input_digest: first.digest_hex(),
+            value: right,
+        },
+    );
+    let value = available(&comparison);
+    assert!(value.head_matches && value.tips_match && !value.bounds_differ);
+}
+
+#[tokio::test]
+async fn a_lower_bound_in_the_head_field_fails_the_schema_check() {
+    use casper::rust::soak_observer::fork_choice::{validate_result, ReferenceControl};
+    let fixture = fork_fixture().await;
+    let captured = snapshot(&fixture, &[]);
+    let result = reference_with(&fixture, &captured, ReferenceControl::None);
+    validate_result(&result).unwrap();
+    let mut substituted = result.clone();
+    substituted.head = substituted.lower_bound.hash.clone();
+    substituted.tips[0] = substituted.lower_bound.hash.clone();
+    assert_eq!(
+        validate_result(&substituted).unwrap_err(),
+        "schema:head_is_lower_bound"
+    );
+    let mut misordered = result.clone();
+    misordered.tips.swap(0, 1);
+    assert_eq!(
+        validate_result(&misordered).unwrap_err(),
+        "schema:head_not_first_tip"
+    );
+    let mut short = result.clone();
+    short.tip_scores.pop();
+    assert_eq!(validate_result(&short).unwrap_err(), "schema:score_count");
+    let mut empty = result;
+    empty.tips.clear();
+    assert_eq!(validate_result(&empty).unwrap_err(), "schema:tip_count");
+}
+
+#[tokio::test]
+async fn fork_choice_scratch_views_do_not_share_cached_floor_rows() {
+    use casper::rust::soak_observer::evaluation::ForkChoiceSelection;
+    let fixture = fork_fixture().await;
+    let controller = ObserverController::new("incarnation".to_string());
+    controller.install(Some(fixture.casper(true).as_ref()));
+    let mut request = fixture.request();
+    request.targets = vec![hex::encode(tag(4))];
+    request.fork_choice = Some(ForkChoiceSelection { reference: true });
+    let response = controller
+        .authority_snapshot(request, Instant::now() + Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert!(matches!(
+        available(&response.fork_choice).bounded,
+        Value::Available { .. }
+    ));
+    let captured = snapshot(&fixture, &[]);
+    let fresh = captured.scratch_view().unwrap();
+    for block in [4u8, 5, 3, 2, 1] {
+        assert!(fresh
+            .representation
+            .get_cached_floor(&tag(block))
+            .unwrap()
+            .is_none());
+    }
+    assert!(fixture
+        .dag
+        .get_representation()
+        .unwrap()
+        .get_cached_floor(&tag(4))
+        .unwrap()
+        .is_none());
+}
+
+struct Lcg(u64);
+
+impl Lcg {
+    fn next(&mut self, bound: u64) -> u64 {
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (self.0 >> 33) % bound
+    }
+}
+
+async fn random_fixture(seed: u64) -> Fixture {
+    let mut rng = Lcg(seed);
+    let base = Fixture::new().await;
+    let template = &base.chain[0];
+    let bonds: Vec<(u8, i64)> = [7u8, 8, 9]
+        .iter()
+        .map(|v| (*v, 1 + rng.next(9) as i64))
+        .collect();
+    let mut chain = vec![bonded_block(template, 1, 0, 7, &[], &bonds)];
+    let mut previous_level = vec![1u8];
+    let mut next_tag = 2u8;
+    let levels = 1 + rng.next(3);
+    for height in 1..=levels {
+        let width = 1 + rng.next(2) as usize;
+        let mut level = Vec::new();
+        for _ in 0..width {
+            let validator = 7 + rng.next(3) as u8;
+            let main = previous_level[rng.next(previous_level.len() as u64) as usize];
+            let mut parents = vec![main];
+            if previous_level.len() > 1 && rng.next(2) == 1 {
+                let other = previous_level[rng.next(previous_level.len() as u64) as usize];
+                if other != main {
+                    parents.push(other);
+                }
+            }
+            chain.push(bonded_block(
+                template,
+                next_tag,
+                height as i64,
+                validator,
+                &parents,
+                &bonds,
+            ));
+            level.push(next_tag);
+            next_tag += 1;
+        }
+        previous_level = level;
+    }
+    Fixture::from_chain(chain).await
+}
+
+#[tokio::test]
+async fn random_dags_give_equal_heads_deterministic_results_and_heads_in_tips() {
+    use casper::rust::estimator::Estimator;
+    use casper::rust::soak_observer::evaluation::ForkChoiceSelection;
+    for seed in 1..=12u64 {
+        let fixture = random_fixture(seed).await;
+        let controller = ObserverController::new("incarnation".to_string());
+        controller.install(Some(fixture.casper(true).as_ref()));
+        let mut request = fixture.request();
+        request.targets = vec![];
+        request.floor = None;
+        request.fork_choice = Some(ForkChoiceSelection { reference: true });
+        let first = controller
+            .authority_snapshot(request.clone(), Instant::now() + Duration::from_secs(5))
+            .await
+            .unwrap();
+        let second = controller
+            .authority_snapshot(request, Instant::now() + Duration::from_secs(5))
+            .await
+            .unwrap();
+        let observation = available(&first.fork_choice);
+        let bounded = available(&observation.bounded);
+        let reference = available(&observation.reference);
+        let comparison = available(&observation.comparison);
+        assert!(bounded.tips.contains(&bounded.head), "seed {seed}");
+        assert!(reference.tips.contains(&reference.head), "seed {seed}");
+        assert!(!comparison.bounds_differ, "seed {seed}");
+        assert!(
+            comparison.head_matches,
+            "seed {seed}: {bounded:?} vs {reference:?}"
+        );
+        assert!(comparison.tips_match, "seed {seed}");
+        assert!(
+            reference.score_count <= bounded.score_count,
+            "seed {seed}: reference {} scores, bounded {} scores",
+            reference.score_count,
+            bounded.score_count
+        );
+        let endpoint = endpoint(&fixture);
+        let mut dag = fixture.dag.get_representation().unwrap();
+        let floor = dag.lookup_unsafe(&tag(1)).unwrap();
+        let latest: HashMap<Bytes, BlockHash> = dag.latest_message_hashes().into_iter().collect();
+        let expected = Estimator::apply()
+            .tips_with_latest_messages(
+                &mut dag,
+                &floor,
+                latest,
+                endpoint.fork_choice_inputs().max_number_of_parents,
+                Some(endpoint.authority().max_parent_depth),
+            )
+            .await
+            .unwrap();
+        assert_eq!(bounded.head, hex::encode(&expected.tips[0]), "seed {seed}");
+        assert_eq!(
+            serde_json::to_string(&first.fork_choice).unwrap(),
+            serde_json::to_string(&second.fork_choice).unwrap(),
+            "seed {seed}"
+        );
+        assert_eq!(
+            serde_json::to_string(&first.work.fork_choice_bounded).unwrap(),
+            serde_json::to_string(&second.work.fork_choice_bounded).unwrap(),
+            "seed {seed}"
+        );
+        assert_eq!(
+            serde_json::to_string(&first.work.fork_choice_reference).unwrap(),
+            serde_json::to_string(&second.work.fork_choice_reference).unwrap(),
+            "seed {seed}"
+        );
+    }
 }
 
 #[test]

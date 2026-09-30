@@ -315,6 +315,8 @@ pub struct WorkReport {
     pub measured: WorkUsage,
     pub original: Value<WorkUsage>,
     pub reference: Value<WorkUsage>,
+    pub fork_choice_bounded: Value<WorkUsage>,
+    pub fork_choice_reference: Value<WorkUsage>,
     pub complete: bool,
     pub failure: Option<String>,
 }
@@ -415,6 +417,8 @@ pub struct PartialWork {
     pub measured: WorkUsage,
     pub original: Option<WorkUsage>,
     pub reference: Option<WorkUsage>,
+    pub fork_choice_bounded: Option<WorkUsage>,
+    pub fork_choice_reference: Option<WorkUsage>,
     pub failure: String,
 }
 
@@ -432,8 +436,18 @@ impl std::fmt::Display for AuthorityFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str(&self.reason) }
 }
 
-fn work_report(meter: &CheckedWork, request: &AuthorityRequest, digest: &str) -> WorkReport {
+fn work_report(
+    meter: &CheckedWork,
+    request: &AuthorityRequest,
+    digest: &str,
+    fork_choice_digest: Option<&str>,
+) -> WorkReport {
     let (aggregate, paths, failure) = meter.usage();
+    let fork_choice_work = |requested: bool, path: usize| match (requested, fork_choice_digest) {
+        (true, Some(digest)) => Value::available(digest, paths[path].clone()),
+        _ => Value::NotRequested,
+    };
+    let selection = request.fork_choice.as_ref();
     WorkReport {
         aggregate,
         preparation: paths[0].clone(),
@@ -448,6 +462,8 @@ fn work_report(meter: &CheckedWork, request: &AuthorityRequest, digest: &str) ->
         } else {
             Value::NotRequested
         },
+        fork_choice_bounded: fork_choice_work(selection.is_some(), 4),
+        fork_choice_reference: fork_choice_work(selection.is_some_and(|s| s.reference), 5),
         complete: failure.is_none(),
         failure,
     }
@@ -474,6 +490,12 @@ pub async fn evaluate(
                     measured: paths[1].clone(),
                     original: request.original.then(|| paths[2].clone()),
                     reference: request.reference.then(|| paths[3].clone()),
+                    fork_choice_bounded: request.fork_choice.as_ref().map(|_| paths[4].clone()),
+                    fork_choice_reference: request
+                        .fork_choice
+                        .as_ref()
+                        .filter(|selection| selection.reference)
+                        .map(|_| paths[5].clone()),
                     failure: failure.unwrap_or(reason),
                 }),
             }
@@ -740,12 +762,12 @@ async fn evaluate_inner(
             (Value::from_result(input_digest, result), comparison)
         }
     };
-    let fork_choice_observation = match (fork_choice_selection, fork_choice_digest) {
+    let fork_choice_observation = match (fork_choice_selection, fork_choice_digest.clone()) {
         (Some(selection), Some(input_digest)) => {
             let bounded_work = meter.for_path(4).map_err(|e| e.to_string())?;
             let (counts, bounded) =
                 bounded_fork_choice(&snapshot, endpoint, threshold, &bounded_work).await;
-            let (reference, comparison) = if selection.reference {
+            let (reference, compare_requested) = if selection.reference {
                 let reference_work = meter.for_path(5).map_err(|e| e.to_string())?;
                 let (_, reference) = fork_choice::ReferenceForkChoice::new(
                     &snapshot,
@@ -755,24 +777,35 @@ async fn evaluate_inner(
                 )
                 .evaluate();
                 (
-                    Value::from_result(&input_digest, reference),
-                    Value::unavailable(&input_digest, "not_implemented"),
+                    Value::from_result(&input_digest, checked_result(reference)),
+                    true,
                 )
             } else {
-                (Value::NotRequested, Value::NotRequested)
+                (Value::NotRequested, false)
+            };
+            let bounded = Value::from_result(&input_digest, checked_result(bounded));
+            let comparison = if compare_requested {
+                fork_choice::compare(&bounded, &reference)
+            } else {
+                Value::NotRequested
             };
             Value::available(&input_digest, ForkChoiceObservation {
                 input_digest: input_digest.clone(),
                 inputs: endpoint.fork_choice.clone(),
                 latest_messages: counts,
-                bounded: Value::from_result(&input_digest, bounded),
+                bounded,
                 reference,
                 comparison,
             })
         }
         _ => Value::NotRequested,
     };
-    let work = work_report(meter, request, &authority_digest);
+    let work = work_report(
+        meter,
+        request,
+        &authority_digest,
+        fork_choice_digest.as_deref(),
+    );
     Ok(AuthorityResponse {
         scope: "batch-b2-detached-authority-evaluation",
         live_profile_qualified: false,
@@ -806,6 +839,12 @@ async fn evaluate_inner(
     })
 }
 
+fn checked_result(result: Result<ForkChoiceResult, String>) -> Result<ForkChoiceResult, String> {
+    let result = result?;
+    fork_choice::validate_result(&result)?;
+    Ok(result)
+}
+
 async fn bounded_fork_choice(
     snapshot: &DetachedDagSnapshot,
     endpoint: &CaptureEndpoint,
@@ -823,6 +862,7 @@ async fn bounded_fork_choice(
             .iter()
             .map(|(validator, hash)| (validator.clone(), hash.clone()))
             .collect();
+        let ordered: Vec<(&Validator, &BlockHash)> = snapshot.latest_messages.iter().collect();
         meter
             .charge(
                 WorkKind::Metadata,
@@ -835,9 +875,9 @@ async fn bounded_fork_choice(
             .invalid_latest_messages_from_hashes(&captured)
             .map_err(|e| e.to_string())?;
         counts.invalid = invalid.len();
-        let mut used: std::collections::HashMap<Validator, BlockHash> =
-            std::collections::HashMap::with_capacity(captured.len());
-        for (validator, hash) in &captured {
+        let mut used: std::collections::BTreeMap<Validator, BlockHash> =
+            std::collections::BTreeMap::new();
+        for (validator, hash) in ordered {
             if invalid.contains_key(validator) {
                 continue;
             }
@@ -883,7 +923,7 @@ async fn bounded_fork_choice(
                 meter,
                 &mut view.representation,
                 &floor_block,
-                used,
+                used.into_iter().collect(),
                 endpoint.fork_choice.max_number_of_parents,
                 Some(endpoint.authority.max_parent_depth),
             )

@@ -151,3 +151,16 @@ The first tracker comparison detected Agent A's concurrent update from Batch D s
 Agent B preserved that update and verified the remaining tracker content outside Batch E as unchanged.
 The approved path list, approval fields, and Batch D blocker passed the scoped check.
 The new plan and log prose passed the STE Check, and the whitespace check passed.
+
+### Step-13 handoff clarification
+
+Agent A specified the handoff after step 13, when the Batch D files are final.
+Agent B will use that explicit file handoff rather than wait for completion of all sixteen task steps.
+The handoff includes the four shared files, the record refresh scope, and the nextest filters.
+The implementation baseline requires the handoff revision and source identities.
+Remaining Batch D verification and acceptance do not transfer with file ownership.
+
+The parent limit in `CasperShardConf::new()` is zero.
+Agent B will preserve that behavior and run rustfmt before each authorized commit.
+No handoff has been received yet.
+Agent B recorded this clarification in the approved plan and left Agent A's staged tracker unchanged.
