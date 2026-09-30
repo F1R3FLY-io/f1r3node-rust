@@ -1,5 +1,7 @@
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
+use comm::rust::discovery::kademlia_handle_rpc::{handle_lookup, handle_ping};
 use comm::rust::discovery::kademlia_node_discovery::KademliaNodeDiscovery;
 use comm::rust::discovery::kademlia_rpc::KademliaRPC;
 use comm::rust::discovery::kademlia_store::KademliaStore;
@@ -73,4 +75,51 @@ async fn normal_removal_does_not_delay_rediscovery() {
     discovery.remove_peer(&dead).unwrap();
     discovery.discover().await.unwrap();
     assert!(store.peers().unwrap().contains(&dead));
+}
+
+#[tokio::test]
+async fn inbound_rpc_does_not_restore_an_evicted_address() {
+    let local = peer(1, "local");
+    let dead = peer(2, "dead");
+    let rpc = Arc::new(LookupRpc {
+        candidate: Mutex::new(dead.clone()),
+    });
+    let store = Arc::new(KademliaStore::new(local.id.clone(), rpc.clone()));
+    store.update_last_seen(&dead).await.unwrap();
+    let discovery = KademliaNodeDiscovery::new(store.clone(), rpc, local.id.clone());
+
+    discovery.evict_unreachable_peer(&dead).unwrap();
+    handle_ping(dead.clone(), store.clone(), None)
+        .await
+        .unwrap();
+    handle_lookup(dead.clone(), local.id.key.to_vec(), store.clone(), None)
+        .await
+        .unwrap();
+    assert!(store.find(&dead.id.key).unwrap().is_none());
+
+    let changed = peer(2, "new-address");
+    handle_ping(changed.clone(), store.clone(), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        store.find(&changed.id.key).unwrap().unwrap().endpoint,
+        changed.endpoint
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn expired_delay_allows_a_peer_to_be_admitted_again() {
+    let local = peer(1, "local");
+    let dead = peer(2, "dead");
+    let rpc = Arc::new(LookupRpc {
+        candidate: Mutex::new(dead.clone()),
+    });
+    let store = KademliaStore::new(local.id, rpc);
+
+    store.evict_unreachable_peer(&dead).unwrap();
+    assert!(store.find(&dead.id.key).unwrap().is_none());
+
+    tokio::time::advance(Duration::from_secs(301)).await;
+    store.update_last_seen(&dead).await.unwrap();
+    assert!(store.find(&dead.id.key).unwrap().is_some());
 }
