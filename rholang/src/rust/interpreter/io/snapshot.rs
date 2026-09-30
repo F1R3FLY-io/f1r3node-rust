@@ -33,15 +33,23 @@
 // [`ManifestEntry`] (struct + `data`/`empty` constructors), and
 // [`ManifestEntry::to_line`] / [`ManifestEntry::from_line`].
 //
-// Slice 7 (this PR) adds the manifest persistence layer:
+// Slice 7 (PR #510) added the manifest persistence layer:
 // [`append_manifest_entry`] (O_APPEND + create-if-missing,
-// line-atomic under POSIX) and [`read_manifest`] (parse every
-// line, missing file → empty Vec, malformed line → error with
-// line number).  Together with slice 6's wire format, this
-// gives on-disk manifests their read/write path.
+// line-atomic on common Linux filesystems) and
+// [`read_manifest`] (parse every line, missing file → empty
+// Vec, malformed line → [`SnapshotError::MalformedManifest`]).
 //
-// Writer / pruning / H-4 signing all land in subsequent slices
-// as their own natural units.
+// Slice 8 (this PR) adds [`prune_snapshot_dir`] — mtime-based
+// retention keeping the N newest `.wal` snapshots and their
+// paired `.hashes` sidecars.  Symlinks are skipped (lstat-
+// based).  This closes the retention loop everyone's been
+// building toward: sidecar (PR #507), sweep (PR #508),
+// manifest read (PR #510), and now the actual deletion pass.
+// The design is intentionally manifest-independent — see the
+// docstring's "Conservative posture" section.
+//
+// Writer / H-4 signing land in subsequent slices as their own
+// natural units.
 //
 // # Snapshot semantics — log-structured
 //
@@ -1361,6 +1369,161 @@ pub fn sweep_stale_tmp_files(snapshot_dir: &Path, older_than_secs: u64) -> std::
                 path = %path.display(),
                 error = %e,
                 "sweep_stale_tmp_files: remove failed; continuing"
+            ),
+        }
+    }
+    Ok(removed)
+}
+
+// ===========================================================
+// Directory pruning (slice 8) — retention by mtime
+// ===========================================================
+
+/// Prune old `.wal` snapshots (and their paired `.hashes`
+/// sidecars) from `snapshot_dir`, keeping the `keep_last_n`
+/// newest by mtime.  Returns the number of `.wal` files
+/// successfully removed.  Sidecar removals are silently
+/// side-effected (they contribute to the retention union but
+/// not to the return count).
+///
+/// # Conservative posture — manifest-independent
+///
+/// This function does NOT consult `<snapshot_dir>/manifest.jsonl`
+/// when deciding what to keep.  Retention is purely mtime-
+/// based over the actual `.wal` files present on disk.  The
+/// rationale ties back to [`append_manifest_entry`]'s no-fsync
+/// posture: a crash between a snapshot write and its manifest
+/// append could leave a durable `.wal` file whose manifest
+/// entry was lost, and a manifest-driven pruner would then
+/// over-eagerly delete it.  By using on-disk mtime as the
+/// authority, a lost manifest entry cannot orphan its `.wal`
+/// file.
+///
+/// If a future design ever requires manifest-authoritative
+/// pruning (e.g., to bound the manifest against on-disk state),
+/// [`append_manifest_entry`] must first gain fsync semantics
+/// AND the retention protocol must handle the "snapshot on
+/// disk but not in any peer's manifest" fetch fallback.
+///
+/// # Symlink skip — operator hygiene defense
+///
+/// The scan uses `entry.file_type()` (which under the hood is
+/// `lstat`, not `stat`) to detect and skip symlink `.wal`
+/// entries; mtimes are read via `symlink_metadata` (also
+/// lstat-based) as TOCTOU hardening — a replace-with-symlink
+/// race between the file_type check and the metadata read
+/// would still read the link's own metadata, not the target's.
+/// Rationale: an operator whose snapshot dir contains an
+/// attacker-planted `evil.wal -> /etc/passwd` symlink would
+/// otherwise let the symlink freshly-touch itself past the
+/// mtime cutoff on every scan (and worse, `remove_file` on the
+/// symlink would just unlink the symlink — safe, but noisy).
+/// Skip cleanly.  The snapshot directory is expected to be
+/// exclusively owned by the validator; symlinks are not a
+/// supported shape.
+///
+/// # Sidecar pairing — only on successful `.wal` removal
+///
+/// Each SUCCESSFULLY removed `.wal` triggers a best-effort
+/// remove of the colocated `.hashes` sidecar
+/// (`snapshot_path` and `hashes_sidecar_path` share the same
+/// stem, so `path.with_extension("hashes")` matches).  ENOENT
+/// on the sidecar is silently OK — pre-sidecar snapshots
+/// (before PR #507) don't have one, and a mid-flight crash
+/// between snapshot write and sidecar write can leave the
+/// same shape.  Other sidecar errors log at `warn` but do NOT
+/// fail the prune (the `.wal` is already gone; a leaked
+/// sidecar just over-counts hashes in the retention union —
+/// safe direction).
+///
+/// # The orphan-`.wal` invariant
+///
+/// Sidecar removal is deliberately NOT attempted when `.wal`
+/// removal fails.  Removing the sidecar for a still-live
+/// orphan `.wal` would under-count its payload hashes in the
+/// next [`scan_retained_payload_hashes`] pass → the payload
+/// store would delete those referenced bytes → the snapshot
+/// would become unreadable.  This is the same "orphan
+/// payload" hazard the manifest-independent pruning design
+/// was built to avoid, surfacing at the `.wal`-removal-failure
+/// path.  Pinned by
+/// `prune_wal_removal_failure_preserves_paired_sidecar`.
+///
+/// # Failure posture
+///
+/// Individual `remove_file` failures on the `.wal` log at
+/// `warn` and do NOT propagate — a permission problem on one
+/// snapshot must not abort the prune of the rest.  The initial
+/// `read_dir` failure DOES propagate (same posture as
+/// [`sweep_stale_tmp_files`]).
+pub fn prune_snapshot_dir(snapshot_dir: &Path, keep_last_n: usize) -> std::io::Result<usize> {
+    let mut wal_files: Vec<(PathBuf, std::time::SystemTime)> = std::fs::read_dir(snapshot_dir)?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("wal") {
+                return None;
+            }
+            let file_type = entry.file_type().ok()?;
+            if file_type.is_symlink() {
+                tracing::debug!(
+                    target: "f1r3fly.fs_wal.snapshot",
+                    path = %path.display(),
+                    "prune_snapshot_dir: skipping symlink .wal entry \
+                     (snapshot dir should be exclusively owned)"
+                );
+                return None;
+            }
+            std::fs::symlink_metadata(&path)
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .map(|mtime| (path, mtime))
+        })
+        .collect();
+    // Newest-first; keep the first `keep_last_n`.  Secondary
+    // key on filename (content-hash hex) breaks ties
+    // deterministically when two snapshots share an mtime — on
+    // filesystems with 1-second mtime resolution, back-to-back
+    // writes within the same second would otherwise have
+    // read_dir-order-dependent (OS/filesystem-dependent)
+    // survivors.
+    wal_files.sort_by(|a, b| {
+        b.1.cmp(&a.1)
+            .then_with(|| a.0.file_name().cmp(&b.0.file_name()))
+    });
+
+    let mut removed = 0;
+    for (path, _) in wal_files.into_iter().skip(keep_last_n) {
+        match std::fs::remove_file(&path) {
+            Ok(()) => {
+                removed += 1;
+                // Pair-remove the sidecar ONLY when the `.wal`
+                // removal succeeded.  Removing the sidecar for a
+                // still-live orphan `.wal` would under-count that
+                // snapshot's payload hashes in the next
+                // `scan_retained_payload_hashes` pass → the
+                // payload store would delete the referenced
+                // bytes → the snapshot would become unreadable.
+                // See the "Sidecar pairing" docstring section.
+                let sidecar_path = path.with_extension("hashes");
+                match std::fs::remove_file(&sidecar_path) {
+                    Ok(()) => {}
+                    Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => tracing::warn!(
+                        target: "f1r3fly.fs_wal.payload_store",
+                        path = %sidecar_path.display(),
+                        error = %e,
+                        "prune_snapshot_dir: failed to remove hashes sidecar; \
+                         the sidecar will leak but retention correctness is preserved"
+                    ),
+                }
+            }
+            Err(e) => tracing::warn!(
+                target: "f1r3fly.fs_wal.snapshot",
+                path = %path.display(),
+                error = %e,
+                "prune_snapshot_dir: failed to remove old snapshot; \
+                 leaving paired sidecar in place so retention keeps counting its payloads"
             ),
         }
     }
@@ -3731,5 +3894,280 @@ mod tests {
         // Low 9 bits are the rwxrwxrwx mode; higher bits are
         // file-type flags.  Mask to compare just the mode bits.
         assert_eq!(meta.permissions().mode() & 0o777, 0o644);
+    }
+
+    // ---------------------------------------------------------------
+    // Directory pruning (slice 8)
+    // ---------------------------------------------------------------
+
+    /// Same posture as [`sweep_stale_tmp_files`]: an explicit
+    /// maintenance op that surfaces a missing dir as an error
+    /// rather than a no-op.
+    #[test]
+    fn prune_missing_dir_returns_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("no-such-dir");
+        let err = prune_snapshot_dir(&missing, 1).expect_err("missing dir is an error");
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn prune_empty_dir_returns_zero() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(prune_snapshot_dir(tmp.path(), 5).unwrap(), 0);
+    }
+
+    /// `keep_last_n >= count` leaves everything alone.
+    #[test]
+    fn prune_keep_last_n_greater_than_count_removes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        for i in 0..3 {
+            let name = format!("{:064x}.wal", i);
+            std::fs::write(tmp.path().join(&name), b"x").unwrap();
+        }
+        assert_eq!(prune_snapshot_dir(tmp.path(), 10).unwrap(), 0);
+        assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 3);
+    }
+
+    /// `keep_last_n = 0` removes every `.wal` file.
+    #[test]
+    fn prune_keep_last_n_zero_removes_everything() {
+        let tmp = tempfile::tempdir().unwrap();
+        for i in 0..3 {
+            let name = format!("{:064x}.wal", i);
+            std::fs::write(tmp.path().join(&name), b"x").unwrap();
+        }
+        assert_eq!(prune_snapshot_dir(tmp.path(), 0).unwrap(), 3);
+        assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 0);
+    }
+
+    /// Load-bearing: retention keeps the N newest by mtime, not
+    /// by filename order.  Five snapshots with staggered mtimes,
+    /// keep 2 → the two newest survive.
+    #[test]
+    fn prune_keeps_newest_n_by_mtime() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut paths = Vec::new();
+        for i in 0..5 {
+            let name = format!("{:064x}.wal", i);
+            let p = tmp.path().join(&name);
+            std::fs::write(&p, b"x").unwrap();
+            // Age file[i] by (5 - i) hours: file[0] is oldest,
+            // file[4] is newest.
+            age_file(&p, ((5 - i) as u64) * 3600);
+            paths.push(p);
+        }
+        assert_eq!(prune_snapshot_dir(tmp.path(), 2).unwrap(), 3);
+        // The two newest (indices 3, 4) survive.
+        assert!(!paths[0].exists());
+        assert!(!paths[1].exists());
+        assert!(!paths[2].exists());
+        assert!(paths[3].exists());
+        assert!(paths[4].exists());
+    }
+
+    /// Sidecar pairing: pruning a `.wal` also removes its paired
+    /// `.hashes` sidecar so stale sidecars don't outlive their
+    /// snapshots (which would defeat retention's payload-hash
+    /// union pass).
+    #[test]
+    fn prune_pairs_sidecar_removal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let entries = diverse_entries();
+        // Two snapshots via the real writer so both `.wal` and
+        // `.hashes` files exist naturally.
+        let (path_a, _, _) = write_snapshot(tmp.path(), &entries).expect("write a ok");
+        // Second snapshot must differ; add a synthetic entry.
+        let mut entries_b = entries.clone();
+        entries_b.push(WalEntry {
+            op: WalOp::Write,
+            path: PathBuf::from("/@bundle/second"),
+            extra_path: None,
+            offset: None,
+            length: Some(4),
+            payload_ref: Some(PayloadRef::hash(b"more")),
+            mode_bits: None,
+            owner: None,
+            group: None,
+            outcome: WalOutcome::Success,
+        });
+        let (path_b, _, _) = write_snapshot(tmp.path(), &entries_b).expect("write b ok");
+        let sidecar_a = path_a.with_extension("hashes");
+        let sidecar_b = path_b.with_extension("hashes");
+        assert!(sidecar_a.exists() && sidecar_b.exists());
+        // Age snapshot_a so snapshot_b is strictly newer.
+        age_file(&path_a, 3600);
+        age_file(&sidecar_a, 3600);
+
+        assert_eq!(prune_snapshot_dir(tmp.path(), 1).unwrap(), 1);
+        assert!(!path_a.exists(), "old .wal removed");
+        assert!(!sidecar_a.exists(), "paired .hashes sidecar removed");
+        assert!(path_b.exists(), "new .wal survives");
+        assert!(sidecar_b.exists(), "new .hashes survives");
+    }
+
+    /// A `.wal` without a paired sidecar (e.g., a pre-sidecar
+    /// snapshot from before PR #507) still prunes cleanly —
+    /// ENOENT on the sidecar removal is silently OK.
+    #[test]
+    fn prune_missing_sidecar_is_fine() {
+        let tmp = tempfile::tempdir().unwrap();
+        let name = format!("{:064x}.wal", 1);
+        let p = tmp.path().join(&name);
+        std::fs::write(&p, b"x").unwrap();
+        assert_eq!(prune_snapshot_dir(tmp.path(), 0).unwrap(), 1);
+        assert!(!p.exists());
+    }
+
+    /// Non-`.wal` files survive prune untouched: an orphan
+    /// `.hashes` (no matching `.wal`), the manifest itself, and
+    /// stale `.wal.tmp` files.
+    #[test]
+    fn prune_leaves_non_wal_files_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let orphan_hashes = tmp.path().join(format!("{:064x}.hashes", 0xAB));
+        let manifest = tmp.path().join(MANIFEST_FILENAME);
+        let stale_tmp = tmp.path().join("something.12345-1-1.wal.tmp");
+        for p in [&orphan_hashes, &manifest, &stale_tmp] {
+            std::fs::write(p, b"x").unwrap();
+        }
+        assert_eq!(prune_snapshot_dir(tmp.path(), 0).unwrap(), 0);
+        for p in [&orphan_hashes, &manifest, &stale_tmp] {
+            assert!(p.exists(), "should survive prune: {}", p.display());
+        }
+    }
+
+    /// Symlink `.wal` entries are skipped — never counted, never
+    /// removed by name (which would just unlink the symlink,
+    /// noisy).  Operator hygiene defense.
+    #[cfg(unix)]
+    #[test]
+    fn prune_skips_symlinks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join(format!("{:064x}.wal", 1));
+        let link = tmp.path().join(format!("{:064x}.wal", 2));
+        std::fs::write(&real, b"real").unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        age_file(&real, 3600);
+        // keep_last_n=0: both real+link would be removed if the
+        // symlink weren't skipped.  With the skip: only the real
+        // file is a candidate; it gets removed, count = 1.  Link
+        // itself is left alone (dangling, but that's operator's
+        // problem to clean up).
+        assert_eq!(prune_snapshot_dir(tmp.path(), 0).unwrap(), 1);
+        assert!(!real.exists(), "real .wal removed");
+        // symlink_metadata (lstat) so we check the link itself,
+        // not the target.
+        assert!(
+            std::fs::symlink_metadata(&link).is_ok(),
+            "symlink survives prune"
+        );
+    }
+
+    /// Prune returns the count of `.wal` files SUCCESSFULLY
+    /// removed — not the count of pruning candidates, and not
+    /// counting sidecar removals.
+    #[test]
+    fn prune_returns_count_of_wal_removals_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        for i in 0..4 {
+            let name = format!("{:064x}.wal", i);
+            let p = tmp.path().join(&name);
+            std::fs::write(&p, b"x").unwrap();
+            // Also drop a sidecar so we can prove sidecar
+            // removals don't inflate the count.
+            let sidecar = p.with_extension("hashes");
+            std::fs::write(&sidecar, b"y").unwrap();
+            age_file(&p, ((10 - i) as u64) * 60);
+        }
+        // Keep 1; expect 3 `.wal` removals (and 3 silent sidecar
+        // removals) — count is `.wal` only.
+        assert_eq!(prune_snapshot_dir(tmp.path(), 1).unwrap(), 3);
+    }
+
+    /// Post-write happy path: after a single `write_snapshot`
+    /// cycle, `prune_snapshot_dir(dir, 1)` removes nothing
+    /// (there is exactly one snapshot).
+    #[test]
+    fn prune_after_write_snapshot_cycle_keeps_just_written_snapshot() {
+        let tmp = tempfile::tempdir().unwrap();
+        let entries = diverse_entries();
+        let (path, _, _) = write_snapshot(tmp.path(), &entries).expect("write ok");
+        let sidecar = path.with_extension("hashes");
+        assert_eq!(prune_snapshot_dir(tmp.path(), 1).unwrap(), 0);
+        assert!(path.exists() && sidecar.exists());
+    }
+
+    /// Load-bearing invariant: if the `.wal` removal fails (e.g.,
+    /// permissions, filesystem quirk, locked by another process),
+    /// the paired `.hashes` sidecar MUST be preserved.  Otherwise
+    /// we create an orphan `.wal` without its sidecar, and the
+    /// next [`scan_retained_payload_hashes`] pass would
+    /// under-count the payload hashes this still-live snapshot
+    /// references → payload-store retention would delete the
+    /// referenced bytes → snapshot becomes unreadable.
+    ///
+    /// This is the exact "orphan payload" hazard the
+    /// manifest-independent pruning design was engineered to
+    /// avoid; this test closes the symmetric case at the
+    /// `.wal`-removal-failure path.  Portable orchestration:
+    /// create the `.wal` as a DIRECTORY so `remove_file` returns
+    /// EISDIR on every POSIX system without needing special
+    /// privileges or filesystem features.
+    #[test]
+    fn prune_wal_removal_failure_preserves_paired_sidecar() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wal_path = tmp.path().join(format!("{:064x}.wal", 1));
+        let sidecar_path = wal_path.with_extension("hashes");
+        // `.wal` as a directory: `remove_file` will fail with EISDIR.
+        std::fs::create_dir(&wal_path).unwrap();
+        // `.hashes` as a regular file: `remove_file` would
+        // succeed if attempted — which the fix forbids.
+        std::fs::write(&sidecar_path, b"preserve me").unwrap();
+
+        // keep_last_n = 0 → every `.wal` candidate enters the
+        // remove loop.  The directory's `remove_file` fails;
+        // per the orphan-`.wal` invariant, the sidecar MUST
+        // survive.
+        let removed = prune_snapshot_dir(tmp.path(), 0).unwrap();
+        assert_eq!(removed, 0, "no `.wal` was successfully removed");
+        assert!(wal_path.exists(), "orphan `.wal` survives (remove failed)");
+        assert!(
+            sidecar_path.exists(),
+            "paired sidecar MUST survive when `.wal` remove failed \
+             (otherwise next retention pass under-counts hashes)"
+        );
+    }
+
+    /// Same-mtime tiebreaker: two `.wal` files with identical
+    /// mtimes must have deterministic pruning survivors (not
+    /// dependent on `read_dir` order, which is OS/filesystem-
+    /// specific).  The secondary sort key is filename, so with
+    /// `keep_last_n = 1` the lexicographically-smaller name is
+    /// the survivor (reverse mtime, then forward filename →
+    /// smaller filename wins the tiebreaker when mtimes match).
+    #[test]
+    fn prune_same_mtime_tiebreaker_is_deterministic_by_filename() {
+        let tmp = tempfile::tempdir().unwrap();
+        let a = tmp.path().join(format!("{:064x}.wal", 1)); // "0000...0001.wal"
+        let b = tmp.path().join(format!("{:064x}.wal", 2)); // "0000...0002.wal"
+        std::fs::write(&a, b"x").unwrap();
+        std::fs::write(&b, b"y").unwrap();
+        // Force both to the same mtime so the tiebreaker fires.
+        let aged = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        for p in [&a, &b] {
+            let f = std::fs::OpenOptions::new().write(true).open(p).unwrap();
+            let times = std::fs::FileTimes::new()
+                .set_modified(aged)
+                .set_accessed(aged);
+            f.set_times(times).unwrap();
+        }
+        // keep_last_n = 1.  Sort key is (mtime desc, filename asc).
+        // With equal mtimes, filename-ascending puts `a` (hex "0...1")
+        // ahead of `b` (hex "0...2"), so `a` is "newest" per the
+        // tiebreaker and survives.
+        assert_eq!(prune_snapshot_dir(tmp.path(), 1).unwrap(), 1);
+        assert!(a.exists(), "lexicographically-smaller filename survives");
+        assert!(!b.exists());
     }
 }
