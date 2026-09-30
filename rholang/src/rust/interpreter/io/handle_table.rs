@@ -8,26 +8,27 @@
 // that a stale fd reliably observes `FSERR_CLOSED` rather than
 // aliasing a later-opened file.
 //
-// # This slice provides
+// # This slice + prior slices provide
 //
-// The pure-storage foundations:
 //   - `FileHandle` — the per-fd metadata record (owning
 //     `Arc<File>` OR a shadow-handle `None` for follower replay).
 //   - `FileHandleTable` — the runtime-wide cloneable handle with
-//     the private `Inner` allocator + map.
+//     the private `Inner` allocator + map, PLUS `wal` and the
+//     deploy-scope cells.
 //   - `new` / `default` / `insert` / `insert_at` / `remove` /
-//     `raw_fd` / `with_mut`.
+//     `raw_fd` / `with_mut` (slice 1).
+//   - `wal: Wal` public field + WAL journaling access (slice 2).
+//   - `current_deploy_scope` / `current_deploy_sig` cells + their
+//     poison-aborted accessors (slice 2).
 //
 // # Deferred to later `handle_table` slices
 //
-//   - WAL wiring (`wal: Wal` field + `wal()` accessor).
 //   - Cross-registry sharing plumbing (`root_registry: Root
 //     IdentityRegistry`, `lock_registry: LockRegistry`,
 //     `dir_handles: DirHandleTable`, `payload_store`,
 //     `payload_source_recorder`) + their `share_*` methods.
-//   - Deploy-scope cell (`current_deploy_scope`,
-//     `current_deploy_sig`) + `close_all_for_deploy` /
-//     `has_active_handles_sync`.
+//   - `close_all_for_deploy` / `has_active_handles_sync` — gated
+//     on `LockRegistry` for the symmetric sweep interface.
 //   - Soft-checkpoint machinery (`snapshot_next_fd` /
 //     `seed_next_fd_watermark` / `seed_next_fd_from_state_hash` /
 //     `truncate_to`) + its `FD_ENTROPY_HEADROOM_BITS` const-
@@ -80,9 +81,19 @@ use std::sync::Arc;
 // `RwLock` also does not poison, so there's no `poison_abort`
 // equivalent to route through here (contrast `Wal`'s std-lock
 // design in `wal.rs`).
+//
+// The **deploy-scope cells** below (`current_deploy_scope`,
+// `current_deploy_sig`) use `std::sync::RwLock` instead — they're
+// updated at deploy-entry / deploy-drop from synchronous
+// `WalDeployScope::new` / `Drop` code that isn't inside an async
+// context.  Their accessors route through `poison_abort` to match
+// the DD-FailClosedOnInvariantBreak discipline.
 use tokio::sync::RwLock;
 
+use super::errors::poison_abort;
+use super::lock::DeployScope;
 use super::mode::AccessMode;
+use super::wal::Wal;
 use super::ConsensusMode;
 
 /// Per-fd metadata record.
@@ -186,19 +197,92 @@ pub struct FileHandle {
 /// handler closure holds an independent handle onto the same
 /// underlying map.
 ///
-/// # Slice 1 shape
+/// # Slice-2 shape
 ///
-/// The plumbing fields (`wal`, `root_registry`, `lock_registry`,
-/// `current_deploy_scope`, `dir_handles`, `payload_store`,
-/// `payload_source_recorder`) that fileio's `FileHandleTable`
-/// carries are DEFERRED to later slices — each is gated on a
-/// downstream module landing (or on a `share_*` API needing a
-/// helper method that doesn't exist yet).  The slice-1 struct
-/// is intentionally minimal so the fd allocator can land against
-/// today's dev without dragging in an unlanded dependency chain.
+/// The plumbing fields (`root_registry`, `lock_registry`,
+/// `dir_handles`, `payload_store`, `payload_source_recorder`)
+/// that fileio's `FileHandleTable` carries are DEFERRED to later
+/// slices — each is gated on a downstream module landing (or on a
+/// `share_*` API needing a helper method that doesn't exist yet).
+/// The slice-2 struct adds the two pieces whose downstream
+/// dependencies HAVE landed: the `Wal` buffer (PR #490 / #493)
+/// and the deploy-scope cells (`DeployScope` type + `poison_abort`
+/// helper from PR #488 / #489).
 #[derive(Debug, Clone, Default)]
 pub struct FileHandleTable {
     inner: Arc<Inner>,
+    /// Consensus-mode Write-Ahead Log.  Attached to the handle
+    /// table because both are per-runtime state that gets plumbed
+    /// identically through the reducer.  Handler closures access
+    /// via `self.handles.wal.append_with_ack(...)` etc.  Journal
+    /// appends happen inside the fd-based mutating handlers after
+    /// successful syscall completion, gated on the `FileHandle`'s
+    /// `cmode`.
+    ///
+    /// Public field (matches fileio's ergonomic idiom) — `Wal`'s
+    /// own methods already route through `poison_abort` internally,
+    /// so no discipline is bypassed by direct access.
+    pub wal: Wal,
+    /// The per-runtime "current deploy state" — `scope` + `sig`
+    /// bundled under a **single** guard.
+    ///
+    /// # Structural invariant
+    ///
+    /// Both fields live under one `RwLock`.  The compound writers
+    /// `set_current_deploy(scope, sig)` and
+    /// `clear_current_deploy()` update both in a single guard
+    /// scope, so consumers can NEVER observe a half-populated
+    /// pair `(sentinel_scope, non_empty_sig)` or
+    /// `(non_sentinel_scope, empty_sig)` even under concurrent
+    /// reads.  This makes the "both populated OR both sentinel"
+    /// contract *structural* rather than conventional-only.
+    ///
+    /// The per-field `set_current_deploy_scope` /
+    /// `set_current_deploy_sig` setters exist for narrower
+    /// callers (tests intentionally exercising partial-state
+    /// semantics); production deploy-entry / -drop code SHOULD
+    /// use the compound helpers.
+    ///
+    /// # Cell shape
+    ///
+    /// `std::sync::RwLock` (not tokio's async lock) — the cell is
+    /// set from synchronous `WalDeployScope::new` / `Drop` code,
+    /// not from an async context.  Accessors route through
+    /// `poison_abort` per DD-FailClosedOnInvariantBreak.
+    ///
+    /// # Consumers
+    ///
+    ///   - `scope` (`Blake2b256(deploy.sig)` for user deploys):
+    ///     read on lock acquire (Wave 4) and by
+    ///     `LockRegistry::release_all_for_deploy` at deploy end.
+    ///     Sentinel `[0u8; 32]` between deploys.
+    ///   - `sig` (raw signature bytes): read on `journal_write`
+    ///     (Wave 4) to index `(payload_hash → deploy_sig)` via
+    ///     `PayloadSourceRecorder`.  Empty vec between deploys —
+    ///     the record step skips when the cell is empty.
+    ///
+    /// # Why two fields instead of one hash
+    ///
+    /// The scope drives lock-sweep scoping; the sig drives the
+    /// block-storage `deploy_index` walk (which keys on
+    /// `DeployId = shared::ByteString`).  Recording the scope
+    /// hash into the payload-source index would break the joiner
+    /// chain `payload_hash → deploy_sig → block_hash → block
+    /// bytes → ProcessedDeploy`.
+    ///
+    /// Per-runtime cell (not manager-broadcast): each runtime
+    /// processes deploys sequentially, so a single cell suffices;
+    /// concurrent runtimes have independent `FileHandleTable`
+    /// instances.
+    deploy: Arc<std::sync::RwLock<DeployState>>,
+}
+
+/// Bundled `(scope, sig)` for the current deploy.  Private —
+/// exposed through `FileHandleTable`'s accessor methods only.
+#[derive(Debug, Default, Clone)]
+struct DeployState {
+    scope: DeployScope,
+    sig: Vec<u8>,
 }
 
 #[derive(Debug)]
@@ -385,6 +469,63 @@ impl FileHandleTable {
     where F: FnOnce(&mut FileHandle) -> R {
         let mut table = self.inner.table.write().await;
         table.get_mut(&fd).map(f)
+    }
+
+    // --- Deploy-scope cells ----------------------------------------
+
+    /// Read the current deploy scope.  Returns `[0u8; 32]` (the
+    /// sentinel) when no `WalDeployScope` is live.
+    pub fn current_deploy_scope(&self) -> DeployScope {
+        poison_abort(self.deploy.read(), "FileHandleTable.deploy").scope
+    }
+
+    /// Set ONLY the current deploy scope.  Prefer
+    /// `set_current_deploy(scope, sig)` at deploy-entry — the
+    /// compound writer maintains the "both populated OR both
+    /// sentinel" invariant structurally.  This per-field setter
+    /// exists for narrower callers (tests that intentionally
+    /// exercise partial state).
+    pub fn set_current_deploy_scope(&self, scope: DeployScope) {
+        poison_abort(self.deploy.write(), "FileHandleTable.deploy").scope = scope;
+    }
+
+    /// Read the current deploy signature (raw bytes).  Returns an
+    /// empty vec when no `WalDeployScope` is live — that's the
+    /// sentinel the (yet-to-land) `journal_write` path checks to
+    /// decide whether to skip the payload-source-recorder step.
+    pub fn current_deploy_sig(&self) -> Vec<u8> {
+        poison_abort(self.deploy.read(), "FileHandleTable.deploy")
+            .sig
+            .clone()
+    }
+
+    /// Set ONLY the current deploy signature.  Same "prefer the
+    /// compound writer" caveat as `set_current_deploy_scope`.
+    pub fn set_current_deploy_sig(&self, sig: Vec<u8>) {
+        poison_abort(self.deploy.write(), "FileHandleTable.deploy").sig = sig;
+    }
+
+    /// Set BOTH deploy cells atomically under a single guard.
+    /// Called by the (yet-to-land) `WalDeployScope::new` at
+    /// deploy-entry — the two fields transition together so
+    /// consumers cannot observe a `(scope, sig)` pair that
+    /// straddles the deploy boundary.
+    pub fn set_current_deploy(&self, scope: DeployScope, sig: Vec<u8>) {
+        let mut guard = poison_abort(self.deploy.write(), "FileHandleTable.deploy");
+        guard.scope = scope;
+        guard.sig = sig;
+    }
+
+    /// Reset BOTH deploy cells to their sentinel state atomically
+    /// under a single guard.  Called by the (yet-to-land)
+    /// `WalDeployScope::drop`.  Consumers reading during (or
+    /// concurrent with) this call see either the pre-clear
+    /// `(populated, populated)` or the post-clear `(sentinel,
+    /// sentinel)` — never a straddled pair.
+    pub fn clear_current_deploy(&self) {
+        let mut guard = poison_abort(self.deploy.write(), "FileHandleTable.deploy");
+        guard.scope = [0u8; 32];
+        guard.sig.clear();
     }
 }
 
@@ -656,5 +797,99 @@ mod tests {
         // Visible via the sibling clone.
         let deploy = b.with_mut(fd, |h| h.deploy).await.unwrap();
         assert_eq!(deploy, [0x42; 32]);
+    }
+
+    // --- Slice 2: Wal + deploy-scope cells -------------------------
+
+    #[test]
+    fn wal_field_starts_empty_and_is_shared_across_clones() {
+        use super::super::wal::{PayloadRef, WalEntry, WalOp, WalOutcome};
+
+        let a = FileHandleTable::new();
+        assert!(a.wal.is_empty());
+
+        // Cloning FileHandleTable shares the Arc<...> inside Wal
+        // (Wal itself is Arc-backed).  A journal append through
+        // `a` is visible through `b`.
+        let b = a.clone();
+        let entry = WalEntry {
+            op: WalOp::Write,
+            path: PathBuf::from("/tmp/x"),
+            extra_path: None,
+            offset: None,
+            length: Some(1),
+            payload_ref: Some(PayloadRef::hash(b"x")),
+            mode_bits: None,
+            owner: None,
+            group: None,
+            outcome: WalOutcome::Success,
+        };
+        a.wal.append(entry).unwrap();
+        assert_eq!(b.wal.len(), 1);
+    }
+
+    #[test]
+    fn deploy_scope_starts_at_sentinel() {
+        let table = FileHandleTable::new();
+        assert_eq!(table.current_deploy_scope(), [0u8; 32]);
+    }
+
+    #[test]
+    fn deploy_sig_starts_empty() {
+        let table = FileHandleTable::new();
+        assert!(table.current_deploy_sig().is_empty());
+    }
+
+    #[test]
+    fn set_and_read_current_deploy_scope_roundtrips() {
+        let table = FileHandleTable::new();
+        let scope = [0xAAu8; 32];
+        table.set_current_deploy_scope(scope);
+        assert_eq!(table.current_deploy_scope(), scope);
+    }
+
+    #[test]
+    fn set_and_read_current_deploy_sig_roundtrips() {
+        let table = FileHandleTable::new();
+        let sig = b"raw-deploy-sig-bytes".to_vec();
+        table.set_current_deploy_sig(sig.clone());
+        assert_eq!(table.current_deploy_sig(), sig);
+    }
+
+    /// The clones share the underlying `Arc<RwLock<...>>` cells —
+    /// a set through one clone is visible through another.  Load-
+    /// bearing for the (yet-to-land) `WalDeployScope::new` +
+    /// handler-side reads across independently-cloned handles.
+    #[test]
+    fn deploy_scope_and_sig_are_shared_across_clones() {
+        let a = FileHandleTable::new();
+        let b = a.clone();
+        let scope = [0xBBu8; 32];
+        a.set_current_deploy_scope(scope);
+        a.set_current_deploy_sig(b"sig".to_vec());
+        assert_eq!(b.current_deploy_scope(), scope);
+        assert_eq!(b.current_deploy_sig(), b"sig".to_vec());
+    }
+
+    #[test]
+    fn clear_current_deploy_resets_both_cells_to_sentinel() {
+        let table = FileHandleTable::new();
+        table.set_current_deploy_scope([0x11u8; 32]);
+        table.set_current_deploy_sig(vec![0x22, 0x33]);
+        table.clear_current_deploy();
+        assert_eq!(table.current_deploy_scope(), [0u8; 32]);
+        assert!(table.current_deploy_sig().is_empty());
+    }
+
+    /// The compound writer sets both cells under a single guard.
+    /// A subsequent read of either field sees the paired value.
+    #[test]
+    fn set_current_deploy_updates_both_cells_atomically() {
+        let table = FileHandleTable::new();
+        let scope = [0x77u8; 32];
+        let sig = b"paired-sig".to_vec();
+        table.set_current_deploy(scope, sig.clone());
+        assert_eq!(table.current_deploy_scope(), scope);
+        assert_eq!(table.current_deploy_sig(), sig);
     }
 }
