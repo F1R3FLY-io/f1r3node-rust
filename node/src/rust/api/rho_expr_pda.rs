@@ -1,6 +1,4 @@
-#[cfg(test)]
 use std::cell::Cell;
-use std::collections::hash_map::RandomState;
 use std::collections::HashMap;
 
 use models::rhoapi::expr::ExprInstance;
@@ -848,6 +846,26 @@ enum CloneSequenceKind {
     Set,
 }
 
+thread_local! {
+    static CLONING_LEGACY_MAP_LAYOUT: Cell<bool> = const { Cell::new(false) };
+}
+
+struct LegacyMapLayoutCloneGuard;
+
+impl Drop for LegacyMapLayoutCloneGuard {
+    fn drop(&mut self) { CLONING_LEGACY_MAP_LAYOUT.set(false); }
+}
+
+fn clone_legacy_map_layout(source: &HashMap<String, RhoExpr>) -> HashMap<String, RhoExpr> {
+    assert!(
+        !CLONING_LEGACY_MAP_LAYOUT.get(),
+        "legacy map layout clone must not reenter itself"
+    );
+    CLONING_LEGACY_MAP_LAYOUT.set(true);
+    let _guard = LegacyMapLayoutCloneGuard;
+    source.clone()
+}
+
 enum CloneWork<'a> {
     Expr(&'a RhoExpr),
     FinishSequence {
@@ -855,9 +873,8 @@ enum CloneWork<'a> {
         arity: usize,
     },
     FinishLegacyMap {
-        keys: Vec<String>,
-        capacity: usize,
-        hasher: RandomState,
+        data: HashMap<String, RhoExpr>,
+        arity: usize,
     },
     FinishPathSet {
         arity: usize,
@@ -929,19 +946,17 @@ fn clone_rho_expr(root: &RhoExpr) -> RhoExpr {
                     clone_push_sequence(&mut work, CloneSequenceKind::Set, data)
                 }
                 RhoExpr::ExprMap { data } => {
-                    let entries: Vec<_> = data.iter().collect();
-                    let keys = entries.iter().map(|(key, _)| (*key).clone()).collect();
-                    work.push(CloneWork::FinishLegacyMap {
-                        keys,
-                        capacity: data.capacity(),
-                        hasher: data.hasher().clone(),
-                    });
-                    work.extend(
-                        entries
-                            .into_iter()
-                            .rev()
-                            .map(|(_, value)| CloneWork::Expr(value)),
+                    let entries: Vec<_> = data.values().collect();
+                    let cloned = clone_legacy_map_layout(data);
+                    assert!(
+                        data.keys().eq(cloned.keys()),
+                        "legacy map layout clone changed iteration order"
                     );
+                    work.push(CloneWork::FinishLegacyMap {
+                        data: cloned,
+                        arity: entries.len(),
+                    });
+                    work.extend(entries.into_iter().rev().map(CloneWork::Expr));
                 }
                 RhoExpr::ExprPathMap {
                     data: RhoPathMap::Empty,
@@ -1091,14 +1106,11 @@ fn clone_rho_expr(root: &RhoExpr) -> RhoExpr {
                     CloneSequenceKind::Set => RhoExpr::ExprSet { data },
                 });
             }
-            CloneWork::FinishLegacyMap {
-                keys,
-                capacity,
-                hasher,
-            } => {
-                let cloned_values = clone_take_values(&mut values, keys.len());
-                let mut data = HashMap::with_capacity_and_hasher(capacity, hasher);
-                data.extend(keys.into_iter().zip(cloned_values));
+            CloneWork::FinishLegacyMap { mut data, arity } => {
+                let cloned_values = clone_take_values(&mut values, arity);
+                for (slot, value) in data.values_mut().zip(cloned_values) {
+                    *slot = value;
+                }
                 values.push(RhoExpr::ExprMap { data });
             }
             CloneWork::FinishPathSet { arity } => {
@@ -1609,7 +1621,15 @@ fn rho_expr_json(root: &RhoExpr) -> String {
 }
 
 impl Clone for RhoExpr {
-    fn clone(&self) -> Self { clone_rho_expr(self) }
+    fn clone(&self) -> Self {
+        if CLONING_LEGACY_MAP_LAYOUT.get() {
+            // HashMap::clone copies its bucket layout. The PDA fills these slots
+            // from the original values without recursing through nested maps.
+            RhoExpr::ExprSysAuthToken
+        } else {
+            clone_rho_expr(self)
+        }
+    }
 }
 
 impl Drop for RhoExpr {
