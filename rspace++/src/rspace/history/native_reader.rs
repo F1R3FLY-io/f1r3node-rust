@@ -5,8 +5,10 @@ use blake2::{Blake2b, Digest};
 use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
 
 mod framing;
+mod typed;
 use framing::{MAX_NODE_BYTES, NodeStep, node_step};
 pub use framing::{NativeLeafKind, NativeRecords};
+pub use typed::decode_record;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NativeReadCharge {
@@ -33,6 +35,8 @@ pub enum NativeReadFault {
     MissingLeaf,
     Overflow,
     Allocation,
+    TypedRecord,
+    Depth,
 }
 
 #[derive(Debug)]
@@ -211,3 +215,6 @@ impl<'a> NativeHistoryReader<'a> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(crate) use tests::allocations::measure as measure_allocations;

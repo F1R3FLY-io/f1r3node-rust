@@ -1,4 +1,5 @@
-use models::rust::host_work::HostWorkDimension;
+use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
+use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::r#match::Match;
 use rspace_plus_plus::rspace::rspace::RSpace;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
@@ -10,6 +11,26 @@ struct Matcher;
 
 impl Match<String, String, String> for Matcher {
     fn get(&self, _: &String, datum: &String) -> Option<String> { Some(datum.clone()) }
+
+    fn get_metered(
+        &self,
+        _: &String,
+        datum: &String,
+        meter: &(dyn rspace_plus_plus::rspace::hashing::native_source::SourceMeter + Send + Sync),
+    ) -> Result<Option<String>, RSpaceError> {
+        meter.reserve(1, datum.len(), datum.len())?;
+        Ok(Some(datum.clone()))
+    }
+
+    fn check_commit_metered(
+        &self,
+        _: &String,
+        _: &[String],
+        meter: &(dyn rspace_plus_plus::rspace::hashing::native_source::SourceMeter + Send + Sync),
+    ) -> Result<bool, RSpaceError> {
+        meter.reserve(1, 0, 0)?;
+        Ok(true)
+    }
 }
 
 fn empty_trace() -> CheckedNativeOperationTrace {
@@ -20,6 +41,13 @@ fn empty_trace() -> CheckedNativeOperationTrace {
         used: 0,
     };
     bind(&recording, Arc::from([]), Vec::new()).unwrap()
+}
+
+#[test]
+fn replay_rejects_before_allocating_fixed_owners_without_cleanup_credit() {
+    let budget = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(3)));
+    assert!(empty_trace().into_replay(budget.clone()).is_err());
+    assert_eq!(budget.usage(HostWorkDimension::SearchStateBytes).get(), 0);
 }
 
 async fn session(
@@ -131,4 +159,104 @@ async fn borrowed_history_uses_the_production_host_budget_without_refunding_read
         budget.usage(HostWorkDimension::SearchStateBytes).get(),
         previous_backing
     );
+}
+
+#[tokio::test]
+async fn cold_session_queries_preserve_rejected_execution_and_use_the_inspection_budget() {
+    use rspace_plus_plus::rspace::rspace_interface::ISpace;
+
+    let mut stores = InMemoryStoreManager::new();
+    let (play, _) = RSpace::<String, String, String, String>::create_with_replay(
+        stores.r_space_stores().await.unwrap(),
+        Arc::new(Box::new(Matcher)),
+    )
+    .unwrap();
+    play.produce("cold".into(), "retained".into(), false)
+        .await
+        .unwrap();
+    let root = play.create_checkpoint().await.unwrap().root;
+    let execution = host();
+    let session = empty_trace()
+        .into_session(
+            play.get_history_repository(),
+            Arc::new(Box::new(Matcher)),
+            execution.clone(),
+        )
+        .unwrap();
+    execution
+        .reserve(HostWorkDimension::VerificationOperations, u64::MAX.into())
+        .unwrap_err();
+    assert_eq!(
+        session.get_data(&"cold".into()).await.unwrap_err(),
+        RSpaceError::HostWorkRejected
+    );
+    let inspection = host();
+    assert_eq!(
+        session
+            .get_data_with_host_work(&"cold".into(), &inspection)
+            .await
+            .unwrap()[0]
+            .a,
+        "retained"
+    );
+    assert!(
+        inspection
+            .usage(HostWorkDimension::VerificationOperations)
+            .get()
+            > 0
+    );
+    assert!(inspection.usage(HostWorkDimension::SearchStateBytes).get() > 0);
+    assert_eq!(
+        session.get_data(&"cold".into()).await.unwrap_err(),
+        RSpaceError::HostWorkRejected
+    );
+    assert_eq!(play.get_history_repository().root(), root);
+    session.close().await.unwrap();
+    assert!(session
+        .get_data_with_host_work(&"cold".into(), &host())
+        .await
+        .is_err());
+}
+
+#[test]
+fn guarded_history_decoder_preserves_the_production_rho_record_schema() {
+    use models::rhoapi::{ListParWithRandom, Par};
+    use rspace_plus_plus::rspace::history::native_reader::{decode_record, NativeReadError};
+    use rspace_plus_plus::rspace::internal::Datum;
+    use rspace_plus_plus::rspace::trace::event::Produce;
+
+    let value = ListParWithRandom {
+        pars: vec![Par {
+            locally_free: vec![1, 2, 3],
+            ..Default::default()
+        }],
+        random_state: vec![7; 32],
+        ..Default::default()
+    };
+    let datum = Datum {
+        source: Produce::create(&Par::default(), &value, false),
+        a: value,
+        persist: false,
+    };
+    let bytes = bincode::serialize(&datum).unwrap();
+    let expected: Datum<ListParWithRandom> = bincode::deserialize(&bytes).unwrap();
+    let budget = host();
+    assert_eq!(
+        decode_record::<Datum<ListParWithRandom>, _>(&bytes, &budget).unwrap(),
+        expected
+    );
+    assert!(
+        budget
+            .usage(HostWorkDimension::VerificationOperations)
+            .get()
+            > 0
+    );
+    assert!(budget.usage(HostWorkDimension::SearchStateBytes).get() > 0);
+    budget
+        .reserve(HostWorkDimension::VerificationOperations, u64::MAX.into())
+        .unwrap_err();
+    assert!(matches!(
+        decode_record::<Datum<ListParWithRandom>, _>(&bytes, &budget),
+        Err(NativeReadError::Host(InterpreterError::HostWorkRejected))
+    ));
 }

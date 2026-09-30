@@ -1,5 +1,8 @@
+use std::cell::Cell;
+
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{Expr, Par};
+use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::replay_rspace::native_epoch::NativeCandidateIdentity;
 use rspace_plus_plus::rspace::rspace_interface::RSpaceOperationSource;
 use rspace_plus_plus::rspace::trace::event::{Consume, Produce, COMM};
@@ -21,7 +24,12 @@ fn native_operation_source_preserves_channel_persistence_and_counter_presence() 
             different.persistent = true;
         }
         assert_eq!(source, different);
-        assert!(!captured.matches(RSpaceOperationSource::Produce(&different)));
+        assert!(!captured
+            .metered_matches(
+                RSpaceOperationSource::Produce(&different),
+                &|_, _, _| Ok(())
+            )
+            .unwrap());
         assert_ne!(
             captured,
             NativeOperationSource::capture(RSpaceOperationSource::Produce(&different), &host)
@@ -88,6 +96,98 @@ fn native_candidate_identity_uses_full_sources_without_imported_telemetry() {
     }
 }
 
+#[test]
+fn native_candidate_identity_pays_each_comparison_before_evaluation() {
+    let host = config(100, [0; 4]).host_work;
+    let producer = Produce::create(&1u8, &7u8, false);
+    let source = COMM {
+        consume: Consume::create(&vec![1u8], &vec![0u8], &7u8, false),
+        produces: vec![producer.clone()],
+        peeks: [0].into_iter().collect(),
+        times_repeated: [(producer.clone(), 3)].into_iter().collect(),
+    };
+    let identity = NativeCommSource::capture(&source, &host).unwrap();
+    let usage = Cell::new([0usize; 3]);
+    let unlimited = |operations: usize, scanned: usize, backing: usize| {
+        let mut next = usage.get();
+        for (used, added) in next.iter_mut().zip([operations, scanned, backing]) {
+            *used += added;
+        }
+        usage.set(next);
+        Ok(())
+    };
+    assert!(identity
+        .metered_matches_consume(&source.consume, &unlimited)
+        .unwrap());
+    assert!(identity
+        .metered_matches_produce(&producer, &unlimited)
+        .unwrap());
+    assert_eq!(
+        identity.metered_repetition(&producer, &unlimited).unwrap(),
+        Some(3)
+    );
+    usage.set([0; 3]);
+    assert!(identity.metered_matches_comm(&source, &unlimited).unwrap());
+    let required = usage.get();
+    assert!(required[0] > 1);
+    assert!(required[1] > 0);
+    for limit in 0..required[0] {
+        let used = Cell::new(0usize);
+        let meter = |count: usize, _: usize, _: usize| {
+            let next = used.get() + count;
+            if next > limit {
+                return Err(RSpaceError::HostWorkRejected);
+            }
+            used.set(next);
+            Ok(())
+        };
+        assert!(matches!(
+            identity.metered_matches_comm(&source, &meter),
+            Err(RSpaceError::HostWorkRejected)
+        ));
+    }
+    for dimension in 0..2 {
+        let mut limits = required;
+        limits[dimension] -= 1;
+        let used = Cell::new([0usize; 3]);
+        let meter = |operations: usize, scanned: usize, backing: usize| {
+            let mut next = used.get();
+            for (value, added) in next.iter_mut().zip([operations, scanned, backing]) {
+                *value += added;
+            }
+            if next.iter().zip(limits).any(|(value, limit)| *value > limit) {
+                return Err(RSpaceError::HostWorkRejected);
+            }
+            used.set(next);
+            Ok(())
+        };
+        assert!(matches!(
+            identity.metered_matches_comm(&source, &meter),
+            Err(RSpaceError::HostWorkRejected)
+        ));
+    }
+    let mut changed = source.clone();
+    changed.consume.channel_hashes[0] =
+        Consume::create(&vec![2u8], &vec![0u8], &7u8, false).channel_hashes[0].clone();
+    assert_eq!(
+        identity.metered_matches_comm(&changed, &unlimited).unwrap(),
+        identity.matches_comm(&changed)
+    );
+    assert!(!identity.metered_matches_comm(&changed, &unlimited).unwrap());
+    let mut changed = source.clone();
+    changed.peeks.insert(1);
+    assert!(!identity.metered_matches_comm(&changed, &unlimited).unwrap());
+    let rejected = |_: usize, _: usize, _: usize| Err(RSpaceError::HostWorkRejected);
+    assert!(matches!(
+        identity.metered_matches_produce(&producer, &rejected),
+        Err(RSpaceError::HostWorkRejected)
+    ));
+    assert!(matches!(
+        identity.metered_repetition(&producer, &rejected),
+        Err(RSpaceError::HostWorkRejected)
+    ));
+}
+
 proptest! {
     #[test]
     fn native_comm_authentication_preserves_ordered_multi_party_sources(
@@ -104,7 +204,8 @@ proptest! {
             times_repeated: produces.into_iter().map(|source| (source, 0)).collect(),
         };
         let expected = NativeCommSource::capture(&source, &host).unwrap();
-        expected.reserve_comparison(&host).unwrap();
+        let meter = |_, _, _| Ok(());
+        prop_assert!(expected.metered_matches(&source, &meter).unwrap());
         prop_assert!(expected.matches(&source));
         let mut reordered = source.clone();
         reordered.produces.reverse();

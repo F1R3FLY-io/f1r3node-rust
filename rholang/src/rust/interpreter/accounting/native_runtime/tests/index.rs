@@ -8,7 +8,7 @@ use proptest::prelude::*;
 use super::*;
 
 impl IndexKey for u64 {
-    fn comparison_work(&self) -> (usize, usize) { (1, 8) }
+    fn comparison_work(&self) -> Result<(usize, usize), InterpreterError> { Ok((1, 8)) }
 }
 
 fn host() -> HostWorkBudget {
@@ -111,7 +111,7 @@ impl Ord for CountedKey {
     }
 }
 impl IndexKey for CountedKey {
-    fn comparison_work(&self) -> (usize, usize) { (1, 8) }
+    fn comparison_work(&self) -> Result<(usize, usize), InterpreterError> { Ok((1, 8)) }
 }
 
 #[test]
@@ -145,7 +145,7 @@ fn native_index_prepaid_completion_survives_independent_growth() {
     let budget = host();
     let prepared = index.prepare_insert(0u64, 7, &budget).unwrap();
     index.commit(prepared);
-    reserve_lookup(0u64.comparison_work(), 512, &budget).unwrap();
+    reserve_lookup(0u64.comparison_work().unwrap(), 512, &budget).unwrap();
     for key in 1..512 {
         let prepared = index.prepare_insert(key, 0, &budget).unwrap();
         index.commit(prepared);

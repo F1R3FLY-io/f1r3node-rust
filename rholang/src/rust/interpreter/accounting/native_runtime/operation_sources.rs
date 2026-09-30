@@ -3,6 +3,8 @@ use std::mem::size_of;
 use std::sync::Arc;
 
 use models::rust::host_work::HostWorkDimension;
+use rspace_plus_plus::rspace::errors::RSpaceError;
+use rspace_plus_plus::rspace::hashing::native_source::SourceMeter;
 use rspace_plus_plus::rspace::replay_rspace::native_epoch::NativeCandidateIdentity;
 use rspace_plus_plus::rspace::rspace_interface::RSpaceOperationSource;
 use rspace_plus_plus::rspace::trace::event::{Consume, Produce, COMM};
@@ -45,6 +47,25 @@ fn hash(bytes: &[u8]) -> Result<[u8; 32], InterpreterError> {
         .map_err(|_| recording_error("native operation source hash has invalid length"))
 }
 
+fn checked_add(left: usize, right: usize) -> Result<usize, InterpreterError> {
+    left.checked_add(right)
+        .ok_or(InterpreterError::HostWorkRejected)
+}
+
+fn checked_mul(left: usize, right: usize) -> Result<usize, InterpreterError> {
+    left.checked_mul(right)
+        .ok_or(InterpreterError::HostWorkRejected)
+}
+
+fn metered_bytes(left: &[u8], right: &[u8], meter: &dyn SourceMeter) -> Result<bool, RSpaceError> {
+    let bytes = left
+        .len()
+        .checked_add(right.len())
+        .ok_or(RSpaceError::HostWorkRejected)?;
+    meter.reserve(1, bytes, 0)?;
+    Ok(left == right)
+}
+
 pub(super) fn allocate<T>(
     count: usize,
     budget: &HostWorkBudget,
@@ -52,12 +73,12 @@ pub(super) fn allocate<T>(
     work(
         budget,
         HostWorkDimension::VerificationOperations,
-        count.saturating_add(1),
+        checked_add(count, 1)?,
     )?;
     work(
         budget,
         HostWorkDimension::SearchStateBytes,
-        count.saturating_mul(size_of::<T>()).saturating_mul(2),
+        checked_mul(checked_mul(count, size_of::<T>())?, 2)?,
     )?;
     let mut result = Vec::new();
     result
@@ -79,6 +100,21 @@ impl NativeProduceSource {
         self.channel.as_slice() == source.channel_hash.0
             && self.hash.as_slice() == source.hash.0
             && self.persistent == source.persistent
+    }
+
+    fn metered_matches(
+        &self,
+        source: &Produce,
+        meter: &dyn SourceMeter,
+    ) -> Result<bool, RSpaceError> {
+        if !metered_bytes(&self.channel, &source.channel_hash.0, meter)? {
+            return Ok(false);
+        }
+        if !metered_bytes(&self.hash, &source.hash.0, meter)? {
+            return Ok(false);
+        }
+        meter.reserve(1, 2, 0)?;
+        Ok(self.persistent == source.persistent)
     }
 }
 
@@ -105,6 +141,30 @@ impl NativeConsumeSource {
                 .zip(&source.channel_hashes)
                 .all(|(a, b)| a.as_slice() == b.0)
     }
+
+    fn metered_matches(
+        &self,
+        source: &Consume,
+        meter: &dyn SourceMeter,
+    ) -> Result<bool, RSpaceError> {
+        if !metered_bytes(&self.hash, &source.hash.0, meter)? {
+            return Ok(false);
+        }
+        meter.reserve(1, 2, 0)?;
+        if self.persistent != source.persistent {
+            return Ok(false);
+        }
+        meter.reserve(1, size_of::<usize>() * 2, 0)?;
+        if self.channels.len() != source.channel_hashes.len() {
+            return Ok(false);
+        }
+        for (expected, actual) in self.channels.iter().zip(&source.channel_hashes) {
+            if !metered_bytes(expected, &actual.0, meter)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
 }
 
 impl NativeOperationSource {
@@ -121,52 +181,34 @@ impl NativeOperationSource {
                 work(
                     budget,
                     HostWorkDimension::VerificationBytes,
-                    source.channel_hashes.len().saturating_mul(64),
+                    checked_mul(source.channel_hashes.len(), 64)?,
                 )?;
                 Ok(Self::Consume(NativeConsumeSource::capture(source, budget)?))
             }
         }
     }
 
-    pub(super) fn matches(&self, source: RSpaceOperationSource<'_>) -> bool {
+    pub(super) fn metered_matches(
+        &self,
+        source: RSpaceOperationSource<'_>,
+        meter: &dyn SourceMeter,
+    ) -> Result<bool, RSpaceError> {
         match (self, source) {
-            (Self::Produce(a), RSpaceOperationSource::Produce(b)) => a.matches(b),
-            (Self::Consume(a), RSpaceOperationSource::Consume(b)) => a.matches(b),
-            _ => false,
+            (Self::Produce(expected), RSpaceOperationSource::Produce(actual)) => {
+                expected.metered_matches(actual, meter)
+            }
+            (Self::Consume(expected), RSpaceOperationSource::Consume(actual)) => {
+                expected.metered_matches(actual, meter)
+            }
+            _ => {
+                meter.reserve(1, 0, 0)?;
+                Ok(false)
+            }
         }
     }
 }
 
 impl NativeCommSource {
-    pub(super) fn reserve_comparison(
-        &self,
-        budget: &HostWorkBudget,
-    ) -> Result<(), InterpreterError> {
-        let producers = self.produces.len().saturating_add(self.repetitions.len());
-        work(
-            budget,
-            HostWorkDimension::VerificationOperations,
-            producers
-                .saturating_add(self.consume.channels.len())
-                .saturating_add(self.peeks.len())
-                .saturating_add(1),
-        )?;
-        work(
-            budget,
-            HostWorkDimension::VerificationBytes,
-            producers
-                .saturating_mul(65)
-                .saturating_add(self.consume.channels.len().saturating_mul(32))
-                .saturating_add(
-                    self.peeks
-                        .len()
-                        .saturating_add(self.repetitions.len())
-                        .saturating_mul(4),
-                )
-                .saturating_add(33),
-        )
-    }
-
     pub(super) fn matches(&self, source: &COMM) -> bool {
         self.consume.matches(&source.consume)
             && self.produces.len() == source.produces.len()
@@ -185,20 +227,60 @@ impl NativeCommSource {
                 .all(|((a, n), (b, m))| n == m && a.matches(b))
     }
 
+    pub(super) fn metered_matches(
+        &self,
+        source: &COMM,
+        meter: &dyn SourceMeter,
+    ) -> Result<bool, RSpaceError> {
+        if !self.consume.metered_matches(&source.consume, meter)? {
+            return Ok(false);
+        }
+        meter.reserve(1, size_of::<usize>() * 2, 0)?;
+        if self.produces.len() != source.produces.len() {
+            return Ok(false);
+        }
+        for (expected, actual) in self.produces.iter().zip(&source.produces) {
+            if !expected.metered_matches(actual, meter)? {
+                return Ok(false);
+            }
+        }
+        meter.reserve(1, size_of::<usize>() * 2, 0)?;
+        if self.peeks.len() != source.peeks.len() {
+            return Ok(false);
+        }
+        for (expected, actual) in self.peeks.iter().zip(&source.peeks) {
+            meter.reserve(1, size_of::<i32>() * 2, 0)?;
+            if expected != actual {
+                return Ok(false);
+            }
+        }
+        meter.reserve(1, size_of::<usize>() * 2, 0)?;
+        if self.repetitions.len() != source.times_repeated.len() {
+            return Ok(false);
+        }
+        for ((expected, count), (actual, actual_count)) in
+            self.repetitions.iter().zip(&source.times_repeated)
+        {
+            meter.reserve(1, size_of::<i32>() * 2, 0)?;
+            if count != actual_count || !expected.metered_matches(actual, meter)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
     pub(super) fn capture(
         source: &COMM,
         budget: &HostWorkBudget,
     ) -> Result<Self, InterpreterError> {
-        let count = source
-            .produces
-            .len()
-            .saturating_add(source.times_repeated.len());
+        let count = checked_add(source.produces.len(), source.times_repeated.len())?;
         work(
             budget,
             HostWorkDimension::VerificationBytes,
-            count
-                .saturating_mul(65)
-                .saturating_add(source.consume.channel_hashes.len().saturating_mul(32)),
+            checked_add(
+                checked_mul(count, 65)?,
+                checked_mul(source.consume.channel_hashes.len(), 32)?,
+            )?,
         )?;
         let mut produces = allocate(source.produces.len(), budget)?;
         for produce in &source.produces {
@@ -235,6 +317,48 @@ impl NativeCandidateIdentity for NativeCommSource {
     }
 
     fn matches_comm(&self, source: &COMM) -> bool { self.matches(source) }
+
+    fn metered_matches_consume(
+        &self,
+        source: &Consume,
+        meter: &dyn SourceMeter,
+    ) -> Result<bool, RSpaceError> {
+        self.consume.metered_matches(source, meter)
+    }
+
+    fn metered_matches_produce(
+        &self,
+        source: &Produce,
+        meter: &dyn SourceMeter,
+    ) -> Result<bool, RSpaceError> {
+        for expected in self.produces.iter() {
+            if expected.metered_matches(source, meter)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    fn metered_repetition(
+        &self,
+        source: &Produce,
+        meter: &dyn SourceMeter,
+    ) -> Result<Option<i32>, RSpaceError> {
+        for (expected, count) in self.repetitions.iter() {
+            if expected.metered_matches(source, meter)? {
+                return Ok(Some(*count));
+            }
+        }
+        Ok(None)
+    }
+
+    fn metered_matches_comm(
+        &self,
+        source: &COMM,
+        meter: &dyn SourceMeter,
+    ) -> Result<bool, RSpaceError> {
+        self.metered_matches(source, meter)
+    }
 }
 
 struct ChannelWriter<'a> {
@@ -254,9 +378,9 @@ impl Write for ChannelWriter<'_> {
             work(
                 self.budget,
                 HostWorkDimension::SearchStateBytes,
-                bytes.len().saturating_mul(4).saturating_add(16),
+                checked_add(checked_mul(bytes.len(), 4)?, 16)?,
             )?;
-            if self.bytes.len().saturating_add(bytes.len()) > self.bytes.capacity() {
+            if checked_add(self.bytes.len(), bytes.len())? > self.bytes.capacity() {
                 work(
                     self.budget,
                     HostWorkDimension::VerificationBytes,

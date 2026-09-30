@@ -1,18 +1,21 @@
 use std::mem::size_of;
 use std::sync::atomic::AtomicBool;
 
+use shared::rust::clone_backing::CloneBacking;
 use tokio::sync::RwLock;
 
 use super::native_epoch::{NativeReplayBoundary, NativeReplayEpoch, NativeReplayRestore};
 use super::*;
 use crate::rspace::hot_store::HotStoreState;
 
+#[cfg(test)]
 mod backing;
 mod publication;
 mod operations;
 mod result;
 mod locks;
-use backing::tree_backing;
+mod history;
+mod installation;
 use publication::PublicationGuard;
 
 type EpochCheckpoint<E> = <<E as NativeReplayEpoch>::Boundary as NativeReplayBoundary>::Checkpoint;
@@ -35,6 +38,7 @@ where
 
 pub struct NativeReplaySession<C, P, A, K, E> {
     space: ReplayRSpace<C, P, A, K>,
+    root: [u8; 32],
     epoch: E,
     identity: Arc<()>,
     gate: RwLock<()>,
@@ -69,68 +73,60 @@ fn backing<T>(count: usize) -> Result<usize, RSpaceError> {
     })
 }
 
-fn reserve_produce<E: NativeReplayEpoch>(epoch: &E, produce: &Produce) -> Result<(), RSpaceError> {
-    epoch.reserve_work(1, produce.channel_hash.0.len())?;
-    epoch.reserve_work(1, produce.hash.0.len())?;
-    epoch.reserve_work(
-        produce.output_value.len(),
-        backing::<Vec<u8>>(produce.output_value.len())?,
-    )?;
-    for bytes in &produce.output_value {
-        epoch.reserve_work(1, bytes.len())?;
-    }
-    Ok(())
-}
-
-fn reserve_tree<K, V, E: NativeReplayEpoch>(epoch: &E, entries: usize) -> Result<(), RSpaceError> {
-    let (operations, bytes) = tree_backing::<K, V>(entries).ok_or_else(|| {
-        RSpaceError::InterpreterError("native replay checkpoint tree size overflow".to_owned())
-    })?;
-    epoch.reserve_work(operations, bytes)
-}
-
-fn reserve_consume<E: NativeReplayEpoch>(epoch: &E, consume: &Consume) -> Result<(), RSpaceError> {
-    epoch.reserve_work(1, consume.hash.0.len())?;
-    epoch.reserve_work(
-        consume.channel_hashes.len(),
-        backing::<Blake2b256Hash>(consume.channel_hashes.len())?,
-    )?;
-    for channel in &consume.channel_hashes {
-        epoch.reserve_work(1, channel.0.len())?;
-    }
-    Ok(())
-}
-
-fn reserve_log<E: NativeReplayEpoch>(epoch: &E, log: &Log) -> Result<(), RSpaceError> {
-    epoch.reserve_work(log.len(), backing::<Event>(log.len())?)?;
-    for event in log {
-        match event {
-            Event::IoEvent(IOEvent::Produce(produce)) => reserve_produce(epoch, produce)?,
-            Event::IoEvent(IOEvent::Consume(consume)) => reserve_consume(epoch, consume)?,
-            Event::Comm(comm) => {
-                reserve_consume(epoch, &comm.consume)?;
-                epoch
-                    .reserve_work(comm.produces.len(), backing::<Produce>(comm.produces.len())?)?;
-                for produce in &comm.produces {
-                    reserve_produce(epoch, produce)?;
-                }
-                reserve_tree::<i32, (), _>(epoch, comm.peeks.len())?;
-                reserve_tree::<Produce, i32, _>(epoch, comm.times_repeated.len())?;
-                for produce in comm.times_repeated.keys() {
-                    reserve_produce(epoch, produce)?;
-                }
-            }
-        }
-    }
-    Ok(())
+fn reserve_checkpoint_metadata<E: NativeReplayEpoch>(
+    epoch: &E,
+    log: &Log,
+    counters: &BTreeMap<Produce, i32>,
+) -> Result<(), RSpaceError> {
+    let meter = |operations, scanned, backing| {
+        epoch.reserve_comparison(operations, scanned)?;
+        epoch.reserve_work(0, backing)
+    };
+    crate::rspace::native_backing::reserve(log, &meter)?;
+    crate::rspace::native_backing::reserve(counters, &meter)
 }
 
 impl<C, P, A, K, E> NativeReplaySession<C, P, A, K, E>
 where
-    C: Clone + Debug + Default + Serialize + Hash + Ord + Eq + 'static + Sync + Send,
-    P: Clone + Debug + Default + Serialize + 'static + Sync + Send,
-    A: Clone + Debug + Default + Serialize + 'static + Sync + Send,
-    K: Clone + Debug + Default + Serialize + 'static + Sync + Send,
+    C: Clone
+        + Debug
+        + Default
+        + Serialize
+        + CloneBacking
+        + serde::de::DeserializeOwned
+        + Hash
+        + Ord
+        + Eq
+        + 'static
+        + Sync
+        + Send,
+    P: Clone
+        + Debug
+        + Default
+        + Serialize
+        + CloneBacking
+        + serde::de::DeserializeOwned
+        + 'static
+        + Sync
+        + Send,
+    A: Clone
+        + Debug
+        + Default
+        + Serialize
+        + CloneBacking
+        + serde::de::DeserializeOwned
+        + 'static
+        + Sync
+        + Send,
+    K: Clone
+        + Debug
+        + Default
+        + Serialize
+        + CloneBacking
+        + serde::de::DeserializeOwned
+        + 'static
+        + Sync
+        + Send,
     E: NativeReplayEpoch,
 {
     pub fn new(
@@ -138,10 +134,56 @@ where
         matcher: Arc<Box<dyn Match<P, A, K>>>,
         epoch: E,
     ) -> Result<Self, RSpaceError> {
-        let reader = history.get_history_reader(&history.root())?;
-        let store = HotStoreInstances::create_from_hr(reader.base());
+        let meter = |operations, scanned, backing| {
+            epoch.reserve_comparison(operations, scanned)?;
+            epoch.reserve_work(0, backing)
+        };
+        let reader = history.get_current_history_reader_native(&meter)?;
+        meter(1, 0, 32)?;
+        let root = reader
+            .root()
+            .0
+            .try_into()
+            .map_err(|_| RSpaceError::HostWorkRejected)?;
+        let base = reader.base_metered(&meter)?;
+        let cache_shards =
+            HotStoreInstances::native_cache_shards().ok_or(RSpaceError::HostWorkRejected)?;
+        let (shards, bytes) = HotStoreState::<C, P, A, K>::snapshot_layout();
+        let (store_operations, store_bytes) =
+            HotStoreInstances::native_constructor_layout::<C, P, A, K>(cache_shards)
+                .ok_or(RSpaceError::HostWorkRejected)?;
+        let (lock_operations, lock_bytes) =
+            crate::rspace::striped_locks::native::constructor_layout()
+                .ok_or(RSpaceError::HostWorkRejected)?;
+        let (replay_operations, replay_bytes) =
+            ReplayRSpace::<C, P, A, K>::native_constructor_layout(cache_shards)
+                .ok_or(RSpaceError::HostWorkRejected)?;
+        let fixed_operations = store_operations
+            .checked_add(lock_operations)
+            .and_then(|value| value.checked_add(replay_operations))
+            .and_then(|value| value.checked_add(2))
+            .ok_or(RSpaceError::HostWorkRejected)?;
+        let operations = shards
+            .checked_mul(2)
+            .and_then(|value| value.checked_add(fixed_operations.checked_mul(2)?))
+            .ok_or(RSpaceError::HostWorkRejected)?;
+        let wrapper_bytes =
+            crate::rspace::native_backing::arc_allocation_bytes::<Box<dyn HotStore<C, P, A, K>>>()
+                .and_then(|value| {
+                    value.checked_add(crate::rspace::native_backing::arc_allocation_bytes::<()>()?)
+                })
+                .ok_or(RSpaceError::HostWorkRejected)?;
+        let bytes = bytes
+            .checked_add(store_bytes)
+            .and_then(|value| value.checked_add(lock_bytes))
+            .and_then(|value| value.checked_add(replay_bytes))
+            .and_then(|value| value.checked_add(wrapper_bytes))
+            .ok_or(RSpaceError::HostWorkRejected)?;
+        epoch.reserve_work(operations, bytes)?;
+        let store = HotStoreInstances::create_from_hr_native(base, cache_shards);
         Ok(Self {
-            space: ReplayRSpace::apply(history, Arc::new(store), matcher),
+            space: ReplayRSpace::apply_native(history, Arc::new(store), matcher, cache_shards),
+            root,
             epoch,
             identity: Arc::new(()),
             gate: RwLock::new(()),
@@ -157,23 +199,7 @@ where
     ) -> Result<Self, RSpaceError> {
         let session = Self::new(history, matcher, epoch)?;
         for (channels, install) in installations {
-            if channels.is_empty() || channels.len() != install.patterns.len() {
-                return Err(RSpaceError::BugFoundError(
-                    "native replay installation requires nonempty paired channels and patterns"
-                        .to_owned(),
-                ));
-            }
-            session.epoch.reserve_work(1, 0)?;
-            let matched = session.space.locked_install_internal(
-                channels,
-                install.patterns,
-                install.continuation,
-            )?;
-            if matched.is_some() {
-                return Err(RSpaceError::BugFoundError(
-                    "native replay installation cannot execute a COMM".to_owned(),
-                ));
-            }
+            session.install(channels, install)?;
         }
         Ok(session)
     }
@@ -231,19 +257,18 @@ where
         self.ensure_open()?;
         let boundary = self.epoch.begin_boundary()?;
         let (shards, bytes) = HotStoreState::<C, P, A, K>::snapshot_layout();
-        self.epoch
-            .reserve_work(shards.saturating_mul(2).saturating_add(16), bytes)?;
+        let operations = shards
+            .checked_mul(2)
+            .and_then(|count| count.checked_add(16))
+            .ok_or(RSpaceError::HostWorkRejected)?;
+        self.epoch.reserve_work(operations, bytes)?;
         let log = self.space.event_log.lock().expect("native replay log");
         let counters = self
             .space
             .produce_counter
             .lock()
             .expect("native replay counters");
-        reserve_log(&self.epoch, &log)?;
-        reserve_tree::<Produce, i32, _>(&self.epoch, counters.len())?;
-        for produce in counters.keys() {
-            reserve_produce(&self.epoch, produce)?;
-        }
+        reserve_checkpoint_metadata(&self.epoch, &log, &counters)?;
         Ok(NativeSessionCheckpoint {
             identity: Arc::clone(&self.identity),
             epoch: boundary.checkpoint(),
@@ -322,16 +347,38 @@ where
         boundary.check_complete()?;
         let evidence = boundary.completed_evidence()?;
         self.epoch.reserve_work(1, 0)?;
+        let preparation =
+            PublicationGuard::with_invalidation(&self.unavailable, || self.epoch.invalidate());
+        let prepared_result = (|| {
+            let changes =
+                self.space
+                    .get_store()
+                    .changes_metered(&|operations, scanned, backing| {
+                        self.history_reserve(operations, scanned, backing)
+                    })?;
+            let history = self.space.get_history_repository();
+            let prepared = history
+                .prepare_native_checkpoint(changes, &|operations, scanned, backing| {
+                    self.history_reserve(operations, scanned, backing)
+                })?;
+            let root = prepared
+                .root
+                .as_ref()
+                .map_or(self.root.as_slice(), |root| root.0.as_slice());
+            self.history_reserve(1, root.len(), root.len())?;
+            let export_root = Blake2b256Hash::from_bytes(root.to_vec());
+            Ok::<_, RSpaceError>((history, prepared, export_root))
+        })();
+        preparation.complete();
+        let (history, prepared, root) = prepared_result?;
+        let export = NativeReplayExport { root, evidence };
         let publication =
             PublicationGuard::with_invalidation(&self.unavailable, || self.epoch.invalidate());
-        let history = self.space.get_history_repository();
-        let changes = self.space.get_store().changes();
-        let persisted = history.checkpoint(changes);
-        let root = persisted.root();
+        history.commit_native_checkpoint(prepared)?;
         self.unavailable.store(true, Ordering::Release);
         boundary.close();
         publication.complete();
-        Ok(NativeReplayExport { root, evidence })
+        Ok(export)
     }
 
     pub async fn validate_produce_update(
@@ -341,22 +388,11 @@ where
     ) -> Result<(), RSpaceError> {
         let _shared = self.gate.read().await;
         self.ensure_open()?;
-        let items = original
-            .output_value
-            .len()
-            .checked_add(updated.output_value.len())
-            .and_then(|items| items.checked_add(8))
-            .ok_or(RSpaceError::HostWorkRejected)?;
-        self.epoch.reserve_comparison(items, 0)?;
-        for bytes in
-            [&original.hash.0, &original.channel_hash.0, &updated.hash.0, &updated.channel_hash.0]
-                .into_iter()
-                .chain(original.output_value.iter())
-                .chain(updated.output_value.iter())
-        {
-            self.epoch.reserve_comparison(1, bytes.len())?;
-        }
-        if super::native_directive::exact_produce(original, updated) {
+        let meter = |operations, scanned, backing| {
+            self.epoch.reserve_comparison(operations, scanned)?;
+            self.epoch.reserve_work(0, backing)
+        };
+        if super::native_directive::metered_exact_produce(original, updated, &meter)? {
             Ok(())
         } else {
             Err(RSpaceError::InterpreterError(
@@ -375,8 +411,8 @@ where
     }
 
     pub async fn get_data(&self, channel: &C) -> Result<Vec<Datum<A>>, RSpaceError> {
-        self.get_data_with_budget(channel, |operations, bytes| {
-            self.epoch.reserve_work(operations, bytes)
+        self.get_data_prepared(channel, |operations, scanned, backing| {
+            self.history_reserve(operations, scanned, backing)
         })
         .await
     }
@@ -386,23 +422,45 @@ where
         channel: &C,
         reserve: impl Fn(usize, usize) -> Result<(), RSpaceError> + Send + Sync,
     ) -> Result<Vec<Datum<A>>, RSpaceError> {
+        self.get_data_prepared(channel, |operations, scanned: usize, backing| {
+            reserve(
+                operations,
+                scanned
+                    .checked_add(backing)
+                    .ok_or(RSpaceError::HostWorkRejected)?,
+            )
+        })
+        .await
+    }
+
+    async fn get_data_prepared(
+        &self,
+        channel: &C,
+        reserve: impl Fn(usize, usize, usize) -> Result<(), RSpaceError> + Send + Sync,
+    ) -> Result<Vec<Datum<A>>, RSpaceError> {
         let _shared = self.gate.read().await;
         self.ensure_open()?;
-        reserve(1, 0)?;
+        reserve(1, 0, 0)?;
+        crate::rspace::native_backing::inspect(channel, &reserve)?;
         let hashes = [striped_locks::channel_hash(channel)];
-        let _channels = self.consume_lock_with(&hashes, &reserve).await?;
+        let _channels = self
+            .consume_lock_with(&hashes, |operations, bytes| reserve(operations, 0, bytes))
+            .await?;
         self.ensure_open()?;
-        Ok(self.space.get_store().get_data(channel))
+        self.read_data_with(channel, &reserve)
     }
 
     pub async fn get_joins(&self, channel: &C) -> Result<Vec<Vec<C>>, RSpaceError> {
         let _shared = self.gate.read().await;
         self.ensure_open()?;
         self.epoch.reserve_work(1, 0)?;
+        crate::rspace::native_backing::inspect(channel, &|operations, scanned, backing| {
+            self.history_reserve(operations, scanned, backing)
+        })?;
         let hashes = [striped_locks::channel_hash(channel)];
         let _channels = self.consume_lock(&hashes).await?;
         self.ensure_open()?;
-        Ok(self.space.get_store().get_joins(channel))
+        self.read_joins(channel)
     }
 
     pub async fn get_continuations(
@@ -414,7 +472,7 @@ where
         let hashes = self.channel_hashes(channels, channels.len())?;
         let _channels = self.consume_lock(&hashes).await?;
         self.ensure_open()?;
-        Ok(self.space.get_store().get_continuations(channels))
+        self.read_continuations(channels)
     }
 }
 

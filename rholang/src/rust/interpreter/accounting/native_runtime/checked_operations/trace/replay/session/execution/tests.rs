@@ -449,7 +449,7 @@ async fn replay_process_with_funding(
         Err(InterpreterError::AggregateError { interpreter_errors }) => interpreter_errors,
         Err(error) => vec![error],
     };
-    assert_eq!(repeated.errors, expected_errors);
+    assert_eq!(repeated.errors, expected_errors, "host={:?}", host.usages());
     assert_eq!(repeated.economic_failures, replayed.1);
     assert_eq!(repeated.cost, budget.total_cost());
     assert_eq!(repeated.native_phlo_usage, Some(recording.used));

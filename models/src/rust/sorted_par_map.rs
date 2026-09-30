@@ -2,6 +2,10 @@
 
 use std::collections::HashMap;
 
+use shared::rust::clone_backing::{BackingError, BackingMeter};
+use shared::rust::collection_backing::hash_backing;
+
+use super::rholang::sorter::metered::SorterMeter;
 use super::rholang::sorter::ordering::Ordering;
 use super::rholang::sorter::par_sort_matcher::ParSortMatcher;
 use super::rholang::sorter::sortable::Sortable;
@@ -16,6 +20,43 @@ pub struct SortedParMap {
 }
 
 impl SortedParMap {
+    pub fn into_sorted_list_prepaid(self) -> Vec<(Par, Par)> { self.sorted_list }
+
+    pub fn create_from_vec_metered(
+        vec: Vec<(Par, Par)>,
+        backing: &dyn BackingMeter,
+    ) -> Result<Self, BackingError> {
+        let meter = SorterMeter::new(backing);
+        let mut map = HashMap::new();
+        let (operations, bytes) =
+            hash_backing::<Par, Par>(vec.len()).ok_or(BackingError::Overflow)?;
+        meter.reserve(operations, 0, bytes)?;
+        map.try_reserve(vec.len())
+            .map_err(|_| BackingError::Allocation)?;
+        for (key, value) in vec {
+            meter.inspect(&key)?;
+            meter.inspect(&value)?;
+            map.insert(key, value);
+        }
+        let sorted_list = Ordering::sort_map_metered(&map, backing)?;
+        let mut sorted_map = HashMap::new();
+        let (operations, bytes) =
+            hash_backing::<Par, Par>(sorted_list.len()).ok_or(BackingError::Overflow)?;
+        meter.reserve(operations, 0, bytes)?;
+        sorted_map
+            .try_reserve(sorted_list.len())
+            .map_err(|_| BackingError::Allocation)?;
+        for (key, value) in &sorted_list {
+            meter.inspect(key)?;
+            sorted_map.insert(meter.clone(key)?, meter.clone(value)?);
+        }
+        Ok(Self {
+            ps: map,
+            sorted_list,
+            sorted_map,
+        })
+    }
+
     pub fn create_from_map(map: HashMap<Par, Par>) -> Self {
         let sorted_list = Ordering::sort_map(&map);
         let sorted_map = sorted_list.clone().into_iter().collect();

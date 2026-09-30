@@ -1,12 +1,49 @@
+use shared::rust::clone_backing::CloneBacking;
+
 use super::*;
 use crate::rspace::striped_locks::ChannelLockGuard;
 
 impl<C, P, A, K, E> NativeReplaySession<C, P, A, K, E>
 where
-    C: Clone + Debug + Default + Serialize + Hash + Ord + Eq + 'static + Sync + Send,
-    P: Clone + Debug + Default + Serialize + 'static + Sync + Send,
-    A: Clone + Debug + Default + Serialize + 'static + Sync + Send,
-    K: Clone + Debug + Default + Serialize + 'static + Sync + Send,
+    C: Clone
+        + Debug
+        + Default
+        + Serialize
+        + CloneBacking
+        + serde::de::DeserializeOwned
+        + Hash
+        + Ord
+        + Eq
+        + 'static
+        + Sync
+        + Send,
+    P: Clone
+        + Debug
+        + Default
+        + Serialize
+        + CloneBacking
+        + serde::de::DeserializeOwned
+        + 'static
+        + Sync
+        + Send,
+    A: Clone
+        + Debug
+        + Default
+        + Serialize
+        + CloneBacking
+        + serde::de::DeserializeOwned
+        + 'static
+        + Sync
+        + Send,
+    K: Clone
+        + Debug
+        + Default
+        + Serialize
+        + CloneBacking
+        + serde::de::DeserializeOwned
+        + 'static
+        + Sync
+        + Send,
     E: NativeReplayEpoch,
 {
     pub(super) fn channel_hashes<'a>(
@@ -26,6 +63,10 @@ where
             if hashes.len() == count {
                 return Err(RSpaceError::HostWorkRejected);
             }
+            crate::rspace::native_backing::inspect_slice(
+                std::slice::from_ref(channel),
+                &|operations, scanned, backing| self.history_reserve(operations, scanned, backing),
+            )?;
             hashes.push(striped_locks::channel_hash(channel));
         }
         Ok(hashes)
@@ -56,12 +97,15 @@ where
         channel: &C,
     ) -> Result<(ChannelLockGuard, ChannelLockGuard), RSpaceError> {
         self.epoch.reserve_work(1, 0)?;
+        crate::rspace::native_backing::inspect(channel, &|operations, scanned, backing| {
+            self.history_reserve(operations, scanned, backing)
+        })?;
         let hash = [striped_locks::channel_hash(channel)];
         let reserve = |operations, bytes| self.epoch.reserve_work(operations, bytes);
         let first = striped_locks::native::prepare(&self.space.phase_a_locks, &hash, reserve)?
             .acquire()
             .await;
-        let joins = self.space.get_store().get_joins(channel);
+        let joins = self.read_joins(channel)?;
         self.epoch.reserve_work(joins.len(), 0)?;
         let count = joins
             .iter()

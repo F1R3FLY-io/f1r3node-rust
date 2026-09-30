@@ -107,6 +107,12 @@ where
         }
     }
 
+    pub(crate) fn empty_with_shard_amount(shards: usize) -> Self {
+        MultisetMultiMap {
+            map: DashMap::with_shard_amount(shards),
+        }
+    }
+
     pub fn add_binding(&self, k: K, v: V) {
         match self.map.get_mut(&k) {
             Some(mut current) => match current.get_mut(&v) {

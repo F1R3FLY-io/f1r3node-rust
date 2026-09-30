@@ -43,7 +43,7 @@ impl Drop for Recording {
     fn drop(&mut self) { REQUESTED.with(|value| value.set(None)); }
 }
 
-fn measure<T>(action: impl FnOnce() -> T) -> (T, usize) {
+pub(crate) fn measure<T>(action: impl FnOnce() -> T) -> (T, usize) {
     REQUESTED.with(|value| {
         assert!(value.get().is_none());
         value.set(Some(0));

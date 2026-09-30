@@ -620,7 +620,9 @@ The tests include introductions, joined receives, independent sends, denied COMM
 
 This connection does not complete funded-runtime activation.
 Wallet settlement still needs the native runtime connection, including the binding between funded results and exported state.
-Typed decoding, matching, cache mutation, and cleanup still require complete host-resource bounds.
+Native replay meters borrowed history reads and the current-root snapshot used during session construction.
+Startup installation also meters prestate matching, source hashing, and installed-map growth.
+The remaining host-resource work includes complete cleanup bounds and production funding integration.
 
 ### Native system environment
 
@@ -841,9 +843,16 @@ Concurrent exports of that session can produce only one successful artifact.
 Another session can persist a different state through the same backing stores without changing the first artifact.
 
 The export contract relies on successful history writes before root publication.
+The production in-memory and LMDB stores apply each cold-leaf batch under one write guard or transaction.
+Native root publication writes the root tag and current-root pointer in one strict transaction.
+Cold leaves and radix nodes are written separately before root publication, so failed exports can leave unreachable content.
 It does not prove filesystem durability across power loss or the correctness of the storage backend.
-The current host reservation does not bound store-change collection, serialization, history writes, or cleanup.
-Complete persistence work and allocation bounds remain required before funded-runtime activation.
+Native export reserves store-change collection, serialization, and staged radix preparation before checkpoint publication.
+Native checkpoint preparation reserves the root copy and returned repository backing.
+Commit constructs the returned repository before it writes cold leaves, radix nodes, or the root record.
+Export reserves and constructs its returned root before checkpoint publication.
+Allocator tests cover no-op and mixed-action preparation and commit with varied payload sizes.
+Storage backend writes and cleanup still require complete host-resource bounds before funded-runtime activation.
 
 ### Native callback conformance
 
@@ -972,7 +981,7 @@ Independent operations need no shared predecessor and can execute concurrently.
 The direct `reserve_current` entry point uses the same atomic readiness check as the private session.
 An incomplete predecessor returns `Dependency` without reserving a slot or changing completed usage.
 An active checkpoint boundary returns `Busy`, and a closed ledger returns `Closed`.
-Both entry points translate journal indexes before checking dependencies. Neither adds new dependency edges or a global execution order.
+Both entry points translate journal indexes before checking dependencies. A retry also waits for the exact operation that owns its earlier accepted attempt, even if a malformed declared footprint omits that channel relationship. This adds only the retry's provenance edge, not a global execution order.
 
 For example, journal operation A precedes B on one channel, while canonical trace order places B before A.
 B must wait for A's mapped slot, not for its own slot. A checkpoint can complete while B waits.
@@ -980,14 +989,14 @@ An unrelated operation C can complete before either operation if its channels an
 
 `NativeOperationJournal.v` proves exact predecessor readiness, independent eligibility, slot-renaming preservation, and the need to recheck after restoration.
 `NativeReplayReadiness.tla` separates waiting, notification eligibility, lease acquisition, rechecking, publication, cancellation, and restoration.
-Its safe configuration checks three slots with one dependency and one restore.
-Three negative controls expose a retained waiting lease, a missing restore recheck, and a direct reservation that bypasses its predecessor.
-The model does not prove notification implementation, memory visibility, retry-stage ownership, or unbounded liveness.
+Its safe configuration checks four slots, one channel dependency, one retry-owner dependency, and one restore.
+Four negative controls expose a retained waiting lease, a missing restore recheck, a direct reservation bypass, and an omitted retry owner.
+The model takes the retry-owner identity as input. It does not prove owner authentication, notification delivery, memory visibility, or unbounded liveness.
 
 Generated direct-entry histories compare reservation eligibility and completed usage with a channel-dependency model before and after restoration.
-A retry regression rejects reservation while its predecessor is absent or reserved, then accepts the retry after predecessor publication without another charge.
+A retry regression rejects reservation while its channel predecessor is absent or reserved, then accepts the retry after predecessor publication without another charge. A separate regression rejects a retry before its exact accepted owner publishes, lets an unrelated operation complete, and rechecks the owner after cancellation and restore.
 Loom imports the production ledger and checks predecessor publication, cancellation, independent reservations, and restoration between readiness and reservation.
-These tests enforce declared channel dependencies. They do not establish stage-level retry provenance or complete funded-contract replay.
+These tests enforce declared channel dependencies and exact accepted-owner readiness. They do not establish stage-level publication before operation completion or complete funded-contract replay.
 
 Private-session tests replay real play records through the production ledger and actual RSpace operations.
 The outcome matrix covers both triggers, all four persistence pairs, and all four outcomes before and after checkpoint restoration.
@@ -1013,9 +1022,16 @@ These tests measure requested node backing, not allocator overhead or process RS
 A toolchain change requires another check of these layout and occupancy premises.
 
 These checkpoint bounds do not establish complete native allocation or cleanup coverage.
-The private session still uses legacy cold decoding and cache-copy paths without native host reservations.
-The separate borrowed reader below bounds framing work but does not yet replace that session path.
-Copy-on-write map changes and later payload destruction also require their own bounds before native activation.
+The private session uses the borrowed reader and guarded typed decoder for cold records.
+Its metered snapshot fixes the session root before cold reads.
+The session prepares required data, continuations, and joins through fallible reads before operation publication.
+Warm-cache copies and candidate copies have local reservation paths.
+Stored produce publication now reserves datum-map copying and vector growth before mutation.
+It also prepares the producer counter without mutation before the operation ticket completes.
+Stored consume publication reserves the continuation, identity output, and affected join maps before the first mutation.
+Matched produce publication now stages data, continuation, and join retirement before the first store mutation.
+It checks every original index and reserves the affected map copies and vector work before publication.
+Later payload destruction and other native cleanup paths still require complete bounds before native activation.
 Economic byte charges do not establish these host-resource bounds.
 Restore makes no new host reservation, but that fact alone does not prove that every discarded allocation received a prior cleanup charge.
 
@@ -1090,8 +1106,9 @@ Its negative control separates the budget check from its update and demonstrates
 These Loom tests do not instrument Tokio channel locks or the production budget implementation.
 
 This preparation contract bounds requested vector backing, not allocator overhead or total process memory.
-It does not yet bound generic channel hashing, cold decoding, returned data copies, cache copies, or matching work.
-Those operations require separate reservations before native activation.
+Cold projections now use metered serialization and hashing. The typed decoder reserves work before visiting owned values.
+Native stripe hashing and history-query copies now use the shared payload traversal before hashing or copying.
+Matching, mutation, export, and cleanup still require complete reservation coverage before native activation.
 
 ### Borrowed cold-history reads
 
@@ -1128,7 +1145,8 @@ The reader reserves a 40-byte reusable key buffer before allocation.
 Each lookup also reserves the backend key-codec bound: the logical key length plus eight bytes.
 The LMDB adapter uses that codec even when it borrows the stored value.
 These bounds cover requested Rust reader and key-codec allocations, not allocator overhead, LMDB transaction internals, or mapped pages.
-Typed payload decoding, hot-cache copies, copy-on-write updates, and payload destruction require separate reservations.
+The guarded typed decoder supplies separate reservations for typed payload decoding.
+History-query cache copies and insertion now have separate reservations. Later tuple updates and payload destruction still require complete reservation coverage.
 
 `HostWorkBudget` maps reader operations, scanned bytes, and backing bytes to their respective host-work dimensions.
 Repeated reads consume additional budget. Failed reads do not refund prior work.
@@ -1141,6 +1159,98 @@ Property tests compare generated frames and radix selections with the existing i
 Allocator tests measure real in-memory and LMDB reads, including reservation rejection before the first allocation.
 The concurrent reader tests use immutable store contents and a shared reservation budget.
 They do not establish backend transaction isolation or complete native replay correctness.
+
+#### Guarded typed records
+
+`decode_record` preserves fixed-width bincode encoding and the legacy handling of trailing bytes.
+The decoder hides untrusted collection size hints from standard serde collection visitors.
+Each nested value requires a reservation before its visitor or deserialize seed runs.
+The decoder first reserves the bincode error object and 64 message bytes for its fixed reservation-error messages.
+An initial rejection returns the host error directly, before serde error construction.
+String and byte-buffer requests use borrowed slice dispatch. The decoder reserves payload bytes before an owned visitor copies them.
+The backing allowance combines standard vector growth with the existing tree and hash container bounds.
+The allocation tests check successful derived records and every reservation cut against actual requested allocations.
+These bounds apply to derived serde records and standard containers. They do not authorize arbitrary custom deserializers with hidden allocations.
+
+The decoder limits nested visitor depth to 128. Reaching this local host bound returns `HostWorkRejected` through the session adapter.
+Complete producer and replay conformance still requires compatible write limits before publication.
+A malformed typed record returns a typed-record fault. A rejected reservation preserves the original host error.
+Neither failure returns a partial record vector or fills the corresponding hot-store entry.
+The decoder uses a byte limit equal to the borrowed record length. Zero-width elements still require per-element reservations.
+For example, a hostile zero-width vector length cannot select an uncharged loop or an eager allocation from that length.
+
+Native data reads accept the explicit inspection budget when the caller supplies one.
+Cold inspection cannot clear the execution budget's rejection or restore its authority.
+Native preparation loads the required channel entries before candidate matching and publication.
+These reads populate the existing private hot store. They do not create a second native cache.
+Checkpoint restoration replaces this private state through the existing snapshot interface.
+
+Session tests prohibit legacy reader calls while they check all three projections, warm reads, restoration, and repeated failures.
+An authenticated leaf with a valid first record and a malformed second record leaves the native data cache empty.
+Independent sessions keep separate caches and host budgets, including when one session rejects work.
+These tests do not complete reservation coverage for later tuple updates, matcher work, export, or cleanup.
+
+`NativeBorrowedHistory.v` also proves visitor depth progress and complete-result publication for an abstract row decoder.
+`NativeTypedHistory.tla` checks two workers, two records, three credits per worker, and one retry.
+The model preserves consumed credits across retries and permits cache publication only after complete decoding.
+Its negative controls detect missing decode credit and partial cache publication.
+These artifacts specify the control contract. They do not prove serde allocation behavior or the complete native execution path.
+
+#### Metered native cache reads
+
+Native queries use `shared::rust::clone_backing::CloneBacking` before copying owned fields.
+The shared walker reserves operations, scanned bytes, and requested backing before each traversal or allocation.
+Rho implementations in models destructure every field. They include local metadata and authority fields that serialization can omit.
+RSpace supplies implementations for datum, continuation, and trace records.
+Warm queries inspect borrowed cache entries under shard read locks. They reserve each returned payload before cloning it.
+Continuation queries preserve installed continuations before stored continuations. Join queries preserve installed joins before stored joins.
+
+Cold queries prepare complete returned values and cache copies before publishing a cache entry.
+Insertion reserves key inspection, key copies, persistent-map metadata, and possible copies of the existing shard entries.
+The shard write lock keeps the map unchanged between inspection and insertion.
+The native path retains the existing shards and checkpoint representation. It does not add a global store lock or a second cache.
+Rejected preparation leaves the queried cache entry unpublished. Previously completed query entries retain their state.
+An explicit inspection budget pays the warm path as well as the cold path.
+
+The metadata bound follows the pinned `imbl` 7.0.1 implementation.
+Its minimum hash step is three bits. The bound permits twelve route nodes and a promotion cohort of at most thirty-three entries.
+It includes shared-pointer headers, node alignment, collision-vector cloning, and vector growth.
+The payload allowance covers every existing shard entry, although insertion can copy fewer entries.
+These allowances bound requested allocations. They do not bound allocator bookkeeping, mapped pages, or total process memory.
+Custom clone, hash, or comparison implementations must satisfy the traversal contract. The trait does not authenticate arbitrary hidden allocations.
+
+Allocator tests measure cold and warm copies, installed rows, hash collisions, promotions, and checkpoint sharing.
+Failure tests reject every reservation boundary and compare live state with its original snapshot.
+Generated map tests place many distinct hash routes in one shard to exercise metadata growth.
+The existing Rho allocation tests check complete field traversal, including fields omitted by serialization.
+
+`NativeCheckpointBacking.v` proves route sums, node allocation sums, collision growth, and composition of prepaid cache copies.
+Its route and layout premises describe the pinned map structure. The proof does not extract or verify the library implementation.
+`NativeCacheBacking.tla` checks one warm reader and one cold reader, three preparation stages, four credits, and one retry.
+Cancellation preserves cache state. Retry preserves spent credit. Restore returns each reader to its original cache state.
+Negative controls expose missing copy credit and publication before complete preparation.
+The Loom cache tests execute the shared production traversal with instrumented reservation atomics.
+They explore the six budget cases within a two-preemption bound, without an early-success schedule limit.
+They do not instrument the persistent-map locks, allocator, or production budget atomics.
+
+Native sessions now construct candidates through the fallible query reader and its host meter.
+The historical directive path retains its original candidate builder.
+Native ordering streams each typed record into one digest and preserves the original index when digests are equal.
+The sort reserves comparison work and element movement. Its scratch vectors and digest buffers have prepaid backing.
+The writer reserves the bincode error object before serialization, including writes that fail from exhausted credit.
+
+Candidate preparation stores each channel's data in a local vector.
+Each continuation probe records selected linear occurrences by channel position and datum position.
+Persistent data can match again. Linear data cannot match twice in one probe.
+Failed spatial or guard probes discard the local selections and preserve the original data.
+This method removes speculative rollback copies and preserves repeated-channel indices.
+COMM construction preserves stable source order, producer counters, peeks, and source metadata.
+Coordinator payload copies and container allocations have reservations before execution.
+
+Shared-pointer cloning remains shallow. Inspection traverses shared values, slices, strings, and nested arrays before hashing or comparison.
+Allocator tests check reservation cuts, stable metadata ties, repeated channels, persistent data, peeks, counter overflow, and legacy parity.
+The coordinator tests use a scalar matcher. They do not establish spatial-matcher or guard-evaluator resource bounds.
+Native matcher execution, identity-comparison bounds, tuple mutation, export, cleanup, and producer depth remain required campaign work.
 
 The bounded model uses two workers, two channels, two epochs, and three reservation serials per epoch.
 It checks every shared or disjoint channel assignment and every accepted or denied assignment within those bounds.
@@ -1218,7 +1328,9 @@ The retirement array stores result positions and original tuple indexes. Only st
 The shared fallible heapsort orders retirement indexes without an auxiliary allocation. Each comparison requires a host-work reservation before execution.
 Result bindings retain match order. Retirement borrows channel identities from those results.
 All preparation completes before tuple mutation and ledger publication. A preparation error cannot publish a completed operation.
-Produce removes the matched continuation first, then retires tuples, then removes joins for every selected candidate, including persistent and incoming candidates.
+Ordinary produce removes the matched continuation, then retires tuples, then updates joins for every selected candidate.
+Native produce prepares all three changes before publication, then writes the prepared data, continuation, and join maps under their locks.
+This join rule also covers persistent and incoming candidates.
 
 ### Native index resource bounds
 
@@ -1311,8 +1423,8 @@ Verification separates these obligations:
 | `NativeReplayAuthority.tla` | Per-purse publication and reservation equations, shared capacity, cancellation, coupled authority restore, and independent preparation | Two workers, two purses, four events, and four starts. Negative controls expose missing debits, stale authority after restore, and pending-reservation overdraw. Authenticated grants and unique identities are premises. This model does not prove full runtime integration. |
 | Authority projection proofs and runtime contract tests | Arbitrary-purse additive conservation, cancellation isolation, permutation, exact suffix restoration, and complete identity coverage | Rocq proofs assume unique ownership and sufficient total allocation. Production tests cover mixed histories over one through 32 purses and threaded COMM/transfer competition. Native replay correspondence remains a separate integration requirement. |
 | `NativeReplayCheckpoint.tla` | Coupled snapshot consistency, tuple/ledger agreement, counter preservation, failed-preparation isolation, channel ownership, and closed-session exclusion | Two workers and two channels separate channel waits, effects, publication, capture, and restore. Five negative controls check unlocked capture, store-only restore, premature release, failed-preparation mutation, and drained counters. The model does not prove Rust refinement or native operation integration. |
-| `NativeReplayReadiness.tla` | Dependency safety, exact completion, independent eligibility, and checkpoint eligibility during dependency waits | Three slots, one dependency, and one restore. Negative controls retain a waiting lease or omit the readiness recheck. Notification implementation and stage-level retries remain outside this model. |
-| `NativeCheckpointBacking.v` | Node-count, layout-padding, allocation-sum, payload, clone/drop traversal, and overflow bounds | The proof requires standard-library occupancy and layout premises. Allocator tests check requested node backing. Cold reads, copy-on-write payloads, allocator overhead, and complete cleanup coverage remain outside this proof. |
+| `NativeReplayReadiness.tla` | Channel and retry-owner dependency safety, exact completion, independent eligibility, and checkpoint eligibility during waits | Four slots and one restore. Four negative controls omit a retry owner, retain a waiting lease, omit the restore recheck, or bypass direct readiness. Owner authentication and notification delivery remain outside this model. |
+| `NativeCheckpointBacking.v` | Node-count, layout-padding, allocation-sum, payload, clone/drop traversal, persistent-map routes, collision growth, cache-copy composition, and overflow bounds | The proof requires library occupancy, route, and layout premises. Allocator tests check requested backing, including cache insertion under checkpoint sharing. Library refinement, allocator overhead, and complete cleanup coverage remain outside this proof. |
 | `NativeLockPreparation.v` | Exact stripe membership, unique locks, reservation limits, and shared-budget composition | Rust properties compare the existing stripe mapping. Async tests check guard release and independent acquisition. Loom checks preparation with an instrumented atomic meter, not Tokio locks. |
 | `CheckpointLocalHandoff.v` and `CheckpointLocalHandoff.tla` | Local state survives reader failure after persistence. Retry preserves the original trace. Independent instances can publish concurrently. | Rocq covers arbitrary finite failure prefixes. TLA+ checks two workers and two early-publication negative controls. Rust tests inject real history-reader failures and compare roots, traces, and local state. |
 | `NativeBorrowedHistory.v` | Checked spans, strict key consumption, bounded row counts, hash slices, and consumer prerequisites | Structural contracts cover framing and control flow, not full Rust parser refinement or typed payload materialization. |
@@ -1367,6 +1479,11 @@ Sources:
 - [Checkpoint backing proof](../../../../formal/rocq/cost_accounted_rho/theories/NativeCheckpointBacking.v)
 - [Borrowed history proof](../../../../formal/rocq/cost_accounted_rho/theories/NativeBorrowedHistory.v)
 - [Borrowed history reader](../../../../rspace++/src/rspace/history/native_reader.rs)
+- [Guarded typed decoder](../../../../rspace++/src/rspace/history/native_reader/typed.rs)
+- [Typed decoder tests](../../../../rspace++/src/rspace/history/native_reader/typed/tests.rs)
+- [Native cold-read connection](../../../../rspace++/src/rspace/replay_rspace/native_session/history.rs)
+- [Native cold-read tests](../../../../rspace++/src/rspace/replay_rspace/native_session/tests/history.rs)
+- [Typed publication model](../../../../formal/tlaplus/cost_accounted_rho/NativeTypedHistory.tla)
 - [Borrowed history tests](../../../../rspace++/src/rspace/history/native_reader/tests.rs)
 - [Borrowed history Loom tests](../../../../rspace++/tests/native_history_loom.rs)
 - [Private native session](../../../../rspace++/src/rspace/replay_rspace/native_session.rs)

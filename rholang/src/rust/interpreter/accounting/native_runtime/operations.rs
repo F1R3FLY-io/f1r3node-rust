@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use models::rhoapi::Par;
 use models::rust::host_work::HostWorkDimension;
+use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::operation_context::{self, OperationOrder};
 use rspace_plus_plus::rspace::rspace_interface::{
     RSpaceOperationCompletion, RSpaceOperationSource,
@@ -79,11 +80,23 @@ impl Ord for OperationKey {
 }
 
 impl IndexKey for OperationKey {
-    fn comparison_work(&self) -> (usize, usize) {
-        (
-            self.0.path.len().saturating_mul(2).saturating_add(4),
-            self.0.path.len().saturating_mul(16).saturating_add(32),
-        )
+    fn comparison_work(&self) -> Result<(usize, usize), InterpreterError> {
+        let operations = self
+            .0
+            .path
+            .len()
+            .checked_mul(2)
+            .and_then(|n| n.checked_add(4));
+        let bytes = self
+            .0
+            .path
+            .len()
+            .checked_mul(16)
+            .and_then(|n| n.checked_add(32));
+        Ok((
+            operations.ok_or(InterpreterError::HostWorkRejected)?,
+            bytes.ok_or(InterpreterError::HostWorkRejected)?,
+        ))
     }
 }
 
@@ -140,7 +153,10 @@ pub(super) fn locked_footprint<C: Serialize>(
         work(
             host,
             HostWorkDimension::VerificationBytes,
-            a.len().min(b.len()).saturating_add(1),
+            a.len()
+                .min(b.len())
+                .checked_add(1)
+                .ok_or(InterpreterError::HostWorkRejected)?,
         )?;
         Ok(a.cmp(b))
     })?;
@@ -168,7 +184,12 @@ impl NativeRuntimeConfig {
         work(
             &self.host_work,
             HostWorkDimension::VerificationOperations,
-            order.path.len().saturating_mul(4).saturating_add(68),
+            order
+                .path
+                .len()
+                .checked_mul(4)
+                .and_then(|count| count.checked_add(68))
+                .ok_or(InterpreterError::HostWorkRejected)?,
         )?;
         Ok(OperationKey(order))
     }
@@ -227,12 +248,14 @@ impl NativeRuntimeConfig {
             (
                 self.limits
                     .path_segments
-                    .saturating_mul(2)
-                    .saturating_add(4),
+                    .checked_mul(2)
+                    .and_then(|count| count.checked_add(4))
+                    .ok_or(InterpreterError::HostWorkRejected)?,
                 self.limits
                     .path_segments
-                    .saturating_mul(16)
-                    .saturating_add(32),
+                    .checked_mul(16)
+                    .and_then(|count| count.checked_add(32))
+                    .ok_or(InterpreterError::HostWorkRejected)?,
             ),
             self.limits.attempts,
             &self.host_work,
@@ -418,7 +441,28 @@ impl NativeRuntimeConfig {
             return false;
         };
         let row = &mut self.operations.rows[index];
-        if row.completion.is_some() || !row.source.matches(source) {
+        let meter = |operations, scanned, backing| -> Result<(), RSpaceError> {
+            work(
+                &self.host_work,
+                HostWorkDimension::VerificationOperations,
+                operations,
+            )
+            .map_err(|_| RSpaceError::HostWorkRejected)?;
+            work(
+                &self.host_work,
+                HostWorkDimension::VerificationBytes,
+                scanned,
+            )
+            .map_err(|_| RSpaceError::HostWorkRejected)?;
+            work(
+                &self.host_work,
+                HostWorkDimension::SearchStateBytes,
+                backing,
+            )
+            .map_err(|_| RSpaceError::HostWorkRejected)
+        };
+        if row.completion.is_some() || !row.source.metered_matches(source, &meter).unwrap_or(false)
+        {
             return false;
         }
         let Some(intro) = row.introduction else {
@@ -452,7 +496,9 @@ impl NativeRuntimeConfig {
             let completion = row
                 .completion
                 .ok_or_else(|| recording_error("native operation did not complete"))?;
-            linked = linked.saturating_add(1 + usize::from(row.comm.is_some()));
+            linked = linked
+                .checked_add(1 + usize::from(row.comm.is_some()))
+                .ok_or(InterpreterError::HostWorkRejected)?;
             let comm = match (&row.comm_source, row.comm) {
                 (Some(source), Some(observation)) => Some(NativeCommRecord {
                     source: Arc::clone(source),
@@ -474,13 +520,13 @@ impl NativeRuntimeConfig {
                 budget_end: row.budget_end,
             });
         }
-        if linked
-            != self
-                .recording
-                .attempts
-                .len()
-                .saturating_add(self.recording.retries.len())
-        {
+        let publications = self
+            .recording
+            .attempts
+            .len()
+            .checked_add(self.recording.retries.len())
+            .ok_or(InterpreterError::HostWorkRejected)?;
+        if linked != publications {
             return Err(recording_error(
                 "native operation evidence does not cover all budget publications",
             ));

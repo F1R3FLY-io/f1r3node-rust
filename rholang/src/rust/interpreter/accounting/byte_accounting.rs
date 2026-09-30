@@ -1,6 +1,8 @@
 use crypto::rust::hash::blake2b256::Blake2b256;
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use prost::Message;
+use rspace_plus_plus::rspace::errors::RSpaceError;
+use rspace_plus_plus::rspace::hashing::native_source::SourceMeter;
 use rspace_plus_plus::rspace::trace::event::{Consume, Produce, COMM};
 use thiserror::Error;
 
@@ -98,12 +100,39 @@ fn domain_identity(domain: &[u8], source_hash: &[u8]) -> [u8; 32] {
     .expect("Blake2b-256 digest length")
 }
 
+fn domain_identity_metered(
+    domain: &[u8],
+    source_hash: &[u8],
+    meter: &dyn SourceMeter,
+) -> Result<[u8; 32], RSpaceError> {
+    let scanned = domain
+        .len()
+        .checked_add(source_hash.len())
+        .ok_or(RSpaceError::HostWorkRejected)?;
+    meter.reserve(1, scanned, 32)?;
+    Ok(domain_identity(domain, source_hash))
+}
+
 pub fn produce_introduction_identity(source: &Produce) -> [u8; 32] {
-    domain_identity(PRODUCE_INTRODUCTION_DOMAIN, &source.hash.bytes())
+    domain_identity(PRODUCE_INTRODUCTION_DOMAIN, &source.hash.0)
+}
+
+pub(crate) fn produce_introduction_identity_metered(
+    source: &Produce,
+    meter: &dyn SourceMeter,
+) -> Result<[u8; 32], RSpaceError> {
+    domain_identity_metered(PRODUCE_INTRODUCTION_DOMAIN, &source.hash.0, meter)
 }
 
 pub fn consume_introduction_identity(source: &Consume) -> [u8; 32] {
-    domain_identity(CONSUME_INTRODUCTION_DOMAIN, &source.hash.bytes())
+    domain_identity(CONSUME_INTRODUCTION_DOMAIN, &source.hash.0)
+}
+
+pub(crate) fn consume_introduction_identity_metered(
+    source: &Consume,
+    meter: &dyn SourceMeter,
+) -> Result<[u8; 32], RSpaceError> {
+    domain_identity_metered(CONSUME_INTRODUCTION_DOMAIN, &source.hash.0, meter)
 }
 
 pub fn produce_introduction_charge(

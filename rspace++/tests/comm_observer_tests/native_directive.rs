@@ -459,7 +459,36 @@ struct OrderedMatch(Vec<String>);
 
 impl Match<Any, String, String> for OrderedMatch {
     fn get(&self, _: &Any, datum: &String) -> Option<String> { Some(datum.clone()) }
+    fn get_metered(
+        &self,
+        _: &Any,
+        datum: &String,
+        meter: &(dyn SourceMeter + Send + Sync),
+    ) -> Result<Option<String>, RSpaceError> {
+        metered_any_get(datum, meter)
+    }
     fn check_commit(&self, _: &String, data: &[String]) -> bool { data == self.0 }
+
+    fn check_commit_metered(
+        &self,
+        continuation: &String,
+        data: &[String],
+        meter: &(dyn SourceMeter + Send + Sync),
+    ) -> Result<bool, RSpaceError> {
+        let steps = data
+            .len()
+            .checked_add(self.0.len())
+            .and_then(|count| count.checked_add(1))
+            .ok_or(RSpaceError::HostWorkRejected)?;
+        meter.reserve(steps, 0, 0)?;
+        let scanned = data
+            .iter()
+            .chain(self.0.iter())
+            .try_fold(0usize, |total, value| total.checked_add(value.len()))
+            .ok_or(RSpaceError::HostWorkRejected)?;
+        meter.reserve(1, scanned, 0)?;
+        Ok(self.check_commit(continuation, data))
+    }
 }
 
 #[tokio::test]
@@ -585,7 +614,25 @@ struct GuardRejects;
 
 impl Match<Any, String, String> for GuardRejects {
     fn get(&self, _: &Any, datum: &String) -> Option<String> { Some(datum.clone()) }
+    fn get_metered(
+        &self,
+        _: &Any,
+        datum: &String,
+        meter: &(dyn SourceMeter + Send + Sync),
+    ) -> Result<Option<String>, RSpaceError> {
+        metered_any_get(datum, meter)
+    }
     fn check_commit(&self, _: &String, _: &[String]) -> bool { false }
+
+    fn check_commit_metered(
+        &self,
+        _: &String,
+        _: &[String],
+        meter: &(dyn SourceMeter + Send + Sync),
+    ) -> Result<bool, RSpaceError> {
+        meter.reserve(1, 0, 0)?;
+        Ok(false)
+    }
 }
 
 #[tokio::test]
@@ -718,8 +765,30 @@ struct NamedGuard {
 
 impl Match<Any, String, String> for NamedGuard {
     fn get(&self, _: &Any, datum: &String) -> Option<String> { Some(datum.clone()) }
+    fn get_metered(
+        &self,
+        _: &Any,
+        datum: &String,
+        meter: &(dyn SourceMeter + Send + Sync),
+    ) -> Result<Option<String>, RSpaceError> {
+        metered_any_get(datum, meter)
+    }
     fn check_commit(&self, continuation: &String, _: &[String]) -> bool {
         !self.reject_all && continuation != &self.rejected
+    }
+
+    fn check_commit_metered(
+        &self,
+        continuation: &String,
+        matched: &[String],
+        meter: &(dyn SourceMeter + Send + Sync),
+    ) -> Result<bool, RSpaceError> {
+        let scanned = continuation
+            .len()
+            .checked_add(self.rejected.len())
+            .ok_or(RSpaceError::HostWorkRejected)?;
+        meter.reserve(2, scanned, 0)?;
+        Ok(self.check_commit(continuation, matched))
     }
 }
 

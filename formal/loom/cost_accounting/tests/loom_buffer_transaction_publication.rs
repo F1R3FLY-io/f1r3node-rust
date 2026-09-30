@@ -18,7 +18,7 @@ fn production_commit_control_preserves_atomic_publication_and_failed_writes() {
         builder.max_branches = 1000;
         builder.max_permutations = None;
         builder.max_duration = None;
-        builder.preemption_bound = None;
+        builder.preemption_bound = Some(builder.preemption_bound.unwrap_or(3));
         builder.checkpoint_file = None;
         builder.check(move || {
             let shared = Arc::new(Mutex::new(Projection::default()));

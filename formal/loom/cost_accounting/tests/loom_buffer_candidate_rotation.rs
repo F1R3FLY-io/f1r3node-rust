@@ -13,7 +13,7 @@ fn recovery_and_expiry_keep_independent_orders() {
     builder.max_branches = 1000;
     builder.max_permutations = None;
     builder.max_duration = None;
-    builder.preemption_bound = None;
+    builder.preemption_bound = Some(builder.preemption_bound.unwrap_or(3));
     builder.checkpoint_file = None;
     builder.check(|| {
         let mut rotation = CandidateRotation::new();
@@ -43,7 +43,7 @@ fn expiry_covers_surviving_members_during_recovery_and_mutation() {
     builder.max_branches = 1000;
     builder.max_permutations = None;
     builder.max_duration = None;
-    builder.preemption_bound = None;
+    builder.preemption_bound = Some(builder.preemption_bound.unwrap_or(3));
     builder.checkpoint_file = None;
     builder.check(|| {
         let mut rotation = CandidateRotation::new();
@@ -89,7 +89,7 @@ fn concurrent_arrivals_and_retirement_preserve_existing_candidate_service() {
     builder.max_branches = 1000;
     builder.max_permutations = None;
     builder.max_duration = None;
-    builder.preemption_bound = None;
+    builder.preemption_bound = Some(builder.preemption_bound.unwrap_or(3));
     builder.checkpoint_file = None;
     builder.check(|| {
         let mut rotation = CandidateRotation::new();

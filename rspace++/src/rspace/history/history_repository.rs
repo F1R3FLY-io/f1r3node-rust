@@ -5,8 +5,10 @@ use serde::{Deserialize, Serialize};
 use shared::rust::store::key_value_store::KeyValueStore;
 
 use super::instances::rspace_history_reader_impl::RSpaceHistoryReaderImpl;
-use crate::rspace::errors::{HistoryError, HistoryRepositoryError};
+use super::native_checkpoint::NativeCheckpoint;
+use crate::rspace::errors::{HistoryError, HistoryRepositoryError, RSpaceError};
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use crate::rspace::hashing::native_source::SourceMeter;
 use crate::rspace::history::history::{History, HistoryInstances};
 use crate::rspace::history::history_reader::HistoryReader;
 use crate::rspace::history::history_repository_impl::HistoryRepositoryImpl;
@@ -32,6 +34,17 @@ pub trait HistoryRepository<C: Clone, P: Clone, A: Clone, K: Clone>: Send + Sync
         actions: Vec<HotStoreTrieAction<C, P, A, K>>,
     ) -> Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>;
 
+    fn prepare_native_checkpoint(
+        &self,
+        actions: Vec<HotStoreAction<C, P, A, K>>,
+        meter: &dyn SourceMeter,
+    ) -> Result<NativeCheckpoint, RSpaceError>;
+
+    fn commit_native_checkpoint(
+        &self,
+        prepared: NativeCheckpoint,
+    ) -> Result<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>, RSpaceError>;
+
     fn reset(
         &self,
         root: &Blake2b256Hash,
@@ -47,6 +60,11 @@ pub trait HistoryRepository<C: Clone, P: Clone, A: Clone, K: Clone>: Send + Sync
         &self,
         state_hash: &Blake2b256Hash,
     ) -> Result<Box<dyn HistoryReader<Blake2b256Hash, C, P, A, K>>, HistoryError>;
+
+    fn get_current_history_reader_native(
+        &self,
+        meter: &dyn SourceMeter,
+    ) -> Result<Box<dyn HistoryReader<Blake2b256Hash, C, P, A, K>>, RSpaceError>;
 
     fn get_history_reader_struct(
         &self,

@@ -3,17 +3,19 @@ use std::mem::size_of;
 use std::sync::{Arc, Mutex};
 
 use models::rust::host_work::HostWorkDimension;
+use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::operation_context::{self, CausalPath};
 use rspace_plus_plus::rspace::rspace_interface::{
     RSpaceOperationCompletion, RSpaceOperationSource,
 };
 use rspace_plus_plus::rspace::trace::event::COMM;
 use serde::Serialize;
+use shared::rust::clone_backing::arc_allocation_bytes;
 use thiserror::Error;
 
 use super::{
     allocate, work, CheckedNativeOperationTrace, HostWorkBudget, InterpreterError,
-    NativeOperationRecord, NativeOperationSource,
+    NativeOperationRecord,
 };
 use crate::rust::interpreter::accounting::byte_receipts::ByteObservation;
 use crate::rust::interpreter::accounting::native_phlo_rules::{
@@ -92,6 +94,7 @@ struct ReplayInner {
     max_path: usize,
     state: Mutex<ReplayState>,
     journal_slots: Vec<usize>,
+    retry_predecessors: Vec<[Option<usize>; 2]>,
     changed: tokio::sync::Notify,
 }
 
@@ -155,6 +158,53 @@ fn compare_path(actual: &CausalPath, expected: &[(u64, u64)]) -> Ordering {
     order
 }
 
+fn checked_add(left: usize, right: usize) -> Result<usize, NativeReplayError> {
+    left.checked_add(right)
+        .ok_or(InterpreterError::HostWorkRejected.into())
+}
+
+fn checked_mul(left: usize, right: usize) -> Result<usize, NativeReplayError> {
+    left.checked_mul(right)
+        .ok_or(InterpreterError::HostWorkRejected.into())
+}
+
+fn reserve_source(
+    host: &HostWorkBudget,
+    operations: usize,
+    scanned: usize,
+    backing: usize,
+) -> Result<(), RSpaceError> {
+    work(host, HostWorkDimension::VerificationOperations, operations)?;
+    work(host, HostWorkDimension::VerificationBytes, scanned)?;
+    work(host, HostWorkDimension::SearchStateBytes, backing)?;
+    Ok(())
+}
+
+fn accepted_owner(
+    link: NativeObservationLink,
+    trace: &CheckedNativeOperationTrace,
+    attempt_owners: &[Option<usize>],
+    journal_slots: &[usize],
+) -> Result<Option<usize>, NativeReplayError> {
+    let NativeObservationLink::Retry(index) = link else {
+        return Ok(None);
+    };
+    let retry = trace
+        .journal
+        .recording
+        .retries
+        .get(index)
+        .ok_or(NativeReplayError::Stage)?;
+    let journal = attempt_owners
+        .get(retry.accepted_attempt)
+        .copied()
+        .flatten()
+        .ok_or(NativeReplayError::Stage)?;
+    Ok(Some(
+        *journal_slots.get(journal).ok_or(NativeReplayError::Stage)?,
+    ))
+}
+
 impl CheckedNativeOperationTrace {
     pub fn into_replay(
         self,
@@ -164,14 +214,16 @@ impl CheckedNativeOperationTrace {
         work(
             &host,
             HostWorkDimension::VerificationOperations,
-            count.saturating_add(1),
+            checked_add(count, 4)?,
         )?;
+        let inner_bytes =
+            arc_allocation_bytes::<ReplayInner>().ok_or(InterpreterError::HostWorkRejected)?;
+        let identity_bytes =
+            arc_allocation_bytes::<()>().ok_or(InterpreterError::HostWorkRejected)?;
         work(
             &host,
             HostWorkDimension::SearchStateBytes,
-            size_of::<ReplayInner>()
-                .saturating_add(128)
-                .saturating_mul(2),
+            checked_add(inner_bytes, identity_bytes)?,
         )?;
         let mut slots = allocate(count, &host)?;
         slots.resize(count, SlotState::Available);
@@ -180,6 +232,51 @@ impl CheckedNativeOperationTrace {
         journal_slots.resize(count, 0);
         for slot in 0..count {
             journal_slots[self.journal_index(slot).expect("checked journal index")] = slot;
+        }
+        let attempts = self.journal.recording.attempts.len();
+        work(
+            &host,
+            HostWorkDimension::VerificationOperations,
+            checked_add(checked_mul(count, 4)?, attempts)?,
+        )?;
+        let mut attempt_owners = allocate(attempts, &host)?;
+        attempt_owners.resize(attempts, None);
+        for (journal, row) in self.journal.operations.iter().enumerate() {
+            for link in [
+                Some(row.introduction),
+                row.comm.as_ref().map(|comm| comm.observation),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if let NativeObservationLink::Attempt(index) = link {
+                    *attempt_owners
+                        .get_mut(index)
+                        .ok_or(NativeReplayError::Stage)? = Some(journal);
+                }
+            }
+        }
+        let mut retry_predecessors = allocate(count, &host)?;
+        for slot in 0..count {
+            let row = self.operation(slot).ok_or(NativeReplayError::Stage)?;
+            let position = self.journal_index(slot).ok_or(NativeReplayError::Stage)?;
+            let introduction =
+                accepted_owner(row.introduction, &self, &attempt_owners, &journal_slots)?;
+            let comm = row
+                .comm
+                .as_ref()
+                .map(|comm| {
+                    accepted_owner(comm.observation, &self, &attempt_owners, &journal_slots)
+                })
+                .transpose()?
+                .flatten();
+            if [introduction, comm].into_iter().flatten().any(|owner| {
+                self.journal_index(owner)
+                    .is_none_or(|journal| journal >= position)
+            }) {
+                return Err(NativeReplayError::Stage);
+            }
+            retry_predecessors.push([introduction, comm]);
         }
         let total = self.journal.total();
         let max_path = self
@@ -198,6 +295,7 @@ impl CheckedNativeOperationTrace {
                 max_path,
                 state: Mutex::new(ReplayState::new(slots, undo, total)),
                 journal_slots,
+                retry_predecessors,
                 changed: tokio::sync::Notify::new(),
             }),
         })
@@ -263,11 +361,12 @@ impl NativeOperationReplay {
         work(
             &self.inner.host,
             HostWorkDimension::VerificationOperations,
-            predecessors.len().saturating_add(1),
+            checked_add(predecessors.len(), 3)?,
         )?;
         Ok(predecessors
             .iter()
-            .map(|index| self.inner.journal_slots[*index]))
+            .map(|index| self.inner.journal_slots[*index])
+            .chain(self.inner.retry_predecessors[slot].into_iter().flatten()))
     }
 
     async fn wait_ready(&self, source: RSpaceOperationSource<'_>) -> Result<(), NativeReplayError> {
@@ -331,16 +430,16 @@ impl NativeOperationReplay {
                 .trace
                 .operation(mid)
                 .expect("checked native replay slot");
-            let segments = current.path.len().saturating_add(row.occurrence.path.len());
+            let segments = checked_add(current.path.len(), row.occurrence.path.len())?;
             work(
                 &self.inner.host,
                 HostWorkDimension::VerificationOperations,
-                segments.saturating_add(1),
+                checked_add(segments, 1)?,
             )?;
             work(
                 &self.inner.host,
                 HostWorkDimension::VerificationBytes,
-                segments.saturating_mul(16),
+                checked_mul(segments, 16)?,
             )?;
             match compare_path(&current.path, &row.occurrence.path) {
                 Ordering::Less => high = mid,
@@ -354,24 +453,13 @@ impl NativeOperationReplay {
             .operation(slot)
             .expect("checked native replay slot")
             .source;
-        let (operations, bytes) = match expected {
-            NativeOperationSource::Produce(_) => (1, 65),
-            NativeOperationSource::Consume(source) => (
-                source.channels.len().saturating_add(1),
-                source.channels.len().saturating_mul(32).saturating_add(33),
-            ),
+        let meter = |operations, scanned, backing| {
+            reserve_source(&self.inner.host, operations, scanned, backing)
         };
-        work(
-            &self.inner.host,
-            HostWorkDimension::VerificationOperations,
-            operations.saturating_add(8),
-        )?;
-        work(
-            &self.inner.host,
-            HostWorkDimension::VerificationBytes,
-            bytes,
-        )?;
-        if !expected.matches(source) {
+        if !expected
+            .metered_matches(source, &meter)
+            .map_err(|error| NativeReplayError::Host(error.into()))?
+        {
             return Err(NativeReplayError::Source);
         }
         Ok(slot)
@@ -419,7 +507,7 @@ impl NativeReplayReservation {
         work(
             &self.replay.inner.host,
             HostWorkDimension::VerificationOperations,
-            actual.len().saturating_add(1),
+            checked_add(actual.len(), 1)?,
         )?;
         for channel in &actual {
             work(
@@ -475,10 +563,14 @@ impl NativeReplayReservation {
             .comm
             .as_ref()
             .ok_or(NativeReplayError::Stage)?;
-        expected
+        let meter = |operations, scanned, backing| {
+            reserve_source(&self.replay.inner.host, operations, scanned, backing)
+        };
+        if !expected
             .source
-            .reserve_comparison(&self.replay.inner.host)?;
-        if !expected.source.matches(source) {
+            .metered_matches(source, &meter)
+            .map_err(|error| NativeReplayError::Host(error.into()))?
+        {
             return Err(NativeReplayError::CommSource);
         }
         Ok(())

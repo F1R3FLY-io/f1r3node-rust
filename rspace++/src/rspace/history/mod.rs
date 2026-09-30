@@ -9,6 +9,7 @@ pub mod root_repository;
 pub mod cold_store;
 pub mod history_repository_impl;
 pub mod native_reader;
+pub mod native_checkpoint;
 
 // PartialEq needed here for testing purposes
 #[derive(Debug, PartialEq, Clone)]

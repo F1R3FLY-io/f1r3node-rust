@@ -368,7 +368,7 @@ proptest! {
     }
 }
 
-mod allocations;
+pub(crate) mod allocations;
 
 #[tokio::test]
 async fn native_factory_keeps_the_storage_handles_through_checkpoint_clone_and_reset() {

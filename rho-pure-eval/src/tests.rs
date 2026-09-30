@@ -7,7 +7,7 @@ use models::rhoapi::{
 
 use crate::env::Env;
 use crate::error::EvalError;
-use crate::eval::eval;
+use crate::eval::{eval, eval_metered};
 
 fn par_of(instance: ExprInstance) -> Par {
     Par {
@@ -62,6 +62,142 @@ fn evar_resolves_from_env() {
     let env = env.put(gint(7));
     let result = eval(&evar(0), &env).unwrap();
     assert_int(&result, 7);
+}
+
+#[test]
+fn owned_environment_push_matches_put_and_prepays_growth() {
+    use std::cell::Cell;
+
+    use shared::rust::clone_backing::BackingError;
+
+    let mut owned = Env::<Par>::new();
+    let mut copied = Env::<Par>::new();
+    for value in 0..16 {
+        owned.push(gint(value)).unwrap();
+        copied = copied.put(gint(value));
+        assert_eq!(owned.env_map, copied.env_map);
+        assert_eq!(owned.level, copied.level);
+    }
+    let used = Cell::new([0usize; 3]);
+    let full = |operations: usize, scanned: usize, backing: usize| {
+        let mut next = used.get();
+        for (total, amount) in next.iter_mut().zip([operations, scanned, backing]) {
+            *total += amount;
+        }
+        used.set(next);
+        Ok(())
+    };
+    let mut paid = Env::<Par>::new();
+    paid.push_metered(gint(7), &full).unwrap();
+    assert_eq!(paid.get(&0), Some(gint(7)));
+    let required = used.get();
+    assert!(required.iter().all(|value| *value > 0));
+    for dimension in 0..3 {
+        let mut limit = required;
+        limit[dimension] -= 1;
+        let spent = Cell::new([0usize; 3]);
+        let meter = |operations: usize, scanned: usize, backing: usize| {
+            let mut next = spent.get();
+            for (total, amount) in next.iter_mut().zip([operations, scanned, backing]) {
+                *total += amount;
+            }
+            if next.iter().zip(limit).any(|(value, max)| *value > max) {
+                return Err(BackingError::Rejected);
+            }
+            spent.set(next);
+            Ok(())
+        };
+        let mut empty = Env::<Par>::new();
+        assert_eq!(
+            empty.push_metered(gint(7), &meter),
+            Err(BackingError::Rejected)
+        );
+        assert!(empty.env_map.is_empty());
+        assert_eq!(empty.level, 0);
+    }
+
+    let lookup_used = Cell::new([0usize; 3]);
+    let lookup_full = |operations: usize, scanned: usize, backing: usize| {
+        let mut next = lookup_used.get();
+        for (total, amount) in next.iter_mut().zip([operations, scanned, backing]) {
+            *total += amount;
+        }
+        lookup_used.set(next);
+        Ok(())
+    };
+    assert_eq!(paid.get_metered(&0, &lookup_full), Ok(Some(gint(7))));
+    let lookup_required = lookup_used.get();
+    assert!(lookup_required.iter().all(|value| *value > 0));
+    for dimension in 0..3 {
+        let mut limit = lookup_required;
+        limit[dimension] -= 1;
+        let spent = Cell::new([0usize; 3]);
+        let meter = |operations: usize, scanned: usize, backing: usize| {
+            let mut next = spent.get();
+            for (total, amount) in next.iter_mut().zip([operations, scanned, backing]) {
+                *total += amount;
+            }
+            if next.iter().zip(limit).any(|(value, max)| *value > max) {
+                return Err(BackingError::Rejected);
+            }
+            spent.set(next);
+            Ok(())
+        };
+        assert_eq!(paid.get_metered(&0, &meter), Err(BackingError::Rejected));
+        assert_eq!(paid.get(&0), Some(gint(7)));
+    }
+}
+
+#[test]
+fn metered_guard_evaluation_preserves_results_and_rejects_each_short_dimension() {
+    use std::cell::Cell;
+
+    use shared::rust::clone_backing::BackingError;
+
+    let mut env = Env::<Par>::new();
+    env.push(gint(7)).unwrap();
+    let guard = par_of(ExprInstance::EAndBody(EAnd {
+        p1: Some(par_of(ExprInstance::EEqBody(EEq {
+            p1: Some(evar(0)),
+            p2: Some(gint(7)),
+        }))),
+        p2: Some(gbool(true)),
+    }));
+    let expected = eval(&guard, &env).unwrap();
+    assert_bool(&expected, true);
+    let used = Cell::new([0usize; 3]);
+    let full = |operations: usize, scanned: usize, backing: usize| {
+        let mut next = used.get();
+        for (total, amount) in next.iter_mut().zip([operations, scanned, backing]) {
+            *total += amount;
+        }
+        used.set(next);
+        Ok(())
+    };
+    assert_eq!(eval_metered(&guard, &env, &full), Ok(expected));
+    let required = used.get();
+    assert!(required.iter().all(|value| *value > 0));
+    for dimension in 0..3 {
+        let mut limit = required;
+        limit[dimension] -= 1;
+        let spent = Cell::new([0usize; 3]);
+        let meter = |operations: usize, scanned: usize, backing: usize| {
+            let mut next = spent.get();
+            for (total, amount) in next.iter_mut().zip([operations, scanned, backing]) {
+                *total += amount;
+            }
+            if next.iter().zip(limit).any(|(value, max)| *value > max) {
+                return Err(BackingError::Rejected);
+            }
+            spent.set(next);
+            Ok(())
+        };
+        assert_eq!(
+            eval_metered(&guard, &env, &meter),
+            Err(EvalError::HostWork(BackingError::Rejected))
+        );
+        assert_eq!(env.get(&0), Some(gint(7)));
+    }
 }
 
 #[test]

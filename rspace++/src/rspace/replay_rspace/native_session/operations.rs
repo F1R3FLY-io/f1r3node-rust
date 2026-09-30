@@ -1,6 +1,9 @@
 use std::borrow::Borrow;
 
+use shared::rust::clone_backing::CloneBacking;
+
 use super::*;
+use crate::rspace::replay_rspace::native_candidate::metered::CandidateReader;
 use crate::rspace::replay_rspace::native_epoch::{
     NativeOperationEpoch, NativeOperationPublication, NativeOperationTicket, NativeReplayDecision,
     NativeReplayOutcome,
@@ -26,10 +29,45 @@ fn require(
 
 impl<C, P, A, K, E> NativeReplaySession<C, P, A, K, E>
 where
-    C: Clone + Debug + Default + Serialize + Hash + Ord + Eq + 'static + Sync + Send,
-    P: Clone + Debug + Default + Serialize + 'static + Sync + Send,
-    A: Clone + Debug + Default + Serialize + 'static + Sync + Send,
-    K: Clone + Debug + Default + Serialize + 'static + Sync + Send,
+    C: Clone
+        + Debug
+        + Default
+        + Serialize
+        + CloneBacking
+        + serde::de::DeserializeOwned
+        + Hash
+        + Ord
+        + Eq
+        + 'static
+        + Sync
+        + Send,
+    P: Clone
+        + Debug
+        + Default
+        + Serialize
+        + CloneBacking
+        + serde::de::DeserializeOwned
+        + 'static
+        + Sync
+        + Send,
+    A: Clone
+        + Debug
+        + Default
+        + Serialize
+        + CloneBacking
+        + serde::de::DeserializeOwned
+        + 'static
+        + Sync
+        + Send,
+    K: Clone
+        + Debug
+        + Default
+        + Serialize
+        + CloneBacking
+        + serde::de::DeserializeOwned
+        + 'static
+        + Sync
+        + Send,
     E: NativeOperationEpoch<C, P, A, K>,
 {
     fn publish_denial(
@@ -111,14 +149,28 @@ where
             return self.publish_denial(ticket, outcome).map(|()| None);
         }
         require(decision, NativeReplayDecision::Granted)?;
-        let prepared = self.space.prepare_native_consume_candidate(
+        self.read_continuations(&channels)?;
+        for channel in &channels {
+            self.read_joins(channel)?;
+        }
+        let reserve =
+            |operations, scanned, backing| self.history_reserve(operations, scanned, backing);
+        let read_data = |channel: &C| self.read_data_with(channel, &reserve);
+        let read_continuations = |channels: &[C]| self.read_continuations(channels);
+        let reader = CandidateReader {
+            meter: &reserve,
+            data: &read_data,
+            continuations: &read_continuations,
+        };
+        let prepared = self.space.prepare_metered_consume_candidate(
             &channels,
             &patterns,
             &continuation,
             &source,
             &peeks,
             ticket.candidate_identity(),
-        );
+            &reader,
+        )?;
         if outcome == NativeReplayOutcome::Stored {
             if prepared.is_some() {
                 return Err(mismatch());
@@ -134,11 +186,9 @@ where
             let publication =
                 PublicationGuard::with_invalidation(&self.unavailable, || self.epoch.invalidate());
             let store = self.space.get_store();
-            if store.put_continuation(&channels, waiting).unwrap_or(false) {
-                self.space.inc_replay_waiting_continuations(&channels);
-            }
-            for channel in &channels {
-                store.put_join(channel, &channels);
+            let (inserted, depth) = store.store_consume_metered(&channels, waiting, &reserve)?;
+            if inserted {
+                self.space.inc_replay_waiting_continuations_depth(depth);
             }
             completion.publish();
             publication.complete();
@@ -166,9 +216,7 @@ where
         let publication =
             PublicationGuard::with_invalidation(&self.unavailable, || self.epoch.invalidate());
         let store = self.space.get_store();
-        for (position, index) in result.retirement {
-            store.remove_datum(&result.data[position].channel, index)?;
-        }
+        store.retire_data_metered(&result.data, &result.retirement, &reserve)?;
         completion.publish();
         publication.complete();
         Ok(Some((continuation, result.data)))
@@ -215,7 +263,7 @@ where
                 break (shared, locked, ticket);
             }
         };
-        let joins = self.space.get_store().get_joins(&channel);
+        let joins = self.read_joins(&channel)?;
         ticket.authenticate_footprint(std::slice::from_ref(&channel), &joins)?;
         let outcome = ticket.outcome();
         let decision = ticket.observe_produce(&source, &channel, &data, authority)?;
@@ -224,26 +272,53 @@ where
             return self.publish_denial(ticket, outcome).map(|()| None);
         }
         require(decision, NativeReplayDecision::Granted)?;
-        let prepared = self.space.prepare_native_produce_candidate(
+        self.prepare_data(&channel)?;
+        for channels in &joins {
+            for channel in channels {
+                self.read_joins(channel)?;
+            }
+        }
+        let reserve =
+            |operations, scanned, backing| self.history_reserve(operations, scanned, backing);
+        let read_data = |channel: &C| self.read_data_with(channel, &reserve);
+        let read_continuations = |channels: &[C]| self.read_continuations(channels);
+        let reader = CandidateReader {
+            meter: &reserve,
+            data: &read_data,
+            continuations: &read_continuations,
+        };
+        let prepared = self.space.prepare_metered_produce_candidate(
             &channel,
             &data,
             persist,
             &source,
             joins,
             ticket.candidate_identity(),
+            &reader,
         )?;
         if outcome == NativeReplayOutcome::Stored {
             if prepared.is_some() {
                 return Err(mismatch());
             }
+            let counter = self
+                .space
+                .prepare_metered_produce_counter(&source, persist, &reserve)?;
             let mut completion = ticket.prepare(outcome)?;
             let publication =
                 PublicationGuard::with_invalidation(&self.unavailable, || self.epoch.invalidate());
-            self.space.increment_produce_counter(&source, persist);
-            let result = self.space.store_data(channel, data, persist, source);
+            self.space.get_store().put_datum_metered(
+                &channel,
+                Datum {
+                    a: data,
+                    persist,
+                    source,
+                },
+                &reserve,
+            )?;
+            counter.publish();
             completion.publish();
             publication.complete();
-            return Ok(result);
+            return Ok(None);
         }
         let prepared = prepared.ok_or_else(mismatch)?;
         let candidate = prepared.candidate;
@@ -269,23 +344,23 @@ where
             patterns: candidate.continuation.patterns,
             peek: !candidate.continuation.peeks.is_empty(),
         };
+        let counter = self
+            .space
+            .prepare_metered_produce_counter(&source, persist, &reserve)?;
         let mut completion = ticket.prepare(NativeReplayOutcome::Matched)?;
         let publication =
             PublicationGuard::with_invalidation(&self.unavailable, || self.epoch.invalidate());
-        self.space.increment_produce_counter(&source, persist);
         let store = self.space.get_store();
-        if !continuation.persistent {
-            store
-                .remove_continuation(&continuation.channels, candidate.continuation_index)
-                .ok_or_else(mismatch)?;
-        }
+        store.retire_produce_match_metered(
+            &continuation.channels,
+            candidate.continuation_index,
+            continuation.persistent,
+            &result.data,
+            &result.retirement,
+            &reserve,
+        )?;
         self.space.mark_replay_waiting_continuation_match();
-        for (position, index) in result.retirement {
-            store.remove_datum(&result.data[position].channel, index)?;
-        }
-        for datum in &result.data {
-            store.remove_join(&datum.channel, &continuation.channels);
-        }
+        counter.publish();
         completion.publish();
         publication.complete();
         Ok(Some((continuation, result.data, returned)))

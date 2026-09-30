@@ -198,7 +198,7 @@ fn explore(test: impl Fn() + Sync + Send + 'static) {
     builder.max_branches = 5_000;
     builder.max_permutations = None;
     builder.max_duration = None;
-    builder.preemption_bound = None;
+    builder.preemption_bound = Some(builder.preemption_bound.unwrap_or(3));
     builder.checkpoint_file = None;
     builder.check(test);
 }

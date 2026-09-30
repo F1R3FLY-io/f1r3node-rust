@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use rspace_plus_plus::rspace::errors::RSpaceError;
+use rspace_plus_plus::rspace::hashing::native_source::SourceMeter;
 use rspace_plus_plus::rspace::r#match::Match;
 use rspace_plus_plus::rspace::replay_rspace::ReplayRSpace;
 use rspace_plus_plus::rspace::rspace::RSpace;
@@ -26,8 +27,35 @@ struct Any;
 #[derive(Clone)]
 struct AnyMatch;
 
+fn metered_any_get(
+    datum: &str,
+    meter: &(dyn SourceMeter + Send + Sync),
+) -> Result<Option<String>, RSpaceError> {
+    meter.reserve(1, datum.len(), datum.len())?;
+    Ok(Some(datum.to_owned()))
+}
+
 impl Match<Any, String, String> for AnyMatch {
     fn get(&self, _: &Any, datum: &String) -> Option<String> { Some(datum.clone()) }
+
+    fn get_metered(
+        &self,
+        _: &Any,
+        datum: &String,
+        meter: &(dyn SourceMeter + Send + Sync),
+    ) -> Result<Option<String>, RSpaceError> {
+        metered_any_get(datum, meter)
+    }
+
+    fn check_commit_metered(
+        &self,
+        _: &String,
+        _: &[String],
+        meter: &(dyn SourceMeter + Send + Sync),
+    ) -> Result<bool, RSpaceError> {
+        meter.reserve(1, 0, 0)?;
+        Ok(true)
+    }
 }
 
 struct Observer {

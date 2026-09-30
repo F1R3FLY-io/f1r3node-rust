@@ -44,7 +44,7 @@ impl Cache {
 
 fn check_readers_and_eviction(indexed: bool) {
     let mut model = loom::model::Builder::new();
-    model.preemption_bound = None;
+    model.preemption_bound = Some(model.preemption_bound.unwrap_or(3));
     model.max_permutations = None;
     model.max_duration = None;
     model.check(move || {

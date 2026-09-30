@@ -10,7 +10,15 @@ They use ordinary dependency compilation because global `--cfg loom` disables To
 The reader workers use one-megabyte coroutine stacks for debug hash computation.
 The tests default to three preemptions. `LOOM_MAX_PREEMPTIONS` can select a different bound.
 They test budgets from zero through ten reservations and include a non-atomic reservation control.
+The typed-record tests execute the production guarded decoder on owned strings with shared budgets from zero through six reservations.
+They require separate error, value, and payload-copy reservations. Their non-atomic control demonstrates an unpaid payload copy.
 The immutable backend uses ordinary locks. These tests cover reader reservation ordering, not backend transaction isolation or the production host-budget atomics.
+
+The [native cache tests](../../../rspace++/tests/native_cache_loom.rs) execute the shared production payload traversal with a Loom reservation meter.
+Two workers share credit. Each worker clones its owned payload only after the complete traversal passes.
+Six budget cases cover initial rejection, partial preparation, and one or two complete copies.
+Each case permits two preemptions without an early-success schedule limit. A non-atomic control must expose unpaid preparation.
+These checks do not instrument persistent-map locks, actual allocation, or the production host-budget atomics.
 
 ## Production correspondence
 

@@ -4,6 +4,7 @@ use loom::thread;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::native_reader::{
     NativeHistoryReader, NativeLeafKind, NativeReadCharge, NativeReadError, NativeReadMeter,
+    decode_record,
 };
 use rspace_plus_plus::rspace::rspace::RSpaceStore;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
@@ -120,3 +121,45 @@ fn non_atomic_meter_can_authorize_unfunded_reads() {
     let (stores, root) = fixture();
     model(move || check(&stores, root, 5, false));
 }
+
+fn typed_check(limit: usize, atomic: bool) {
+    let meter = Arc::new(Meter {
+        remaining: AtomicUsize::new(limit),
+        atomic,
+    });
+    let workers: Vec<_> = (0..2)
+        .map(|_| {
+            let meter = Arc::clone(&meter);
+            thread::spawn(move || {
+                let bytes = [1_u64.to_le_bytes().as_slice(), b"x"].concat();
+                match decode_record::<String, _>(&bytes, meter.as_ref()) {
+                    Ok(value) => {
+                        assert_eq!(value, "x");
+                        1
+                    }
+                    Err(NativeReadError::Host(())) => 0,
+                    other => panic!("unexpected typed decode: {other:?}"),
+                }
+            })
+        })
+        .collect();
+    let completed: usize = workers
+        .into_iter()
+        .map(|worker| worker.join().unwrap())
+        .sum();
+    assert!(completed * 3 <= limit, "typed payload copied without all three reservations");
+    if limit == 6 {
+        assert_eq!(completed, 2);
+    }
+}
+
+#[test]
+fn concurrent_typed_payloads_require_error_value_and_copy_reservations() {
+    for limit in 0..=6 {
+        model(move || typed_check(limit, true));
+    }
+}
+
+#[test]
+#[should_panic(expected = "typed payload copied without all three reservations")]
+fn non_atomic_meter_can_authorize_unfunded_typed_payloads() { model(|| typed_check(3, false)); }

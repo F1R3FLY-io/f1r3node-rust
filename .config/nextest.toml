@@ -18,11 +18,6 @@
 filter = 'test(/genesis::contracts::pos_spec::pos_spec/)'
 threads-required = "num-cpus"
 
-[[profile.default.overrides]]
-filter = 'test(unmetered_longslow_evaluation_has_bounded_work)'
-threads-required = "num-cpus"
-slow-timeout = { period = "100s", terminate-after = 2 }
-
 # `soft_checkpoint_cost_does_not_scale_with_accumulated_store_size` is a
 # timing-invariant regression guard (issue-43: O(store-size) HotStore
 # snapshots) that compares microsecond-scale cost at two store sizes. Its 8x

@@ -1,4 +1,5 @@
 use super::RSpaceError;
+use crate::rspace::hashing::native_source::SourceMeter;
 use crate::rspace::internal::ConsumeCandidate;
 use crate::rspace::rspace_interface::RSpaceOperationSource;
 use crate::rspace::trace::event::{COMM, Consume, Produce};
@@ -84,6 +85,26 @@ pub trait NativeCandidateIdentity {
     fn matches_produce(&self, source: &Produce) -> bool;
     fn repetition(&self, source: &Produce) -> Option<i32>;
     fn matches_comm(&self, source: &COMM) -> bool;
+    fn metered_matches_consume(
+        &self,
+        source: &Consume,
+        meter: &dyn SourceMeter,
+    ) -> Result<bool, RSpaceError>;
+    fn metered_matches_produce(
+        &self,
+        source: &Produce,
+        meter: &dyn SourceMeter,
+    ) -> Result<bool, RSpaceError>;
+    fn metered_repetition(
+        &self,
+        source: &Produce,
+        meter: &dyn SourceMeter,
+    ) -> Result<Option<i32>, RSpaceError>;
+    fn metered_matches_comm(
+        &self,
+        source: &COMM,
+        meter: &dyn SourceMeter,
+    ) -> Result<bool, RSpaceError>;
 }
 
 pub trait NativeReplayRestore: Send {

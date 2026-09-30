@@ -1,6 +1,21 @@
 use super::native_epoch::NativeCandidateIdentity;
 use super::*;
+use crate::rspace::hashing::native_source::{self, SourceMeter};
 use crate::rspace::rspace_interface::ReplayOperationDirective;
+
+pub(in crate::rspace::replay_rspace) fn meter_identity_inputs<A: Serialize, B: Serialize>(
+    actual: &A,
+    expected: &B,
+    meter: &dyn SourceMeter,
+) -> Result<(), RSpaceError> {
+    native_source::hash(actual, &|operations, scanned, backing| {
+        meter.reserve(operations, scanned, backing)
+    })?;
+    native_source::hash(expected, &|operations, scanned, backing| {
+        meter.reserve(operations, scanned, backing)
+    })?;
+    meter.reserve(1, 0, 0)
+}
 
 fn mismatch() -> RSpaceError {
     RSpaceError::InterpreterError("Native replay directive does not match execution".to_string())
@@ -13,6 +28,33 @@ pub(super) fn exact_produce(actual: &Produce, expected: &Produce) -> bool {
         actual.is_deterministic == expected.is_deterministic &&
         actual.output_value == expected.output_value &&
         actual.failed == expected.failed
+}
+
+pub(super) fn metered_exact_produce(
+    actual: &Produce,
+    expected: &Produce,
+    meter: &dyn SourceMeter,
+) -> Result<bool, RSpaceError> {
+    let operations = actual
+        .output_value
+        .len()
+        .checked_add(expected.output_value.len())
+        .and_then(|count| count.checked_add(8))
+        .ok_or(RSpaceError::HostWorkRejected)?;
+    meter.reserve(operations, 0, 0)?;
+    let mut scanned = 0usize;
+    for bytes in
+        [&actual.hash.0, &actual.channel_hash.0, &expected.hash.0, &expected.channel_hash.0]
+            .into_iter()
+            .chain(actual.output_value.iter())
+            .chain(expected.output_value.iter())
+    {
+        scanned = scanned
+            .checked_add(bytes.len())
+            .ok_or(RSpaceError::HostWorkRejected)?;
+    }
+    meter.reserve(1, scanned, 0)?;
+    Ok(exact_produce(actual, expected))
 }
 
 fn exact_comm(actual: &COMM, expected: &COMM) -> bool {
@@ -36,6 +78,42 @@ impl NativeCandidateIdentity for LegacyCandidateIdentity<'_> {
     }
 
     fn matches_comm(&self, source: &COMM) -> bool { exact_comm(source, self.0) }
+
+    fn metered_matches_consume(
+        &self,
+        source: &Consume,
+        meter: &dyn SourceMeter,
+    ) -> Result<bool, RSpaceError> {
+        meter_identity_inputs(source, &self.0.consume, meter)?;
+        Ok(self.matches_consume(source))
+    }
+
+    fn metered_matches_produce(
+        &self,
+        source: &Produce,
+        meter: &dyn SourceMeter,
+    ) -> Result<bool, RSpaceError> {
+        meter_identity_inputs(source, self.0, meter)?;
+        Ok(self.matches_produce(source))
+    }
+
+    fn metered_repetition(
+        &self,
+        source: &Produce,
+        meter: &dyn SourceMeter,
+    ) -> Result<Option<i32>, RSpaceError> {
+        meter_identity_inputs(source, self.0, meter)?;
+        Ok(self.repetition(source))
+    }
+
+    fn metered_matches_comm(
+        &self,
+        source: &COMM,
+        meter: &dyn SourceMeter,
+    ) -> Result<bool, RSpaceError> {
+        meter_identity_inputs(source, self.0, meter)?;
+        Ok(self.matches_comm(source))
+    }
 }
 
 fn compare_comm(

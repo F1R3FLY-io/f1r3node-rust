@@ -110,6 +110,23 @@ impl KeyValueStore for LmdbKeyValueStore {
         })
     }
 
+    fn put_if_absent(&self, kv_pairs: Vec<(ByteBuffer, ByteBuffer)>) -> Result<(), KvStoreError> {
+        in_blocking(|| {
+            let mut writer = self.env.write_txn()?;
+            for (key, value) in kv_pairs {
+                match self
+                    .db
+                    .put_with_flags(&mut writer, PutFlags::NO_OVERWRITE, &key, &value)
+                {
+                    Ok(()) | Err(HeedError::Mdb(MdbError::KeyExist)) => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            writer.commit()?;
+            Ok(())
+        })
+    }
+
     fn delete(&self, keys: Vec<ByteBuffer>) -> Result<usize, KvStoreError> {
         in_blocking(|| {
             let mut writer = self.env.write_txn()?;
@@ -250,21 +267,22 @@ impl KeyValueStore for LmdbKeyValueStore {
             }
             let mut writer = self.env.write_txn()?;
             for (mutation, store) in mutations.iter().zip(stores) {
-                let current = store.db.get(&writer, &mutation.key)?;
                 match &mutation.operation {
                     AtomicStoreOperation::Put(value) => {
                         store.db.put(&mut writer, &mutation.key, value)?;
                     }
-                    AtomicStoreOperation::PutIfAbsentOrEqual(value) => match current {
-                        Some(existing) if existing != *value => {
-                            return Err(KvStoreError::TransactionConflict(format!(
-                                "existing value differs for key {}",
-                                hex::encode(&mutation.key)
-                            )));
+                    AtomicStoreOperation::PutIfAbsentOrEqual(value) => {
+                        match store.db.get(&writer, &mutation.key)? {
+                            Some(existing) if existing != *value => {
+                                return Err(KvStoreError::TransactionConflict(format!(
+                                    "existing value differs for key {}",
+                                    hex::encode(&mutation.key)
+                                )));
+                            }
+                            Some(_) => {}
+                            None => store.db.put(&mut writer, &mutation.key, value)?,
                         }
-                        Some(_) => {}
-                        None => store.db.put(&mut writer, &mutation.key, value)?,
-                    },
+                    }
                     AtomicStoreOperation::Delete => {
                         store.db.delete(&mut writer, &mutation.key)?;
                     }
@@ -272,6 +290,7 @@ impl KeyValueStore for LmdbKeyValueStore {
                         expected,
                         replacement,
                     } => {
+                        let current = store.db.get(&writer, &mutation.key)?;
                         if current.as_ref() != expected.as_ref() {
                             return Err(KvStoreError::TransactionConflict(format!(
                                 "compare-and-swap expectation failed for key {}",
@@ -297,6 +316,8 @@ impl KeyValueStore for LmdbKeyValueStore {
             Ok(())
         })
     }
+
+    fn supports_strict_atomic_mutate(&self) -> bool { true }
 
     // This is only needed for testing purposes
     fn size_bytes(&self) -> usize { todo!() }
@@ -624,6 +645,38 @@ mod batched_put_tests {
 
         assert_eq!(a.get_one(&b"a".to_vec()).unwrap(), Some(b"one".to_vec()));
         assert_eq!(b.get_one(&b"b".to_vec()).unwrap(), Some(b"two".to_vec()));
+    }
+
+    #[test]
+    fn strict_unconditional_mutations_do_not_decode_replaced_values() {
+        let env = open_env();
+        let store = open_store(&env, "strict-replace-malformed");
+        let root = b"root".to_vec();
+        let obsolete = b"obsolete".to_vec();
+        let mut writer = env.write_txn().unwrap();
+        let raw = store.db.remap_data_type::<Bytes>();
+        raw.put(&mut writer, &root, &[0xff]).unwrap();
+        raw.put(&mut writer, &obsolete, &[0xff]).unwrap();
+        writer.commit().unwrap();
+        assert!(store.get_one(&root).is_err());
+        assert!(store.get_one(&obsolete).is_err());
+
+        strict_atomic_mutate(&[
+            AtomicStoreMutation {
+                store: &store,
+                key: root.clone(),
+                operation: AtomicStoreOperation::Put(b"next".to_vec()),
+            },
+            AtomicStoreMutation {
+                store: &store,
+                key: obsolete.clone(),
+                operation: AtomicStoreOperation::Delete,
+            },
+        ])
+        .unwrap();
+
+        assert_eq!(store.get_one(&root).unwrap(), Some(b"next".to_vec()));
+        assert_eq!(store.get_one(&obsolete).unwrap(), None);
     }
 
     #[test]
@@ -1153,7 +1206,7 @@ mod store_tests {
     }
 
     #[test]
-    fn trait_contains_and_put_if_absent_defaults_work_through_lmdb() {
+    fn trait_contains_and_atomic_put_if_absent_work_through_lmdb() {
         let (_env, store) = seeded_store();
         assert_eq!(
             store
@@ -1173,5 +1226,27 @@ mod store_tests {
             store.get_one(&b"k9".to_vec()).unwrap(),
             Some(b"fresh".to_vec())
         );
+        store
+            .put_if_absent(kv(&[("new", "first"), ("new", "second"), ("k9", "later")]))
+            .unwrap();
+        assert_eq!(
+            store.get_one(&b"new".to_vec()).unwrap(),
+            Some(b"first".to_vec())
+        );
+        assert_eq!(
+            store.get_one(&b"k9".to_vec()).unwrap(),
+            Some(b"fresh".to_vec())
+        );
+    }
+
+    #[test]
+    fn atomic_put_if_absent_rolls_back_an_earlier_insert_on_late_error() {
+        let (_env, store) = new_store();
+        let result = store.put_if_absent(vec![
+            (b"first".to_vec(), b"value".to_vec()),
+            (vec![0; 4096], b"invalid key".to_vec()),
+        ]);
+        assert!(result.is_err());
+        assert_eq!(store.get_one(&b"first".to_vec()).unwrap(), None);
     }
 }

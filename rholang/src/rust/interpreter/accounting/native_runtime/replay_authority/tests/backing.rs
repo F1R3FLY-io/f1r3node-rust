@@ -36,6 +36,54 @@ fn unpaid_authority_preparation_cannot_publish_any_state() {
 }
 
 #[test]
+fn retry_comparison_exhaustion_preserves_published_authority() {
+    let (baseline_budget, baseline_host) = configured(100_000_000);
+    let baseline_binding =
+        ReplayAuthorityBinding::new(baseline_budget.clone(), baseline_budget.deploy_id()).unwrap();
+    let _baseline_scope = baseline_budget.enter_comm_accounting_scope();
+    baseline_binding
+        .prepare([None, Some(row(0, 3, true, false))])
+        .unwrap()
+        .publish();
+    let owner_work = baseline_host
+        .usage(HostWorkDimension::VerificationOperations)
+        .get();
+
+    let mut configuration = config(1_000_000, [0, 1, 1, 0]);
+    let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(100_000_000));
+    let lookup_work = (u64::from(usize::BITS) + 1) * 11 * 3;
+    limits.set(
+        HostWorkDimension::VerificationOperations,
+        HostWorkLimit::new(owner_work + lookup_work),
+    );
+    configuration.host_work = HostWorkBudget::new(limits);
+    let host = configuration.host_work();
+    let budget = RuntimeBudget::new(Cost::unsafe_max());
+    budget.reset_for_native_execution(configuration).unwrap();
+    let binding = ReplayAuthorityBinding::new(budget.clone(), budget.deploy_id()).unwrap();
+    let _scope = budget.enter_comm_accounting_scope();
+    binding
+        .prepare([None, Some(row(0, 3, true, false))])
+        .unwrap()
+        .publish();
+    let realized = budget.authority_realized();
+    assert!(matches!(
+        binding.prepare([None, Some(row(0, 3, true, true))]),
+        Err(InterpreterError::HostWorkRejected)
+    ));
+    assert!(host.is_rejected());
+    assert_eq!(budget.authority_realized(), realized);
+    assert_eq!(budget.authority_events().len(), 1);
+    assert_eq!(budget.byte_observations().rows.len(), 1);
+    assert!(budget
+        .authority_state
+        .lock()
+        .unwrap()
+        .pending_replay_events
+        .is_empty());
+}
+
+#[test]
 fn prepaid_publication_and_cancellation_survive_later_host_rejection() {
     let (budget, host) = configured(100_000_000);
     let binding = ReplayAuthorityBinding::new(budget.clone(), budget.deploy_id()).unwrap();

@@ -26,6 +26,7 @@ use models::rust::rholang::sorter::sortable::Sortable;
 use models::rust::sorted_par_hash_set::SortedParHashSet;
 use models::rust::sorted_par_map::SortedParMap;
 use rspace_plus_plus::rspace::history::Either;
+use shared::rust::clone_backing::BackingMeter;
 
 use super::accounting::costs::Cost;
 use super::env::Env;
@@ -33,6 +34,10 @@ use super::errors::InterpreterError;
 use super::metering::MeteredMachine;
 use super::util::{prepend_connective, prepend_expr};
 use super::{deterministic_reduction, unwrap_option_safe};
+
+mod native_cost_signature;
+mod native_expr;
+mod native_par;
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/Substitute.scala
 pub trait SubstituteTrait<A> {
@@ -52,6 +57,23 @@ pub struct Substitute {
 }
 
 impl Substitute {
+    pub(crate) fn substitute_cost_signature_metered(
+        &self,
+        signature: CostSignature,
+        depth: i32,
+        env: &Env<Par>,
+        backing: &dyn BackingMeter,
+    ) -> Result<CostSignature, InterpreterError> {
+        native_cost_signature::substitute_cost_signature_metered_with(
+            self,
+            signature,
+            depth,
+            env,
+            backing,
+            &Self::substitute_par_metered,
+        )
+    }
+
     fn reserve_host_work<A: prost::Message>(
         term: &A,
         env: &Env<Par>,

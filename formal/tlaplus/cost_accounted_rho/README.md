@@ -18,6 +18,12 @@ Common TLC jar locations:
 
 | File | Purpose | States | Properties |
 |---|---|---|---|
+| `NativeTypedHistory.tla` | Two readers reserve decode credit before visiting records and publish complete cache entries after decoding | 6,161 generated / 3,136 distinct / depth 19 | PaidDecoding, CompleteCache, RejectedCacheEmpty, CompletedCacheExact |
+| `NativeTypedHistoryCreditUnsafe.cfg` | Decode without a reservation | Exact counterexample required | Violates PaidDecoding |
+| `NativeTypedHistoryPartialUnsafe.cfg` | Publish a cache entry after only one record | Exact counterexample required | Violates CompleteCache |
+| `NativeCacheBacking.tla` | Cold and warm readers reserve copies before publication, preserve credit through retry, and restore the original cache state | 18,241 generated / 9,216 distinct / depth 25 | PaidCopies, NoPartialCache, UnpublishedCachePreserved, CompleteResultPrepared |
+| `NativeCacheBackingCreditUnsafe.cfg` | Copy without a reservation | Exact counterexample required | Violates PaidCopies |
+| `NativeCacheBackingPublishUnsafe.cfg` | Publish before completing preparation | Exact counterexample required | Violates NoPartialCache |
 | `CostAccountedRho.tla` | Atomic token protocol | 79 (3 procs) | TokenConservation, CostDeterminism, FuelGateSafety |
 | `CompoundProtocol.tla` | Full protocol: compound sigs, Splits, nested eval | 63 (4 procs) | TokenConservation, CostDeterminism, FuelGateSafety, SplitOrdering, InnerGateOrdering |
 | `EvalScheduling.tla` | Eval loop scheduling comparison | 16 (3 bodies) | InternalizedCostDeterministic, AllEventuallyDone |

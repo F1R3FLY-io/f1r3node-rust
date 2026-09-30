@@ -91,12 +91,29 @@ struct JournalKey<'a> {
 }
 
 impl IndexKey for JournalKey<'_> {
-    fn comparison_work(&self) -> (usize, usize) {
-        (
-            self.path.len().saturating_mul(2).saturating_add(4),
-            self.path.len().saturating_mul(16).saturating_add(34),
-        )
+    fn comparison_work(&self) -> Result<(usize, usize), InterpreterError> {
+        let operations = self
+            .path
+            .len()
+            .checked_mul(2)
+            .and_then(|n| n.checked_add(4));
+        let bytes = self
+            .path
+            .len()
+            .checked_mul(16)
+            .and_then(|n| n.checked_add(34));
+        Ok((
+            operations.ok_or(InterpreterError::HostWorkRejected)?,
+            bytes.ok_or(InterpreterError::HostWorkRejected)?,
+        ))
     }
+}
+
+fn work_count(count: usize, scale: usize, extra: usize) -> Result<usize, InterpreterError> {
+    count
+        .checked_mul(scale)
+        .and_then(|total| total.checked_add(extra))
+        .ok_or(InterpreterError::HostWorkRejected)
 }
 
 fn add_count(
@@ -152,12 +169,12 @@ fn check_sizes(
     work(
         host,
         HostWorkDimension::VerificationOperations,
-        count.saturating_mul(32).saturating_add(1),
+        work_count(count, 32, 1)?,
     )?;
     work(
         host,
         HostWorkDimension::VerificationBytes,
-        count.saturating_mul(32),
+        work_count(count, 32, 0)?,
     )?;
     let mut paths = 0;
     for occurrence in recording
@@ -195,12 +212,12 @@ fn check_sizes(
             work(
                 host,
                 HostWorkDimension::VerificationOperations,
-                peeks.len().saturating_mul(4).saturating_add(2),
+                work_count(peeks.len(), 4, 2)?,
             )?;
             work(
                 host,
                 HostWorkDimension::VerificationBytes,
-                peeks.len().saturating_mul(8),
+                work_count(peeks.len(), 8, 0)?,
             )?;
         }
         if let Some(comm) = &row.comm {
@@ -290,12 +307,12 @@ fn check_link(
     work(
         host,
         HostWorkDimension::VerificationOperations,
-        occurrence.path.len().saturating_mul(2).saturating_add(10),
+        work_count(occurrence.path.len(), 2, 10)?,
     )?;
     work(
         host,
         HostWorkDimension::VerificationBytes,
-        occurrence.path.len().saturating_mul(16).saturating_add(32),
+        work_count(occurrence.path.len(), 16, 32)?,
     )?;
     if occurrence.session != row.occurrence.session
         || occurrence.path.as_slice() != row.occurrence.path.as_ref()
@@ -330,14 +347,19 @@ fn check_dependencies(
         HostWorkDimension::VerificationOperations,
         row.footprint
             .len()
-            .saturating_add(row.predecessors.len())
-            .saturating_add(1),
+            .checked_add(row.predecessors.len())
+            .and_then(|count| count.checked_add(1))
+            .ok_or(InterpreterError::HostWorkRejected)?,
     )?;
     for pair in row.footprint.windows(2) {
         work(
             host,
             HostWorkDimension::VerificationBytes,
-            pair[0].len().min(pair[1].len()).saturating_add(1),
+            pair[0]
+                .len()
+                .min(pair[1].len())
+                .checked_add(1)
+                .ok_or(InterpreterError::HostWorkRejected)?,
         )?;
         if pair[0] >= pair[1] {
             return Err(NativeOperationJournalError::Footprint);
@@ -362,12 +384,12 @@ fn check_dependencies(
     work(
         host,
         HostWorkDimension::VerificationOperations,
-        expected.len().saturating_mul(2),
+        work_count(expected.len(), 2, 0)?,
     )?;
     work(
         host,
         HostWorkDimension::VerificationBytes,
-        expected.len().saturating_mul(size_of::<usize>()),
+        work_count(expected.len(), size_of::<usize>(), 0)?,
     )?;
     expected.dedup();
     if expected.as_slice() != row.predecessors.as_ref() {

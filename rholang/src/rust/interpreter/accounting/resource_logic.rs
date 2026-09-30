@@ -205,7 +205,9 @@ impl OslfResourceLogic<RhoGslt> for DefaultResourceLogic {
             DemandBound::Unprovable(_) => return None,
         };
         let valid = match (bound, &expected) {
-            (DemandBound::Exact(reservation), _) => reservation == expected_bound,
+            (DemandBound::Exact(reservation), DemandBound::Exact(expected)) => {
+                reservation == expected
+            }
             (
                 DemandBound::FiniteUpperBound { bound, proof },
                 DemandBound::FiniteUpperBound {
@@ -557,6 +559,39 @@ mod resource_logic_conformance {
         let par = Par::default();
         let sig = Sig::Ground(vec![1, 2, 3, 4]);
         assert_eq!(rl.demand(&par, &sig), delta_sigma::demand(&par, &sig));
+    }
+
+    #[test]
+    fn finite_bound_cannot_be_relabelled_as_exact_evidence() {
+        let logic = DefaultResourceLogic;
+        let canonical = Par::default();
+        let signature = Sig::Ground(b"bound-only".to_vec());
+        let certified = logic.demand_bound(&canonical, &signature);
+        let DemandBound::FiniteUpperBound { bound, .. } = &certified else {
+            panic!("native structural demand must be a finite bound");
+        };
+        assert_eq!(
+            logic.verify_demand_bound(&canonical, &signature, &certified),
+            Some(bound.clone()),
+        );
+        assert!(matches!(
+            logic
+                .resource_observation(&canonical, &signature, &ResourceMultiset::default())
+                .unwrap()
+                .demand,
+            oslf::DemandKnowledge::UpperBound(_),
+        ));
+        let forged = DemandBound::Exact(bound.clone());
+        assert_eq!(
+            logic.verify_demand_bound(&canonical, &signature, &forged),
+            None,
+        );
+        assert!(!logic.is_funded_bound(
+            &canonical,
+            &signature,
+            &forged,
+            &ResourceMultiset::singleton(signature.lane_hash(), u64::MAX),
+        ));
     }
 
     #[derive(Clone)]

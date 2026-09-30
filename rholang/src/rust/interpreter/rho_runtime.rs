@@ -9,7 +9,7 @@ use models::rhoapi::expr::ExprInstance::{EMapBody, GByteArray};
 use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::{BindPattern, Bundle, Expr, ListParWithRandom, Par, TaggedContinuation, Var};
 use models::rust::block_hash::BlockHash;
-use models::rust::host_work::HostWorkLimits;
+use models::rust::host_work::{HostWorkDimension, HostWorkLimits, HostWorkUnits};
 use models::rust::par_map::ParMap;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::sorted_par_map::SortedParMap;
@@ -612,6 +612,24 @@ struct RhoCommObserver {
     budget: RuntimeBudget,
 }
 
+fn reserve_native_observation_work(
+    host: &HostWorkBudget,
+    operations: usize,
+    scanned: usize,
+    backing: usize,
+) -> Result<(), RSpaceError> {
+    for (dimension, amount) in [
+        (HostWorkDimension::VerificationOperations, operations),
+        (HostWorkDimension::VerificationBytes, scanned),
+        (HostWorkDimension::SearchStateBytes, backing),
+    ] {
+        let units = u64::try_from(amount).map_err(|_| RSpaceError::HostWorkRejected)?;
+        host.reserve(dimension, HostWorkUnits::new(units))
+            .map_err(|_| RSpaceError::HostWorkRejected)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 pub(crate) fn test_accounting_observer(
     budget: RuntimeBudget,
@@ -651,7 +669,21 @@ impl RSpaceAccountingObserver<Par, BindPattern, ListParWithRandom, TaggedContinu
         if !self.budget.has_comm_accounting_scope() || self.budget.is_unmetered() {
             return Ok(());
         }
-        let identity = super::accounting::byte_accounting::produce_introduction_identity(source);
+        let host = self.budget.native_host_work();
+        let meter = |operations, scanned, backing| {
+            reserve_native_observation_work(
+                host.as_ref().ok_or(RSpaceError::HostWorkRejected)?,
+                operations,
+                scanned,
+                backing,
+            )
+        };
+        let identity = match host.as_ref() {
+            Some(_) => super::accounting::byte_accounting::produce_introduction_identity_metered(
+                source, &meter,
+            )?,
+            None => super::accounting::byte_accounting::produce_introduction_identity(source),
+        };
         let authority = self
             .budget
             .introduction_authority(
@@ -659,9 +691,16 @@ impl RSpaceAccountingObserver<Par, BindPattern, ListParWithRandom, TaggedContinu
                 super::accounting::authority::AuthorityByteEventKind::ProduceIntroduction,
             )
             .map_err(RSpaceError::from)?;
-        let observed = super::accounting::observation_construction::produce_introduction(
-            source, channel, data, &authority,
-        )?;
+        let observed = match host.as_ref() {
+            Some(_) => {
+                super::accounting::observation_construction::produce_introduction_metered_with_identity(
+                    identity, channel, data, &authority, &meter,
+                )?
+            }
+            None => super::accounting::observation_construction::produce_introduction(
+                source, channel, data, &authority,
+            )?,
+        };
         self.budget
             .reserve_produce_introduction_measured(
                 observed.event_id,
@@ -687,7 +726,21 @@ impl RSpaceAccountingObserver<Par, BindPattern, ListParWithRandom, TaggedContinu
         self.budget
             .observe_native_consume_peeks(peeks)
             .map_err(RSpaceError::from)?;
-        let identity = super::accounting::byte_accounting::consume_introduction_identity(source);
+        let host = self.budget.native_host_work();
+        let meter = |operations, scanned, backing| {
+            reserve_native_observation_work(
+                host.as_ref().ok_or(RSpaceError::HostWorkRejected)?,
+                operations,
+                scanned,
+                backing,
+            )
+        };
+        let identity = match host.as_ref() {
+            Some(_) => super::accounting::byte_accounting::consume_introduction_identity_metered(
+                source, &meter,
+            )?,
+            None => super::accounting::byte_accounting::consume_introduction_identity(source),
+        };
         let authority = self
             .budget
             .introduction_authority(
@@ -695,13 +748,16 @@ impl RSpaceAccountingObserver<Par, BindPattern, ListParWithRandom, TaggedContinu
                 super::accounting::authority::AuthorityByteEventKind::ConsumeIntroduction,
             )
             .map_err(RSpaceError::from)?;
-        let observed = super::accounting::observation_construction::consume_introduction(
-            source,
-            channels,
-            patterns,
-            continuation,
-            &authority,
-        )?;
+        let observed = match host.as_ref() {
+            Some(_) => {
+                super::accounting::observation_construction::consume_introduction_metered_with_identity(
+                    identity, channels, patterns, continuation, &authority, &meter,
+                )?
+            }
+            None => super::accounting::observation_construction::consume_introduction(
+                source, channels, patterns, continuation, &authority,
+            )?,
+        };
         self.budget
             .reserve_consume_introduction_measured(
                 observed.event_id,
@@ -725,12 +781,30 @@ impl RSpaceAccountingObserver<Par, BindPattern, ListParWithRandom, TaggedContinu
         self.budget
             .observe_native_comm_source(comm)
             .map_err(RSpaceError::from)?;
-        let observed = super::accounting::observation_construction::comm(
-            comm,
-            continuation,
-            continuation_persistent,
-            data,
-        )?;
+        let host = self.budget.native_host_work();
+        let meter = |operations, scanned, backing| {
+            reserve_native_observation_work(
+                host.as_ref().ok_or(RSpaceError::HostWorkRejected)?,
+                operations,
+                scanned,
+                backing,
+            )
+        };
+        let observed = match host.as_ref() {
+            Some(_) => super::accounting::observation_construction::comm_metered(
+                comm,
+                continuation,
+                continuation_persistent,
+                data,
+                &meter,
+            )?,
+            None => super::accounting::observation_construction::comm(
+                comm,
+                continuation,
+                continuation_persistent,
+                data,
+            )?,
+        };
         self.budget
             .reserve_comm_authority_measured(
                 observed.event_id,

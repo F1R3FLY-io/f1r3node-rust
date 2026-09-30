@@ -1,3 +1,4 @@
+pub mod clone_backing;
 pub mod collection_backing;
 pub mod dag;
 pub mod env;

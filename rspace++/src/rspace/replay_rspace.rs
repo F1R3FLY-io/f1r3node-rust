@@ -538,6 +538,28 @@ where
         A: Clone + Debug,
         K: Clone + Debug,
     {
+        Self::apply_with_shards(history_repository, store, matcher, None)
+    }
+
+    pub(crate) fn apply_native(
+        history_repository: Arc<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>>,
+        store: Arc<Box<dyn HotStore<C, P, A, K>>>,
+        matcher: Arc<Box<dyn Match<P, A, K>>>,
+        cache_shards: usize,
+    ) -> ReplayRSpace<C, P, A, K> {
+        Self::apply_with_shards(history_repository, store, matcher, Some(cache_shards))
+    }
+
+    fn apply_with_shards(
+        history_repository: Arc<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>>,
+        store: Arc<Box<dyn HotStore<C, P, A, K>>>,
+        matcher: Arc<Box<dyn Match<P, A, K>>>,
+        cache_shards: Option<usize>,
+    ) -> ReplayRSpace<C, P, A, K> {
+        let replay_data = match cache_shards {
+            Some(shards) => MultisetMultiMap::empty_with_shard_amount(shards),
+            None => MultisetMultiMap::empty(),
+        };
         ReplayRSpace {
             history_repository: Arc::new(std::sync::RwLock::new(history_repository)),
             store: Arc::new(std::sync::RwLock::new(store)),
@@ -546,13 +568,45 @@ where
             installs: Arc::new(Mutex::new(HashMap::new())),
             event_log: Arc::new(Mutex::new(Vec::new())),
             produce_counter: Arc::new(Mutex::new(BTreeMap::new())),
-            replay_data: Arc::new(Mutex::new(MultisetMultiMap::empty())),
+            replay_data: Arc::new(Mutex::new(replay_data)),
             consume_replay_index: Arc::new(Mutex::new(HashMap::new())),
             logger: Arc::new(Mutex::new(Box::new(BasicLogger::new()))),
             replay_waiting_continuations_estimate: Arc::new(AtomicI64::new(0)),
             phase_a_locks: Self::new_striped_locks(),
             phase_b_locks: Self::new_striped_locks(),
         }
+    }
+
+    pub(crate) fn native_constructor_layout(cache_shards: usize) -> Option<(usize, usize)> {
+        use super::native_backing::{arc_allocation_bytes, dashmap_shard_bytes};
+
+        let arc_bytes = [
+            arc_allocation_bytes::<
+                std::sync::RwLock<
+                    Arc<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>>,
+                >,
+            >()?,
+            arc_allocation_bytes::<std::sync::RwLock<Arc<Box<dyn HotStore<C, P, A, K>>>>>()?,
+            arc_allocation_bytes::<
+                std::sync::RwLock<Option<Arc<dyn RSpaceAccountingObserver<C, P, A, K>>>>,
+            >()?,
+            arc_allocation_bytes::<Mutex<HashMap<Vec<C>, Install<P, K>>>>()?,
+            arc_allocation_bytes::<Mutex<Log>>()?,
+            arc_allocation_bytes::<Mutex<BTreeMap<Produce, i32>>>()?,
+            arc_allocation_bytes::<Mutex<MultisetMultiMap<IOEvent, COMM>>>()?,
+            arc_allocation_bytes::<
+                Mutex<HashMap<Blake2b256Hash, HashMap<Blake2b256Hash, Vec<COMM>>>>,
+            >()?,
+            arc_allocation_bytes::<Mutex<Box<dyn RSpaceLogger<C, P, A, K>>>>()?,
+            arc_allocation_bytes::<AtomicI64>()?,
+        ]
+        .into_iter()
+        .try_fold(0usize, |sum, bytes| sum.checked_add(bytes))?;
+        let replay_index_bytes =
+            cache_shards.checked_mul(dashmap_shard_bytes::<IOEvent, counter::Counter<COMM>>())?;
+        let bytes = arc_bytes.checked_add(replay_index_bytes)?;
+        let operations = cache_shards.checked_add(10)?;
+        Some((operations, bytes))
     }
 
     pub fn apply_with_logger(
@@ -585,6 +639,11 @@ where
     }
 
     fn inc_replay_waiting_continuations(&self, channels: &[C]) {
+        let depth = self.get_store().get_continuations(channels).len();
+        self.inc_replay_waiting_continuations_depth(depth);
+    }
+
+    fn inc_replay_waiting_continuations_depth(&self, depth: usize) {
         metrics::counter!(
             REPLAY_WAITING_CONTINUATIONS_STORED_TOTAL_METRIC,
             "source" => REPLAY_RSPACE_METRICS_SOURCE
@@ -599,12 +658,11 @@ where
             "source" => REPLAY_RSPACE_METRICS_SOURCE
         )
         .set(estimate as f64);
-        let channel_depth = self.get_store().get_continuations(channels).len();
         metrics::histogram!(
             REPLAY_WAITING_CONTINUATIONS_CHANNEL_DEPTH_METRIC,
             "source" => REPLAY_RSPACE_METRICS_SOURCE
         )
-        .record(channel_depth as f64);
+        .record(depth as f64);
     }
 
     fn dec_replay_waiting_continuations(&self) {

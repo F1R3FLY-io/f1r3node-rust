@@ -190,6 +190,58 @@ impl<K: Ord + Clone> Formula<K> {
             }
         }
     }
+
+    fn validated_surfaces(&self, out: &mut BTreeSet<K>) -> bool {
+        match self {
+            Self::True => true,
+            Self::All(formulas) => formulas
+                .iter()
+                .all(|formula| formula.validated_surfaces(out)),
+            Self::Not(formula) => formula.validated_surfaces(out),
+            Self::Spatial(left, right) => {
+                let mut left_surfaces = BTreeSet::new();
+                let mut right_surfaces = BTreeSet::new();
+                if !left.validated_surfaces(&mut left_surfaces)
+                    || !right.validated_surfaces(&mut right_surfaces)
+                    || !left_surfaces.is_disjoint(&right_surfaces)
+                {
+                    return false;
+                }
+                out.extend(left_surfaces);
+                out.extend(right_surfaces);
+                true
+            }
+            Self::Located { surface, body } => {
+                let mut body_surfaces = BTreeSet::new();
+                if !body.validated_surfaces(&mut body_surfaces)
+                    || body_surfaces.iter().any(|candidate| candidate != surface)
+                {
+                    return false;
+                }
+                out.insert(surface.clone());
+                true
+            }
+            Self::Available { surface, .. }
+            | Self::Required { surface, .. }
+            | Self::Sufficient { surface } => {
+                out.insert(surface.clone());
+                true
+            }
+            Self::Spend {
+                grade,
+                continuation,
+            } => {
+                out.extend(
+                    grade
+                        .0
+                        .iter()
+                        .filter(|(_, amount)| **amount > 0)
+                        .map(|(key, _)| key.clone()),
+                );
+                continuation.validated_surfaces(out)
+            }
+        }
+    }
 }
 
 impl<K: Ord + Clone> ResourceObservation<K> {
@@ -247,12 +299,22 @@ pub fn evaluate<K: Ord + Clone>(
     observation: &ResourceObservation<K>,
     formula: &Formula<K>,
 ) -> Verdict {
+    if !formula.validated_surfaces(&mut BTreeSet::new()) {
+        return Verdict::Unsatisfied;
+    }
+    evaluate_scoped(observation, formula)
+}
+
+fn evaluate_scoped<K: Ord + Clone>(
+    observation: &ResourceObservation<K>,
+    formula: &Formula<K>,
+) -> Verdict {
     match formula {
         Formula::True => Verdict::Satisfied,
         Formula::All(formulas) => {
             let mut verdict = Verdict::Satisfied;
             for formula in formulas {
-                match evaluate(observation, formula) {
+                match evaluate_scoped(observation, formula) {
                     Verdict::Unsatisfied => return Verdict::Unsatisfied,
                     Verdict::Indeterminate => verdict = Verdict::Indeterminate,
                     Verdict::Satisfied => {}
@@ -260,7 +322,7 @@ pub fn evaluate<K: Ord + Clone>(
             }
             verdict
         }
-        Formula::Not(formula) => match evaluate(observation, formula) {
+        Formula::Not(formula) => match evaluate_scoped(observation, formula) {
             Verdict::Satisfied => Verdict::Unsatisfied,
             Verdict::Unsatisfied => Verdict::Satisfied,
             Verdict::Indeterminate => Verdict::Indeterminate,
@@ -273,8 +335,10 @@ pub fn evaluate<K: Ord + Clone>(
             if !left_surfaces.is_disjoint(&right_surfaces) {
                 Verdict::Unsatisfied
             } else {
-                evaluate(&observation.restricted(&left_surfaces), left)
-                    .and(evaluate(&observation.restricted(&right_surfaces), right))
+                evaluate_scoped(&observation.restricted(&left_surfaces), left).and(evaluate_scoped(
+                    &observation.restricted(&right_surfaces),
+                    right,
+                ))
             }
         }
         Formula::Located { surface, body } => {
@@ -283,7 +347,7 @@ pub fn evaluate<K: Ord + Clone>(
             if body_surfaces.iter().any(|candidate| candidate != surface) {
                 Verdict::Unsatisfied
             } else {
-                evaluate(
+                evaluate_scoped(
                     &observation.restricted(&BTreeSet::from([surface.clone()])),
                     body,
                 )
@@ -301,10 +365,16 @@ pub fn evaluate<K: Ord + Clone>(
             DemandKnowledge::UpperBound(_) => Verdict::Indeterminate,
         },
         Formula::Sufficient { surface } => {
-            let demand = match &observation.demand {
-                DemandKnowledge::Exact(demand) | DemandKnowledge::UpperBound(demand) => demand,
-            };
-            Verdict::from_bool(observation.available.get(surface) >= demand.get(surface))
+            let available = observation.available.get(surface);
+            match &observation.demand {
+                DemandKnowledge::Exact(demand) => {
+                    Verdict::from_bool(available >= demand.get(surface))
+                }
+                DemandKnowledge::UpperBound(demand) if available >= demand.get(surface) => {
+                    Verdict::Satisfied
+                }
+                DemandKnowledge::UpperBound(_) => Verdict::Indeterminate,
+            }
         }
         Formula::Spend {
             grade,
@@ -323,7 +393,9 @@ pub fn evaluate<K: Ord + Clone>(
             DemandKnowledge::Exact(demand) if !demand.dominates(grade) => Verdict::Unsatisfied,
             DemandKnowledge::Exact(_) => observation
                 .after_spend(grade)
-                .map_or(Verdict::Unsatisfied, |next| evaluate(&next, continuation)),
+                .map_or(Verdict::Unsatisfied, |next| {
+                    evaluate_scoped(&next, continuation)
+                }),
         },
     }
 }
@@ -507,6 +579,49 @@ mod tests {
     }
 
     #[test]
+    fn negation_cannot_make_an_invalid_resource_scope_satisfied() {
+        let here = key(6);
+        let there = key(7);
+        let state = observation(&[(here, 1, 0), (there, 1, 0)]);
+        let foreign = Formula::Located {
+            surface: here,
+            body: Box::new(Formula::Available {
+                surface: there,
+                amount: 1,
+            }),
+        };
+        let overlapping = Formula::Spatial(
+            Box::new(Formula::Available {
+                surface: here,
+                amount: 1,
+            }),
+            Box::new(Formula::Required {
+                surface: here,
+                amount: 1,
+            }),
+        );
+        for invalid in [foreign, overlapping] {
+            let negated = Formula::Not(Box::new(invalid));
+            assert_eq!(evaluate(&state, &negated), Verdict::Unsatisfied);
+            assert_eq!(check(&state, &negated), Err(CheckError::Unsatisfied));
+            assert_eq!(
+                evaluate(&state, &Formula::All(vec![Formula::True, negated])),
+                Verdict::Unsatisfied,
+            );
+        }
+        assert_eq!(
+            evaluate(
+                &state,
+                &Formula::Not(Box::new(Formula::Required {
+                    surface: here,
+                    amount: 1,
+                })),
+            ),
+            Verdict::Satisfied,
+        );
+    }
+
+    #[test]
     fn rho_reference_checker_uses_native_structural_demand() {
         let canonical = Compiler::source_to_adt(r#"{% @"x"!(0) %}[ a ]"#).unwrap();
         let signature =
@@ -573,6 +688,33 @@ mod tests {
     }
 
     #[test]
+    fn insufficient_supply_for_an_upper_bound_cannot_prove_underfunding() {
+        let surface = key(13);
+        let available = ResourceMultiset::singleton(surface, 1);
+        let sufficient = Formula::Sufficient { surface };
+        let negated = Formula::Not(Box::new(sufficient.clone()));
+        let bounded = ResourceObservation::upper_bound(
+            available.clone(),
+            ResourceMultiset::singleton(surface, 2),
+        );
+        assert_eq!(evaluate(&bounded, &sufficient), Verdict::Indeterminate);
+        assert_eq!(evaluate(&bounded, &negated), Verdict::Indeterminate);
+        assert_eq!(check(&bounded, &sufficient), Err(CheckError::Indeterminate));
+        assert_eq!(check(&bounded, &negated), Err(CheckError::Indeterminate));
+
+        let exact_funded =
+            ResourceObservation::exact(available.clone(), ResourceMultiset::singleton(surface, 1));
+        let exact_underfunded =
+            ResourceObservation::exact(available, ResourceMultiset::singleton(surface, 2));
+        assert_eq!(evaluate(&exact_funded, &sufficient), Verdict::Satisfied);
+        assert_eq!(
+            evaluate(&exact_underfunded, &sufficient),
+            Verdict::Unsatisfied
+        );
+        assert_eq!(evaluate(&exact_underfunded, &negated), Verdict::Satisfied);
+    }
+
+    #[test]
     fn zero_requirement_is_proved_for_exact_and_bounded_observations() {
         let surface = key(12);
         let exact =
@@ -602,20 +744,22 @@ mod tests {
     }
 
     #[test]
-    fn candidate_created_stack_does_not_fund_its_own_transfer() {
+    fn candidate_created_stack_cannot_prove_its_own_transfer() {
         let canonical = Compiler::source_to_adt("a :: ()").unwrap();
         let signature = Sig::Ground(b"deploy".to_vec());
         let deploy_surface = signature.lane_hash();
         let observation =
             rho_observation(&canonical, &signature, &ResourceMultiset::default()).unwrap();
-        assert_eq!(
-            evaluate(&observation, &Formula::Located {
+        let formula = Formula::Located {
+            surface: deploy_surface,
+            body: Box::new(Formula::Sufficient {
                 surface: deploy_surface,
-                body: Box::new(Formula::Sufficient {
-                    surface: deploy_surface,
-                }),
-            },),
-            Verdict::Unsatisfied,
+            }),
+        };
+        assert_eq!(evaluate(&observation, &formula), Verdict::Indeterminate);
+        assert_eq!(
+            check(&observation, &formula),
+            Err(CheckError::Indeterminate)
         );
     }
 

@@ -3,13 +3,16 @@ use std::sync::atomic::AtomicUsize;
 use futures::FutureExt;
 use proptest::prelude::*;
 
+use super::backing::tree_backing;
 use super::*;
+use crate::rspace::hashing::native_source::SourceMeter;
 use crate::rspace::rspace::RSpace;
 use crate::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use crate::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 
 mod installation;
 mod export;
+mod history;
 
 #[tokio::test]
 async fn legacy_query_lock_path_has_no_native_reservation() {
@@ -89,9 +92,9 @@ async fn query_lock_preparation_rejects_exhausted_host_budget() {
 
 #[tokio::test]
 async fn every_two_phase_lock_preparation_cut_releases_all_guards() {
-    let session = session().await;
     let channel = "two phase preparation".to_owned();
     for produce in [false, true] {
+        let session = self::session().await;
         let before = session.epoch.calls.load(Ordering::Relaxed);
         let result = if produce {
             session.produce_lock(&channel).await
@@ -101,6 +104,7 @@ async fn every_two_phase_lock_preparation_cut_releases_all_guards() {
         drop(result.unwrap());
         let calls = session.epoch.calls.load(Ordering::Relaxed) - before;
         for accepted in 0..calls {
+            let session = self::session().await;
             *session.epoch.remaining_calls.lock().unwrap() = Some(accepted);
             let result = if produce {
                 session.produce_lock(&channel).await
@@ -239,6 +243,26 @@ struct Matcher;
 
 impl Match<String, String, String> for Matcher {
     fn get(&self, _: &String, datum: &String) -> Option<String> { Some(datum.clone()) }
+
+    fn get_metered(
+        &self,
+        _: &String,
+        datum: &String,
+        meter: &(dyn SourceMeter + Send + Sync),
+    ) -> Result<Option<String>, RSpaceError> {
+        meter.reserve(1, datum.len(), datum.len())?;
+        Ok(Some(datum.clone()))
+    }
+
+    fn check_commit_metered(
+        &self,
+        _: &String,
+        _: &[String],
+        meter: &(dyn SourceMeter + Send + Sync),
+    ) -> Result<bool, RSpaceError> {
+        meter.reserve(1, 0, 0)?;
+        Ok(true)
+    }
 }
 
 type Session = NativeReplaySession<String, String, String, String, Epoch>;
@@ -326,6 +350,43 @@ async fn session() -> Session {
         .unwrap()
 }
 
+#[tokio::test]
+async fn session_creation_prepays_its_allocations() {
+    let mut stores = InMemoryStoreManager::new();
+    let (play, _) = RSpace::<String, String, String, String>::create_with_replay(
+        stores.r_space_stores().await.unwrap(),
+        Arc::new(Box::new(Matcher)),
+    )
+    .unwrap();
+    let epoch = Epoch::default();
+    let history = play.get_history_repository();
+    let matcher: Arc<Box<dyn Match<String, String, String>>> = Arc::new(Box::new(Matcher));
+    let (session, allocated) = crate::rspace::history::native_reader::measure_allocations(|| {
+        Session::new(history, matcher, epoch.clone())
+    });
+    let session = session.unwrap();
+    let reserved = epoch.bytes.load(Ordering::Relaxed);
+    assert!(allocated <= reserved, "allocated={allocated}, reserved={reserved}");
+    assert!(
+        epoch.work.load(Ordering::Relaxed) >= crate::rspace::striped_locks::NUM_LOCK_STRIPES * 4
+    );
+    assert_eq!(
+        session.space.replay_data.lock().unwrap().map.shards().len(),
+        HotStoreInstances::native_cache_shards().unwrap()
+    );
+    let calls = epoch.calls.load(Ordering::Relaxed);
+    session.close().await.unwrap();
+
+    let exhausted = Epoch::default();
+    *exhausted.remaining_calls.lock().unwrap() = Some(calls - 1);
+    let (result, allocated) = crate::rspace::history::native_reader::measure_allocations(|| {
+        Session::new(play.get_history_repository(), Arc::new(Box::new(Matcher)), exhausted)
+    });
+    assert!(result.is_err());
+    let (_, lock_bytes) = crate::rspace::striped_locks::native::constructor_layout().unwrap();
+    assert!(allocated < lock_bytes / 4, "allocated={allocated}, lock_bytes={lock_bytes}");
+}
+
 async fn put(session: &Session, value: &str) { put_at(session, "c", value).await; }
 
 async fn put_at(session: &Session, channel: &str, value: &str) {
@@ -383,6 +444,53 @@ async fn checkpoint_preserves_counters_and_restores_store_log_and_ledger_togethe
     assert_eq!(counters(&session), 1);
     assert_eq!(session.epoch.state.lock().unwrap().0.len(), 1);
     assert_eq!(format!("{:?}", session.space.event_log.lock().unwrap()), before_log);
+}
+
+#[tokio::test]
+async fn checkpoint_prepays_nested_log_and_counter_clones() {
+    let session = session().await;
+    let before_bytes = session.epoch.bytes.load(Ordering::Relaxed);
+    let before_work = session.epoch.work.load(Ordering::Relaxed);
+    let empty = session.checkpoint().await.unwrap();
+    let empty_bytes = session.epoch.bytes.load(Ordering::Relaxed) - before_bytes;
+    let empty_work = session.epoch.work.load(Ordering::Relaxed) - before_work;
+
+    let mut produce = Produce::create(&"nested", &"value", false);
+    produce.output_value = vec![vec![3; 4096], vec![7; 2048]];
+    let consume = Consume::create(
+        &vec!["nested".to_owned()],
+        &vec!["pattern".to_owned()],
+        &"body".to_owned(),
+        false,
+    );
+    session.space.event_log.lock().unwrap().extend([
+        Event::IoEvent(IOEvent::Produce(produce.clone())),
+        Event::Comm(COMM {
+            consume,
+            produces: vec![produce.clone()],
+            peeks: BTreeSet::from([0, 2]),
+            times_repeated: BTreeMap::from([(produce.clone(), 1)]),
+        }),
+    ]);
+    session
+        .space
+        .produce_counter
+        .lock()
+        .unwrap()
+        .insert(produce, 1);
+    let (_, copied_bytes) = crate::rspace::history::native_reader::measure_allocations(|| {
+        let log = session.space.event_log.lock().unwrap();
+        let counters = session.space.produce_counter.lock().unwrap();
+        (log.clone(), counters.clone())
+    });
+    let before_bytes = session.epoch.bytes.load(Ordering::Relaxed);
+    let before_work = session.epoch.work.load(Ordering::Relaxed);
+    let populated = session.checkpoint().await.unwrap();
+    let populated_bytes = session.epoch.bytes.load(Ordering::Relaxed) - before_bytes;
+    let populated_work = session.epoch.work.load(Ordering::Relaxed) - before_work;
+    assert!(populated_bytes - empty_bytes >= copied_bytes);
+    assert!(populated_work > empty_work);
+    drop((empty, populated));
 }
 
 #[tokio::test]
@@ -588,7 +696,7 @@ fn metadata_reservation_includes_every_source_and_output_payload() {
         times_repeated: BTreeMap::from([(produce.clone(), 3)]),
     };
     let log = vec![Event::IoEvent(IOEvent::Produce(produce.clone())), Event::Comm(comm)];
-    reserve_log(&epoch, &log).unwrap();
+    reserve_checkpoint_metadata(&epoch, &log, &BTreeMap::new()).unwrap();
     let bytes = epoch.bytes.load(Ordering::Relaxed);
     let smaller = Epoch::default();
     let mut changed = log;
@@ -596,8 +704,8 @@ fn metadata_reservation_includes_every_source_and_output_payload() {
         unreachable!()
     };
     p.output_value[1].pop();
-    reserve_log(&smaller, &changed).unwrap();
-    assert_eq!(bytes - smaller.bytes.load(Ordering::Relaxed), 1);
+    reserve_checkpoint_metadata(&smaller, &changed, &BTreeMap::new()).unwrap();
+    assert!(bytes - smaller.bytes.load(Ordering::Relaxed) >= 3);
     assert!(bytes >= 3 * (64 + 38 + 3 * size_of::<Vec<u8>>()));
 }
 
@@ -725,10 +833,7 @@ fn tree_backing_covers_node_splits_merges_and_aligned_keys() {
 
 #[test]
 fn tree_backing_rejects_overflow_before_any_reservation() {
-    let epoch = Epoch::default();
-    assert!(reserve_tree::<Produce, i32, _>(&epoch, usize::MAX).is_err());
-    assert_eq!(epoch.work.load(Ordering::Relaxed), 0);
-    assert_eq!(epoch.bytes.load(Ordering::Relaxed), 0);
+    assert!(tree_backing::<Produce, i32>(usize::MAX).is_none());
     assert_eq!(tree_backing::<Produce, i32>(0), Some((0, 0)));
 }
 

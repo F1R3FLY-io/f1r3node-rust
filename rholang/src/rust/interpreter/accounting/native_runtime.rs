@@ -71,6 +71,16 @@ impl NativeRuntimeConfig {
 }
 
 impl RuntimeBudget {
+    pub(crate) fn native_host_work(&self) -> Option<HostWorkBudget> {
+        self.authority_state
+            .lock()
+            .expect("authority state")
+            .native
+            .as_ref()
+            .filter(|native| !native.replay_bound)
+            .map(NativeRuntimeConfig::host_work)
+    }
+
     pub fn reset_for_native_execution(
         &self,
         mut config: NativeRuntimeConfig,
@@ -168,7 +178,11 @@ impl RuntimeBudget {
             work(
                 &host_work,
                 HostWorkDimension::VerificationOperations,
-                order.path.len().saturating_add(34),
+                order
+                    .path
+                    .len()
+                    .checked_add(34)
+                    .ok_or(InterpreterError::HostWorkRejected)?,
             )?;
             work(
                 &host_work,
@@ -176,7 +190,8 @@ impl RuntimeBudget {
                 order
                     .path
                     .len()
-                    .saturating_mul(std::mem::size_of::<(u64, u64)>()),
+                    .checked_mul(std::mem::size_of::<(u64, u64)>())
+                    .ok_or(InterpreterError::HostWorkRejected)?,
             )?;
             let occurrence = NativeBudgetOccurrence {
                 session,

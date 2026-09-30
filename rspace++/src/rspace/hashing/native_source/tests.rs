@@ -108,6 +108,27 @@ fn rejected_write_does_not_update_bytes_or_hash() {
 }
 
 #[test]
+fn returned_produce_clone_reserves_nested_payload_backing_before_copy() {
+    let source = Produce::create(&"channel", &"datum", false)
+        .mark_as_non_deterministic(vec![vec![1_u8; 17], vec![2_u8; 35]]);
+    let baseline = Meter::default();
+    let copied = clone_produce(&source, &baseline).unwrap();
+    assert_eq!(bincode::serialize(&copied).unwrap(), bincode::serialize(&source).unwrap());
+    let required = baseline.used.get();
+    assert!(required.iter().all(|amount| *amount > 0));
+    for dimension in 0..3 {
+        let mut limits = required;
+        limits[dimension] -= 1;
+        let meter = Meter {
+            used: Cell::new([0; 3]),
+            limit: Some(limits),
+        };
+        assert!(matches!(clone_produce(&source, &meter), Err(RSpaceError::HostWorkRejected)));
+        assert_eq!(bincode::serialize(&source).unwrap(), bincode::serialize(&copied).unwrap());
+    }
+}
+
+#[test]
 fn exact_budget_succeeds_and_one_less_rejects_each_dimension() {
     let channels = vec![3_u64, 1, 3];
     let patterns = vec![vec![2_u8], vec![], vec![2]];

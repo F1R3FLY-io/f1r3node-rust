@@ -9,7 +9,7 @@ use super::index::{reserve_vector, NativeIndex, PreparedInsert};
 use super::*;
 use crate::rust::interpreter::accounting::monetary_allocation::reserve_work;
 use crate::rust::interpreter::accounting::native_phlo_rules::{
-    NativeAttemptStage, NativeBudgetAttempt, NativeBudgetOccurrence,
+    observation_comparison_bytes, NativeAttemptStage, NativeBudgetAttempt, NativeBudgetOccurrence,
 };
 
 #[derive(Clone, Debug)]
@@ -161,8 +161,9 @@ impl NativeRuntimeConfig {
                 .occurrence
                 .path
                 .len()
-                .saturating_mul(2)
-                .saturating_add(34),
+                .checked_mul(2)
+                .and_then(|count| count.checked_add(34))
+                .ok_or(InterpreterError::HostWorkRejected)?,
         )?;
         if self
             .recording
@@ -178,8 +179,9 @@ impl NativeRuntimeConfig {
             .occurrence
             .path
             .len()
-            .saturating_mul(size_of::<(u64, u64)>())
-            .saturating_mul(2);
+            .checked_mul(size_of::<(u64, u64)>())
+            .and_then(|bytes| bytes.checked_mul(2))
+            .ok_or(InterpreterError::HostWorkRejected)?;
         work(&self.host_work, HostWorkDimension::SearchStateBytes, bytes)?;
         #[cfg(test)]
         if self.recording.fail_allocation_after == Some(self.recording.occurrences.len()) {
@@ -282,10 +284,16 @@ impl NativeRuntimeConfig {
             .copied()
             .ok_or_else(|| recording_error("native retry has no accepted charge"))?;
         let original = &self.recording.attempts[index];
+        let accepted_bytes = observation_comparison_bytes(&original.observation, &self.host_work)
+            .map_err(|_| InterpreterError::HostWorkRejected)?;
+        let comparison_bytes = prepared
+            .comparison_bytes
+            .checked_add(accepted_bytes)
+            .ok_or(InterpreterError::HostWorkRejected)?;
         work(
             &self.host_work,
             HostWorkDimension::VerificationBytes,
-            prepared.comparison_bytes,
+            comparison_bytes,
         )?;
         if !Arc::ptr_eq(&original.observation, &prepared.observation)
             && original.observation != prepared.observation
@@ -328,7 +336,9 @@ impl NativeRuntimeConfig {
         work(
             &self.host_work,
             HostWorkDimension::VerificationOperations,
-            count.saturating_add(1),
+            count
+                .checked_add(1)
+                .ok_or(InterpreterError::HostWorkRejected)?,
         )?;
         let path_bytes = self
             .recording
@@ -338,10 +348,12 @@ impl NativeRuntimeConfig {
                 total.checked_add(row.path.len().checked_mul(size_of::<(u64, u64)>())?)
             })
             .ok_or(InterpreterError::HostWorkRejected)?;
-        let bytes = count
-            .saturating_mul(size_of::<NativeBudgetAttempt>() + size_of::<NativeBudgetRetry>())
-            .saturating_mul(2)
-            .saturating_add(path_bytes);
+        let bytes = size_of::<NativeBudgetAttempt>()
+            .checked_add(size_of::<NativeBudgetRetry>())
+            .and_then(|record_bytes| count.checked_mul(record_bytes))
+            .and_then(|bytes| bytes.checked_mul(2))
+            .and_then(|bytes| bytes.checked_add(path_bytes))
+            .ok_or(InterpreterError::HostWorkRejected)?;
         work(&self.host_work, HostWorkDimension::SearchStateBytes, bytes)?;
         work(
             &self.host_work,

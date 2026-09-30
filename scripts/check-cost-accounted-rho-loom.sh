@@ -34,8 +34,14 @@ out="$(
       LOOM_MAX_PREEMPTIONS="$preemptions" LOOM_MAX_BRANCHES="$branches" \
       timeout 900 cargo test --locked -p cost-accounting-loom-models &&
     RUSTFLAGS="-C target-cpu=native" \
+      timeout 900 cargo test --locked -p cost-accounting-loom-models \
+        --test initializer_ownership --test startup_runtime --test recovery_actor_service &&
+    RUSTFLAGS="-C target-cpu=native" \
       LOOM_MAX_PREEMPTIONS="$preemptions" LOOM_MAX_BRANCHES="$branches" \
       timeout 900 cargo test --locked -p rspace_plus_plus --test native_history_loom &&
+    RUSTFLAGS="-C target-cpu=native" \
+      LOOM_MAX_PREEMPTIONS="$preemptions" LOOM_MAX_BRANCHES="$branches" \
+      timeout 900 cargo test --locked -p rspace_plus_plus --test native_cache_loom &&
     RUSTFLAGS="-C target-cpu=native" \
       LOOM_MAX_PREEMPTIONS="$preemptions" LOOM_MAX_BRANCHES="$branches" \
       timeout 900 cargo test --locked -p rspace_plus_plus --test native_source_loom

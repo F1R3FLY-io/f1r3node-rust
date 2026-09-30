@@ -1,3 +1,5 @@
+use std::cell::Cell;
+
 use loom::sync::Arc;
 use loom::sync::atomic::{AtomicUsize, Ordering};
 use loom::thread;
@@ -34,8 +36,21 @@ impl SourceMeter for Meter {
     }
 }
 
-fn check(limit: usize, atomic: bool) {
-    loom::model(move || {
+fn source_backing() -> usize {
+    let total = Cell::new(0usize);
+    native_source::produce(&(), &(), false, &|_, _, backing| {
+        total.set(total.get().checked_add(backing).unwrap());
+        Ok(())
+    })
+    .unwrap();
+    assert!(total.get() > 0);
+    total.get()
+}
+
+fn check(limit: usize, atomic: bool, required: usize) {
+    let mut model = loom::model::Builder::new();
+    model.preemption_bound = Some(model.preemption_bound.unwrap_or(3));
+    model.check(move || {
         let meter = Arc::new(Meter {
             remaining: AtomicUsize::new(limit),
             atomic,
@@ -62,9 +77,9 @@ fn check(limit: usize, atomic: bool) {
             .into_iter()
             .map(|worker| worker.join().unwrap())
             .sum();
-        assert!(completed * 64 <= limit, "source results exceed shared backing budget");
+        assert!(completed * required <= limit, "source results exceed shared backing budget");
         assert!(meter.remaining.load(Ordering::Acquire) <= limit);
-        if limit == 128 {
+        if limit == required * 2 {
             assert_eq!(completed, 2);
         }
     });
@@ -72,11 +87,15 @@ fn check(limit: usize, atomic: bool) {
 
 #[test]
 fn concurrent_source_construction_respects_shared_backing_budget() {
-    for limit in [0, 32, 64, 128] {
-        check(limit, true);
+    let required = source_backing();
+    for limit in [0, required / 2, required, required * 2] {
+        check(limit, true, required);
     }
 }
 
 #[test]
 #[should_panic(expected = "source results exceed shared backing budget")]
-fn separate_budget_check_and_update_can_authorize_unpaid_sources() { check(64, false); }
+fn separate_budget_check_and_update_can_authorize_unpaid_sources() {
+    let required = source_backing();
+    check(required, false, required);
+}

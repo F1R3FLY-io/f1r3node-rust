@@ -135,6 +135,8 @@ impl KeyValueStore for CheckpointStore {
         Ok(())
     }
 
+    fn supports_strict_atomic_mutate(&self) -> bool { self.inner.supports_strict_atomic_mutate() }
+
     fn delete(&self, keys: Vec<ByteBuffer>) -> Result<usize, KvStoreError> {
         self.inner.delete(keys)
     }

@@ -9,7 +9,7 @@ use production::PublicationGuard;
 
 fn model(test: impl Fn() + Send + Sync + 'static) {
     let mut builder = loom::model::Builder::new();
-    builder.preemption_bound = None;
+    builder.preemption_bound = Some(builder.preemption_bound.unwrap_or(3));
     builder.max_permutations = None;
     builder.max_duration = None;
     builder.checkpoint_file = None;

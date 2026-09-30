@@ -151,6 +151,131 @@ async fn private_initialization_rejects_matching_prestate_without_consuming_it()
     );
 }
 
+#[tokio::test]
+async fn every_installation_reservation_cut_leaves_history_and_other_sessions_unchanged() {
+    let base = session().await;
+    let history = base.space.get_history_repository();
+    let root = history.root();
+    let names = ["first".to_owned(), "second".to_owned()];
+    let baseline_epoch = Epoch::default();
+    let baseline = Session::new_with_installs(
+        history.clone(),
+        Arc::new(Box::new(Matcher)),
+        baseline_epoch.clone(),
+        templates(&names),
+    )
+    .unwrap();
+    let calls = baseline_epoch.calls.load(Ordering::Relaxed);
+    assert!(calls > names.len());
+    assert!(baseline_epoch.bytes.load(Ordering::Relaxed) > 0);
+    assert_templates(&baseline, &names).await;
+    for accepted in 0..calls {
+        let epoch = Epoch::default();
+        *epoch.remaining_calls.lock().unwrap() = Some(accepted);
+        assert!(
+            Session::new_with_installs(
+                history.clone(),
+                Arc::new(Box::new(Matcher)),
+                epoch,
+                templates(&names),
+            )
+            .is_err(),
+            "accepted={accepted}"
+        );
+        assert_eq!(history.root(), root);
+    }
+    for name in &names {
+        assert!(
+            base.get_continuations(std::slice::from_ref(name))
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(base.get_joins(name).await.unwrap().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn repeated_channel_installations_preserve_greedy_matching_and_join_deduplication() {
+    let mut stores = InMemoryStoreManager::new();
+    let (play, _) = RSpace::<String, String, String, String>::create_with_replay(
+        stores.r_space_stores().await.unwrap(),
+        Arc::new(Box::new(Matcher)),
+    )
+    .unwrap();
+    let channel = "occupied".to_owned();
+    play.produce(channel.clone(), "one".to_owned(), false)
+        .await
+        .unwrap();
+    play.create_checkpoint().await.unwrap();
+    let history = play.get_history_repository();
+    let channels = vec![channel.clone(), channel.clone()];
+    let install = Install {
+        patterns: vec!["a".to_owned(), "b".to_owned()],
+        continuation: "body".to_owned(),
+    };
+    let initialized = Session::new_with_installs(
+        history.clone(),
+        Arc::new(Box::new(Matcher)),
+        Epoch::default(),
+        vec![(channels.clone(), install.clone())],
+    )
+    .unwrap();
+    assert_eq!(
+        initialized
+            .get_continuations(&channels)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(initialized.get_joins(&channel).await.unwrap(), vec![channels.clone()]);
+    assert_eq!(initialized.get_data(&channel).await.unwrap().len(), 1);
+    play.produce(channel.clone(), "two".to_owned(), false)
+        .await
+        .unwrap();
+    play.create_checkpoint().await.unwrap();
+    let history = play.get_history_repository();
+    let root = history.root();
+    assert!(
+        Session::new_with_installs(
+            history.clone(),
+            Arc::new(Box::new(Matcher)),
+            Epoch::default(),
+            vec![(channels, install)],
+        )
+        .is_err()
+    );
+    assert_eq!(history.root(), root);
+}
+
+#[tokio::test]
+async fn later_installation_replaces_the_same_continuation_key() {
+    let base = session().await;
+    let history = base.space.get_history_repository();
+    let channel = "same".to_owned();
+    let initialized =
+        Session::new_with_installs(history, Arc::new(Box::new(Matcher)), Epoch::default(), vec![
+            (vec![channel.clone()], Install {
+                patterns: vec!["first".to_owned()],
+                continuation: "first body".to_owned(),
+            }),
+            (vec![channel.clone()], Install {
+                patterns: vec!["second".to_owned()],
+                continuation: "second body".to_owned(),
+            }),
+        ])
+        .unwrap();
+    let continuations = initialized
+        .get_continuations(&[channel.clone()])
+        .await
+        .unwrap();
+    assert_eq!(continuations.len(), 1);
+    assert_eq!(continuations[0].patterns, ["second"]);
+    assert_eq!(continuations[0].continuation, "second body");
+    assert_eq!(initialized.get_joins(&channel).await.unwrap(), vec![vec![channel]]);
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
     #[test]

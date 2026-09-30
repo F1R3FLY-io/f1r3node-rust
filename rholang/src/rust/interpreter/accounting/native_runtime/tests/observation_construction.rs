@@ -38,6 +38,160 @@ fn inputs(size: usize) -> (Par, ListParWithRandom, TaggedContinuation, COMM) {
 }
 
 #[test]
+fn metered_comm_construction_preserves_identity_and_measurement() {
+    let (_, data, continuation, comm) = inputs(17);
+    let unlimited = |_: usize, _: usize, _: usize| Ok(());
+    let ordinary = build::comm(&comm, &continuation, false, &[(&data, false)]).unwrap();
+    let metered =
+        build::comm_metered(&comm, &continuation, false, &[(&data, false)], &unlimited).unwrap();
+    assert_eq!(ordinary.event_id, metered.event_id);
+    assert_eq!(ordinary.measurement, metered.measurement);
+    assert_eq!(ordinary.authority, metered.authority);
+}
+
+#[test]
+fn native_introduction_registry_rejects_before_clone_or_publication() {
+    use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
+
+    let budget = RuntimeBudget::new(Cost::unsafe_max());
+    budget
+        .reset_for_native_execution(config(u64::MAX, [1, 1, 1, 1]))
+        .unwrap();
+    let _scope = budget.enter_comm_accounting_scope();
+    let identity = [73; 32];
+    let kind = AuthorityByteEventKind::ProduceIntroduction;
+    let expected = authority(1);
+    budget
+        .register_introduction_authority(identity, kind, &expected)
+        .unwrap();
+    let before = budget.introduction_authorities.lock().unwrap().clone();
+    let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
+    limits.set(HostWorkDimension::SearchStateBytes, HostWorkLimit::new(0));
+    budget
+        .authority_state
+        .lock()
+        .unwrap()
+        .native
+        .as_mut()
+        .unwrap()
+        .host_work = HostWorkBudget::new(limits);
+    assert!(matches!(
+        budget.introduction_authority(identity, kind),
+        Err(InterpreterError::HostWorkRejected)
+    ));
+    assert_eq!(*budget.introduction_authorities.lock().unwrap(), before);
+}
+
+#[test]
+fn native_stack_transfer_exhaustion_and_cancellation_leave_no_pending_debit() {
+    use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
+
+    let cost_authority = authority(1);
+    let cell = cost_authority.regions[0].signature.clone().unwrap();
+    let budget = RuntimeBudget::new(Cost::unsafe_max());
+    budget
+        .reset_for_native_execution(config(u64::MAX, [1, 1, 1, 1]))
+        .unwrap();
+    let _scope = budget.enter_comm_accounting_scope();
+    let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
+    limits.set(HostWorkDimension::SearchStateBytes, HostWorkLimit::new(0));
+    budget
+        .authority_state
+        .lock()
+        .unwrap()
+        .native
+        .as_mut()
+        .unwrap()
+        .host_work = HostWorkBudget::new(limits);
+    assert!(matches!(
+        budget.prepare_authority_stack_transfer([41; 32], vec![cell.clone()], &cost_authority),
+        Err(InterpreterError::HostWorkRejected)
+    ));
+    let state = budget.authority_state.lock().unwrap();
+    assert!(state.pending_stack_transfers.is_empty());
+    assert!(state.pending_stack_event_ids.is_empty());
+    assert!(state.events.is_empty());
+    assert!(state.reserved.0.is_empty());
+    drop(state);
+
+    let budget = RuntimeBudget::new(Cost::unsafe_max());
+    let configuration = config(u64::MAX, [1, 1, 1, 1]);
+    let host = configuration.host_work();
+    budget.reset_for_native_execution(configuration).unwrap();
+    let _scope = budget.enter_comm_accounting_scope();
+    let reservation = budget
+        .prepare_authority_stack_transfer([42; 32], vec![cell], &cost_authority)
+        .unwrap();
+    assert_eq!(
+        budget
+            .authority_state
+            .lock()
+            .unwrap()
+            .pending_stack_transfers
+            .len(),
+        1
+    );
+    assert!(host
+        .reserve(HostWorkDimension::SearchStateBytes, u64::MAX.into())
+        .is_err());
+    let work_before_cancel = host.usages();
+    drop(reservation);
+    assert_eq!(host.usages(), work_before_cancel);
+    let state = budget.authority_state.lock().unwrap();
+    assert!(state.pending_stack_transfers.is_empty());
+    assert!(state.pending_stack_event_ids.is_empty());
+    assert!(state.reserved.0.is_empty());
+    assert!(state.realized.0.is_empty());
+}
+
+#[test]
+fn native_stack_rollback_uses_prepaid_scratch_after_host_rejection() {
+    use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
+
+    let cost_authority = authority(1);
+    let cell = cost_authority.regions[0].signature.clone().unwrap();
+    let budget = RuntimeBudget::new(Cost::unsafe_max());
+    budget
+        .reset_for_native_execution(config(u64::MAX, [1, 1, 1, 1]))
+        .unwrap();
+    let _scope = budget.enter_comm_accounting_scope();
+    budget
+        .prepare_authority_stack_transfer([51; 32], vec![cell.clone()], &cost_authority)
+        .unwrap()
+        .commit();
+    let pending = budget
+        .prepare_authority_stack_transfer([52; 32], vec![cell], &cost_authority)
+        .unwrap();
+    let host = budget
+        .authority_state
+        .lock()
+        .unwrap()
+        .native
+        .as_ref()
+        .unwrap()
+        .host_work
+        .clone();
+    assert!(host
+        .reserve(
+            HostWorkDimension::VerificationOperations,
+            HostWorkUnits::new(u64::MAX)
+        )
+        .is_err());
+    let before = host.usages();
+    budget.rollback_authority_stack_transfers().unwrap();
+    assert_eq!(host.usages(), before);
+    let state = budget.authority_state.lock().unwrap();
+    assert!(state.pending_stack_transfers.is_empty());
+    assert!(state.pending_stack_event_ids.is_empty());
+    assert!(state.stack_births.is_empty());
+    assert!(state.events.is_empty());
+    assert!(state.reserved.0.is_empty());
+    assert!(state.realized.0.is_empty());
+    drop(state);
+    drop(pending);
+}
+
+#[test]
 fn native_observation_construction_keeps_introduction_and_payload_authorities_separate() {
     let budget = RuntimeBudget::new(Cost::unsafe_max());
     budget

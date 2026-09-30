@@ -163,7 +163,7 @@ impl NativePhloExecutionContract<'_> {
                         .path
                         .len()
                         .min(rows[right].occurrence.path.len()),
-                ),
+                )?,
             )?;
             Ok(rows[left].occurrence.cmp(&rows[right].occurrence))
         };
@@ -218,7 +218,9 @@ impl CheckedNativeBudgetTrace {
             return Err(NativeBudgetTraceError::Limit);
         }
         let comparisons = (usize::BITS - self.evidence.ordered.len().leading_zeros()) as usize + 1;
-        let work = occurrence_work(occurrence.path.len()).saturating_mul(comparisons);
+        let work = occurrence_work(occurrence.path.len())?
+            .checked_mul(comparisons)
+            .ok_or(NativeBudgetTraceError::Limit)?;
         reserve_work(budget, HostWorkDimension::VerificationOperations, work)?;
         let position = self
             .evidence
@@ -286,7 +288,12 @@ impl CheckedNativeBudgetEvidence {
     }
 }
 
-fn occurrence_work(segments: usize) -> usize { segments.saturating_mul(2).saturating_add(35) }
+fn occurrence_work(segments: usize) -> Result<usize, NativeBudgetTraceError> {
+    segments
+        .checked_mul(2)
+        .and_then(|count| count.checked_add(35))
+        .ok_or(NativeBudgetTraceError::Limit)
+}
 
 pub(in crate::rust::interpreter::accounting) fn observation_comparison_bytes(
     observation: &ByteObservation,

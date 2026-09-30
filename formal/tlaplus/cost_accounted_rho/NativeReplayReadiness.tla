@@ -1,11 +1,13 @@
 -------------------- MODULE NativeReplayReadiness --------------------
 EXTENDS Naturals, FiniteSets, TLC
-CONSTANTS HoldWaitingLease, SkipRecheck, SkipDirectCheck
+CONSTANTS HoldWaitingLease, SkipRecheck, SkipDirectCheck, SkipRetryOwner
 VARIABLES stage, done, writer, restored
 vars == <<stage, done, writer, restored>>
-Slots == {1, 2, 3}
-Predecessors(s) == IF s = 2 THEN {1} ELSE {}
-Ready(s) == Predecessors(s) \subseteq done
+Slots == {1, 2, 3, 4}
+ChannelPredecessors(s) == IF s = 2 THEN {1} ELSE {}
+RetryOwner(s) == IF s = 3 THEN {1} ELSE {}
+Predecessors(s) == ChannelPredecessors(s) \cup RetryOwner(s)
+Ready(s) == (ChannelPredecessors(s) \cup IF SkipRetryOwner THEN {} ELSE RetryOwner(s)) \subseteq done
 Leases == {s \in Slots : stage[s] \in {"Leased", "Running"}
   \/ (HoldWaitingLease /\ stage[s] = "Waiting")}
 
@@ -53,7 +55,7 @@ TypeOK == /\ stage \in [Slots -> {"Idle", "Waiting", "Awake", "Leased", "Running
           /\ writer \in {"Idle", "Queued"}
           /\ restored \in BOOLEAN
 ExactCompletion == done = {s \in Slots : stage[s] = "Done"}
-DependencySafety == \A s \in Slots : stage[s] \in {"Running", "Done"} => Ready(s)
+DependencySafety == \A s \in Slots : stage[s] \in {"Running", "Done"} => Predecessors(s) \subseteq done
 QuiescentCaptureEnabled ==
   (writer = "Queued" /\ \A s \in Slots : stage[s] \notin {"Leased", "Running"}) => ENABLED Restore
 IndependentProgress == \A s \in Slots :

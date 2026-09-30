@@ -13,6 +13,7 @@ use rspace_plus_plus::rspace::replay_rspace::native_session::{
     NativeReplayExport, NativeReplaySession, NativeSessionCheckpoint,
 };
 use serde::Serialize;
+use shared::rust::clone_backing::CloneBacking;
 
 use super::*;
 use crate::rust::interpreter::accounting::authority::AuthorityError;
@@ -151,10 +152,45 @@ impl CheckedNativeOperationTrace {
         host: HostWorkBudget,
     ) -> Result<NativeRuntimeReplaySession<C, P, A, K>, RSpaceError>
     where
-        C: Clone + Debug + Default + Serialize + Hash + Ord + Eq + 'static + Sync + Send,
-        P: Clone + Debug + Default + Serialize + 'static + Sync + Send,
-        A: Clone + Debug + Default + Serialize + 'static + Sync + Send,
-        K: Clone + Debug + Default + Serialize + 'static + Sync + Send,
+        C: Clone
+            + Debug
+            + Default
+            + Serialize
+            + CloneBacking
+            + serde::de::DeserializeOwned
+            + Hash
+            + Ord
+            + Eq
+            + 'static
+            + Sync
+            + Send,
+        P: Clone
+            + Debug
+            + Default
+            + Serialize
+            + CloneBacking
+            + serde::de::DeserializeOwned
+            + 'static
+            + Sync
+            + Send,
+        A: Clone
+            + Debug
+            + Default
+            + Serialize
+            + CloneBacking
+            + serde::de::DeserializeOwned
+            + 'static
+            + Sync
+            + Send,
+        K: Clone
+            + Debug
+            + Default
+            + Serialize
+            + CloneBacking
+            + serde::de::DeserializeOwned
+            + 'static
+            + Sync
+            + Send,
     {
         self.into_installed_session(history, matcher, host, std::iter::empty())
     }
@@ -167,10 +203,45 @@ impl CheckedNativeOperationTrace {
         installations: impl IntoIterator<Item = (Vec<C>, Install<P, K>)>,
     ) -> Result<NativeRuntimeReplaySession<C, P, A, K>, RSpaceError>
     where
-        C: Clone + Debug + Default + Serialize + Hash + Ord + Eq + 'static + Sync + Send,
-        P: Clone + Debug + Default + Serialize + 'static + Sync + Send,
-        A: Clone + Debug + Default + Serialize + 'static + Sync + Send,
-        K: Clone + Debug + Default + Serialize + 'static + Sync + Send,
+        C: Clone
+            + Debug
+            + Default
+            + Serialize
+            + CloneBacking
+            + serde::de::DeserializeOwned
+            + Hash
+            + Ord
+            + Eq
+            + 'static
+            + Sync
+            + Send,
+        P: Clone
+            + Debug
+            + Default
+            + Serialize
+            + CloneBacking
+            + serde::de::DeserializeOwned
+            + 'static
+            + Sync
+            + Send,
+        A: Clone
+            + Debug
+            + Default
+            + Serialize
+            + CloneBacking
+            + serde::de::DeserializeOwned
+            + 'static
+            + Sync
+            + Send,
+        K: Clone
+            + Debug
+            + Default
+            + Serialize
+            + CloneBacking
+            + serde::de::DeserializeOwned
+            + 'static
+            + Sync
+            + Send,
     {
         self.build_session(history, matcher, host, installations, None)
     }
@@ -184,10 +255,45 @@ impl CheckedNativeOperationTrace {
         budget: RuntimeBudget,
     ) -> Result<NativeRuntimeReplaySession<C, P, A, K>, RSpaceError>
     where
-        C: Clone + Debug + Default + Serialize + Hash + Ord + Eq + 'static + Sync + Send,
-        P: Clone + Debug + Default + Serialize + 'static + Sync + Send,
-        A: Clone + Debug + Default + Serialize + 'static + Sync + Send,
-        K: Clone + Debug + Default + Serialize + 'static + Sync + Send,
+        C: Clone
+            + Debug
+            + Default
+            + Serialize
+            + CloneBacking
+            + serde::de::DeserializeOwned
+            + Hash
+            + Ord
+            + Eq
+            + 'static
+            + Sync
+            + Send,
+        P: Clone
+            + Debug
+            + Default
+            + Serialize
+            + CloneBacking
+            + serde::de::DeserializeOwned
+            + 'static
+            + Sync
+            + Send,
+        A: Clone
+            + Debug
+            + Default
+            + Serialize
+            + CloneBacking
+            + serde::de::DeserializeOwned
+            + 'static
+            + Sync
+            + Send,
+        K: Clone
+            + Debug
+            + Default
+            + Serialize
+            + CloneBacking
+            + serde::de::DeserializeOwned
+            + 'static
+            + Sync
+            + Send,
     {
         self.build_session(history, matcher, host, installations, Some(budget))
     }
@@ -201,10 +307,45 @@ impl CheckedNativeOperationTrace {
         budget: Option<RuntimeBudget>,
     ) -> Result<NativeRuntimeReplaySession<C, P, A, K>, RSpaceError>
     where
-        C: Clone + Debug + Default + Serialize + Hash + Ord + Eq + 'static + Sync + Send,
-        P: Clone + Debug + Default + Serialize + 'static + Sync + Send,
-        A: Clone + Debug + Default + Serialize + 'static + Sync + Send,
-        K: Clone + Debug + Default + Serialize + 'static + Sync + Send,
+        C: Clone
+            + Debug
+            + Default
+            + Serialize
+            + CloneBacking
+            + serde::de::DeserializeOwned
+            + Hash
+            + Ord
+            + Eq
+            + 'static
+            + Sync
+            + Send,
+        P: Clone
+            + Debug
+            + Default
+            + Serialize
+            + CloneBacking
+            + serde::de::DeserializeOwned
+            + 'static
+            + Sync
+            + Send,
+        A: Clone
+            + Debug
+            + Default
+            + Serialize
+            + CloneBacking
+            + serde::de::DeserializeOwned
+            + 'static
+            + Sync
+            + Send,
+        K: Clone
+            + Debug
+            + Default
+            + Serialize
+            + CloneBacking
+            + serde::de::DeserializeOwned
+            + 'static
+            + Sync
+            + Send,
     {
         let replay = self.into_replay(host.clone()).map_err(error)?;
         let replay = match budget {
@@ -224,10 +365,45 @@ impl CheckedNativeOperationTrace {
 
 impl<C, P, A, K> NativeRuntimeReplaySession<C, P, A, K>
 where
-    C: Clone + Debug + Default + Serialize + Hash + Ord + Eq + 'static + Sync + Send,
-    P: Clone + Debug + Default + Serialize + 'static + Sync + Send,
-    A: Clone + Debug + Default + Serialize + 'static + Sync + Send,
-    K: Clone + Debug + Default + Serialize + 'static + Sync + Send,
+    C: Clone
+        + Debug
+        + Default
+        + Serialize
+        + CloneBacking
+        + serde::de::DeserializeOwned
+        + Hash
+        + Ord
+        + Eq
+        + 'static
+        + Sync
+        + Send,
+    P: Clone
+        + Debug
+        + Default
+        + Serialize
+        + CloneBacking
+        + serde::de::DeserializeOwned
+        + 'static
+        + Sync
+        + Send,
+    A: Clone
+        + Debug
+        + Default
+        + Serialize
+        + CloneBacking
+        + serde::de::DeserializeOwned
+        + 'static
+        + Sync
+        + Send,
+    K: Clone
+        + Debug
+        + Default
+        + Serialize
+        + CloneBacking
+        + serde::de::DeserializeOwned
+        + 'static
+        + Sync
+        + Send,
 {
     pub async fn checkpoint(
         &self,

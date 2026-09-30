@@ -81,7 +81,7 @@ fn serialize<T: Serialize + ?Sized, M: SourceMeter>(
     output: Output,
     meter: &M,
 ) -> Result<Output> {
-    meter.reserve(1, 0, 0)?;
+    meter.reserve(1, 0, size_of::<bincode::ErrorKind>())?;
     let mut writer = Writer {
         meter,
         output,
@@ -97,7 +97,10 @@ fn serialize<T: Serialize + ?Sized, M: SourceMeter>(
     Ok(writer.output)
 }
 
-fn encode<T: Serialize + ?Sized>(value: &T, meter: &impl SourceMeter) -> Result<Vec<u8>> {
+pub(crate) fn encode<T: Serialize + ?Sized>(
+    value: &T,
+    meter: &impl SourceMeter,
+) -> Result<Vec<u8>> {
     match serialize(
         value,
         Output::Bytes {
@@ -111,7 +114,10 @@ fn encode<T: Serialize + ?Sized>(value: &T, meter: &impl SourceMeter) -> Result<
     }
 }
 
-fn hash<T: Serialize + ?Sized>(value: &T, meter: &impl SourceMeter) -> Result<Blake2b256Hash> {
+pub(crate) fn hash<T: Serialize + ?Sized>(
+    value: &T,
+    meter: &impl SourceMeter,
+) -> Result<Blake2b256Hash> {
     match serialize(value, Output::Hash(Blake2b::<U32>::new()), meter)? {
         Output::Hash(hash) => {
             let mut bytes = vector(32, meter)?;
@@ -122,11 +128,30 @@ fn hash<T: Serialize + ?Sized>(value: &T, meter: &impl SourceMeter) -> Result<Bl
     }
 }
 
+pub(crate) fn channels_hash<C: Serialize>(
+    channels: &[C],
+    meter: &impl SourceMeter,
+) -> Result<Blake2b256Hash> {
+    let mut hashes = vector(channels.len(), meter)?;
+    for channel in channels {
+        hashes.push(hash(channel, meter)?);
+    }
+    sort(&mut hashes, |hash| &hash.0, meter)?;
+    let mut digest = Blake2b::<U32>::new();
+    for hash in hashes {
+        meter.reserve(1, hash.0.len(), 0)?;
+        digest.update(hash.0);
+    }
+    let mut bytes = vector(32, meter)?;
+    bytes.extend_from_slice(&digest.finalize());
+    Ok(Blake2b256Hash::from_bytes(bytes))
+}
+
 fn vector<T>(count: usize, meter: &impl SourceMeter) -> Result<Vec<T>> {
     let bytes = count
         .checked_mul(size_of::<T>())
         .ok_or(RSpaceError::HostWorkRejected)?;
-    meter.reserve(count.saturating_add(1), bytes, bytes)?;
+    meter.reserve(count.checked_add(1).ok_or(RSpaceError::HostWorkRejected)?, bytes, bytes)?;
     let mut values = Vec::new();
     values
         .try_reserve_exact(count)
@@ -134,7 +159,11 @@ fn vector<T>(count: usize, meter: &impl SourceMeter) -> Result<Vec<T>> {
     Ok(values)
 }
 
-fn sort<T>(values: &mut [T], key: impl Fn(&T) -> &[u8], meter: &impl SourceMeter) -> Result<()> {
+pub(crate) fn sort<T>(
+    values: &mut [T],
+    key: impl Fn(&T) -> &[u8],
+    meter: &impl SourceMeter,
+) -> Result<()> {
     let moves = size_of::<T>()
         .checked_mul(2)
         .ok_or(RSpaceError::HostWorkRejected)?;
@@ -173,6 +202,11 @@ pub fn produce<C: Serialize, A: Serialize>(
     let parts = [channel_hash.0.as_slice(), data.as_slice(), persist.as_slice()];
     let source_hash = hash(parts.as_slice(), meter)?;
     Ok(Produce::new(channel_hash, source_hash, persistent))
+}
+
+pub fn clone_produce(source: &Produce, meter: &dyn SourceMeter) -> Result<Produce> {
+    crate::rspace::native_backing::reserve(source, meter)?;
+    Ok(source.clone())
 }
 
 pub fn consume<C: Serialize, P: Serialize, K: Serialize>(

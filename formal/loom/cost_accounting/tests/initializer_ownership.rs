@@ -1,3 +1,5 @@
+#![cfg(not(loom))]
+
 use std::future::{pending, poll_fn, Future};
 use std::task::Poll;
 

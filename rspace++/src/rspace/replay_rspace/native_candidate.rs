@@ -2,6 +2,8 @@ use super::native_epoch::NativeCandidateIdentity;
 use super::*;
 use crate::rspace::space_matcher::deterministic_candidates;
 
+pub(super) mod metered;
+
 pub(super) struct PreparedConsumeCandidate<C, A: Clone> {
     pub(super) data: Vec<ConsumeCandidate<C, A>>,
     pub(super) comm: COMM,

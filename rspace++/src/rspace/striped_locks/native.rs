@@ -1,7 +1,19 @@
 use std::mem::size_of;
 
-use super::{Arc, ChannelLockGuard, HeldLock};
+use super::{Arc, ChannelLockGuard, HeldLock, NUM_LOCK_STRIPES};
 use crate::rspace::errors::RSpaceError;
+use crate::rspace::native_backing::arc_allocation_bytes;
+
+pub(crate) fn constructor_layout() -> Option<(usize, usize)> {
+    let per_stripe = size_of::<Arc<tokio::sync::Mutex<()>>>()
+        .checked_add(arc_allocation_bytes::<tokio::sync::Mutex<()>>()?)?;
+    let per_table = NUM_LOCK_STRIPES
+        .checked_mul(per_stripe)?
+        .checked_add(arc_allocation_bytes::<Vec<Arc<tokio::sync::Mutex<()>>>>()?)?;
+    let bytes = per_table.checked_mul(2)?;
+    let operations = NUM_LOCK_STRIPES.checked_add(2)?.checked_mul(2)?;
+    Some((operations, bytes))
+}
 
 pub(crate) struct PreparedLocks<'a> {
     stripes: &'a [Arc<tokio::sync::Mutex<()>>],

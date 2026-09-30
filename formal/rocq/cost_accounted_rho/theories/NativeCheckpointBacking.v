@@ -184,3 +184,75 @@ Qed.
 Example inspection_still_requires_worklist_backing :
   ~ traversal_fits false [WorklistAllocation 64; PayloadCopy 4096] 0 0 63.
 Proof. unfold traversal_fits, traversal_total. cbn. lia. Qed.
+
+Definition persistent_node_bound (entries : nat) : nat :=
+  match entries with 0 => 1 | S _ => 12 * Nat.min (S entries) 33 + 2 end.
+
+Theorem persistent_route_nodes_fit : forall routes entries,
+  length routes <= Nat.min (S entries) 33 ->
+  Forall (fun height => height <= 12) routes ->
+  fold_right Nat.add 0 routes <= 12 * Nat.min (S entries) 33.
+Proof.
+  intros routes entries count depths.
+  pose proof (allocation_sum routes 12 depths). nia.
+Qed.
+
+Theorem persistent_promotions_and_path_fit : forall routes entries extra,
+  0 < entries -> length routes <= Nat.min (S entries) 33 ->
+  Forall (fun height => height <= 12) routes -> extra <= 2 ->
+  fold_right Nat.add 0 routes + extra <= persistent_node_bound entries.
+Proof.
+  intros routes entries extra nonempty count depths padding.
+  pose proof (persistent_route_nodes_fit routes entries count depths).
+  destruct entries; [lia|]. cbn [persistent_node_bound]. lia.
+Qed.
+
+Theorem persistent_node_allocations_fit : forall entries allocations layout,
+  length allocations <= persistent_node_bound entries ->
+  Forall (fun allocation => allocation <= layout) allocations ->
+  fold_right Nat.add 0 allocations <= persistent_node_bound entries * layout.
+Proof.
+  intros entries allocations layout count sizes.
+  pose proof (allocation_sum allocations layout sizes). nia.
+Qed.
+
+Theorem collision_clone_and_growth_fit : forall entries cloned grown,
+  cloned <= entries -> grown <= 2 * Nat.max (S entries) 4 ->
+  cloned + grown <= 4 * Nat.max (S entries) 4.
+Proof.
+  intros entries cloned grown old next.
+  pose proof (Nat.le_max_l (S entries) 4). lia.
+Qed.
+
+Fixpoint prepare_cache (costs : list nat) (available : nat) : option nat :=
+  match costs with
+  | [] => Some 0
+  | requested :: tail =>
+      if requested <=? available then
+        match prepare_cache tail (available - requested) with
+        | Some spent => Some (requested + spent)
+        | None => None
+        end
+      else None
+  end.
+
+Theorem prepared_cache_reservations_fit : forall costs available spent,
+  prepare_cache costs available = Some spent ->
+  spent = fold_right Nat.add 0 costs /\ spent <= available.
+Proof.
+  induction costs as [|requested tail IH]; intros available spent result; cbn in result.
+  - inversion result. cbn. split; [reflexivity|lia].
+  - destruct (requested <=? available) eqn:fits; [|discriminate].
+    apply Nat.leb_le in fits.
+    destruct (prepare_cache tail (available - requested)) eqn:rest; [|discriminate].
+    specialize (IH _ _ rest). inversion result. cbn. lia.
+Qed.
+
+Theorem cache_copy_allocation_fits : forall actual reserved available spent,
+  Forall2 Nat.le actual reserved -> prepare_cache reserved available = Some spent ->
+  fold_right Nat.add 0 actual <= available.
+Proof.
+  intros actual reserved available spent copied prepared.
+  pose proof (clone_field_bounds_compose _ _ copied).
+  pose proof (prepared_cache_reservations_fit _ _ _ prepared). lia.
+Qed.

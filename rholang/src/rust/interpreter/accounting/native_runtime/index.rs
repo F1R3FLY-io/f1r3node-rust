@@ -11,24 +11,34 @@ use crate::rust::interpreter::accounting::native_phlo_rules::{
 };
 
 pub(super) trait IndexKey: Ord {
-    fn comparison_work(&self) -> (usize, usize);
+    fn comparison_work(&self) -> Result<(usize, usize), InterpreterError>;
 }
 
 impl IndexKey for Arc<[u8]> {
-    fn comparison_work(&self) -> (usize, usize) { (1, self.len()) }
+    fn comparison_work(&self) -> Result<(usize, usize), InterpreterError> { Ok((1, self.len())) }
 }
 
 impl IndexKey for NativeBudgetOccurrence {
-    fn comparison_work(&self) -> (usize, usize) {
-        (
-            self.path.len().saturating_mul(2).saturating_add(4),
-            self.path.len().saturating_mul(16).saturating_add(33),
-        )
+    fn comparison_work(&self) -> Result<(usize, usize), InterpreterError> {
+        let operations = self
+            .path
+            .len()
+            .checked_mul(2)
+            .and_then(|n| n.checked_add(4));
+        let bytes = self
+            .path
+            .len()
+            .checked_mul(16)
+            .and_then(|n| n.checked_add(33));
+        Ok((
+            operations.ok_or(InterpreterError::HostWorkRejected)?,
+            bytes.ok_or(InterpreterError::HostWorkRejected)?,
+        ))
     }
 }
 
 impl IndexKey for (NativeAttemptStage, [u8; 32]) {
-    fn comparison_work(&self) -> (usize, usize) { (2, 33) }
+    fn comparison_work(&self) -> Result<(usize, usize), InterpreterError> { Ok((2, 33)) }
 }
 
 pub(super) fn height_bound(nodes: usize) -> usize {
@@ -188,12 +198,14 @@ impl<K: IndexKey, V> NativeIndex<K, V> {
         key: &K,
         budget: &HostWorkBudget,
     ) -> Result<Location, InterpreterError> {
-        let (operations, bytes) = key.comparison_work();
+        let (operations, bytes) = key.comparison_work()?;
         self.locate(key, |a, b| {
             work(
                 budget,
                 HostWorkDimension::VerificationOperations,
-                operations.saturating_add(2),
+                operations
+                    .checked_add(2)
+                    .ok_or(InterpreterError::HostWorkRejected)?,
             )?;
             work(budget, HostWorkDimension::VerificationBytes, bytes)?;
             Ok(a.cmp(b))
@@ -281,7 +293,7 @@ impl<K: IndexKey, V> NativeIndex<K, V> {
             .checked_add(updates.len())
             .ok_or(InterpreterError::HostWorkRejected)?;
         for (key, _) in &updates {
-            reserve_lookup(key.comparison_work(), final_size, budget)?;
+            reserve_lookup(key.comparison_work()?, final_size, budget)?;
         }
         Self::reserve_repair(final_size, updates.len(), budget)?;
         reserve_vector(

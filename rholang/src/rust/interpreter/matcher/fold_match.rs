@@ -16,7 +16,7 @@ pub trait FoldMatch<T, P> {
     fn free_check(&self, trem: &[T], level: i32, acc: Vec<T>) -> Option<Vec<T>>;
 }
 
-impl FoldMatch<Par, Par> for SpatialMatcherContext {
+impl<'a> FoldMatch<Par, Par> for SpatialMatcherContext<'a> {
     fn fold_match(
         &mut self,
         tlist: &[Par],
@@ -33,6 +33,8 @@ impl FoldMatch<Par, Par> for SpatialMatcherContext {
 
         let n = tlist.len().min(plist.len());
         for i in 0..n {
+            self.reserve_clone(&tlist[i])?;
+            self.reserve_clone(&plist[i])?;
             let __clone_start = std::time::Instant::now();
             let t_owned = tlist[i].clone();
             let p_owned = plist[i].clone();
@@ -63,23 +65,21 @@ impl FoldMatch<Par, Par> for SpatialMatcherContext {
         }
     }
 
-    fn free_check(&self, trem: &[Par], level: i32, mut acc: Vec<Par>) -> Option<Vec<Par>> {
-        match trem {
-            &[] => Some(acc),
-
-            [item, rem @ ..] => {
-                if self.locally_free(item.to_owned(), 0).is_empty() {
-                    acc.push(item.clone());
-                    self.free_check(rem, level, acc)
-                } else {
-                    None
-                }
+    fn free_check(&self, trem: &[Par], _level: i32, mut acc: Vec<Par>) -> Option<Vec<Par>> {
+        for item in trem {
+            self.reserve_clone(item)?;
+            if !self.locally_free(item.to_owned(), 0).is_empty() {
+                return None;
             }
+            self.reserve_clone(item)?;
+            self.reserve_vec(&mut acc, 1)?;
+            acc.push(item.clone());
         }
+        Some(acc)
     }
 }
 
-impl FoldMatch<MatchCase, MatchCase> for SpatialMatcherContext {
+impl<'a> FoldMatch<MatchCase, MatchCase> for SpatialMatcherContext<'a> {
     fn fold_match(
         &mut self,
         tlist: &[MatchCase],
@@ -89,6 +89,8 @@ impl FoldMatch<MatchCase, MatchCase> for SpatialMatcherContext {
         // Iterative pair-walk; head-pair clone per iteration, no tail-vec clone.
         let n = tlist.len().min(plist.len());
         for i in 0..n {
+            self.reserve_clone(&tlist[i])?;
+            self.reserve_clone(&plist[i])?;
             self.spatial_match(tlist[i].clone(), plist[i].clone())?;
         }
 
@@ -114,19 +116,76 @@ impl FoldMatch<MatchCase, MatchCase> for SpatialMatcherContext {
     fn free_check(
         &self,
         trem: &[MatchCase],
-        level: i32,
+        _level: i32,
         mut acc: Vec<MatchCase>,
     ) -> Option<Vec<MatchCase>> {
-        match trem {
-            &[] => Some(acc),
+        for item in trem {
+            self.reserve_clone(item)?;
+            if !self.locally_free(item.to_owned(), 0).is_empty() {
+                return None;
+            }
+            self.reserve_clone(item)?;
+            self.reserve_vec(&mut acc, 1)?;
+            acc.push(item.clone());
+        }
+        Some(acc)
+    }
+}
 
-            [item, rem @ ..] => {
-                if self.locally_free(item.to_owned(), 0).is_empty() {
-                    acc.push(item.clone());
-                    self.free_check(rem, level, acc)
-                } else {
-                    None
+#[cfg(test)]
+mod metered_tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use models::rhoapi::var::VarInstance::FreeVar;
+    use rspace_plus_plus::rspace::errors::RSpaceError;
+
+    use super::*;
+
+    #[test]
+    fn remainder_matching_preserves_results_and_rejects_each_missing_operation() {
+        let targets = vec![Par::default(); 4];
+        let patterns = vec![Par::default()];
+        let remainder = Some(Var {
+            var_instance: Some(FreeVar(0)),
+        });
+        let expected = SpatialMatcherContext::new()
+            .fold_match(&targets, &patterns, remainder.clone())
+            .unwrap();
+        let used = AtomicUsize::new(0);
+        let unlimited = |operations: usize, _: usize, _: usize| {
+            used.fetch_add(operations, Ordering::Relaxed);
+            Ok(())
+        };
+        let mut context = SpatialMatcherContext::with_meter(&unlimited).unwrap();
+        assert_eq!(
+            context.fold_match(&targets, &patterns, remainder.clone()),
+            Some(expected.clone())
+        );
+        assert!(context.take_error().is_none());
+        let required = used.load(Ordering::Relaxed);
+        assert!(required > 1);
+        for limit in 0..required {
+            let spent = AtomicUsize::new(0);
+            let meter = |operations: usize, _: usize, _: usize| {
+                let next = spent.load(Ordering::Relaxed) + operations;
+                if next > limit {
+                    return Err(RSpaceError::HostWorkRejected);
                 }
+                spent.store(next, Ordering::Relaxed);
+                Ok(())
+            };
+            match SpatialMatcherContext::with_meter(&meter) {
+                Ok(mut context) => {
+                    assert!(context
+                        .fold_match(&targets, &patterns, remainder.clone())
+                        .is_none());
+                    assert!(matches!(
+                        context.take_error(),
+                        Some(RSpaceError::HostWorkRejected)
+                    ));
+                }
+                Err(RSpaceError::HostWorkRejected) => {}
+                Err(error) => panic!("unexpected matcher error: {error}"),
             }
         }
     }

@@ -83,6 +83,28 @@ run_expected_violation() {
 echo "Checking cost-accounted rho with Apalache 0.58.3+..."
 
 overall=0
+run_check native-cache-backing \
+  "cold and warm cache copies preserve credit, publication, cancellation, retry, and checkpoint state through length 8" \
+  --config=NativeCacheBacking.cfg --length=8 NativeCacheBacking.tla || overall=1
+run_expected_violation native-cache-backing-credit-unsafe \
+  "missing copy credit is independently refuted" \
+  PaidCopies \
+  --config=NativeCacheBackingCreditUnsafe.cfg --length=4 NativeCacheBacking.tla || overall=1
+run_expected_violation native-cache-backing-publish-unsafe \
+  "premature cache publication is independently refuted" \
+  NoPartialCache \
+  --config=NativeCacheBackingPublishUnsafe.cfg --length=4 NativeCacheBacking.tla || overall=1
+run_check native-typed-history \
+  "two independent readers preserve decode credit and complete cache publication through length 8" \
+  --config=NativeTypedHistory.cfg --length=8 NativeTypedHistory.tla || overall=1
+run_expected_violation native-typed-history-credit-unsafe \
+  "missing decode credit is independently refuted" \
+  PaidDecoding \
+  --config=NativeTypedHistoryCreditUnsafe.cfg --length=4 NativeTypedHistory.tla || overall=1
+run_expected_violation native-typed-history-partial-unsafe \
+  "partial cache publication is independently refuted" \
+  CompleteCache \
+  --config=NativeTypedHistoryPartialUnsafe.cfg --length=4 NativeTypedHistory.tla || overall=1
 run_check replay-cache-context \
   "concurrent cache lookup, publication, cancellation, eviction, and metadata removal preserve complete replay context" \
   --config=ReplayCacheContext.cfg --length=8 ReplayCacheContext.tla || overall=1

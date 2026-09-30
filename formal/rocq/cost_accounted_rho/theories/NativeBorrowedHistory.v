@@ -115,3 +115,61 @@ Proof. reflexivity. Qed.
 
 Theorem maximum_radix_frame : 256 * (2 + 127 + 32) = 41216.
 Proof. reflexivity. Qed.
+
+Definition visitor_admitted (reserved : bool) (depth maximum : nat) : bool :=
+  reserved && (depth <? maximum).
+
+Theorem visitor_requires_credit_and_depth : forall reserved depth maximum,
+  visitor_admitted reserved depth maximum = true ->
+  reserved = true /\ depth < maximum.
+Proof.
+  intros. apply andb_true_iff in H. destruct H as [paid bounded].
+  apply Nat.ltb_lt in bounded. auto.
+Qed.
+
+Theorem nested_visitor_strict_progress : forall depth maximum,
+  visitor_admitted true (S depth) maximum = true ->
+  maximum - S depth < maximum - depth.
+Proof.
+  intros. apply visitor_requires_credit_and_depth in H. destruct H. lia.
+Qed.
+
+Fixpoint decode_rows {A B} (decode : A -> option B) (rows : list A) : option (list B) :=
+  match rows with
+  | [] => Some []
+  | row :: tail =>
+      match decode row, decode_rows decode tail with
+      | Some value, Some values => Some (value :: values)
+      | _, _ => None
+      end
+  end.
+
+Theorem decoded_rows_complete : forall A B (decode : A -> option B) rows values,
+  decode_rows decode rows = Some values -> length values = length rows.
+Proof.
+  intros A B decode rows. induction rows as [|row tail IH]; intros values result; simpl in result.
+  - inversion result. reflexivity.
+  - destruct (decode row), (decode_rows decode tail) eqn:rest; try discriminate.
+    inversion result. subst. simpl. f_equal. apply IH. reflexivity.
+Qed.
+
+Theorem malformed_row_rejects_complete_result : forall A B (decode : A -> option B)
+  before row after,
+  decode row = None -> decode_rows decode (before ++ row :: after) = None.
+Proof.
+  intros A B decode before. induction before as [|first tail IH]; intros row after bad; simpl.
+  - rewrite bad. reflexivity.
+  - rewrite (IH row after bad). destruct (decode first); reflexivity.
+Qed.
+
+Definition publish_decoded {A} (original : list A) (decoded : option (list A)) : list A :=
+  match decoded with Some values => values | None => original end.
+
+Theorem failed_read_preserves_cached_state : forall A B (decode : A -> option B)
+  before row after original,
+  decode row = None ->
+  publish_decoded original (decode_rows decode (before ++ row :: after)) = original.
+Proof.
+  intros. rewrite (malformed_row_rejects_complete_result A B decode before row after H).
+  reflexivity.
+Qed.

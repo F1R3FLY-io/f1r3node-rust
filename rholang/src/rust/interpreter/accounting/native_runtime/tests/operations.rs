@@ -1,6 +1,7 @@
 use futures::FutureExt;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{Expr, Par};
+use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
 use rspace_plus_plus::rspace::operation_context::{self, OperationOrder};
 use rspace_plus_plus::rspace::rspace_interface::{
     RSpaceOperationCompletion, RSpaceOperationSource,
@@ -123,6 +124,32 @@ fn native_operation_recording_rejects_incomplete_duplicate_and_mismatched_lifecy
             "failure case {failure}"
         );
     }
+}
+
+#[test]
+fn native_completion_exhaustion_invalidates_recording_before_publication() {
+    let budget = RuntimeBudget::new(Cost::unsafe_max());
+    let config = config(100, [0, 0, 1, 0]);
+    let host = config.host_work();
+    budget.reset_for_native_execution(config).unwrap();
+    let _accounting = budget.enter_comm_accounting_scope();
+    let channel = channel(1);
+    let source = Produce::create(&channel, &7u8, false);
+    scope(&budget, 0, || {
+        let reference = RSpaceOperationSource::Produce(&source);
+        budget
+            .start_native_operation(reference, std::slice::from_ref(&channel), &[])
+            .unwrap();
+        introduce(&budget, &source);
+        let dimension = HostWorkDimension::VerificationOperations;
+        let remaining = host.limits().get(dimension).get() - host.usage(dimension).get();
+        host.reserve(dimension, HostWorkUnits::new(remaining))
+            .unwrap();
+        budget.finish_native_operation(reference, RSpaceOperationCompletion::Stored);
+    });
+    assert!(host.is_rejected());
+    assert_eq!(budget.native_phlo_usage(), Some(1));
+    assert!(budget.native_operation_recording().is_err());
 }
 
 #[test]

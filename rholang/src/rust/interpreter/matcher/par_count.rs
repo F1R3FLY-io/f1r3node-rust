@@ -1,9 +1,7 @@
-use models::rust::utils::no_frees;
-
 use super::exports::*;
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/ParCount.scala
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParCount {
     pub sends: usize,
     pub receives: usize,
@@ -31,6 +29,25 @@ impl ParCount {
             cost_signed_terms: par.cost_signed_terms.len(),
             cost_stacks: par.cost_stacks.len(),
         }
+    }
+
+    pub fn without_frees(par: &Par) -> Self {
+        let mut count = Self::new(par);
+        count.exprs = par
+            .exprs
+            .iter()
+            .filter(|expr| {
+                !matches!(
+                    &expr.expr_instance,
+                    Some(EVarBody(EVar {
+                        v: Some(Var {
+                            var_instance: Some(FreeVar(_) | Wildcard(_)),
+                        }),
+                    }))
+                )
+            })
+            .count();
+        count
     }
 
     pub fn _new(&self) -> Self {
@@ -110,8 +127,8 @@ impl ParCount {
         }
     }
 
-    pub fn min_max_par(&self, par: Par) -> (ParCount, ParCount) {
-        let pc = ParCount::new(&no_frees(&par));
+    pub fn min_max_par(&self, par: &Par) -> (ParCount, ParCount) {
+        let pc = ParCount::without_frees(par);
         let wildcard: bool = par.exprs.iter().any(|expr| match &expr.expr_instance {
             Some(EVarBody(EVar { v })) => match v.as_ref().unwrap().var_instance {
                 Some(Wildcard(_)) => true,
@@ -128,37 +145,25 @@ impl ParCount {
         par.connectives
             .iter()
             .fold((min_init, max_init), |(min, max), con| {
-                let (cmin, cmax) = self.min_max_con(con.clone());
+                let (cmin, cmax) = self.min_max_con(con);
                 (min.add(&cmin), max.add(&cmax))
             })
     }
 
-    pub fn min_max_con(&self, con: Connective) -> (ParCount, ParCount) {
-        match con.connective_instance {
+    pub fn min_max_con(&self, con: &Connective) -> (ParCount, ParCount) {
+        match &con.connective_instance {
             Some(ConnAndBody(ConnectiveBody { ps })) => {
-                let p_min_max: Vec<(ParCount, ParCount)> =
-                    ps.iter().map(|p| self.min_max_par(p.clone())).collect();
-
-                let min = p_min_max
-                    .iter()
-                    .fold(self._new(), |acc, (min, _)| acc.max(min));
-                let max = p_min_max
-                    .iter()
-                    .fold(self._max(), |acc, (_, max)| acc.min(max));
-                (min, max)
+                ps.iter().fold((self._new(), self._max()), |(min, max), p| {
+                    let (p_min, p_max) = self.min_max_par(p);
+                    (min.max(&p_min), max.min(&p_max))
+                })
             }
 
             Some(ConnOrBody(ConnectiveBody { ps })) => {
-                let p_min_max: Vec<(ParCount, ParCount)> =
-                    ps.iter().map(|p| self.min_max_par(p.clone())).collect();
-
-                let min = p_min_max
-                    .iter()
-                    .fold(self._max(), |acc, (min, _)| acc.min(min));
-                let max = p_min_max
-                    .iter()
-                    .fold(self._new(), |acc, (_, max)| acc.max(max));
-                (min, max)
+                ps.iter().fold((self._max(), self._new()), |(min, max), p| {
+                    let (p_min, p_max) = self.min_max_par(p);
+                    (min.min(&p_min), max.max(&p_max))
+                })
             }
 
             Some(ConnNotBody(_)) => (self._new(), self._max()),
@@ -203,5 +208,69 @@ impl ParCount {
                 (p_count_1.clone(), p_count_1)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use models::rust::utils::{
+        new_boundvar_expr, new_freevar_expr, new_gint_expr, new_wildcard_expr, no_frees,
+    };
+
+    use super::*;
+
+    #[test]
+    fn borrowed_count_matches_filtered_pattern() {
+        let par = Par {
+            exprs: vec![
+                new_wildcard_expr(),
+                new_freevar_expr(3),
+                new_boundvar_expr(2),
+                new_gint_expr(7),
+            ],
+            ..Par::default()
+        };
+
+        assert_eq!(
+            ParCount::without_frees(&par),
+            ParCount::new(&no_frees(&par))
+        );
+        assert_eq!(ParCount::without_frees(&par).exprs, 2);
+    }
+
+    #[test]
+    fn nested_connective_bounds_keep_fixed_and_flexible_alternatives() {
+        let fixed = Par {
+            exprs: vec![new_gint_expr(1), new_gint_expr(2)],
+            ..Par::default()
+        };
+        let flexible = Par {
+            exprs: vec![new_wildcard_expr()],
+            ..Par::default()
+        };
+        let count = ParCount::new(&Par::default());
+        let and = Connective {
+            connective_instance: Some(ConnAndBody(ConnectiveBody {
+                ps: vec![fixed.clone(), flexible.clone()],
+            })),
+        };
+        let or = Connective {
+            connective_instance: Some(ConnOrBody(ConnectiveBody {
+                ps: vec![fixed, flexible],
+            })),
+        };
+
+        let (and_min, and_max) = count.min_max_con(&and);
+        assert_eq!((and_min.exprs, and_max.exprs), (2, 2));
+        let (or_min, or_max) = count.min_max_con(&or);
+        assert_eq!((or_min.exprs, or_max.exprs), (0, 1000));
+
+        let nested = Par {
+            exprs: vec![new_gint_expr(3)],
+            connectives: vec![and],
+            ..Par::default()
+        };
+        let (nested_min, nested_max) = count.min_max_par(&nested);
+        assert_eq!((nested_min.exprs, nested_max.exprs), (3, 3));
     }
 }

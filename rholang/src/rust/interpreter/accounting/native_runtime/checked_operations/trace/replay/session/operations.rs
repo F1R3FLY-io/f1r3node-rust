@@ -136,69 +136,46 @@ impl NativeOperationTicket<Par, BindPattern, ListParWithRandom, TaggedContinuati
     fn returned_produce(&self, source: &Produce) -> Result<Produce, RSpaceError> {
         let trace = &self.replay.inner.trace;
         let host = &self.replay.inner.host;
+        let meter =
+            |operations, scanned, backing| reserve_source(host, operations, scanned, backing);
         if !self
             .operation()
             .source
-            .matches(RSpaceOperationSource::Produce(source))
+            .metered_matches(RSpaceOperationSource::Produce(source), &meter)?
         {
             return Err(error(NativeReplayError::Source));
         }
         let comm = trace
             .comm(self.slot)
             .ok_or_else(|| error(NativeReplayError::CommSource))?;
-        work(
-            host,
-            HostWorkDimension::VerificationOperations,
-            comm.produces.len().saturating_add(1),
-        )
-        .map_err(error)?;
-        work(
-            host,
-            HostWorkDimension::VerificationBytes,
-            comm.produces.len().saturating_mul(96),
-        )
-        .map_err(error)?;
-        let recorded = comm
-            .produces
-            .iter()
-            .find(|candidate| {
-                candidate.hash == source.hash
-                    && candidate.channel_hash == source.channel_hash
-                    && candidate.persistent == source.persistent
-            })
-            .or_else(|| match trace.introduction(self.slot) {
-                Some(IOEvent::Produce(source)) => Some(source),
-                _ => None,
-            })
-            .ok_or_else(|| error(NativeReplayError::Source))?;
-        work(
-            host,
-            HostWorkDimension::VerificationOperations,
-            recorded.output_value.len().saturating_add(1),
-        )
-        .map_err(error)?;
-        work(
-            host,
-            HostWorkDimension::SearchStateBytes,
-            128usize.saturating_add(
-                recorded
-                    .output_value
-                    .len()
-                    .saturating_mul(size_of::<Vec<u8>>())
-                    .saturating_mul(2),
-            ),
-        )
-        .map_err(error)?;
-        for bytes in &recorded.output_value {
-            work(
-                host,
-                HostWorkDimension::SearchStateBytes,
-                bytes.len().saturating_mul(2),
-            )
-            .map_err(error)?;
-            work(host, HostWorkDimension::VerificationBytes, bytes.len()).map_err(error)?;
+        let mut recorded = None;
+        for candidate in &comm.produces {
+            let scanned = candidate
+                .hash
+                .0
+                .len()
+                .checked_add(source.hash.0.len())
+                .and_then(|bytes| bytes.checked_add(candidate.channel_hash.0.len()))
+                .and_then(|bytes| bytes.checked_add(source.channel_hash.0.len()))
+                .and_then(|bytes| bytes.checked_add(2))
+                .ok_or(RSpaceError::HostWorkRejected)?;
+            meter(1, scanned, 0)?;
+            if candidate.hash == source.hash
+                && candidate.channel_hash == source.channel_hash
+                && candidate.persistent == source.persistent
+            {
+                recorded = Some(candidate);
+                break;
+            }
         }
-        Ok(recorded.clone())
+        if recorded.is_none() {
+            meter(1, 0, 0)?;
+            if let Some(IOEvent::Produce(introduction)) = trace.introduction(self.slot) {
+                recorded = Some(introduction);
+            }
+        }
+        let recorded = recorded.ok_or_else(|| error(NativeReplayError::Source))?;
+        rspace_plus_plus::rspace::hashing::native_source::clone_produce(recorded, &meter)
     }
 
     fn prepare(self, outcome: NativeReplayOutcome) -> Result<Self::Publication, RSpaceError> {

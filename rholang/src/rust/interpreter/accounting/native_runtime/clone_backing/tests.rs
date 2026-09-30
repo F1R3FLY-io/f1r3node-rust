@@ -1,12 +1,17 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 
+use models::rhoapi::connective::ConnectiveInstance::{ConnAndBody, ConnOrBody};
+use models::rhoapi::*;
 use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
 use models::rust::utils::new_gstring_par;
 use proptest::prelude::*;
 use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 
 use super::*;
+use crate::rust::interpreter::matcher::spatial_matcher::{SpatialMatcher, SpatialMatcherContext};
 
 thread_local! {
     static ALLOCATED: Cell<Option<usize>> = const { Cell::new(None) };
@@ -78,6 +83,129 @@ fn clone_fits<T: CloneBacking + Clone>(value: &T) {
         host.usage(HostWorkDimension::SearchStateBytes).get()
     );
     drop(copy);
+}
+
+#[test]
+fn connective_rejects_before_large_target_or_binding_clone() {
+    let payload_bytes = 1_048_576;
+    for disjunction in [false, true] {
+        let target = if disjunction {
+            Par::default()
+        } else {
+            new_gstring_par("x".repeat(payload_bytes), Vec::new(), false)
+        };
+        let pattern = Connective {
+            connective_instance: Some(if disjunction {
+                ConnOrBody(ConnectiveBody {
+                    ps: vec![Par::default()],
+                })
+            } else {
+                ConnAndBody(ConnectiveBody {
+                    ps: vec![Par::default()],
+                })
+            }),
+        };
+        let meter = |_: usize, _: usize, backing: usize| {
+            if backing >= payload_bytes {
+                Err(rspace_plus_plus::rspace::errors::RSpaceError::HostWorkRejected)
+            } else {
+                Ok(())
+            }
+        };
+        let mut context = SpatialMatcherContext::with_meter(&meter).unwrap();
+        if disjunction {
+            context.free_map.insert(
+                0,
+                new_gstring_par("x".repeat(payload_bytes), Vec::new(), false),
+            );
+        }
+        ALLOCATED.with(|total| {
+            assert!(total.get().is_none());
+            total.set(Some(0));
+        });
+        let measurement = Measurement;
+        assert!(context.spatial_match(target, pattern).is_none());
+        let allocated = ALLOCATED.with(|total| total.get().unwrap());
+        drop(measurement);
+        assert!(matches!(
+            context.take_error(),
+            Some(rspace_plus_plus::rspace::errors::RSpaceError::HostWorkRejected)
+        ));
+        assert!(allocated < payload_bytes / 2, "allocated={allocated}");
+    }
+}
+
+fn inspection_fits_exactly<T: CloneBacking>(value: &T) -> u64 {
+    let measured = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000_000_000)));
+    ALLOCATED.with(|total| {
+        assert!(total.get().is_none());
+        total.set(Some(0));
+    });
+    let measurement = Measurement;
+    inspect(value, &measured).unwrap();
+    let actual = ALLOCATED.with(|total| total.get().unwrap());
+    drop(measurement);
+    assert!(actual as u64 <= measured.usage(HostWorkDimension::SearchStateBytes).get());
+    let mut exact = HostWorkLimits::uniform(HostWorkLimit::new(0));
+    for dimension in HostWorkDimension::ALL {
+        exact.set(
+            dimension,
+            HostWorkLimit::new(measured.usage(dimension).get()),
+        );
+    }
+    inspect(value, &HostWorkBudget::new(exact.clone())).unwrap();
+    for dimension in HostWorkDimension::ALL {
+        let required = measured.usage(dimension).get();
+        if required > 0 {
+            let mut short = exact.clone();
+            short.set(dimension, HostWorkLimit::new(required - 1));
+            let rejected = HostWorkBudget::new(short);
+            ALLOCATED.with(|total| {
+                assert!(total.get().is_none());
+                total.set(Some(0));
+            });
+            let measurement = Measurement;
+            let result = inspect(value, &rejected);
+            let actual = ALLOCATED.with(|total| total.get().unwrap());
+            drop(measurement);
+            assert!(matches!(result, Err(InterpreterError::HostWorkRejected)));
+            assert!(actual as u64 <= rejected.usage(HostWorkDimension::SearchStateBytes).get());
+        }
+    }
+    measured.usage(HostWorkDimension::VerificationBytes).get()
+}
+
+#[test]
+fn shared_values_are_shallow_copies_and_deep_inspections() {
+    let value = Arc::new("shared".repeat(2048));
+    let slice: Arc<[String]> = Arc::from(vec!["slice".repeat(2048), "tail".repeat(2048)]);
+    let text: Arc<str> = Arc::from("text".repeat(2048));
+    clone_fits(&value);
+    clone_fits(&slice);
+    clone_fits(&text);
+    let host = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000_000_000)));
+    reserve(&value, &host).unwrap();
+    reserve(&slice, &host).unwrap();
+    reserve(&text, &host).unwrap();
+    assert_eq!(host.usage(HostWorkDimension::SearchStateBytes).get(), 0);
+    assert!(inspection_fits_exactly(&value) >= (value.len() * 2) as u64);
+    assert!(
+        inspection_fits_exactly(&slice)
+            >= (slice.iter().map(String::len).sum::<usize>() * 2) as u64
+    );
+    assert!(inspection_fits_exactly(&text) >= (text.len() * 2) as u64);
+    let single = inspection_fits_exactly(&value);
+    let nested = [[value.clone(), value.clone()], [
+        value.clone(),
+        value.clone(),
+    ]];
+    clone_fits(&nested);
+    assert!(inspection_fits_exactly(&nested) >= single * 4);
+    assert!(nested
+        .iter()
+        .flatten()
+        .all(|entry| Arc::ptr_eq(entry, &value)));
+    assert_eq!(Arc::strong_count(&value), 5);
 }
 
 fn term() -> impl Strategy<Value = Par> {

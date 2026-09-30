@@ -12,7 +12,27 @@ impl Match<u8, u8, u8> for Matcher {
         (*pattern == 0 || pattern == datum).then_some(*datum)
     }
 
+    fn get_metered(
+        &self,
+        pattern: &u8,
+        datum: &u8,
+        meter: &(dyn crate::rspace::hashing::native_source::SourceMeter + Send + Sync),
+    ) -> Result<Option<u8>, RSpaceError> {
+        meter.reserve(1, 2, 0)?;
+        Ok(self.get(pattern, datum))
+    }
+
     fn check_commit(&self, continuation: &u8, _: &[u8]) -> bool { *continuation != 255 }
+
+    fn check_commit_metered(
+        &self,
+        continuation: &u8,
+        matched: &[u8],
+        meter: &(dyn crate::rspace::hashing::native_source::SourceMeter + Send + Sync),
+    ) -> Result<bool, RSpaceError> {
+        meter.reserve(1, 1, 0)?;
+        Ok(self.check_commit(continuation, matched))
+    }
 }
 
 type Space = ReplayRSpace<u8, u8, u8, u8>;
@@ -24,7 +44,7 @@ async fn space() -> Space {
         .1
 }
 
-struct Logical(COMM);
+pub(super) struct Logical(pub(super) COMM);
 
 fn same_produce(a: &Produce, b: &Produce) -> bool {
     a.hash == b.hash && a.channel_hash == b.channel_hash && a.persistent == b.persistent
@@ -59,6 +79,42 @@ impl NativeCandidateIdentity for Logical {
                 .iter()
                 .zip(&self.0.times_repeated)
                 .all(|((a, n), (b, m))| n == m && same_produce(a, b))
+    }
+
+    fn metered_matches_consume(
+        &self,
+        source: &Consume,
+        meter: &dyn crate::rspace::hashing::native_source::SourceMeter,
+    ) -> Result<bool, RSpaceError> {
+        super::super::native_directive::meter_identity_inputs(source, &self.0.consume, meter)?;
+        Ok(self.matches_consume(source))
+    }
+
+    fn metered_matches_produce(
+        &self,
+        source: &Produce,
+        meter: &dyn crate::rspace::hashing::native_source::SourceMeter,
+    ) -> Result<bool, RSpaceError> {
+        super::super::native_directive::meter_identity_inputs(source, &self.0, meter)?;
+        Ok(self.matches_produce(source))
+    }
+
+    fn metered_repetition(
+        &self,
+        source: &Produce,
+        meter: &dyn crate::rspace::hashing::native_source::SourceMeter,
+    ) -> Result<Option<i32>, RSpaceError> {
+        super::super::native_directive::meter_identity_inputs(source, &self.0, meter)?;
+        Ok(self.repetition(source))
+    }
+
+    fn metered_matches_comm(
+        &self,
+        source: &COMM,
+        meter: &dyn crate::rspace::hashing::native_source::SourceMeter,
+    ) -> Result<bool, RSpaceError> {
+        super::super::native_directive::meter_identity_inputs(source, &self.0, meter)?;
+        Ok(self.matches_comm(source))
     }
 }
 

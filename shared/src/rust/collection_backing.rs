@@ -36,3 +36,30 @@ pub fn hash_backing<K, V>(capacity: usize) -> Option<(usize, usize)> {
         .checked_add(64)?;
     Some((buckets.checked_mul(2)?, bytes))
 }
+
+pub fn persistent_insert_backing<K, V>(entries: usize) -> Option<(usize, usize)> {
+    let levels = 32_usize.div_ceil(3).checked_add(1)?;
+    let count = entries.checked_add(1)?;
+    let nodes = if entries == 0 {
+        1
+    } else {
+        levels.checked_mul(count.min(33))?.checked_add(2)?
+    };
+    let alignment = align_of::<(K, V, u64, [usize; 4])>();
+    let slot = size_of::<(K, V, u64, [usize; 4])>().checked_add(alignment.checked_mul(2)?)?;
+    let padding = alignment.checked_mul(8)?;
+    let node = slot
+        .checked_mul(32)?
+        .checked_add(padding)?
+        .checked_add(128)?;
+    let collision = count
+        .max(4)
+        .checked_mul(4)?
+        .checked_mul(size_of::<(K, V)>())?;
+    let bytes = nodes.checked_mul(node)?.checked_add(collision)?;
+    let operations = count
+        .checked_mul(levels)?
+        .checked_mul(32)?
+        .checked_add(nodes.checked_mul(32)?)?;
+    Some((operations, bytes))
+}

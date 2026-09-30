@@ -14,11 +14,11 @@ use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
-    BindPattern, Bundle, CostAuthority, CostSignedTerm, CostStack, EAnd, EDiv, EEq, EGt, EGte,
-    EList, ELt, ELte, EMatches, EMethod, EMinus, EMinusMinus, EMod, EMult, ENeq, EOr, EPathMap,
-    EPercentPercent, EPlus, EPlusPlus, ETuple, EVar, EZipper, Expr, GUnforgeable, If, KeyValuePair,
-    ListParWithRandom, Match, MatchCase, New, Par, ParWithRandom, Receive, ReceiveBind, Send,
-    TaggedContinuation, Var,
+    BindPattern, Bundle, CostAuthority, CostRegion, CostSignedTerm, CostStack, EAnd, EDiv, EEq,
+    EGt, EGte, EList, ELt, ELte, EMatches, EMethod, EMinus, EMinusMinus, EMod, EMult, ENeq, EOr,
+    EPathMap, EPercentPercent, EPlus, EPlusPlus, ETuple, EVar, EZipper, Expr, GUnforgeable, If,
+    KeyValuePair, ListParWithRandom, Match, MatchCase, New, Par, ParWithRandom, Receive,
+    ReceiveBind, Send, TaggedContinuation, Var,
 };
 use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
 use models::rust::par_map::ParMap;
@@ -35,13 +35,17 @@ use models::rust::utils::{
     new_elist_par, new_emap_par, new_gint_expr, new_gint_par, new_gstring_par, union,
 };
 use prost::Message;
+use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 use rspace_plus_plus::rspace::trace::event::{Consume, Produce};
 use rspace_plus_plus::rspace::util::unpack_option_with_peek;
+use shared::rust::clone_backing::{self as clone_backing, BackingError, BackingMeter};
 use tokio::sync::RwLock;
 
 use super::accounting::authority::{
-    cost_region, cost_signature_to_sig, extend_authority, sig_to_cost_signature,
+    cost_region, cost_region_metered, cost_signature_to_sig, cost_signature_to_sig_metered,
+    extend_authority, funding_sig_channel_metered, merge_authorities_metered,
+    sig_to_cost_signature, sig_to_cost_signature_metered, AuthorityError,
 };
 use super::accounting::costs::{
     bigint_comparison_cost, bigint_division_cost, bigint_modulo_cost, bigint_multiplication_cost,
@@ -94,6 +98,29 @@ const STACK_RED_ZONE: usize = 1024 * 1024; // 1 MB
 /// Size of each new stack segment allocated when the red zone is reached.
 const STACK_GROW_SIZE: usize = 2 * 1024 * 1024; // 2 MB
 const SINGLE_TERM_YIELD_INTERVAL: u64 = 256;
+
+fn reserve_reducer_random_bytes(
+    rand: &Blake2b512Random,
+    backing: &dyn BackingMeter,
+) -> Result<(), InterpreterError> {
+    let count_bytes = rand
+        .count_view
+        .len()
+        .checked_mul(8)
+        .ok_or(InterpreterError::HostWorkRejected)?;
+    let output_bytes = 168usize
+        .checked_add(rand.last_block.len())
+        .and_then(|size| size.checked_add(rand.path_view.len()))
+        .and_then(|size| size.checked_add(count_bytes))
+        .ok_or(InterpreterError::HostWorkRejected)?;
+    let allocation = output_bytes
+        .checked_mul(4)
+        .and_then(|size| size.checked_add(144))
+        .ok_or(InterpreterError::HostWorkRejected)?;
+    backing
+        .reserve(output_bytes, output_bytes, allocation)
+        .map_err(|_| InterpreterError::HostWorkRejected)
+}
 
 /// A Future wrapper that dynamically grows the thread stack during polling.
 ///
@@ -1686,15 +1713,69 @@ impl ReducerCore {
         rand: Blake2b512Random,
         authority: &CostAuthority,
     ) -> Result<(), InterpreterError> {
-        let signature = self.substitute.substitute_cost_signature(
-            unwrap_option_safe(term.signature.clone())?,
-            0,
-            env,
-        )?;
-        let region = cost_region(&signature, &rand.to_bytes(), 0)
-            .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
-        let authority = extend_authority(authority, region)
-            .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+        let host =
+            deterministic_reduction::current().and_then(|context| context.host_work_budget());
+        let backing = |operations: usize, scanned: usize, bytes: usize| {
+            let Some(host) = host.as_ref() else {
+                return Ok(());
+            };
+            for (dimension, amount) in [
+                (HostWorkDimension::VerificationOperations, operations),
+                (HostWorkDimension::VerificationBytes, scanned),
+                (HostWorkDimension::SearchStateBytes, bytes),
+            ] {
+                let amount = u64::try_from(amount).map_err(|_| BackingError::Overflow)?;
+                host.reserve(dimension, HostWorkUnits::new(amount))
+                    .map_err(|_| BackingError::Rejected)?;
+            }
+            Ok(())
+        };
+        let owned_backing = |operations: usize, scanned: usize, bytes: usize| {
+            backing(
+                operations.checked_mul(2).ok_or(BackingError::Overflow)?,
+                scanned,
+                bytes,
+            )
+        };
+        let native_error = |error: AuthorityError| match error {
+            AuthorityError::HostWorkRejected => InterpreterError::HostWorkRejected,
+            other => InterpreterError::ReduceError(other.to_string()),
+        };
+        if host.is_some() {
+            clone_backing::inspect(&term.signature, &backing)
+                .map_err(|_| InterpreterError::HostWorkRejected)?;
+            clone_backing::reserve(&term.signature, &owned_backing)
+                .map_err(|_| InterpreterError::HostWorkRejected)?;
+        }
+        let signature = unwrap_option_safe(term.signature.clone())?;
+        let signature = if host.is_some() {
+            self.substitute
+                .substitute_cost_signature_metered(signature, 0, env, &backing)?
+        } else {
+            self.substitute
+                .substitute_cost_signature(signature, 0, env)?
+        };
+        let authority = if host.is_some() {
+            reserve_reducer_random_bytes(&rand, &owned_backing)?;
+            let region = cost_region_metered(&signature, &rand.to_bytes(), 0, &backing)
+                .map_err(native_error)?;
+            backing(1, 0, std::mem::size_of::<CostRegion>())
+                .map_err(|_| InterpreterError::HostWorkRejected)?;
+            let singleton = CostAuthority {
+                regions: vec![region],
+            };
+            merge_authorities_metered([authority, &singleton], &owned_backing)
+                .map_err(native_error)?
+        } else {
+            let region = cost_region(&signature, &rand.to_bytes(), 0).map_err(native_error)?;
+            extend_authority(authority, region).map_err(native_error)?
+        };
+        if host.is_some() {
+            clone_backing::inspect(&term.body, &backing)
+                .map_err(|_| InterpreterError::HostWorkRejected)?;
+            clone_backing::reserve(&term.body, &owned_backing)
+                .map_err(|_| InterpreterError::HostWorkRejected)?;
+        }
         self.eval_with_authority(unwrap_option_safe(term.body.clone())?, env, rand, authority)
             .await
     }
@@ -1706,53 +1787,157 @@ impl ReducerCore {
         rand: Blake2b512Random,
         authority: &CostAuthority,
     ) -> Result<(), InterpreterError> {
+        let host =
+            deterministic_reduction::current().and_then(|context| context.host_work_budget());
+        let backing = |operations: usize, scanned: usize, bytes: usize| {
+            let Some(host) = host.as_ref() else {
+                return Ok(());
+            };
+            for (dimension, amount) in [
+                (HostWorkDimension::VerificationOperations, operations),
+                (HostWorkDimension::VerificationBytes, scanned),
+                (HostWorkDimension::SearchStateBytes, bytes),
+            ] {
+                let amount = u64::try_from(amount).map_err(|_| BackingError::Overflow)?;
+                host.reserve(dimension, HostWorkUnits::new(amount))
+                    .map_err(|_| BackingError::Rejected)?;
+            }
+            Ok(())
+        };
+        let owned_backing = |operations: usize, scanned: usize, bytes: usize| {
+            backing(
+                operations.checked_mul(2).ok_or(BackingError::Overflow)?,
+                scanned,
+                bytes,
+            )
+        };
+        let source_meter = |operations: usize, scanned: usize, bytes: usize| {
+            let Some(host) = host.as_ref() else {
+                return Ok(());
+            };
+            for (dimension, amount) in [
+                (HostWorkDimension::VerificationOperations, operations),
+                (HostWorkDimension::VerificationBytes, scanned),
+                (HostWorkDimension::SearchStateBytes, bytes),
+            ] {
+                let amount = u64::try_from(amount).map_err(|_| RSpaceError::HostWorkRejected)?;
+                host.reserve(dimension, HostWorkUnits::new(amount))
+                    .map_err(|_| RSpaceError::HostWorkRejected)?;
+            }
+            Ok(())
+        };
+        let native_error = |error: AuthorityError| match error {
+            AuthorityError::HostWorkRejected => InterpreterError::HostWorkRejected,
+            other => InterpreterError::ReduceError(other.to_string()),
+        };
+        if host.is_some() {
+            clone_backing::inspect(&stack.cells, &backing)
+                .map_err(|_| InterpreterError::HostWorkRejected)?;
+            clone_backing::reserve(&stack.cells, &owned_backing)
+                .map_err(|_| InterpreterError::HostWorkRejected)?;
+        }
         let stack = CostStack {
             cells: stack
                 .cells
                 .iter()
                 .cloned()
-                .map(|signature| self.substitute.substitute_cost_signature(signature, 0, env))
+                .map(|signature| {
+                    if host.is_some() {
+                        self.substitute
+                            .substitute_cost_signature_metered(signature, 0, env, &backing)
+                    } else {
+                        self.substitute.substitute_cost_signature(signature, 0, env)
+                    }
+                })
                 .collect::<Result<Vec<_>, _>>()?,
         };
         let head = stack.cells.first().ok_or_else(|| {
             InterpreterError::ReduceError("cost-accounting: empty token stack".to_string())
         })?;
         for cell in &stack.cells {
-            if cost_signature_to_sig(cell)
-                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?
-                == super::accounting::Sig::Unit
-            {
+            let cell_signature = if host.is_some() {
+                cost_signature_to_sig_metered(cell, &backing).map_err(native_error)?
+            } else {
+                cost_signature_to_sig(cell).map_err(native_error)?
+            };
+            if cell_signature == super::accounting::Sig::Unit {
                 return Err(InterpreterError::ReduceError(
                     "cost-accounting: unit cannot be stored as a token-stack cell".to_string(),
                 ));
             }
         }
-        let signature = cost_signature_to_sig(head)
-            .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
-        let authority =
-            if authority.regions.is_empty() && self.metering.budget().has_comm_accounting_scope() {
-                let signature = sig_to_cost_signature(&self.metering.budget().signature())
-                    .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
-                let region = cost_region(&signature, &rand.to_bytes(), 0)
-                    .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
-                extend_authority(authority, region)
-                    .map_err(|error| InterpreterError::ReduceError(error.to_string()))?
+        let signature = if host.is_some() {
+            cost_signature_to_sig_metered(head, &backing).map_err(native_error)?
+        } else {
+            cost_signature_to_sig(head).map_err(native_error)?
+        };
+        let authority = if authority.regions.is_empty()
+            && self.metering.budget().has_comm_accounting_scope()
+        {
+            let payer = if let Some(host) = host.as_ref() {
+                self.metering.budget().signature_with_host_work(host)?
             } else {
-                authority.clone()
+                self.metering.budget().signature()
             };
-        let channel = super::accounting::SignatureChannel::from_sig(&signature).par;
+            if host.is_some() {
+                let signature =
+                    sig_to_cost_signature_metered(&payer, &backing).map_err(native_error)?;
+                reserve_reducer_random_bytes(&rand, &owned_backing)?;
+                let region = cost_region_metered(&signature, &rand.to_bytes(), 0, &backing)
+                    .map_err(native_error)?;
+                backing(1, 0, std::mem::size_of::<CostRegion>())
+                    .map_err(|_| InterpreterError::HostWorkRejected)?;
+                let singleton = CostAuthority {
+                    regions: vec![region],
+                };
+                merge_authorities_metered([authority, &singleton], &owned_backing)
+                    .map_err(native_error)?
+            } else {
+                let signature = sig_to_cost_signature(&payer).map_err(native_error)?;
+                let region = cost_region(&signature, &rand.to_bytes(), 0).map_err(native_error)?;
+                extend_authority(authority, region).map_err(native_error)?
+            }
+        } else {
+            if host.is_some() {
+                clone_backing::inspect(authority, &backing)
+                    .map_err(|_| InterpreterError::HostWorkRejected)?;
+                clone_backing::reserve(authority, &owned_backing)
+                    .map_err(|_| InterpreterError::HostWorkRejected)?;
+            }
+            authority.clone()
+        };
+        let channel = if host.is_some() {
+            funding_sig_channel_metered(&signature, &owned_backing).map_err(native_error)?
+        } else {
+            super::accounting::SignatureChannel::from_sig(&signature).par
+        };
+        if host.is_some() {
+            reserve_reducer_random_bytes(&rand, &owned_backing)?;
+        }
         let datum = ListParWithRandom {
             pars: Vec::new(),
             random_state: rand.to_bytes(),
             cost_authority: None,
             cost_stack: Some(stack),
         };
-        let produce_hash: [u8; 32] = Produce::create(&channel, &datum, false)
+        let datum_cells = &datum.cost_stack.as_ref().expect("cost stack").cells;
+        if host.is_some() {
+            clone_backing::inspect(datum_cells, &backing)
+                .map_err(|_| InterpreterError::HostWorkRejected)?;
+            clone_backing::reserve(datum_cells, &owned_backing)
+                .map_err(|_| InterpreterError::HostWorkRejected)?;
+        }
+        let cells = datum_cells.clone();
+        let source = if host.is_some() {
+            Produce::create_metered(&channel, &datum, false, &source_meter)?
+        } else {
+            Produce::create(&channel, &datum, false)
+        };
+        let produce_hash: [u8; 32] = source
             .hash
             .bytes()
             .try_into()
             .expect("RSpace produce hash length");
-        let cells = datum.cost_stack.as_ref().expect("cost stack").cells.clone();
         let reservation = self.metering.budget().prepare_authority_stack_transfer(
             produce_hash,
             cells,

@@ -10,11 +10,23 @@
  * @tparam A A type representing data and match result
  * @tparam K A type representing continuations (used by check_commit)
  */
+use crate::rspace::errors::RSpaceError;
+use crate::rspace::hashing::native_source::SourceMeter;
+
 pub trait Match<P, A, K>: Send + Sync {
     // Takes pattern and data by reference so the matcher hot path can probe a
     // datum without cloning the whole pattern/data on every failed attempt.
     // Only the matched result (Option<A>) is allocated, on success.
     fn get(&self, p: &P, a: &A) -> Option<A>;
+
+    fn get_metered(
+        &self,
+        _p: &P,
+        _a: &A,
+        _meter: &(dyn SourceMeter + Send + Sync),
+    ) -> Result<Option<A>, RSpaceError> {
+        Err(RSpaceError::HostWorkRejected)
+    }
 
     /// Called once per candidate consume after every spatial bind has
     /// matched and the continuation is about to commit. Default is
@@ -22,4 +34,13 @@ pub trait Match<P, A, K>: Send + Sync {
     /// consume back so the messages stay in the tuple space and the
     /// continuation stays installed.
     fn check_commit(&self, _k: &K, _matched: &[A]) -> bool { true }
+
+    fn check_commit_metered(
+        &self,
+        _k: &K,
+        _matched: &[A],
+        _meter: &(dyn SourceMeter + Send + Sync),
+    ) -> Result<bool, RSpaceError> {
+        Err(RSpaceError::HostWorkRejected)
+    }
 }

@@ -25,11 +25,17 @@ use crossbeam_queue::SegQueue;
 use crypto::rust::hash::blake2b256::Blake2b256;
 use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::{CostAuthority, CostSignature, GPrivate, GUnforgeable, Par};
+use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
 use models::rust::rholang::implicits::concatenate_pars;
 use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
 use models::rust::rholang::sorter::sortable::Sortable;
+use shared::rust::clone_backing::{
+    self as shared_clone_backing, arc_allocation_bytes, BackingError, CloneBacking, Walker,
+};
+use shared::rust::collection_backing::tree_backing;
 
 use super::errors::InterpreterError;
+use super::host_work::HostWorkBudget;
 
 pub mod cost_accounting;
 pub mod costs;
@@ -388,6 +394,380 @@ pub struct BillableTokenEvent {
     pub weight: u64,
 }
 
+fn reserve_native_backing(
+    host: &HostWorkBudget,
+    operations: usize,
+    scanned: usize,
+    backing: usize,
+) -> Result<(), BackingError> {
+    for (dimension, amount) in [
+        (HostWorkDimension::VerificationOperations, operations),
+        (HostWorkDimension::VerificationBytes, scanned),
+        (HostWorkDimension::SearchStateBytes, backing),
+    ] {
+        let amount = u64::try_from(amount).map_err(|_| BackingError::Rejected)?;
+        host.reserve(dimension, HostWorkUnits::new(amount))
+            .map_err(|_| BackingError::Rejected)?;
+    }
+    Ok(())
+}
+
+fn reserve_owned_backing(
+    host: &HostWorkBudget,
+    operations: usize,
+    scanned: usize,
+    backing: usize,
+) -> Result<(), BackingError> {
+    reserve_native_backing(
+        host,
+        operations.checked_mul(2).ok_or(BackingError::Overflow)?,
+        scanned,
+        backing,
+    )
+}
+
+fn native_authority_error(error: authority::AuthorityError) -> InterpreterError {
+    match error {
+        authority::AuthorityError::HostWorkRejected => InterpreterError::HostWorkRejected,
+        other => InterpreterError::ReduceError(other.to_string()),
+    }
+}
+
+fn canonical_authority_with_host(
+    authority: &CostAuthority,
+    host: Option<&HostWorkBudget>,
+) -> Result<CostAuthority, InterpreterError> {
+    match host {
+        Some(host) => {
+            let backing = |operations, scanned, bytes| {
+                reserve_owned_backing(host, operations, scanned, bytes)
+            };
+            authority::canonical_authority_metered(authority, &backing)
+                .map_err(native_authority_error)
+        }
+        None => authority::canonical_authority(authority)
+            .map_err(|error| InterpreterError::ReduceError(error.to_string())),
+    }
+}
+
+fn canonical_observation_authority_with_host(
+    authority: &CostAuthority,
+    host: Option<&HostWorkBudget>,
+) -> Result<CostAuthority, InterpreterError> {
+    let canonical = canonical_authority_with_host(authority, host)?;
+    if canonical.regions.is_empty() {
+        return Err(InterpreterError::ReduceError(
+            authority::AuthorityError::MissingAuthority.to_string(),
+        ));
+    }
+    Ok(canonical)
+}
+
+fn authority_demand_with_host(
+    authority: &CostAuthority,
+    host: Option<&HostWorkBudget>,
+) -> Result<authority::ResourceMultiset<[u8; 32]>, InterpreterError> {
+    match host {
+        Some(host) => {
+            let backing = |operations, scanned, bytes| {
+                reserve_owned_backing(host, operations, scanned, bytes)
+            };
+            authority::authority_demand_metered(authority, &backing).map_err(native_authority_error)
+        }
+        None => authority::authority_demand(authority)
+            .map_err(|error| InterpreterError::ReduceError(error.to_string())),
+    }
+}
+
+fn reserve_authority_clone(
+    authority: &CostAuthority,
+    host: Option<&HostWorkBudget>,
+) -> Result<(), InterpreterError> {
+    if let Some(host) = host {
+        let backing =
+            |operations, scanned, bytes| reserve_owned_backing(host, operations, scanned, bytes);
+        shared_clone_backing::reserve(authority, &backing)
+            .map_err(|_| InterpreterError::HostWorkRejected)?;
+    }
+    Ok(())
+}
+
+fn inspect_authority(
+    authority: &CostAuthority,
+    host: Option<&HostWorkBudget>,
+) -> Result<(), InterpreterError> {
+    if let Some(host) = host {
+        let backing =
+            |operations, scanned, bytes| reserve_native_backing(host, operations, scanned, bytes);
+        shared_clone_backing::inspect(authority, &backing)
+            .map_err(|_| InterpreterError::HostWorkRejected)?;
+    }
+    Ok(())
+}
+
+fn inspect_observation(
+    observation: &byte_receipts::ByteObservation,
+    host: Option<&HostWorkBudget>,
+) -> Result<(), InterpreterError> {
+    if let Some(host) = host {
+        let backing =
+            |operations, scanned, bytes| reserve_native_backing(host, operations, scanned, bytes);
+        shared_clone_backing::inspect(observation, &backing)
+            .map_err(|_| InterpreterError::HostWorkRejected)?;
+    }
+    Ok(())
+}
+
+fn reserve_registry_lookup<K>(
+    entries: usize,
+    host: Option<&HostWorkBudget>,
+) -> Result<(), InterpreterError> {
+    if let Some(host) = host {
+        let comparisons = entries
+            .checked_add(1)
+            .ok_or(InterpreterError::HostWorkRejected)?;
+        let bytes = comparisons
+            .checked_mul(std::mem::size_of::<K>())
+            .ok_or(InterpreterError::HostWorkRejected)?;
+        reserve_native_backing(host, comparisons, bytes, 0)
+            .map_err(|_| InterpreterError::HostWorkRejected)?;
+    }
+    Ok(())
+}
+
+fn reserve_registry_insert(
+    entries: usize,
+    host: Option<&HostWorkBudget>,
+) -> Result<(), InterpreterError> {
+    if let Some(host) = host {
+        let next = entries
+            .checked_add(1)
+            .ok_or(InterpreterError::HostWorkRejected)?;
+        let (operations, bytes) =
+            tree_backing::<([u8; 32], authority::AuthorityByteEventKind), CostAuthority>(next)
+                .ok_or(InterpreterError::HostWorkRejected)?;
+        reserve_owned_backing(host, operations, 0, bytes)
+            .map_err(|_| InterpreterError::HostWorkRejected)?;
+    }
+    Ok(())
+}
+
+fn reserve_tree_birth<K, V>(
+    entries: usize,
+    host: Option<&HostWorkBudget>,
+) -> Result<(), InterpreterError> {
+    if let Some(host) = host {
+        let next = entries
+            .checked_add(1)
+            .ok_or(InterpreterError::HostWorkRejected)?;
+        let (operations, bytes) =
+            tree_backing::<K, V>(next).ok_or(InterpreterError::HostWorkRejected)?;
+        reserve_owned_backing(host, operations, 0, bytes)
+            .map_err(|_| InterpreterError::HostWorkRejected)?;
+    }
+    Ok(())
+}
+
+fn reserve_tree_batch<K, V>(
+    entries: usize,
+    additional: usize,
+    host: Option<&HostWorkBudget>,
+) -> Result<(), InterpreterError> {
+    if let Some(host) = host {
+        let total = entries
+            .checked_add(additional)
+            .ok_or(InterpreterError::HostWorkRejected)?;
+        let (operations, bytes) =
+            tree_backing::<K, V>(total).ok_or(InterpreterError::HostWorkRejected)?;
+        reserve_owned_backing(host, operations, 0, bytes)
+            .map_err(|_| InterpreterError::HostWorkRejected)?;
+    }
+    Ok(())
+}
+
+fn reserve_multiset_clone(
+    value: &authority::ResourceMultiset<[u8; 32]>,
+    host: Option<&HostWorkBudget>,
+) -> Result<(), InterpreterError> {
+    if let Some(host) = host {
+        let entries = value.0.len();
+        let (operations, backing) =
+            tree_backing::<[u8; 32], u64>(entries).ok_or(InterpreterError::HostWorkRejected)?;
+        let scanned = entries
+            .checked_mul(32)
+            .ok_or(InterpreterError::HostWorkRejected)?;
+        reserve_owned_backing(host, operations, scanned, backing)
+            .map_err(|_| InterpreterError::HostWorkRejected)?;
+    }
+    Ok(())
+}
+
+fn stack_transfer_id_with_host(
+    produce_hash: &[u8; 32],
+    cell_index: u64,
+    host: Option<&HostWorkBudget>,
+) -> Result<[u8; 32], InterpreterError> {
+    match host {
+        Some(host) => {
+            let backing = |operations, scanned, bytes| {
+                reserve_native_backing(host, operations, scanned, bytes)
+            };
+            authority::stack_transfer_event_id_metered(produce_hash, cell_index, &backing)
+                .map_err(native_authority_error)
+        }
+        None => Ok(authority::stack_transfer_event_id(produce_hash, cell_index)),
+    }
+}
+
+fn reserve_stack_transfer_id_for_rollback(
+    host: Option<&HostWorkBudget>,
+) -> Result<(), InterpreterError> {
+    if let Some(host) = host {
+        let backing =
+            |operations, scanned, bytes| reserve_native_backing(host, operations, scanned, bytes);
+        authority::reserve_stack_transfer_event_id(&backing).map_err(native_authority_error)?;
+    }
+    Ok(())
+}
+
+fn reserve_observation_birth(host: Option<&HostWorkBudget>) -> Result<(), InterpreterError> {
+    if let Some(host) = host {
+        let bytes = arc_allocation_bytes::<byte_receipts::ByteObservation>()
+            .ok_or(InterpreterError::HostWorkRejected)?;
+        reserve_owned_backing(host, 1, 0, bytes).map_err(|_| InterpreterError::HostWorkRejected)?;
+    }
+    Ok(())
+}
+
+fn reserve_byte_row(
+    log: &mut byte_receipts::ByteObservationLog,
+    host: Option<&HostWorkBudget>,
+) -> Result<(), InterpreterError> {
+    if let Some(host) = host {
+        log.reserve_native(1, host)
+    } else {
+        log.try_reserve(1)
+            .map_err(|_| InterpreterError::HostWorkRejected)
+    }
+}
+
+fn reserve_multiset_add(
+    left: &authority::ResourceMultiset<[u8; 32]>,
+    right: &authority::ResourceMultiset<[u8; 32]>,
+    host: Option<&HostWorkBudget>,
+) -> Result<(), InterpreterError> {
+    if let Some(host) = host {
+        let maximum = left
+            .0
+            .len()
+            .checked_add(right.0.len())
+            .ok_or(InterpreterError::HostWorkRejected)?;
+        let comparisons = right
+            .0
+            .len()
+            .checked_mul(
+                maximum
+                    .checked_add(1)
+                    .ok_or(InterpreterError::HostWorkRejected)?,
+            )
+            .and_then(|count| count.checked_mul(2))
+            .and_then(|count| count.checked_add(maximum))
+            .ok_or(InterpreterError::HostWorkRejected)?;
+        let scanned = comparisons
+            .checked_mul(32)
+            .ok_or(InterpreterError::HostWorkRejected)?;
+        let (_, backing) =
+            tree_backing::<[u8; 32], u64>(maximum).ok_or(InterpreterError::HostWorkRejected)?;
+        reserve_owned_backing(host, comparisons, scanned, backing)
+            .map_err(|_| InterpreterError::HostWorkRejected)?;
+    }
+    Ok(())
+}
+
+fn reserve_multiset_dominates(
+    left: &authority::ResourceMultiset<[u8; 32]>,
+    right: &authority::ResourceMultiset<[u8; 32]>,
+    host: Option<&HostWorkBudget>,
+) -> Result<(), InterpreterError> {
+    if let Some(host) = host {
+        let comparisons = right
+            .0
+            .len()
+            .checked_mul(
+                left.0
+                    .len()
+                    .checked_add(1)
+                    .ok_or(InterpreterError::HostWorkRejected)?,
+            )
+            .ok_or(InterpreterError::HostWorkRejected)?;
+        let scanned = comparisons
+            .checked_mul(32)
+            .ok_or(InterpreterError::HostWorkRejected)?;
+        reserve_native_backing(host, comparisons, scanned, 0)
+            .map_err(|_| InterpreterError::HostWorkRejected)?;
+    }
+    Ok(())
+}
+
+fn reserve_stack_rollback_work(
+    pending_ids: usize,
+    possible_committed_ids: usize,
+    folds: usize,
+    event_entries: usize,
+    debit_keys: usize,
+    host: Option<&HostWorkBudget>,
+) -> Result<(), InterpreterError> {
+    let Some(host) = host else { return Ok(()) };
+    reserve_tree_batch::<[u8; 32], ()>(0, pending_ids, Some(host))?;
+    reserve_tree_batch::<[u8; 32], ()>(0, possible_committed_ids, Some(host))?;
+    let lookups = pending_ids
+        .checked_mul(
+            pending_ids
+                .checked_add(1)
+                .ok_or(InterpreterError::HostWorkRejected)?,
+        )
+        .and_then(|count| {
+            possible_committed_ids
+                .checked_mul(possible_committed_ids.checked_add(1)?)
+                .and_then(|extra| count.checked_add(extra))
+        })
+        .and_then(|count| {
+            possible_committed_ids
+                .checked_mul(event_entries.checked_add(1)?)
+                .and_then(|extra| extra.checked_mul(2))
+                .and_then(|extra| count.checked_add(extra))
+        })
+        .ok_or(InterpreterError::HostWorkRejected)?;
+    let scanned = lookups
+        .checked_mul(32)
+        .ok_or(InterpreterError::HostWorkRejected)?;
+    reserve_native_backing(host, lookups, scanned, 0)
+        .map_err(|_| InterpreterError::HostWorkRejected)?;
+    let (tree_operations, tree_bytes) =
+        tree_backing::<[u8; 32], u64>(debit_keys).ok_or(InterpreterError::HostWorkRejected)?;
+    let comparisons = debit_keys
+        .checked_mul(
+            debit_keys
+                .checked_add(1)
+                .ok_or(InterpreterError::HostWorkRejected)?,
+        )
+        .and_then(|count| count.checked_mul(2))
+        .and_then(|count| count.checked_add(debit_keys))
+        .and_then(|count| count.checked_add(tree_operations))
+        .ok_or(InterpreterError::HostWorkRejected)?;
+    let operations = folds
+        .checked_mul(comparisons)
+        .ok_or(InterpreterError::HostWorkRejected)?;
+    let copied_bytes = operations
+        .checked_mul(32)
+        .ok_or(InterpreterError::HostWorkRejected)?;
+    let backing = folds
+        .checked_mul(tree_bytes)
+        .ok_or(InterpreterError::HostWorkRejected)?;
+    reserve_owned_backing(host, operations, copied_bytes, backing)
+        .map_err(|_| InterpreterError::HostWorkRejected)
+}
+
 impl RuntimeBudget {
     fn resolve_max_log_entries() -> usize { 1024 }
 
@@ -561,8 +941,8 @@ impl RuntimeBudget {
         if !self.has_comm_accounting_scope() || self.unmetered.load(Ordering::Acquire) != 0 {
             return Ok(());
         }
-        let canonical = authority::canonical_authority(cost_authority)
-            .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+        let host = self.native_host_work();
+        let canonical = canonical_authority_with_host(cost_authority, host.as_ref())?;
         let canonical = if canonical.regions.is_empty() {
             self.fallback_introduction_authority(identity, kind)?
         } else {
@@ -572,12 +952,24 @@ impl RuntimeBudget {
             .introduction_authorities
             .lock()
             .expect("introduction authority map");
+        reserve_registry_lookup::<([u8; 32], authority::AuthorityByteEventKind)>(
+            authorities.len(),
+            host.as_ref(),
+        )?;
         match authorities.get(&(identity, kind)) {
-            Some(existing) if existing == &canonical => Ok(()),
-            Some(_) => Err(InterpreterError::ReduceError(
-                authority::AuthorityError::EventIdentityConflict.to_string(),
-            )),
+            Some(existing) => {
+                inspect_authority(existing, host.as_ref())?;
+                inspect_authority(&canonical, host.as_ref())?;
+                if existing == &canonical {
+                    Ok(())
+                } else {
+                    Err(InterpreterError::ReduceError(
+                        authority::AuthorityError::EventIdentityConflict.to_string(),
+                    ))
+                }
+            }
             None => {
+                reserve_registry_insert(authorities.len(), host.as_ref())?;
                 authorities.insert((identity, kind), canonical);
                 Ok(())
             }
@@ -589,24 +981,38 @@ impl RuntimeBudget {
         identity: [u8; 32],
         kind: authority::AuthorityByteEventKind,
     ) -> Result<CostAuthority, InterpreterError> {
-        if let Some(authority) = self
+        let host = self.native_host_work();
+        let authorities = self
             .introduction_authorities
             .lock()
-            .expect("introduction authority map")
-            .get(&(identity, kind))
-            .cloned()
-        {
-            return Ok(authority);
+            .expect("introduction authority map");
+        reserve_registry_lookup::<([u8; 32], authority::AuthorityByteEventKind)>(
+            authorities.len(),
+            host.as_ref(),
+        )?;
+        if let Some(authority) = authorities.get(&(identity, kind)) {
+            reserve_authority_clone(authority, host.as_ref())?;
+            return Ok(authority.clone());
         }
+        drop(authorities);
         let fallback = self.fallback_introduction_authority(identity, kind)?;
         let mut authorities = self
             .introduction_authorities
             .lock()
             .expect("introduction authority map");
-        Ok(authorities
-            .entry((identity, kind))
-            .or_insert(fallback)
-            .clone())
+        reserve_registry_lookup::<([u8; 32], authority::AuthorityByteEventKind)>(
+            authorities.len(),
+            host.as_ref(),
+        )?;
+        if let Some(authority) = authorities.get(&(identity, kind)) {
+            reserve_authority_clone(authority, host.as_ref())?;
+            return Ok(authority.clone());
+        }
+        reserve_authority_clone(&fallback, host.as_ref())?;
+        reserve_registry_insert(authorities.len(), host.as_ref())?;
+        let result = fallback.clone();
+        authorities.insert((identity, kind), fallback);
+        Ok(result)
     }
 
     fn fallback_introduction_authority(
@@ -614,14 +1020,42 @@ impl RuntimeBudget {
         identity: [u8; 32],
         kind: authority::AuthorityByteEventKind,
     ) -> Result<CostAuthority, InterpreterError> {
-        let signature = authority::sig_to_cost_signature(&self.signature())
-            .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
-        let region = authority::cost_region(&signature, &identity, u32::from(kind.tag()))
-            .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
-        authority::canonical_authority(&CostAuthority {
-            regions: vec![region],
-        })
-        .map_err(|error| InterpreterError::ReduceError(error.to_string()))
+        let host = self.native_host_work();
+        let current_signature = self.signature.lock().expect("signature lock");
+        let signature = match host.as_ref() {
+            Some(host) => {
+                let backing = |operations, scanned, bytes| {
+                    reserve_native_backing(host, operations, scanned, bytes)
+                };
+                authority::sig_to_cost_signature_metered(&current_signature, &backing)
+                    .map_err(native_authority_error)?
+            }
+            None => authority::sig_to_cost_signature(&current_signature)
+                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?,
+        };
+        drop(current_signature);
+        let region = match host.as_ref() {
+            Some(host) => {
+                let backing = |operations, scanned, bytes| {
+                    reserve_native_backing(host, operations, scanned, bytes)
+                };
+                authority::cost_region_metered(
+                    &signature,
+                    &identity,
+                    u32::from(kind.tag()),
+                    &backing,
+                )
+                .map_err(native_authority_error)?
+            }
+            None => authority::cost_region(&signature, &identity, u32::from(kind.tag()))
+                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?,
+        };
+        canonical_authority_with_host(
+            &CostAuthority {
+                regions: vec![region],
+            },
+            host.as_ref(),
+        )
     }
 
     pub fn reserve_consume_introduction_identity(
@@ -676,8 +1110,10 @@ impl RuntimeBudget {
         if !self.has_comm_accounting_scope() || self.unmetered.load(Ordering::Acquire) != 0 {
             return Ok(());
         }
+        let host = self.native_host_work();
         let canonical_authority =
-            observation_construction::canonical_observation_authority(cost_authority)?;
+            canonical_observation_authority_with_host(cost_authority, host.as_ref())?;
+        reserve_observation_birth(host.as_ref())?;
         let observation = Arc::new(byte_receipts::ByteObservation {
             event_id: identity,
             kind: byte_kind,
@@ -688,10 +1124,7 @@ impl RuntimeBudget {
         let prepared = self.prepare_native_observation(&observation)?;
         if !persistent {
             let mut state = self.authority_state.lock().expect("authority state");
-            state
-                .byte_observations
-                .try_reserve(1)
-                .map_err(|_| InterpreterError::HostWorkRejected)?;
+            reserve_byte_row(&mut state.byte_observations, host.as_ref())?;
             self.reserve_observation_usage(
                 &mut state,
                 prepared.as_ref(),
@@ -708,6 +1141,7 @@ impl RuntimeBudget {
             .persistent_introductions
             .lock()
             .expect("persistent introduction set");
+        reserve_registry_lookup::<([u8; 32], BillableKind)>(introductions.len(), host.as_ref())?;
         if let Some(existing) = introductions.get(&key) {
             if prepared.is_some() {
                 let mut state = self.authority_state.lock().expect("authority state");
@@ -720,11 +1154,12 @@ impl RuntimeBudget {
             }
             return Ok(());
         }
+        reserve_tree_birth::<([u8; 32], BillableKind), Arc<byte_receipts::ByteObservation>>(
+            introductions.len(),
+            host.as_ref(),
+        )?;
         let mut state = self.authority_state.lock().expect("authority state");
-        state
-            .byte_observations
-            .try_reserve(1)
-            .map_err(|_| InterpreterError::HostWorkRejected)?;
+        reserve_byte_row(&mut state.byte_observations, host.as_ref())?;
         self.reserve_observation_usage(
             &mut state,
             prepared.as_ref(),
@@ -802,39 +1237,64 @@ impl RuntimeBudget {
                 authority::AuthorityError::MissingSignature.to_string(),
             ));
         }
-        let canonical_authority = authority::canonical_authority(cost_authority)
-            .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
-        if canonical_authority.regions.is_empty() {
-            return Err(InterpreterError::ReduceError(
-                authority::AuthorityError::MissingAuthority.to_string(),
-            ));
-        }
-        let demand = authority::authority_demand(&canonical_authority)
-            .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+        let host = self
+            .authority_state
+            .lock()
+            .expect("authority state")
+            .native
+            .as_ref()
+            .map(NativeRuntimeConfig::host_work);
+        let canonical_authority =
+            canonical_observation_authority_with_host(cost_authority, host.as_ref())?;
+        let demand = authority_demand_with_host(&canonical_authority, host.as_ref())?;
+        reserve_tree_batch::<[u8; 32], AuthorityRuntimeEvent>(0, cells.len(), host.as_ref())?;
         let mut events = BTreeMap::new();
         for cell_index in 0..cells.len() {
             let cell_index = u64::try_from(cell_index).map_err(|_| {
                 InterpreterError::ReduceError("cost-stack transfer index overflow".to_string())
             })?;
-            let identity = authority::stack_transfer_event_id(&produce_hash, cell_index);
+            let identity = stack_transfer_id_with_host(&produce_hash, cell_index, host.as_ref())?;
+            reserve_stack_transfer_id_for_rollback(host.as_ref())?;
+            reserve_registry_lookup::<[u8; 32]>(events.len(), host.as_ref())?;
+            reserve_authority_clone(&canonical_authority, host.as_ref())?;
+            reserve_multiset_clone(&demand, host.as_ref())?;
             events.insert(identity, AuthorityRuntimeEvent {
                 authority: canonical_authority.clone(),
                 debit: demand.clone(),
                 byte_observation: None,
             });
         }
-        let aggregate_demand = events
-            .values()
-            .try_fold(
-                authority::ResourceMultiset::default(),
-                |aggregate, event| aggregate.checked_add(&event.debit),
-            )
-            .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+        let mut aggregate_demand = authority::ResourceMultiset::default();
+        for event in events.values() {
+            reserve_multiset_add(&aggregate_demand, &event.debit, host.as_ref())?;
+            aggregate_demand = aggregate_demand
+                .checked_add(&event.debit)
+                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+        }
         let birth = authority::AuthorityStackBirth {
             produce_hash,
             cells,
         };
         let mut state = self.authority_state.lock().expect("authority state");
+        reserve_registry_lookup::<[u8; 32]>(
+            state
+                .stack_births
+                .len()
+                .checked_add(state.pending_stack_transfers.len())
+                .and_then(|count| count.checked_add(1))
+                .ok_or(InterpreterError::HostWorkRejected)?,
+            host.as_ref(),
+        )?;
+        let event_lookup_entries = state
+            .events
+            .len()
+            .checked_add(state.pending_stack_event_ids.len())
+            .and_then(|count| count.checked_add(state.pending_replay_events.len()))
+            .and_then(|count| count.checked_add(2))
+            .ok_or(InterpreterError::HostWorkRejected)?;
+        for _ in events.keys() {
+            reserve_registry_lookup::<[u8; 32]>(event_lookup_entries, host.as_ref())?;
+        }
         if state.stack_births.contains_key(&produce_hash)
             || state.pending_stack_transfers.contains_key(&produce_hash)
             || events.keys().any(|identity| {
@@ -847,11 +1307,31 @@ impl RuntimeBudget {
                 authority::AuthorityError::EventIdentityConflict.to_string(),
             ));
         }
+        reserve_multiset_add(&state.reserved, &aggregate_demand, host.as_ref())?;
         let next_reserved = state
             .reserved
             .checked_add(&aggregate_demand)
             .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+        if state.enforce_allocation {
+            reserve_multiset_dominates(&state.allocation, &next_reserved, host.as_ref())?;
+        }
         if state.enforce_allocation && !state.allocation.dominates(&next_reserved) {
+            reserve_tree_batch::<[u8; 32], CostAuthority>(
+                state.frontier.len(),
+                events.len(),
+                host.as_ref(),
+            )?;
+            for _ in events.keys() {
+                reserve_authority_clone(&canonical_authority, host.as_ref())?;
+                reserve_registry_lookup::<[u8; 32]>(
+                    state
+                        .frontier
+                        .len()
+                        .checked_add(events.len())
+                        .ok_or(InterpreterError::HostWorkRejected)?,
+                    host.as_ref(),
+                )?;
+            }
             for identity in events.keys() {
                 state
                     .frontier
@@ -859,6 +1339,132 @@ impl RuntimeBudget {
             }
             return Err(InterpreterError::OutOfPhlogistonsError);
         }
+        if let Some(host) = host.as_ref() {
+            let entries = state.pending_stack_transfers.len();
+            reserve_native_backing(
+                host,
+                entries,
+                entries
+                    .checked_mul(std::mem::size_of::<PendingAuthorityStackTransfer>())
+                    .ok_or(InterpreterError::HostWorkRejected)?,
+                0,
+            )
+            .map_err(|_| InterpreterError::HostWorkRejected)?;
+        }
+        let pending_events = state
+            .pending_stack_transfers
+            .values()
+            .try_fold(0_usize, |count, pending| {
+                count.checked_add(pending.events.len())
+            })
+            .ok_or(InterpreterError::HostWorkRejected)?;
+        let eventual_events = pending_events
+            .checked_add(events.len())
+            .ok_or(InterpreterError::HostWorkRejected)?;
+        if let Some(host) = host.as_ref() {
+            let entries = state.stack_births.len();
+            reserve_native_backing(
+                host,
+                entries,
+                entries
+                    .checked_mul(std::mem::size_of::<authority::AuthorityStackBirth>())
+                    .ok_or(InterpreterError::HostWorkRejected)?,
+                0,
+            )
+            .map_err(|_| InterpreterError::HostWorkRejected)?;
+        }
+        let committed_cells = state
+            .stack_births
+            .values()
+            .try_fold(0_usize, |count, birth| count.checked_add(birth.cells.len()))
+            .ok_or(InterpreterError::HostWorkRejected)?;
+        let pending_ids = state
+            .pending_stack_event_ids
+            .len()
+            .checked_add(events.len())
+            .ok_or(InterpreterError::HostWorkRejected)?;
+        let possible_committed_ids = committed_cells
+            .checked_add(pending_ids)
+            .ok_or(InterpreterError::HostWorkRejected)?;
+        let folds = state
+            .pending_stack_transfers
+            .len()
+            .checked_add(1)
+            .and_then(|count| count.checked_add(possible_committed_ids))
+            .and_then(|count| count.checked_add(4))
+            .ok_or(InterpreterError::HostWorkRejected)?;
+        reserve_stack_rollback_work(
+            pending_ids,
+            possible_committed_ids,
+            folds,
+            state
+                .events
+                .len()
+                .checked_add(eventual_events)
+                .ok_or(InterpreterError::HostWorkRejected)?,
+            next_reserved.0.len(),
+            host.as_ref(),
+        )?;
+        reserve_tree_batch::<[u8; 32], ()>(
+            state.pending_stack_event_ids.len(),
+            events.len(),
+            host.as_ref(),
+        )?;
+        reserve_tree_batch::<[u8; 32], AuthorityRuntimeEvent>(
+            state.events.len(),
+            eventual_events,
+            host.as_ref(),
+        )?;
+        reserve_tree_batch::<[u8; 32], authority::AuthorityStackBirth>(
+            state.stack_births.len(),
+            state
+                .pending_stack_transfers
+                .len()
+                .checked_add(1)
+                .ok_or(InterpreterError::HostWorkRejected)?,
+            host.as_ref(),
+        )?;
+        reserve_tree_birth::<[u8; 32], PendingAuthorityStackTransfer>(
+            state.pending_stack_transfers.len(),
+            host.as_ref(),
+        )?;
+        reserve_registry_lookup::<[u8; 32]>(state.pending_stack_transfers.len(), host.as_ref())?;
+        reserve_registry_lookup::<[u8; 32]>(
+            state
+                .stack_births
+                .len()
+                .checked_add(state.pending_stack_transfers.len())
+                .ok_or(InterpreterError::HostWorkRejected)?,
+            host.as_ref(),
+        )?;
+        for _ in events.keys() {
+            reserve_registry_lookup::<[u8; 32]>(
+                state
+                    .pending_stack_event_ids
+                    .len()
+                    .checked_add(events.len())
+                    .ok_or(InterpreterError::HostWorkRejected)?,
+                host.as_ref(),
+            )?;
+            reserve_registry_lookup::<[u8; 32]>(
+                state
+                    .events
+                    .len()
+                    .checked_add(eventual_events)
+                    .ok_or(InterpreterError::HostWorkRejected)?,
+                host.as_ref(),
+            )?;
+            reserve_registry_lookup::<[u8; 32]>(
+                state
+                    .pending_stack_event_ids
+                    .len()
+                    .checked_add(eventual_events)
+                    .ok_or(InterpreterError::HostWorkRejected)?,
+                host.as_ref(),
+            )?;
+        }
+        reserve_multiset_add(&next_reserved, &aggregate_demand, host.as_ref())?;
+        reserve_multiset_add(&next_reserved, &aggregate_demand, host.as_ref())?;
         state.pending_stack_event_ids.extend(events.keys().copied());
         state
             .pending_stack_transfers
@@ -981,11 +1587,13 @@ impl RuntimeBudget {
         if !self.has_comm_accounting_scope() || self.unmetered.load(Ordering::Acquire) != 0 {
             return Ok(());
         }
+        let host = self.native_host_work();
         let canonical_authority =
-            observation_construction::canonical_observation_authority(cost_authority)?;
-        let demand = authority::authority_demand(&canonical_authority)
-            .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+            canonical_observation_authority_with_host(cost_authority, host.as_ref())?;
+        let demand = authority_demand_with_host(&canonical_authority, host.as_ref())?;
         let legacy_amount = (comm_byte_cost > 0 && !demand.0.is_empty()).then_some(comm_byte_cost);
+        reserve_authority_clone(&canonical_authority, host.as_ref())?;
+        reserve_observation_birth(host.as_ref())?;
         let observation = Arc::new(byte_receipts::ByteObservation {
             event_id: identity,
             kind: authority::AuthorityByteEventKind::Comm,
@@ -995,6 +1603,16 @@ impl RuntimeBudget {
         });
         let prepared = self.prepare_native_observation(&observation)?;
         let mut state = self.authority_state.lock().expect("authority state");
+        reserve_registry_lookup::<[u8; 32]>(
+            state
+                .pending_stack_event_ids
+                .len()
+                .checked_add(state.pending_replay_events.len())
+                .and_then(|count| count.checked_add(state.events.len()))
+                .and_then(|count| count.checked_add(2))
+                .ok_or(InterpreterError::HostWorkRejected)?,
+            host.as_ref(),
+        )?;
         if state.pending_stack_event_ids.contains(&identity)
             || state.pending_replay_events.contains_key(&identity)
         {
@@ -1006,6 +1624,12 @@ impl RuntimeBudget {
             if prepared.is_some() {
                 return self.record_native_retry(&mut state, prepared.as_ref());
             }
+            inspect_authority(&existing.authority, host.as_ref())?;
+            inspect_authority(&canonical_authority, host.as_ref())?;
+            if let Some(row) = existing.byte_observation.as_ref() {
+                inspect_observation(row, host.as_ref())?;
+            }
+            inspect_observation(&observation, host.as_ref())?;
             if existing.authority != canonical_authority
                 || (measurement.is_some()
                     && !existing
@@ -1019,22 +1643,26 @@ impl RuntimeBudget {
             }
             return Ok(());
         }
+        reserve_multiset_add(&state.reserved, &demand, host.as_ref())?;
         let next_reserved = state
             .reserved
             .checked_add(&demand)
             .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
-        if state.enforce_allocation && !state.allocation.dominates(&next_reserved) {
-            state.frontier.insert(identity, canonical_authority);
-            return Err(InterpreterError::OutOfPhlogistonsError);
+        reserve_tree_birth::<[u8; 32], CostAuthority>(state.frontier.len(), host.as_ref())?;
+        if state.enforce_allocation {
+            reserve_multiset_dominates(&state.allocation, &next_reserved, host.as_ref())?;
+            if !state.allocation.dominates(&next_reserved) {
+                state.frontier.insert(identity, canonical_authority);
+                return Err(InterpreterError::OutOfPhlogistonsError);
+            }
         }
+        reserve_multiset_add(&state.realized, &demand, host.as_ref())?;
         let next_realized = state
             .realized
             .checked_add(&demand)
             .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
-        state
-            .byte_observations
-            .try_reserve(1)
-            .map_err(|_| InterpreterError::HostWorkRejected)?;
+        reserve_tree_birth::<[u8; 32], AuthorityRuntimeEvent>(state.events.len(), host.as_ref())?;
+        reserve_byte_row(&mut state.byte_observations, host.as_ref())?;
         if state.native.is_some() || !demand.0.is_empty() {
             let weight = if state.native.is_some() {
                 0
@@ -1762,6 +2390,18 @@ impl RuntimeBudget {
 
     pub fn signature(&self) -> Sig { self.signature.lock().expect("signature lock").clone() }
 
+    pub(crate) fn signature_with_host_work(
+        &self,
+        host: &HostWorkBudget,
+    ) -> Result<Sig, InterpreterError> {
+        let signature = self.signature.lock().expect("signature lock");
+        let backing =
+            |operations, scanned, bytes| reserve_owned_backing(host, operations, scanned, bytes);
+        shared_clone_backing::reserve(&*signature, &backing)
+            .map_err(|_| InterpreterError::HostWorkRejected)?;
+        Ok(signature.clone())
+    }
+
     pub fn deploy_id(&self) -> [u8; 32] { *self.deploy_id.lock().expect("deploy id lock") }
 
     pub fn set_unmetered(&self, unmetered: bool) {
@@ -2049,6 +2689,24 @@ pub enum Sig {
     /// on-chain in the `rho:system:capabilities` registry contract per
     /// Phase 3 §3.5 design.
     Lolly(Box<Sig>, Box<Sig>),
+}
+
+impl CloneBacking for Sig {
+    fn children<'a>(&'a self, walker: &mut Walker<'a>) -> Result<(), BackingError> {
+        match self {
+            Sig::Unit => Ok(()),
+            Sig::Ground(bytes) | Sig::Quote(bytes) => walker.push(bytes),
+            Sig::And(left, right)
+            | Sig::Plus(left, right)
+            | Sig::With(left, right)
+            | Sig::Lolly(left, right) => {
+                walker.push(left)?;
+                walker.push(right)
+            }
+            Sig::Threshold { members, .. } => walker.push(members),
+            Sig::Bang(inner) | Sig::WhyNot(inner) => walker.push(inner),
+        }
+    }
 }
 
 /// Derive the envelope `Sig` of a SINGLE-signer deploy from its raw wire
@@ -2759,6 +3417,31 @@ mod runtime_budget_tests {
         CostAuthority {
             regions: vec![authority::cost_region(&signature, b"test", 0).unwrap()],
         }
+    }
+
+    #[test]
+    fn metered_signature_copy_preserves_value_and_rejects_before_clone() {
+        use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
+
+        let budget = RuntimeBudget::new(Cost::unsafe_max());
+        let signature = Sig::And(
+            Box::new(Sig::Ground(vec![11; 37])),
+            Box::new(Sig::Quote(vec![23; 41])),
+        );
+        budget.set_deploy_id_funded([19; 32], signature.clone());
+        let unlimited = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)));
+        assert_eq!(
+            budget.signature_with_host_work(&unlimited).unwrap(),
+            signature
+        );
+        let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
+        limits.set(HostWorkDimension::SearchStateBytes, HostWorkLimit::new(0));
+        let limited = HostWorkBudget::new(limits);
+        assert!(matches!(
+            budget.signature_with_host_work(&limited),
+            Err(InterpreterError::HostWorkRejected)
+        ));
+        assert_eq!(budget.signature(), signature);
     }
 
     /// The runtime reconciliation equals its extracted pure walk over the same

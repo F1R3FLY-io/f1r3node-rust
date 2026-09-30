@@ -1,6 +1,12 @@
 // See models/src/main/scala/coop/rchain/models/rholang/sorter/ScoreTree.scala
 
+use std::cmp::Ordering;
+use std::mem::size_of;
+
+use shared::rust::clone_backing::BackingError;
 use shared::rust::ByteString;
+
+use super::metered::SorterMeter;
 
 /**
  * Sorts the insides of the Par and ESet/EMap of the rholangADT
@@ -98,6 +104,27 @@ impl ScoreAtom {
 }
 
 impl<T> Tree<T> {
+    pub fn create_node_from_i64s_metered(
+        children: &[i64],
+        meter: &SorterMeter<'_>,
+    ) -> Result<Tree<ScoreAtom>, BackingError> {
+        let mut result = meter.vec(children.len())?;
+        for value in children {
+            result.push(Tree::<ScoreAtom>::create_leaf_from_i64(*value));
+        }
+        Ok(Tree::Node(result))
+    }
+
+    pub fn create_node_from_i32_metered(
+        left: i32,
+        right: Vec<Tree<ScoreAtom>>,
+        meter: &SorterMeter<'_>,
+    ) -> Result<Tree<ScoreAtom>, BackingError> {
+        let mut result = meter.vec(right.len().checked_add(1).ok_or(BackingError::Overflow)?)?;
+        result.push(Tree::<ScoreAtom>::create_leaf_from_i64(i64::from(left)));
+        result.extend(right);
+        Ok(Tree::Node(result))
+    }
     pub fn create_leaf_from_i64(item: i64) -> Tree<ScoreAtom> {
         Tree::Leaf(ScoreAtom::create_from_i64(item))
     }
@@ -186,6 +213,169 @@ impl<T: Clone> ScoredTerm<T> {
  *
  * The general order is ground, vars, arithmetic, comparisons, logical, and then others
  */
+impl<T> ScoredTerm<T> {
+    pub fn sort_vec_metered(
+        scored_terms: &mut Vec<ScoredTerm<T>>,
+        meter: &SorterMeter<'_>,
+    ) -> Result<(), BackingError> {
+        let len = scored_terms.len();
+        let mut indices = meter.vec(len)?;
+        indices.extend(0..len);
+        for start in (0..len / 2).rev() {
+            sift_down(&mut indices, start, len, scored_terms, meter)?;
+        }
+        for end in (1..len).rev() {
+            meter.reserve(1, size_of::<usize>() * 2, 0)?;
+            indices.swap(0, end);
+            sift_down(&mut indices, 0, end, scored_terms, meter)?;
+        }
+        let mut slots = meter.vec(len)?;
+        let scanned = len
+            .checked_mul(size_of::<ScoredTerm<T>>())
+            .ok_or(BackingError::Overflow)?;
+        meter.reserve(len, scanned, 0)?;
+        slots.extend(scored_terms.drain(..).map(Some));
+        for index in indices {
+            scored_terms.push(slots[index].take().ok_or(BackingError::Rejected)?);
+        }
+        Ok(())
+    }
+}
+
+fn sift_down<T>(
+    indices: &mut [usize],
+    mut root: usize,
+    end: usize,
+    scored_terms: &[ScoredTerm<T>],
+    meter: &SorterMeter<'_>,
+) -> Result<(), BackingError> {
+    while let Some(left) = root.checked_mul(2).and_then(|value| value.checked_add(1)) {
+        meter.reserve(1, size_of::<usize>() * 3, 0)?;
+        if left >= end {
+            break;
+        }
+        let mut child = left;
+        if left + 1 < end
+            && compare_index(scored_terms, indices[left], indices[left + 1], meter)?
+                == Ordering::Less
+        {
+            child = left + 1;
+        }
+        if compare_index(scored_terms, indices[root], indices[child], meter)? != Ordering::Less {
+            break;
+        }
+        indices.swap(root, child);
+        root = child;
+    }
+    Ok(())
+}
+
+fn compare_index<T>(
+    scored_terms: &[ScoredTerm<T>],
+    left: usize,
+    right: usize,
+    meter: &SorterMeter<'_>,
+) -> Result<Ordering, BackingError> {
+    let order =
+        compare_score_metered(&scored_terms[left].score, &scored_terms[right].score, meter)?;
+    Ok(if order == Ordering::Equal {
+        left.cmp(&right)
+    } else {
+        order
+    })
+}
+
+fn compare_score_metered(
+    left: &Tree<ScoreAtom>,
+    right: &Tree<ScoreAtom>,
+    meter: &SorterMeter<'_>,
+) -> Result<Ordering, BackingError> {
+    struct Frame<'a> {
+        left: &'a [Tree<ScoreAtom>],
+        right: &'a [Tree<ScoreAtom>],
+        index: usize,
+    }
+
+    let mut frames = Vec::new();
+    meter.push(&mut frames, Frame {
+        left: std::slice::from_ref(left),
+        right: std::slice::from_ref(right),
+        index: 0,
+    })?;
+    while let Some(frame) = frames.last_mut() {
+        meter.reserve(1, size_of::<Tree<ScoreAtom>>() * 2, 0)?;
+        let left = frame.left.get(frame.index);
+        let right = frame.right.get(frame.index);
+        match (left, right) {
+            (None, None) => {
+                frames.pop();
+            }
+            (None, Some(_)) => return Ok(Ordering::Less),
+            (Some(_), None) => return Ok(Ordering::Greater),
+            (Some(left), Some(right)) => {
+                frame.index += 1;
+                match (left, right) {
+                    (Tree::Leaf(left), Tree::Leaf(right)) => {
+                        let order = compare_atom_metered(left, right, meter)?;
+                        if order != Ordering::Equal {
+                            return Ok(order);
+                        }
+                    }
+                    (Tree::Leaf(_), Tree::Node(_)) => return Ok(Ordering::Less),
+                    (Tree::Node(_), Tree::Leaf(_)) => return Ok(Ordering::Greater),
+                    (Tree::Node(left), Tree::Node(right)) => {
+                        meter.push(&mut frames, Frame {
+                            left,
+                            right,
+                            index: 0,
+                        })?;
+                    }
+                }
+            }
+        }
+    }
+    Ok(Ordering::Equal)
+}
+
+fn compare_atom_metered(
+    left: &ScoreAtom,
+    right: &ScoreAtom,
+    meter: &SorterMeter<'_>,
+) -> Result<Ordering, BackingError> {
+    match (&left.value, &right.value) {
+        (TaggedAtom::IntAtom(left), TaggedAtom::IntAtom(right)) => {
+            meter.reserve(1, size_of::<i64>() * 2, 0)?;
+            Ok(left.cmp(right))
+        }
+        (TaggedAtom::IntAtom(_), _) => Ok(Ordering::Less),
+        (_, TaggedAtom::IntAtom(_)) => Ok(Ordering::Greater),
+        (TaggedAtom::StringAtom(left), TaggedAtom::StringAtom(right)) => {
+            compare_bytes_metered(left.as_bytes(), right.as_bytes(), meter)
+        }
+        (TaggedAtom::StringAtom(_), _) => Ok(Ordering::Less),
+        (_, TaggedAtom::StringAtom(_)) => Ok(Ordering::Greater),
+        (TaggedAtom::BytesAtom(left), TaggedAtom::BytesAtom(right)) => {
+            compare_bytes_metered(left, right, meter)
+        }
+    }
+}
+
+fn compare_bytes_metered(
+    left: &[u8],
+    right: &[u8],
+    meter: &SorterMeter<'_>,
+) -> Result<Ordering, BackingError> {
+    for (left, right) in left.iter().zip(right) {
+        meter.reserve(1, 2, 0)?;
+        let order = left.cmp(right);
+        if order != Ordering::Equal {
+            return Ok(order);
+        }
+    }
+    meter.reserve(1, size_of::<usize>() * 2, 0)?;
+    Ok(left.len().cmp(&right.len()))
+}
+
 pub struct Score;
 
 impl Score {
@@ -277,4 +467,43 @@ impl Score {
     pub const CONNECTIVE_BYTEARRAY: i32 = 408;
 
     pub const PAR: i32 = 999;
+}
+
+#[cfg(test)]
+mod metered_tests {
+    use super::*;
+
+    #[test]
+    fn metered_sort_preserves_score_order_and_equal_score_input_order() {
+        let mut ordinary = vec![
+            ScoredTerm {
+                term: 3,
+                score: Tree::<ScoreAtom>::create_leaf_from_i64(2),
+            },
+            ScoredTerm {
+                term: 2,
+                score: Tree::<ScoreAtom>::create_leaf_from_i64(1),
+            },
+            ScoredTerm {
+                term: 1,
+                score: Tree::<ScoreAtom>::create_leaf_from_i64(1),
+            },
+            ScoredTerm {
+                term: 4,
+                score: Tree::<ScoreAtom>::create_leaf_from_i64(3),
+            },
+        ];
+        let mut metered = ordinary.clone();
+        ScoredTerm::sort_vec(&mut ordinary);
+        let backing = |_: usize, _: usize, _: usize| Ok(());
+        ScoredTerm::sort_vec_metered(&mut metered, &SorterMeter::new(&backing)).unwrap();
+        assert_eq!(metered, ordinary);
+        assert_eq!(
+            metered
+                .into_iter()
+                .map(|item| item.term)
+                .collect::<Vec<_>>(),
+            [2, 1, 3, 4]
+        );
+    }
 }

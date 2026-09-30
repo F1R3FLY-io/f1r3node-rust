@@ -1,3 +1,5 @@
+#![cfg(not(loom))]
+
 #[path = "../../../../casper/src/rust/blocks/block_processing_queue/startup_completion.rs"]
 mod startup_completion;
 #[path = "../../../../casper/src/rust/blocks/block_processing_queue/startup_snapshot_lease.rs"]

@@ -4,8 +4,13 @@ use rspace_plus_plus::rspace::trace::event::{Consume, Produce};
 use super::*;
 use crate::rust::interpreter::accounting::observation_construction;
 
-fn construction_error(error: impl std::fmt::Display) -> NativeReplayError {
-    NativeReplayError::Construction(error.to_string())
+fn construction_error(error: RSpaceError) -> NativeReplayError {
+    match error {
+        RSpaceError::HostWorkRejected => {
+            NativeReplayError::Host(InterpreterError::HostWorkRejected)
+        }
+        other => NativeReplayError::Construction(other.to_string()),
+    }
 }
 
 impl NativeReplayReservation {
@@ -16,21 +21,15 @@ impl NativeReplayReservation {
         if self.stage != ObservationStage::Introduction {
             return Err(NativeReplayError::Stage);
         }
-        let channels = match &self.operation().source {
-            NativeOperationSource::Produce(_) => 1,
-            NativeOperationSource::Consume(source) => source.channels.len(),
+        let meter = |operations, scanned, backing| {
+            reserve_source(&self.replay.inner.host, operations, scanned, backing)
         };
-        work(
-            &self.replay.inner.host,
-            HostWorkDimension::VerificationOperations,
-            channels.saturating_add(1),
-        )?;
-        work(
-            &self.replay.inner.host,
-            HostWorkDimension::VerificationBytes,
-            channels.saturating_mul(32).saturating_add(64),
-        )?;
-        if !self.operation().source.matches(source) {
+        if !self
+            .operation()
+            .source
+            .metered_matches(source, &meter)
+            .map_err(|error| NativeReplayError::Host(error.into()))?
+        {
             return Err(NativeReplayError::Source);
         }
         Ok(())
@@ -44,14 +43,19 @@ impl NativeReplayReservation {
         introduction_authority: &CostAuthority,
     ) -> Result<NativeBudgetReplayDecision, NativeReplayError> {
         self.authenticate_introduction_source(RSpaceOperationSource::Produce(source))?;
-        let observed = observation_construction::produce_introduction(
+        let meter = |operations, scanned, backing| {
+            reserve_source(&self.replay.inner.host, operations, scanned, backing)
+        };
+        let observed = observation_construction::produce_introduction_metered(
             source,
             channel,
             data,
             introduction_authority,
+            &meter,
         )
         .map_err(construction_error)?
-        .into_native()?;
+        .into_native_metered(&meter)
+        .map_err(construction_error)?;
         self.observe_introduction(&observed)
     }
 
@@ -73,25 +77,30 @@ impl NativeReplayReservation {
         work(
             &self.replay.inner.host,
             HostWorkDimension::VerificationOperations,
-            peeks.len().saturating_add(1),
+            checked_add(peeks.len(), 1)?,
         )?;
         work(
             &self.replay.inner.host,
             HostWorkDimension::VerificationBytes,
-            peeks.len().saturating_mul(size_of::<i32>()),
+            checked_mul(peeks.len(), size_of::<i32>())?,
         )?;
         if peeks.len() != expected.len() || !peeks.iter().eq(expected.iter()) {
             return Err(NativeReplayError::Source);
         }
-        let observed = observation_construction::consume_introduction(
+        let meter = |operations, scanned, backing| {
+            reserve_source(&self.replay.inner.host, operations, scanned, backing)
+        };
+        let observed = observation_construction::consume_introduction_metered(
             source,
             channels,
             patterns,
             continuation,
             introduction_authority,
+            &meter,
         )
         .map_err(construction_error)?
-        .into_native()?;
+        .into_native_metered(&meter)
+        .map_err(construction_error)?;
         self.observe_introduction(&observed)
     }
 
@@ -103,10 +112,19 @@ impl NativeReplayReservation {
         data: &[(&ListParWithRandom, bool)],
     ) -> Result<NativeBudgetReplayDecision, NativeReplayError> {
         self.authenticate_comm_source(source)?;
-        let observed =
-            observation_construction::comm(source, continuation, continuation_persistent, data)
-                .map_err(construction_error)?
-                .into_native()?;
+        let meter = |operations, scanned, backing| {
+            reserve_source(&self.replay.inner.host, operations, scanned, backing)
+        };
+        let observed = observation_construction::comm_metered(
+            source,
+            continuation,
+            continuation_persistent,
+            data,
+            &meter,
+        )
+        .map_err(construction_error)?
+        .into_native_metered(&meter)
+        .map_err(construction_error)?;
         let link = self
             .operation()
             .comm

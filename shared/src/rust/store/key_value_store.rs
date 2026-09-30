@@ -96,6 +96,8 @@ pub trait KeyValueStore: Send + Sync + 'static {
         ))
     }
 
+    fn supports_strict_atomic_mutate(&self) -> bool { false }
+
     fn print_store(&self) -> Result<(), KvStoreError>;
 
     /// Check if the store contains any entries. O(1) time and space.

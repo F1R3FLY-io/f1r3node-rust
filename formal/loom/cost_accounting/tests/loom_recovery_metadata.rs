@@ -10,7 +10,7 @@ fn pending_publication_and_admission(keep_guard: bool, lose_metadata: bool) {
     model.max_branches = 1000;
     model.max_permutations = None;
     model.max_duration = None;
-    model.preemption_bound = None;
+    model.preemption_bound = Some(model.preemption_bound.unwrap_or(3));
     model.checkpoint_file = None;
     model.check(move || {
         let dag = Arc::new(RwLock::new((false, false)));

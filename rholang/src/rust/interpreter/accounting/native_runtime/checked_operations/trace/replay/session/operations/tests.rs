@@ -395,8 +395,8 @@ struct OverlappingMatcher {
     changed: std::sync::Condvar,
 }
 
-impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for OverlappingMatcher {
-    fn get(&self, pattern: &BindPattern, data: &ListParWithRandom) -> Option<ListParWithRandom> {
+impl OverlappingMatcher {
+    fn rendezvous(&self) {
         let mut arrivals = self.arrivals.lock().unwrap();
         *arrivals += 1;
         self.changed.notify_all();
@@ -407,7 +407,32 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for OverlappingMa
             })
             .unwrap();
         assert!(*arrivals >= 2, "independent matchers could not overlap");
+    }
+}
+
+impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for OverlappingMatcher {
+    fn get(&self, pattern: &BindPattern, data: &ListParWithRandom) -> Option<ListParWithRandom> {
+        self.rendezvous();
         Matcher.get(pattern, data)
+    }
+
+    fn get_metered(
+        &self,
+        pattern: &BindPattern,
+        data: &ListParWithRandom,
+        meter: &(dyn rspace_plus_plus::rspace::hashing::native_source::SourceMeter + Send + Sync),
+    ) -> Result<Option<ListParWithRandom>, RSpaceError> {
+        self.rendezvous();
+        Matcher.get_metered(pattern, data, meter)
+    }
+
+    fn check_commit_metered(
+        &self,
+        continuation: &TaggedContinuation,
+        matched: &[ListParWithRandom],
+        meter: &(dyn rspace_plus_plus::rspace::hashing::native_source::SourceMeter + Send + Sync),
+    ) -> Result<bool, RSpaceError> {
+        Matcher.check_commit_metered(continuation, matched, meter)
     }
 }
 
@@ -651,6 +676,24 @@ struct SharedMatcher(Arc<OverlappingMatcher>);
 impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for SharedMatcher {
     fn get(&self, pattern: &BindPattern, data: &ListParWithRandom) -> Option<ListParWithRandom> {
         self.0.get(pattern, data)
+    }
+
+    fn get_metered(
+        &self,
+        pattern: &BindPattern,
+        data: &ListParWithRandom,
+        meter: &(dyn rspace_plus_plus::rspace::hashing::native_source::SourceMeter + Send + Sync),
+    ) -> Result<Option<ListParWithRandom>, RSpaceError> {
+        self.0.get_metered(pattern, data, meter)
+    }
+
+    fn check_commit_metered(
+        &self,
+        continuation: &TaggedContinuation,
+        matched: &[ListParWithRandom],
+        meter: &(dyn rspace_plus_plus::rspace::hashing::native_source::SourceMeter + Send + Sync),
+    ) -> Result<bool, RSpaceError> {
+        self.0.check_commit_metered(continuation, matched, meter)
     }
 }
 

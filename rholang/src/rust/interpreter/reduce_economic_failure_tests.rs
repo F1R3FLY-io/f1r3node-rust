@@ -1,3 +1,5 @@
+use models::rhoapi::cost_signature::Value as CostSignatureValue;
+use models::rhoapi::CostSignature;
 use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
 use rspace_plus_plus::rspace::rspace::RSpace;
 
@@ -8,6 +10,42 @@ use crate::rust::interpreter::accounting::phlo_execution::PhloFailure;
 use crate::rust::interpreter::rho_runtime::RhoRuntime;
 use crate::rust::interpreter::test_utils::persistent_store_tester::create_test_space;
 use crate::rust::interpreter::test_utils::resources::with_runtime;
+
+#[tokio::test]
+async fn native_signed_term_respects_host_rejection_and_preserves_nil_execution() {
+    let (_, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let term = CostSignedTerm {
+        body: Some(Par::default()),
+        signature: Some(CostSignature {
+            value: Some(CostSignatureValue::Ground(vec![1, 2, 3])),
+        }),
+    };
+    for (limit, succeeds) in [(0, false), (1_000_000, true)] {
+        let host = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(limit)));
+        let result = deterministic_reduction::root_with_host_work(
+            reducer.space.clone(),
+            reducer.metering.budget(),
+            reducer.reduction_coordinator.clone(),
+            Some(host.clone()),
+            reducer.eval_cost_signed_term(
+                &term,
+                &Env::new(),
+                Blake2b512Random::create_from_length(128),
+                &CostAuthority::default(),
+            ),
+        )
+        .await;
+        if succeeds {
+            assert!(result.is_ok());
+            assert!(host.report().rejection.is_none());
+        } else {
+            assert!(matches!(result, Err(InterpreterError::HostWorkRejected)));
+            assert!(host.report().rejection.is_some());
+        }
+    }
+}
 
 #[tokio::test]
 async fn economic_observation_preserves_fault_hidden_by_legacy_abort() {

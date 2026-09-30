@@ -1,20 +1,26 @@
 // See rspace/src/main/scala/coop/rchain/rspace/history/RadixTree.scala
 
 use std::collections::BTreeMap;
+use std::mem::size_of;
 use std::sync::Arc;
 
 use dashmap::DashMap;
 use itertools::Itertools;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+use shared::rust::collection_backing::hash_backing;
 use shared::rust::store::key_value_store::KeyValueStore;
 use shared::rust::{Byte, ByteVector};
 
 use super::history_action::{DeleteAction, HistoryAction, InsertAction};
-use crate::rspace::errors::RadixTreeError;
+use crate::rspace::errors::{RSpaceError, RadixTreeError};
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use crate::rspace::hashing::native_source::SourceMeter;
 use crate::rspace::history::Either;
 use crate::rspace::history::history_action::HistoryActionTrait;
+
+mod native;
+pub(crate) use native::NativeRadixBuilder;
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Debug)]
 pub enum Item {
@@ -247,26 +253,19 @@ pub fn decode(bv: ByteVector) -> Node {
 }
 
 fn common_prefix(b1: ByteVector, b2: ByteVector) -> (ByteVector, ByteVector, ByteVector) {
-    fn go(
-        common: ByteVector,
-        l: ByteVector,
-        r: ByteVector,
-    ) -> (ByteVector, ByteVector, ByteVector) {
-        if r.is_empty() || l.is_empty() {
-            (common, l, r)
-        } else {
-            let (l_head, l_tail) = l.split_first().unwrap();
-            let (r_head, r_tail) = r.split_first().unwrap();
-            if l_head == r_head {
-                let mut new_common = common.clone();
-                new_common.push(*l_head);
-                go(new_common, l_tail.to_vec(), r_tail.to_vec())
-            } else {
-                (common, l, r)
-            }
-        }
+    let length = b1
+        .iter()
+        .zip(&b2)
+        .take_while(|(left, right)| left == right)
+        .count();
+    if length == 0 {
+        return (Vec::new(), b1, b2);
     }
-    go(Vec::new(), b1, b2)
+    let mut common = b1;
+    let left = common.split_off(length);
+    let mut right = b2;
+    let right = right.split_off(length);
+    (common, left, right)
 }
 
 pub fn hash_node(node: &Node) -> (ByteVector, ByteVector) {
@@ -967,12 +966,90 @@ impl RadixTreeImpl {
         node_bytes_hash
     }
 
+    pub(crate) fn save_native_root(
+        &self,
+        node: &Node,
+        meter: &dyn SourceMeter,
+    ) -> Result<ByteVector, RSpaceError> {
+        let node_scan = node
+            .len()
+            .checked_mul(size_of::<Item>())
+            .ok_or(RSpaceError::HostWorkRejected)?;
+        meter.reserve(1, node_scan, 0)?;
+        let mut encoded = 0usize;
+        let mut payload_scan = 0usize;
+        for item in node {
+            let (prefix, payload) = match item {
+                Item::EmptyItem => continue,
+                Item::Leaf { prefix, value } => (prefix, value),
+                Item::NodePtr { prefix, ptr } => (prefix, ptr),
+            };
+            if prefix.len() > 127 || payload.len() != DEF_SIZE {
+                return Err(RadixTreeError::SerializationError(
+                    "invalid native radix node".to_owned(),
+                )
+                .into());
+            }
+            encoded = encoded
+                .checked_add(HEAD_SIZE)
+                .and_then(|length| length.checked_add(prefix.len()))
+                .and_then(|length| length.checked_add(DEF_SIZE))
+                .ok_or(RSpaceError::HostWorkRejected)?;
+            payload_scan = payload_scan
+                .checked_add(prefix.len())
+                .and_then(|length| length.checked_add(DEF_SIZE))
+                .ok_or(RSpaceError::HostWorkRejected)?;
+        }
+        let hash_scan = node_scan
+            .checked_add(payload_scan)
+            .and_then(|length| length.checked_add(encoded))
+            .ok_or(RSpaceError::HostWorkRejected)?;
+        let count = self.cache_w.len();
+        let next = count.checked_add(1).ok_or(RSpaceError::HostWorkRejected)?;
+        let (old_ops, old_backing) =
+            hash_backing::<ByteVector, ByteVector>(count).ok_or(RSpaceError::HostWorkRejected)?;
+        let (new_ops, new_backing) =
+            hash_backing::<ByteVector, ByteVector>(next).ok_or(RSpaceError::HostWorkRejected)?;
+        let backing = encoded
+            .checked_add(3 * DEF_SIZE)
+            .and_then(|length| length.checked_add(size_of::<(ByteVector, ByteVector)>()))
+            .and_then(|length| length.checked_add(new_backing.checked_sub(old_backing)?))
+            .ok_or(RSpaceError::HostWorkRejected)?;
+        meter.reserve(
+            node.len()
+                .checked_add(1)
+                .and_then(|ops| ops.checked_add(new_ops.checked_sub(old_ops)?))
+                .ok_or(RSpaceError::HostWorkRejected)?,
+            hash_scan,
+            backing,
+        )?;
+        let (key, bytes) = hash_node(node);
+        if let Some(existing) = self.cache_r.get(&key) {
+            meter.reserve(
+                1,
+                node_scan
+                    .checked_add(payload_scan)
+                    .ok_or(RSpaceError::HostWorkRejected)?,
+                0,
+            )?;
+            if existing.value().as_ref() != node {
+                return Err(RadixTreeError::CollisionError(format!(
+                    "Radix Tree - Collision in cache: record with key = {} has already existed.",
+                    hex::encode(&key)
+                ))
+                .into());
+            }
+        }
+        self.cache_w.insert(key.clone(), bytes);
+        Ok(key)
+    }
+
     /**
      * Save all [[cacheW]] to [[store]]
      *
      * If detected collision with older KVDB data - execute Exception
      */
-    pub fn commit(&self) -> Result<(), RadixTreeError> {
+    pub fn prepare_commit(&self) -> Result<Vec<(ByteVector, ByteVector)>, RadixTreeError> {
         fn collision_panic(collisions: Vec<(ByteVector, ByteVector)>) -> RadixTreeError {
             RadixTreeError::CollisionError(format!(
                 "{} collisions in KVDB (first collision with key = {}.",
@@ -1028,12 +1105,121 @@ impl RadixTreeImpl {
             .map(|(kv, _)| kv)
             .collect();
 
-        let serialized_kv_absent = kv_absent
-            .into_iter()
-            .map(|(key, value)| (key, value))
-            .collect();
+        Ok(kv_absent)
+    }
 
-        self.store.put(serialized_kv_absent)?;
+    pub(crate) fn prepare_native_commit(
+        &self,
+        meter: &dyn SourceMeter,
+    ) -> Result<Vec<(ByteVector, ByteVector)>, RSpaceError> {
+        let count = self.cache_w.len();
+        let shards = self.cache_w.shards().len();
+        let guard_bytes = size_of::<dashmap::RwLockReadGuard<'_, ()>>()
+            .checked_add(2 * size_of::<usize>())
+            .and_then(|bytes| {
+                bytes.checked_add(2 * std::mem::align_of::<dashmap::RwLockReadGuard<'_, ()>>())
+            })
+            .and_then(|bytes| bytes.checked_mul(shards))
+            .ok_or(RSpaceError::HostWorkRejected)?;
+        meter.reserve(shards, 0, guard_bytes)?;
+        let backing = count
+            .checked_mul(size_of::<(ByteVector, ByteVector)>())
+            .ok_or(RSpaceError::HostWorkRejected)?;
+        meter.reserve(count.checked_add(1).ok_or(RSpaceError::HostWorkRejected)?, 0, backing)?;
+        let mut writes = Vec::new();
+        writes
+            .try_reserve_exact(count)
+            .map_err(|_| RSpaceError::HostWorkRejected)?;
+        for entry in self.cache_w.iter() {
+            let key = entry.key();
+            let value = entry.value();
+            meter.reserve(1, key.len(), 0)?;
+            let mut present = false;
+            let mut collision = false;
+            let mut rejected = None;
+            self.store.with_value(key, &mut |existing| {
+                if let Some(existing) = existing {
+                    let scanned = existing
+                        .len()
+                        .checked_add(value.len())
+                        .ok_or(RSpaceError::HostWorkRejected);
+                    match scanned.and_then(|scanned| meter.reserve(1, scanned, 0)) {
+                        Ok(()) => {
+                            present = true;
+                            collision = existing != value.as_slice();
+                        }
+                        Err(error) => rejected = Some(error),
+                    }
+                } else if let Err(error) = meter.reserve(1, 0, 0) {
+                    rejected = Some(error);
+                }
+                Ok(())
+            })?;
+            if let Some(error) = rejected {
+                return Err(error);
+            }
+            if collision {
+                let diagnostic = key
+                    .len()
+                    .checked_mul(2)
+                    .and_then(|length| length.checked_add(80))
+                    .ok_or(RSpaceError::HostWorkRejected)?;
+                meter.reserve(1, key.len(), diagnostic)?;
+                return Err(RadixTreeError::CollisionError(format!(
+                    "1 collisions in KVDB (first collision with key = {}.",
+                    hex::encode(key)
+                ))
+                .into());
+            }
+            if !present {
+                let bytes = key
+                    .len()
+                    .checked_add(value.len())
+                    .ok_or(RSpaceError::HostWorkRejected)?;
+                meter.reserve(2, bytes, bytes)?;
+                writes.push((key.clone(), value.clone()));
+            }
+        }
+        let written_bytes = writes.iter().try_fold(0usize, |total, (key, value)| {
+            total.checked_add(key.len())?.checked_add(value.len())
+        });
+        meter.reserve(1, written_bytes.ok_or(RSpaceError::HostWorkRejected)?, 0)?;
+        Ok(writes)
+    }
+
+    pub(crate) fn reserve_native_new(
+        &self,
+        meter: &dyn SourceMeter,
+        shared: bool,
+    ) -> Result<(), RSpaceError> {
+        let shards = self
+            .cache_r
+            .shards()
+            .len()
+            .checked_add(self.cache_w.shards().len())
+            .ok_or(RSpaceError::HostWorkRejected)?;
+        let arrays = std::mem::size_of_val(self.cache_r.shards())
+            .checked_add(std::mem::size_of_val(self.cache_w.shards()))
+            .ok_or(RSpaceError::HostWorkRejected)?;
+        let arc = if shared {
+            size_of::<RadixTreeImpl>()
+                .checked_add(2 * size_of::<usize>())
+                .and_then(|bytes| bytes.checked_add(2 * std::mem::align_of::<RadixTreeImpl>()))
+                .ok_or(RSpaceError::HostWorkRejected)?
+        } else {
+            0
+        };
+        meter.reserve(
+            shards.checked_add(1).ok_or(RSpaceError::HostWorkRejected)?,
+            0,
+            arrays
+                .checked_add(arc)
+                .ok_or(RSpaceError::HostWorkRejected)?,
+        )
+    }
+
+    pub fn commit(&self) -> Result<(), RadixTreeError> {
+        self.store.put(self.prepare_commit()?)?;
         Ok(())
     }
 
@@ -1177,58 +1363,53 @@ impl RadixTreeImpl {
      */
     fn save_node_and_create_item(&self, node: Node, prefix: ByteVector, compaction: bool) -> Item {
         if compaction {
-            let non_empty_items: Vec<Item> = node
-                .clone()
-                .into_iter()
-                .filter(|item| *item != Item::EmptyItem)
-                .take(2)
-                .collect();
-
-            match non_empty_items.len() {
-                0 => Item::EmptyItem, // All items are empty.
-                1 => {
-                    // Only one item is not empty - merge child and parent nodes.
-                    let idx_item = node
-                        .iter()
-                        .position(|item| *item == non_empty_items[0])
-                        .unwrap();
-
-                    match &non_empty_items[0] {
-                        Item::EmptyItem => Item::EmptyItem,
+            let mut non_empty_items = node
+                .iter()
+                .enumerate()
+                .filter(|(_, item)| **item != Item::EmptyItem);
+            match (non_empty_items.next(), non_empty_items.next()) {
+                (None, _) => Item::EmptyItem,
+                (
+                    Some((
+                        index,
                         Item::Leaf {
                             prefix: leaf_prefix,
                             value,
-                        } => {
-                            let mut new_prefix = prefix.clone();
-                            new_prefix.push(idx_item as u8);
-                            new_prefix.append(&mut leaf_prefix.clone());
-                            Item::Leaf {
-                                prefix: new_prefix,
-                                value: value.clone(),
-                            }
-                        }
+                        },
+                    )),
+                    None,
+                ) => {
+                    let mut joined = prefix;
+                    joined.push(index as u8);
+                    joined.extend_from_slice(leaf_prefix);
+                    Item::Leaf {
+                        prefix: joined,
+                        value: value.clone(),
+                    }
+                }
+                (
+                    Some((
+                        index,
                         Item::NodePtr {
                             prefix: node_ptr_prefix,
                             ptr,
-                        } => {
-                            let mut new_prefix = prefix.clone();
-                            new_prefix.push(idx_item as u8);
-                            new_prefix.append(&mut node_ptr_prefix.clone());
-                            Item::NodePtr {
-                                prefix: new_prefix,
-                                ptr: ptr.to_vec(),
-                            }
-                        }
-                    }
-                }
-                2 => {
+                        },
+                    )),
+                    None,
+                ) => {
+                    let mut joined = prefix;
+                    joined.push(index as u8);
+                    joined.extend_from_slice(node_ptr_prefix);
                     Item::NodePtr {
-                        // 2 or more items are not empty.
-                        prefix,
-                        ptr: self.save_node(node),
+                        prefix: joined,
+                        ptr: ptr.clone(),
                     }
                 }
-                _ => unreachable!(),
+                (Some(_), Some(_)) => Item::NodePtr {
+                    prefix,
+                    ptr: self.save_node(node),
+                },
+                (Some((_, Item::EmptyItem)), None) => unreachable!(),
             }
         } else {
             Item::NodePtr {
@@ -1659,5 +1840,144 @@ impl RadixTreeImpl {
             }
         }
         Ok(output)
+    }
+}
+
+#[cfg(test)]
+mod native_commit_tests {
+    use std::sync::Arc;
+
+    use shared::rust::store::key_value_store::KeyValueStore;
+
+    use super::{Item, RadixTreeImpl, common_prefix, empty_node, hash_node};
+    use crate::rspace::errors::{RSpaceError, RadixTreeError};
+    use crate::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
+
+    #[test]
+    fn prepared_writes_reject_collisions_before_publication() {
+        let store = Arc::new(InMemoryKeyValueStore::new());
+        let tree = RadixTreeImpl::new(store.clone());
+        let node = empty_node();
+        let (key, value) = hash_node(&node);
+        assert_eq!(tree.save_node(node), key);
+        assert_eq!(tree.prepare_commit().unwrap(), vec![(key.clone(), value.clone())]);
+        assert_eq!(store.get_one(&key).unwrap(), None);
+        let calls = std::cell::Cell::new(0);
+        let metered = tree
+            .prepare_native_commit(&|_, _, _| {
+                calls.set(calls.get() + 1);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(metered, vec![(key.clone(), value.clone())]);
+        for accepted in 0..calls.get() {
+            let remaining = std::cell::Cell::new(accepted);
+            assert_eq!(
+                tree.prepare_native_commit(&|_, _, _| {
+                    if remaining.get() == 0 {
+                        return Err(RSpaceError::HostWorkRejected);
+                    }
+                    remaining.set(remaining.get() - 1);
+                    Ok(())
+                }),
+                Err(RSpaceError::HostWorkRejected)
+            );
+            assert_eq!(store.get_one(&key).unwrap(), None);
+        }
+
+        store.put_one(key.clone(), vec![1]).unwrap();
+        assert!(matches!(tree.prepare_commit(), Err(RadixTreeError::CollisionError(_))));
+        assert!(matches!(
+            tree.prepare_native_commit(&|_, _, _| Ok(())),
+            Err(RSpaceError::RadixTreeError(RadixTreeError::CollisionError(_)))
+        ));
+        assert_eq!(store.get_one(&key).unwrap(), Some(vec![1]));
+
+        store.put_one(key.clone(), value).unwrap();
+        assert!(tree.prepare_commit().unwrap().is_empty());
+        assert!(
+            tree.prepare_native_commit(&|_, _, _| Ok(()))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn native_root_reservation_precedes_hash_and_cache_growth() {
+        let store = Arc::new(InMemoryKeyValueStore::new());
+        let node = empty_node();
+        let (expected, _) = hash_node(&node);
+        let tree = RadixTreeImpl::new(store.clone());
+        let calls = std::cell::Cell::new(0);
+        assert_eq!(
+            tree.save_native_root(&node, &|_, _, _| {
+                calls.set(calls.get() + 1);
+                Ok(())
+            })
+            .unwrap(),
+            expected
+        );
+        for accepted in 0..calls.get() {
+            let denied = RadixTreeImpl::new(store.clone());
+            let remaining = std::cell::Cell::new(accepted);
+            assert_eq!(
+                denied.save_native_root(&node, &|_, _, _| {
+                    if remaining.get() == 0 {
+                        return Err(RSpaceError::HostWorkRejected);
+                    }
+                    remaining.set(remaining.get() - 1);
+                    Ok(())
+                }),
+                Err(RSpaceError::HostWorkRejected)
+            );
+            assert!(denied.cache_w.is_empty());
+            assert_eq!(store.get_one(&expected).unwrap(), None);
+        }
+        assert_eq!(tree.prepare_native_commit(&|_, _, _| Ok(())).unwrap().len(), 1);
+        assert_eq!(store.get_one(&expected).unwrap(), None);
+    }
+
+    #[test]
+    fn compaction_preserves_leaf_pointer_and_branch_shapes() {
+        let store = Arc::new(InMemoryKeyValueStore::new());
+        let tree = RadixTreeImpl::new(store);
+        assert_eq!(tree.save_node_and_create_item(empty_node(), vec![9], true), Item::EmptyItem);
+
+        let mut one = empty_node();
+        one[7] = Item::Leaf {
+            prefix: vec![8],
+            value: vec![1; 32],
+        };
+        assert_eq!(tree.save_node_and_create_item(one, vec![9], true), Item::Leaf {
+            prefix: vec![9, 7, 8],
+            value: vec![1; 32],
+        });
+
+        let mut branch = empty_node();
+        branch[7] = Item::Leaf {
+            prefix: vec![],
+            value: vec![1; 32],
+        };
+        branch[8] = Item::Leaf {
+            prefix: vec![],
+            value: vec![2; 32],
+        };
+        let (expected, _) = hash_node(&branch);
+        assert_eq!(tree.save_node_and_create_item(branch, vec![9], true), Item::NodePtr {
+            prefix: vec![9],
+            ptr: expected,
+        });
+    }
+
+    #[test]
+    fn prefix_splits_preserve_common_and_unmatched_bytes() {
+        assert_eq!(common_prefix(vec![], vec![1]), (vec![], vec![], vec![1]));
+        assert_eq!(common_prefix(vec![1], vec![2]), (vec![], vec![1], vec![2]));
+        assert_eq!(common_prefix(vec![1, 2], vec![1, 2]), (vec![1, 2], vec![], vec![]));
+        assert_eq!(
+            common_prefix(vec![1, 2, 3], vec![1, 2, 4, 5]),
+            (vec![1, 2], vec![3], vec![4, 5])
+        );
+        assert_eq!(common_prefix(vec![1, 2], vec![1, 2, 3]), (vec![1, 2], vec![], vec![3]));
     }
 }

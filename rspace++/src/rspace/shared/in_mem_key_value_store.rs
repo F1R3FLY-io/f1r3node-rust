@@ -74,6 +74,16 @@ impl KeyValueStore for InMemoryKeyValueStore {
         }
     }
 
+    fn put_if_absent(&self, kv_pairs: Vec<(ByteBuffer, ByteBuffer)>) -> Result<(), KvStoreError> {
+        let _guard = self.write_guard();
+        for (key, value) in kv_pairs {
+            if let Entry::Vacant(entry) = self.state.entry(key) {
+                entry.insert(value);
+            }
+        }
+        Ok(())
+    }
+
     fn delete(&self, keys: Vec<ByteBuffer>) -> Result<usize, KvStoreError> {
         let _guard = self.write_guard();
         Ok(keys
@@ -148,6 +158,8 @@ impl KeyValueStore for InMemoryKeyValueStore {
             .collect::<Result<Vec<_>, KvStoreError>>()?;
         sparse_transaction::apply(self, &borrowed)
     }
+
+    fn supports_strict_atomic_mutate(&self) -> bool { true }
 
     fn size_bytes(&self) -> usize {
         let _guard = self.read_guard();
@@ -254,6 +266,23 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn put_if_absent_keeps_existing_and_first_batch_values() {
+        let store = InMemoryKeyValueStore::new();
+        store
+            .put_one(b"old".to_vec(), b"original".to_vec())
+            .unwrap();
+        store
+            .put_if_absent(vec![
+                (b"old".to_vec(), b"replacement".to_vec()),
+                (b"new".to_vec(), b"first".to_vec()),
+                (b"new".to_vec(), b"second".to_vec()),
+            ])
+            .unwrap();
+        assert_eq!(store.get_one(&b"old".to_vec()).unwrap(), Some(b"original".to_vec()));
+        assert_eq!(store.get_one(&b"new".to_vec()).unwrap(), Some(b"first".to_vec()));
+    }
 
     fn operation_strategy() -> impl Strategy<Value = AtomicStoreOperation> {
         prop_oneof![

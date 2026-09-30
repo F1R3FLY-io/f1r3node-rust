@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
 
 use models::rhoapi::CostAuthority;
+use shared::rust::clone_backing::BackingError;
 
 use super::*;
 use crate::rust::interpreter::accounting::authority::{
@@ -47,6 +48,40 @@ pub(crate) struct NativeAuthorityCheckpoint {
 
 fn invalid() -> InterpreterError {
     recording_error("native replay authority state differs from the authenticated execution")
+}
+
+fn metered_demand(
+    authority: &CostAuthority,
+    host: &HostWorkBudget,
+) -> Result<ResourceMultiset<[u8; 32]>, InterpreterError> {
+    let backing = |operations, scanned, bytes| {
+        for (dimension, amount) in [
+            (
+                models::rust::host_work::HostWorkDimension::VerificationOperations,
+                operations,
+            ),
+            (
+                models::rust::host_work::HostWorkDimension::VerificationBytes,
+                scanned,
+            ),
+            (
+                models::rust::host_work::HostWorkDimension::SearchStateBytes,
+                bytes,
+            ),
+        ] {
+            let amount = u64::try_from(amount).map_err(|_| BackingError::Rejected)?;
+            host.reserve(
+                dimension,
+                models::rust::host_work::HostWorkUnits::new(amount),
+            )
+            .map_err(|_| BackingError::Rejected)?;
+        }
+        Ok(())
+    };
+    authority::authority_demand_metered(authority, &backing).map_err(|error| match error {
+        authority::AuthorityError::HostWorkRejected => InterpreterError::HostWorkRejected,
+        other => recording_error(&other.to_string()),
+    })
 }
 
 impl ReplayAuthorityBinding {
@@ -103,6 +138,7 @@ impl ReplayAuthorityBinding {
             let Some(row) = row else { continue };
             if row.observation.kind == AuthorityByteEventKind::Comm {
                 backing::reserve_event_lookup(&host)?;
+                clone_backing::inspect(row.observation.as_ref(), &host)?;
                 clone_backing::reserve(&row.observation.authority, &host)?;
                 let id = row.observation.event_id;
                 if state.pending_stack_event_ids.contains(&id)
@@ -111,14 +147,16 @@ impl ReplayAuthorityBinding {
                     return Err(invalid());
                 }
                 match (state.events.get(&id), row.retry) {
-                    (Some(existing), true)
-                        if row.granted
-                            && existing.byte_observation.as_deref()
-                                == Some(row.observation.as_ref()) => {}
+                    (Some(existing), true) if row.granted => {
+                        let saved = existing.byte_observation.as_deref().ok_or_else(invalid)?;
+                        clone_backing::inspect(saved, &host)?;
+                        if saved != row.observation.as_ref() {
+                            return Err(invalid());
+                        }
+                    }
                     (None, false) => {
                         if row.granted {
-                            let demand = authority::authority_demand(&row.observation.authority)
-                                .map_err(|error| recording_error(&error.to_string()))?;
+                            let demand = metered_demand(&row.observation.authority, &host)?;
                             event = Some((id, AuthorityRuntimeEvent {
                                 authority: row.observation.authority.clone(),
                                 debit: demand,
