@@ -20,22 +20,26 @@
 // that later slices thread through the sidecar path.
 //
 // Slice 4 (PR #507) added the payload-hash sidecar:
-// [`hashes_sidecar_path`] (colocated `.hashes` path derivation),
-// [`read_hashes_sidecar`] (best-effort read that returns an
-// empty set on corruption rather than propagating), and
-// [`scan_retained_payload_hashes`] (union across a snapshot
-// directory).  The sidecar write is threaded into
-// [`write_snapshot`] as a best-effort tail.
+// [`hashes_sidecar_path`], [`read_hashes_sidecar`], and
+// [`scan_retained_payload_hashes`].  The sidecar write is
+// threaded into [`write_snapshot`] as a best-effort tail.
 //
-// Slice 5 (this PR) adds [`sweep_stale_tmp_files`] — a
-// best-effort maintenance helper that removes stale tmp files
-// left behind by a crash between `atomic_write_file`'s tmp
-// `sync_all` and its `rename`.  Handles both `.wal.tmp` and
-// `.hashes.tmp` shapes produced by the two current writers
-// (snapshot + sidecar).
+// Slice 5 (PR #508) added [`sweep_stale_tmp_files`] — a
+// best-effort maintenance helper that removes leaked
+// `.wal.tmp` / `.hashes.tmp` files.
 //
-// Manifest / writer / pruning all land in subsequent slices as
-// their own natural units.
+// Slice 6 (this PR) adds the manifest wire format:
+// [`MANIFEST_FORMAT_VERSION`], [`MANIFEST_FILENAME`],
+// [`ManifestEntry`] (struct + `data`/`empty` constructors), and
+// [`ManifestEntry::to_line`] / [`ManifestEntry::from_line`] —
+// the JSONL line format that on-disk manifests use to advertise
+// "which snapshots exist at which block heights."  This slice
+// ships the wire-format layer alone; persistence
+// (`append_manifest_entry` + `read_manifest`) and H-4 signing
+// land in later slices.
+//
+// Writer / pruning / manifest persistence + signing all land in
+// subsequent slices as their own natural units.
 //
 // # Snapshot semantics — log-structured
 //
@@ -138,6 +142,49 @@ use super::wal::{PayloadRef, WalEntry, WalOp, WalOutcome, MAX_WAL_ENTRIES};
 pub const SNAPSHOT_FORMAT_VERSION: u8 = 6;
 
 crate::register_consensus_constant!(order = 15, name = SNAPSHOT_FORMAT_VERSION, u8_raw);
+
+/// Wire-format version of the on-disk `manifest.jsonl` line
+/// format.  Distinct from [`SNAPSHOT_FORMAT_VERSION`] because
+/// the two are independent wire surfaces: the `.wal` file bytes
+/// and the manifest text lines evolve on separate cadences.
+///
+/// A WAL encoding change (added field, new op tag) does NOT
+/// invalidate existing manifest lines; a manifest schema change
+/// (added key, renamed field) does NOT invalidate existing
+/// `.wal` snapshots.  Coupling the two under a single version
+/// would force every WAL bump to invalidate manifest lines
+/// (H-4 signatures unnecessarily) and vice versa.
+///
+/// # Wire-format contract
+///
+/// - The version is embedded as `"v":<n>` in the JSON line so
+///   readers can multi-decode across versions cleanly.  A future
+///   reader that understands versions 1..=N routes each line
+///   through the version-appropriate decoder.
+/// - Bumping this value is a coordinated upgrade — producers
+///   and consumers on the network MUST upgrade before the
+///   change activates, or joiners will refuse post-upgrade
+///   manifest lines.
+/// - The version is separate from consensus fold registration
+///   because the manifest is a LOCAL-STORAGE artifact — a
+///   joiner never trusts a manifest line without verifying the
+///   referenced snapshot bytes directly against the on-chain
+///   `WalSnapshotWrite` root.  Manifest divergence between
+///   validators does not fork the state; it degrades peer
+///   discovery.
+///
+/// # Version history
+///
+/// - `1`: initial layout.  Fields: `v`, `block_number`, `root`
+///   (hex string or null), `entries`, `ts_ms`, `sig` (optional
+///   hex string, populated by a later slice).
+pub const MANIFEST_FORMAT_VERSION: u8 = 1;
+
+/// Filename of the manifest inside the snapshot directory.
+///
+/// A single manifest per snapshot dir; appended to (`O_APPEND`)
+/// by the writer machinery in a later slice.
+pub const MANIFEST_FILENAME: &str = "manifest.jsonl";
 
 /// Encoded WAL slice + its two consensus-observable hashes.
 ///
@@ -1305,6 +1352,319 @@ pub fn sweep_stale_tmp_files(snapshot_dir: &Path, older_than_secs: u64) -> std::
         }
     }
     Ok(removed)
+}
+
+// ===========================================================
+// Manifest wire format (slice 6) — ManifestEntry + to/from line
+// ===========================================================
+
+/// One line in the manifest.  Serialized to a compact JSON
+/// object with fixed field ordering by [`ManifestEntry::to_line`]
+/// and parsed by the strict-schema [`ManifestEntry::from_line`].
+///
+/// A manifest advertises "which snapshots exist at which block
+/// heights" so joiners can discover fetchable snapshots by
+/// scanning peers' manifests instead of guessing content-
+/// addressed hashes.  A joiner still verifies each fetched
+/// snapshot's bytes against the on-chain `WalSnapshotWrite`
+/// root before applying — the manifest is discovery, not
+/// authority.
+///
+/// # Field ordering (wire-format contract)
+///
+/// The serialization is `{v, block_number, root, entries,
+/// ts_ms, [sig]}`.  Adding a field is a coordinated upgrade
+/// (bump [`MANIFEST_FORMAT_VERSION`]).  Removing or renaming a
+/// field is a hard fork of the manifest wire format.
+///
+/// # `sig` field
+///
+/// `sig` is an optional [`Vec<u8>`] carrying a secp256k1
+/// signature over the canonicalized non-`sig` fields (H-4).
+/// This slice ships the wire-format layer only — the
+/// `sign_bytes` / `signed` / `verify_with_pubkey` methods land
+/// in a follow-up.  Callers wanting to write an unsigned
+/// manifest line pass `sig = None`; the emitted line omits the
+/// `sig` field entirely.  On parse, absence of `sig` yields
+/// `None`; presence yields `Some(bytes)`.  The join-protocol
+/// layer (yet-to-land) MUST reject `None` in production unless
+/// an explicit "trust local disk" override is set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManifestEntry {
+    /// Block number the snapshot corresponds to.  Under
+    /// last-finalized-block cadence (yet-to-land), the
+    /// finalized-block height at which this snapshot was written.
+    pub block_number: i64,
+    /// `Some(root)` for a data snapshot; `None` for the
+    /// empty-slice sentinel.
+    pub root: Option<[u8; 32]>,
+    /// Number of `WalEntry` records the snapshot encodes.  Zero
+    /// for the empty sentinel; strictly positive for data.
+    pub entries: u64,
+    /// Wall-clock write timestamp, ms since UNIX_EPOCH.
+    /// Best-effort — a validator whose clock is skewed still
+    /// produces a valid manifest, but comparisons across peers
+    /// are noisy.
+    pub ts_ms: i64,
+    /// H-4 optional secp256k1 signature (see struct-level
+    /// docstring).  `None` = unsigned; `Some(bytes)` = signed.
+    /// This slice ships wire-format only; the actual signing
+    /// methods land later.
+    pub sig: Option<Vec<u8>>,
+}
+
+impl ManifestEntry {
+    /// Constructor for a data-snapshot manifest entry.  `ts_ms`
+    /// is populated from [`now_ms`] so callers get a wall-clock
+    /// stamp without threading a clock parameter.
+    pub fn data(block_number: i64, root: [u8; 32], entries: usize) -> Self {
+        Self {
+            block_number,
+            root: Some(root),
+            entries: entries as u64,
+            ts_ms: now_ms(),
+            sig: None,
+        }
+    }
+
+    /// Constructor for an empty-slice sentinel entry.  Some
+    /// blocks produce no WAL entries (no fs syscalls); the
+    /// manifest still records them so a joiner can distinguish
+    /// "we produced no snapshot at height N" from "we never
+    /// finalized height N."
+    pub fn empty(block_number: i64) -> Self {
+        Self {
+            block_number,
+            root: None,
+            entries: 0,
+            ts_ms: now_ms(),
+            sig: None,
+        }
+    }
+
+    /// Serialize to a single JSON line (no trailing newline).
+    /// Fixed field order + minimal whitespace so peers parsing
+    /// with a hand-rolled reader don't have to canonicalize.
+    ///
+    /// Field order: `v`, `block_number`, `root`, `entries`,
+    /// `ts_ms`, [`sig`].  `sig` is omitted entirely when `None`.
+    pub fn to_line(&self) -> String {
+        let root_field = match &self.root {
+            Some(r) => format!("\"{}\"", hex_encode(r)),
+            None => "null".to_string(),
+        };
+        match &self.sig {
+            Some(s) => format!(
+                "{{\"v\":{},\"block_number\":{},\"root\":{},\"entries\":{},\"ts_ms\":{},\"sig\":\"{}\"}}",
+                MANIFEST_FORMAT_VERSION,
+                self.block_number,
+                root_field,
+                self.entries,
+                self.ts_ms,
+                hex_encode(s),
+            ),
+            None => format!(
+                "{{\"v\":{},\"block_number\":{},\"root\":{},\"entries\":{},\"ts_ms\":{}}}",
+                MANIFEST_FORMAT_VERSION, self.block_number, root_field, self.entries, self.ts_ms,
+            ),
+        }
+    }
+
+    /// Parse a single manifest line.  Rejects any input that
+    /// doesn't match the strict schema — a corrupted line
+    /// surfaces here rather than mid-catchup.
+    ///
+    /// # Version handling
+    ///
+    /// The `"v"` field is mandatory.  A missing `v` is either a
+    /// pre-versioned line or a corrupted one; both are treated
+    /// as untrusted and rejected so a silent decode of
+    /// "someone's future schema as v1" can never happen.  A
+    /// `v` value not matching [`MANIFEST_FORMAT_VERSION`] is
+    /// rejected with a coordinated-upgrade message.
+    ///
+    /// # Parser posture
+    ///
+    /// Hand-rolled — deliberately not `serde` — to keep the
+    /// line format independent of any Rust crate's
+    /// deserializer behavior and to make the wire format
+    /// reproducible in other languages.  Errors are returned as
+    /// [`String`] here (the persistence layer, in a later
+    /// slice, wraps these into `SnapshotError::Io(InvalidData)`
+    /// with the line number).
+    pub fn from_line(line: &str) -> Result<Self, String> {
+        let trimmed = line.trim();
+        let inner = trimmed
+            .strip_prefix('{')
+            .and_then(|s| s.strip_suffix('}'))
+            .ok_or_else(|| format!("manifest line missing braces: {line:?}"))?;
+        let mut saw_v = false;
+        let mut block_number: Option<i64> = None;
+        let mut root: Option<Option<[u8; 32]>> = None;
+        let mut entries: Option<u64> = None;
+        let mut ts_ms: Option<i64> = None;
+        let mut sig: Option<Vec<u8>> = None;
+        for part in split_top_level_commas(inner) {
+            let (key, value) = part
+                .split_once(':')
+                .ok_or_else(|| format!("manifest kv missing `:` in {part:?}"))?;
+            let key = key.trim().trim_matches('"');
+            let value = value.trim();
+            match key {
+                "v" => {
+                    let v: u8 = value.parse().map_err(|e| format!("v parse: {e}"))?;
+                    if v != MANIFEST_FORMAT_VERSION {
+                        return Err(format!(
+                            "unsupported manifest version {v} (this validator understands \
+                             version {MANIFEST_FORMAT_VERSION}); a coordinated upgrade may \
+                             be needed"
+                        ));
+                    }
+                    saw_v = true;
+                }
+                "block_number" => {
+                    block_number = Some(
+                        value
+                            .parse()
+                            .map_err(|e| format!("block_number parse: {e}"))?,
+                    );
+                }
+                "root" => {
+                    if value == "null" {
+                        root = Some(None);
+                    } else {
+                        let hex = value.trim_matches('"');
+                        if hex.len() != 64 {
+                            return Err(format!("root hex must be 64 chars; got {}", hex.len()));
+                        }
+                        let bytes = hex_decode_32(hex)?;
+                        root = Some(Some(bytes));
+                    }
+                }
+                "entries" => {
+                    entries = Some(value.parse().map_err(|e| format!("entries parse: {e}"))?);
+                }
+                "ts_ms" => {
+                    ts_ms = Some(value.parse().map_err(|e| format!("ts_ms parse: {e}"))?);
+                }
+                "sig" => {
+                    let hex = value.trim_matches('"');
+                    // secp256k1 sigs are DER-ish, variable length (~70-72
+                    // bytes typical).  Accept any even-length hex that
+                    // decodes cleanly; length validation lives in the
+                    // (yet-to-land) verify_with_pubkey.
+                    if hex.len() % 2 != 0 {
+                        return Err(format!("sig hex length must be even; got {}", hex.len()));
+                    }
+                    let mut bytes = Vec::with_capacity(hex.len() / 2);
+                    for i in (0..hex.len()).step_by(2) {
+                        let byte = u8::from_str_radix(&hex[i..i + 2], 16)
+                            .map_err(|e| format!("sig hex byte {i}: {e}"))?;
+                        bytes.push(byte);
+                    }
+                    sig = Some(bytes);
+                }
+                other => {
+                    return Err(format!("unknown manifest key `{other}`"));
+                }
+            }
+        }
+        if !saw_v {
+            return Err(format!(
+                "missing `v` field (mandatory); expected v = {MANIFEST_FORMAT_VERSION}"
+            ));
+        }
+        Ok(Self {
+            block_number: block_number.ok_or("missing block_number")?,
+            root: root.ok_or("missing root")?,
+            entries: entries.ok_or("missing entries")?,
+            ts_ms: ts_ms.ok_or("missing ts_ms")?,
+            sig,
+        })
+    }
+}
+
+/// Wall-clock milliseconds since UNIX_EPOCH.  Saturates to
+/// [`i64::MAX`] if the clock is set far in the future
+/// (astronomically improbable but keeps the return total).
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+        .unwrap_or(0)
+}
+
+/// Lowercase-hex encoding.  Hand-rolled to match the rest of
+/// this module's hex conventions (no `hex` crate dependency
+/// coupling for a couple call sites).
+fn hex_encode(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        use std::fmt::Write;
+        let _ = write!(s, "{b:02x}");
+    }
+    s
+}
+
+/// Decode a 64-char lowercase-hex string to a `[u8; 32]`.
+/// Returns a diagnostic error on wrong length or non-hex
+/// digits.
+fn hex_decode_32(hex: &str) -> Result<[u8; 32], String> {
+    if hex.len() != 64 {
+        return Err(format!("hex must be 64 chars; got {}", hex.len()));
+    }
+    let mut out = [0u8; 32];
+    for i in 0..32 {
+        out[i] = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16)
+            .map_err(|e| format!("hex byte {i}: {e}"))?;
+    }
+    Ok(out)
+}
+
+/// Split a top-level JSON-object body on commas that are NOT
+/// inside a quoted string.  The manifest line format has no
+/// nested objects or arrays, so this is sufficient — a
+/// full JSON parser would be overkill.  Handles escaped quotes
+/// (`\"`) inside strings.
+fn split_top_level_commas(inner: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut cur = String::new();
+    let mut in_str = false;
+    let mut escape = false;
+    for c in inner.chars() {
+        if escape {
+            cur.push(c);
+            escape = false;
+            continue;
+        }
+        if in_str {
+            if c == '\\' {
+                escape = true;
+                cur.push(c);
+                continue;
+            }
+            if c == '"' {
+                in_str = false;
+            }
+            cur.push(c);
+            continue;
+        }
+        match c {
+            '"' => {
+                in_str = true;
+                cur.push(c);
+            }
+            ',' => {
+                parts.push(cur.trim().to_string());
+                cur.clear();
+            }
+            _ => cur.push(c),
+        }
+    }
+    if !cur.trim().is_empty() {
+        parts.push(cur.trim().to_string());
+    }
+    parts
 }
 
 #[cfg(test)]
@@ -2747,5 +3107,321 @@ mod tests {
         // Even at older_than_secs = 0, nothing to sweep — rename
         // consumed the tmp during the write.
         assert_eq!(sweep_stale_tmp_files(tmp.path(), 0).unwrap(), 0);
+    }
+
+    // ---------------------------------------------------------------
+    // Manifest wire format (slice 6)
+    // ---------------------------------------------------------------
+
+    /// Coordinated-upgrade surface pin.  Bumping this value invalidates
+    /// existing manifest lines cross the network and must land as a
+    /// coordinated upgrade.
+    #[test]
+    fn manifest_format_version_pinned_at_1() {
+        assert_eq!(MANIFEST_FORMAT_VERSION, 1);
+    }
+
+    #[test]
+    fn manifest_filename_pinned_at_manifest_jsonl() {
+        assert_eq!(MANIFEST_FILENAME, "manifest.jsonl");
+    }
+
+    /// Load-bearing wire-format pin: the exact JSON layout of a
+    /// data entry, no whitespace, fixed field order.  Any refactor
+    /// that reorders keys, adds whitespace, or drops the `v` field
+    /// prefix trips this test.
+    ///
+    /// # H-4 coordination cost
+    ///
+    /// The (yet-to-land) H-4 signing slice will sign
+    /// [`ManifestEntry::to_line`]'s output byte-for-byte.  Any
+    /// change that trips this test would invalidate EVERY
+    /// existing signature on the network — a coordinated
+    /// fleet-wide upgrade, not a local refactor.  Peers
+    /// producing differently-ordered JSON would produce
+    /// signatures over different bytes and fail
+    /// verify_with_pubkey on every joiner.
+    #[test]
+    fn manifest_data_entry_to_line_layout_pinned() {
+        let entry = ManifestEntry {
+            block_number: 42,
+            root: Some([0xABu8; 32]),
+            entries: 7,
+            ts_ms: 1_700_000_000_000,
+            sig: None,
+        };
+        let hex64 = "ab".repeat(32);
+        let expected = format!(
+            "{{\"v\":1,\"block_number\":42,\"root\":\"{hex64}\",\"entries\":7,\"ts_ms\":1700000000000}}"
+        );
+        assert_eq!(entry.to_line(), expected);
+    }
+
+    /// Empty-sentinel entry: `root` serializes as `null`, no
+    /// quotes.  Distinct from `"null"` (which would be a bogus
+    /// 4-char root hex).
+    #[test]
+    fn manifest_empty_entry_root_field_serializes_as_null() {
+        let entry = ManifestEntry {
+            block_number: 100,
+            root: None,
+            entries: 0,
+            ts_ms: 1_700_000_000_000,
+            sig: None,
+        };
+        let expected =
+            "{\"v\":1,\"block_number\":100,\"root\":null,\"entries\":0,\"ts_ms\":1700000000000}";
+        assert_eq!(entry.to_line(), expected);
+    }
+
+    /// `sig = Some(bytes)` appends `,"sig":"<hex>"` at the end
+    /// (never in the middle — field ordering is contractual).
+    #[test]
+    fn manifest_signed_entry_appends_sig_field_at_end() {
+        let entry = ManifestEntry {
+            block_number: 1,
+            root: Some([0x11u8; 32]),
+            entries: 2,
+            ts_ms: 3,
+            sig: Some(vec![0xDE, 0xAD, 0xBE, 0xEF]),
+        };
+        let root_hex = "11".repeat(32);
+        let expected = format!(
+            "{{\"v\":1,\"block_number\":1,\"root\":\"{root_hex}\",\"entries\":2,\"ts_ms\":3,\"sig\":\"deadbeef\"}}"
+        );
+        assert_eq!(entry.to_line(), expected);
+    }
+
+    /// Load-bearing round-trip: any entry we serialize we can
+    /// parse back to structural equality.  Covers both `None`
+    /// and `Some` for the root and sig options.
+    #[test]
+    fn manifest_entry_to_line_from_line_round_trips() {
+        for entry in [
+            ManifestEntry {
+                block_number: -5,
+                root: Some([0x33u8; 32]),
+                entries: 12345,
+                ts_ms: 999,
+                sig: None,
+            },
+            ManifestEntry {
+                block_number: 0,
+                root: None,
+                entries: 0,
+                ts_ms: 0,
+                sig: None,
+            },
+            ManifestEntry {
+                block_number: i64::MAX,
+                root: Some([0xAAu8; 32]),
+                entries: u64::MAX,
+                ts_ms: i64::MAX,
+                sig: Some(vec![0x01, 0x02, 0x03, 0x04, 0x05]),
+            },
+        ] {
+            let line = entry.to_line();
+            let back = ManifestEntry::from_line(&line).expect("parse ok");
+            assert_eq!(back, entry, "round-trip preserves entry: {line}");
+        }
+    }
+
+    /// `data` constructor: root populated, sig=None, ts_ms from
+    /// wall clock (best-effort, so we only assert it's non-zero
+    /// under a normally-set clock).
+    #[test]
+    fn manifest_data_constructor_populates_root_and_wallclock() {
+        let entry = ManifestEntry::data(7, [0x55u8; 32], 3);
+        assert_eq!(entry.block_number, 7);
+        assert_eq!(entry.root, Some([0x55u8; 32]));
+        assert_eq!(entry.entries, 3);
+        assert!(entry.ts_ms > 0, "ts_ms populated from wall clock");
+        assert_eq!(entry.sig, None);
+    }
+
+    /// `empty` constructor: root=None, entries=0, sig=None.
+    #[test]
+    fn manifest_empty_constructor_has_null_root_and_zero_entries() {
+        let entry = ManifestEntry::empty(10);
+        assert_eq!(entry.block_number, 10);
+        assert_eq!(entry.root, None);
+        assert_eq!(entry.entries, 0);
+        assert!(entry.ts_ms > 0);
+        assert_eq!(entry.sig, None);
+    }
+
+    /// `v` field is mandatory: a line without it is rejected
+    /// (defends against silent-decode-as-v1 for pre-versioned
+    /// or corrupted lines).
+    #[test]
+    fn manifest_from_line_missing_v_rejected() {
+        let line = "{\"block_number\":1,\"root\":null,\"entries\":0,\"ts_ms\":0}";
+        let err = ManifestEntry::from_line(line).expect_err("missing v is rejected");
+        assert!(
+            err.contains("missing `v` field"),
+            "error mentions the missing v field: {err}"
+        );
+    }
+
+    /// `v` value not matching the current MANIFEST_FORMAT_VERSION
+    /// surfaces a coordinated-upgrade message.
+    #[test]
+    fn manifest_from_line_wrong_v_rejected_with_upgrade_message() {
+        let line = "{\"v\":99,\"block_number\":1,\"root\":null,\"entries\":0,\"ts_ms\":0}";
+        let err = ManifestEntry::from_line(line).expect_err("wrong v is rejected");
+        assert!(
+            err.contains("unsupported manifest version 99") && err.contains("coordinated upgrade"),
+            "error surfaces both the unsupported version and the upgrade guidance: {err}"
+        );
+    }
+
+    /// `root` hex must be exactly 64 chars (32 bytes).
+    #[test]
+    fn manifest_from_line_short_root_hex_rejected() {
+        let line = "{\"v\":1,\"block_number\":1,\"root\":\"abcd\",\"entries\":0,\"ts_ms\":0}";
+        let err = ManifestEntry::from_line(line).expect_err("short root hex is rejected");
+        assert!(
+            err.contains("root hex must be 64 chars"),
+            "error names the length constraint: {err}"
+        );
+    }
+
+    /// An unknown key surfaces cleanly rather than being silently
+    /// dropped — future producers introducing a new field without
+    /// coordinating the upgrade would otherwise mint lines that
+    /// existing consumers half-decode.
+    #[test]
+    fn manifest_from_line_unknown_key_rejected() {
+        let line = "{\"v\":1,\"block_number\":1,\"root\":null,\"entries\":0,\"ts_ms\":0,\"future_key\":\"x\"}";
+        let err = ManifestEntry::from_line(line).expect_err("unknown key is rejected");
+        assert!(
+            err.contains("unknown manifest key"),
+            "error names the unknown key: {err}"
+        );
+    }
+
+    /// Missing required field (other than v, which has its own
+    /// dedicated test) surfaces cleanly.
+    #[test]
+    fn manifest_from_line_missing_required_field_rejected() {
+        // Missing `entries`.
+        let line = "{\"v\":1,\"block_number\":1,\"root\":null,\"ts_ms\":0}";
+        let err = ManifestEntry::from_line(line).expect_err("missing entries is rejected");
+        assert!(
+            err.contains("missing entries"),
+            "error names the missing field: {err}"
+        );
+    }
+
+    /// Missing braces (not a JSON object at all) surfaces cleanly.
+    #[test]
+    fn manifest_from_line_missing_braces_rejected() {
+        let line = "not a json object";
+        let err = ManifestEntry::from_line(line).expect_err("no braces is rejected");
+        assert!(
+            err.contains("missing braces"),
+            "error names the shape problem: {err}"
+        );
+    }
+
+    /// The parser tolerates leading/trailing whitespace on the
+    /// whole line (some editors add trailing newlines or spaces).
+    #[test]
+    fn manifest_from_line_tolerates_outer_whitespace() {
+        let entry = ManifestEntry::empty(1);
+        let line = format!("   {}   ", entry.to_line());
+        let back = ManifestEntry::from_line(&line).expect("trimmed parse ok");
+        assert_eq!(back, entry);
+    }
+
+    /// Inner whitespace (around `:` and `,`) is also tolerated —
+    /// producers with different JSON-emitter style should still
+    /// parse.  The trims on key/value happen after
+    /// [`split_top_level_commas`], so this exercises both paths.
+    #[test]
+    fn manifest_from_line_tolerates_inner_whitespace() {
+        let line = "{ \"v\" : 1 , \"block_number\" : 42 , \"root\" : null , \
+                     \"entries\" : 0 , \"ts_ms\" : 1700000000000 }";
+        let back = ManifestEntry::from_line(line).expect("inner-whitespace parse ok");
+        assert_eq!(back, ManifestEntry {
+            block_number: 42,
+            root: None,
+            entries: 0,
+            ts_ms: 1_700_000_000_000,
+            sig: None,
+        });
+    }
+
+    /// Load-bearing when H-4 signing arrives: signatures cover
+    /// [`ManifestEntry::to_line`] output byte-for-byte (fixed
+    /// order), but [`ManifestEntry::from_line`] MUST tolerate
+    /// arbitrary field orderings so a peer running a differently-
+    /// implemented producer (or a future emitter that reorders)
+    /// still parses cleanly.  Pins the write-vs-parse asymmetry:
+    /// serialize is order-fixed, deserialize is order-agnostic.
+    #[test]
+    fn manifest_from_line_is_field_order_agnostic() {
+        let line =
+            "{\"entries\":0,\"v\":1,\"ts_ms\":1700000000000,\"block_number\":42,\"root\":null}";
+        let back = ManifestEntry::from_line(line).expect("reordered parse ok");
+        assert_eq!(back, ManifestEntry {
+            block_number: 42,
+            root: None,
+            entries: 0,
+            ts_ms: 1_700_000_000_000,
+            sig: None,
+        });
+    }
+
+    /// Pins the odd-length-hex guard on the `sig` field.  An odd
+    /// number of hex characters is definitionally not a byte
+    /// sequence; reject cleanly rather than silently truncating
+    /// or panicking.
+    #[test]
+    fn manifest_from_line_odd_length_sig_hex_rejected() {
+        let line =
+            "{\"v\":1,\"block_number\":1,\"root\":null,\"entries\":0,\"ts_ms\":0,\"sig\":\"abc\"}";
+        let err = ManifestEntry::from_line(line).expect_err("odd-length sig hex is rejected");
+        assert!(
+            err.contains("sig hex length must be even"),
+            "error names the length constraint: {err}"
+        );
+    }
+
+    // Helpers pins (small but the split-commas helper is subtle
+    // enough to deserve one dedicated test).
+
+    #[test]
+    fn split_top_level_commas_ignores_commas_inside_strings() {
+        let parts = split_top_level_commas("\"a,b\":\"c\",\"d\":\"e,f\"");
+        assert_eq!(parts, vec![
+            "\"a,b\":\"c\"".to_string(),
+            "\"d\":\"e,f\"".to_string()
+        ]);
+    }
+
+    #[test]
+    fn hex_encode_decode_32_round_trips_arbitrary_bytes() {
+        let mut b = [0u8; 32];
+        for (i, x) in b.iter_mut().enumerate() {
+            *x = (i * 7 + 13) as u8;
+        }
+        let hex = hex_encode(&b);
+        assert_eq!(hex.len(), 64);
+        let back = hex_decode_32(&hex).expect("decode ok");
+        assert_eq!(back, b);
+    }
+
+    #[test]
+    fn hex_decode_32_rejects_wrong_length() {
+        assert!(hex_decode_32("abcd").is_err());
+    }
+
+    #[test]
+    fn hex_decode_32_rejects_non_hex_chars() {
+        let mostly_hex: String = std::iter::repeat_n('0', 63)
+            .chain(std::iter::once('z'))
+            .collect();
+        assert!(hex_decode_32(&mostly_hex).is_err());
     }
 }
