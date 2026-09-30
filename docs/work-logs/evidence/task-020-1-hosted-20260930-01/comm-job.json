@@ -1,0 +1,79 @@
+{
+  "id": 109688126217,
+  "run_id": 36651370411,
+  "name": "Test (comm)",
+  "status": "completed",
+  "conclusion": "success",
+  "started_at": "2026-09-30T00:47:42Z",
+  "completed_at": "2026-09-30T00:52:43Z",
+  "head_sha": "affbebc6eaa5cac9678fcbded9182423fda0fb67",
+  "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/36651370411/job/109688126217",
+  "steps": [
+    {
+      "name": "Set up job",
+      "number": 1,
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "name": "Checkout",
+      "number": 2,
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "name": "Install Rust",
+      "number": 3,
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "name": "Cache dependencies",
+      "number": 4,
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "name": "Install system dependencies",
+      "number": 5,
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "name": "Install nextest",
+      "number": 6,
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "name": "Run tests",
+      "number": 7,
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "name": "Upload test logs",
+      "number": 8,
+      "status": "completed",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Post Cache dependencies",
+      "number": 15,
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "name": "Post Checkout",
+      "number": 16,
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "name": "Complete job",
+      "number": 17,
+      "status": "completed",
+      "conclusion": "success"
+    }
+  ]
+}

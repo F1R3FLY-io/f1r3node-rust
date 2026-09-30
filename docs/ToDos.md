@@ -100,11 +100,19 @@ tasks:
     status: in_progress
     claimed_by: claude-session-f3cbc961
     claimed_at: 2026-09-30T00:40:00Z
+    verification_claimed_by: 01a0ab62-71b3-7248-a800-37a6fde2e4fa
+    verification_claimed_at: 2026-09-30T01:03:01Z
+    verification_status: in_progress
     blocked_by: []
     work_log: docs/work-logs/transport-accept-resource-review-20260923.md
-    implementation_status: "The accept loop has the backoff, the log limit, and the stop condition. The six portable regression tests pass. The Linux descriptor test has no result yet."
+    implementation_status: "Hosted Test (comm) passed all 400 tests, including all seven resource regressions and the Linux descriptor-exhaustion test. Strict task closure remains blocked on no_flow_link."
+    hosted_verification: docs/work-logs/evidence/task-020-1-hosted-20260930-01/report.json
+    hosted_run: 36651370411
+    hosted_job: 109688126217
+    unit_tests: [comm/src/rust/transport/f1r3fly_server_resource_tests.rs]
+    completion_blocker: "EPIC-020 has no user_flow field. Strict completion refused with exit 3 without changing task status."
     remaining:
-      - "Get the result of the Linux descriptor test from the hosted run. The local container storage had no space for the build."
+      - "Establish the real EPIC-020 user-flow linkage, then repeat strict completion. Do not force or create a placeholder link."
     files:
       - comm/src/rust/transport/f1r3fly_server.rs
     acceptance:

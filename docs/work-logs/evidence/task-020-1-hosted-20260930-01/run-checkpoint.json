@@ -1,0 +1,10 @@
+{
+  "id": 36651370411,
+  "head_sha": "affbebc6eaa5cac9678fcbded9182423fda0fb67",
+  "event": "pull_request",
+  "run_attempt": 1,
+  "status": "queued",
+  "conclusion": null,
+  "html_url": "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/36651370411",
+  "path": ".github/workflows/ci.yml"
+}

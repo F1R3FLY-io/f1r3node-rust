@@ -1,6 +1,8 @@
 # Transport resource review after the bootstrap log incident
 
-**Status:** Correction and regression verification in progress. Candidate resource qualification remains blocked.
+**Status:** Hosted transport regression verification passed. Strict TASK-020-1 closure remains blocked on missing user-flow linkage. Candidate resource qualification remains separate.
+
+Earlier sections retain their original results and limitations. The final section records the hosted verification checkpoint.
 
 ## Review gap
 
@@ -92,3 +94,59 @@ The hosted checks use one process for each test. The local results use the same 
 - The log test uses a subscriber for one thread. With all tests in one process and parallel threads, that test fails intermittently. The cause is the shared callsite cache of the tracing library, not the listener.
 - The summary line is written when an accept error occurs after the minute ends. A suppressed count stays unreported if the errors stop before that time.
 - The correction does not limit the number of concurrent handshakes. It does not find the initial cause of the descriptor exhaustion.
+
+## Hosted verification on 2026-09-30
+
+Verification session: `01a0ab62-71b3-7248-a800-37a6fde2e4fa`. The verification claim time is `2026-09-30T01:03:01Z`.
+
+The verification fields are separate from implementation ownership. `claimed_by` remains `claude-session-f3cbc961`. `verification_status` remains `in_progress` as requested.
+
+The user requested verification and closure of TASK-020-1 if its acceptance checks pass. The reviewed branch head is `affbebc6eaa5cac9678fcbded9182423fda0fb67`.
+
+[CI run 36651370411](https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/36651370411), attempt 1, ran the `Test (comm)` job on Linux.
+
+The [job](https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/36651370411/job/109688126217) completed successfully. All 400 tests passed, with zero skipped tests.
+
+All seven transport resource regressions passed. The real descriptor-exhaustion test completed in 0.679 seconds according to nextest.
+
+The test child reaches its 64-descriptor limit and exercises the production accept loop. The reviewed assertions bound retries and log bytes before checking recovery.
+
+The test requires between one and six accept errors during its 500 ms fault window. It requires positive log output below 1,024 bytes.
+
+The child releases its held descriptors and requires the next connection to reach handshake timeout within two seconds. Its accept-error count must not increase.
+
+Successful nextest output does not expose the child metric line. These values are assertion bounds, not separately observed descriptor or byte counts.
+
+The other tests verify exponential delay, reset after success, bounded error logging, suppressed-count summaries, consumer closure, and stalled-handshake cleanup.
+
+The hosted test command returned `nextest exit=0 doctest exit=0`. No doctest was present. The separate hosted lint job also passed.
+
+### Source and execution identity
+
+The test job checked out synthetic merge commit `b21659ec1ea526b97227157d6cae790310f6013f`, not the PR head directly.
+
+Its second parent is the reviewed head. Its first parent is `aaabb6710ef8136713a9959c4b1929835f30d17f`.
+
+Nine relevant source and build inputs match the GitHub tree at that tested commit. The API response was complete, and checkout logs confirm the tested identity.
+
+The [evidence report](./evidence/task-020-1-hosted-20260930-01/report.json) retains job identities, assertion limits, source hashes, and sanitized result lines.
+
+Raw logs and API responses remain under `target/task-020-1-hosted-36651370411/`. No raw runner log or binary was published.
+
+Overall CI was not complete at the recorded checkpoint. Success of this job does not establish success of other jobs or merge readiness.
+
+### Strict completion refusal
+
+The unchanged completion helper ran against a tracker copy with strict mode enabled and force disabled. It refused with exit 3 and `no_flow_link`.
+
+EPIC-020 has no `user_flow` field. The test link was supplied, but that link cannot substitute for the missing flow relationship.
+
+The [refusal record](./evidence/task-020-1-hosted-20260930-01/strict-completion-refusal.txt) preserves the integrity result. No completion status or completion date was applied.
+
+The live tracker now links the actual regression file and hosted evidence. TASK-020-1 remains in progress until a real flow relationship permits strict completion.
+
+This review does not waive that gap or create a placeholder flow. It changes no production source, test, workflow, artifact attribute, or adjacent task.
+
+The maintainer decision to leave the accept path untagged remains unchanged. Transport test success does not discharge disk-protection claims or finish TASK-020-2 through TASK-020-4.
+
+No commit, push, merge, campaign, or unrelated closure occurred.
