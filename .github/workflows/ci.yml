@@ -935,6 +935,58 @@ jobs:
           fi
           echo "All arm64 integration test slots succeeded"
 
+  # A failed merge group ejects its pull requests, and GitHub records that only as
+  # a timeline event on each one. A comment names the author and carries the run
+  # link, so the person who has to act learns about it without watching the queue.
+  notify_queue_failure:
+    name: Notify Queue Failure
+    needs: [pipeline, integration_tests_amd64, integration_tests_arm64]
+    if: >-
+      always() && github.event_name == 'merge_group'
+      && (needs.pipeline.result == 'failure'
+          || needs.integration_tests_amd64.result == 'failure'
+          || needs.integration_tests_arm64.result == 'failure')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Comment on the group's pull requests
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        shell: bash -euo pipefail {0}
+        run: |
+          # The group's pull requests are whatever the commits it added belong to;
+          # the queue ref names only the last one.
+          prs="$(gh api "repos/$GITHUB_REPOSITORY/compare/$BASE_SHA...$HEAD_SHA" --jq '.commits[].sha' \
+            | while read -r sha; do
+                gh api "repos/$GITHUB_REPOSITORY/commits/$sha/pulls" --jq '.[].number' || true
+              done | sort -u)"
+
+          if [ -z "$prs" ]; then
+            echo "::warning::merge group $HEAD_SHA maps to no pull request; nothing to notify"
+            exit 0
+          fi
+
+          # printf, not a multi-line string: a YAML block scalar would carry its
+          # own indentation into the comment, and four leading spaces make
+          # markdown render the paragraph as a code block.
+          body="$(printf '%s\n\n%s\n' \
+            "The merge group containing this pull request failed its integration checks, so the queue removed it. Run: $RUN_URL" \
+            "A batch failure does not always come from this pull request — the group also carried the others queued with it. Add the \`ci-heavy\` label to run the suite against this head alone, then queue again.")"
+
+          for pr in $prs; do
+            if gh pr comment "$pr" --repo "$GITHUB_REPOSITORY" --body "$body"; then
+              echo "commented on #$pr"
+            else
+              echo "::warning::could not comment on #$pr"
+            fi
+          done
+
   # Publish Docker image to Docker Hub + OCIR.
   # Runs on release tag pushes and on push to dev/master (with suffix).
   release_docker_image:
