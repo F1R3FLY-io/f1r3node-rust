@@ -975,11 +975,6 @@ impl Bag {
     }
 
     pub fn meet(&self, other: &Self) -> Self {
-        // PathMap's generic lattice is prefix-aware: a value at `k` can
-        // interact with descendants below `k`. Bag membership is an exact-key
-        // finite-support function, so its pointwise lattice must use exact
-        // trie lookups. Iterate only the smaller support and construct no
-        // flattened entry collection.
         let (probe, index) = if self.distinct_len <= other.distinct_len {
             (self, other)
         } else {
@@ -995,11 +990,6 @@ impl Bag {
     }
 
     pub fn subtract(&self, other: &Self) -> Self {
-        // Bag is an exact-key finite-support function, whereas PathMap's
-        // generic subtraction is intentionally prefix-aware. Stream both
-        // already-canonical tries through one moving destination zipper so an
-        // ancestor in `other` cannot affect a descendant in `self`. No entry
-        // vector or sorting pass is materialized.
         let mut removals = other.iter().peekable();
         Self::try_from_sorted_unique(|writer| {
             for (path, current) in self.iter() {
@@ -1284,10 +1274,6 @@ impl BagDelta {
             return Ok(());
         }
 
-        // Exact Bag subtraction streams the authoritative trie and ordered
-        // removal trie into one clean candidate. This deliberately does not
-        // call PathMap's prefix-aware generic subtraction. One moving zipper
-        // then applies ordered additions while reusing consecutive prefixes.
         let mut entries = if has_structural_removal {
             target.subtract(removals).entries
         } else {

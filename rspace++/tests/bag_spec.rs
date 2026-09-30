@@ -504,6 +504,14 @@ fn algebra_count_strategy() -> impl Strategy<Value = u64> {
     prop_oneof![Just(0), Just(1), Just(u64::MAX), any::<u64>()]
 }
 
+fn borrowed_cursor_entries(value: &Bag) -> Vec<(Vec<u8>, Multiplicity)> {
+    let mut entries = Vec::new();
+    value.visit_relative_prefix(b"", |path, multiplicity| {
+        entries.push((path.to_vec(), multiplicity));
+    });
+    entries
+}
+
 proptest! {
     #![proptest_config(ProptestConfig { cases: 128, failure_persistence: None, ..ProptestConfig::default() })]
     #[test]
@@ -535,6 +543,13 @@ proptest! {
         let meet = left.meet(&right);
         let subtract = left.subtract(&right);
 
+        for value in [&left, &right, &join, &meet, &subtract] {
+            let borrowed = borrowed_cursor_entries(value);
+            prop_assert!(borrowed.windows(2).all(|pair| pair[0].0 < pair[1].0));
+            prop_assert_eq!(borrowed.len(), value.distinct_len());
+            prop_assert_eq!(borrowed, value.iter().collect::<Vec<_>>());
+        }
+
         for (index, key) in keys.iter().enumerate() {
             prop_assert_eq!(join.count(key), left_counts[index].max(right_counts[index]));
             prop_assert_eq!(meet.count(key), left_counts[index].min(right_counts[index]));
@@ -552,12 +567,14 @@ proptest! {
 }
 
 #[test]
-fn ancestor_membership_cannot_substitute_for_an_exact_descendant() {
+fn prefix_coupled_algebra_mutants_disagree_with_the_exact_key_oracle() {
     let ancestor = bag(&[(b"", u64::MAX)]);
     let descendant = bag(&[(b"\0", 1)]);
     assert_eq!(ancestor.meet(&descendant), Bag::new());
+    assert_ne!(ancestor.meet(&descendant), bag(&[(b"", 1)]));
     assert_eq!(ancestor.subtract(&descendant), ancestor);
     assert_eq!(descendant.subtract(&ancestor), descendant);
+    assert_ne!(descendant.subtract(&ancestor), Bag::new());
     assert!(!ancestor.is_subbag_of(&descendant));
     assert!(!descendant.is_subbag_of(&ancestor));
     assert_eq!(ancestor.join(&descendant).count(b""), u64::MAX);

@@ -778,13 +778,27 @@ The Bag caches distinct and total cardinality as derived scalars while `PathMap<
 \operatorname{cardinality}(B)=\sum_{p\in\operatorname{keys}(B)} B(p).
 ```
 
-PathMap's generic lattice operations are deliberately **not** Bag's lattice implementation.
-PathMap is a prefix dictionary, so its generic meet and join may relate keys that are prefixes of
-one another. Bag membership is instead exact: `[a]` and `[a, b]` are two independent elements.
-Randomized comparison with a `BTreeMap<Vec<u8>, u64>` oracle exposed that distinction, including a
-minimal prefix-related failure. The Bag therefore computes pointwise join, meet, and subtraction
-with exact PathMap lookups and copy-on-write trie updates. This preserves prefix compression and
-does not flatten the Bag or modify PathMap.
+Bag's finite-support count algebra treats `[a]` and `[a, b]` as independent exact keys. The
+historical native-PathMap candidate failed a randomized `BTreeMap<Vec<u8>, u64>` comparison on a
+prefix-related fixture, but that failure alone does not establish that all PathMap lattice operations
+have prefix-aware semantics. The current Bag therefore computes pointwise join, meet, and subtraction
+with exact PathMap lookups and copy-on-write trie updates. A future native-operation substitution
+requires a source-level equivalence argument and differential evidence for the pinned PathMap version.
+The current operations preserve prefix compression and do not flatten the Bag or modify PathMap.
+
+The current cursor boundary is narrower than the algebra proof. `Bag::iter()` delegates to a
+guarded `ReadZipperIter`; each yielded path is an owned byte vector, while its positive
+`Multiplicity` comes from a borrowed trie value. `Bag::visit_relative_prefix` instead lends each
+cursor path to its callback, beginning with the root value when present and then advancing through
+`to_next_get_val`. The callback must consume that path before the cursor moves. The Rocq
+`cursor_walk_refines_pointwise_algebra` theorem assumes a duplicate-free visit of every occupied
+key, and `cursor_subbag_walk_refines_finite_support` needs every occupied left key. The release
+property checks that this guarded borrowed cursor emits precisely the same strictly ascending
+endpoints as `Bag::iter()` for both inputs and all algebra results. Clone-based snapshots in that
+property and the deep 128 KiB-stack gate check that construction leaves shared roots unchanged.
+The existing guarded-ownership development covers the physical anchor boundary; the Bag algebra
+proof does not claim to verify PathMap internals or Rust borrow checking. A replacement algorithm
+must retain those concrete cursor and ownership checks while eliminating allocated-key hot walks.
 
 The canonical standalone Bag byte image is the PathMap arena itself:
 
@@ -1287,10 +1301,9 @@ The review yields the following campaign decisions:
    publication are not retryable effects. Any future CAS-published datum lane must remain inside the
    existing selected-match linearization boundary and first prove schedule, replay, and post-state
    equivalence.
-5. **Keep exact-key Bag algebra distinct from prefix algebra.** PathMap's native generic lattice is
-   intentionally prefix-aware, whereas Bag join, meet, and subtraction are pointwise finite-support
-   operations. Native zippers and product traversals are welcome; substituting prefix lattice
-   semantics is not.
+5. **Prove Bag algebra against exact-key counts.** Bag join, meet, and subtraction are pointwise
+   finite-support operations. Native zippers and product traversals are eligible only when their
+   endpoint semantics agree with those equations, including keys that prefix other keys.
 
 Experiment 220 used one preregistered, CPU-pinned run with 82 raw samples per arm and cardinality.
 At the primary cardinality 256, control and treatment means were 71,177.181 ns and 115,273.666 ns.
@@ -1453,8 +1466,8 @@ report-only Heaptrack, paired Cachegrind/Massif, and headless uProf establish th
 mutable trie work and live heap. Checkpoint `0d7a6a3f8`
 adds normalized reversible Bag deltas with atomic apply/revert, and `1560f4371` gives the Bag a
 direct canonical ACTree03 image through the shared iterative trie reader. It also corrects the Bag
-lattice boundary to exact-key finite-support semantics rather than PathMap's generic prefix-aware
-lattice relation. The standalone algebra, delta, codec, malformed-input, property, tiny-stack,
+lattice boundary to exact-key finite-support semantics without assuming equivalence from PathMap's
+generic lattice API. The standalone algebra, delta, codec, malformed-input, property, tiny-stack,
 allocation-shape, comparative-microbenchmark, and core Rocq/Verus law gates pass. Checkpoint
 `cd01ea721` makes the normalized delta the live commit carrier for accepted datum selections in both
 play and replay: fresh and persistent candidates contribute no removal, repeated exact identities

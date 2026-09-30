@@ -190,6 +190,16 @@ Definition cursor_step
   (key :: visited,
    set_count key (cursor_result operation left right key) output).
 
+Theorem cursor_step_preserves_every_other_key :
+  forall operation left right visited output selected other,
+    other <> selected ->
+    snd (cursor_step operation left right visited output selected) other = output other.
+Proof.
+  intros operation left right visited output selected other different.
+  unfold cursor_step; simpl.
+  apply set_count_is_exact. exact different.
+Qed.
+
 Theorem empty_cursor_valid :
   forall operation left right, cursor_valid operation left right empty [].
 Proof.
