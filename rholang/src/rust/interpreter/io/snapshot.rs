@@ -28,18 +28,20 @@
 // best-effort maintenance helper that removes leaked
 // `.wal.tmp` / `.hashes.tmp` files.
 //
-// Slice 6 (this PR) adds the manifest wire format:
+// Slice 6 (PR #509) added the manifest wire format:
 // [`MANIFEST_FORMAT_VERSION`], [`MANIFEST_FILENAME`],
 // [`ManifestEntry`] (struct + `data`/`empty` constructors), and
-// [`ManifestEntry::to_line`] / [`ManifestEntry::from_line`] —
-// the JSONL line format that on-disk manifests use to advertise
-// "which snapshots exist at which block heights."  This slice
-// ships the wire-format layer alone; persistence
-// (`append_manifest_entry` + `read_manifest`) and H-4 signing
-// land in later slices.
+// [`ManifestEntry::to_line`] / [`ManifestEntry::from_line`].
 //
-// Writer / pruning / manifest persistence + signing all land in
-// subsequent slices as their own natural units.
+// Slice 7 (this PR) adds the manifest persistence layer:
+// [`append_manifest_entry`] (O_APPEND + create-if-missing,
+// line-atomic under POSIX) and [`read_manifest`] (parse every
+// line, missing file → empty Vec, malformed line → error with
+// line number).  Together with slice 6's wire format, this
+// gives on-disk manifests their read/write path.
+//
+// Writer / pruning / H-4 signing all land in subsequent slices
+// as their own natural units.
 //
 // # Snapshot semantics — log-structured
 //
@@ -475,6 +477,14 @@ pub enum SnapshotError {
     /// the assembled snapshot as byzantine and re-fetch from a
     /// different peer set.
     MalformedBlob { offset: usize, message: String },
+    /// [`read_manifest`] encountered a malformed line at
+    /// (1-based) `line`.  Distinct from [`Io`] so the
+    /// join-protocol layer can pattern-match manifest schema
+    /// issues (retry with a different peer's manifest) apart
+    /// from real I/O failures (disk problem, escalate).  `cause`
+    /// carries the underlying [`ManifestEntry::from_line`] error
+    /// text.
+    MalformedManifest { line: usize, cause: String },
 }
 
 impl std::fmt::Display for SnapshotError {
@@ -498,6 +508,9 @@ impl std::fmt::Display for SnapshotError {
             ),
             SnapshotError::MalformedBlob { offset, message } => {
                 write!(f, "snapshot blob malformed at offset {offset}: {message}")
+            }
+            SnapshotError::MalformedManifest { line, cause } => {
+                write!(f, "manifest line {line}: {cause}")
             }
         }
     }
@@ -1584,6 +1597,125 @@ impl ManifestEntry {
     }
 }
 
+// ===========================================================
+// Manifest persistence (slice 7) — append + read
+// ===========================================================
+
+/// Append a manifest entry to `<snapshot_dir>/manifest.jsonl`.
+/// Creates the file with `0o644` on first append.
+///
+/// # O_APPEND semantics
+///
+/// Uses O_APPEND.  On common Linux filesystems (ext4, xfs), a
+/// single `write_all` call for a payload <= PIPE_BUF (4 KiB on
+/// Linux, 512 bytes on some BSDs) is atomic against concurrent
+/// writers — no torn lines.  A single manifest line fits in
+/// ~250 bytes worst case (v + block_number + 64-char hex root +
+/// entries + ts_ms + optional 144-char hex sig).
+///
+/// POSIX itself only guarantees this atomicity for pipes;
+/// regular-file behavior is filesystem-specific.  NFSv3 in
+/// particular has weaker semantics.  Under the intended
+/// single-writer SnapshotWriter cadence the concurrent case is
+/// degenerate anyway; the O_APPEND posture is defense-in-depth
+/// for operator side-band tooling on common local filesystems.
+///
+/// # Explicit 0o644 on unix
+///
+/// Matches [`atomic_write_file`]'s discipline — the leader's
+/// umask does not leak to any joiner reading the manifest over
+/// shared storage.  Mode applies only on first-create; a
+/// subsequent append to an existing differently-moded file
+/// does NOT rectify the mode.
+///
+/// # No fsync — manifest is discovery, not authoritative
+///
+/// This function does NOT `fsync` the manifest file or the
+/// containing directory.  Deliberate: the manifest is a
+/// discovery artifact, not consensus authority.  The
+/// referenced snapshot bytes themselves are already durable
+/// (via [`atomic_write_file`]'s tmp+fsync+rename+dir-fsync
+/// discipline).  A crash between this append and the next
+/// natural sync loses the manifest entry from local durable
+/// storage; the consequences are bounded:
+///
+///   - **Discovery**: a joiner querying this peer's manifest
+///     won't see the lost entry; they can rediscover the
+///     snapshot via another peer's manifest, direct-by-root
+///     fetch, or subsequent re-appends by the writer.
+///   - **Retention**: [`prune_snapshot_dir`] (yet to land)
+///     will follow a "keep on-disk `.wal` if referenced by
+///     manifest OR present on disk within retention window"
+///     posture, so a lost manifest entry does not orphan its
+///     `.wal` file to over-eager deletion.
+///
+/// If a future pruning design instead treats the manifest as
+/// authoritative (delete `.wal` files not in manifest), this
+/// no-fsync posture becomes unsafe and MUST be revisited.
+pub fn append_manifest_entry(
+    snapshot_dir: &Path,
+    entry: ManifestEntry,
+) -> Result<(), SnapshotError> {
+    use std::io::Write;
+
+    let path = snapshot_dir.join(MANIFEST_FILENAME);
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o644);
+    }
+    let mut file = opts.open(&path)?;
+    let mut line = entry.to_line();
+    line.push('\n');
+    file.write_all(line.as_bytes())?;
+    Ok(())
+}
+
+/// Read every manifest entry from `<snapshot_dir>/manifest.jsonl`
+/// in file order.  Blank lines skipped.
+///
+/// # Missing file → empty Vec
+///
+/// A fresh install has no manifest yet; retention and discovery
+/// treat "no manifest" as "no snapshots advertised."  Returning
+/// an error instead would force every caller to special-case
+/// [`ErrorKind::NotFound`] as an empty result.
+///
+/// # Malformed line → error with line number
+///
+/// A corrupt line halts parsing at that line and surfaces
+/// [`SnapshotError::MalformedManifest`] with the 1-based line
+/// number so an operator inspecting the manifest can jump
+/// straight to the offending line.  The distinct variant (vs.
+/// wrapping the string in `Io(InvalidData)`) lets the
+/// join-protocol layer pattern-match manifest schema issues
+/// (retry with a different peer's manifest) apart from real
+/// I/O failures (disk problem, escalate).  Join clients should
+/// NOT treat entries before the malformed line as a "best-
+/// effort prefix" — that opens a "who saw what prefix"
+/// divergence hazard between joiners at different manifest read
+/// points; retry with a fixed manifest instead.
+pub fn read_manifest(snapshot_dir: &Path) -> Result<Vec<ManifestEntry>, SnapshotError> {
+    let path = snapshot_dir.join(MANIFEST_FILENAME);
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(SnapshotError::Io(e)),
+    };
+    let mut out = Vec::new();
+    for (i, line) in raw.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let entry = ManifestEntry::from_line(line)
+            .map_err(|cause| SnapshotError::MalformedManifest { line: i + 1, cause })?;
+        out.push(entry);
+    }
+    Ok(out)
+}
+
 /// Wall-clock milliseconds since UNIX_EPOCH.  Saturates to
 /// [`i64::MAX`] if the clock is set far in the future
 /// (astronomically improbable but keeps the return total).
@@ -2374,6 +2506,12 @@ mod tests {
             message: "test-message".into(),
         });
         assert!(s.contains("42") && s.contains("test-message"), "got {s:?}");
+
+        let s = format!("{}", SnapshotError::MalformedManifest {
+            line: 17,
+            cause: "example-cause".into(),
+        });
+        assert!(s.contains("17") && s.contains("example-cause"), "got {s:?}");
 
         let io_err = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "nope");
         let s = format!("{}", SnapshotError::Io(io_err));
@@ -3423,5 +3561,175 @@ mod tests {
             .chain(std::iter::once('z'))
             .collect();
         assert!(hex_decode_32(&mostly_hex).is_err());
+    }
+
+    // ---------------------------------------------------------------
+    // Manifest persistence (slice 7)
+    // ---------------------------------------------------------------
+
+    /// Fresh install: no manifest file yet.  Callers see an empty
+    /// Vec, not an error.
+    #[test]
+    fn read_manifest_missing_file_returns_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let out = read_manifest(tmp.path()).expect("missing manifest is OK, empty");
+        assert!(out.is_empty());
+    }
+
+    /// Empty file (created but never written) also returns empty
+    /// — semantically the same as "no snapshots advertised."
+    #[test]
+    fn read_manifest_empty_file_returns_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join(MANIFEST_FILENAME), b"").unwrap();
+        assert!(read_manifest(tmp.path()).unwrap().is_empty());
+    }
+
+    /// First `append_manifest_entry` creates the file at the
+    /// expected path.
+    #[test]
+    fn append_manifest_entry_creates_file_on_first_append() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join(MANIFEST_FILENAME);
+        assert!(!path.exists());
+        append_manifest_entry(tmp.path(), ManifestEntry::empty(1)).expect("append ok");
+        assert!(path.exists());
+    }
+
+    /// Append writes exactly `to_line() + "\n"` — the newline is
+    /// added by the appender, not by `to_line` (which returns a
+    /// bare line for composition into other contexts).
+    #[test]
+    fn append_manifest_entry_writes_line_with_trailing_newline() {
+        let tmp = tempfile::tempdir().unwrap();
+        let entry = ManifestEntry::empty(1);
+        append_manifest_entry(tmp.path(), entry.clone()).expect("append ok");
+        let bytes = std::fs::read_to_string(tmp.path().join(MANIFEST_FILENAME)).unwrap();
+        assert_eq!(bytes, format!("{}\n", entry.to_line()));
+    }
+
+    /// Second `append_manifest_entry` on an existing file appends
+    /// (not overwrites).  Load-bearing behavior: the manifest is
+    /// meant to grow over the lifetime of the snapshot dir.
+    #[test]
+    fn append_manifest_entry_appends_to_existing_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let e1 = ManifestEntry::empty(1);
+        let e2 = ManifestEntry::empty(2);
+        append_manifest_entry(tmp.path(), e1.clone()).unwrap();
+        append_manifest_entry(tmp.path(), e2.clone()).unwrap();
+        let bytes = std::fs::read_to_string(tmp.path().join(MANIFEST_FILENAME)).unwrap();
+        assert_eq!(bytes, format!("{}\n{}\n", e1.to_line(), e2.to_line()));
+    }
+
+    /// End-to-end load-bearing round-trip: `read_manifest` after
+    /// multiple `append_manifest_entry` calls returns the entries
+    /// in append order.
+    #[test]
+    fn append_read_round_trips_multiple_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let entries = vec![
+            ManifestEntry::data(1, [0x11u8; 32], 3),
+            ManifestEntry::empty(2),
+            ManifestEntry::data(3, [0x33u8; 32], 7),
+        ];
+        for e in &entries {
+            append_manifest_entry(tmp.path(), e.clone()).expect("append ok");
+        }
+        let back = read_manifest(tmp.path()).expect("read ok");
+        assert_eq!(
+            back, entries,
+            "read returns entries in append (= write) order"
+        );
+    }
+
+    /// Blank lines within the manifest (e.g., from an editor
+    /// pass) are tolerated — parsing skips them.  Not a
+    /// well-formed producer's output, but a resilience posture
+    /// against manual edits.
+    #[test]
+    fn read_manifest_skips_blank_lines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let e1 = ManifestEntry::empty(1);
+        let e2 = ManifestEntry::empty(2);
+        let contents = format!("{}\n\n\n   \n{}\n", e1.to_line(), e2.to_line());
+        std::fs::write(tmp.path().join(MANIFEST_FILENAME), contents).unwrap();
+        let back = read_manifest(tmp.path()).expect("read ok");
+        assert_eq!(back, vec![e1, e2]);
+    }
+
+    /// A malformed line surfaces as [`SnapshotError::MalformedManifest`]
+    /// with the 1-based line number as a structured field.  Pattern-
+    /// matching this variant apart from [`SnapshotError::Io`] lets
+    /// the join-protocol layer distinguish "manifest schema issue,
+    /// retry with a different peer" from "real disk problem,
+    /// escalate."
+    #[test]
+    fn read_manifest_malformed_line_returns_error_with_line_number() {
+        let tmp = tempfile::tempdir().unwrap();
+        let good = ManifestEntry::empty(1);
+        // Second line is malformed (missing braces).
+        let contents = format!("{}\nnot json here\n", good.to_line());
+        std::fs::write(tmp.path().join(MANIFEST_FILENAME), contents).unwrap();
+        let err = read_manifest(tmp.path()).expect_err("malformed line surfaces");
+        match err {
+            SnapshotError::MalformedManifest { line, cause } => {
+                assert_eq!(line, 2, "1-based line number");
+                assert!(
+                    cause.contains("missing braces"),
+                    "underlying parse error: {cause}"
+                );
+                // Also pin the Display shape for operator-facing text.
+                let msg = format!("{}", SnapshotError::MalformedManifest { line, cause });
+                assert!(msg.starts_with("manifest line 2:"), "Display shape: {msg}");
+            }
+            other => panic!("expected MalformedManifest, got: {other:?}"),
+        }
+    }
+
+    /// Partial-view posture: parsing halts at the first malformed
+    /// line — entries before it are not returned, even though
+    /// they parsed successfully.  Callers wanting a "best-effort
+    /// prefix" should retry with a fixed manifest.  Pins the
+    /// all-or-nothing behavior.
+    #[test]
+    fn read_manifest_stops_at_first_malformed_line() {
+        let tmp = tempfile::tempdir().unwrap();
+        let good_a = ManifestEntry::empty(1);
+        let good_b = ManifestEntry::empty(3);
+        let contents = format!("{}\nnot json\n{}\n", good_a.to_line(), good_b.to_line());
+        std::fs::write(tmp.path().join(MANIFEST_FILENAME), contents).unwrap();
+        assert!(read_manifest(tmp.path()).is_err());
+    }
+
+    /// Append preserves numeric order under a single-writer
+    /// cadence (block_number climbs monotonically per validator).
+    /// This is a natural consequence of append-only + writer
+    /// discipline; pinned here so a future SnapshotWriter that
+    /// accidentally shuffles entries would be caught.
+    #[test]
+    fn append_preserves_block_number_order_under_single_writer() {
+        let tmp = tempfile::tempdir().unwrap();
+        for bn in 1..=5 {
+            append_manifest_entry(tmp.path(), ManifestEntry::empty(bn)).unwrap();
+        }
+        let back = read_manifest(tmp.path()).expect("read ok");
+        let bns: Vec<i64> = back.iter().map(|e| e.block_number).collect();
+        assert_eq!(bns, vec![1, 2, 3, 4, 5]);
+    }
+
+    /// Explicit 0o644 mode on unix so shared-storage joiners see
+    /// consistent metadata regardless of the leader's umask.
+    /// Matches the `atomic_write_file` posture.
+    #[cfg(unix)]
+    #[test]
+    fn append_manifest_entry_creates_file_with_0o644_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        append_manifest_entry(tmp.path(), ManifestEntry::empty(1)).expect("append ok");
+        let meta = std::fs::metadata(tmp.path().join(MANIFEST_FILENAME)).unwrap();
+        // Low 9 bits are the rwxrwxrwx mode; higher bits are
+        // file-type flags.  Mask to compare just the mode bits.
+        assert_eq!(meta.permissions().mode() & 0o777, 0o644);
     }
 }
