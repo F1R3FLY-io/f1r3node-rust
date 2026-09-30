@@ -18441,6 +18441,29 @@ The next candidate selects the smaller probe first and checks its one empty
 case, preserving the singleton point and multi-key cursor algorithms. Its full
 matrix must be registered and measured afresh.
 
+**MEASURED.** Experiment 370 evaluates that probe-first revision against the
+same 39 cells. Disjoint singleton meet now passes with median ratio 0.992330315
+and upper ratio 1.001812737. All allocation cells pass. The only time failure
+is singleton-left meet against 1,024 right endpoints: median ratio 1.010172909,
+upper ratio 1.131658817. Its paired raw rows show both arms near 73,000 ns
+for the first nine measured samples, then both near 39,000 ns; five discarded
+warmups did not reach steady state for that cell. The complete run remains
+rejected, with no exclusion of those early samples. The
+[compressed raw run](../stack-safety/measurements/bag-cursor-algebra-2026-09-30-probe-first.log.gz)
+has SHA-256
+`89802b2ba9f4ee15bb2a5db2e98b972876d9efccf37ae29994bfb1e73f81c8e8`,
+the [39-cell fits](../stack-safety/measurements/bag-cursor-algebra-2026-09-30-probe-first-fits.tsv)
+have SHA-256
+`c810bebcafa34d27d187263cca0a90f480c956239cba4387d3c41e67218c00e8`,
+and the uncompressed raw digest is
+`450afda4cef3297a9232d39bb62ccfcfbda58ec9897bcd802db3062a8b513966`.
+
+**DECISION.** The implementation is unchanged for the next experiment. The
+measurement harness now discards 20 warmup pairs per cell before retaining the
+same 31 paired samples. This protocol change applies to all 39 cells and is
+registered before any new measurement. Experiments 367–370 remain rejected
+historical observations; they are not retroactively refit or removed.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

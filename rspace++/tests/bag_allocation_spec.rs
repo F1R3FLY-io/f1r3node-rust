@@ -735,7 +735,7 @@ fn bag_algebra_old_new_resource_profile() {
         assert_eq!(allocated_key_subbag(&left, &right), left.is_subbag_of(&right));
         let repetitions = (32768 / case.left.max(case.right).max(1)).clamp(32, 4096);
         for operation in ["meet", "subtract", "subbag"] {
-            for sample in 0..36 {
+            for sample in 0..51 {
                 let arms = if sample % 2 == 0 {
                     ["control", "treatment"]
                 } else {
@@ -747,13 +747,13 @@ fn bag_algebra_old_new_resource_profile() {
                         algebra_profile_batch(operation, arm, &left, &right, repetitions);
                     });
                     let nanos = start.elapsed().as_nanos();
-                    if sample >= 5 {
+                    if sample >= 20 {
                         println!(
                             "BAGALG\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                             case.name,
                             operation,
                             arm,
-                            sample - 5,
+                            sample - 20,
                             repetitions,
                             calls,
                             bytes,
