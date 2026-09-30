@@ -1,6 +1,6 @@
 use std::env;
 use std::hint::black_box;
-use std::panic::{AssertUnwindSafe, catch_unwind, panic_any};
+use std::panic::panic_any;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -511,64 +511,183 @@ fn live_map() -> LiveMap {
     })
 }
 
+fn assert_live_unwind_child(test: &str, case_env: &str, case: &str) {
+    let scratch = shared::rust::test_scratch::acquire("rspace-live-gateway-unwind-");
+    let marker = scratch.path().join("verified");
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command
+        .args(["--exact", test, "--nocapture"])
+        .env(case_env, case)
+        .env("RSPACE_LIVE_GATEWAY_UNWIND_MARKER", &marker)
+        .env_remove(shared::rust::test_process::ALLOW_EXPECTED_PROBE_CORE);
+    let outcome = shared::rust::test_process::run_child_probe(
+        &mut command,
+        std::time::Duration::from_secs(30),
+    )
+    .expect("run the guarded PathMap unwind child");
+    match outcome {
+        shared::rust::test_process::ProbeOutcome::Failed(failure) => {
+            assert_eq!(failure.kind, shared::rust::test_process::ProbeFailureKind::Panicked);
+        }
+        shared::rust::test_process::ProbeOutcome::Passed => {
+            panic!("the guarded PathMap unwind child did not fail: {case}")
+        }
+    }
+    assert_eq!(std::fs::read(marker).unwrap(), case.as_bytes());
+}
+
+fn observe_live_unwind_payload(outcome: &Arc<u64>) -> Arc<AtomicUsize> {
+    let observed = Arc::new(AtomicUsize::new(0));
+    let expected = Arc::clone(outcome);
+    let flag = Arc::clone(&observed);
+    std::panic::set_hook(Box::new(move |info| {
+        if info
+            .payload()
+            .downcast_ref::<Arc<u64>>()
+            .is_some_and(|payload| Arc::ptr_eq(payload, &expected))
+        {
+            flag.store(1, Ordering::SeqCst);
+        }
+    }));
+    observed
+}
+
+fn run_live_gateway_unwind_child(path: Vec<u8>, prefix_gateway: bool, shared: bool) {
+    struct VerifyOnDrop {
+        map: Option<LiveMap>,
+        snapshot: Option<LiveMap>,
+        original: Vec<u8>,
+        anchor: usize,
+        path: Vec<u8>,
+        shared: bool,
+        observed: Arc<AtomicUsize>,
+        case: String,
+        marker: std::path::PathBuf,
+    }
+    impl Drop for VerifyOnDrop {
+        fn drop(&mut self) {
+            assert_eq!(self.observed.load(Ordering::SeqCst), 1);
+            let mut map = self.map.take().unwrap();
+            assert!(map.is_empty());
+            assert_eq!(map.anchor.value_count, 0);
+            assert_eq!(map.iter().count(), 0);
+            assert_eq!(map.compact_u64_bytes(|v| *v), live_map().compact_u64_bytes(|v| *v));
+            let normalized = map.compact_u64_bytes(|v| *v);
+            map.with_write_cursor(|_| ());
+            map.with_write_cursor_at(&[], |_| ());
+            assert_eq!(map.compact_u64_bytes(|v| *v), normalized);
+            if !self.shared {
+                assert_eq!(map.anchor_identity(), self.anchor);
+            }
+            map.set_val_at([0x22, 0x44], 99);
+            assert_eq!(map.get([0x22, 0x44]), Some(&99));
+            assert_eq!(map.anchor.value_count, 1);
+            if let Some(snapshot) = &self.snapshot {
+                assert_eq!(snapshot.compact_u64_bytes(|v| *v), self.original);
+                assert_eq!(snapshot.get(&self.path), Some(&17));
+                drop(map);
+                assert_eq!(snapshot.compact_u64_bytes(|v| *v), self.original);
+            }
+            std::fs::write(&self.marker, self.case.as_bytes()).unwrap();
+        }
+    }
+    let case = std::env::var("RSPACE_LIVE_GATEWAY_UNWIND_CASE").unwrap();
+    let marker = std::env::var_os("RSPACE_LIVE_GATEWAY_UNWIND_MARKER").unwrap();
+    let mut map = live_map();
+    map.set_val_at(&path, 17);
+    let original = map.compact_u64_bytes(|value| *value);
+    let snapshot = shared.then(|| map.clone());
+    let anchor = map.anchor_identity();
+    let outcome = Arc::new(73_u64);
+    let observed = observe_live_unwind_payload(&outcome);
+    let mut verify = VerifyOnDrop {
+        map: Some(map),
+        snapshot,
+        original,
+        anchor,
+        path: path.clone(),
+        shared,
+        observed,
+        case,
+        marker: marker.into(),
+    };
+    let remove = |mut cursor: LiveCursor<'_, '_>| {
+        cursor.move_to_path(&path);
+        assert!(cursor.remove_val_and_prune());
+        panic_any(Arc::clone(&outcome));
+    };
+    if prefix_gateway {
+        verify
+            .map
+            .as_mut()
+            .unwrap()
+            .with_write_cursor_at(&[], remove);
+    } else {
+        verify.map.as_mut().unwrap().with_write_cursor(remove);
+    }
+}
+
 fn check_live_gateway(path: &[u8]) {
     for prefix_gateway in [false, true] {
-        for unwind in [false, true] {
-            for shared in [false, true] {
-                let mut map = live_map();
-                map.set_val_at(path, 17);
-                let original = map.compact_u64_bytes(|value| *value);
-                let snapshot = shared.then(|| map.clone());
-                let anchor = map.anchor_identity();
-                let outcome = Arc::new(73_u64);
-                let remove = |mut cursor: LiveCursor<'_, '_>| {
-                    cursor.move_to_path(path);
-                    assert!(cursor.remove_val_and_prune());
-                    if unwind {
-                        panic_any(Arc::clone(&outcome));
-                    }
-                    Arc::clone(&outcome)
-                };
-                let result = catch_unwind(AssertUnwindSafe(|| {
-                    if prefix_gateway {
-                        map.with_write_cursor_at(&[], remove)
-                    } else {
-                        map.with_write_cursor(remove)
-                    }
-                }));
-                let returned = if unwind {
-                    *result.unwrap_err().downcast::<Arc<u64>>().unwrap()
-                } else {
-                    result.unwrap()
-                };
-                assert!(Arc::ptr_eq(&returned, &outcome));
-                assert!(map.is_empty());
-                assert_eq!(map.anchor.value_count, 0);
-                assert_eq!(map.iter().count(), 0);
-                assert_eq!(map.compact_u64_bytes(|v| *v), live_map().compact_u64_bytes(|v| *v));
-                let normalized = map.compact_u64_bytes(|v| *v);
-                map.with_write_cursor(|_| ());
-                map.with_write_cursor_at(&[], |_| ());
-                assert_eq!(map.compact_u64_bytes(|v| *v), normalized);
-                if !shared {
-                    assert_eq!(map.anchor_identity(), anchor);
-                }
-                map.set_val_at([0x22, 0x44], 99);
-                assert_eq!(map.get([0x22, 0x44]), Some(&99));
-                assert_eq!(map.anchor.value_count, 1);
-                if let Some(snapshot) = snapshot {
-                    assert_eq!(snapshot.compact_u64_bytes(|v| *v), original);
-                    assert_eq!(snapshot.get(path), Some(&17));
-                    drop(map);
-                    assert_eq!(snapshot.compact_u64_bytes(|v| *v), original);
-                }
+        for shared in [false, true] {
+            let mut map = live_map();
+            map.set_val_at(path, 17);
+            let original = map.compact_u64_bytes(|value| *value);
+            let snapshot = shared.then(|| map.clone());
+            let anchor = map.anchor_identity();
+            let outcome = Arc::new(73_u64);
+            let remove = |mut cursor: LiveCursor<'_, '_>| {
+                cursor.move_to_path(path);
+                assert!(cursor.remove_val_and_prune());
+                Arc::clone(&outcome)
+            };
+            let returned = if prefix_gateway {
+                map.with_write_cursor_at(&[], remove)
+            } else {
+                map.with_write_cursor(remove)
+            };
+            assert!(Arc::ptr_eq(&returned, &outcome));
+            assert!(map.is_empty());
+            assert_eq!(map.anchor.value_count, 0);
+            assert_eq!(map.iter().count(), 0);
+            assert_eq!(map.compact_u64_bytes(|v| *v), live_map().compact_u64_bytes(|v| *v));
+            let normalized = map.compact_u64_bytes(|v| *v);
+            map.with_write_cursor(|_| ());
+            map.with_write_cursor_at(&[], |_| ());
+            assert_eq!(map.compact_u64_bytes(|v| *v), normalized);
+            if !shared {
+                assert_eq!(map.anchor_identity(), anchor);
             }
+            map.set_val_at([0x22, 0x44], 99);
+            assert_eq!(map.get([0x22, 0x44]), Some(&99));
+            assert_eq!(map.anchor.value_count, 1);
+            if let Some(snapshot) = snapshot {
+                assert_eq!(snapshot.compact_u64_bytes(|v| *v), original);
+                assert_eq!(snapshot.get(path), Some(&17));
+                drop(map);
+                assert_eq!(snapshot.compact_u64_bytes(|v| *v), original);
+            }
+            let case = format!("{}:{prefix_gateway}:{shared}", hex::encode(path));
+            assert_live_unwind_child(
+                    "rspace::guarded_pathmap::two_phase_teardown_properties::live_write_gateways_preserve_normal_and_unwind_outcomes",
+                    "RSPACE_LIVE_GATEWAY_UNWIND_CASE",
+                    &case,
+                );
         }
     }
 }
 
 #[test]
 fn live_write_gateways_preserve_normal_and_unwind_outcomes() {
+    if let Ok(case) = std::env::var("RSPACE_LIVE_GATEWAY_UNWIND_CASE") {
+        let mut parts = case.split(':');
+        let path = hex::decode(parts.next().unwrap()).expect("hex-encoded live gateway path");
+        let prefix_gateway = parts.next().unwrap().parse::<bool>().unwrap();
+        let shared = parts.next().unwrap().parse::<bool>().unwrap();
+        assert!(parts.next().is_none());
+        run_live_gateway_unwind_child(path, prefix_gateway, shared);
+        return;
+    }
     for path in [Vec::new(), vec![0x11], vec![0xa5; 256]] {
         check_live_gateway(&path);
     }
@@ -576,6 +695,11 @@ fn live_write_gateways_preserve_normal_and_unwind_outcomes() {
 
 #[test]
 fn live_write_gateways_preserve_nonempty_topology_and_siblings() {
+    if let Ok(case) = std::env::var("RSPACE_LIVE_SIBLING_UNWIND_CASE") {
+        let with_sibling = case.parse::<bool>().unwrap();
+        run_nonempty_topology_unwind_child(with_sibling, case);
+        return;
+    }
     for prefix_gateway in [false, true] {
         let mut map = live_map();
         map.create_path([1, 2, 3]);
@@ -591,28 +715,18 @@ fn live_write_gateways_preserve_nonempty_topology_and_siblings() {
         assert!(map.path_exists([1, 2, 3]));
         assert_eq!(map.compact_u64_bytes(|v| *v), before);
     }
-    for (unwind, with_sibling) in [(false, false), (false, true), (true, false), (true, true)] {
+    for with_sibling in [false, true] {
         let mut map = live_map();
         map.set_val_at([1, 2], 17);
         if with_sibling {
             map.set_val_at([3, 4], 55);
         }
         let outcome = Arc::new(73_u64);
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            map.with_write_cursor_at(&[1], |mut cursor| {
-                cursor.move_to_path(&[2]);
-                assert!(cursor.remove_val_and_prune());
-                if unwind {
-                    panic_any(Arc::clone(&outcome));
-                }
-                Arc::clone(&outcome)
-            })
-        }));
-        let returned = if unwind {
-            *result.unwrap_err().downcast::<Arc<u64>>().unwrap()
-        } else {
-            result.unwrap()
-        };
+        let returned = map.with_write_cursor_at(&[1], |mut cursor| {
+            cursor.move_to_path(&[2]);
+            assert!(cursor.remove_val_and_prune());
+            Arc::clone(&outcome)
+        });
         assert!(Arc::ptr_eq(&returned, &outcome));
         assert!(map.get([1, 2]).is_none());
         assert_eq!(map.get([3, 4]), with_sibling.then_some(&55));
@@ -625,7 +739,62 @@ fn live_write_gateways_preserve_nonempty_topology_and_siblings() {
         map.set_val_at([1, 9], 42);
         assert_eq!(map.get([1, 9]), Some(&42));
         assert_eq!(map.get([3, 4]), with_sibling.then_some(&55));
+        assert_live_unwind_child(
+            "rspace::guarded_pathmap::two_phase_teardown_properties::live_write_gateways_preserve_nonempty_topology_and_siblings",
+            "RSPACE_LIVE_SIBLING_UNWIND_CASE",
+            &with_sibling.to_string(),
+        );
     }
+}
+
+fn run_nonempty_topology_unwind_child(with_sibling: bool, case: String) {
+    struct VerifyOnDrop {
+        map: LiveMap,
+        with_sibling: bool,
+        observed: Arc<AtomicUsize>,
+        case: String,
+        marker: std::path::PathBuf,
+    }
+    impl Drop for VerifyOnDrop {
+        fn drop(&mut self) {
+            assert_eq!(self.observed.load(Ordering::SeqCst), 1);
+            assert!(self.map.get([1, 2]).is_none());
+            assert_eq!(self.map.get([3, 4]), self.with_sibling.then_some(&55));
+            assert_eq!(self.map.anchor.value_count, usize::from(self.with_sibling));
+            if self.map.is_empty() {
+                assert_eq!(
+                    self.map.compact_u64_bytes(|v| *v),
+                    live_map().compact_u64_bytes(|v| *v)
+                );
+            } else {
+                assert!(self.map.path_exists([1]) || self.with_sibling);
+            }
+            self.map.set_val_at([1, 9], 42);
+            assert_eq!(self.map.get([1, 9]), Some(&42));
+            assert_eq!(self.map.get([3, 4]), self.with_sibling.then_some(&55));
+            std::fs::write(&self.marker, self.case.as_bytes()).unwrap();
+        }
+    }
+    let marker = std::env::var_os("RSPACE_LIVE_GATEWAY_UNWIND_MARKER").unwrap();
+    let mut map = live_map();
+    map.set_val_at([1, 2], 17);
+    if with_sibling {
+        map.set_val_at([3, 4], 55);
+    }
+    let outcome = Arc::new(73_u64);
+    let observed = observe_live_unwind_payload(&outcome);
+    let mut verify = VerifyOnDrop {
+        map,
+        with_sibling,
+        observed,
+        case,
+        marker: marker.into(),
+    };
+    verify.map.with_write_cursor_at(&[1], |mut cursor| {
+        cursor.move_to_path(&[2]);
+        assert!(cursor.remove_val_and_prune());
+        panic_any(Arc::clone(&outcome));
+    });
 }
 
 proptest! {
