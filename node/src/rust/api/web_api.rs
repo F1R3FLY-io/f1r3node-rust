@@ -325,13 +325,13 @@ impl WebApiImpl {
             }
         };
         // Serves the cached report when there is one and replays only when the
-        // reporter is idle: block_report refuses rather than queues, so a read
-        // arriving during catch-up returns without waiting instead of adding to
-        // the load. A replay that does happen also caches, so ordinary reads
-        // repopulate what pre-caching missed.
+        // reporter is idle: block_report_if_idle refuses rather than queues, so
+        // a read arriving during catch-up returns without waiting instead of
+        // adding to the load. A replay that does happen also caches, so ordinary
+        // reads repopulate what pre-caching missed.
         match self
             .block_report_api
-            .block_report(block_hash_bytes, false)
+            .block_report_if_idle(block_hash_bytes)
             .await
         {
             Ok(report) => {
