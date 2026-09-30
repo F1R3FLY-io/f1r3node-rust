@@ -8,11 +8,12 @@ Earlier acceptance does not cover the Batch E source changes.
   "artifact": {
     "path": "formal/rocq/node_authority/_CoqProject",
     "id": "formal-rocq-node-authority-CoqProject",
-    "commit": "28606f1103343a6d4e1e425a7d9a96c93459c57a",
-    "commit_is_base": true,
+    "commit": "7b023678c8ab6e32fe8266624cf10e087ef89d57",
+    "commit_is_base": false,
     "working_tree": false,
-    "sha256": "7ac76c64251e36750b6bce5fd71e016c832a9a96c003188dadd0dec69b3a7f9d",
-    "sha256_at_registration": "7ac76c64251e36750b6bce5fd71e016c832a9a96c003188dadd0dec69b3a7f9d"
+    "sha256": "2004bbfc106f5930a36b53a634a87183daca425bb6e2a3abcaebcc22613ae23f",
+    "sha256_at_registration": "7ac76c64251e36750b6bce5fd71e016c832a9a96c003188dadd0dec69b3a7f9d",
+    "sha256_before_refresh": "7ac76c64251e36750b6bce5fd71e016c832a9a96c003188dadd0dec69b3a7f9d"
   },
   "claim": "docs/claims/casper-node-display-projection.md",
   "claim_ids": [
@@ -38,6 +39,17 @@ Earlier acceptance does not cover the Batch E source changes.
   },
   "soak": "pending",
   "waiver": null,
-  "verified_at": null
+  "verified_at": null,
+  "previous_refresh_record": {
+    "path": "docs/cbc-evidence/formal-rocq-node-authority-CoqProject.md",
+    "commit": "7b023678c8ab6e32fe8266624cf10e087ef89d57",
+    "sha256": "f61a00cd0bf36b6ce59f71787f6e3c76bc4d4a457776412569cdf204f12d560c"
+  },
+  "claim_digests_before_refresh": {
+    "docs/claims/casper-node-authority-evaluation.md": "15cc3c2951f8291b4670cf9554103755833777b857cd700feac1776d02924081",
+    "docs/claims/casper-node-display-projection.md": "ace855346324009b5f08972b5c12e043abaf8889ff40501b525d0fa09cd49dce"
+  },
+  "refreshed_at": "2026-09-30T22:43:21.676Z",
+  "refresh_scope": "batch-e-source-registration-renewal"
 }
 ```

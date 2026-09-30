@@ -8,11 +8,12 @@ Earlier acceptance does not cover the Batch E source changes.
   "artifact": {
     "path": "casper/tests/soak_observer.rs",
     "id": "casper-tests-soak-observer-rs",
-    "commit": "28606f1103343a6d4e1e425a7d9a96c93459c57a",
-    "commit_is_base": true,
+    "commit": "7b023678c8ab6e32fe8266624cf10e087ef89d57",
+    "commit_is_base": false,
     "working_tree": false,
-    "sha256": "8750c7c9ba7bf72db70f4dcb93180c4e275429a783c3c38a976bafe91fa9e9bf",
-    "sha256_at_registration": "8750c7c9ba7bf72db70f4dcb93180c4e275429a783c3c38a976bafe91fa9e9bf"
+    "sha256": "12332259bd1bd4ea958cff1da0dc080f3cb94c3d19238db1fffd4d78755ac17e",
+    "sha256_at_registration": "8750c7c9ba7bf72db70f4dcb93180c4e275429a783c3c38a976bafe91fa9e9bf",
+    "sha256_before_refresh": "8750c7c9ba7bf72db70f4dcb93180c4e275429a783c3c38a976bafe91fa9e9bf"
   },
   "claim": "docs/claims/casper-node-display-projection.md",
   "claim_ids": [
@@ -20,7 +21,7 @@ Earlier acceptance does not cover the Batch E source changes.
     "CLAIM-CASPER-NODE-OBSERVATION-005"
   ],
   "claim_digests": {
-    "docs/claims/casper-node-fork-choice-observation.md": "24619b06b7c3c4b3849227cea5126c237a9f45e97c628205003866ee6c3c1940",
+    "docs/claims/casper-node-fork-choice-observation.md": "c007214aad05afbcd100c0e37fd18b166463147b5fa2e1e797743ab814b15a49",
     "docs/claims/casper-node-display-projection.md": "ace855346324009b5f08972b5c12e043abaf8889ff40501b525d0fa09cd49dce"
   },
   "status": "pending",
@@ -38,6 +39,17 @@ Earlier acceptance does not cover the Batch E source changes.
   },
   "soak": "pending",
   "waiver": null,
-  "verified_at": null
+  "verified_at": null,
+  "previous_refresh_record": {
+    "path": "docs/cbc-evidence/casper-tests-soak-observer-rs.md",
+    "commit": "7b023678c8ab6e32fe8266624cf10e087ef89d57",
+    "sha256": "5402727459d24360ac01dbc17cd4f30527a11b04ab5f18d2589cc9d2bfd43feb"
+  },
+  "claim_digests_before_refresh": {
+    "docs/claims/casper-node-fork-choice-observation.md": "24619b06b7c3c4b3849227cea5126c237a9f45e97c628205003866ee6c3c1940",
+    "docs/claims/casper-node-display-projection.md": "ace855346324009b5f08972b5c12e043abaf8889ff40501b525d0fa09cd49dce"
+  },
+  "refreshed_at": "2026-09-30T22:43:21.676Z",
+  "refresh_scope": "batch-e-source-registration-renewal"
 }
 ```

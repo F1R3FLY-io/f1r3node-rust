@@ -9,11 +9,12 @@ It supplies no acceptance evidence.
   "artifact": {
     "path": "casper/src/rust/api/block_api.rs",
     "id": "casper-src-rust-api-block-api-rs",
-    "commit": "3ab092cc58fb30f4da39e6c8b28b8d25206c661b",
-    "commit_is_base": true,
-    "working_tree": true,
+    "commit": "7b023678c8ab6e32fe8266624cf10e087ef89d57",
+    "commit_is_base": false,
+    "working_tree": false,
     "sha256": "fe33e07118d43ab733870ac54840e648d4196a5890188b1b5343b5593d60cd26",
-    "sha256_at_registration": "7c1553e367da17fe05b96aec1ce721afcc03e63c1a1c7d10d9ef06d7d2883892"
+    "sha256_at_registration": "7c1553e367da17fe05b96aec1ce721afcc03e63c1a1c7d10d9ef06d7d2883892",
+    "sha256_before_refresh": "fe33e07118d43ab733870ac54840e648d4196a5890188b1b5343b5593d60cd26"
   },
   "claim": "docs/claims/casper-node-display-projection.md",
   "claim_ids": [
@@ -34,6 +35,16 @@ It supplies no acceptance evidence.
   },
   "soak": "pending",
   "waiver": null,
-  "verified_at": null
+  "verified_at": null,
+  "previous_refresh_record": {
+    "path": "docs/cbc-evidence/casper-src-rust-api-block-api-rs.md",
+    "commit": "7b023678c8ab6e32fe8266624cf10e087ef89d57",
+    "sha256": "fd3ca83ed505c1c6bc710fd91531962ba7329d187067393178291b51548baf37"
+  },
+  "claim_digests_before_refresh": {
+    "docs/claims/casper-node-display-projection.md": "ace855346324009b5f08972b5c12e043abaf8889ff40501b525d0fa09cd49dce"
+  },
+  "refreshed_at": "2026-09-30T22:43:21.676Z",
+  "refresh_scope": "batch-e-source-registration-renewal"
 }
 ```

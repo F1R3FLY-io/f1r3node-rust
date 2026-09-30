@@ -954,8 +954,8 @@ tasks:
     cbc_tags_applied: true
     implementation_baseline: 3ab092cc58fb30f4da39e6c8b28b8d25206c661b
     source_scope_recheck_required: false
-    stage: "Step-13 handoff verified against 7 committed digests. Claim 005 registered pending and 5 ratified tags applied. Two new production-file records registered before code changes. Agent A retains its 28 Batch D records through step 15."
-    record_refresh_coordination: "Do not edit Agent A's batch-d-registration records. Wait for the step-15 refresh before creating Batch E successor records with previous_record. The binding-driver record also waits for Agent A's refresh."
+    stage: "Batch E sources and initial tests are committed. The current checkpoint is 7b023678c. Capture, observer, and arithmetic checks passed 80 tests. Formal bindings, boundary coverage, isolated node checks, evidence, and named acceptance remain incomplete."
+    record_refresh_coordination: "Agent A committed step 15 at 28606f110. Sixteen successor records retain their exact previous_record identities. Batch E has 31 current-source pending records. Twelve first records follow source implementation, with explicit registration gaps. The final mandatory inventory determines the complete refresh scope."
     open_questions: "No scope decision remains open. A new implementation path requires a scope amendment."
     scope: "Capture the equivocation inputs in the same interval as the detached DAG capture, and calculate the display projection from captured inputs only, with the arithmetic of the live calculation."
     acceptance:

@@ -9,11 +9,12 @@ It supplies no acceptance evidence.
   "artifact": {
     "path": "casper/src/rust/engine/multi_parent_casper/dispatch.rs",
     "id": "casper-src-rust-engine-multi-parent-casper-dispatch-rs",
-    "commit": "3ab092cc58fb30f4da39e6c8b28b8d25206c661b",
-    "commit_is_base": true,
-    "working_tree": true,
+    "commit": "7b023678c8ab6e32fe8266624cf10e087ef89d57",
+    "commit_is_base": false,
+    "working_tree": false,
     "sha256": "7f20e21e0808fee5e22d279ef4d9760553bce05ef26761395ee800372027a664",
-    "sha256_at_registration": "e917a68e49d130b99a16a7c446c3409cba9c49c5d6811bea7e7ed66ef422b68a"
+    "sha256_at_registration": "e917a68e49d130b99a16a7c446c3409cba9c49c5d6811bea7e7ed66ef422b68a",
+    "sha256_before_refresh": "7f20e21e0808fee5e22d279ef4d9760553bce05ef26761395ee800372027a664"
   },
   "claim": "docs/claims/casper-node-display-projection.md",
   "claim_ids": [
@@ -34,6 +35,16 @@ It supplies no acceptance evidence.
   },
   "soak": "pending",
   "waiver": null,
-  "verified_at": null
+  "verified_at": null,
+  "previous_refresh_record": {
+    "path": "docs/cbc-evidence/casper-src-rust-engine-multi-parent-casper-dispatch-rs.md",
+    "commit": "7b023678c8ab6e32fe8266624cf10e087ef89d57",
+    "sha256": "624e959d52e72801a8b57ce6ec4d9db866f9e2690df7982ef4317dca32f928a2"
+  },
+  "claim_digests_before_refresh": {
+    "docs/claims/casper-node-display-projection.md": "ace855346324009b5f08972b5c12e043abaf8889ff40501b525d0fa09cd49dce"
+  },
+  "refreshed_at": "2026-09-30T22:43:21.676Z",
+  "refresh_scope": "batch-e-source-registration-renewal"
 }
 ```

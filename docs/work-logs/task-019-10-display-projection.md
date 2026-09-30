@@ -7,6 +7,9 @@ claimed_at: 2026-09-30T17:45:58Z
 implementation_baseline: 3ab092cc58fb30f4da39e6c8b28b8d25206c661b
 claim_id: CLAIM-CASPER-NODE-OBSERVATION-005
 claim_status: pending
+implementation_checkpoint: 7b023678c8ab6e32fe8266624cf10e087ef89d57
+source_records: 31
+late_source_registrations: 12
 scope_files: 72
 ```
 
@@ -18,22 +21,28 @@ Agent B verified the seven SHA-256 digests in Agent A's committed step-13 handof
 The handoff commit is `3ab092cc58fb30f4da39e6c8b28b8d25206c661b`.
 The working files also matched those seven digests before Batch E changes.
 
-Agent A retains Batch D verification, evidence, and acceptance work.
-Its 28 registration records remain untouched until its step-15 refresh.
-Batch E successor records must preserve the committed Batch D record through `previous_record`.
-The binding-driver record also requires Agent A's refresh first.
+Agent A committed its step-15 refresh at `28606f1103343a6d4e1e425a7d9a96c93459c57a`.
+Commit `2d4af9134db60ff1393442e844e313be9e907813` records the separate Claim 004 acceptance.
+Sixteen Batch E successor records preserve the exact committed `previous_record` references.
 The Batch E scope changes no binding-driver code.
+Historical acceptance does not cover changed source bytes.
 
 ## Registration
 
-Claim 005 was registered as pending before the first code change.
+The initial slice registered Claim 005 as pending before the first code change.
 The five ratified mandatory tags were applied.
-The dispatch and block API files received new pending source-bound records before their source changes.
+The dispatch and block API files received pending records before their source changes.
+The initial-fault file received its pending record when its source first existed.
 
-The new initial-fault file received its pending record when its source first existed.
-All three new records bind the current source and claim bytes, and retain the registration digests.
-The sixteen shared existing records await the committed step-15 refresh.
-No claim was discharged or accepted.
+The current refresh updates nineteen existing pending records and creates twelve missing records.
+All thirty-one records bind the source bytes at the implementation checkpoint.
+The refresh preserves registration digests and adds immutable references to the nineteen prior records.
+All sixteen original `previous_record` references passed independent hash checks.
+
+The twelve missing records follow their source implementation commits.
+Each new record names this registration gap explicitly.
+The refresh does not establish registration before source implementation.
+Claim 005 remains pending, with no new verification or acceptance.
 
 ## Work sequence
 
@@ -41,14 +50,36 @@ No claim was discharged or accepted.
 - [x] Register the pending claim, tags, and two new production-file records.
 - [x] Extract production arithmetic and pass the first isolated duplicate-record fixture.
 - [ ] Complete arithmetic boundary and differential tests.
-- [ ] Capture bounded tracker rows in the existing transaction interval.
-- [ ] Add the optional display request and detached calculation.
+- [x] Capture bounded tracker rows in the existing transaction interval.
+- [x] Add the optional display request and detached calculation.
 - [ ] Preserve legacy and Batch D request digests and tests.
 - [ ] Add the bounded model, controls, integer proofs, and bindings.
 - [ ] Complete coordinated source-specific records and compact evidence.
 - [ ] Request named maintainer acceptance.
 
-## Initial arithmetic cycle
+## Current checkpoint on 2026-09-30
+
+The checkout returned to `feature/casper-node-observation` at `7b023678c8ab6e32fe8266624cf10e087ef89d57`.
+Commit `5419682e9` contains the later display tests and formal artifacts.
+The committed implementation now includes the tracker capture and detached display calculation.
+
+Fresh host release checks passed:
+
+| Check | Result | Retained local log |
+| --- | --- | --- |
+| `cargo nextest run --locked --offline --release -p block-storage --test soak_snapshot --no-fail-fast` | 33 passed, zero skipped | `target/node-observation-prep-20260928-01/batch-e/capture-current.log` |
+| `cargo nextest run --locked --offline --release -p casper --test soak_observer --no-fail-fast` | 44 passed, zero skipped | `target/node-observation-prep-20260928-01/batch-e/observer-current.log` |
+| `cargo nextest run --locked --offline --release -p casper --lib -E 'test(initial_fault::tests)' --no-fail-fast` | 3 passed, 378 filtered out | `target/node-observation-prep-20260928-01/batch-e/arithmetic-current.log` |
+
+These checks cover eighty distinct selected tests.
+Each retained log has a separate exit record with value zero.
+The current observer run has no resource-leak report.
+The earlier resource-leak report remains historical evidence, not a diagnosed or repaired defect.
+
+Formal bindings, remaining boundary tests, isolated Linux node checks, compact evidence, and named acceptance remain incomplete.
+The initial arithmetic account below describes the earlier slice, not the current implementation.
+
+## Initial arithmetic cycle (historical)
 
 The new `initial_fault.rs` contains shared weight lookup, integer sums, normalization, and final subtraction.
 The production dispatch calls the weight helpers and normalization.
