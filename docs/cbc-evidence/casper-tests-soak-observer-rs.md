@@ -1,16 +1,16 @@
 # CbC Evidence: casper/tests/soak_observer.rs
 
-This record registers the pending Batch D claim before implementation. It replaces the accepted record of the earlier claim, which previous_record names. It contains no acceptance evidence.
+This record binds the Batch D verification of 2026-09-30 at revision `3ab092cc5` to the file. Named maintainer review and acceptance of the claim remain pending.
 
 ```json
 {
   "artifact": {
     "path": "casper/tests/soak_observer.rs",
     "id": "casper-tests-soak-observer-rs",
-    "commit": "e90e4cffae56fce5ab39eea5878c7772ffa5e880",
+    "commit": "3ab092cc58fb30f4da39e6c8b28b8d25206c661b",
     "commit_is_base": true,
-    "working_tree": true,
-    "sha256": null,
+    "working_tree": false,
+    "sha256": "8750c7c9ba7bf72db70f4dcb93180c4e275429a783c3c38a976bafe91fa9e9bf",
     "sha256_at_registration": "5eb62fddb3517a435cb2597595343bf2d9ed32acf8308911543464387bd556a6"
   },
   "claim": "docs/claims/casper-node-fork-choice-observation.md",
@@ -22,19 +22,23 @@ This record registers the pending Batch D claim before implementation. It replac
   },
   "previous_record": {
     "path": "docs/cbc-evidence/casper-tests-soak-observer-rs.md",
-    "sha256": "be3c89f7158e85e0625ca45982f9f419ae760e2f734e4a9d82e2414039aa71e5",
-    "commit": "e90e4cffae56fce5ab39eea5878c7772ffa5e880"
+    "sha256": "0d73dbf8d604291560c0cd5b2bc593f5a9d4583dc87a71c91df0286fe5d42578",
+    "commit": "3ab092cc58fb30f4da39e6c8b28b8d25206c661b"
   },
   "status": "pending",
-  "scope": "batch-d-registration",
-  "evidence": null,
+  "scope": "batch-d-verification-01",
+  "evidence": {
+    "kind": "tiered-evidence-recorded-pending-acceptance",
+    "ref": "docs/cbc-evidence/runs/casper-node-fork-choice-batch-d-3ab092cc5-01/report.json",
+    "sha256": "6eb70a7bd3a4833555780e3ebd87104964a45a0c8f518af55869fde4da323297"
+  },
   "tiers": {
-    "refutation": "pending",
+    "refutation": "recorded",
     "construction": "pending",
-    "binding": "pending"
+    "binding": "recorded"
   },
   "soak": "pending",
   "waiver": null,
-  "verified_at": null
+  "verified_at": "2026-09-30T17:50:15+00:00"
 }
 ```

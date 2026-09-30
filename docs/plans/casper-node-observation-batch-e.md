@@ -1,15 +1,18 @@
 # Casper Node Observation: Batch E
 
 ```yaml
-status: scope_confirmed_implementation_blocked
+status: implementation_in_progress
 scope_confirmed_by: user
 scope_confirmed_at: 2026-09-30T15:38:36.579734+00:00
 approval_checkpoint: 06f0d3e8cf85f7072769960cde3746dc0830a68f
 reviewed_checkpoint: 030384f5f31613c64552f7d5b517ef1fe2552d11
 task: TASK-019-10
-blocked_by: TASK-019-9
+blocked_by: null
 handoff_milestone: TASK-019-9_step_13
-handoff_received: false
+handoff_received: true
+handoff_revision: 3ab092cc58fb30f4da39e6c8b28b8d25206c661b
+handoff_digests_verified: 7
+implementation_baseline: 3ab092cc58fb30f4da39e6c8b28b8d25206c661b
 requires_batch_d_task_completion: false
 main_files: 39
 ledger_records: 31
@@ -18,9 +21,9 @@ total_files: 72
 new_files: 33
 changed_files: 39
 cbc_tags_ratified: true
-cbc_tags_applied: false
-claim_registered: false
-implementation_started: false
+cbc_tags_applied: true
+claim_registered: true
+implementation_started: true
 ```
 
 ## Authorization and sequencing
@@ -29,15 +32,22 @@ The user approved the 72-file scope and the documented recommendations on 2026-0
 The approval includes all sixteen decisions, the complete shared arithmetic, five mandatory tags, and the 4,096-row ceiling.
 Batch D is at step 8 of 16 at the approval checkpoint.
 
-Agent A will hand over the final Batch D files after step 13.
-Batch E implementation remains blocked until that explicit handoff and the final shared-source check.
+Agent A handed over the final Batch D files after step 13.
+Agent B verified all seven committed digests at `3ab092cc58fb30f4da39e6c8b28b8d25206c661b`.
+The source-scope check passed, and Batch E implementation started after pending claim registration.
 The file handoff does not establish completion, verification, or acceptance of the Batch D task.
 An additional implementation path requires a scope amendment.
 
 The review used checkpoint `030384f5f31613c64552f7d5b517ef1fe2552d11`.
 Agent A changed three shared observer files during that review.
-The implementation baseline will use the step-13 handoff revision, not the earlier review hashes.
-No claim, tag, or ledger registration occurred through this plan promotion.
+The implementation baseline uses the step-13 handoff revision, not the earlier review hashes.
+No claim, tag, or ledger registration occurred through the initial plan promotion.
+The later handoff enabled pending Claim 005 registration, the five ratified tags, and the new production-file records.
+
+Agent A owns the 28 Batch D records and the binding-driver refresh in step 15.
+Agent B leaves those records unchanged until the refresh has a committed identity.
+Batch E successor records must use `previous_record` to preserve the original record.
+Batch D verification remains specific to the pinned handoff sources.
 
 ## Approved design
 
@@ -93,7 +103,7 @@ It adds no dependency, lockfile, module, workflow, or model beyond the draft.
 | 13: Code and tags | Keep three new modules. Add tags for those modules and the two changed production arithmetic files. |
 | 14: Row limit | Require a positive request limit with a proposed ceiling of 4,096. No production limit changes. |
 | 15: Reference | Do not add another arithmetic implementation. Test against frozen behavior and the actual shared production path. |
-| 16: Identity | Use `TASK-019-10` and `CLAIM-CASPER-NODE-OBSERVATION-005`. The task already exists. The claim remains unregistered. |
+| 16: Identity | Use `TASK-019-10` and `CLAIM-CASPER-NODE-OBSERVATION-005`. The claim is registered as pending after the verified handoff. |
 
 The user approved the record ceiling and the guarded raw read.
 The user approved all sixteen decisions and the complete-arithmetic extension.
@@ -293,9 +303,13 @@ The handoff must identify the revision and final state of these shared files:
 
 - `casper/src/rust/soak_observer.rs`
 - `casper/src/rust/soak_observer/evaluation.rs`
+- `casper/src/rust/soak_observer/fork_choice.rs`
 - `casper/tests/soak_observer.rs`
+- `node/src/rust/soak_observer.rs`
 - `node/tests/soak_observer.rs`
+- `shared/src/rust/dag/observation_work.rs`
 
+The seven handoff paths identify the baseline, not additional implementation authority.
 The handoff also identifies the post-Batch-D record refresh scope and the exact nextest filters.
 The record inventory must distinguish Batch D obligations from the approved Batch E records.
 Additional implementation paths require a scope amendment.

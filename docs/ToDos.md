@@ -854,7 +854,7 @@ tasks:
     recorded_on: 2026-09-30
     blocked_by: []
     precedes: [TASK-019-10]
-    stage: "Steps 1 to 13 of 16 complete on 2026-09-30. Steps 5 to 12: model, work paths, metered entry points, inputs and digest, bounded and reference evaluations, comparison, controls, property test, capability entry. Step 13: claim 004 binding entry (16 properties, 30 tests), Batch D applicability review in the README, 3 refusal tests, failed state with an error class. The file hand-off to Agent B (TASK-019-10) is in the work log. Findings 1 to 4 are in the work log. Step 14 (formal gate, binding check, test suites, results) is next."
+    stage: "Steps 1 to 15 of 16 complete on 2026-09-30. Verification on the pinned revision 3ab092cc5: observer 39, unit 57, mod.rs 66, clippy clean, gate both tiers clean, paired model 203 states with 5 controls, Linux binding driver exit 0. Evidence package docs/cbc-evidence/runs/casper-node-fork-choice-batch-d-3ab092cc5-01 (2 files), 28 records at batch-d-verification-01 plus the driver record refresh, strict audit exit 4 with 29 pending (expected before acceptance). The file hand-off to Agent B is in the work log. Step 16 (acceptance request to the named maintainer) is next."
     consumer: "TASK-017-12 harness profile on formal/soak-casper-consensus: the profile compares the selected head of a bounded member and a reference member on equal inputs."
     claims: [CLAIM-CASPER-NODE-OBSERVATION-004]
     claim_status: pending
@@ -879,14 +879,20 @@ tasks:
       - "Confirmation of this batch does not authorize Batch E."
   - id: TASK-019-10
     title: "Batch E: equivocation input capture for the detached display projection"
-    status: pending
-    claimed_by: null
+    status: in_progress
+    claimed_by: pi-session-01a0ab62-71b3-7248-a800-37a6fde2e4fa
+    claimed_at: 2026-09-30T17:45:58Z
     proposed_owner: pi-session-01a0ab62-71b3-7248-a800-37a6fde2e4fa
     recorded_by: claude-session-f3cbc961
     recorded_on: 2026-09-30
-    blocked_by: [TASK-019-9]
+    blocked_by: []
+    implementation_dependency: TASK-019-9_step_13_handoff
+    handoff_revision: 3ab092cc58fb30f4da39e6c8b28b8d25206c661b
+    handoff_digests_verified: 7
     claims: [CLAIM-CASPER-NODE-OBSERVATION-005]
-    claim_status: not_registered
+    claim_status: pending
+    claim_file: docs/claims/casper-node-display-projection.md
+    work_log: docs/work-logs/task-019-10-display-projection.md
     plan: docs/plans/casper-node-observation-batch-e.md
     plan_draft: "target/node-observation-prep-20260928-01/batch-e/ (historical local draft, ignored by Git)"
     draft_reviewed_base: 670037c2511abd5f576063b3153681a873244a18
@@ -899,10 +905,11 @@ tasks:
     file_scope_size: "72 files: 39 main files, 31 ledger records, and 2 run files. The scope has 33 new files and 39 changed files."
     decisions: "All 16 documented recommendations approved, with the complete shared arithmetic, 5 mandatory tags, and the 4096-row ceiling."
     cbc_tags_ratified: true
-    cbc_tags_applied: false
-    implementation_baseline: null
-    source_scope_recheck_required: true
-    stage: "Scope confirmed and plan promoted. Batch D is at step 8 of 16 at approval. Implementation and claim registration await its completed handoff and the final shared-source check."
+    cbc_tags_applied: true
+    implementation_baseline: 3ab092cc58fb30f4da39e6c8b28b8d25206c661b
+    source_scope_recheck_required: false
+    stage: "Step-13 handoff verified against 7 committed digests. Claim 005 registered pending and 5 ratified tags applied. Two new production-file records registered before code changes. Agent A retains its 28 Batch D records through step 15."
+    record_refresh_coordination: "Do not edit Agent A's batch-d-registration records. Wait for the step-15 refresh before creating Batch E successor records with previous_record. The binding-driver record also waits for Agent A's refresh."
     open_questions: "No scope decision remains open. A new implementation path requires a scope amendment."
     scope: "Capture the equivocation inputs in the same interval as the detached DAG capture, and calculate the display projection from captured inputs only, with the arithmetic of the live calculation."
     acceptance:
@@ -912,7 +919,7 @@ tasks:
       - "CLAIM-CASPER-NODE-OBSERVATION-005 is registered as pending before the first code change, and its evidence record is source bound."
     constraints:
       - "No code before the user confirms the exact file list of the plan draft."
-      - "Starts after TASK-019-9, because both change casper/src/rust/soak_observer.rs, evaluation.rs, and the two soak_observer test files."
+      - "Starts after the explicit TASK-019-9 step-13 file handoff, not after full task acceptance. Agent A retains Batch D verification and its step-15 record refresh."
 ---
 ```
 

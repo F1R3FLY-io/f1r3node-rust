@@ -266,6 +266,39 @@ The record of `scripts/ci/check-node-observation-bindings.sh` has the scope `age
 
 The raw debug node test executable is 571 MB and fails the observer self-check. Strip it before the run, as finding 3 records. Run `rustfmt --edition 2021` on each changed Rust file before a commit request.
 
+## Step 14 on 2026-09-30: gate, binding check, and test suites on the pinned revision
+
+All runs used an export of revision `3ab092cc58fb30f4da39e6c8b28b8d25206c661b` (`git archive`) in a separate directory with its own cargo target directory. The working tree of the checkout had Batch E edits at that time, so no run read it.
+
+| Check | Environment | Result |
+|-------|-------------|--------|
+| Observer integration suite (`casper/tests/soak_observer.rs`) | macOS, rustc 1.95.0-nightly (6efa357bf), release | 39 passed |
+| Estimator and floor unit tests (`binary(casper)`) | macOS, release | 57 passed |
+| Estimator, fork-choice, and floor suites (`casper/tests/mod.rs`) | macOS, release | 66 passed |
+| `cargo clippy --locked --release -p casper -p node -p shared --all-targets -- -D warnings` | macOS | Clean |
+| Formal gate, default tier | macOS, TLC from `tla2tools.jar` | 31 configurations clean, 83 negative controls violated their expected invariants |
+| Formal gate, `--soak-pr` tier | macOS | 16 configurations clean, 83 negative controls violated their expected invariants |
+| Gate self-test (`test-check-tla-invariants.sh`) | macOS | PASS, 83 controls classify exactly, unregistered controls are caught |
+| `MC_PairedForkChoice` direct TLC run | macOS, 2 workers | No error, 203 distinct states |
+| 5 paired controls, direct TLC runs | macOS | `digest_unsafe` violates `OneCapture` (21 states), `floor_unsafe` violates `HeadNotFloor` (17), `absent_unsafe` violates `NoFabricatedHead` (17), `compare_unsafe` violates `CompareSameInput` (113), `budget_unsafe` violates `SharedBudget` (29) |
+| Node binding driver (`check-node-observation-bindings.sh`) | Linux container `rust:bookworm`, aarch64, debug | Exit 0. 72 inputs hashed and re-verified. Node observer tests 21 passed and 1 ignored. Node library tests 259 passed. |
+
+The binding driver output directory holds the input hashes, the raw and stripped executable hashes, the strip equivalence records, and the test logs. Step 15 selects the compact evidence from it.
+
+Two environment notes for a repeat run. A Docker bind mount of the cargo target directory gave one build failure with a missing `rlib`, and a rebuild in the same directory passed. The driver requires an output directory that does not exist, so give it a new subdirectory.
+
+## Step 15 on 2026-09-30: compact evidence package and record digests
+
+The package `docs/cbc-evidence/runs/casper-node-fork-choice-batch-d-3ab092cc5-01/` has 2 files. `report.json` follows the Batch B2 report schema. It has the 29 claim artifacts with their SHA-256 at revision `3ab092cc5` and the 3 specification digests. It also has the refutation results with the 5 controls, the binding results with the exact commands, the 4 findings, and the strict audit. `sources.sha256` has the 29 artifact digests in `sha256sum` format.
+
+The package has no log copies and no bulk directory. The driver output stays outside the repository.
+
+The strict audit `cbc.sh discharge --strict` over the 29 artifacts gave exit 4 with 29 pending items. That result is expected before the acceptance, as in the Batch B2 cycle.
+
+The 28 records with the scope `batch-d-registration` now have the scope `batch-d-verification-01`. Each record has the artifact digest at `3ab092cc5`, the claim digest, and the evidence reference with the report digest. The tiers are `recorded` (refutation), `pending` (construction), and `recorded` (binding). A `previous_record` entry points to the registration version. The status stays `pending`.
+
+The record of `scripts/ci/check-node-observation-bindings.sh` has a new version on top of the Agent B refresh of 2026-09-30. It adds claim 004, the digest of the changed script, and the evidence reference. The Batch E owner can refresh that record after this version.
+
 ## Progress
 
 - [x] Claim the task and start the work log.
@@ -280,5 +313,6 @@ The raw debug node test executable is 571 MB and fails the observer self-check. 
 - [x] Comparison, response field, negative controls.
 - [x] Capability entry and node tests.
 - [x] Binding entries and applicability review.
-- [ ] Gate, binding check, test suites, results recorded.
-- [ ] Compact evidence package and the acceptance request.
+- [x] Gate, binding check, test suites, results recorded.
+- [x] Compact evidence package.
+- [ ] Acceptance request.
