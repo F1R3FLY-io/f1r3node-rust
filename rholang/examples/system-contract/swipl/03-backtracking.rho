@@ -1,0 +1,15 @@
+new executePetta(`rho:petta:execute`), stdout(`rho:io:stdout`), retCh, printGrandparents in {
+  contract printGrandparents(@grandparents) = {
+    match grandparents {
+      [] => Nil
+      [head ...tail] => {
+        stdout!("Grandparent of Tom: " ++ head) |
+        printGrandparents!(tail)
+      }
+    }
+  } |
+  executePetta!("(= (parent Tom) Bob) (= (parent Tom) Liz) (= (parent Bob) Ann) (= (parent Liz) Pat) (= (grandparent $x) (parent (parent $x))) !(grandparent Tom)", *retCh) |
+  for(@result <- retCh) {
+    printGrandparents!(result)
+  }
+}
