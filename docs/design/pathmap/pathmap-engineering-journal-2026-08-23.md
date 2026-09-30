@@ -18344,6 +18344,62 @@ The width-512 zero-copy regression independently passes with log SHA-256
 `5eeee7d4b0cf7e4345a60f26994ae20c84ff8e7c0eb22aad9ad524f3977d4f33`.
 No matcher production or Casper source changed for this reconciliation.
 
+### J-241 — Exact-key Bag cursor algebra, rejected first candidate, and measured crossover (2026-09-30)
+
+**DERIVED.** The Bag refinement at `fe0effbf3` and `cbc28bfb8` models an
+occupied byte path as one independent multiplicity cell. Rocq proves that a
+duplicate-free complete cursor walk computes pointwise maximum, minimum, or
+truncated subtraction; it also proves the exact subbag scan and a common
+endpoint-count bound. The proof assumes complete visits. A release property
+checks that the guarded borrowed cursor visits exactly the same ascending
+endpoints as the public iterator for prefix-related and empty-root inputs,
+maximum multiplicities, and copy-on-write snapshots. A 128 KiB native-stack
+test covers a 200,000-byte shared prefix. The old description of PathMap's
+native lattice as inherently prefix-aware was too broad and was corrected.
+
+**MEASURED.** Candidate `d2015af3f` replaces allocated-key meet, subtraction,
+and subbag walks with borrowed read cursors. The focused release Bag suite
+passes 38 tests and the isolated 64/1,024-endpoint allocation gate rules out
+one path allocation per endpoint. Full RSpace release nextest, run without
+fail-fast under 24 GiB and zero swap, reports 1,209 pass, one failure, and ten
+skips. The failure is the previously tracked PMU-006 PathMap 0.2.2 empty-sentinel
+panic in a raw `create_path` history, before Bag algebra; its additional
+minimized seed is committed at `d2015af3f`. No upstream PathMap code changed.
+
+Pgmcp experiment 367 locked the representative old/new test before timing.
+The frozen public-API control reproduces the allocated-key algorithm; each
+cell alternates arm order, discards five warmups, and retains 31 paired samples.
+The 13 key shapes include empty, singleton, shared-prefix, prefix-chain,
+dispersed, equal, half-overlap, disjoint, and asymmetric supports; each runs
+meet, subtraction, and subbag. The run was pinned to CPU 6 on an AMD Ryzen
+Threadripper PRO 5975WX with the `performance` governor. The analysis requires
+all 2,418 rows, bootstraps paired median ratios 10,000 times per cell, and
+takes the largest one-sided 99% upper ratio. The locked acceptance ceiling is
+1.05, with no cell allowed to increase allocation calls.
+
+| Initial-candidate observation | Result |
+| --- | ---: |
+| Largest upper wall-time ratio, empty meet | 2.655136 |
+| Time cells over the 1.05 ceiling | 5 of 39 |
+| Cells with more allocation calls | 3 of 39 |
+| Empty meet median candidate/control ratio | 2.638046 |
+| Singleton-disjoint meet median candidate/control ratio | 1.632272 |
+
+**DECISION.** Experiment 367 is rejected; no favorable cells were selected to
+override it. Empty meet and subtraction paid for writer construction despite
+having an empty result. Singleton-disjoint meet paid cursor and writer setup
+with no sharing opportunity. The next candidate returns a shared empty input
+or unchanged subtraction input directly and uses the exact point operation
+for a singleton probe. The optimized multi-key cursor path remains intact.
+Its focused semantic and allocation tests pass, but a fresh locked comparison
+must decide whether the revised candidate clears the same time and allocation
+gates. The initial [compressed raw run](../stack-safety/measurements/bag-cursor-algebra-2026-09-30-initial.log.gz)
+and [39-cell fits](../stack-safety/measurements/bag-cursor-algebra-2026-09-30-initial-fits.tsv)
+are retained; the uncompressed raw log SHA-256 is
+`5c307130caf6968d5e405e4cfb4b42cca375cce86347aaf208d7f9b9072a9622`
+and the committed gzip SHA-256 is
+`74d43648f15dd9c7776eab7d622d2e952db3c2ab008e9d70189dfea467ccff41`.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

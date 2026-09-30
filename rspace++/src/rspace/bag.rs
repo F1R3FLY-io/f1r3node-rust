@@ -975,11 +975,26 @@ impl Bag {
     }
 
     pub fn meet(&self, other: &Self) -> Self {
+        if self.is_empty() {
+            return self.clone();
+        }
+        if other.is_empty() {
+            return other.clone();
+        }
         let (probe, index) = if self.distinct_len <= other.distinct_len {
             (self, other)
         } else {
             (other, self)
         };
+        if probe.distinct_len == 1 {
+            let mut result = Self::new();
+            for (path, multiplicity) in probe.iter() {
+                if let Some(counter) = index.entries.get(&path) {
+                    result.set_count(&path, Some(multiplicity.min(*counter)));
+                }
+            }
+            return result;
+        }
         Self::try_from_sorted_unique(|writer| {
             probe.with_read_cursor(|mut cursor| {
                 let mut present = cursor.val().is_some() || cursor.to_next_val();
@@ -997,6 +1012,9 @@ impl Bag {
     }
 
     pub fn subtract(&self, other: &Self) -> Self {
+        if self.is_empty() || other.is_empty() {
+            return self.clone();
+        }
         Self::try_from_sorted_unique(|writer| {
             self.with_read_cursor(|mut current| {
                 other.with_read_cursor(|mut removals| {

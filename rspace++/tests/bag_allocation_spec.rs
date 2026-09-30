@@ -8,6 +8,7 @@
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
+use std::hint::black_box;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -473,6 +474,294 @@ fn catalog_resource_profile() {
                 rss_before,
                 rss_after
             );
+        }
+    }
+}
+
+fn allocated_key_meet(left: &Bag, right: &Bag) -> Bag {
+    let (probe, index) = if left.distinct_len() <= right.distinct_len() {
+        (left, right)
+    } else {
+        (right, left)
+    };
+    let mut result = Bag::new();
+    for (path, multiplicity) in probe.iter() {
+        let counter = index.count(&path);
+        if counter != 0 {
+            result.set_count(&path, Some(multiplicity.min(Multiplicity::new(counter).unwrap())));
+        }
+    }
+    result
+}
+
+fn allocated_key_subtract(left: &Bag, right: &Bag) -> Bag {
+    let mut removals = right.iter().peekable();
+    Bag::try_from_sorted_unique(|writer| {
+        for (path, current) in left.iter() {
+            while removals
+                .peek()
+                .is_some_and(|(removed_path, _)| removed_path < &path)
+            {
+                removals.next();
+            }
+            let next = match removals.peek() {
+                Some((removed_path, removed)) if removed_path == &path => (current.get() >
+                    removed.get())
+                .then(|| Multiplicity::new(current.get() - removed.get()).unwrap()),
+                _ => Some(current),
+            };
+            if let Some(next) = next {
+                writer.push(&path, next)?;
+            }
+        }
+        Ok::<(), SortedUniqueBagError>(())
+    })
+    .unwrap()
+}
+
+fn allocated_key_subbag(left: &Bag, right: &Bag) -> bool {
+    left.iter()
+        .all(|(path, multiplicity)| right.count(&path) >= multiplicity.get())
+}
+
+#[derive(Clone, Copy)]
+struct AlgebraProfileCase {
+    name: &'static str,
+    left: usize,
+    right: usize,
+    right_offset: usize,
+    shared_prefix: bool,
+    prefix_related: bool,
+    maximum_count: bool,
+}
+
+fn algebra_profile_cases() -> [AlgebraProfileCase; 13] {
+    [
+        AlgebraProfileCase {
+            name: "empty",
+            left: 0,
+            right: 0,
+            right_offset: 0,
+            shared_prefix: true,
+            prefix_related: false,
+            maximum_count: false,
+        },
+        AlgebraProfileCase {
+            name: "one_equal",
+            left: 1,
+            right: 1,
+            right_offset: 0,
+            shared_prefix: true,
+            prefix_related: false,
+            maximum_count: false,
+        },
+        AlgebraProfileCase {
+            name: "one_disjoint",
+            left: 1,
+            right: 1,
+            right_offset: 1,
+            shared_prefix: true,
+            prefix_related: false,
+            maximum_count: false,
+        },
+        AlgebraProfileCase {
+            name: "one_maximum",
+            left: 1,
+            right: 1,
+            right_offset: 0,
+            shared_prefix: true,
+            prefix_related: false,
+            maximum_count: true,
+        },
+        AlgebraProfileCase {
+            name: "shared_64_equal",
+            left: 64,
+            right: 64,
+            right_offset: 0,
+            shared_prefix: true,
+            prefix_related: false,
+            maximum_count: false,
+        },
+        AlgebraProfileCase {
+            name: "shared_64_half",
+            left: 64,
+            right: 64,
+            right_offset: 32,
+            shared_prefix: true,
+            prefix_related: false,
+            maximum_count: false,
+        },
+        AlgebraProfileCase {
+            name: "prefix_chain_64_half",
+            left: 64,
+            right: 64,
+            right_offset: 32,
+            shared_prefix: true,
+            prefix_related: true,
+            maximum_count: false,
+        },
+        AlgebraProfileCase {
+            name: "shared_1024_equal",
+            left: 1024,
+            right: 1024,
+            right_offset: 0,
+            shared_prefix: true,
+            prefix_related: false,
+            maximum_count: false,
+        },
+        AlgebraProfileCase {
+            name: "shared_1024_half",
+            left: 1024,
+            right: 1024,
+            right_offset: 512,
+            shared_prefix: true,
+            prefix_related: false,
+            maximum_count: false,
+        },
+        AlgebraProfileCase {
+            name: "shared_1024_disjoint",
+            left: 1024,
+            right: 1024,
+            right_offset: 1024,
+            shared_prefix: true,
+            prefix_related: false,
+            maximum_count: false,
+        },
+        AlgebraProfileCase {
+            name: "left_one_right_1024",
+            left: 1,
+            right: 1024,
+            right_offset: 0,
+            shared_prefix: true,
+            prefix_related: false,
+            maximum_count: false,
+        },
+        AlgebraProfileCase {
+            name: "left_1024_right_one",
+            left: 1024,
+            right: 1,
+            right_offset: 0,
+            shared_prefix: true,
+            prefix_related: false,
+            maximum_count: false,
+        },
+        AlgebraProfileCase {
+            name: "dispersed_1024_equal",
+            left: 1024,
+            right: 1024,
+            right_offset: 0,
+            shared_prefix: false,
+            prefix_related: false,
+            maximum_count: false,
+        },
+    ]
+}
+
+fn algebra_profile_key(ordinal: usize, shared_prefix: bool) -> Vec<u8> {
+    if shared_prefix {
+        let mut key = vec![0xA5; 64];
+        key.extend_from_slice(&(ordinal as u64).to_be_bytes());
+        key
+    } else {
+        let mut state = (ordinal as u64)
+            .wrapping_add(1)
+            .wrapping_mul(0x9e3779b97f4a7c15);
+        let mut key = vec![0u8; 64];
+        for byte in &mut key {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            *byte = state as u8;
+        }
+        key.extend_from_slice(&(ordinal as u64).to_be_bytes());
+        key
+    }
+}
+
+fn algebra_profile_bag(size: usize, offset: usize, case: AlgebraProfileCase) -> Bag {
+    let mut result = Bag::new();
+    for ordinal in offset..offset + size {
+        let count = if case.maximum_count {
+            u64::MAX
+        } else {
+            ordinal as u64 % 5 + 1
+        };
+        let key = if case.prefix_related {
+            vec![0xA5; ordinal + 1]
+        } else {
+            algebra_profile_key(ordinal, case.shared_prefix)
+        };
+        result
+            .insert_many(&key, Multiplicity::new(count).unwrap())
+            .unwrap();
+    }
+    result
+}
+
+fn algebra_profile_batch(operation: &str, arm: &str, left: &Bag, right: &Bag, repetitions: usize) {
+    for _ in 0..repetitions {
+        match (operation, arm) {
+            ("meet", "control") => {
+                black_box(allocated_key_meet(black_box(left), black_box(right)));
+            }
+            ("meet", "treatment") => {
+                black_box(black_box(left).meet(black_box(right)));
+            }
+            ("subtract", "control") => {
+                black_box(allocated_key_subtract(black_box(left), black_box(right)));
+            }
+            ("subtract", "treatment") => {
+                black_box(black_box(left).subtract(black_box(right)));
+            }
+            ("subbag", "control") => {
+                black_box(allocated_key_subbag(black_box(left), black_box(right)));
+            }
+            ("subbag", "treatment") => {
+                black_box(black_box(left).is_subbag_of(black_box(right)));
+            }
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[test]
+#[ignore = "isolated preregistered old/new Bag algebra resource experiment"]
+fn bag_algebra_old_new_resource_profile() {
+    for case in algebra_profile_cases() {
+        let left = algebra_profile_bag(case.left, 0, case);
+        let right = algebra_profile_bag(case.right, case.right_offset, case);
+        assert_eq!(allocated_key_meet(&left, &right), left.meet(&right));
+        assert_eq!(allocated_key_subtract(&left, &right), left.subtract(&right));
+        assert_eq!(allocated_key_subbag(&left, &right), left.is_subbag_of(&right));
+        let repetitions = (32768 / case.left.max(case.right).max(1)).clamp(32, 4096);
+        for operation in ["meet", "subtract", "subbag"] {
+            for sample in 0..36 {
+                let arms = if sample % 2 == 0 {
+                    ["control", "treatment"]
+                } else {
+                    ["treatment", "control"]
+                };
+                for arm in arms {
+                    let start = Instant::now();
+                    let ((), calls, bytes) = measure(|| {
+                        algebra_profile_batch(operation, arm, &left, &right, repetitions);
+                    });
+                    let nanos = start.elapsed().as_nanos();
+                    if sample >= 5 {
+                        println!(
+                            "BAGALG\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                            case.name,
+                            operation,
+                            arm,
+                            sample - 5,
+                            repetitions,
+                            calls,
+                            bytes,
+                            nanos
+                        );
+                    }
+                }
+            }
         }
     }
 }
