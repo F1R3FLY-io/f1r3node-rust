@@ -18284,6 +18284,49 @@ not a full-workspace-with-Casper pass or completion of the PathMap campaign.
 The separately requested cost-accounting/Casper branch decomposition remains
 after cost-accounting-specific work is complete.
 
+### J-240 — Matcher all-family resource ladder and Casper gate disposition (2026-09-30)
+
+**MEASURED.** Pgmcp experiment 366 accepted the locked all-family matcher
+resource threshold at commit `d334e163043482bd4351862a6da499b648ed18cc`.
+The corrected study completed 150 isolated cells, 4,650 post-warm-up samples,
+and 30 family/profile fits. Its maximum one-sided 95th-percentile wall-time
+exponent against encoded input bytes was 0.971352, below the preregistered
+1.20 bound; maximum allocator-call and allocated-byte median exponents were
+0.922218 and 1.030075. The largest whole-process peak RSS was 27,056 KiB.
+The [raw samples](../stack-safety/measurements/recursive-matcher-family-resources-2026-09-30-samples.tsv),
+[fits](../stack-safety/measurements/recursive-matcher-family-resources-2026-09-30-fits.tsv),
+and [manifest](../stack-safety/measurements/recursive-matcher-family-resources-2026-09-30-manifest.json)
+are committed evidence; stack-safety report §5.30.6 defines the exact
+measurement boundary and caveats. Experiment artifact 828 binds the 4,650-row
+sample SHA-256
+`7593312f62f2c5ceb2c9274265a630720fe3525b029206d3766cfec4b80fe517`.
+The earlier partial attempt failed because the probe expected an empty capture
+for a depth-zero `Connective::Not` fixture with no connective wrapper; its logs
+remain under `target/verification/matcher-recursive-family-5866-attempt1/`.
+Only the complete corrected population entered the decision.
+
+**MEASURED.** The read-only Casper-only release run at the prior committed
+candidate `b23da6086a3d93b96a21633d10a7d02522677f21` ran all 1,054 test
+cases in 27,173.238 seconds: 1,050 passed, four genesis RhoSpec cases failed,
+and 33 were skipped. The failures were fixed 60-second timeouts in
+MultiSigSystemVault, SystemVault, and TreeHashMap, and a 400-second timeout in
+PoS. Casper's cost-accounting replay oracles and phlogiston tests passed. The
+log `target/verification/parbag-5849/r92-casper-readonly-release-nextest.log`
+has SHA-256
+`589df32c5833fedbf15add5b8c8fb297ffad3d08447a7dd482b49c983cbffe24`.
+This run is not a full-release pass and does not show a direct cost-accounting
+defect. Under the user's scope restriction, it authorizes no Casper source
+change. Neither this prior-candidate Casper run nor J-239's non-Casper run
+supplies the exact-final-commit full-workspace acceptance receipt.
+
+**DERIVED.** Two scheduler-listed matcher reports were historically repaired
+by `a6b3ad0903`: `spatial-matcher-differential-without-panic-interception`
+now uses the fallible legacy-oracle domain and partitions every canonical
+corpus pair, while `spatial-matcher-ineligible-target-zero-endpoint-copy`
+has a width-512 scalar-target regression asserting zero endpoint backing
+copies. Both tests passed within J-239's release gate. They are triaged and
+linked in pgmcp; these observations are not trusted verification receipts.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

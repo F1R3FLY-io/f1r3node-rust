@@ -1,0 +1,54 @@
+{
+  "revision": "d334e163043482bd4351862a6da499b648ed18cc",
+  "experiment_id": 366,
+  "host": {
+    "uname": {
+      "system": "Linux",
+      "node": "arch-workstation",
+      "release": "7.2.7-arch1-1",
+      "version": "#1 SMP PREEMPT_DYNAMIC Mon, 21 Sep 2026 18:51:14 +0000",
+      "machine": "x86_64",
+      "processor": ""
+    },
+    "cpu_model": "AMD Ryzen Threadripper PRO 5975WX 32-Cores",
+    "affinity": [
+      8,
+      9
+    ],
+    "governor": "performance",
+    "scaling_driver": "amd-pstate-epp"
+  },
+  "seed": 5866,
+  "families": [
+    "New",
+    "Send",
+    "Receive",
+    "Match",
+    "ENot",
+    "EPlus",
+    "EList",
+    "ETuple",
+    "EMethod",
+    "EMatches",
+    "ESet",
+    "EMap",
+    "Connective::Not",
+    "Connective::And",
+    "Connective::Or"
+  ],
+  "depths": [
+    0,
+    128,
+    512,
+    2048,
+    4096
+  ],
+  "samples": 31,
+  "warmups": 3,
+  "bootstraps": 10000,
+  "threshold": 1.2,
+  "binaries": {
+    "release": "/home/dylon/Workspace/f1r3fly.io/f1r3node-rust-mettail/target/release/deps/matcher_recursive_family_cursor-a79b9e814302f832",
+    "debug": "/home/dylon/Workspace/f1r3fly.io/f1r3node-rust-mettail/target/debug/deps/matcher_recursive_family_cursor-25bc4ffb6967fdd1"
+  }
+}

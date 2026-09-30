@@ -10113,6 +10113,46 @@ fixture and runner memory. Full intervals, per-depth raw samples, memory logs,
 hashes, and the open pgmcp scheduling/verification boundary are recorded in
 the PathMap engineering journal J-233. No Casper source or test was changed.
 
+#### 5.30.6 All-family geometric resource qualification — 2026-09-30
+
+Pgmcp experiment 366 extends the current-source resource ladder from `If` to all 15 recursively
+nested matcher families in `matcher_recursive_family_cursor`. At commit
+`d334e163043482bd4351862a6da499b648ed18cc`, the ordinary release target passed 6/6
+tests, including the depth-4,096 fixed-128-KiB-stack gate; its one ignored measurement probe ran
+only in the isolated study. The study used 150 family/profile/depth cells: 15 families, debug and
+release, and depths 0, 128, 512, 2,048, and 4,096. Each cell ran in a separate process with three
+warm-ups and 31 measured matches. Fixture construction and CoW root cloning preceded each timed
+match; process peak resident set size (RSS) includes the fixture and test runner. The complete run
+used a zero-swap 8-GiB cgroup, CPU affinity 8–9 on a performance-governor Threadripper PRO 5975WX,
+and seed 5866.
+
+For each family and build profile, the primary statistic fits the four positive-depth medians of
+matching wall time against encoded input bytes on logarithmic axes. Ten thousand seeded,
+within-cell bootstrap resamples give a one-sided upper 95th-percentile exponent. The locked gate
+required every upper exponent to be at most 1.20. All 30 fits passed; the largest upper exponent
+was **0.971352** for debug `Connective::Or`. The largest median-slope exponent for allocator calls
+was **0.922218** (release `Connective::Or`), and for allocated bytes **1.030075** (release
+`Connective::Not`). The largest whole-process peak RSS was **27,056 KiB** (debug `EMethod`). These
+RSS samples check for a gross process-memory spike; they do not isolate the matcher's retained
+heap or provide a process-to-process RSS confidence interval. The 31 wall-time samples within a
+cell share one process, so their bootstrap interval is conditional on that process and the recorded
+host conditions.
+
+The complete [raw 4,650-row sample table](measurements/recursive-matcher-family-resources-2026-09-30-samples.tsv),
+[30 fitted outcomes](measurements/recursive-matcher-family-resources-2026-09-30-fits.tsv), and
+[execution manifest](measurements/recursive-matcher-family-resources-2026-09-30-manifest.json)
+are retained in the repository. Their SHA-256 digests are respectively
+`7593312f62f2c5ceb2c9274265a630720fe3525b029206d3766cfec4b80fe517`,
+`25bd9f249acc7e85be5bda6c7391140625eced5c618c432af04f898ca3e8ac3b`, and
+`fac88c504a27c511ee3d65d809836f320fa273a102a19b25ea77f163145e81a3`.
+Experiment 366 accepted the preregistered threshold and indexed the fit table as artifact 828.
+The first partial attempt stopped on a measurement-probe mistake: at depth zero,
+`Connective::Not` has no connective wrapper and must retain the terminal capture. Its logs remain
+under `target/verification/matcher-recursive-family-5866-attempt1/`; the corrected, complete run
+is the only population used for this verdict. This evidence advances the resource criterion but
+does not satisfy the separate full-release-workspace gate, which still fails at four Casper
+genesis-contract timeouts. No Casper source was edited.
+
 ### 5.31 Drive-local `FreeMap` undo journal and exact FreeVar capture compression [SS-A16]
 
 #### 5.31.1 Defect and hypothesis
