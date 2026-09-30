@@ -120,6 +120,26 @@ Checks: 68 tests of the observer, estimator, and fork-choice suites passed. One 
 
 Not tested at the integration level: `approved_block_not_captured` and `approved_block_mismatch`. The endpoint binds the hash and the number from one block. The model control `absent_unsafe` covers the refusal rule.
 
+## Step 10 on 2026-09-30: `reference` evaluation
+
+`ReferenceForkChoice` in `fork_choice.rs` runs on path 5. It reads the capture maps `blocks`, `child_map`, `invalid_blocks`, and `latest_messages` only. It calls no production estimator, common ancestor, floor, or traversal function.
+
+The reference applies the rules of the fork-choice specification with its own code. R-FILTER and the testimony filter remove absent, invalid, and foreign latest messages. The depth filter of R-LCA uses the highest captured block number and `latest_message_depth`. The lower bound is the approved block, decision 1.
+
+The common ancestor walk holds a set of blocks ordered by height and pops the highest. One remaining block is the ancestor. A highest block at or below the approved height gives the approved block. A missing parent gives `history_incomplete`.
+
+R-SCORE walks the main parents of each used message down to the ancestor height. At each block it adds the validator weight from the main parent's weight map with `checked_add`, and an overflow gives the failure `score_overflow`. R-GHOST and R-TOTAL descend from the ancestor over the scored main children, with score descending and hash ascending. The frontier, R-DEPTH, and R-COUNT follow the same order as the production estimator.
+
+`visited_blocks` is the number of distinct block hashes read, and `examined_edges` is the number of parent and child links followed. Both are counters of the reference, not meter values.
+
+`evaluation.rs` runs the reference when the selection asks for it. Without the reference request, `reference` and `comparison` are `NotRequested`.
+
+Tests: the reference head, tips, scores, score digest, and common ancestor equal the `bounded` result on the fork fixture. A selection without the reference leaves it `NotRequested`. A direct call with a wide budget gives 2 tips and no failure, and a budget of 2 operations gives the `observation_work:` limit error. The step 8 and step 9 tests now expect an available reference.
+
+Checks: 71 tests of the observer, estimator, and fork-choice suites passed. `cargo clippy --all-targets -- -D warnings` for `casper` and `node` passed. `rustfmt --check` passed.
+
+Pending for step 11: the comparison, the response work fields, the 10 negative controls of the plan, and the property tests on random DAGs and permutations.
+
 ## Progress
 
 - [x] Claim the task and start the work log.
@@ -130,7 +150,7 @@ Not tested at the integration level: `approved_block_not_captured` and `approved
 - [x] Metered functions in the 4 consensus files.
 - [x] Input record and input digest.
 - [x] `bounded` evaluation and tests.
-- [ ] `reference` evaluation and tests.
+- [x] `reference` evaluation and tests.
 - [ ] Comparison, response field, negative controls.
 - [ ] Capability entry and node tests.
 - [ ] Binding entries and applicability review.

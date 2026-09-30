@@ -890,7 +890,9 @@ async fn a_fork_choice_selection_binds_the_inputs_and_the_digest() {
     assert!(
         matches!(&value.bounded, Value::Available { input_digest: d, .. } if d == input_digest)
     );
-    assert!(not_implemented(&value.reference, input_digest));
+    assert!(
+        matches!(&value.reference, Value::Available { input_digest: d, .. } if d == input_digest)
+    );
     assert!(not_implemented(&value.comparison, input_digest));
     let mut changed = inputs.clone();
     changed.max_number_of_parents += 1;
@@ -968,9 +970,7 @@ async fn bounded_fork_choice_matches_the_production_estimator_on_the_capture() {
     assert_eq!(bounded.score_digest.len(), 64);
     assert!(bounded.visited_blocks >= 3);
     assert!(bounded.examined_edges >= 3);
-    assert!(
-        matches!(&observation.reference, Value::Unavailable { reason, .. } if reason == "not_implemented")
-    );
+    assert!(matches!(&observation.reference, Value::Available { .. }));
     assert!(
         matches!(&observation.comparison, Value::Unavailable { reason, .. } if reason == "not_implemented")
     );
@@ -1015,6 +1015,94 @@ async fn a_zero_parent_limit_gives_no_head_and_no_substitute() {
         matches!(&observation.bounded, Value::Unavailable { reason, input_digest: Some(d) }
         if reason == "no_head_selected" && d == &observation.input_digest)
     );
+}
+
+#[tokio::test]
+async fn reference_fork_choice_matches_the_bounded_result_on_the_capture() {
+    use casper::rust::soak_observer::evaluation::ForkChoiceSelection;
+    use casper::rust::soak_observer::fork_choice::{EvaluationMode, LowerBoundRule};
+    let fixture = fork_fixture().await;
+    let controller = ObserverController::new("incarnation".to_string());
+    controller.install(Some(fixture.casper(true).as_ref()));
+    let mut request = fixture.request();
+    request.targets = vec![hex::encode(tag(4))];
+    request.fork_choice = Some(ForkChoiceSelection { reference: true });
+    let response = controller
+        .authority_snapshot(request, Instant::now() + Duration::from_secs(5))
+        .await
+        .unwrap();
+    let observation = available(&response.fork_choice);
+    let bounded = available(&observation.bounded);
+    let reference = available(&observation.reference);
+    assert_eq!(reference.mode, EvaluationMode::Reference);
+    assert_eq!(reference.lower_bound.rule, LowerBoundRule::ApprovedBlock);
+    assert_eq!(reference.lower_bound, bounded.lower_bound);
+    assert_eq!(reference.common_ancestor, bounded.common_ancestor);
+    assert_eq!(reference.head, bounded.head);
+    assert_eq!(reference.head, hex::encode(tag(4)));
+    assert_eq!(reference.tips, bounded.tips);
+    assert_eq!(reference.tip_scores, bounded.tip_scores);
+    assert_eq!(reference.score_count, bounded.score_count);
+    assert_eq!(reference.score_digest, bounded.score_digest);
+    assert!(reference.visited_blocks >= 5);
+    assert!(reference.examined_edges >= 4);
+    assert!(
+        matches!(&observation.comparison, Value::Unavailable { reason, .. } if reason == "not_implemented")
+    );
+}
+
+#[tokio::test]
+async fn a_selection_without_the_reference_leaves_it_not_requested() {
+    use casper::rust::soak_observer::evaluation::ForkChoiceSelection;
+    let fixture = fork_fixture().await;
+    let controller = ObserverController::new("incarnation".to_string());
+    controller.install(Some(fixture.casper(true).as_ref()));
+    let mut request = fixture.request();
+    request.targets = vec![hex::encode(tag(4))];
+    request.fork_choice = Some(ForkChoiceSelection { reference: false });
+    let response = controller
+        .authority_snapshot(request, Instant::now() + Duration::from_secs(5))
+        .await
+        .unwrap();
+    let observation = available(&response.fork_choice);
+    assert!(matches!(&observation.bounded, Value::Available { .. }));
+    assert!(matches!(&observation.reference, Value::NotRequested));
+    assert!(matches!(&observation.comparison, Value::NotRequested));
+}
+
+#[tokio::test]
+async fn reference_fork_choice_refuses_a_budget_limit_with_the_limit_reason() {
+    use casper::rust::soak_observer::fork_choice::ReferenceForkChoice;
+    let fixture = fork_fixture().await;
+    let endpoint = endpoint(&fixture);
+    let captured = snapshot(&fixture, &[]);
+    let wide = meter(work_limits());
+    let (counts, result) = ReferenceForkChoice::new(
+        &captured,
+        &wide,
+        endpoint.fork_choice_inputs(),
+        endpoint.authority(),
+    )
+    .evaluate();
+    let result = result.unwrap();
+    assert_eq!(counts.captured, 3);
+    assert_eq!(counts.used, 3);
+    assert_eq!(result.head, hex::encode(tag(4)));
+    assert_eq!(result.tips, vec![hex::encode(tag(4)), hex::encode(tag(5))]);
+    let (total, _, failure) = wide.usage();
+    assert!(failure.is_none());
+    assert!(total.metadata >= 5 && total.traversal >= 4);
+    let mut limits = work_limits();
+    limits.operations = 2;
+    let (_, limited) = ReferenceForkChoice::new(
+        &captured,
+        &meter(limits),
+        endpoint.fork_choice_inputs(),
+        endpoint.authority(),
+    )
+    .evaluate();
+    let error = limited.unwrap_err();
+    assert!(error.contains("observation_work:"), "{error}");
 }
 
 #[test]

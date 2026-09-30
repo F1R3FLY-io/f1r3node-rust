@@ -343,7 +343,7 @@ pub struct AuthorityResponse {
     pub events: Vec<ObservationEvent>,
 }
 
-fn digest(value: &impl Serialize, meter: &CheckedWork) -> Result<String, String> {
+pub(super) fn digest(value: &impl Serialize, meter: &CheckedWork) -> Result<String, String> {
     let size = bincode::serialized_size(value).map_err(|e| e.to_string())?;
     meter
         .charge(WorkKind::Allocation, 1, size)
@@ -741,17 +741,33 @@ async fn evaluate_inner(
         }
     };
     let fork_choice_observation = match (fork_choice_selection, fork_choice_digest) {
-        (Some(_), Some(input_digest)) => {
+        (Some(selection), Some(input_digest)) => {
             let bounded_work = meter.for_path(4).map_err(|e| e.to_string())?;
             let (counts, bounded) =
                 bounded_fork_choice(&snapshot, endpoint, threshold, &bounded_work).await;
+            let (reference, comparison) = if selection.reference {
+                let reference_work = meter.for_path(5).map_err(|e| e.to_string())?;
+                let (_, reference) = fork_choice::ReferenceForkChoice::new(
+                    &snapshot,
+                    &reference_work,
+                    &endpoint.fork_choice,
+                    &endpoint.authority,
+                )
+                .evaluate();
+                (
+                    Value::from_result(&input_digest, reference),
+                    Value::unavailable(&input_digest, "not_implemented"),
+                )
+            } else {
+                (Value::NotRequested, Value::NotRequested)
+            };
             Value::available(&input_digest, ForkChoiceObservation {
                 input_digest: input_digest.clone(),
                 inputs: endpoint.fork_choice.clone(),
                 latest_messages: counts,
                 bounded: Value::from_result(&input_digest, bounded),
-                reference: Value::unavailable(&input_digest, "not_implemented"),
-                comparison: Value::unavailable(&input_digest, "not_implemented"),
+                reference,
+                comparison,
             })
         }
         _ => Value::NotRequested,
